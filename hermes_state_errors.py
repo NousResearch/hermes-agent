@@ -178,12 +178,24 @@ _STATE_DB_CORRUPT_MSG = (
 )
 
 
+class StateDbWriterHeldError(sqlite3.OperationalError):
+    """Another process holds ``<state.db>.writer.lock``: this process must not
+    write (a second WAL writer corrupts the live database, #103339).
+
+    Subclasses OperationalError so generic sqlite handlers treat it as an
+    operational refusal; it is raised BEFORE ``_execute_write``'s retry loop,
+    so it never waits out a patience window — the holder keeps the gate for
+    its lifetime, and only stopping that process frees it.
+    """
+
+
 _PERSISTENCE_CAUSE_BY_TYPE = (
     (SessionTurnLeaseLostError, "turn_lease"),
     (CompressionSessionClosedError, "compression_closed"),
     (CompressionSessionBusyError, "compression"),
     (StateDbReplacedError, "replaced"),
     (StateDbCorruptError, "corrupt"),
+    (StateDbWriterHeldError, "locked"),
 )
 _PERSISTENCE_CAUSE_BY_PHRASE = (
     (("turn lease",), "turn_lease"),

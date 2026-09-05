@@ -797,6 +797,11 @@ class SessionSchemaMixin:
         # the lease duration. Per-chunk renewal would shrink that, but adds complexity to the migration
         # loops for a rare failure mode.
         report_startup_progress(600.0, phase="state_db_init_schema")
+        # Structural gate (#103339): schema DDL must not interleave a live
+        # surgery (repair/VACUUM-class holder). Ordinary coexisting writers
+        # never trip this — only a held global structural lock refuses.
+        from hermes_state_writergate import refuse_if_structural_op_holds
+        refuse_if_structural_op_holds(self.db_path, "open-time schema init")
         cursor = self._conn.cursor()
         cursor.executescript(SCHEMA_SQL)
 

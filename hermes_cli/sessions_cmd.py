@@ -14,6 +14,7 @@ from functools import partial
 from pathlib import Path
 
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_state_errors import StateDbWriterHeldError
 
 
 def get_hermes_home():
@@ -964,5 +965,10 @@ def cmd_sessions(args, sessions_parser=None):
             sessions_parser.print_help()
             return
         return handler(db, args)
+    except StateDbWriterHeldError as e:
+        # Single-writer gate (#103339): another process (usually the running
+        # gateway) owns this state.db — report, don't traceback.
+        print(f"Error: {e}")
+        return 1
     finally:
         db.close()

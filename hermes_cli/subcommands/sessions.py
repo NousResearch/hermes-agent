@@ -102,7 +102,9 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     add_yes_flag(sessions_delete, "Skip confirmation")
 
     sessions_prune = sessions_subparsers.add_parser(
-        "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
+        "prune", help="Delete old sessions (filterable by time window, source, title, ...)",
+        description="Delete old sessions. Stop the profile's gateway first "
+            "(`hermes gateway stop`): pruning a live database can corrupt it (#103339).")
     _add_session_filter_args(
         sessions_prune, "Delete sessions older than AGE — days if bare number, or a duration "
         "like '5h'/'2d'/'1w', or an ISO timestamp (bare prune with no filters "
@@ -161,7 +163,9 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         description="Recover a state.db whose schema is malformed (e.g. 'table "
             "messages_fts already exists'), which makes Desktop/Dashboard show "
             "no sessions. A backup is made first; sessions and messages are "
-            "preserved and the FTS search index is rebuilt if needed.")
+            "preserved and the FTS search index is rebuilt if needed. Stop the "
+            "profile's gateway first (`hermes gateway stop`): repairing a live "
+            "database can corrupt it (#103339).")
     _flag(sessions_repair, "--check-only",
         help="Only report whether the database opens cleanly; do not modify it")
     _flag(sessions_repair, "--no-backup", help="Skip the timestamped backup copy (not recommended)")

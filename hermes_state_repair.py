@@ -797,53 +797,101 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     if not db_path.exists():
         report["error"] = f"{db_path} does not exist"
         return report
-    # Cross-restart cap: the in-memory claim bounds one process, but unhealable b-tree damage used to re-run
-    # surgery + a fresh backup on EVERY restart.
-    # Cross-restart attempt cap (#86747): the in-memory claim bounds one process, but a corruption class the
-    # strategies below cannot heal (b-tree page damage) previously re-ran the whole surgery — and took a
-    # fresh multi-hundred-MB forensic backup — on EVERY restart, forever. After
-    # _MAX_PERSISTENT_REPAIR_ATTEMPTS failures against the same damaged file, stop retrying and surface a
-    # terminal, actionable error.
-    if _persistent_repair_attempts_exhausted(db_path):
-        return _repair_skip(report, "skipped", _persistent_repair_exhausted_error(db_path))
-
-    with _cross_process_repair_lock(db_path) as holding_lock:
-        if not holding_lock:
-            # Another process holds the lock (or the lock file was unopenable); it may have healed the file
-            # already, so re-probe before failing.
-            if _db_opens_cleanly(db_path) is None:
-                report["repaired"], report["strategy"] = True, "repaired_by_other_process"
-            else:
-                report["error"] = ("could not obtain the state.db repair lock (held by another process, or the lock "
-                                   "file was unopenable); skipped schema surgery to avoid racing a concurrent repairer")
-            return report
-
-        result = report
-        # Recheck exhaustion after acquisition: a queued repairer can have recorded the final failure while
-        # this process waited.
+    # Single-writer gate (#103339): surgery under a live gateway mints a second
+    # WAL and corrupts the file — and the EXCLUSIVE-probe below is blind exactly
+    # here (a malformed db answers DatabaseError instead of busy). The flock is
+    # held by ANY open SQLite writer regardless of db health, so refuse first
+    # and touch nothing (no backup, no ledger mutation, no repair lock).
+    from hermes_state_writergate import (
+        acquire_writer_gate, release_writer_gate, writer_gate_holder, writer_gate_holder_role,
+        OwnerToken,
+    )
+    gate_holder = writer_gate_holder(db_path)
+    gate_role = writer_gate_holder_role(db_path)
+    if gate_holder is not None and gate_role not in (None, "repair"):
+        return _repair_skip(
+            report, "refused",
+            f"REFUSED: {gate_holder}; schema surgery under a live writer corrupts "
+            "state.db. Stop the gateway (`hermes gateway stop`) and retry. "
+            "The database was not modified.",
+        )
+    # A fellow repairer's hold is NOT a refusal: repairers serialize on the
+    # cross-process repair lock below (queuing is the pinned contract); only a
+    # live writer — or an unidentifiable holder — refuses. Hold the gate as
+    # repair through surgery so a writer starting mid-surgery is refused, and
+    # release it after: a repair's need is bounded, unlike a writer's.
+    repair_token = OwnerToken("repair")
+    try:
+        acquire_writer_gate(db_path, role="repair", owner=repair_token, exclusive=True)
+    except Exception as exc:
+        # Lost a flock race after a free probe. A fellow repairer (role) means
+        # queue briefly for the gate — repairers serialize, like on the repair
+        # lock below; a live writer means refuse outright.
+        if writer_gate_holder_role(db_path) != "repair":
+            return _repair_skip(report, "refused", f"REFUSED: {exc} The database was not modified.")
+        from hermes_state import _REPAIR_LOCK_TIMEOUT_SECONDS
+        deadline = time.monotonic() + _REPAIR_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                acquire_writer_gate(db_path, role="repair", owner=repair_token, exclusive=True)
+                break
+            except Exception as exc2:
+                if writer_gate_holder_role(db_path) != "repair" or time.monotonic() >= deadline:
+                    return _repair_skip(report, "refused", f"REFUSED: {exc2} The database was not modified.")
+                time.sleep(0.2)
+    # NOTE: no separate post-take presence check here — acquire_writer_gate
+    # with exclusive=True is atomic (take global, then verify quiet) and is
+    # the single authority carrier; re-checking would duplicate it.
+    try:
+        # Cross-restart cap: the in-memory claim bounds one process, but unhealable b-tree damage used to re-run
+        # surgery + a fresh backup on EVERY restart.
+        # Cross-restart attempt cap (#86747): the in-memory claim bounds one process, but a corruption class the
+        # strategies below cannot heal (b-tree page damage) previously re-ran the whole surgery — and took a
+        # fresh multi-hundred-MB forensic backup — on EVERY restart, forever. After
+        # _MAX_PERSISTENT_REPAIR_ATTEMPTS failures against the same damaged file, stop retrying and surface a
+        # terminal, actionable error.
         if _persistent_repair_attempts_exhausted(db_path):
-            _repair_skip(report, "skipped", _persistent_repair_exhausted_error(db_path))
-        # WAL-holder preflight: fail closed for active readers before a backup is taken. Not the race defence — the
-        # exclusive guard in the locked routine excludes writers through promotion and sees DELETE-mode readers too.
-        elif _live_writer_holds_db(db_path):
-            _repair_skip(report, "skipped", "a live writer still holds state.db; skipped schema surgery to avoid tearing "
-                         "b-tree pages under a concurrent writer. Stop the gateway (hermes gateway stop) and retry.")
-        else:
-            # Probe journal mode BEFORE surgery: a rebuilt file comes back in the default (delete) mode and nothing
-            # else records the flip. Unprobeable (damaged file) -> database.journal_mode is the restore target.
-            # The open-time WAL-reset gate never sees this flip because it happens inside the repair path
-            # (distinct from the open-time flip #89393 warns about).
-            before_mode = _probe_journal_mode_for_repair(db_path)
-            result = _repair_state_db_schema_locked(db_path, backup=backup, report=report,
-                                                    journal_mode_before=before_mode)
-            if result.get("repaired"):
-                result["journal_mode_before"] = before_mode
-        # Environmental aborts (before a strategy mutates the snapshot) are retriable, not proof of exhaustion;
-        # the private marker stays out of the public report. The ledger update stays under the cross-process
-        # lock so two repairers cannot lose each other's updates; a queued loser must not record at all.
-        if result.pop("_repair_attempted", False) or result.get("repaired"):
-            _record_repair_outcome(db_path, repaired=bool(result.get("repaired")))
-    return result
+            return _repair_skip(report, "skipped", _persistent_repair_exhausted_error(db_path))
+
+        with _cross_process_repair_lock(db_path) as holding_lock:
+            if not holding_lock:
+                # Another process holds the lock (or the lock file was unopenable); it may have healed the file
+                # already, so re-probe before failing.
+                if _db_opens_cleanly(db_path) is None:
+                    report["repaired"], report["strategy"] = True, "repaired_by_other_process"
+                else:
+                    report["error"] = ("could not obtain the state.db repair lock (held by another process, or the lock "
+                                       "file was unopenable); skipped schema surgery to avoid racing a concurrent repairer")
+                return report
+
+            result = report
+            # Recheck exhaustion after acquisition: a queued repairer can have recorded the final failure while
+            # this process waited.
+            if _persistent_repair_attempts_exhausted(db_path):
+                _repair_skip(report, "skipped", _persistent_repair_exhausted_error(db_path))
+            # WAL-holder preflight: fail closed for active readers before a backup is taken. Not the race defence — the
+            # exclusive guard in the locked routine excludes writers through promotion and sees DELETE-mode readers too.
+            elif _live_writer_holds_db(db_path):
+                _repair_skip(report, "skipped", "a live writer still holds state.db; skipped schema surgery to avoid tearing "
+                             "b-tree pages under a concurrent writer. Stop the gateway (hermes gateway stop) and retry.")
+            else:
+                # Probe journal mode BEFORE surgery: a rebuilt file comes back in the default (delete) mode and nothing
+                # else records the flip. Unprobeable (damaged file) -> database.journal_mode is the restore target.
+                # The open-time WAL-reset gate never sees this flip because it happens inside the repair path
+                # (distinct from the open-time flip #89393 warns about).
+                before_mode = _probe_journal_mode_for_repair(db_path)
+                result = _repair_state_db_schema_locked(db_path, backup=backup, report=report,
+                                                        journal_mode_before=before_mode)
+                if result.get("repaired"):
+                    result["journal_mode_before"] = before_mode
+            # Environmental aborts (before a strategy mutates the snapshot) are retriable, not proof of exhaustion;
+            # the private marker stays out of the public report. The ledger update stays under the cross-process
+            # lock so two repairers cannot lose each other's updates; a queued loser must not record at all.
+            if result.pop("_repair_attempted", False) or result.get("repaired"):
+                _record_repair_outcome(db_path, repaired=bool(result.get("repaired")))
+        return result
+    finally:
+        release_writer_gate(db_path, repair_token)
 
 
 def _probe_journal_mode_for_repair(db_path: Path) -> Optional[str]:

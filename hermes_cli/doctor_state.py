@@ -158,11 +158,11 @@ _STATE_DB_REPAIRS = {
     "fts": ("Repaired state.db FTS write health",
             "state.db FTS write-health repair did not recover automatically",
             "state.db FTS write corruption and auto-repair failed — restore from the backup copy beside state.db",
-            "state.db FTS write corruption — run 'hermes doctor --fix' (or 'hermes sessions repair') to rebuild the FTS index"),
+            "state.db FTS write corruption — stop the profile's gateway first, then run 'hermes doctor --fix' (or 'hermes sessions repair') to rebuild the FTS index"),
     "schema": ("Repaired state.db schema ({count} sessions recovered)",
                "state.db schema repair did not recover automatically",
                "state.db schema malformed and auto-repair failed — restore from the backup copy beside state.db",
-               "state.db schema malformed — run 'hermes doctor --fix' (or 'hermes sessions repair') to recover hidden sessions"),
+               "state.db schema malformed — stop the profile's gateway first, then run 'hermes doctor --fix' (or 'hermes sessions repair') to recover hidden sessions"),
 }
 
 
@@ -235,10 +235,41 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
             if not should_fix:
                 return f.issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
+            # Single-writer gate (#103339): a bare connect runs WAL recovery and
+            # the checkpoint joins the live WAL — under a running gateway that
+            # second-writer handling corrupts state.db. Refuse instead.
+            from hermes_state_writergate import (
+                OwnerToken, acquire_writer_gate, release_writer_gate, writer_gate_holder,
+            )
+            gate_holder = writer_gate_holder(state_db_path)
+            if gate_holder is not None:
+                check_warn("WAL checkpoint skipped: a live writer holds state.db",
+                           f"({gate_holder}). Stop the profile's gateway "
+                           "(`hermes gateway stop`) and re-run 'hermes doctor --fix'.")
+                return f.issues.append(
+                    "Large WAL file — stop the profile's gateway first, then "
+                    "re-run 'hermes doctor --fix' to checkpoint")
+            # Hold the global structural lock through the checkpoint (same
+            # usage contract as repair): writers announcing mid-checkpoint
+            # see it held and refuse, closing the probe-to-checkpoint race.
+            checkpoint_token = OwnerToken("doctor-checkpoint")
+            try:
+                acquire_writer_gate(state_db_path, role="repair",
+                                    owner=checkpoint_token, exclusive=True)
+            except Exception as exc:
+                check_warn("WAL checkpoint skipped: a live writer holds state.db",
+                           f"({exc}). Stop the profile's gateway "
+                           "(`hermes gateway stop`) and re-run 'hermes doctor --fix'.")
+                return f.issues.append(
+                    "Large WAL file — stop the profile's gateway first, then "
+                    "re-run 'hermes doctor --fix' to checkpoint")
             import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            conn.close()
+            try:
+                conn = sqlite3.connect(str(state_db_path))
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                conn.close()
+            finally:
+                release_writer_gate(state_db_path, checkpoint_token)
             check_ok(f"WAL checkpoint performed ({size // 1024}K → {wal_size() // 1024}K)")
             f.fixed += 1
         elif size > 10 * 1024 * 1024:  # 10 MB

@@ -53,6 +53,7 @@ from hermes_state_dbfile import (
 from hermes_state_messages import SessionMessagesMixin
 from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
+from hermes_state_writergate import acquire_writer_gate
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_usage import SessionUsageMixin
 from hermes_state_maintenance import SessionMaintenanceMixin
@@ -769,6 +770,14 @@ class SessionDB(
                 f"in flight (a session-teardown path called close() before "
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
+        if context == "write":
+            # Single-writer gate (#103339): the racing close() above also ran
+            # the gate release, so re-pin this instance's share — a second
+            # process may have taken the gate in between, in which case this
+            # in-flight write is refused (fail-closed; the callback has not
+            # run yet, so refusing is exactly-once safe). Readers never hold
+            # the gate, hence write-only.
+            acquire_writer_gate(self.db_path, owner=self)
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
@@ -777,7 +786,18 @@ class SessionDB(
         is handled here (callers must not commit). Returns *fn*'s result.
         BEGIN IMMEDIATE takes the WAL write lock up front so contention surfaces
         immediately; on locked/busy the Python lock is released, a jitter slept,
-        and the WHOLE callback retried — *fn* must stay idempotent under retry."""
+        and the WHOLE callback retried — *fn* must stay idempotent under retry.
+
+        Single-writer gate (#103339): the first write of a process announces
+        presence (``<state.db>.writer.<pid>.lock``); structural operations
+        (repair surgery) refuse while any presence is live. Row writes
+        themselves proceed under SQLite's own WAL locking no matter how many
+        processes announce — and are refused only while a surgery holds the
+        global structural lock (fail-closed in both directions).
+        Read-only handles never reach this path. ``close()`` releases this
+        instance's presence share."""
+        if not self.read_only:
+            acquire_writer_gate(self.db_path, owner=self)
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         deadline = time.monotonic() + patience_s
@@ -911,6 +931,11 @@ class SessionDB(
         """
         if self.read_only or self._conn is None:
             return
+        # Structural gate (#103339): the generation stamp ends in a WAL
+        # checkpoint from this (possibly second) connection — it must not run
+        # while a surgery owns the database. Coexisting writers never trip this.
+        from hermes_state_writergate import refuse_if_structural_op_holds
+        refuse_if_structural_op_holds(self.db_path, "open-time generation stamp")
         token = uuid.uuid4().hex
         try:
             with self._lock:
@@ -1173,6 +1198,18 @@ class SessionDB(
                 # A clean close lets SQLite unlink the sidecars (a legitimate end of the
                 # generation, not a split): a teardown-race reopen must re-adopt.
                 self._db_sidecar_identity = {}
+        # Single-writer gate (#103339): release this instance's presence
+        # share (best effort, never breaks close). Presence drops when the
+        # last in-process owner closes; a live gateway's registry-owned
+        # handle is never closed mid-life, so it keeps announcing exactly
+        # while it can write. Registry-owned early-return above skips this
+        # (not our share to release).
+        if not self.read_only:
+            try:
+                from hermes_state_writergate import release_writer_gate
+                release_writer_gate(self.db_path, self)
+            except Exception:
+                pass
 
     def __del__(self) -> None:
         """Safety net: close() if the caller forgot. Attribute access stays

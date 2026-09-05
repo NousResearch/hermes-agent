@@ -3683,12 +3683,22 @@ class BasePlatformAdapter(ABC):
         if is_ephemeral_response or str(event.text or "").lstrip().startswith(
             ("/", self.typed_command_prefix or "!")):
             return None
+        source = event.source
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and str(getattr(source, "scope_id", "") or "").startswith("telegram-business:")
+        ):
+            # Business send-as-account authority belongs to the trusted inbound event and is
+            # deliberately absent from durable SessionSource/ledger rows. Recording a normal
+            # obligation here would let startup/reconnect recovery replay the content through the
+            # bot's ordinary DM route after that authority is gone. Prefer a failed/unknown final
+            # over an identity downgrade into a different conversation.
+            return None
         try:
             from gateway.delivery_ledger import (
                 compute_obligation_id, ledger_enabled, mark_attempting, record_obligation)
             if not await asyncio.to_thread(ledger_enabled):
                 return None
-            source = event.source
             # ``ledger_message_id`` wins when set: a queued chain's final answers the last message
             # of the chain, not the event that opened it (see ``MessageEvent.ledger_message_id``).
             _ledger_id = getattr(event, "ledger_message_id", None)

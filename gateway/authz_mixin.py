@@ -484,7 +484,16 @@ class GatewayAuthorizationMixin:
         adapter_profile = self._adapter_profile_for_source(source)
         is_group = source.chat_type in _GROUP_CHAT_TYPES
         is_group_or_forum = source.chat_type in _GROUP_FORUM_TYPES
-        if self._chat_scoped_grant(source, adapter_profile, is_group, allow_adapter_delegation):
+        business_scope = (
+            source.platform == Platform.TELEGRAM
+            and str(getattr(source, "scope_id", "") or "").startswith("telegram-business:")
+        )
+        if (
+            not business_scope
+            and self._chat_scoped_grant(
+                source, adapter_profile, is_group, allow_adapter_delegation
+            )
+        ):
             return True
 
         # Telegram Business customers are intentionally not part of the bot's
@@ -492,14 +501,14 @@ class GatewayAuthorizationMixin:
         # plugin after its fail-closed business policy checks, and re-bind that
         # proof to the live adapter config plus isolated connection scope. The
         # marker is wire/persistence-invisible on SessionSource.
-        if (
-            allow_adapter_delegation
-            and source.platform == Platform.TELEGRAM
-            and getattr(source, "authorized_via_telegram_business", False) is True
-            and str(getattr(source, "scope_id", "") or "").startswith("telegram-business:")
-            and source.chat_type == "dm"
-            and source.chat_id
-        ):
+        if business_scope:
+            if not (
+                allow_adapter_delegation
+                and getattr(source, "authorized_via_telegram_business", False) is True
+                and source.chat_type == "dm"
+                and source.chat_id
+            ):
+                return False
             try:
                 adapter = self._adapter_for_source(source)
                 business_config = getattr(adapter, "_business_config", None)
@@ -507,14 +516,27 @@ class GatewayAuthorizationMixin:
                 if not isinstance(cfg, dict):
                     cfg = {}
                 allowed_chats = set(cfg.get("allowed_chats") or ())
+                scope_id = str(getattr(source, "scope_id", "") or "")
+                connection_id = scope_id.removeprefix("telegram-business:").strip()
+                owner_id = str(
+                    getattr(source, "telegram_business_owner_id", "") or ""
+                ).strip()
+                scope_allowed = getattr(adapter, "_business_scope_allowed", None)
                 if (
                     cfg.get("enabled") is True
                     and bool(cfg.get("trigger_words"))
+                    and connection_id
+                    and owner_id
+                    and callable(scope_allowed)
+                    and bool(scope_allowed(owner_id, connection_id))
                     and (not allowed_chats or str(source.chat_id) in allowed_chats)
                 ):
                     return True
             except Exception:
                 pass
+            # Business-scoped delegated input must never fall through to
+            # ordinary Telegram grants after live authority revocation.
+            return False
 
         user_id = source.user_id
         if not user_id:

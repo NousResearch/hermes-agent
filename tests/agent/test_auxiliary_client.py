@@ -2481,6 +2481,35 @@ class TestAuxiliaryTaskExtraBody:
         assert kwargs["extra_body"]["reasoning"] == {"effort": "none"}
         assert kwargs["extra_body"]["metadata"] == {"source": "test"}
 
+    def test_sync_deepseek_task_reasoning_none_disables_thinking(self):
+        """Task-level reasoning_effort must reach provider-profile projection."""
+        client = MagicMock()
+        client.base_url = "https://api.deepseek.com/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+        config = {
+            "auxiliary": {
+                "compression": {
+                    "provider": "deepseek",
+                    "model": "deepseek-v4-flash",
+                    "reasoning_effort": "none",
+                }
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch("hermes_cli.config.load_config_readonly", return_value=config), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(client, "deepseek-v4-flash")):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
     @pytest.mark.asyncio
     async def test_async_call_explicit_extra_body_overrides_task_config(self):
         client = MagicMock()

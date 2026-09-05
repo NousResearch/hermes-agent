@@ -26,7 +26,7 @@ class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
     __slots__ = (
         "approval_id", "event", "data", "result", "reason",
-        "created_at_ns", "acknowledged", "settle", "cancelled",
+        "created_at_ns", "acknowledged", "settle", "cancelled", "expires_at",
     )
 
     def __init__(self, data: dict):
@@ -46,6 +46,8 @@ class _ApprovalEntry:
         self.settle = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         self.created_at_ns = time.monotonic_ns()
+        self.expires_at = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+        self.data["expires_at"] = self.expires_at
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
@@ -55,7 +57,7 @@ class _ApprovalEntry:
         self.cancelled: str | None = None
 
 
-def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
+def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str, expires_at: float) -> str:
     """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
     elapses; returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
     slices so activity heartbeats reach the agent's inactivity tracker every ~10s —
@@ -68,7 +70,7 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     per-thread interrupt-cause channel (``get_interrupt_reason()``, a trusted fixed
     category), never inferred from message text, so the caller can report a
     withdrawn prompt without inventing a user refusal."""
-    deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+    deadline = expires_at
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
         while True:
@@ -121,7 +123,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
     so observers see the follower's lifecycle without a duplicate prompt."""
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
-    state = _poll_event(leader.event, session_key,
+    state = _poll_event(leader.event, session_key, expires_at=leader.expires_at,
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
     cancelled = _cancel_cause(state, leader)
@@ -216,7 +218,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
         return {"resolved": False, "choice": None, "notify_failed": True}
 
-    state = _poll_event(entry.event, session_key,
+    state = _poll_event(entry.event, session_key, expires_at=entry.expires_at,
                         interrupt_log="Approval wait interrupted — returning deny for session %s")
     cancelled = _cancel_cause(state, entry)
     if state == "interrupted":

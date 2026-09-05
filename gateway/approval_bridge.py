@@ -16,6 +16,8 @@ def _build_exec_approval_metadata(
     approval_id = str(approval_data.get("approval_id") or "")
     if approval_id:
         metadata["approval_id"] = approval_id
+    if "expires_at" in approval_data:
+        metadata["expires_at"] = approval_data["expires_at"]
     return metadata
 
 
@@ -117,4 +119,3 @@ def _make_gateway_approval_notifier(
             raise
 
     return _approval_notify_sync
-

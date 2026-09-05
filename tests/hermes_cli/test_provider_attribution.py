@@ -155,12 +155,16 @@ def test_openrouter_profile_requests_usage_accounting():
     OpenRouter returns no `usage.cost` unless `usage: {include: true}` is sent,
     so this assertion is half the fix, not a detail.
     """
-    import importlib.util
     from pathlib import Path
 
+    # Resolve the REPO root, not merely the first ancestor holding a `plugins`
+    # directory — `tests/plugins` exists and would win, which is exactly how the
+    # first run of this test failed.
     here = Path(__file__).resolve()
-    root = next(p for p in here.parents if (p / "plugins").is_dir())
+    root = next(p for p in here.parents
+                if (p / "plugins" / "model-providers").is_dir())
     mod_path = root / "plugins/model-providers/openrouter/__init__.py"
+    assert mod_path.is_file(), f"resolved the wrong root: {mod_path}"
     src = mod_path.read_text()
     assert '"usage"' in src and '"include": True' in src, (
         "the OpenRouter profile must request usage accounting")

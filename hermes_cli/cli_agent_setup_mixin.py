@@ -376,6 +376,52 @@ class CLIAgentSetupMixin:
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
+        if not getattr(self, "_skip_turn_routing", False):
+            try:
+                from hermes_cli.middleware import apply_turn_route_middleware, public_turn_route
+                result = apply_turn_route_middleware(
+                    public_turn_route(route["model"], runtime),
+                    user_message=user_message,
+                    session_id=getattr(self, "session_id", None),
+                    session_key=getattr(self, "session_id", None),
+                    source="cli",
+                    is_user_turn=True,
+                    is_first_turn=self.agent is None,
+                    internal=False,
+                    tool_continuation=False,
+                )
+                if result.changed and isinstance(result.payload, dict):
+                    selected_model = result.payload.get("model")
+                    selected_runtime = result.payload.get("runtime")
+                    selected_runtime = selected_runtime if isinstance(selected_runtime, dict) else {}
+                    current_requested = runtime.get("requested_provider") or runtime.get("provider")
+                    current_canonical = runtime.get("provider")
+                    top_requested = result.payload.get("requested_provider")
+                    nested_requested = selected_runtime.get("requested_provider")
+                    requested = nested_requested if nested_requested and nested_requested != current_requested else (top_requested or nested_requested)
+                    canonical = result.payload.get("provider") or selected_runtime.get("provider")
+                    selected_provider = requested if requested and requested != current_requested else (canonical if canonical and canonical != current_canonical else (requested or canonical or current_requested))
+                    if isinstance(selected_model, str) and selected_model.strip() and isinstance(selected_provider, str) and selected_provider.strip():
+                        selected_model = selected_model.strip()
+                        selected_provider = selected_provider.strip()
+                        if selected_provider != current_requested:
+                            from hermes_cli.runtime_provider import resolve_runtime_provider
+                            resolved = resolve_runtime_provider(requested=selected_provider, target_model=selected_model)
+                            runtime = {
+                                "api_key": resolved.get("api_key"), "base_url": resolved.get("base_url"),
+                                "provider": resolved.get("provider", selected_provider),
+                                "requested_provider": selected_provider,
+                                "api_mode": resolved.get("api_mode", self.api_mode),
+                                "command": resolved.get("command"), "args": list(resolved.get("args") or []),
+                                "credential_pool": resolved.get("credential_pool"),
+                            }
+                        runtime["requested_provider"] = selected_provider
+                        route["model"] = selected_model
+                        route["runtime"] = runtime
+                        route["middleware_trace"] = result.trace
+            except Exception as exc:
+                from cli import logger
+                logger.warning("Turn-route middleware failed open: %s", exc)
         overrides = None
         if getattr(self, "service_tier", None) == "priority":
             try:

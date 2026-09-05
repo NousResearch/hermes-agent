@@ -653,9 +653,12 @@ class PluginContext:
         self, name: str, handler: Callable, description: str = "", args_hint: str = "",
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
-        """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        """Register an in-session slash command (``/name``).
+
+        Handlers may accept keyword context such as ``session_id`` (the
+        persisted physical id, or ``None`` before creation), durable
+        ``session_key``, and ``platform``; one-argument handlers remain valid.
+        """
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -1973,6 +1976,25 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def invoke_plugin_command(handler: Callable, raw_args: str, **context: Any) -> Any:
+    """Invoke a slash-command handler with only the context it declares."""
+    try:
+        parameters = inspect.signature(handler).parameters.values()
+    except (TypeError, ValueError):
+        return handler(raw_args)
+    parameter_list = list(parameters)
+    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameter_list)
+    accepted_names = {
+        p.name for p in parameter_list
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    if not accepts_kwargs and not accepted_names.intersection(context):
+        return handler(raw_args)
+    if accepts_kwargs:
+        return handler(raw_args, **context)
+    return handler(raw_args, **{name: value for name, value in context.items() if name in accepted_names})
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

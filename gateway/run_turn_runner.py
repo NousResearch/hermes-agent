@@ -664,6 +664,10 @@ class TurnRunner:
         if pane is None:
             return
 
+        # Heartbeat and queue updates share this throttle; idle polling flushes
+        # pending snapshots even when no later tool arrives.
+        pane.publish_interval = 1.5
+
         async def _publish(raw: Any) -> None:
             if isinstance(raw, tuple) and raw and raw[0] == "__reset__":
                 # Matrix has one root for the whole turn, including across
@@ -689,10 +693,15 @@ class TurnRunner:
                 try:
                     raw = ctx.progress_queue.get_nowait()
                 except queue.Empty:
+                    if not self._agent_interrupted():
+                        await pane.flush()
                     await asyncio.sleep(0.1)
                     continue
                 if ctx._run_still_current() and not self._agent_interrupted():
                     await _publish(raw)
+                # Yield under a continuously replenished queue, without emitting
+                # one replacement per queued label.
+                await asyncio.sleep(0)
         except asyncio.CancelledError:
             while True:
                 try:

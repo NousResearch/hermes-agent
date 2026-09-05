@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from gateway.matrix_tool_activity import matrix_tool_activity_bodies
@@ -34,6 +35,14 @@ class MatrixActivityPane:
         self.footer: Optional[str] = None
         self.lock = asyncio.Lock()
         self.closed = False
+        self.closing = False  # Desired terminal state; closed means acknowledged.
+        self.publish_interval = 0.0
+        self._last_publish = float("-inf")
+        self._delivered_snapshot = None
+
+    SEAL_ATTEMPTS = 3
+    TRANSPORT_TIMEOUT = 2.0
+    SEAL_RETRY_DELAY = 0.1
 
     async def append_activity(self, line: str) -> Any:
         """Append one status/tool label and publish the complete snapshot."""
@@ -68,32 +77,75 @@ class MatrixActivityPane:
         return await self._coordinate(lambda: setattr(self, "footer", value))
 
     async def close(self) -> None:
-        """Seal the pane after any in-flight publish; drop the live footer."""
+        """Stop mutations, then acknowledge a bounded, cancellation-safe seal.
 
+        Failed delivery remains retryable by a later close(), never a new root.
+        """
+        self.closing = True
+        task = asyncio.create_task(self._seal())
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        task.result()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _seal(self) -> None:
         async with self.lock:
             if self.closed:
                 return
-            # Seal before awaiting transport: cancellation must never reopen the turn.
-            self.closed = True
-            if self.footer is not None:
+            target = (tuple(self.activity_lines), None)
+            if self._delivered_snapshot == target or (
+                self.root_event_id is None and not self.activity_lines
+                and self.footer is None
+            ):
                 self.footer = None
-                if self.root_event_id:
-                    await self._transport_locked()
+                self.closed = True
+                return
+            for attempt in range(self.SEAL_ATTEMPTS):
+                result = await self._transport_locked(seal=True)
+                if getattr(result, "success", False) and self.root_event_id:
+                    self.footer = None
+                    self.closed = True
+                    return
+                if attempt + 1 < self.SEAL_ATTEMPTS:
+                    await asyncio.sleep(self.SEAL_RETRY_DELAY)
+            logger.warning("Matrix activity pane seal delivery exhausted; remains pending")
+
+    async def flush(self) -> Any:
+        """Publish a pending snapshot when the shared edit interval permits."""
+        async with self.lock:
+            if self.closing or not self.coalescing_enabled:
+                return None
+            return await self._flush_locked()
+
+    async def _flush_locked(self) -> Any:
+        if self._delivered_snapshot == (tuple(self.activity_lines), self.footer):
+            return None
+        if not self.activity_lines and self.footer is None:
+            return None
+        if time.monotonic() - self._last_publish < self.publish_interval:
+            return None
+        self._last_publish = time.monotonic()
+        return await self._transport_locked()
 
     async def _coordinate(self, mutate: Callable[[], None]) -> Any:
         """Mutate, snapshot, render, and transport under one turn-local lock."""
 
         async with self.lock:
-            if self.closed or not self.coalescing_enabled:
+            if self.closing or not self.coalescing_enabled:
                 return None
             mutate()
-            return await self._transport_locked()
+            return await self._flush_locked()
 
-    async def _transport_locked(self) -> Any:
+    async def _transport_locked(self, *, seal: bool = False) -> Any:
         """Send or edit the current snapshot. Caller MUST hold ``self.lock``."""
 
         lines = tuple(self.activity_lines)
-        footer = self.footer
+        footer = None if seal else self.footer
         body, formatted_body = matrix_tool_activity_bodies(lines, footer)
         metadata = dict(self.metadata)
         metadata["matrix_formatted_body"] = formatted_body
@@ -114,6 +166,7 @@ class MatrixActivityPane:
                     result, "message_id", None
                 ):
                     self.root_event_id = str(result.message_id)
+                    self._delivered_snapshot = (lines, footer)
                 return result
 
             kwargs = {
@@ -124,7 +177,10 @@ class MatrixActivityPane:
             }
             if getattr(self.adapter, "REQUIRES_EDIT_FINALIZE", False):
                 kwargs["finalize"] = True
-            return await self._await_transport(self.adapter.edit_message(**kwargs))
+            result = await self._await_transport(self.adapter.edit_message(**kwargs))
+            if getattr(result, "success", False):
+                self._delivered_snapshot = (lines, footer)
+            return result
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -134,7 +190,7 @@ class MatrixActivityPane:
     async def _await_transport(self, awaitable: Any) -> Any:
         """Finish the Matrix call even if the consumer task is cancelled."""
 
-        task = asyncio.ensure_future(awaitable)
+        task = asyncio.ensure_future(asyncio.wait_for(awaitable, self.TRANSPORT_TIMEOUT))
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
@@ -145,4 +201,5 @@ class MatrixActivityPane:
                 and getattr(result, "message_id", None)
             ):
                 self.root_event_id = str(result.message_id)
+                self._delivered_snapshot = (tuple(self.activity_lines), self.footer)
             raise

@@ -102,6 +102,24 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         if _schema_has_external_ref(validation_schema):
             logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
             return None
+        # ``todo_list`` is repaired in the wrapper: items missing ``id`` get an
+        # auto-assigned ``auto_N`` placeholder. The strict required-field check
+        # below would reject the model-emission case ``{"todos": {"content":
+        # "..."}}`` (a bare dict, ``coerce_tool_args``-wrapped) before the wrapper
+        # can repair it. Strip the items-array required list for this tool only.
+        if name == "todo_list" and isinstance(validation_schema, dict):
+            todos_schema = (validation_schema.get("properties") or {}).get("todos")
+            if isinstance(todos_schema, dict):
+                items_schema = todos_schema.get("items")
+                if isinstance(items_schema, dict):
+                    items_schema = {**items_schema}
+                    items_schema.pop("required", None)
+                    todos_schema = {**todos_schema, "items": items_schema}
+                    validation_schema = {
+                        **validation_schema,
+                        "properties": {**validation_schema.get("properties", {}),
+                                       "todos": todos_schema},
+                    }
         # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
         # normalize in place (dispatch re-coerces canonically).
         try:

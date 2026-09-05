@@ -977,6 +977,18 @@ class TurnRunner:
             load_soul_identity=True,
         )
 
+    def _stale_run_result(self, stage: str) -> dict:
+        """Stop invalidated work before cache publication or provider execution."""
+        ctx = self._ctx
+        logger.info("Discarding stale agent generation for %s before %s", ctx.session_key, stage)
+        result = {
+            "final_response": "", "messages": [], "api_calls": 0, "tools": [],
+            "history_offset": len(ctx.history or []), "session_id": ctx.session_id,
+            "response_previewed": False, "completed": False, "stale_run": True,
+        }
+        ctx.result_holder[0] = result
+        return result
+
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
         """Reuse this session's cached AIAgent (frozen system prompt + tool schemas → prompt cache
         hits) or build a fresh one. Returns (agent, reused_cached_agent)."""
@@ -1007,12 +1019,18 @@ class TurnRunner:
             agent = self._build_fresh_agent(
                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
             )
-            if cache_lock and cache is not None:
+            # Initialization can outlive /stop or /new. The invalidated worker
+            # must neither replace a newer cached agent nor execute its old prompt.
+            stale = not ctx._run_still_current()
+            if not stale and cache_lock and cache is not None:
                 with cache_lock:
-                    # Record the snapshot's session_id with message_count so the cross-process guard
-                    # can skip the meaningless count comparison if the active session_id switches.
-                    cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
-                    runner._enforce_agent_cache_cap()
+                    stale = not ctx._run_still_current()
+                    if not stale:
+                        cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
+                        runner._enforce_agent_cache_cap()
+            if stale:
+                runner._release_evicted_agent_soft(agent)
+                return None, False
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
         return agent, found.reused
 
@@ -1438,6 +1456,8 @@ class TurnRunner:
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            if not ctx._run_still_current():
+                return self._stale_run_result("run_conversation")
             return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
@@ -1641,10 +1661,19 @@ class TurnRunner:
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if agent is None:
+            return self._stale_run_result("agent cache publication")
+        # A cache hit can race with /stop or /new after resolution. Fence before
+        # wiring callbacks or loading history so a stale turn never mutates the
+        # newer turn's cache-owned agent (or causes it to be released).
+        if not ctx._run_still_current():
+            return self._stale_run_result("agent resolution")
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        if result.get("stale_run"):
+            return result
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.

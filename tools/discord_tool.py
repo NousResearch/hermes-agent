@@ -372,6 +372,9 @@ def _create_thread(
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
     def _action(token: str, **kw: Any) -> str:
+        for _k, _v in kw.items():
+            if '{' + _k + '}' in path and not str(_v).isdigit():
+                return json.dumps({"error": f"Invalid Discord ID for {_k}: must be numeric"})
         _discord_request(method, path.format(**kw), token)
         return json.dumps({"success": True, "message": message.format(**kw)})
     return _action

@@ -583,8 +583,11 @@ class WebhookAdapter(BasePlatformAdapter):
         if payload is _UNPARSEABLE:
             return _json_error("Cannot parse body", 400)
         headers = request.headers
+        _payload_dict = payload if isinstance(payload, dict) else {}
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
-                      or payload.get("event_type", "") or payload.get("type", "") or "unknown")
+                      or _payload_dict.get("event_type", "") or _payload_dict.get("type", "") or "unknown")
+        # Sanitize: strip newlines and cap length to prevent prompt injection via attacker-controlled headers.
+        event_type = re.sub(r"[\r\n]+", " ", event_type)[:128]
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
             logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,

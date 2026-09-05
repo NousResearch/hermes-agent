@@ -9,8 +9,16 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
 
-# Normalized fallback chain (merges legacy ``fallback_model``); always a fresh copy.
-_read_chain = get_fallback_chain
+
+def read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return the normalized fallback chain as a list of dicts.
+
+    Accepts both the new list format (``fallback_providers``) and the legacy
+    ``fallback_model`` format. When both are present, the effective chain is
+    merged with ``fallback_providers`` entries kept first. The returned list is
+    always a fresh copy — callers can mutate without touching the config dict.
+    """
+    return get_fallback_chain(config)
 
 
 def _identity(entry: Dict[str, Any]):
@@ -19,10 +27,15 @@ def _identity(entry: Dict[str, Any]):
     return BackendIdentity.build(provider=entry.get("provider"), model=entry.get("model"), base_url=entry.get("base_url"))
 
 
-def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
+def write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
     """Persist the chain to ``fallback_providers``; drop the legacy key so there is one source of truth."""
     config["fallback_providers"] = chain
     config.pop("fallback_model", None)
+
+
+# Backwards-compatible aliases for older internal callers.
+_read_chain = read_chain
+_write_chain = write_chain
 
 
 def _format_entry(entry: Dict[str, Any]) -> str:

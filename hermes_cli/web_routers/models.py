@@ -6,7 +6,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
@@ -15,7 +15,9 @@ from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _apply_model_assignment_sync, _dashboard_code_skew_guard,
 )
 from starlette.concurrency import run_in_threadpool
-from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
+from hermes_cli.web_models import (
+    FallbackProvidersUpdate, ModelAssignment, MoaConfigPayload, MoaModelSlot,
+)
 from hermes_cli.web_routers._common import http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -277,6 +279,97 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             cfg.setdefault("moa", {}).update(normalized)
             save_config(cfg)
             return {"ok": True, **normalized}
+
+
+def _public_fallback_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop the inline secret from a chain entry, keeping a presence flag.
+
+    Same contract as ``_custom_endpoint_response`` for custom providers: the
+    dashboard learns *that* a key is configured, never its value.
+    """
+    public = {k: v for k, v in entry.items() if k != "api_key"}
+    if str(entry.get("api_key") or "").strip():
+        public["has_api_key"] = True
+    return public
+
+
+def _dedupe_fallback_entries(cleaned: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop entries repeating a route already present earlier in the chain.
+
+    ``get_fallback_chain`` dedupes on read, so a repeat was invisible in the
+    dashboard while ``config.yaml`` gained another copy on every add — and the
+    user could not remove it, because the list they see is the deduped view.
+    Deduping on write keeps the stored file matching what the UI shows.
+
+    The first occurrence wins, preserving the order the user arranged.
+    """
+    from hermes_cli.fallback_config import _entry_identity
+
+    seen: set = set()
+    unique: List[Dict[str, Any]] = []
+    for entry in cleaned:
+        identity = _entry_identity(entry)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(entry)
+    return unique
+
+
+def _carry_forward_fallback_secrets(
+    cleaned: List[Dict[str, Any]], stored: List[Dict[str, Any]]
+) -> None:
+    """Re-attach inline ``api_key`` values the client was never given.
+
+    The dashboard cannot echo back a secret it never received, so a reorder
+    would otherwise drop it. Entries are matched on the same identity the
+    chain itself dedupes by (provider/model/base_url), which is stable across
+    reordering; editing an entry's route intentionally does not inherit.
+    """
+    # Private helper, but reused deliberately: re-deriving the identity here
+    # would drift from the base_url normalization the chain dedupes with.
+    from hermes_cli.fallback_config import _entry_identity
+
+    by_identity = {
+        _entry_identity(entry): entry
+        for entry in stored
+        if str(entry.get("api_key") or "").strip()
+    }
+    for entry in cleaned:
+        prior = by_identity.get(_entry_identity(entry))
+        if prior is not None:
+            entry["api_key"] = prior["api_key"]
+
+
+@router.get("/api/model/fallbacks")
+def get_model_fallbacks(profile: Optional[str] = None):
+    """Return the configured fallback provider chain (secrets stripped)."""
+    with http_failure("GET /api/model/fallbacks failed", 500, detail="Failed to read fallback providers"):
+        from hermes_cli.fallback_cmd import read_chain
+
+        with _profile_scope(profile):
+            return {"fallbacks": [_public_fallback_entry(e) for e in read_chain(load_config())]}
+
+
+@router.put("/api/model/fallbacks")
+def set_model_fallbacks(body: FallbackProvidersUpdate, profile: Optional[str] = None):
+    """Persist fallback providers in config.yaml order."""
+    cleaned = [entry.model_dump(exclude_none=True) for entry in body.fallbacks]
+    # Collapse repeated routes before anything else looks at the list, so the
+    # survivor is the one that inherits stored credentials below.
+    cleaned = _dedupe_fallback_entries(cleaned)
+
+    with http_failure("PUT /api/model/fallbacks failed", 500, detail="Failed to save fallback providers"):
+        from hermes_cli.fallback_cmd import read_chain, write_chain
+
+        with _profile_scope(body.profile or profile):
+            cfg = load_config()
+            # The client never receives inline keys, so it cannot send them
+            # back — restore them from the stored chain before overwriting it.
+            _carry_forward_fallback_secrets(cleaned, read_chain(cfg))
+            write_chain(cfg, cleaned)
+            save_config(cfg)
+        return {"ok": True, "fallbacks": [_public_fallback_entry(e) for e in cleaned]}
 
 
 @router.post("/api/model/set")

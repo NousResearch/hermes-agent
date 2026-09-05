@@ -1758,3 +1758,165 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls and calls[0][:2] == ["docker", "version"]
+
+
+class TestDoctorScalarModelShape:
+    """A scalar ``model:`` must not disable the whole model/provider block.
+
+    Regression tests for #71019. ``doctor`` read raw YAML and assumed
+    ``model:`` was a mapping, so ``model: <id>`` (the shape
+    ``hermes config set model <id>`` writes) made ``model_section`` a ``str``.
+    The first ``.get()`` raised AttributeError inside the ~184-line ``try``
+    guarding this section, and its blanket handler collapsed every check —
+    unknown provider, vendor-prefixed id, missing API key — into a single
+    "Could not validate model/provider config" warning.
+    """
+
+    def _run(self, monkeypatch, tmp_path, config_yaml):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".env").write_text("", encoding="utf-8")
+        (home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        monkeypatch.setitem(
+            sys.modules,
+            "model_tools",
+            types.SimpleNamespace(
+                check_tool_availability=lambda *a, **kw: ([], []),
+                TOOLSET_REQUIREMENTS={},
+            ),
+        )
+
+        from hermes_cli import auth as _auth_mod
+
+        for _fn in (
+            "get_nous_auth_status",
+            "get_codex_auth_status",
+            "get_minimax_oauth_auth_status",
+            "get_xai_oauth_auth_status",
+        ):
+            monkeypatch.setattr(_auth_mod, _fn, lambda: {})
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_scalar_model_does_not_trip_the_blanket_handler(
+        self, monkeypatch, tmp_path
+    ):
+        out = self._run(
+            monkeypatch,
+            tmp_path,
+            "model: openai-codex/gpt-5.6-sol\nprovider: openai-codex\n",
+        )
+        assert "Could not validate model/provider config" not in out
+
+    def test_scalar_model_still_reports_unknown_provider(self, monkeypatch, tmp_path):
+        """The check that matters most: a bogus provider must not pass clean."""
+        out = self._run(
+            monkeypatch,
+            tmp_path,
+            "model: totally-made-up/xyz\nprovider: not-a-real-provider\n",
+        )
+        assert "model.provider 'not-a-real-provider' is not a recognised provider" in out
+
+    def test_scalar_model_still_reports_vendor_prefix(self, monkeypatch, tmp_path):
+        out = self._run(
+            monkeypatch,
+            tmp_path,
+            "model: openai-codex/gpt-5.6-sol\nprovider: openai-codex\n",
+        )
+        assert (
+            "model.default 'openai-codex/gpt-5.6-sol' uses a vendor/model slug "
+            "but provider is 'openai-codex'"
+        ) in out
+
+    def test_scalar_and_nested_configs_agree(self, monkeypatch, tmp_path):
+        """Behaviour contract: the two shapes are equivalent inputs.
+
+        Pins the invariant rather than a literal, so it keeps holding as the
+        individual check strings evolve.
+        """
+        scalar = self._run(
+            monkeypatch,
+            tmp_path / "a",
+            "model: totally-made-up/xyz\nprovider: not-a-real-provider\n",
+        )
+        nested = self._run(
+            monkeypatch,
+            tmp_path / "b",
+            "model:\n  default: totally-made-up/xyz\n  provider: not-a-real-provider\n",
+        )
+        for marker in (
+            "is not a recognised provider",
+            "uses a vendor/model slug",
+        ):
+            assert (marker in scalar) == (marker in nested), (
+                f"scalar and nested model: shapes disagree on {marker!r}"
+            )
+
+    def test_non_mapping_non_scalar_model_is_survivable(self, monkeypatch, tmp_path):
+        """A ``model:`` list is not migratable — degrade, don't crash."""
+        out = self._run(
+            monkeypatch, tmp_path, "model:\n  - gpt-4o\n  - gpt-5.6-sol\n"
+        )
+        assert "Could not validate model/provider config" not in out
+        assert "config.yaml exists" in out
+
+    def test_list_model_with_root_provider_is_survivable(self, monkeypatch, tmp_path):
+        """List ``model:`` *plus* a root ``provider:`` — the harder shape.
+
+        Regression for the review finding on #71046: with root keys present,
+        _normalize_root_model_keys wraps the list as ``{"default": [...]}``, so a
+        container-level isinstance check passes while the *values* are still
+        lists. ``.strip()`` on that raised AttributeError and the blanket
+        handler swallowed the whole block again.
+        """
+        out = self._run(
+            monkeypatch,
+            tmp_path,
+            "model:\n  - gpt-4o\n  - gpt-5.6-sol\nprovider: openai-codex\n",
+        )
+        assert "Could not validate model/provider config" not in out
+        assert "config.yaml exists" in out
+
+    def test_scalar_junk_model_values_are_survivable(self, monkeypatch, tmp_path):
+        """Non-string scalars (int, mapping) must not abort the block either."""
+        out = self._run(
+            monkeypatch,
+            tmp_path,
+            "model:\n  default: 42\n  provider:\n    nested: true\n",
+        )
+        assert "Could not validate model/provider config" not in out
+        assert "config.yaml exists" in out
+
+    def test_doctor_remains_read_only_without_fix(self, monkeypatch, tmp_path):
+        """The added migration is in-memory only; --fix owns writes."""
+        original = "model: openai-codex/gpt-5.6-sol\nprovider: openai-codex\n"
+        self._run(monkeypatch, tmp_path, original)
+        assert (
+            tmp_path / ".hermes" / "config.yaml"
+        ).read_text(encoding="utf-8") == original
+
+
+class TestAsConfigStr:
+    """Unit coverage for the value coercion helper (pure function)."""
+
+    def test_strings_are_stripped(self):
+        assert doctor_config._as_config_str("  openai-codex  ") == "openai-codex"
+
+    def test_none_becomes_empty(self):
+        assert doctor_config._as_config_str(None) == ""
+
+    @pytest.mark.parametrize(
+        "value",
+        [["gpt-4o", "gpt-5"], {"nested": True}, 42, 3.14, True],
+    )
+    def test_non_strings_become_empty_rather_than_raising(self, value):
+        assert doctor_config._as_config_str(value) == ""

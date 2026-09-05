@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -1271,6 +1272,73 @@ class GatewayShutdownMixin:
                     winerror if winerror is not None else exc.errno,
                 )
 
+    async def _run_restart_context_checkpoint(
+        self, reason: str = "gateway restart requested"
+    ) -> None:
+        """Run the configured external restart checkpoint, best-effort.
+
+        Hermes persists and resumes gateway transcripts itself. This optional
+        hook is only for operator-configured external exports, so missing
+        scripts and execution failures must never block a restart.
+        """
+        from gateway.run import (
+            _RESTART_CHECKPOINT_TIMEOUT_SECS,
+            _gateway_config_home,
+            _load_gateway_config,
+        )
+
+        config = _load_gateway_config()
+        gateway_config = config.get("gateway", {}) if isinstance(config, dict) else {}
+        raw_script = (
+            gateway_config.get("restart_checkpoint_script", "")
+            if isinstance(gateway_config, dict)
+            else ""
+        )
+        if not isinstance(raw_script, str) or not raw_script.strip():
+            return
+
+        script = Path(raw_script.strip()).expanduser()
+        checkpoint_home = _gateway_config_home()
+        if not script.is_absolute():
+            script = checkpoint_home / script
+        if script.suffix.lower() != ".py":
+            logger.warning("Restart checkpoint script must be a Python .py file: %s", script)
+            return
+        if not script.is_file():
+            logger.warning("Restart checkpoint script does not exist: %s", script)
+            return
+
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, str(script), "--reason", reason],
+                cwd=str(checkpoint_home),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=_RESTART_CHECKPOINT_TIMEOUT_SECS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Restart checkpoint timed out after %ss: %s",
+                _RESTART_CHECKPOINT_TIMEOUT_SECS,
+                script,
+            )
+            return
+        except Exception as exc:
+            logger.warning("Restart checkpoint invocation failed: %s", exc)
+            return
+
+        if result.returncode == 0:
+            logger.info("Restart checkpoint completed: %s", script)
+        else:
+            logger.warning(
+                "Restart checkpoint failed with exit code %s: %s",
+                result.returncode,
+                script,
+            )
+
     async def _launch_detached_restart_command(self) -> None:
         from gateway.run import _resolve_hermes_bin
         import shutil
@@ -1858,6 +1926,12 @@ class GatewayShutdownMixin:
             await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
             if ctx.timed_out:
                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+            # The durable transcript/resume path above is the source of truth
+            # for conversation continuity. A configured checkpoint is only an
+            # optional external export of that stable state, so await it before
+            # adapter/session teardown and never let its failures block restart.
+            if self._restart_requested:
+                await self._run_restart_context_checkpoint()
             await GatewayRunner._stop_finalize_agents_and_adapters(self, ctx)
             GatewayRunner._stop_release_runtime_state(self, ctx)
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)

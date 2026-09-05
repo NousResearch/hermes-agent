@@ -1901,6 +1901,10 @@ DEFAULT_CONFIG = {
         # (primary copy: state.db gateway_routing table). True for external tooling and downgrade
         # safety; False stops producing the file.
         "write_sessions_json": True,
+        # Optional external export hook for planned gateway restarts. Hermes transcript
+        # persistence/resume does not depend on this. A configured Python .py path runs
+        # after transcript drain and before teardown; relative paths resolve from HERMES_HOME.
+        "restart_checkpoint_script": "",
         # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
         # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
         # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can

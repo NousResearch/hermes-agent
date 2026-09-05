@@ -1310,8 +1310,8 @@ class AIAgent(
         work_generation = 0
         closeout_delivery_id = ""
         closeout_claim_id = ""
-        allocated_here = False
-        if not is_subagent and closeout_active and async_supported and background:
+        is_spawn = (function_args.get("action") or "").strip().lower() in ("", "spawn")
+        if is_spawn and not is_subagent and closeout_active and async_supported and background:
             work_id = str(getattr(self, "_current_work_id", "") or "")
             if work_id:
                 closeout_delivery_id = str(
@@ -1322,14 +1322,11 @@ class AIAgent(
                 )
                 work_generation = int(
                     getattr(self, "_current_work_generation", 0) or 0
-                ) + 1
+                )
+                if closeout_delivery_id and closeout_claim_id:
+                    work_generation += 1
             else:
                 work_id = uuid.uuid4().hex
-                allocated_here = True
-            self._current_work_id = work_id
-            self._current_work_generation = work_generation
-            self._current_work_delivery_id = ""
-            self._current_work_claim_id = ""
 
         result = _delegate_task(
             goal=function_args.get("goal"),
@@ -1352,14 +1349,13 @@ class AIAgent(
             payload = json.loads(result)
         except (TypeError, ValueError):
             payload = {}
-        if work_id and payload.get("status") != "dispatched":
-            if allocated_here:
-                self._current_work_id = ""
-                self._current_work_generation = 0
-            elif closeout_delivery_id and closeout_claim_id:
-                self._current_work_generation = max(0, work_generation - 1)
-                self._current_work_delivery_id = closeout_delivery_id
-                self._current_work_claim_id = closeout_claim_id
+        if work_id and payload.get("status") == "dispatched":
+            # Publish identity only after registration accepts the spawn. A rejected
+            # replacement must retain the exact claim so this turn can still close.
+            self._current_work_id = work_id
+            self._current_work_generation = work_generation
+            self._current_work_delivery_id = ""
+            self._current_work_claim_id = ""
         return result
 
     _invoke_tool = _forward("agent.agent_runtime_helpers", "invoke_tool")

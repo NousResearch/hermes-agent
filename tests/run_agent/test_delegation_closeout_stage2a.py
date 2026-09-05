@@ -117,6 +117,78 @@ def test_existing_group_keeps_replacement_semantics_after_disable(monkeypatch):
     assert captured["closeout_delivery_id"] == "delivery-3"
 
 
+@pytest.mark.parametrize("replacement", [False, True])
+def test_multiple_spawns_share_generation_and_rejection_preserves_identity(monkeypatch, replacement):
+    monkeypatch.setattr(ad, "task_scoped_closeout_enabled", lambda config=None: True)
+    monkeypatch.setattr("gateway.session_context.closeout_delivery_supported", lambda: True)
+    agent = _agent()
+    if replacement:
+        assert ad.register_work_group_member(
+            work_id="work", owner_turn_id="owner", delegation_id="original",
+            feature_config={"delegation": {"task_scoped_closeout": True}},
+        )
+        ad.persist_group_member_completion("original", {"status": "completed"}, {})
+        assert ad.seal_work_group("work", "owner")
+        claim = ad.claim_ready_work_group("work", "test")
+        delivery = claim["envelope"]["delivery_id"]
+        assert ad.bind_work_group_closeout_turn("work", delivery, claim["claim_id"], "turn-1")
+        agent._current_work_id = "work"
+        agent._current_work_delivery_id = delivery
+        agent._current_work_claim_id = claim["claim_id"]
+
+    def identity():
+        return (agent._current_work_id, agent._current_work_generation,
+                agent._current_work_delivery_id, agent._current_work_claim_id)
+
+    captures = []
+    def ledger_delegate(**kwargs):
+        captures.append(kwargs)
+        if kwargs["goal"] == "reject":
+            return json.dumps({"status": "error"})
+        accepted = ad._register_grouped_dispatch(
+            dict(delegation_id=f"child-{len(captures)}", origin_work_id=kwargs["origin_work_id"],
+                 work_generation=kwargs["work_generation"], dispatched_at=1.0),
+            owner_turn_id=kwargs["owner_turn_id"],
+            closeout_delivery_id=kwargs["closeout_delivery_id"],
+            closeout_claim_id=kwargs["closeout_claim_id"],
+        )
+        return json.dumps({"status": "dispatched" if accepted else "error"})
+    monkeypatch.setattr("tools.delegate_tool.delegate_task", ledger_delegate)
+    for goal in ("reject", "first", "reject", "second"):
+        before = identity()
+        result = json.loads(agent._dispatch_delegate_task({"goal": goal}))
+        if goal == "reject":
+            assert result["status"] == "error"
+            assert identity() == before
+        else:
+            assert result["status"] == "dispatched"
+            assert agent._current_work_generation == int(replacement)
+    assert captures[-1]["work_generation"] == captures[1]["work_generation"]
+
+
+@pytest.mark.parametrize("action", ["list", " steer ", "STOP", "invalid"])
+@pytest.mark.parametrize("bound", [False, True])
+def test_non_spawn_actions_bypass_closeout_identity(monkeypatch, action, bound):
+    agent = _agent()
+    if bound:
+        agent._current_work_id = "work"
+        agent._current_work_generation = 3
+        agent._current_work_delivery_id = "delivery"
+        agent._current_work_claim_id = "claim"
+    before = dict(agent.__dict__)
+    captured = {}
+    monkeypatch.setattr(ad, "task_scoped_closeout_enabled", lambda config=None: True)
+    monkeypatch.setattr("gateway.session_context.closeout_delivery_supported", lambda: True)
+    def control(**kwargs):
+        captured.update(kwargs)
+        assert agent.__dict__ == before
+        return json.dumps({"status": "ok"})
+    monkeypatch.setattr("tools.delegate_tool.delegate_task", control)
+    agent._dispatch_delegate_task({"action": action})
+    assert agent.__dict__ == before
+    assert captured["origin_work_id"] == captured["closeout_delivery_id"] == captured["closeout_claim_id"] == ""
+
+
 def test_dynamic_description_changes_only_when_enabled(monkeypatch):
     monkeypatch.setattr(ad, "task_scoped_closeout_enabled", lambda config=None: False)
     off = __import__("tools.delegate_tool", fromlist=["x"])._build_dynamic_schema_overrides()

@@ -13,6 +13,28 @@ import pytest
 
 from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 from run_agent import AIAgent
+from tools.registry import registry
+
+# Registry handler for the end-to-end steer-survival test below (module level,
+# like the built-in tool files — dispatch looks the tool up here at run time).
+_STEER_SURVIVAL_TOOL = "steer_survival_probe"
+
+
+def _steer_survival_tool(args, **_kwargs):
+    return "probe ok"
+
+
+registry.register(
+    name=_STEER_SURVIVAL_TOOL,
+    toolset="utility",
+    schema={
+        "name": _STEER_SURVIVAL_TOOL,
+        "description": "probe tool for the steer-survival regression test",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    handler=_steer_survival_tool,
+    override=True,
+)
 
 
 def _bare_agent() -> AIAgent:
@@ -608,10 +630,10 @@ class TestSteerThreadSafety:
 
 
 class TestSteerClearedOnInterrupt:
-    def test_clear_interrupt_drops_pending_steer(self):
+    def test_hard_cancel_drops_pending_steer(self):
         """A hard interrupt supersedes any pending steer — the agent's
         next tool iteration won't happen, so delivering the steer later
-        would be surprising."""
+        would be surprising. Only the explicit hard-cancel clear drops it."""
         agent = _bare_agent()
         # Minimal surface needed by clear_interrupt()
         agent._interrupt_requested = True
@@ -625,9 +647,134 @@ class TestSteerClearedOnInterrupt:
         agent._pending_redirect = "also drop this"
         assert agent._pending_steer == "will be dropped"
 
-        agent.clear_interrupt()
+        agent.clear_interrupt(hard_cancel=True)
         assert agent._pending_steer is None
         assert agent._pending_redirect is None
+
+    def test_soft_clear_preserves_pending_steer(self):
+        """A soft clear (redirect rebuild, error recovery, turn-boundary
+        hygiene) keeps the session alive, so an already-accepted steer must
+        survive it — the existing drains deliver it on the continued run.
+        Dropping it here silently lost a user message the surface had
+        already acknowledged as delivered."""
+        agent = _bare_agent()
+        agent._interrupt_requested = True
+        agent._interrupt_message = None
+        agent._interrupt_thread_signal_pending = False
+        agent._execution_thread_id = None
+        agent._tool_worker_threads = None
+        agent._tool_worker_threads_lock = None
+
+        agent.steer("must survive the rebuild")
+        agent._pending_redirect = "correction"
+
+        agent.clear_interrupt(preserve_redirect=True)
+        assert agent._pending_steer == "must survive the rebuild"
+        # preserve_redirect semantics unchanged: the correction survives too.
+        assert agent._pending_redirect == "correction"
+
+        # A plain soft clear (no flags) preserves the steer as well.
+        agent.clear_interrupt()
+        assert agent._pending_steer == "must survive the rebuild"
+        assert agent._pending_redirect is None
+
+
+class TestSteerSurvivesRedirectRebuild:
+    """A steer accepted while a redirect lands must still reach a later API
+    payload. Regression for the busy-redirect message loss: the rebuild's
+    ``clear_interrupt(preserve_redirect=True)`` used to wipe ``_pending_steer``
+    unconditionally, so a user message the surface had already acknowledged
+    as delivered evaporated with no trace (no payload, no leftover, no log)."""
+
+    STEER_TEXT = "STEER_TEXT_ONE"
+    REDIRECT_TEXT = "REDIRECT_TEXT_TWO"
+
+    def _loop_agent(self):
+        from unittest.mock import MagicMock, patch
+
+        from run_agent import AIAgent
+
+        tool_schema = {
+            "type": "function",
+            "function": {
+                "name": _STEER_SURVIVAL_TOOL,
+                "description": "probe tool for the steer-survival regression test",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[tool_schema]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent._disable_streaming = True
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        return agent
+
+    def test_steer_accepted_before_redirect_lands_in_rebuilt_payload(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from tests.run_agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        payloads = []
+
+        def model_call(api_kwargs):
+            payloads.append([dict(m) for m in api_kwargs["messages"]])
+            if len(payloads) == 1:
+                tool_call = SimpleNamespace(
+                    id="call_1", type="function",
+                    function=SimpleNamespace(name=_STEER_SURVIVAL_TOOL, arguments="{}"),
+                )
+                return _mock_response(
+                    content=None, finish_reason="tool_calls", tool_calls=[tool_call]
+                )
+            if len(payloads) == 2:
+                # Both mid-turn user messages race the in-flight request:
+                # the steer is accepted first, then the redirect kills the
+                # request and arms the rebuild.
+                assert agent.steer(self.STEER_TEXT) is True
+                assert agent.redirect(self.REDIRECT_TEXT) is True
+                raise InterruptedError("redirect cancelled the in-flight request")
+            return _mock_response(content="rebuilt reply", finish_reason="stop")
+
+        agent._interruptible_api_call = model_call
+
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("start something")
+
+        blob = "\n".join(
+            str(m.get("content"))
+            for call in payloads
+            for m in call
+            if isinstance(m, dict)
+        )
+        # The rebuild reached the wire: the redirect correction is a real user message.
+        assert self.REDIRECT_TEXT in blob
+        # The steer accepted just before the redirect must ride the same rebuild
+        # (injected into the newest tool result by the pre-API drain).
+        assert self.STEER_TEXT in blob
+        # Fully consumed: nothing left for the finalizer's leftover handoff.
+        assert result.get("pending_steer") is None
+        assert result["completed"] is True
 
 
 class TestPreApiCallSteerDrain:

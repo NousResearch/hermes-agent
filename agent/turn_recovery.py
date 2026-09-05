@@ -948,7 +948,9 @@ def abort_turn_on_interrupt(
     _vlines(agent, f"⚡ {abort_message}")
     close_interrupted_tool_sequence(messages, interrupt_text)
     agent._persist_session(messages, conversation_history)
-    agent.clear_interrupt()
+    # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
+    # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
+    agent.clear_interrupt(hard_cancel=True)
     return {
         "final_response": interrupt_text, "messages": messages, "api_calls": api_call_count,
         "completed": False, "interrupted": True,

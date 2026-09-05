@@ -18,11 +18,15 @@ lock's legitimate users and pass. New violations fail with the method
 name and the fix (route through ``_read_ctx()``).
 
 ``SessionDB`` itself is declared in ``hermes_state.py`` as
-``class SessionDB(SessionSearchMixin, SessionSchemaMixin,
-SessionPortabilityMixin)`` — its actual methods live across four files.
-A gate that only opens ``hermes_state.py`` never sees a locked reader
-declared in one of the three mixin files, so ``_ALL_STATE_SOURCES`` scans
-each of them under their own class name.
+``class SessionDB(<12 mixins>)`` — its actual methods live across
+``hermes_state.py`` plus every one of those mixin files. A gate that only
+opens ``hermes_state.py`` never sees a locked reader declared in a mixin
+file, so ``_ALL_STATE_SOURCES`` scans each of them under their own class
+name. ``test_all_state_sources_matches_sessiondb_bases`` re-derives the
+current mixin list from ``hermes_state.py`` itself and fails loudly if a
+future split adds/removes a mixin without a matching update here — this
+list previously only covered 3 of 11 mixins after a further split grew
+``SessionDB`` from 4 bases to 12 with no update to this file.
 
 Deliberately NOT flagged:
 - methods that INSERT/UPDATE/DELETE/REPLACE under the lock (writers);
@@ -44,12 +48,24 @@ _STATE_PY = _REPO_ROOT / "hermes_state.py"
 
 # SessionDB's own class body lives in hermes_state.py; the rest of its
 # methods come from these mixins (see module docstring). Each entry is
-# (source file, class name to scan in that file).
+# (source file, class name to scan in that file). Keep in sync with
+# hermes_state.py's `class SessionDB(...)` bases — see
+# test_all_state_sources_matches_sessiondb_bases below, which fails
+# loudly the moment this list drifts from the real composition.
 _ALL_STATE_SOURCES: list[tuple[Path, str]] = [
     (_STATE_PY, "SessionDB"),
+    (_REPO_ROOT / "hermes_state_sessions.py", "SessionSessionsMixin"),
+    (_REPO_ROOT / "hermes_state_fts.py", "SessionFtsSetupMixin"),
     (_REPO_ROOT / "hermes_state_search.py", "SessionSearchMixin"),
     (_REPO_ROOT / "hermes_state_schema.py", "SessionSchemaMixin"),
     (_REPO_ROOT / "hermes_state_portability.py", "SessionPortabilityMixin"),
+    (_REPO_ROOT / "hermes_state_telegram.py", "SessionTelegramTopicsMixin"),
+    (_REPO_ROOT / "hermes_state_compression.py", "SessionCompressionMixin"),
+    (_REPO_ROOT / "hermes_state_gateway.py", "SessionGatewayMixin"),
+    (_REPO_ROOT / "hermes_state_maintenance.py", "SessionMaintenanceMixin"),
+    (_REPO_ROOT / "hermes_state_usage.py", "SessionUsageMixin"),
+    (_REPO_ROOT / "hermes_state_titles.py", "SessionTitlesMixin"),
+    (_REPO_ROOT / "hermes_state_messages.py", "SessionMessagesMixin"),
 ]
 
 _WRITE_RE = re.compile(
@@ -289,3 +305,45 @@ class TestNoPureReadersUnderWriterLock:
             f"{p.name}: {v}" for v in _scan_locked_readers(p, "FakeMixin")
         ]
         assert any("guilty_mixin_reader" in v for v in violations), violations
+
+    def test_all_state_sources_matches_sessiondb_bases(self):
+        """Re-derive SessionDB's actual mixin composition from
+        hermes_state.py itself (its `class SessionDB(...)` bases, resolved
+        to their defining files via this module's own `from
+        hermes_state_X import Y` imports) and assert it matches
+        _ALL_STATE_SOURCES exactly.
+
+        Independent ground truth, not a copy of the hardcoded list above:
+        if a future mixin split adds/removes/renames a base without a
+        matching update here, this fails loudly instead of the gate
+        silently going blind on the new/renamed file — exactly how
+        _ALL_STATE_SOURCES previously fell behind (covered 3 of 11 mixins
+        once SessionDB grew from 4 bases to 12).
+        """
+        tree = ast.parse(_STATE_PY.read_text(encoding="utf-8"))
+        base_to_file: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.startswith("hermes_state_")
+            ):
+                for alias in node.names:
+                    base_to_file[alias.asname or alias.name] = f"{node.module}.py"
+
+        session_db = next(
+            n for n in tree.body
+            if isinstance(n, ast.ClassDef) and n.name == "SessionDB"
+        )
+        expected = {"SessionDB": _STATE_PY.name}
+        for base in session_db.bases:
+            if isinstance(base, ast.Name) and base.id in base_to_file:
+                expected[base.id] = base_to_file[base.id]
+
+        actual = {class_name: path.name for path, class_name in _ALL_STATE_SOURCES}
+        assert actual == expected, (
+            "hermes_state.py's SessionDB bases no longer match "
+            "_ALL_STATE_SOURCES in this file — update the list above.\n"
+            f"expected (derived from hermes_state.py): {expected}\n"
+            f"actual (_ALL_STATE_SOURCES):              {actual}"
+        )

@@ -20,8 +20,8 @@ class _FakeBridge:
             return self._reads.pop(0)
         return None
 
-    def write(self, data):
-        pass
+    async def write(self, data):
+        return True
 
     def resize(self, cols, rows):
         pass

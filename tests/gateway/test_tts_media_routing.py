@@ -78,10 +78,18 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
 
     await adapter._process_message_background(event, build_session_key(event.source))
 
+    # Plain-DM sends now carry the reply anchor (#103429): the answer to a
+    # queued follow-up must reply to the message that asked it, not the one
+    # that opened the turn. The anchor comes from the event, so voice sends
+    # carry it alongside notify.
     adapter.send_voice.assert_awaited_once_with(
         chat_id="chat-1",
         audio_path=str(media_file),
-        metadata={"notify": True},
+        metadata={
+            "notify": True,
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "msg-1",
+        },
         is_voice=True,
     )
     adapter.send_document.assert_not_awaited()

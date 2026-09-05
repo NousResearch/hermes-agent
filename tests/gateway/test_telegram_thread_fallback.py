@@ -298,6 +298,60 @@ def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     }
 
 
+def test_base_gateway_metadata_sets_reply_anchor_for_plain_telegram_dm():
+    """A plain DM (no topic/thread) must still carry the reply anchor (#103429).
+
+    The old order bailed out on empty metadata BEFORE the Telegram-DM block:
+    thread_id None -> {} -> return None, so ``telegram_reply_to_message_id``
+    was never stamped and a queued follow-up's answer hung on the message that
+    opened the turn instead of the message that asked it.
+    """
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        thread_id=None,
+        message_id="77",
+    )
+
+    metadata = _thread_metadata_for_source(source, "512")
+
+    assert metadata is not None
+    assert metadata["telegram_dm_topic_reply_fallback"] is True
+    assert metadata["telegram_reply_to_message_id"] == "512"
+    assert "direct_messages_topic_id" not in metadata
+    # No thread: thread_id must not be stamped.
+    assert "thread_id" not in metadata
+
+
+def test_base_gateway_metadata_plain_dm_bare_call_stays_bare():
+    """A bare anchorless call for a plain DM keeps the historical empty result.
+
+    Typing indicators, status pings, and default media-send metadata call
+    _thread_metadata_for_source(source) with no anchor; stamping Telegram
+    fallback keys there would change those sends' payloads (#103429 fix
+    scope: only the runner's explicitly-anchored turn path).
+    """
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        thread_id=None,
+        message_id="901",
+    )
+
+    assert _thread_metadata_for_source(source, None) is None
+
+
+def test_base_gateway_metadata_group_chat_without_thread_still_bare():
+    """A Telegram group message (not dm) with no thread keeps the old bare result."""
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+        thread_id=None,
+    )
+
+    assert _thread_metadata_for_source(source, "5") is None
+
+
 @pytest.mark.asyncio
 async def test_gateway_runner_busy_ack_replies_to_triggering_message_for_telegram_dm_topic(monkeypatch, tmp_path):
     """GatewayRunner's duplicate thread metadata must match the base helper."""

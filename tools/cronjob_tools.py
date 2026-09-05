@@ -1686,14 +1686,32 @@ def check_cronjob_requirements() -> bool:
     ``yes``, ``on``) — false-like values (``0``, ``false``, ``no``, ``off``)
     leave the tool disabled. Uses the shared ``env_var_enabled`` helper so
     every consumer of these flags agrees on the truthy set.
+
+    Newer concurrent gateway paths (hermes-webui, API server) bind
+    ``HERMES_SESSION_PLATFORM`` via contextvars instead of setting the legacy
+    process-global flags, so a bound session platform also enables the tool —
+    mirroring ``tools.approval._is_gateway_approval_context``. Cron jobs are
+    never treated as an interactive session here: a cron-created job could
+    otherwise schedule further jobs unattended.
     """
     from utils import env_var_enabled
 
-    return (
+    if (
         env_var_enabled("HERMES_INTERACTIVE")
         or env_var_enabled("HERMES_GATEWAY_SESSION")
         or env_var_enabled("HERMES_EXEC_ASK")
-    )
+    ):
+        return True
+
+    try:
+        from gateway.session_context import get_session_env
+        from utils import is_truthy_value
+
+        if is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
+            return False
+        return bool(str(get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip())
+    except Exception:
+        return False
 
 
 # --- Registry ---

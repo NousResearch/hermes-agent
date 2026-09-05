@@ -7957,7 +7957,7 @@ def _get_cached_client(
         is_vision=is_vision,
         task=task,
     )
-    if client is not None:
+    if client is not None and not isinstance(client, _AuxProbeClientStub):
         # For async clients, remember which loop they were created on so we
         # can detect stale entries later.
         bound_loop = current_loop

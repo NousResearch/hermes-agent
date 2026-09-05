@@ -98,10 +98,13 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   const failed = item.state === 'failed'
   const running = item.state === 'running'
 
+  // A peer row mirrors a process owned by another gateway process: this backend
+  // holds no handle on that PID and refuses to signal it, so offering Stop would
+  // be a control that can only ever fail. Dismiss still works — it's local.
   const action =
     item.type === 'background'
       ? running
-        ? onStop && { label: s.stop, onClick: () => onStop(item.id) }
+        ? !item.peer && onStop && { label: s.stop, onClick: () => onStop(item.id) }
         : onDismiss && { label: s.dismiss, onClick: () => onDismiss(item.id) }
       : null
 

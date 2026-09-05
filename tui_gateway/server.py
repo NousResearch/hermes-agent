@@ -3054,19 +3054,114 @@ def _respond(rid, params, key, *, allow_expired=False):
 # ── Methods: tools & system ──────────────────────────────────────────
 
 
+def _process_owned_by_session(proc, session_key: str) -> bool:
+    """Whether a background process belongs to this conversation.
+
+    A conversation has more than one identity and the process carries all three: the gateway
+    ``session_key`` it was spawned under, the RAW spawning ``owner_task_id``, and
+    ``parent_session_id`` — the durable session-db id, which is exactly what ``session.resume``
+    binds as a Desktop session's own ``session_key``. Matching only the first is why a job started
+    from Telegram was invisible in Desktop even on the same conversation. An empty key matches
+    nothing (fail closed) so an unidentified caller never sees another conversation's work.
+    """
+    key = str(session_key or "")
+    return bool(key) and key in {
+        str(getattr(proc, "session_key", "") or ""),
+        str(getattr(proc, "owner_task_id", "") or ""),
+        str(getattr(proc, "parent_session_id", "") or ""),
+    }
+
+
+def _durable_process_scope_id(params: dict) -> str:
+    """Client-supplied conversation id usable as a durable process scope, or "".
+
+    Rejected: empty/whitespace-only and anything carrying a control character (this
+    string is matched against stored ownership fields and logged, so a malformed id
+    fails closed), then anything that does not name a real stored conversation in
+    this profile's ``state.db``.
+
+    That last check is load-bearing in both directions. A DEAD RUNTIME id must keep
+    getting the 4001 — the desktop's gone-latch and its passive session heal are both
+    hung off exactly that verdict (#94219, #98434), and reinterpreting the id as a
+    durable scope would answer "no processes" forever instead. And an arbitrary
+    string never gets probed against stored ownership fields at all.
+
+    Profile scope: with no live session there is no ``profile_home`` to consult, so
+    the lookup uses this process's own store. A conversation stored under another
+    profile is simply not found and keeps its 4001 — fail-closed, never a
+    cross-profile read (see :func:`_session_home_is_process_home`).
+    """
+    candidate = str(params.get("session_id") or "").strip()
+    if not candidate or any(ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+        return ""
+    try:
+        db = _get_db()
+        return candidate if db is not None and db.get_session(candidate) else ""
+    except Exception:
+        logger.debug("durable process scope lookup failed for %r", candidate, exc_info=True)
+        return ""
+
+
+def _process_scope_session(params: dict, rid):
+    """``(scope, None)`` or ``(None, error)`` for the process RPCs.
+
+    Normally the live runtime session. A messaging conversation the user is only *viewing* in
+    Desktop has no live runtime row here, and its background work lives in another gateway
+    process entirely — so on the ONE expected verdict (``4001 session not found``) fall back to a
+    scope keyed by the durable conversation id. Every other failure (agent build, validation)
+    propagates: those are not "this runtime is gone" and must not open a second lookup path.
+    The fallback widens nothing on its own — :func:`_process_owned_by_session` still has to prove
+    each row belongs to that conversation.
+    """
+    session, err = _sess(params, rid)
+    if not err:
+        return session, None
+    if (err.get("error") or {}).get("code") != 4001:
+        return None, err
+    durable = _durable_process_scope_id(params)
+    return ({"session_key": durable}, None) if durable else (None, err)
+
+
+def _session_home_is_process_home(session: dict) -> bool:
+    """Whether *session* belongs to the profile whose state THIS process is bound to.
+
+    ``tools.process_registry.CHECKPOINT_PATH`` resolves once, at import, against the
+    launch profile's ``HERMES_HOME`` — the module-constant pattern the root AGENTS.md
+    sanctions, and one this handler is in no position to reinterpret. Profiles are
+    independent islands by design, so a session homed elsewhere fails CLOSED: it
+    simply gets no peer rows, rather than being served another profile's process
+    registry. Making cross-profile discovery work means making that path resolve per
+    call inside the registry, which is a change to that module's contract and not
+    something to fake from here.
+    """
+    profile_home = session.get("profile_home")
+    if not profile_home:
+        return True  # launch profile — the one CHECKPOINT_PATH already points at
+    try:
+        return Path(profile_home).resolve() == Path(get_hermes_home()).resolve()
+    except Exception:
+        return False
+
+
 def _session_processes(session: dict) -> list:
-    """Background processes owned by this session (registry session_key match)."""
+    """Background processes owned by this session (any of its identities)."""
     # Drain completion notifications that arrived during this turn. The background poller handles
     # between-turn delivery; this is the safety net for events that arrived mid-turn. Ownership filter
     # (#42674, #35652): a turn finishing in session B must not consume an event that belongs to session A.
     # The registry requeues every addressed event this session cannot positively claim; the poller then
     # delivers it to a live owner or drops an orphan.
     from tools.process_registry import process_registry
+    # A process spawned in ANOTHER gateway process (messaging gateway, second desktop window, CLI)
+    # broadcasts nothing here; the shared checkpoint is the only channel between the two registries.
+    # Only this process's own profile checkpoint is readable — see _session_home_is_process_home.
+    if _session_home_is_process_home(session):
+        with contextlib.suppress(Exception):
+            process_registry.sync_from_checkpoint()
     key = str(session.get("session_key") or "")
     owned = []
     for entry in process_registry.list_sessions():
         proc = process_registry.get(entry["session_id"])
-        if proc is not None and str(getattr(proc, "session_key", "") or "") == key:
+        if proc is not None and _process_owned_by_session(proc, key):
             entry["output_tail"] = (proc.output_buffer or "")[-4000:]  # the 200-char list preview is too thin for the viewer
             owned.append(entry)
     return owned

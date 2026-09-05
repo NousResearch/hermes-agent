@@ -149,11 +149,16 @@ class TestCheckpointNotify:
 
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""
+        from gateway.status import get_process_start_time
+
         checkpoint = tmp_path / "procs.json"
         checkpoint.write_text(json.dumps([{
             "session_id": "proc_live",
             "command": "sleep 999",
             "pid": os.getpid(),
+            # Recovery adopts a process into locally killable state, so it requires
+            # a start-time baseline to prove the PID was not recycled.
+            "host_start_time": get_process_start_time(os.getpid()),
             "task_id": "t1",
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):

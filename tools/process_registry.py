@@ -5,7 +5,7 @@ Nothing runs on the host unless TERMINAL_ENV=local; other backends run in their 
 """
 
 import codecs
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import json
 import logging
 import os
@@ -41,6 +41,23 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
+
+# Output tail published in the checkpoint for OTHER gateway processes to render
+# (messaging gateway spawns the job, Desktop shows it). Bounded well below
+# MAX_OUTPUT_CHARS: this is a display preview rewritten on disk while the process
+# runs, not the authoritative log, and it is what process.list already ships.
+CHECKPOINT_OUTPUT_TAIL_CHARS = 4_000
+# Extra left context redacted BEFORE the published tail is cut out of it. Slicing
+# first and redacting after decapitates any secret straddling the cut
+# (``DB_PASSWORD=`` on one side, the value on the other): the pattern no longer
+# matches and the value ships in the clear. Redacting a window this much wider
+# means the cut can only ever land inside text that was already scanned with full
+# left context — orders of magnitude more than the longest credential.
+CHECKPOINT_REDACT_CONTEXT_CHARS = 12_000
+# Floor between two output-driven checkpoint rewrites. A chunk landing inside the
+# window arms one trailing write, so a burst costs two rewrites instead of one
+# per chunk and the last line is still published.
+CHECKPOINT_OUTPUT_MIN_INTERVAL_SECONDS = 1.0
 
 # Watch-pattern rate limiting, PER SESSION: one watch-match notification per
 # WATCH_MIN_INTERVAL_SECONDS; a match inside the cooldown is dropped and counts as one
@@ -287,6 +304,64 @@ def format_uptime_short(seconds: int) -> str:
     return f"{hours}h {mins}m"
 
 
+def _flock(fh, *, lock: bool) -> None:
+    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows).
+    Same primitive the other cross-process state files use (``gateway/status.py``,
+    ``cron/scheduler.py``, ``hermes_cli/active_sessions.py``)."""
+    if _IS_WINDOWS:
+        import msvcrt
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+
+
+@contextmanager
+def _checkpoint_lock():
+    """Hold the inter-process checkpoint lock; yields True when it is actually held.
+
+    ``processes.json`` has one writer per gateway PROCESS, so an unsynchronized
+    read-modify-write drops whatever another gateway published between our read and
+    our replace. Callers therefore get an honest verdict instead of a silent
+    downgrade: a WRITE must skip when this yields False (our own update is
+    republished by the next write; another owner's row, once dropped, is gone), while
+    a read may proceed — it destroys nothing, and ``atomic_json_write`` means the
+    worst case is a slightly stale view rather than a torn one.
+    """
+    path = CHECKPOINT_PATH.with_name(CHECKPOINT_PATH.name + ".lock")
+    handle = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if _IS_WINDOWS:
+            # msvcrt.locking requires a byte to exist at the lock range. Seed a
+            # fresh file before opening it; a concurrent creator may win the race,
+            # in which case this write is harmless and the existing byte remains.
+            try:
+                if not path.exists() or path.stat().st_size == 0:
+                    path.write_bytes(b" ")
+            except OSError:
+                pass
+            handle = open(path, "r+b")
+        else:
+            handle = open(path, "a+b")
+        _flock(handle, lock=True)
+    except Exception as exc:
+        logger.warning("Process checkpoint lock unavailable: %s", exc)
+        if handle is not None:
+            with suppress(Exception):
+                handle.close()
+        handle = None
+    try:
+        yield handle is not None
+    finally:
+        if handle is not None:
+            with suppress(Exception):
+                _flock(handle, lock=False)
+            with suppress(Exception):
+                handle.close()
+
+
 def _not_found(session_id: str) -> dict:
     return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
@@ -296,6 +371,20 @@ def _output_tail(session: "ProcessSession", n: int) -> str:
     from tools.ansi_strip import strip_ansi
 
     return strip_ansi(session.output_buffer[-n:])
+
+
+def _checkpoint_output_tail(text: str) -> str:
+    """Bounded, force-redacted output tail as published in the shared checkpoint.
+
+    Redact FIRST over a window wider than what is published (see
+    ``CHECKPOINT_REDACT_CONTEXT_CHARS``), then cut the tail out of the redacted
+    text: every character that survives into the checkpoint was scanned with the
+    full left context a pattern needs, so a credential sitting across the cut is
+    masked instead of arriving headless and unmatched. The final slice bounds the
+    result whatever a mask expanded to.
+    """
+    window = text[-(CHECKPOINT_OUTPUT_TAIL_CHARS + CHECKPOINT_REDACT_CONTEXT_CHARS):]
+    return redact_sensitive_text(window, force=True, code_file=False)[-CHECKPOINT_OUTPUT_TAIL_CHARS:]
 
 
 @dataclass
@@ -321,6 +410,10 @@ class ProcessSession:
     output_buffer: str = ""                     # Rolling tail (last max_output_chars)
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # Recovered from checkpoint (no pipe)
+    # Mirror of a process owned by ANOTHER gateway process, imported from the
+    # shared checkpoint for display only: never signalled, never notified on,
+    # never re-published (the owner is the sole author of its checkpoint entry).
+    peer_mirror: bool = False
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     # Watcher/notification routing (persisted for crash recovery)
@@ -396,7 +489,26 @@ class ProcessRegistry:
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
+        # Read-only mirrors of other gateway processes' live rows. Deliberately a
+        # separate store: everything that reasons about work THIS process owns
+        # (kill_all, scale-to-zero, session reset, checkpoint authorship) keeps
+        # reading _running only.
+        self._peers: Dict[str, ProcessSession] = {}
+        # Identity stamped on every checkpoint row we publish. ``owner_token`` says
+        # "this row is mine" exactly (no inference); ``owner_pid`` + start time let
+        # another gateway ask "is that writer still alive" without trusting a PID
+        # the kernel may have recycled onto a stranger.
+        self._owner_token = uuid.uuid4().hex
+        self._owner_pid = os.getpid()
+        self._owner_start_time = self._safe_host_start_time(self._owner_pid)
         self._lock = threading.Lock()
+        # Serializes this registry's own checkpoint writes end to end (snapshot →
+        # redact → merge → replace). The inter-process lock cannot order two writers
+        # inside ONE process: it would just pick which stale ordering wins.
+        self._checkpoint_write_lock = threading.Lock()
+        self._output_checkpoint_lock = threading.Lock()
+        self._last_output_checkpoint_at = 0.0
+        self._output_checkpoint_timer: Optional[threading.Timer] = None
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
         # Unified queue for all background events (distinguished by "type"); the CLI
@@ -444,6 +556,31 @@ class ProcessRegistry:
             return
         with suppress(Exception):
             sink(session, chunk)
+
+    def _checkpoint_live_output(self) -> None:
+        """Publish the redacted output tail so peer gateway processes can render it.
+        Rate-limited to ``CHECKPOINT_OUTPUT_MIN_INTERVAL_SECONDS``: a rewrite per
+        chunk turns a chatty dev server into continuous disk churn. A chunk that
+        lands inside the window arms a single trailing write instead of being
+        dropped, so the last line of a burst is never stranded off the checkpoint."""
+        with self._output_checkpoint_lock:
+            wait = self._last_output_checkpoint_at + CHECKPOINT_OUTPUT_MIN_INTERVAL_SECONDS - time.monotonic()
+            if wait > 0:
+                if self._output_checkpoint_timer is None:
+                    self._output_checkpoint_timer = timer = threading.Timer(
+                        wait, self._flush_output_checkpoint)
+                    timer.daemon = True
+                    timer.start()
+                return
+            self._last_output_checkpoint_at = time.monotonic()
+        self._write_checkpoint()
+
+    def _flush_output_checkpoint(self) -> None:
+        """Trailing write armed by :meth:`_checkpoint_live_output` (timer thread)."""
+        with self._output_checkpoint_lock:
+            self._output_checkpoint_timer = None
+            self._last_output_checkpoint_at = time.monotonic()
+        self._write_checkpoint()
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan a freshly-read chunk for watch patterns and queue notifications.
@@ -625,7 +762,12 @@ class ProcessRegistry:
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
-        if session is None or session.exited or not session.detached or session.pid_scope != "host":
+        # A peer mirror's lifecycle is re-derived from the checkpoint on every
+        # sync; moving it to _finished here would file another process's row into
+        # OUR stores (and back into the checkpoint we write).
+        if session is None or session.exited or session.peer_mirror:
+            return session
+        if not session.detached or session.pid_scope != "host":
             return session
         # A recycled PID (alive but not ours) counts as "our process exited" so a
         # later kill() can never tree-kill the stranger.
@@ -1091,6 +1233,7 @@ class ProcessRegistry:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
+                    self._checkpoint_live_output()
 
                 check = env.execute(
                     f"kill -0 \"$(cat {q(pid_path)} 2>/dev/null)\" 2>/dev/null; echo $?", timeout=5)
@@ -1141,6 +1284,7 @@ class ProcessRegistry:
         session.append_output(text)
         self._check_watch_patterns(session, text)
         self._emit_output(session, text)
+        self._checkpoint_live_output()
 
     def _finish_exited(self, session: ProcessSession, exit_code) -> None:
         """Mark a reader-observed exit (a raced kill keeps its own code/reason) and finish."""
@@ -1381,7 +1525,8 @@ class ProcessRegistry:
         """Session by full ID or unique prefix (``proc_4dae`` / bare ``4dae``, like git
         short hashes); ambiguous or too-short prefixes resolve to None, never a guess."""
         with self._lock:
-            session = self._running.get(session_id) or self._finished.get(session_id)
+            session = (self._running.get(session_id) or self._finished.get(session_id)
+                       or self._peers.get(session_id))
         return self._refresh_detached_session(session if session is not None else self._resolve_prefix(session_id))
 
     def _resolve_prefix(self, session_id: str) -> Optional[ProcessSession]:
@@ -1396,7 +1541,7 @@ class ProcessRegistry:
             return None
         with self._lock:
             matches = [
-                s for store in (self._running, self._finished)
+                s for store in (self._running, self._finished, self._peers)
                 for sid, s in store.items() if sid.startswith(query)
             ]
         return matches[0] if len(matches) == 1 else None
@@ -1632,8 +1777,19 @@ class ProcessRegistry:
 
     def _signal_kill(self, session: ProcessSession, session_id: str, consume_output: bool) -> Optional[dict]:
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host
-        PID. Returns a final result dict when the kill cannot proceed (recycled/dead
-        recovered PID, or no runtime handle), else None."""
+        PID. Returns a final result dict when the kill cannot proceed (peer-owned
+        process, recycled/dead recovered PID, or no runtime handle), else None."""
+        if session.peer_mirror:
+            # The PID belongs to another gateway process's child. We have no
+            # handle on it and no way to tell a recycled number from the real
+            # thing beyond the owner's own bookkeeping, so signalling it here is
+            # exactly the tree-kill-a-stranger risk the identity checks exist to
+            # prevent. Ask through the gateway that owns it instead.
+            return {
+                "status": "error",
+                "error": "This process is owned by another Hermes gateway process; "
+                         "stop it from the surface that started it.",
+            }
         if session._pty:
             try:
                 session._pty.terminate(force=True)
@@ -1754,7 +1910,9 @@ class ProcessRegistry:
     def list_sessions(self, task_id: str = None, session_key: str = None) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server
-        blocking session reset) are flagged ``"session_scoped": true``.
+        blocking session reset) are flagged ``"session_scoped": true``; rows mirrored
+        from another gateway process (see :meth:`sync_from_checkpoint`) are flagged
+        ``"peer": true`` so callers know they are display-only.
 
         When ``task_id`` is given, processes for that task are included. When ``session_key`` is also given,
         session-scoped background processes (``background: true``) registered under that gateway session are
@@ -1762,7 +1920,8 @@ class ProcessRegistry:
         preview server that is blocking session reset (#29177).
         """
         with self._lock:
-            all_sessions = list(self._running.values()) + list(self._finished.values())
+            all_sessions = (list(self._running.values()) + list(self._finished.values())
+                            + list(self._peers.values()))
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
         if task_id or session_key:
             all_sessions = [
@@ -1794,6 +1953,8 @@ class ProcessRegistry:
                 entry["exit_code"] = s.exit_code
             if s.detached:
                 entry["detached"] = True
+            if s.peer_mirror:
+                entry["peer"] = True
             result.append(entry)
         return result
 
@@ -1875,58 +2036,250 @@ class ProcessRegistry:
 
     # ----- Checkpoint (crash recovery) -----
 
+    def _row_is_mine(self, row: Dict[str, Any]) -> bool:
+        """Whether this registry authored *row* (exact identity, never inference)."""
+        return bool(self._owner_token) and row.get("owner_token") == self._owner_token
+
+    def _row_owner_alive(self, row: Dict[str, Any]) -> bool:
+        """Whether the gateway process that published *row* is still running.
+        Unstamped legacy rows answer False — an unknown writer is treated as gone,
+        which is what lets crash recovery adopt them."""
+        owner_pid = row.get("owner_pid")
+        return bool(owner_pid) and self._host_pid_is_ours(owner_pid, row.get("owner_start_time"))
+
+    def _row_process_identified(self, row: Dict[str, Any]) -> bool:
+        """Whether *row* still provably names the host process its author recorded.
+
+        The single identity rule behind mirroring, adoption and pruning alike. A
+        recorded ``host_start_time`` is REQUIRED, not merely compared: without a
+        baseline ``_host_pid_is_ours`` degrades to bare liveness, and a session
+        adopted on that basis also disables the identity check inside
+        ``_terminate_host_pid`` — so a recycled PID would be tree-killed by a later
+        ``process(action="kill")``. An unidentifiable row is actionable by nobody.
+        """
+        pid, recorded_start = row.get("pid"), row.get("host_start_time")
+        return bool(pid) and recorded_start is not None and self._host_pid_is_ours(pid, recorded_start)
+
+    def _row_is_garbage(self, row: Dict[str, Any]) -> bool:
+        """Whether *row* is useless to every reader and may be dropped.
+
+        A host row we cannot identify helps nobody — not this display, not the next
+        startup's recovery, both of which now refuse it. A non-host (in-sandbox) row
+        is meaningless without the environment handle its owner holds, so it survives
+        only while that owner does. Everything else is preserved untouched: an
+        identified live process with a dead owner is precisely what
+        ``recover_from_checkpoint`` exists to adopt, so pruning on owner death alone
+        would delete the feature.
+        """
+        if row.get("pid_scope", "host") != "host":
+            return not self._row_owner_alive(row)
+        return not self._row_process_identified(row)
+
+    def _merge_foreign_rows(
+        self, published: List[Dict[str, Any]], ours: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Rows in the checkpoint that belong to OTHER writers and must survive our
+        update.
+
+        Dropped: rows we authored (this write republishes them, so keeping the old
+        copies would resurrect anything we just retired), rows carrying an id we are
+        publishing ourselves — ``recover_from_checkpoint`` adopts an orphan under a
+        NEW owner stamp, and the dead owner's copy would otherwise linger as a
+        duplicate — and garbage (see :meth:`_row_is_garbage`).
+        """
+        claimed = {row.get("session_id") for row in ours}
+        return [
+            row for row in published
+            if not self._row_is_mine(row)
+            and row.get("session_id") not in claimed
+            and not self._row_is_garbage(row)
+        ]
+
     def _write_checkpoint(self, extra_entries: Optional[List[Dict[str, Any]]] = None):
-        """Write running process metadata to the checkpoint file atomically."""
+        """Publish our running processes into the shared checkpoint.
+
+        Read-modify-write under the inter-process lock: this file is written by
+        every gateway process on the profile, so our update replaces only the rows
+        we authored and leaves every other live owner's rows exactly as they are.
+
+        The whole snapshot→replace sequence also runs under an instance lock. The
+        running set is read before the redaction and disk work, so two writers from
+        THIS registry (a reader thread's live-output publish racing a completion)
+        could otherwise land in the wrong order and put a retired row back on disk.
+        """
         try:
-            with self._lock:
-                entries = []
-                for s in self._running.values():
-                    if s.exited:
-                        continue
-                    # Backfill the start time so recovery can detect PID recycling
-                    # even for sessions spawned before this field existed.
-                    if s.host_start_time is None and s.pid_scope == "host" and s.pid:
-                        s.host_start_time = self._safe_host_start_time(s.pid)
-                    entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
-                    # Redact inline credentials before persisting (~/.hermes/processes.json).
-                    # Recovery uses command only for display (adoption re-validates the
-                    # PID, never re-runs it), so masking is lossless.
-                    # See #77484.
-                    entry["command"] = redact_sensitive_text(s.command, code_file=True)
-                    entry["owner_task_id"] = s.owner_task_id or s.task_id
-                    entries.append(entry)
-                if extra_entries:
-                    tracked_ids = {item.get("session_id") for item in entries}
-                    entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
-            from utils import atomic_json_write
-            atomic_json_write(CHECKPOINT_PATH, entries)
+            with self._checkpoint_write_lock:
+                self._write_checkpoint_locked(extra_entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
-    def recover_from_checkpoint(self) -> int:
-        """On gateway startup, probe PIDs from the checkpoint file; returns how many
-        were recovered as detached sessions."""
+    def _write_checkpoint_locked(self, extra_entries: Optional[List[Dict[str, Any]]]) -> None:
+        """Body of :meth:`_write_checkpoint`; call only with ``_checkpoint_write_lock``."""
+        # Snapshot under the registry lock, serialize outside it: the redaction
+        # passes over each tail are far too much work to hold that lock through.
+        with self._lock:
+            live = [s for s in self._running.values() if not s.exited]
+        entries = []
+        for s in live:
+            # Backfill the start time so recovery can detect PID recycling
+            # even for sessions spawned before this field existed.
+            if s.host_start_time is None and s.pid_scope == "host" and s.pid:
+                s.host_start_time = self._safe_host_start_time(s.pid)
+            entry = {"session_id": s.id, **{f: getattr(s, f) for f in _CHECKPOINT_FIELDS}}
+            # Redact inline credentials before persisting (~/.hermes/processes.json).
+            # Recovery uses command only for display (adoption re-validates the
+            # PID, never re-runs it), so masking is lossless.
+            # ``force``: this file is a disk artifact another gateway process
+            # renders for the user, so it must not return raw secrets even
+            # when the user turned redaction off. ``code_file=False`` keeps the
+            # ENV/JSON assignment passes on — ``DB_PASSWORD=…`` in a command
+            # line or a log line is exactly what must not land here.
+            # See #77484.
+            entry["command"] = redact_sensitive_text(s.command, force=True, code_file=False)
+            entry["owner_task_id"] = s.owner_task_id or s.task_id
+            # Peer gateways have their own Python heap and cannot read our
+            # buffers; a bounded tail is what makes the row renderable there.
+            entry["output_tail"] = _checkpoint_output_tail(s.output_buffer)
+            entry.update(
+                owner_token=self._owner_token, owner_pid=self._owner_pid,
+                owner_start_time=self._owner_start_time)
+            entries.append(entry)
+        from utils import atomic_json_write
+        with _checkpoint_lock() as locked:
+            if not locked:
+                # Skipping costs us this publication, which the next write redoes.
+                # Writing anyway risks dropping another gateway's row for good.
+                logger.warning(
+                    "Skipping process checkpoint write: could not take the shared lock. "
+                    "%d running process(es) are unpublished until the next write.", len(entries))
+                return
+            entries.extend(self._merge_foreign_rows(self._read_checkpoint_rows(), entries))
+            if extra_entries:
+                tracked_ids = {item.get("session_id") for item in entries}
+                entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
+            atomic_json_write(CHECKPOINT_PATH, entries)
+
+    def publish_checkpoint(self) -> None:
+        """Persist the current running set now.
+
+        Spawn callers finish a session AFTER the registry has already registered and
+        checkpointed it — session lineage, watcher routing and the notify/watch flags
+        are all stamped on the way back out, and all three are checkpoint fields. The
+        row written at registration is therefore incomplete, and for a quiet process
+        nothing else ever rewrites it. Callers publish once their metadata is final.
+        """
+        self._write_checkpoint()
+
+    @staticmethod
+    def _read_checkpoint_rows() -> List[Dict[str, Any]]:
+        """Parse the checkpoint WITHOUT taking the inter-process lock — for callers
+        that already hold it. ``[]`` when absent/unreadable/malformed."""
         if not CHECKPOINT_PATH.exists():
-            return 0
+            return []
         try:
             entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
         except Exception:
+            return []
+        return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+    def _read_checkpoint_entries(self) -> List[Dict[str, Any]]:
+        """Parsed checkpoint rows, read under the inter-process lock so a concurrent
+        publisher's replace can never be observed half-applied. Unlike a write, a read
+        still proceeds when the lock is unavailable: it destroys nothing, and the
+        atomic replace means the worst case is a slightly stale view."""
+        with _checkpoint_lock():
+            return self._read_checkpoint_rows()
+
+    def sync_from_checkpoint(self) -> int:
+        """Mirror OTHER gateway processes' live rows from the shared checkpoint.
+
+        Desktop and the messaging gateway are separate Python processes with
+        separate registries; the checkpoint is the only thing both see. Each call
+        rebuilds the mirror set from the file, so a row the owner retired stops
+        being reported here on the next poll. Returns the number of mirrors held.
+
+        Adoption is deliberately strict: host scope only, and the PID must still
+        be the process the owner recorded (``host_start_time`` must be present AND
+        match). A PID alone proves nothing — the kernel recycles them — and a
+        mirror we could not identify would be a row pointing at a stranger.
+        Locally-owned ids are never overwritten: this process is authoritative for
+        the work it spawned.
+        """
+        mirrors: Dict[str, ProcessSession] = {}
+        for entry in self._read_checkpoint_entries():
+            process_id = str(entry.get("session_id") or "")
+            pid, recorded_start = entry.get("pid"), entry.get("host_start_time")
+            if not process_id or entry.get("pid_scope", "host") != "host":
+                continue
+            if not self._row_process_identified(entry):
+                continue
+            if self._row_is_mine(entry):
+                continue  # our own publication — mirroring it would make us a peer of ourselves
+            with self._lock:
+                if process_id in self._running or process_id in self._finished:
+                    continue  # ours; the checkpoint copy is our own publication
+                existing = self._peers.get(process_id)
+            if existing is not None:
+                # Keep object identity across polls (stable rows for readers) and
+                # refresh only what the owner republishes.
+                with existing._lock:
+                    existing.output_buffer = str(entry.get("output_tail") or "")[-MAX_OUTPUT_CHARS:]
+                mirrors[process_id] = existing
+                continue
+            mirrors[process_id] = ProcessSession(
+                id=process_id,
+                command=entry.get("command", "unknown"),
+                task_id=entry.get("task_id", ""),
+                owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
+                session_key=entry.get("session_key", ""),
+                parent_session_id=entry.get("parent_session_id", ""),
+                pid=pid,
+                host_start_time=recorded_start,
+                pid_scope="host",
+                systemd_unit=entry.get("systemd_unit", ""),
+                cwd=entry.get("cwd"),
+                started_at=entry.get("started_at", time.time()),
+                output_buffer=str(entry.get("output_tail") or "")[-MAX_OUTPUT_CHARS:],
+                detached=True,
+                peer_mirror=True,
+                # The owning gateway holds the completion contract and the watcher;
+                # a mirror that notified would double-deliver to the same user.
+                notify_on_complete=False,
+            )
+        with self._lock:
+            self._peers = mirrors
+            return len(self._peers)
+
+    def recover_from_checkpoint(self) -> int:
+        """On gateway startup, probe PIDs from the checkpoint file; returns how many
+        were recovered as detached sessions.
+
+        Only ORPHANED rows are adopted. A row whose publishing gateway is still
+        running belongs to that gateway: adopting it would give two processes a
+        handle on one child, each believing it may kill it. Those rows reach the
+        user through :meth:`sync_from_checkpoint` as read-only mirrors instead.
+        """
+        if not CHECKPOINT_PATH.exists():
             return 0
+        entries = self._read_checkpoint_entries()
         recovered = 0
         unresolved_scope_entries: List[Dict[str, Any]] = []
         for entry in entries:
             pid, pid_scope = entry.get("pid"), entry.get("pid_scope", "host")
             if not pid:
                 continue
+            if self._row_owner_alive(entry):
+                continue
             if pid_scope != "host":  # in-sandbox PIDs mean nothing once the env handle is gone
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
                     entry.get("command", "unknown")[:60], pid, pid_scope)
                 continue
-            # Alive AND the same process: across a restart the kernel may have
-            # recycled the PID onto a stranger, and adopting it would let a later
-            # kill tree-kill e.g. a browser.
-            if not self._host_pid_is_ours(pid, entry.get("host_start_time")):
+            # Alive AND provably the same process: across a restart the kernel may
+            # have recycled the PID onto a stranger, and adopting it would let a
+            # later kill tree-kill e.g. a browser. A row with no recorded baseline
+            # cannot clear that bar (see ``_row_process_identified``).
+            if not self._row_process_identified(entry):
                 if self._is_host_pid_alive(pid):
                     logger.info(
                         "Not recovering session %s: pid %d is alive but its "

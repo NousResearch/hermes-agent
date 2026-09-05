@@ -442,6 +442,35 @@ class OpenAICompatRoutesMixin:
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
                 conversation_messages.append({"role": role, "content": content})
+            elif role == "tool" and getattr(self, "_client_tools_enabled", False):
+                # Client executed one of our tool_calls last turn (OpenAI protocol).
+                # Preserved verbatim; the client-tools bridge folds the pair below.
+                conversation_messages.append({
+                    "role": "tool",
+                    "content": _normalize_chat_content(raw_content),
+                    "tool_call_id": str(msg.get("tool_call_id") or ""),
+                })
+        client_bridge = None
+        if getattr(self, "_client_tools_enabled", False) and isinstance(body.get("tools"), list) and body["tools"]:
+            from gateway.platforms.api_server_client_tools import (
+                ClientToolsBridge, fold_tool_result)
+            client_bridge = ClientToolsBridge(body["tools"], body.get("tool_choice"))
+            if client_bridge.suppressed:
+                client_bridge = None  # all schemas invalid -> legacy path
+            else:
+                folded_messages, folded_ok = fold_tool_result(messages, client_bridge)
+                if folded_ok:
+                    rebuilt: List[Dict[str, str]] = []
+                    system_prompt_fb = None
+                    for m in folded_messages:
+                        if m.get("role") == "system":
+                            c = _normalize_chat_content(m.get("content", ""))
+                            system_prompt_fb = c if system_prompt_fb is None else system_prompt_fb + "\n" + c
+                        else:
+                            rebuilt.append({"role": m.get("role"), "content": m.get("content", "")})
+                    conversation_messages = rebuilt
+                    if system_prompt_fb is not None:
+                        system_prompt = system_prompt_fb
         user_message: Any = (conversation_messages[-1].get("content", "") if conversation_messages else "")
         history = conversation_messages[:-1]
         if not _content_has_visible_payload(user_message):
@@ -491,6 +520,8 @@ class OpenAICompatRoutesMixin:
             model_alias=model_name)
         if selection_error is not None:
             return selection_error
+        if client_bridge is not None:
+            system_prompt = (system_prompt + "\n\n" if system_prompt else "") + client_bridge.system_contract()
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
@@ -527,7 +558,7 @@ class OpenAICompatRoutesMixin:
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
-                gateway_session_key=gateway_session_key)
+                gateway_session_key=gateway_session_key, client_bridge=client_bridge)
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
@@ -542,7 +573,19 @@ class OpenAICompatRoutesMixin:
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
+        # Client-tools bridge: convert <tool_call> decisions into a proper tool_calls response.
+        client_tool_calls = None
+        if client_bridge is not None and not is_failed and final_response:
+            try:
+                client_tool_calls, residual = client_bridge.extract_calls(final_response)
+                if client_tool_calls:
+                    final_response = residual or None
+            except Exception:
+                logger.exception("client-tools bridge: extraction failed on final text")
+                client_tool_calls = None
         finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg)
+        if client_tool_calls:
+            finish_reason = "tool_calls"
         response_headers = {"X-Hermes-Session-Id": result.get("session_id", session_id)}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
@@ -561,7 +604,8 @@ class OpenAICompatRoutesMixin:
         response_data = {
             "id": completion_id, "object": "chat.completion", "created": created,
             "model": model_name,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": final_response},
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": final_response,
+                         **({"tool_calls": client_tool_calls} if client_tool_calls else {})},
                          "finish_reason": finish_reason}],
             "usage": _chat_usage_payload(usage)}
         if is_partial or is_failed or not completed:
@@ -613,7 +657,7 @@ class OpenAICompatRoutesMixin:
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None) -> "web.StreamResponse":
+        gateway_session_key: str = None, client_bridge=None) -> "web.StreamResponse":
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
@@ -624,6 +668,8 @@ class OpenAICompatRoutesMixin:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
                     "model": model,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
+        _streamed_deltas: list = []
+        _emitted_len = 0
         try:
             await response.write(_sse_frame(_chunk({"role": "assistant"})))
             async for delta in _iter_stream_items(stream_q, agent_task, response):
@@ -632,6 +678,19 @@ class OpenAICompatRoutesMixin:
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
+                elif client_bridge is not None and isinstance(delta, str):
+                    # Client-tools bridge: suppress raw <tool_call> blocks from the wire.
+                    _streamed_deltas.append(delta)
+                    _pending = "".join(_streamed_deltas)
+                    if "<tool_call>" in _pending:
+                        safe = _pending.rsplit("<tool_call>", 1)[0]
+                    elif "</tool_call>" in _pending:
+                        safe = _pending.rsplit("</tool_call>", 1)[0]
+                    else:
+                        safe = _pending
+                    if len(safe) > _emitted_len:
+                        await response.write(_sse_frame(_chunk({"content": safe[_emitted_len:]})))
+                        _emitted_len = len(safe)
                 else:
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
@@ -649,6 +708,27 @@ class OpenAICompatRoutesMixin:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error)
+            bridge_calls = None
+            if client_bridge is not None and not agent_error and not is_failed:
+                try:
+                    accumulated = "".join(d for d in _streamed_deltas if isinstance(d, str))
+                    bridge_calls, residual = client_bridge.extract_calls(accumulated)
+                except Exception:
+                    logger.exception("client-tools bridge: stream extraction failed")
+                    bridge_calls = None
+            if bridge_calls:
+                finish_reason = "tool_calls"
+                for idx_c, call in enumerate(bridge_calls):
+                    await response.write(_sse_frame(_chunk({
+                        "tool_calls": [{"index": idx_c, "id": call["id"], "type": "function",
+                                        "function": {"name": call["function"]["name"],
+                                                     "arguments": call["function"]["arguments"]}}],
+                    })))
+            elif client_bridge is not None:
+                accumulated = "".join(d for d in _streamed_deltas if isinstance(d, str))
+                if len(accumulated) > _emitted_len:
+                    await response.write(_sse_frame(_chunk({"content": accumulated[_emitted_len:]})))
+                    _emitted_len = len(accumulated)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
             if finish_reason != "stop":
                 if err_msg:

@@ -1138,6 +1138,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # client_tools: enable the client-tools bridge on /v1/chat/completions
+        # (Raycast AI Extensions, and any OpenAI-compatible client that ships
+        # executable tool schemas).  Default on; no behavior change for
+        # requests that carry no ``tools`` array.
+        self._client_tools_enabled: bool = _coerce_request_bool(
+            extra.get("client_tools"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None

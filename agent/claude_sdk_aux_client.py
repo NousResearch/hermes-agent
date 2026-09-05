@@ -72,9 +72,10 @@ class ClaudeSdkAuxError(RuntimeError):
 def _render_message_content(content: Any) -> str:
     """Render only the textual portion of an OpenAI-shaped message.
 
-    Auxiliary SDK calls are deliberately text-only.  Image/file blocks are
-    skipped rather than serialised into a misleading Python/JSON blob, while
-    ordinary structured text and tool results keep their readable content.
+    This renders the TEXT portion only.  Image parts are handled separately by
+    ``_aux_image_blocks`` and travel as SDK-native blocks; serialising them
+    here would produce a misleading Python/JSON blob.  Ordinary structured
+    text and tool results keep their readable content.
     """
     if content is None:
         return ""
@@ -97,6 +98,61 @@ def _render_message_content(content: Any) -> str:
                     parts.append(text.strip())
         return "\n".join(parts)
     return str(content).strip()
+
+
+
+_IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
+
+
+def _aux_image_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """SDK-native image blocks carried by an auxiliary request, in order.
+
+    The auxiliary surface used to flatten every message to a plain string, so
+    an attachment was dropped before the call. That is invisible to the
+    caller: the query succeeds and the model truthfully answers that no image
+    was provided, which reads as a bad analysis rather than a lost payload.
+    Vision runs through this client whenever it resolves to the SDK provider,
+    so the drop silently disabled it.
+
+    Translation reuses the persistent transport's helper so both surfaces
+    accept exactly the same shapes. A part whose source is unsupported or
+    malformed becomes an explicit marker instead of a silent omission — the
+    model must never be told an image is attached when it is not.
+    """
+    try:
+        from agent.transports.claude_agent_sdk_session import (
+            _sdk_image_content_block,
+        )
+    except Exception:
+        logger.debug("SDK image translation unavailable", exc_info=True)
+        return []
+
+    blocks: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") not in _IMAGE_PART_TYPES:
+                continue
+            block = _sdk_image_content_block(item)
+            if block is not None:
+                blocks.append(block)
+            else:
+                logger.warning(
+                    "claude-agent-sdk aux: image part has an unsupported or "
+                    "malformed source; sending an explicit unavailable marker"
+                )
+                blocks.append({
+                    "type": "text",
+                    "text": (
+                        "[image attachment unavailable: unsupported or "
+                        "malformed source]"
+                    ),
+                })
+    return blocks
 
 
 def _messages_to_prompt(messages: list[dict[str, Any]]) -> str:
@@ -156,6 +212,7 @@ async def _collect_text(
     prompt: str,
     *,
     model: str,
+    image_blocks: list[dict[str, Any]] | None = None,
     cancel_check: Callable[[], Any] | None = None,
     progress_hook: Callable[[], Any] | None = None,
 ) -> tuple[str, Any, str]:
@@ -222,7 +279,20 @@ async def _collect_text(
     if cancel_requested():
         raise AuxiliaryExplicitCancellation()
 
-    stream = query(prompt=prompt, options=options)
+    # Text-only stays on the historical string surface byte for byte; only a
+    # request that actually carries an attachment switches to streaming input,
+    # which is the only shape query() accepts structured content on.
+    if image_blocks:
+        from agent.transports.claude_agent_sdk_session import (
+            _sdk_user_message_stream,
+        )
+
+        query_input: Any = _sdk_user_message_stream(
+            [{"type": "text", "text": prompt}, *image_blocks]
+        )
+    else:
+        query_input = prompt
+    stream = query(prompt=query_input, options=options)
     pending_error: BaseException | None = None
     try:
         async for message in stream:
@@ -378,12 +448,14 @@ class _AuxCompletions:
             raise ClaudeSdkAuxError("refusing to send an empty auxiliary prompt")
 
         prompt = _messages_to_prompt(messages)
+        image_blocks = _aux_image_blocks(messages)
 
         try:
             text, usage, stop_reason = _run_coro_blocking(
                 _collect_text(
                     prompt,
                     model=model,
+                    image_blocks=image_blocks,
                     cancel_check=cancel_check,
                     progress_hook=progress_hook,
                 ),

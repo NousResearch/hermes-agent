@@ -132,7 +132,7 @@ def test_explicit_sdk_async_aux_provider_uses_subscription_facade(monkeypatch):
     assert client.base_url == ""
 
     async def _fake_collect(
-        prompt, *, model, cancel_check=None, progress_hook=None
+        prompt, *, model, image_blocks=None, cancel_check=None, progress_hook=None
     ):
         assert prompt
         assert model == "claude-sonnet-5"
@@ -270,6 +270,84 @@ def test_async_sdk_explicit_cancellation_bypasses_fallbacks(monkeypatch):
                 messages=[{"role": "user", "content": "summarize"}],
             )
         )
+
+
+_PNG_1PX = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _image_message(part):
+    return [{"role": "user", "content": [{"type": "text", "text": "describe"}, part]}]
+
+
+def test_aux_image_blocks_translates_base64_attachment():
+    """An attachment must survive to the SDK, not be flattened away."""
+    blocks = AUX._aux_image_blocks(
+        _image_message({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": _PNG_1PX},
+        })
+    )
+    assert blocks == [{
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": _PNG_1PX},
+    }]
+
+
+def test_aux_image_blocks_marks_malformed_source_instead_of_dropping():
+    """Silence is the failure mode that made this bug invisible."""
+    blocks = AUX._aux_image_blocks(
+        _image_message({"type": "image", "source": {"type": "base64", "data": "!!"}})
+    )
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "text"
+    assert "unavailable" in blocks[0]["text"]
+
+
+def test_aux_image_blocks_ignores_text_only_messages():
+    assert AUX._aux_image_blocks([{"role": "user", "content": "plain"}]) == []
+    assert AUX._aux_image_blocks(
+        [{"role": "user", "content": [{"type": "text", "text": "plain"}]}]
+    ) == []
+
+
+def test_text_only_request_keeps_the_plain_string_surface(monkeypatch):
+    """No attachment must mean no behavioural change at all."""
+    seen = {}
+
+    async def _fake_collect(prompt, *, model, image_blocks=None, **_kw):
+        seen["prompt"] = prompt
+        seen["image_blocks"] = image_blocks
+        return "ok", {"input_tokens": 1}, "stop"
+
+    monkeypatch.setattr(AUX, "_collect_text", _fake_collect)
+    client = ClaudeSdkAuxClient(default_model="claude-sonnet-5")
+    client.chat.completions.create(
+        model="claude-sonnet-5",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+    assert isinstance(seen["prompt"], str)
+    assert seen["image_blocks"] == []
+
+
+def test_attachment_reaches_collect_text(monkeypatch):
+    seen = {}
+
+    async def _fake_collect(prompt, *, model, image_blocks=None, **_kw):
+        seen["image_blocks"] = image_blocks
+        return "ok", {"input_tokens": 1}, "stop"
+
+    monkeypatch.setattr(AUX, "_collect_text", _fake_collect)
+    client = ClaudeSdkAuxClient(default_model="claude-sonnet-5")
+    client.chat.completions.create(
+        model="claude-sonnet-5",
+        messages=_image_message({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": _PNG_1PX},
+        }),
+    )
+    assert seen["image_blocks"] and seen["image_blocks"][0]["type"] == "image"
 
 
 def test_prompt_formatter_preserves_roles_and_only_text_content():
@@ -732,7 +810,7 @@ def test_sdk_aux_composes_with_protected_provider_worker(monkeypatch, async_faca
     captured = {}
 
     async def _fake_collect(
-        prompt, *, model, cancel_check=None, progress_hook=None
+        prompt, *, model, image_blocks=None, cancel_check=None, progress_hook=None
     ):
         captured["prompt"] = prompt
         captured["model"] = model
@@ -784,7 +862,7 @@ def test_sdk_aux_composed_hard_cancel_latches_without_timeout_cleanup(monkeypatc
         return original_begin_timeout(self)
 
     async def _fake_collect(
-        prompt, *, model, cancel_check=None, progress_hook=None
+        prompt, *, model, image_blocks=None, cancel_check=None, progress_hook=None
     ):
         captured["prompt"] = prompt
         captured["cancel_check"] = cancel_check

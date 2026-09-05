@@ -488,6 +488,18 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _console_print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     build_env = _npm_lifecycle_env(with_hermes_node_path())
+    project_root = _web_project_root(web_dir)
+    from hermes_cli.main import _is_termux_startup_environment
+    if _is_termux_startup_environment():
+        from hermes_cli._early_recovery import (
+            fix_termux_node_shebangs,
+            prefer_termux_bionic_path,
+        )
+
+        build_env = prefer_termux_bionic_path(build_env)
+        # npm install may have left #!/usr/bin/env shebangs that Termux cannot
+        # execute when /usr/bin/env is missing — fix before tsc/vite run.
+        fix_termux_node_shebangs(project_root)
     _console_print("→ Building web UI...")
 
     npm_cwd, npm_workspace_args = _web_npm_install_context(web_dir)
@@ -499,6 +511,12 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     def _build() -> subprocess.CompletedProcess:
         # Streamed + idle-killed (never capture_output on a long Vite build: it
         # looks identical to a hang and users reboot mid-install).
+        if _is_termux_startup_environment():
+            from hermes_cli._early_recovery import fix_termux_node_shebangs
+
+            # npm install rewrites #!/usr/bin/env shebangs; on Termux without
+            # /usr/bin/env that surfaces as `tsc: not found`. Fix before each run.
+            fix_termux_node_shebangs(project_root)
         return _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
     r1 = _install_web_deps(silent=True)

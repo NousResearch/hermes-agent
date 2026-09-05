@@ -1085,6 +1085,74 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 500
 
+  # Claude Agent SDK provider runtime (provider: claude-agent-sdk).
+  # claude_agent_sdk:
+  #   # Emit the SDK's partial-message deltas into the gateway streaming
+  #   # pipeline (default off — upstream-conservative; the top-level
+  #   # streaming: block still governs how deltas are displayed).
+  #   streaming: false
+  #   # The provider defaults to the Claude subscription and refuses known
+  #   # metered lanes: API-key sources and enabled/active subscription Extra
+  #   # Usage reported by the CLI. Set true to allow metering explicitly.
+  #   allow_metered_key: false
+  #   # Optional operator persona/soul file appended to the system prompt
+  #   # ("" = none).
+  #   append_file: ""
+  #   # Whole SDK system-prompt append budget in characters. null (default)
+  #   # uses 22000. Blocks are packed whole; each eviction emits a warning
+  #   # with a content-free block label. Positive integer overrides are
+  #   # accepted; invalid values warn and fall back.
+  #   append_total_max_chars: null
+  #   # SDK permission mode, taken verbatim as a claude-agent-sdk
+  #   # permission_mode literal: default | acceptEdits | plan |
+  #   # bypassPermissions | dontAsk | auto ("auto" is the SDK's own mode,
+  #   # not the HERMES_TERMINAL_SECURITY_MODE value of the same name).
+  #   # "" (default) keeps current behavior: the HERMES_TERMINAL_SECURITY_MODE
+  #   # mapping stands (auto/approval-required→default,
+  #   # unrestricted/yolo→bypassPermissions). Set "default" to route SDK tool
+  #   # permissions through Hermes' approval flow. Invalid values are ignored
+  #   # with a warning.
+  #   permission_mode: ""
+  #   # Extra environment for the spawned Claude CLI. Values are stringified;
+  #   # metered-billing vectors are rejected unless allow_metered_key is true.
+  #   # Use this for CLI-owned operational knobs, for example:
+  #   # env:
+  #   #   CLAUDE_CODE_AUTO_COMPACT_WINDOW: "300000"
+  #   env: {}
+  #   # SDK setting sources (claude-agent-sdk SettingSource literals:
+  #   # user | project | local). [] (default) = full isolation: the spawned
+  #   # CLI loads no filesystem settings. Opt in (e.g. ["user"]) when your
+  #   # deployment keeps tool grants in the operator's ~/.claude/settings.json
+  #   # — unattended cron turns can't answer permission prompts. Invalid
+  #   # entries are dropped with a warning.
+  #   setting_sources: []
+  #   # Per-query USD budget forwarded to the SDK's max_budget_usd option:
+  #   # the turn stops with error_max_budget_usd once exceeded. null
+  #   # (default) = no budget. Non-numeric / non-positive values are ignored
+  #   # with a warning.
+  #   max_budget_usd: null
+  #   # Maximum size of one NDJSON message read from the Claude CLI. null
+  #   # (default) uses Hermes' 10 MiB limit rather than the SDK's 1 MiB
+  #   # default, which can kill a turn on a large tool result. Positive
+  #   # integer overrides are accepted; invalid values warn and fall back.
+  #   max_buffer_size: null
+  #   # Soft turn budget in seconds. null (default) = 600. Activity-aware:
+  #   # fires only when no tool call is outstanding, no approval prompt is
+  #   # awaiting a human, AND the SDK stream has also been quiet for
+  #   # min(30s, budget) — a turn actively running tools or producing output
+  #   # is never killed at the wall. Raise it for deployments with long
+  #   # multi-step turns; keep it under agent.gateway_timeout (1800s), the
+  #   # outer ceiling. 0/negative/non-numeric are ignored with a warning.
+  #   turn_timeout: null
+  #   # Post-tool quiet watchdog in seconds: silence budget AFTER a tool
+  #   # result before the turn is declared wedged and interrupted fast (a
+  #   # clean interrupt-ack keeps the resume id; only an unresponsive CLI
+  #   # retires). null (default) = 90 with streaming: true, disabled with
+  #   # streaming off (no liveness signal exists there between a tool result
+  #   # and the next complete assistant message). 0 = explicitly disabled.
+  #   # Negative/non-numeric are ignored with a warning.
+  #   post_tool_quiet_timeout: null
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

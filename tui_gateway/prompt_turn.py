@@ -294,7 +294,9 @@ def _goal_followup_after_turn(
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
             try:
                 from hermes_cli.goals import gather_background_processes as _gather_bg
-                _bg_procs = _gather_bg()
+                # Only THIS session's processes (TUI turns register under session_key): subagents'
+                # pollers must not park the parent's goal. Same rule as the CLI and gateway loops.
+                _bg_procs = _gather_bg(owner_task_id=session.get("session_key") or None)
             except Exception:
                 _bg_procs = None
             decision = goal_mgr.evaluate_after_turn(

@@ -49,6 +49,9 @@ DEFAULT_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 5
 # on concrete evidence instead of a vibe check.
 DEFAULT_GATE_TIMEOUT_SECONDS = 300
 DEFAULT_GATE_MAX_RETRIES = 3
+# Longest a pid/session wait barrier may hold the loop before judging resumes. Timed barriers
+# (``waiting_until``) carry their own deadline and are exempt.
+_MAX_BARRIER_WAIT_S = 30 * 60
 # Bounded tail of a failed gate's combined stdout/stderr fed back to the agent.
 _GATE_OUTPUT_TAIL_CHARS = 3000
 
@@ -909,9 +912,15 @@ def judge_goal(
     return verdict, reason, parse_failed, wait_directive, False
 
 
-def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fail-safe snapshot of RUNNING ``process_registry`` sessions for the judge; ``[]`` on any error
-    so the loop degrades to its pre-wait-barrier behavior."""
+    so the loop degrades to its pre-wait-barrier behavior.
+
+    ``owner_task_id`` restricts the snapshot to processes the goal's OWN session spawned. The registry's
+    ``task_id`` is the container key, which collapses to one value for every agent in the process, so
+    without this filter a fan-out parent's judge saw every subagent's pollers and parked the goal on a
+    grandchild's ``proc_*`` session (one run: 7 of 7 root verdicts were WAIT on child-owned processes;
+    parked 3 h 22 min at the end while nothing of its own was running)."""
     try:
         from tools.process_registry import process_registry
 
@@ -919,7 +928,10 @@ def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str,
     except Exception as exc:
         logger.debug("gather_background_processes failed: %s", exc)
         return []
-    return [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
+    running = [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
+    if owner_task_id:
+        running = [s for s in running if str(s.get("owner_task_id") or s.get("task_id") or "") == str(owner_task_id)]
+    return running
 
 
 def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Optional[GoalContract]:
@@ -1282,7 +1294,10 @@ class GoalManager:
 
     def is_waiting(self) -> bool:
         """True iff a barrier is set AND not yet satisfied. A satisfied barrier is cleared here
-        (lazy auto-clear) so the next evaluation resumes normal judging."""
+        (lazy auto-clear) so the next evaluation resumes normal judging. A pid/session barrier
+        also expires after ``_MAX_BARRIER_WAIT_S``: a watcher or poller that never exits would
+        otherwise park the goal indefinitely (one run sat 3 h 22 min on a poller that outlived
+        the work it was polling)."""
         s = self._state
         if s is None:
             return False
@@ -1294,6 +1309,10 @@ class GoalManager:
             still = time.time() < s.waiting_until
         else:
             return False
+        if still and s.waiting_since and s.waiting_until == 0.0 and time.time() - s.waiting_since > _MAX_BARRIER_WAIT_S:
+            logger.info("goal %s: wait barrier on %s exceeded %ds; resuming judging",
+                        self.session_id, s.waiting_on_session or s.waiting_on_pid, _MAX_BARRIER_WAIT_S)
+            still = False
         if not still:
             self.stop_waiting()
         return still

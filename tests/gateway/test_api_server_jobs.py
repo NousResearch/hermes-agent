@@ -37,6 +37,14 @@ SAMPLE_JOB = {
     "enabled": True,
 }
 
+SAMPLE_EXTENDED_JOB = {
+    **SAMPLE_JOB,
+    "context_from": ["self", "112233aabbcc"],
+    "no_agent": False,
+    "script": "collect.py",
+    "reasoning_effort": "high",
+}
+
 VALID_JOB_ID = "aabbccddeeff"
 
 
@@ -97,6 +105,18 @@ class TestListJobs:
                 assert "jobs" in data
                 assert data["jobs"] == [SAMPLE_JOB]
 
+    @pytest.mark.asyncio
+    async def test_list_jobs_preserves_extended_job_fields(self, adapter):
+        """GET /api/jobs exposes the same extended fields clients can set."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_list", return_value=[SAMPLE_EXTENDED_JOB]
+            ):
+                resp = await cli.get("/api/jobs")
+                assert resp.status == 200
+                assert (await resp.json())["jobs"] == [SAMPLE_EXTENDED_JOB]
+
     # -------------------------------------------------------------------
     # 2. test_list_jobs_include_disabled
     # -------------------------------------------------------------------
@@ -138,6 +158,67 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["chat_id"] == "api"
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
+
+    @pytest.mark.asyncio
+    async def test_create_job_forwards_extended_fields(self, adapter):
+        """POST accepts storage-shaped 0.21 cron fields."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_EXTENDED_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create", mock_create
+            ), patch(
+                f"{_MOD}._cron_get", return_value={"id": "112233aabbcc"}
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "summarize the collected data",
+                    "context_from": ["self", "112233aabbcc"],
+                    "no_agent": False,
+                    "script": "collect.py",
+                    "reasoning_effort": "HIGH",
+                })
+
+                assert resp.status == 200
+                kwargs = mock_create.call_args.kwargs
+                assert kwargs["context_from"] == ["self", "112233aabbcc"]
+                assert kwargs["no_agent"] is False
+                assert kwargs["script"] == "collect.py"
+                assert kwargs["reasoning_effort"] == "high"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra", "error_fragment"),
+        [
+            ({"context_from": ["missing-job"]}, "not found"),
+            ({"context_from": "self"}, "list"),
+            ({"script": "../outside.py"}, "scripts directory"),
+            ({"no_agent": "true", "script": "collect.py"}, "boolean"),
+            ({"no_agent": True}, "requires a script"),
+            ({"reasoning_effort": "warp9"}, "Invalid reasoning_effort"),
+            ({"reasoning_effort": False}, "string or null"),
+        ],
+    )
+    async def test_create_job_rejects_invalid_extended_fields(
+        self, adapter, extra, error_fragment
+    ):
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_create", mock_create
+            ), patch(f"{_MOD}._cron_get", return_value=None):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                    **extra,
+                })
+
+                assert resp.status == 400
+                assert error_fragment in (await resp.json())["error"]
+                mock_create.assert_not_called()
 
 
     @pytest.mark.asyncio
@@ -207,12 +288,85 @@ class TestGetJob:
                 assert data["job"] == SAMPLE_JOB
                 mock_get.assert_called_once_with(VALID_JOB_ID)
 
+    @pytest.mark.asyncio
+    async def test_get_job_preserves_extended_job_fields(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_get", return_value=SAMPLE_EXTENDED_JOB
+            ):
+                resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}")
+                assert resp.status == 200
+                assert (await resp.json())["job"] == SAMPLE_EXTENDED_JOB
+
 
 # ---------------------------------------------------------------------------
 # 11-12. test_update_job
 # ---------------------------------------------------------------------------
 
 class TestUpdateJob:
+
+    @pytest.mark.asyncio
+    async def test_update_job_forwards_extended_fields(self, adapter):
+        app = _create_app(adapter)
+        mock_update = MagicMock(return_value=SAMPLE_EXTENDED_JOB)
+        existing = {**SAMPLE_JOB, "script": "old.py"}
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_update", mock_update
+            ), patch(
+                f"{_MOD}._cron_get",
+                side_effect=[existing, {"id": "112233aabbcc"}],
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={
+                        "context_from": ["self", "112233aabbcc"],
+                        "no_agent": True,
+                        "script": "collect.py",
+                        "reasoning_effort": "XHIGH",
+                    },
+                )
+
+                assert resp.status == 200
+                assert mock_update.call_args.args == (
+                    VALID_JOB_ID,
+                    {
+                        "context_from": ["self", "112233aabbcc"],
+                        "no_agent": True,
+                        "script": "collect.py",
+                        "reasoning_effort": "xhigh",
+                    },
+                )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("update", "error_fragment"),
+        [
+            ({"context_from": ["missing-job"]}, "not found"),
+            ({"script": "/tmp/outside.py"}, "relative"),
+            ({"no_agent": True, "script": ""}, "requires a script"),
+            ({"reasoning_effort": "warp9"}, "Invalid reasoning_effort"),
+        ],
+    )
+    async def test_update_job_rejects_invalid_extended_fields(
+        self, adapter, update, error_fragment
+    ):
+        app = _create_app(adapter)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+
+        def mock_get(job_id):
+            return SAMPLE_JOB if job_id == VALID_JOB_ID else None
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                f"{_MOD}._cron_update", mock_update
+            ), patch(f"{_MOD}._cron_get", side_effect=mock_get):
+                resp = await cli.patch(f"/api/jobs/{VALID_JOB_ID}", json=update)
+
+                assert resp.status == 400
+                assert error_fragment in (await resp.json())["error"]
+                mock_update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):
@@ -556,4 +710,3 @@ class TestCronPromptScanParity:
                 data = await resp.json()
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
-

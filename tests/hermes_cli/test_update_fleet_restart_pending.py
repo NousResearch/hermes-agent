@@ -254,6 +254,86 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_receipt_looks_unfinished_predicate():
+    """Clean updates recording stop_reason must not look unfinished (#103590)."""
+    # Success cases with stop_reason set at exit boundaries
+    assert update_cmd_fleet._receipt_looks_unfinished({
+        "exit_code": 0,
+        "outcome": "success",
+        "stop_reason": "completed at command boundary",
+        "gateway_restart": {"incomplete": False},
+    }) is False
+
+    assert update_cmd_fleet._receipt_looks_unfinished({
+        "exit_code": 0,
+        "outcome": "success",
+        "stop_reason": "sys.exit(0)",
+        "gateway_restart": {"incomplete": False},
+    }) is False
+
+    # Genuinely unfinished / failed cases
+    assert update_cmd_fleet._receipt_looks_unfinished({
+        "exit_code": 1,
+        "outcome": "failed",
+        "stop_reason": "KeyboardInterrupt: ",
+    }) is True
+
+    assert update_cmd_fleet._receipt_looks_unfinished({
+        "exit_code": 2,
+        "outcome": "refused",
+        "stop_reason": "image-marker",
+    }) is True
+
+    assert update_cmd_fleet._receipt_looks_unfinished({
+        "exit_code": 0,
+        "outcome": "partial",
+        "gateway_restart": {"incomplete": True},
+    }) is True
+
+    assert update_cmd_fleet._receipt_looks_unfinished({
+        "exit_code": 0,
+        "outcome": "running",
+    }) is True
+
+
+def test_successful_receipt_with_stop_reason_and_empty_fleet_does_not_retrigger(
+    monkeypatch,
+):
+    """Clean update with empty fleet and stop_reason does not trigger catch-up (#103590)."""
+    disk_sha = "n" * 40
+    old_sha = "o" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "exit_code": 0,
+                "outcome": "success",
+                "stop_reason": "completed at command boundary",
+                "plan": {
+                    "expected_sha": old_sha,
+                    "runtimes": [
+                        {
+                            "kind": "gateway",
+                            "profile": "default",
+                            "pid": 1,
+                            "code_sha": old_sha,
+                        }
+                    ],
+                },
+                "fleet": [],
+                "gateway_restart": {"incomplete": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
 def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     disk_sha = "n" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)

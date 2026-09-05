@@ -537,6 +537,9 @@ browser:
 # opt-in for interactive CLI/TUI/Desktop/ACP sessions, but default on for unattended
 # gateway/cron sessions where nobody is present to interrupt a model that
 # ignores loop warnings.
+# The *_no_progress thresholds are split because a repeated write is a weaker
+# signal than a repeated read — it may be polling something external — so the
+# mutating ceiling sits well above the idempotent one.
 tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: false
@@ -545,10 +548,12 @@ tool_loop_guardrails:
     exact_failure: 2
     same_tool_failure: 3
     idempotent_no_progress: 2
+    mutating_no_progress: 4
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+    mutating_no_progress: 12
 
 # =============================================================================
 # Context Compression (Auto-shrinks long conversations)

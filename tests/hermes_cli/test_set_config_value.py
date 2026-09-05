@@ -547,6 +547,10 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "tool_loop_guardrails.warn_after.idempotent_no_progress",
+        "tool_loop_guardrails.warn_after.mutating_no_progress",
+        "tool_loop_guardrails.hard_stop_after.idempotent_no_progress",
+        "tool_loop_guardrails.hard_stop_after.mutating_no_progress",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key

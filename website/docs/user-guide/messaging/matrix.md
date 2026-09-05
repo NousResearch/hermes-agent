@@ -94,6 +94,7 @@ matrix:
     - "^@telegram_"
     - "^@whatsapp_"
   process_notices: false          # Ignore m.notice by default
+  process_edits: false            # Ignore message edits (m.replace) by default
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)

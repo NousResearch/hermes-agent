@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 import os
@@ -20432,6 +20433,48 @@ def test_clarify_callback_uses_configured_timeout(monkeypatch):
     assert captured["event"] == "clarify.request"
     assert captured["timeout"] == 42
     assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+
+
+def test_workflow_callback_blocks_on_the_canvas(monkeypatch):
+    """The `workflow` tool reaches the Workflows plugin the same way every other
+    renderer-backed tool reaches its surface: one blocking request, payload
+    forwarded whole."""
+    captured = {}
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(event=event, sid=sid, payload=payload, timeout=timeout)
+        return '{"workflow": {"id": "w1"}}'
+
+    monkeypatch.setattr(server, "_block", fake_block)
+
+    ops = [{"tool": "graph_add_step", "args": {"kind": "agent"}}]
+    result = server._agent_cbs("sid-1")["workflow_callback"]({"action": "edit", "ops": ops})
+
+    assert result == '{"workflow": {"id": "w1"}}'
+    assert captured["event"] == "workflow.request"
+    assert captured["sid"] == "sid-1"
+    assert captured["payload"] == {"action": "edit", "ops": ops}
+
+
+def test_every_gateway_callback_is_one_the_agent_accepts():
+    """_agent_cbs() is splatted into AIAgent(**cbs), so a callback added to the
+    gateway without a matching parameter on the agent doesn't fail at import or
+    typecheck — it fails at agent build, as 'unexpected keyword argument', on
+    the user's first message. Adding a renderer-backed tool means touching five
+    files; this is the one seam between them that nothing else checks."""
+    import run_agent
+
+    accepted = inspect.signature(run_agent.AIAgent.__init__).parameters
+    emitted = server._agent_cbs("sid-1").keys()
+
+    assert not [name for name in emitted if name not in accepted]
+
+
+def test_workflow_request_expires_for_a_late_canvas():
+    """A renderer that answers after the block gave up must not have its reply
+    rejected as unknown — the topic has to be in the expire set, or the plugin
+    surfaces a raw JSON-RPC error for a request that merely ran long."""
+    assert "workflow.request" in server._EXPIRING_REQUESTS, "workflow.request must opt into the .expire notification"
 
 
 def test_clarify_callback_multi_select_hint(monkeypatch):

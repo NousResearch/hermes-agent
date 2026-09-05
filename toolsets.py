@@ -135,7 +135,7 @@ TOOLSETS = {
         "reactions (GUI sessions only)",
         ["read_terminal", "close_terminal", "desktop_preview", "drive_preview",
          "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
-         "setup_mcp", "gui_tour", "show_tip"],
+         "setup_mcp", "gui_tour", "show_tip", "workflow"],
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),

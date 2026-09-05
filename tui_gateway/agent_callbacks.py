@@ -112,6 +112,10 @@ def _agent_cbs(sid: str) -> dict:
         # (typing an API key, browser OAuth) and, like clarify, a late answer is tolerated.
         "setup_mcp_callback": lambda server, action, reason: _block(
             "mcp.setup.request", sid, {"server": server, "action": action, "reason": reason}, timeout=600),
+        # workflow (desktop GUI): the Workflows plugin owns the node graph, so a read/edit round-trips to the
+        # renderer, which applies the ops through the canvas's own dispatcher and answers workflow.respond.
+        # Graph ops are in-memory; the budget covers a busy renderer and a scenario-sized batch.
+        "workflow_callback": lambda payload: _block("workflow.request", sid, dict(payload), timeout=30),
         # tour (desktop GUI): renderer drives driver.js and answers tour.respond.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 

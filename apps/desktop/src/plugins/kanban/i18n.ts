@@ -60,6 +60,7 @@ type KanbanMessages = {
   bulkFailed: (failed: number, total: number, err: string) => string
   titlePlaceholderTriage: string
   titlePlaceholder: string
+  titleRequired: string
   descPlaceholder: string
   priority: string
   workspace: string
@@ -183,6 +184,7 @@ type KanbanMessages = {
   boardSettingsFor: (name: string) => string
   name: string
   boardNamePlaceholder: string
+  boardNameUnusable: string
   slug: (slug: string) => string
   project: string
   noProject: string
@@ -273,6 +275,7 @@ export const en: KanbanMessages = {
   bulkFailed: (failed, total, err) => `${failed} of ${total} failed — ${err}. Failed cards stay selected.`,
   titlePlaceholderTriage: 'Rough idea — a specifier will flesh it out',
   titlePlaceholder: 'Title',
+  titleRequired: 'Give it a title.',
   descPlaceholder: 'Description (optional)',
   priority: 'Priority',
   workspace: 'Workspace',
@@ -395,6 +398,7 @@ export const en: KanbanMessages = {
   boardSettingsFor: name => `Board settings — ${name}`,
   name: 'Name',
   boardNamePlaceholder: 'Board name',
+  boardNameUnusable: 'Needs a letter or a number.',
   slug: slug => `slug: ${slug}`,
   project: 'Project',
   noProject: 'No project (scratch sandboxes)',
@@ -485,6 +489,7 @@ const ja: KanbanMessages = {
   bulkFailed: (failed, total, err) => `${total} 件中 ${failed} 件が失敗 — ${err}。失敗したカードは選択されたままです。`,
   titlePlaceholderTriage: '大まかなアイデア — スペシファイアが具体化します',
   titlePlaceholder: 'タイトル',
+  titleRequired: 'タイトルを入力してください。',
   descPlaceholder: '説明（任意）',
   priority: '優先度',
   workspace: 'ワークスペース',
@@ -606,6 +611,7 @@ const ja: KanbanMessages = {
   boardSettingsFor: name => `ボード設定 — ${name}`,
   name: '名前',
   boardNamePlaceholder: 'ボード名',
+  boardNameUnusable: '英数字を含めてください。',
   slug: slug => `slug: ${slug}`,
   project: 'プロジェクト',
   noProject: 'プロジェクトなし（スクラッチのサンドボックス）',
@@ -695,6 +701,7 @@ const zh: KanbanMessages = {
   bulkFailed: (failed, total, err) => `${total} 个中有 ${failed} 个失败 — ${err}。失败的卡片仍保持选中。`,
   titlePlaceholderTriage: '大致想法 — 细化代理会补全',
   titlePlaceholder: '标题',
+  titleRequired: '请输入标题。',
   descPlaceholder: '描述（可选）',
   priority: '优先级',
   workspace: '工作区',
@@ -815,6 +822,7 @@ const zh: KanbanMessages = {
   boardSettingsFor: name => `面板设置 — ${name}`,
   name: '名称',
   boardNamePlaceholder: '面板名称',
+  boardNameUnusable: '需要包含字母或数字。',
   slug: slug => `slug: ${slug}`,
   project: '项目',
   noProject: '无项目（临时沙箱）',
@@ -903,6 +911,7 @@ const zhHant: KanbanMessages = {
   bulkFailed: (failed, total, err) => `${total} 個中有 ${failed} 個失敗 — ${err}。失敗的卡片仍保持選取。`,
   titlePlaceholderTriage: '大致想法 — 細化代理會補全',
   titlePlaceholder: '標題',
+  titleRequired: '請輸入標題。',
   descPlaceholder: '描述（選填）',
   priority: '優先順序',
   workspace: '工作區',
@@ -1023,6 +1032,7 @@ const zhHant: KanbanMessages = {
   boardSettingsFor: name => `面板設定 — ${name}`,
   name: '名稱',
   boardNamePlaceholder: '面板名稱',
+  boardNameUnusable: '需要包含字母或數字。',
   slug: slug => `slug: ${slug}`,
   project: '專案',
   noProject: '無專案（暫存沙箱）',

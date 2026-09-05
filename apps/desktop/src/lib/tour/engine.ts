@@ -106,21 +106,97 @@ export function runTourEngine(
   host?: TourHost
 ): TourResult {
   const kind = action.kind
-  const base = { animate: true, smoothScroll: true, ...(style || {}) }
+  const base = {
+    animate: true,
+    // The backdrop is not a dismiss target. driver.js closes on any overlay
+    // click by default, which on a pannable surface means the first drag to
+    // see the thing being pointed AT ends the tour. Handing it a hook instead
+    // of 'close' makes the backdrop inert — driver.js checks `=== 'close'`
+    // before it checks for a function, so this cannot destroy. Deliberately
+    // NOT `allowClose: false`: Esc and the popover's ✕ are the intended exits
+    // and both stay live.
+    overlayClickBehavior: () => {},
+    smoothScroll: true,
+    ...(style || {})
+  }
 
   /** driver.js reads `popoverClass` off the POPOVER object, not off the step
    *  (`r.popoverClass` where r = step.popover), so the entrance animation has
    *  to be declared in here. `first` settles down into place, every step after
-   *  rises — styled in app-tour.css. */
-  const popoverOf = (step: TourStep, first = false) =>
+   *  rises — styled in app-tour.css.
+   *
+   *  `solo` is a one-off `show`, and it MUST ask for the ✕ by name. driver.js
+   *  derives a step's buttons from the ones that lead somewhere, and a lone
+   *  highlight has no next and no previous — so it drops the whole footer AND
+   *  the close button with it, leaving a popover with no way out of it. A
+   *  paged tour needs no such help: its own next/previous keep the footer. */
+  const popoverOf = (step: TourStep, first = false, solo = false) =>
     step.title || step.text
       ? {
           description: step.text || '',
           popoverClass: first ? 'tour-pop-in' : 'tour-pop-next',
+          ...(solo ? { showButtons: ['close'] } : {}),
           side: step.side || undefined,
           title: step.title || ''
         }
       : undefined
+
+  /** Ask whoever owns the target to bring it on screen.
+   *
+   *  Scrolling is the engine's blind spot: driver.js scrolls a target into view
+   *  through the scrollport above it, and a pan-and-zoom canvas has none — its
+   *  cards are laid out by a transform, so a node parked off screen stays off
+   *  screen and the step spotlights nothing. Only the surface knows how to move
+   *  its own camera, so the engine asks rather than tries: an event from the
+   *  target itself, which reaches that surface by bubbling and costs nothing on
+   *  every surface that already scrolls normally.
+   *
+   *  A handler that moves instantly need do nothing else — this runs from
+   *  `onHighlightStarted`, which driver.js fires BEFORE it measures, so the
+   *  spotlight lands on where the target ended up. One that animates hands back
+   *  a promise on `settled`, and the step re-measures once when it resolves. */
+  let resettling = false
+
+  const revealFor = (step: TourStep) => {
+    // The re-measure below fires this hook a second time, and a second reveal
+    // would restart the very animation it is waiting on.
+    if (!step.selector || resettling) {
+      return
+    }
+
+    const target = doc.querySelector(step.selector)
+
+    if (!target) {
+      return
+    }
+
+    const detail: { settled?: PromiseLike<unknown> } = {}
+
+    target.dispatchEvent(new CustomEvent('hermes:tour-reveal', { bubbles: true, detail }))
+
+    if (!detail.settled) {
+      return
+    }
+
+    void Promise.resolve(detail.settled).then(() => {
+      const driver = holder.driver
+
+      if (!driver?.isActive()) {
+        return
+      }
+
+      // Re-drive, not refresh: driver.js's `refresh` re-renders the popover
+      // where it already was, and re-driving the step is the only thing that
+      // re-measures a target that has moved under it.
+      resettling = true
+
+      try {
+        driver.drive(driver.getActiveIndex() ?? 0)
+      } finally {
+        resettling = false
+      }
+    })
+  }
 
   /** Move the app where a step needs to be.
    *
@@ -138,6 +214,8 @@ export function runTourEngine(
     if (step.navigate && host?.navigate) {
       host.navigate(step.navigate)
     }
+
+    revealFor(step)
 
     // No waiting here: a target that mounts after the move is picked up by the
     // keep-alive below, which re-drives the step the moment the element exists.
@@ -221,10 +299,10 @@ export function runTourEngine(
 
   /** Every step carries its move on `onHighlightStarted`, the one hook driver
    *  fires no matter how the step was reached. */
-  const stepOf = (step: TourStep, first = false) => ({
+  const stepOf = (step: TourStep, first = false, solo = false) => ({
     element: step.selector || undefined,
     onHighlightStarted: () => moveFor(step),
-    popover: popoverOf(step, first)
+    popover: popoverOf(step, first, solo)
   })
 
   /** Selectors that match nothing right now — the caller's cue to re-scan.
@@ -289,8 +367,9 @@ export function runTourEngine(
       holder.driver = factory(base)
     }
 
-    // A one-off highlight is its own arrival, so it uses the settle-down enter.
-    holder.driver.highlight(stepOf(action, true))
+    // A one-off highlight is its own arrival, so it uses the settle-down enter,
+    // and it is solo — it has to carry its own ✕ (see popoverOf).
+    holder.driver.highlight(stepOf(action, true, true))
 
     return { action: kind, success: true }
   }

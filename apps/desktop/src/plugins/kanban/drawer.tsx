@@ -20,6 +20,15 @@ import {
   host,
   Loader,
   LogView,
+  SidePanel,
+  SidePanelAction,
+  SidePanelBody,
+  SidePanelClose,
+  SidePanelHeader,
+  SidePanelMeta,
+  SidePanelMetaRow,
+  SidePanelTitle,
+  SidePanelToolbar,
   Textarea,
   Tip,
   useMutation,
@@ -27,7 +36,7 @@ import {
   useQueryClient,
   useValue
 } from '@hermes/plugin-sdk'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   $boardSlug,
@@ -169,14 +178,6 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
   }
 }
 
-function MetaRow({ children, label }: { children: ReactNode; label: string }) {
-  return (
-    <>
-      <span className="text-(--ui-text-quaternary)">{label}</span>
-      <span className="min-w-0 truncate text-(--ui-text-secondary)">{children}</span>
-    </>
-  )
-}
 
 /** The dashboard's diagnostics panel: severity-toned, plain-English, with the
  *  backend's structured recovery actions as buttons. `reassign` is skipped —
@@ -247,7 +248,7 @@ function AssigneeMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
-          className="-mx-1 inline-flex max-w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-(--chrome-action-hover)"
+          className="inline-flex max-w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-(--chrome-action-hover)"
           type="button"
         >
           {current ? (
@@ -571,18 +572,6 @@ export function TaskDrawer({
     refetchInterval: running ? 3_000 : 15_000
   })
 
-  // Esc closes the drawer even though it isn't modal (no backdrop to click off).
-  useEffect(() => {
-    if (!id) {
-      return
-    }
-
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-
-    return () => window.removeEventListener('keydown', onKey)
-  }, [id, onClose])
-
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
     void qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })
@@ -674,9 +663,9 @@ export function TaskDrawer({
   }
 
   return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-[26rem] flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out animate-in fade-in slide-in-from-right-4">
-      <header className="flex flex-col gap-2 px-4 pt-3.5 pb-3">
-        <div className="flex items-center gap-2">
+    <SidePanel onClose={onClose}>
+      <SidePanelHeader>
+        <SidePanelToolbar>
           {task ? (
             <StatusMenu columns={columns} onMove={move} status={task.status} />
           ) : (
@@ -691,13 +680,9 @@ export function TaskDrawer({
             {task && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <button
-                    aria-label={k.taskActions}
-                    className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                    type="button"
-                  >
+                  <SidePanelAction aria-label={k.taskActions}>
                     <Codicon name="ellipsis" size="0.9rem" />
-                  </button>
+                  </SidePanelAction>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem
@@ -730,24 +715,13 @@ export function TaskDrawer({
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-            <button
-              aria-label={k.close}
-              className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-              onClick={onClose}
-              type="button"
-            >
-              <Codicon name="close" size="0.9rem" />
-            </button>
+            <SidePanelClose aria-label={k.close} />
           </div>
-        </div>
-        {task && (
-          <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
-            {task.title || task.id}
-          </h2>
-        )}
-      </header>
+        </SidePanelToolbar>
+        {task && <SidePanelTitle data-selectable-text="true">{task.title || task.id}</SidePanelTitle>}
+      </SidePanelHeader>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4" data-selectable-text="true">
+      <SidePanelBody data-selectable-text="true">
         {errorMessage ? (
           <ErrorState title={errorMessage} />
         ) : !detail || !task ? (
@@ -756,22 +730,22 @@ export function TaskDrawer({
           </div>
         ) : (
           <div className="flex flex-col gap-4 text-sm">
-            <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.71rem]">
-              <MetaRow label={k.assignee}>
+            <SidePanelMeta>
+              <SidePanelMetaRow control label={k.assignee}>
                 <AssigneeMenu
                   current={task.assignee}
                   onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
                 />
-              </MetaRow>
-              {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
-              {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
+              </SidePanelMetaRow>
+              {typeof task.priority === 'number' && <SidePanelMetaRow label={k.metaPriority}>{task.priority}</SidePanelMetaRow>}
+              {task.tenant && <SidePanelMetaRow label={k.metaTenant}>{task.tenant}</SidePanelMetaRow>}
               {task.workspace_path && (
-                <MetaRow label={k.workspace}>
+                <SidePanelMetaRow label={k.workspace} wrap>
                   {task.workspace_kind ? `${task.workspace_kind}: ` : ''}
                   {task.workspace_path}
-                </MetaRow>
+                </SidePanelMetaRow>
               )}
-              <MetaRow label={k.model}>
+              <SidePanelMetaRow control label={k.model}>
                 <ModelOverrideField
                   onChange={next => void mutate(() => patchTask(task.id, overridePatch(next)))()}
                   value={{
@@ -780,11 +754,11 @@ export function TaskDrawer({
                     provider: task.provider_override ?? ''
                   }}
                 />
-              </MetaRow>
-              {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
-              {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
-              {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
-            </div>
+              </SidePanelMetaRow>
+              {task.created_by && <SidePanelMetaRow label={k.metaCreatedBy}>{task.created_by}</SidePanelMetaRow>}
+              {ago(task.created_at) && <SidePanelMetaRow label={k.metaCreated}>{ago(task.created_at)}</SidePanelMetaRow>}
+              {running && task.worker_pid ? <SidePanelMetaRow label={k.metaWorkerPid}>{task.worker_pid}</SidePanelMetaRow> : null}
+            </SidePanelMeta>
 
             {task.status === 'ready' && !task.assignee && !defaultAssignee && (
               <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
@@ -952,7 +926,7 @@ export function TaskDrawer({
             />
           </div>
         )}
-      </div>
-    </div>
+      </SidePanelBody>
+    </SidePanel>
   )
 }

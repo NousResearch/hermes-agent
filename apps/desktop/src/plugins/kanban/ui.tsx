@@ -227,49 +227,15 @@ export function StatusMenu({
   )
 }
 
-// The board's one field/section-label style — hoisted so Section (here), the
-// create dialog's Field, and the orchestration panel all read identically.
-export const FIELD_LABEL = 'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'
+// A labelled group, now the SDK's. Form fields no longer come through here —
+// they use the app's `Field`, which is a different thing wearing a different
+// label, and conflating the two is why a section heading and the knobs under
+// it used to render identically.
+export { SidePanelSection as Section } from '@hermes/plugin-sdk'
 
-export function Section({ action, children, label }: { action?: ReactNode; children: ReactNode; label: string }) {
-  return (
-    <section className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between">
-        <div className={FIELD_LABEL}>{label}</div>
-        {action}
-      </div>
-      {children}
-    </section>
-  )
-}
-
-// Tinted advisory panel: a `tone`-washed body with a matching left rule and a
-// tone-colored icon+title header. Shared by the drawer's diagnostics and its
-// ready-but-unassigned warning so both read identically.
-export function Callout({
-  children,
-  icon = 'warning',
-  title,
-  tone
-}: {
-  children?: ReactNode
-  icon?: string
-  title: ReactNode
-  tone: string
-}) {
-  return (
-    <div
-      className="flex flex-col gap-2 rounded-md p-2.5"
-      style={{ backgroundColor: `color-mix(in srgb, ${tone} 7%, transparent)`, borderLeft: `2px solid ${tone}` }}
-    >
-      <div className="flex items-start gap-1.5 text-[0.75rem] font-medium" style={{ color: tone }}>
-        <Codicon className="mt-px shrink-0" name={icon} size="0.8rem" />
-        <span>{title}</span>
-      </div>
-      {children}
-    </div>
-  )
-}
+// The drawer's diagnostics and its ready-but-unassigned warning; now the SDK's,
+// because a step whose budget ran out wants to say so the same way.
+export { Callout } from '@hermes/plugin-sdk'
 
 // A short, edge-masked scroll area. Thin wrapper over the app's FadeScroll so
 // the drawer's scrollers behave exactly like the ones in chat; kept as a local

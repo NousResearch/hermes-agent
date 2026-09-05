@@ -66,6 +66,24 @@ def _is_loopback_host(host: Optional[str]) -> bool:
     return bool(host) and host.strip().lower() in _LOOPBACK_HOSTS
 
 
+def _is_workflow_route(route_name: str, route_config: dict) -> bool:
+    """True for a hook the Workflows canvas owns.
+
+    Such a route answers only to its workflow: it accepts an unsigned POST (the unguessable URL is the
+    credential) and 404s rather than falling through to the generic agent dispatch. The `wf-` prefix is the
+    fallback for a route whose flag an older sync dropped.
+    """
+    return bool(route_config.get("hermes_workflow")) or str(route_name).startswith("wf-")
+
+
+_SIGNATURE_HEADERS = ("X-Webhook-Signature-V2", "X-Webhook-Signature", "X-Hub-Signature-256", "X-Gitlab-Token",
+                      "svix-signature", "linear-signature")
+
+
+def _request_carries_signature(request: "web.Request") -> bool:
+    return any(request.headers.get(name) or request.headers.get(name.lower()) for name in _SIGNATURE_HEADERS)
+
+
 def _hmac_str_equal(provided: str, expected: str) -> bool:
     """Timing-safe str equality tolerant of non-ASCII: ``compare_digest`` raises TypeError on non-ASCII
     str and ``provided`` is an attacker-controlled header, so compare as UTF-8 bytes to fail closed."""
@@ -429,7 +447,10 @@ class WebhookAdapter(BasePlatformAdapter):
         if not secret:
             logger.error("[webhook] Route %s has no HMAC secret; refusing request", route_name)
             return None, _json_error("Webhook route is missing an HMAC secret", 403)
-        if secret != _INSECURE_NO_AUTH and not self._validate_signature(request, raw_body, secret):
+        # Workflow hooks are n8n-shaped: the unguessable URL is the credential. A sender that *does* sign
+        # (GitHub, etc.) is still checked. Unsigned POST is how you point a generic tool at it.
+        must_verify = _request_carries_signature(request) or not _is_workflow_route(route_name, route_config)
+        if secret != _INSECURE_NO_AUTH and must_verify and not self._validate_signature(request, raw_body, secret):
             logger.warning("[webhook] Invalid signature for route %s", route_name)
             return None, _json_error("Invalid signature", 401)
         return raw_body, None
@@ -531,6 +552,8 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self._route_processor.route_filters_match(route_config, payload, event_type, request.headers):
             logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
             return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
+        if (workflow_response := self._dispatch_workflow(route_name, route_config, payload, event_type)) is not None:
+            return workflow_response
         # Script, prompt render and skill lookup read the profile's home (skills/, config); the runner
         # only enters the routed profile's scope later around handle_message, so enter it here.
         # See #67277.
@@ -558,6 +581,36 @@ class WebhookAdapter(BasePlatformAdapter):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
+
+    @staticmethod
+    def _dispatch_workflow(route_name: str, route_config: dict, payload: Any, event_type: str) -> Optional["web.Response"]:
+        """Route a hook the Workflows canvas owns (or one bound to a workflow/event) to the runner. None = not ours."""
+        try:
+            from workflow.triggers import workflow_id_for_route
+            workflow_id = workflow_id_for_route(route_name, route_config)
+        except Exception:
+            workflow_id = str(route_config.get("workflow") or "").strip()
+        if workflow_id:
+            try:
+                from workflow.runner import start_matching, start_run
+                state = start_run(workflow_id, payload=payload, source="webhook")
+                start_matching(event=str(event_type or ""), payload=payload, source="webhook")
+                return web.json_response({"status": "started", "workflow": workflow_id, "run_id": state.get("runId")})
+            except Exception as exc:
+                logger.error("[webhook] workflow start failed route=%s: %s", route_name, exc)
+                return _json_error(f"Failed to start workflow: {exc}", 500)
+        if _is_workflow_route(route_name, route_config):
+            return _json_error("No workflow bound to this hook", 404)
+        if workflow_event := str(route_config.get("workflow_event") or "").strip():
+            try:
+                from workflow.runner import start_matching
+                started = start_matching(event=workflow_event, payload=payload, source="webhook")
+                return web.json_response({"status": "started" if started else "ok", "event": workflow_event,
+                                          "runs": [s.get("runId") for s in started]})
+            except Exception as exc:
+                logger.error("[webhook] workflow event failed route=%s: %s", route_name, exc)
+                return _json_error(f"Failed to emit workflow event: {exc}", 500)
+        return None
 
     def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
                             event_type: str, delivery_id: str, now: float) -> "web.Response":

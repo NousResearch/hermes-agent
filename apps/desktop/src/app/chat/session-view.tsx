@@ -1,4 +1,4 @@
-import { computed, type ReadableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 import { createContext, useContext } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
@@ -41,7 +41,9 @@ import { lastVisibleMessageIsUser } from './thread-loading'
  * only exactly like the primary view's perf contract.
  */
 export interface SessionView {
-  kind: 'primary' | 'tile'
+  /** Which surface owns it. Read only to ask "is this the workspace pane?" —
+   *  `tile` and `detached` differ in who mounts them, not in how they render. */
+  kind: 'detached' | 'primary' | 'tile'
   $runtimeId: ReadableAtom<string | null>
   $storedId: ReadableAtom<string | null>
   $messages: ReadableAtom<ChatMessage[]>
@@ -107,6 +109,45 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $runtimeId: $activeSessionId,
   $storedId: $selectedStoredSessionId,
   $turnStartedAt: primaryField<number | null>(state => state.turnStartedAt, $turnStartedAt)
+}
+
+const NO_MESSAGES: ChatMessage[] = []
+
+/**
+ * A view over ONE session's slice of `$sessionStates`, for any surface that
+ * isn't the workspace pane. The caller supplies how its runtime id is found —
+ * a tile looks it up in the tile registry, a detached chat is told directly —
+ * and everything else derives from the slice, so every non-primary surface
+ * reads the same shape from the same place.
+ */
+export function buildSessionView(
+  kind: 'detached' | 'tile',
+  $runtimeId: ReadableAtom<null | string>,
+  storedSessionId: string
+): SessionView {
+  const $state = computed([$runtimeId, $sessionStates], (runtimeId, states) =>
+    runtimeId ? states[runtimeId] : undefined
+  )
+
+  const $viewMessages = computed($state, state => state?.messages ?? NO_MESSAGES)
+
+  return {
+    kind,
+    $awaitingResponse: computed($state, state => Boolean(state?.awaitingResponse)),
+    $busy: computed($state, state => Boolean(state?.busy)),
+    $cwd: computed($state, state => state?.cwd ?? ''),
+    $fast: computed($state, state => Boolean(state?.fast)),
+    $lastVisibleIsUser: computed($viewMessages, lastVisibleMessageIsUser),
+    $messages: $viewMessages,
+    $messagesEmpty: computed($viewMessages, messages => messages.length === 0),
+    $model: computed($state, state => state?.model ?? ''),
+    $provider: computed($state, state => state?.provider ?? ''),
+    $reasoningEffort: computed($state, state => state?.reasoningEffort ?? ''),
+    $runtimeId,
+    // Constant for the surface's lifetime — a plain atom, not a computed.
+    $storedId: atom(storedSessionId),
+    $turnStartedAt: computed($state, state => state?.turnStartedAt ?? null)
+  }
 }
 
 const SessionViewContext = createContext<SessionView>(PRIMARY_SESSION_VIEW)

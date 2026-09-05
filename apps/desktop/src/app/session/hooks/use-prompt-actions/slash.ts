@@ -1,6 +1,7 @@
 import { skillInvocationText } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { $detachedNewSession } from '@/app/chat/detached-new'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
@@ -496,6 +497,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
         new: async () => {
+          const detached = $detachedNewSession.get()
+
+          if (detached) {
+            detached()
+
+            return
+          }
+
           startFreshSessionDraft()
         },
         branch: async () => {

@@ -46,6 +46,7 @@ const buttonVariants = cva(
         micro:
           "h-auto gap-0.5 px-1 py-0 text-xs leading-4 font-normal has-[>svg]:px-0.5 [&_svg:not([class*='size-'])]:size-3",
         icon: 'size-9 rounded-[4px]',
+        'icon-2xs': "size-5 rounded-[4px] [&_svg:not([class*='size-'])]:size-2.5 [&_.codicon]:text-[0.75rem]",
         'icon-xs': "size-6 rounded-[4px] [&_svg:not([class*='size-'])]:size-3",
         'icon-sm': 'size-8 rounded-[4px]',
         'icon-lg': 'size-10 rounded-[4px]',

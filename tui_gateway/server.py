@@ -1228,7 +1228,7 @@ def _enable_gateway_prompts() -> None:
 _EXPIRING_REQUESTS = frozenset({
     "secret.request", "sudo.request", "clarify.request", "terminal.read.request",
     "preview.read.request", "preview.act.request", "window.read.request", "mcp.setup.request",
-    "tour.request",
+    "tour.request", "workflow.request",
 })
 
 
@@ -3212,7 +3212,7 @@ from . import (  # noqa: E402
     methods_config_set as _methods_config_set, methods_images as _methods_images,
     methods_profiles as _methods_profiles, methods_prompt as _methods_prompt, methods_session as _methods_session,
     methods_tools as _methods_tools, prompt_turn as _prompt_turn, billing_view as _billing_view,
-    methods_projects as _methods_projects)
+    methods_projects as _methods_projects, methods_workflow as _methods_workflow)
 
 for _m in (
     _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3221,6 +3221,6 @@ for _m in (
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
-    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects):
+    _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_workflow):
     _m.register(sys.modules[__name__])
 del _m

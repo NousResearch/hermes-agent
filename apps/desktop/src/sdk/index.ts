@@ -1411,6 +1411,25 @@ export {
 
 // -- ui: the design language --------------------------------------------------
 
+/** The composer control row's button vocabulary — a ghost icon for the
+ *  secondary controls, a solid circle for the one primary action. Wear these on
+ *  any control that rides the composer so a plugin's row reads as the same row. */
+export {
+  ACTIVE_ICON_BTN,
+  GHOST_ICON_BTN,
+  ICON_BTN,
+  PRIMARY_ICON_BTN,
+  PRIMARY_ICON_FACE
+} from '@/app/chat/composer/control-classes'
+/** A REAL Hermes chat, for a session the plugin owns — the same thread, tool
+ *  cards, streaming indicators, attachments and composer the workspace pane
+ *  renders, not a lookalike. The plugin creates or resumes the session and
+ *  passes the ids; layout is the plugin's, styled from its own container the
+ *  way HUD mode restyles the same tree. */
+export {
+  DetachedSessionChat as SessionChat,
+  type DetachedSessionChatProps as SessionChatProps
+} from '@/app/chat/detached-chat'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1475,6 +1494,7 @@ export {
   ModelMenuCloseContext,
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
+
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
@@ -1492,6 +1512,17 @@ export { SkillsView } from '@/app/skills'
  *  renders anywhere (a plugin dialog); pass a live `gateway` (see
  *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
 export { McpTab } from '@/app/skills/mcp-tab'
+/** The composer's own chrome, so a plugin surface that carries an input can
+ *  wear the real one instead of approximating it. `composerDockCard('top')` is
+ *  the card that fuses above the composer (the status stack uses it). */
+export {
+  composerDockCard,
+  composerFill,
+  composerFloatingPill,
+  composerFloatingStrip,
+  composerPanelCard,
+  composerSurfaceGlass
+} from '@/components/chat/composer-dock'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
@@ -1504,6 +1535,9 @@ export type { FloatingAnchor } from '@/components/pane-shell/tree/renderer/float
 export { StatusDot, type StatusTone } from '@/components/status-dot'
 export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'
+/** A tone-washed advisory block. Unlike `Alert` it takes an arbitrary colour,
+ *  so it can wear a tone the data already picked. */
+export { Callout } from '@/components/ui/callout'
 export { Checkbox } from '@/components/ui/checkbox'
 export { Codicon } from '@/components/ui/codicon'
 /** THE color picker — swatch grid plus a clear row that means "back to the
@@ -1524,6 +1558,9 @@ export {
   ContextMenuSubTrigger,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+/** The form-control chrome Input/Textarea/SelectTrigger share — for the
+ *  composite controls (steppers, tag fields) the kit doesn't ship. */
+export { type ControlVariantProps, controlVariants } from '@/components/ui/control'
 export { CopyButton } from '@/components/ui/copy-button'
 export { DecodeText } from '@/components/ui/decode-text'
 export {
@@ -1549,13 +1586,32 @@ export {
 export { EmptyState } from '@/components/ui/empty-state'
 export { ErrorState } from '@/components/ui/error-state'
 export { FadeScroll } from '@/components/ui/fade-scroll'
-export { GlyphSpinner } from '@/components/ui/glyph-spinner'
+/** The app's one field language — a label stacked over its control, hint or
+ *  `status` underneath. Don't hand-roll a label+control stack; both bundled
+ *  plugins did, and the two of them plus this made three. Don't hand-roll the
+ *  error line either: `status` puts it under the control and marks the control
+ *  invalid, and `FieldStatusSlot` does the same for a control that isn't in a
+ *  `Field` or a `SidePanelMetaRow`. */
+export {
+  Field,
+  FIELD_LABEL,
+  FIELD_STACK,
+  FieldHint,
+  type FieldStatus,
+  FieldStatusSlot,
+  useFieldControl
+} from '@/components/ui/field'
+export { GlyphSpinner, type SpinnerName } from '@/components/ui/glyph-spinner'
 export { Input } from '@/components/ui/input'
 export { Kbd, KbdGroup } from '@/components/ui/kbd'
 /** The app's canonical loader (animated curves; `lemniscate-bloom` for long
  *  page loads) — the same one every core page uses. */
 export { Loader, type LoaderType } from '@/components/ui/loader'
 export { LogView } from '@/components/ui/log-view'
+/** The chrome a full-page surface is built from — shell, header, title, count,
+ *  actions. Both bundled plugin pages wear it, so two plugins read as two
+ *  pages of one app rather than two apps. */
+export { PageHeader, PageHeaderActions, PageHeaderCount, PageHeaderTitle, PageShell } from '@/components/ui/page-shell'
 export { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 /** Full-row / region click target. Imposes NO styling — the caller keeps its own
  *  layout classes — it just bakes in `type="button"` and a stable `data-slot`.
@@ -1564,11 +1620,40 @@ export { RowButton } from '@/components/ui/row-button'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
 export { SegmentedControl } from '@/components/ui/segmented-control'
-export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+export {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 export { Separator } from '@/components/ui/separator'
+/** The detail panel pinned to the edge of a page — non-modal, so the surface
+ *  behind it stays live. NOT `Sheet`, which is a portalled modal dialog. */
+export {
+  SIDE_PANEL_LABEL,
+  SIDE_PANEL_TITLE,
+  SidePanel,
+  SidePanelAction,
+  SidePanelBody,
+  SidePanelClose,
+  SidePanelHeader,
+  SidePanelMeta,
+  SidePanelMetaRow,
+  type SidePanelProps,
+  SidePanelSection,
+  SidePanelTitle,
+  SidePanelTitleInput,
+  SidePanelToolbar
+} from '@/components/ui/side-panel'
 export { Skeleton } from '@/components/ui/skeleton'
+/** A bounded number with − / + nudges. */
+export { Stepper } from '@/components/ui/stepper'
 export { Switch } from '@/components/ui/switch'
 export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+export { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'

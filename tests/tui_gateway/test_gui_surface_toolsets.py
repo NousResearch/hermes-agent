@@ -29,6 +29,7 @@ GUI_TOOLS = {
     "setup_mcp",
     "show_tip",
     "gui_tour",
+    "workflow",
 }
 
 

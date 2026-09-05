@@ -344,6 +344,10 @@ def _(rid, params: dict) -> dict:
     # message-preview name. Title mirrors the TUI /branch naming.
     if parent_session_id and history:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+    # Surfaces that *own* the conversation (a workflow canvas, a named hidden chat) pass persist=true so a
+    # refresh can resume the same id instead of 404ing "session not found".
+    elif _flag(params, "persist"):
+        _ensure_session_db_row(_sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap

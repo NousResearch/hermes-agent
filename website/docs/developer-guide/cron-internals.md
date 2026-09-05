@@ -63,6 +63,20 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 }
 ```
 
+### `last_status` literals
+
+`last_status` is a closed set written only by `cron.jobs.mark_job_run`. Every
+renderer (`hermes cron list`/`doctor`, the `cronjob` tool, the web dashboard
+badge, the Desktop routine inspector) maps each literal explicitly — a consumer
+must never test `== "ok"` for "the user got their result":
+
+| Literal | Meaning | Detail field |
+|---------|---------|--------------|
+| `ok` | Agent run succeeded and (if targeted) delivery was confirmed | — |
+| `error` | Agent run failed | `last_error` |
+| `delivery_failed` | Agent run succeeded, but the output never reached its target | `last_delivery_error` (`last_error` is `null`) |
+| `blocked_config` | Pre-dispatch validation refused to burn a run | `last_error` |
+
 ### Job Lifecycle States
 
 | State | Meaning |

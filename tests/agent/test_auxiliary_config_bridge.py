@@ -139,9 +139,11 @@ class TestGatewayBridgeCodeParity:
         content = gateway_path.read_text(encoding="utf-8")
         # Dynamic env-var derivation present
         assert 'f"AUXILIARY_{_upper}_PROVIDER"' in content
-        assert 'f"AUXILIARY_{_upper}_MODEL"' in content
-        assert 'f"AUXILIARY_{_upper}_BASE_URL"' in content
-        assert 'f"AUXILIARY_{_upper}_API_KEY"' in content
+        # MODEL / BASE_URL / API_KEY are bridged through one generalized
+        # field->suffix loop; assert the loop table and the dynamic key shape.
+        assert 'f"AUXILIARY_{_upper}_{_suffix}"' in content
+        for field, suffix in (("model", "MODEL"), ("base_url", "BASE_URL"), ("api_key", "API_KEY")):
+            assert f'("{field}", "{suffix}")' in content
         # Built-in bridged keys present
         assert "_aux_bridged_keys" in content
         assert '"vision"' in content
@@ -241,5 +243,6 @@ class TestCLIDefaultsHaveAuxiliaryKeys:
         # test runs on Windows where the default locale is cp1252.
         source = Path(_cli_mod.__file__).read_text(encoding="utf-8")
         assert "auxiliary_config = defaults.get(\"auxiliary\"" in source
+        assert "_AUXILIARY_TASK_ENV" in source
         assert "AUXILIARY_VISION_PROVIDER" in source
         assert "AUXILIARY_VISION_MODEL" in source

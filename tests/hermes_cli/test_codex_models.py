@@ -117,7 +117,7 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
 
 
 def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypatch, capsys):
-    from hermes_cli.main import _model_flow_openai_codex
+    from hermes_cli.model_setup_flows import _model_flow_openai_codex
 
     captured = {"login_calls": 0}
     choices = iter(["2"])

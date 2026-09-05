@@ -25,7 +25,7 @@ from plugins.web.parallel.provider import ParallelWebSearchProvider
 def _no_web_env(monkeypatch):
     """Blank every web credential and neutralize config lookups."""
     for var in (
-        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY",
+        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY", "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL", "TOOL_GATEWAY_USER_TOKEN",
     ):
@@ -289,7 +289,7 @@ class TestResolutionOrder:
 
     def test_keyless_ring_rotates_and_covers_all_vendors(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
-        # The ring order always contains all five vendors, starting at the
+        # The ring order always contains all four vendors, starting at the
         # current cursor and wrapping.
         order = registry._keyless_preference()
         assert sorted(order) == sorted(keyless_mcp._KEYLESS_RING)
@@ -302,6 +302,15 @@ class TestResolutionOrder:
         monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: name == "keenable")
         assert keyless_mcp._ring_order("keenable")[0] == "keenable"
         assert keyless_mcp._ring_order("keenable")[0] == "keenable"
+
+    def test_tavily_is_not_a_ring_member(self):
+        """Tavily is opt-in keyless; zero-config rotation must not include it."""
+        from plugins.web import keyless_mcp
+
+        assert "tavily" not in keyless_mcp._KEYLESS_RING
+        assert "tavily" not in keyless_mcp._KEYLESS_SEARCHERS
+        assert "tavily" not in keyless_mcp._KEYLESS_EXTRACTORS
+        assert "tavily" not in registry._KEYLESS_PREFERENCE
 
     def test_registry_keyless_disabled_returns_none(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)

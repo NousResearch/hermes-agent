@@ -108,10 +108,8 @@ def test_preflight_wrapper_falls_back_to_generic_when_ineligible():
 
 
 def test_midturn_pressure_uses_pruned_estimate_when_eligible():
-    from agent.conversation_loop import (
-        _midturn_request_pressure_tokens,
-        estimate_messages_tokens_rough,
-    )
+    from agent.conversation_loop import _midturn_request_pressure_tokens
+    from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = _codex_agent()
     messages = [{"role": "system", "content": "be brief"}] + _history_with_checkpoint()
@@ -133,8 +131,8 @@ def test_midturn_pressure_falls_back_to_generic_plus_tools_when_ineligible():
     from agent.conversation_loop import (
         _estimate_tools_tokens_rough,
         _midturn_request_pressure_tokens,
-        estimate_messages_tokens_rough,
     )
+    from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = _codex_agent(
         api_mode="chat_completions",

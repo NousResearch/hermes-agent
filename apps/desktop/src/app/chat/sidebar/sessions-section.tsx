@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo } from 'react'
 
+import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
@@ -113,6 +114,8 @@ interface SidebarSessionsSectionProps {
   onTogglePin: (sessionId: string) => void
   onToggleUnread: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
+  /** Create a new session as a tile at a drop target (drag from a project "+"). */
+  onNewSessionSplit?: NewSessionSplitHandler
   pinned: boolean
   rootClassName?: string
   contentClassName?: string
@@ -191,6 +194,7 @@ export function SidebarSessionsSection({
   onTogglePin,
   onToggleUnread,
   onNewSessionInWorkspace,
+  onNewSessionSplit,
   pinned,
   rootClassName,
   contentClassName,
@@ -300,10 +304,29 @@ export function SidebarSessionsSection({
 
   // Date dividers head a group the same way a repo header does, so they carry
   // the same hover-revealed "+". Only for dates: "new session in WORKING" is
-  // not a thing.
+  // not a thing. The divider "+" is a drag source too (the same gesture as the
+  // nav's "New session" row): drag it onto a chat zone to create the session
+  // exactly there; a sub-threshold release stays the ordinary click. The ONE
+  // element here feeds both the plain and the virtualized list paths, so this
+  // single wiring covers every date-divider "+" on screen.
   const dividerAction =
     grouping === 'date' && onNewSessionInWorkspace ? (
-      <WorkspaceAddButton label={t.sidebar.nav['new-session']} onClick={() => onNewSessionInWorkspace(null)} />
+      <WorkspaceAddButton
+        label={t.sidebar.nav['new-session']}
+        onClick={() => onNewSessionInWorkspace(null)}
+        onPointerDown={
+          onNewSessionSplit
+            ? event => {
+                startNewSessionDrag(placement => {
+                  onNewSessionSplit(placement.dir, {
+                    anchor: placement.anchor,
+                    before: placement.before
+                  })
+                }, event)
+              }
+            : undefined
+        }
+      />
     ) : null
 
   const dividerToggle = useMemo(
@@ -443,6 +466,7 @@ export function SidebarSessionsSection({
           <EnteredProjectContent
             liveSessions={liveSessions}
             onNewSession={onNewSessionInWorkspace}
+            onNewSessionSplit={onNewSessionSplit}
             project={projectContent}
             removedSessionIds={removedSessionIds}
             renderRows={renderRowsDated}
@@ -471,6 +495,11 @@ export function SidebarSessionsSection({
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}
+        onNewSessionSplit={onNewSessionSplit}
+        // Keyed by project ID to match the producer: `overlayLivePreviews`
+        // writes `out[node.id]` (workspace-groups.ts). A path key made Home
+        // (path: null) and any id/path-divergent project fall back to stale
+        // preview rows instead of the live overlay.
         previewSessions={projectOverviewPreviews?.[project.id]}
         project={project}
         renderRows={renderRows}
@@ -502,6 +531,7 @@ export function SidebarSessionsSection({
         group={group}
         key={group.id}
         onNewSession={onNewSessionInWorkspace}
+        onNewSessionSplit={onNewSessionSplit}
         renderRows={renderRows}
       />
     ))

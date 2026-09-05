@@ -1,8 +1,8 @@
 """Codex request identity helpers shared by agent client builders.
 
-This leaf module intentionally has no dependency on the large auxiliary-client
-router. Long-lived processes can therefore import a newly added client builder
-without resolving a new symbol from an older cached ``auxiliary_client`` module.
+Leaf module with no dependency on the large auxiliary-client router, so a
+long-lived process can import a newly added client builder without resolving a
+new symbol from an older cached ``auxiliary_client`` module.
 """
 
 from __future__ import annotations
@@ -31,32 +31,21 @@ def is_official_codex_base_url(base_url: str) -> bool:
         return False
 
 
-def codex_cloudflare_headers(
-    access_token: str, *, base_url: str = CODEX_AUX_BASE_URL,
-) -> Dict[str, str]:
+def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BASE_URL) -> Dict[str, str]:
     """Identity and account headers for chatgpt.com/backend-api/codex.
 
-    OpenAI requires third-party harnesses to identify themselves. Requests to
-    the official endpoint always send Hermes' originator and version. Custom
-    endpoints retain the existing compatibility identity. In either case,
-    preserve ``ChatGPT-Account-ID`` from the OAuth JWT's
-    ``chatgpt_account_id`` claim.
-
-    Malformed tokens are tolerated — we drop the account-ID header rather than
-    raise, so a bad token still surfaces as an auth error (401) instead of a
-    crash at client construction.
+    OpenAI requires third-party harnesses to identify themselves: the official
+    endpoint gets Hermes' originator and version, custom endpoints keep the
+    codex_cli_rs compatibility identity. ``ChatGPT-Account-ID`` comes from the
+    OAuth JWT's ``chatgpt_account_id`` claim; a malformed token drops the header
+    rather than raising, so it surfaces as a 401 instead of a crash at client
+    construction.
     """
-    headers = {
-        "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
-        "originator": "codex_cli_rs",
-    }
     if is_official_codex_base_url(base_url):
         from hermes_cli import __version__
-
-        headers.update({
-            "User-Agent": f"HermesAgent/{__version__}",
-            "originator": "hermes-agent",
-        })
+        headers = {"User-Agent": f"HermesAgent/{__version__}", "originator": "hermes-agent"}
+    else:
+        headers = {"User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)", "originator": "codex_cli_rs"}
     if not isinstance(access_token, str) or not access_token.strip():
         return headers
     try:
@@ -73,9 +62,7 @@ def codex_cloudflare_headers(
     return headers
 
 
-def apply_required_codex_headers(
-    client_kwargs: Dict[str, Any], *, access_token: str, base_url: str,
-) -> None:
+def apply_required_codex_headers(client_kwargs: Dict[str, Any], *, access_token: str, base_url: str) -> None:
     """Keep required Codex identity after user/provider header overrides."""
     if not is_official_codex_base_url(base_url):
         return
@@ -83,10 +70,6 @@ def apply_required_codex_headers(
     required_names = {name.lower() for name in required}
     existing = client_kwargs.get("default_headers") or {}
     client_kwargs["default_headers"] = {
-        **{
-            name: value
-            for name, value in existing.items()
-            if str(name).lower() not in required_names
-        },
+        **{name: value for name, value in existing.items() if str(name).lower() not in required_names},
         **required,
     }

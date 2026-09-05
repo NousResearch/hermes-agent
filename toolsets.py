@@ -1,81 +1,31 @@
-#!/usr/bin/env python3
-"""
-Toolsets Module
-
-This module provides a flexible system for defining and managing tool aliases/toolsets.
-Toolsets allow you to group tools together for specific scenarios and can be composed
-from individual tools or other toolsets.
-
-Features:
-- Define custom toolsets with specific tools
-- Compose toolsets from other toolsets
-- Built-in common toolsets for typical use cases
-- Easy extension for new toolsets
-- Support for dynamic toolset resolution
-
-Usage:
-    from toolsets import get_toolset, resolve_toolset, get_all_toolsets
-    
-    # Get tools for a specific toolset
-    tools = get_toolset("research")
-    
-    # Resolve a toolset to get all tool names (including from composed toolsets)
-    all_tools = resolve_toolset("full_stack")
-"""
+"""Toolset helpers: get/resolve/validate named tool groups (static TOOLSETS + registry-registered)."""
 
 from typing import Dict, List, Any, Set, Optional, Tuple
 
 
-# Shared tool list for CLI and all messaging platform toolsets.
-# Edit this once to update all platforms simultaneously.
+# Shared tool list for CLI and all messaging platform toolsets (edit once, all
+# platforms follow). Desktop GUI affordances are deliberately NOT here: they live
+# in `desktop_ui`/`project`, enabled per desktop-sourced session by the GUI gateway
+# (tui_gateway/server.py::_load_enabled_toolsets). HA, kanban and computer_use
+# entries are further gated by their tools' check_fns.
 _HERMES_CORE_TOOLS = [
-    # Web
     "web_search", "web_extract",
-    # Terminal + process management
-    "terminal", "process",
-    # NOTE: the desktop GUI affordances (read_terminal, open_preview, …) are
-    # deliberately NOT here, for the same reason as the `project` tools below:
-    # they only work where a GUI renderer can answer them. They live in the
-    # `desktop_ui` toolset and are enabled solely by the GUI gateway for a
-    # session whose SOURCE is the desktop app (tui_gateway/server.py::
-    # _load_enabled_toolsets) — never keyed on a process env var, which is
-    # blind to a desktop client talking to a remote/cloud backend.
-    # File manipulation
+    "terminal", "process_manage",
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
     "vision_analyze", "image_generate",
-    # Skills
     "skills_list", "skill_view", "skill_manage",
-    # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-    # replaces other tools when browser.backend is "browser-use"
-    "browser_exec",
-    # Text-to-speech
+    "browser_exec",  # replaces the other browser tools when browser.backend is "browser-use"
     "text_to_speech",
-    # Planning & memory
-    "todo", "memory",
-    # NOTE: the desktop Project tools (project_list/create/switch) are
-    # deliberately NOT here. They only make sense where a GUI can follow the
-    # move, so they live in the `project` toolset and are enabled solely by the
-    # GUI gateway (tui_gateway/server.py::_load_enabled_toolsets) — keeping them
-    # off every CLI/messaging/cron schema (narrow waist).
-    # Session history search
+    "todo_list", "memory",
     "session_search",
-    # Clarifying questions
     "clarify",
-    # Code execution + delegation
     "execute_code", "delegate_task",
-    # Cronjob management
-    "cronjob",
-    # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+    "cronjob_manage",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-    # Kanban multi-agent coordination — only in schema when the agent is
-    # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
-    # profile explicitly enables the kanban toolset. Gated via check_fn in
-    # tools/kanban_tools.py.
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
     "kanban_request_changes",
@@ -83,980 +33,437 @@ _HERMES_CORE_TOOLS = [
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
-    # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
 
-# Webhook events may originate from untrusted third-party content (for example,
-# public PR titles/comments). Keep the default webhook toolset intentionally
-# constrained to avoid local file/system execution by prompt injection.
-_HERMES_WEBHOOK_SAFE_TOOLS = [
-    "web_search",
-    "web_extract",
-    "vision_analyze",
-    "clarify",
+# Webhook payloads are untrusted third-party content: no file/system execution.
+_HERMES_WEBHOOK_SAFE_TOOLS = ["web_search", "web_extract", "vision_analyze", "clarify"]
+_HA_TOOLS = ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"]
+_FEISHU_TOOLS = [
+    "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
+    "feishu_drive_reply_comment", "feishu_drive_add_comment",
 ]
+_YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
 
-# Core toolset definitions
-# These can include individual tools or reference other toolsets
+def _ts(description, tools=(), includes=(), **extra):
+    """One TOOLSETS entry (fresh lists per entry; extra keys such as posture pass through)."""
+    return {"description": description, "tools": list(tools), "includes": list(includes), **extra}
+
+
+def _bundle(description, extras=()):
+    """A `hermes-*` platform bundle: the shared core tools plus optional platform extras."""
+    return _ts(description, _HERMES_CORE_TOOLS + list(extras))
+
+
+def _core_without(*excluded, kanban=True):
+    """_HERMES_CORE_TOOLS minus *excluded* (and, unless kanban=True, every kanban_* tool); order preserved."""
+    return [t for t in _HERMES_CORE_TOOLS if t not in excluded and (kanban or not t.startswith("kanban_"))]
+
+
+# Coding posture: everything you reach for while pairing on code; drops messaging,
+# tts, image_gen, home-assistant, cron, kanban and computer-use.
+_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", *_HA_TOOLS, kanban=False)
+
+# Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
-    "web": {
-        "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract"],
-        "includes": []  # No other toolsets included
-    },
-    
-    "search": {
-        "description": "Web search only (no content extraction/scraping)",
-        "tools": ["web_search"],
-        "includes": []
-    },
+    "web": _ts("Web research and content extraction tools", ["web_search", "web_extract"]),
+    "search": _ts("Web search only (no content extraction/scraping)", ["web_search"]),
+    "x_search": _ts(
+        "Search X (Twitter) posts and threads via xAI's built-in x_search Responses "
+        "tool. Read-only public X discovery; use the xurl skill for authenticated X "
+        "API reads and account actions. Available when xAI credentials are configured "
+        "(SuperGrok OAuth or XAI_API_KEY). Off by default; enable in `hermes tools` → "
+        "X (Twitter) Search.",
+        ["x_search"],
+    ),
+    "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
+    "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
+    "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),
+    "video_gen": _ts(
+        "Video generation tools. Single ``video_generate`` tool covers text-to-video "
+        "(prompt only) and image-to-video (prompt + image_url), plus "
+        "reference-to-video. Provider-specific edit/extend workflows may appear as "
+        "separate tools. Configure via ``hermes tools`` → Video Generation.",
+        ["video_generate", "xai_video_edit", "xai_video_extend"],
+    ),
+    "computer_use": _ts(
+        "Background desktop control via cua-driver (macOS/Windows/Linux) — "
+        "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
+        "or keyboard focus. Works with any tool-capable model.",
+        ["computer_use"],
+    ),
+    "terminal": _ts("Terminal/command execution and process management tools", ["terminal", "process_manage"]),
+    "skills": _ts(
+        "Access, create, edit, and manage skill documents with specialized "
+        "instructions and knowledge",
+        ["skills_list", "skill_view", "skill_manage"],
+    ),
+    # web_search belongs to `web`/`search` only. Listing it here too let
+    # `disabled_toolsets: [browser]` (headless/Docker deployments) strip
+    # web_search from every session, because disabled toolsets are a strict
+    # end-of-pipeline subtraction (#17309, #64503).
+    "browser": _ts(
+        "Browser automation for web interaction (navigate, click, type, scroll, "
+        "iframes, hold-click)",
+        [t for t in _HERMES_CORE_TOOLS if t.startswith("browser_")],
+    ),
+    "cronjob": _ts(
+        "Cronjob management tool - create, list, update, pause, resume, remove, and "
+        "trigger scheduled tasks",
+        ["cronjob_manage"],
+    ),
+    "file": _ts(
+        "File manipulation tools: read, write, patch (with fuzzy matching), and "
+        "search (content + files)",
+        ["read_file", "write_file", "patch", "search_files"],
+    ),
+    "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
+    "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),
+    "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
+    "context_engine": _ts("Runtime tools exposed by the active context engine"),
+    "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
+    "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
+    "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
 
-    "x_search": {
-        "description": (
-            "Search X (Twitter) posts and threads via xAI's built-in "
-            "x_search Responses tool. Read-only public X discovery; use the "
-            "xurl skill for authenticated X API reads and account actions. "
-            "Available when xAI credentials are configured (SuperGrok OAuth "
-            "or XAI_API_KEY). Off by default; enable in `hermes tools` → "
-            "X (Twitter) Search."
-        ),
-        "tools": ["x_search"],
-        "includes": []
-    },
-    
-    "vision": {
-        "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
-        "includes": []
-    },
-
-    "video": {
-        "description": "Video analysis and understanding tools (opt-in, not in default toolset)",
-        "tools": ["video_analyze"],
-        "includes": []
-    },
-    
-    "image_gen": {
-        "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
-        "includes": []
-    },
-
-    "video_gen": {
-        "description": (
-            "Video generation tools. Single ``video_generate`` tool covers "
-            "text-to-video (prompt only) and image-to-video (prompt + "
-            "image_url), plus reference-to-video. Provider-specific edit/"
-            "extend workflows may appear as separate tools. Configure via "
-            "``hermes tools`` → Video Generation."
-        ),
-        "tools": ["video_generate", "xai_video_edit", "xai_video_extend"],
-        "includes": []
-    },
-
-    "computer_use": {
-        "description": (
-            "Background desktop control via cua-driver (macOS/Windows/Linux) — "
-            "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the "
-            "user's cursor or keyboard focus. Works with any tool-capable model."
-        ),
-        "tools": ["computer_use"],
-        "includes": []
-    },
-
-    "terminal": {
-        "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
-        "includes": []
-    },
-    
-    "skills": {
-        "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
-        "includes": []
-    },
-    
-    "browser": {
-        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
-        "tools": [
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "browser_exec", "web_search"
-        ],
-        "includes": []
-    },
-    
-    "cronjob": {
-        "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
-        "tools": ["cronjob"],
-        "includes": []
-    },
-    
-
-    "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search_files"],
-        "includes": []
-    },
-    
-    "tts": {
-        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
-        "tools": ["text_to_speech"],
-        "includes": []
-    },
-    
-    "todo": {
-        "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
-        "includes": []
-    },
-    
-    "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
-        "includes": []
-    },
-
-    "context_engine": {
-        "description": "Runtime tools exposed by the active context engine",
-        "tools": [],
-        "includes": []
-    },
-    
-    "session_search": {
-        "description": "Search and recall past conversations with summarization",
-        "tools": ["session_search"],
-        "includes": []
-    },
-
-    "project": {
-        "description": "Desktop Projects — create/switch named workspaces (GUI sessions only)",
-        "tools": ["desktop_project"],
-        "includes": []
-    },
-
-    "bot_room": {
-        "description": "Verified text-only Group Chat turn capabilities",
-        "tools": [],
-        "includes": [],
-    },
-
-    # Affordances that only exist because a GUI renderer is on the other end of
-    # the connection: read/close the embedded terminal pane, open/read/close the
-    # in-app browser, focus a pane, tapback a message.
-    #
-    # Enabled by the GUI gateway for a session whose SOURCE is the desktop app
-    # (tui_gateway/server.py::_load_enabled_toolsets), NOT by a process env var.
-    # The renderer is a CLIENT — it can be driving a local, SSH, URL, or cloud
-    # backend — so "was this process spawned by Electron?" is the wrong
-    # question and silently strips these tools from every remote gateway.
-    "desktop_ui": {
-        "description": "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
-        "tools": [
-            "read_terminal", "close_terminal",
-            "desktop_preview", "drive_preview", "annotate_preview",
-            "read_window_below",
-            "focus_pane", "react_to_message",
-            "setup_mcp", "tour", "tip",
-        ],
-        "includes": []
-    },
-    
-    "clarify": {
-        "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
-        "tools": ["clarify"],
-        "includes": []
-    },
-    
-    "code_execution": {
-        "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
-        "tools": ["execute_code"],
-        "includes": []
-    },
-    
-    "delegation": {
-        "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
-        "includes": []
-    },
-
-    # "honcho" toolset removed — Honcho is now a memory provider plugin.
-    # Tools are injected via MemoryManager, not the toolset system.
-
-    "homeassistant": {
-        "description": "Home Assistant smart home control and monitoring",
-        "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
-        "includes": []
-    },
-
-    "kanban": {
-        "description": (
-            "Kanban multi-agent coordination — only active when the agent "
-            "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
-            "set). The dispatcher runs inside the gateway by default; see "
-            "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
-            "tasks done with structured handoffs, enter first-class review "
-            "(request_review — not a block), return review changes, block for human input, "
-            "heartbeat during long ops, comment on threads, attach files, and "
-            "(for orchestrators) list, unblock, and fan out tasks."
-        ),
-        "tools": [
-            "kanban_show", "kanban_list", "kanban_complete", "kanban_block",
-            "kanban_request_review", "kanban_request_changes",
-            "kanban_heartbeat", "kanban_comment",
-            "kanban_create", "kanban_link",
-            "kanban_unblock",
-            "kanban_attach", "kanban_attach_url", "kanban_attachments",
-        ],
-        "includes": [],
-    },
-
-    "discord": {
-        "description": "Discord read and participate tools (fetch messages, search members, create threads)",
-        "tools": ["discord"],
-        "includes": [],
-    },
-
-    "discord_admin": {
-        "description": "Discord server management (list channels/roles, pin messages, assign roles)",
-        "tools": ["discord_admin"],
-        "includes": [],
-    },
-
-    "yuanbao": {
-        "description": "Yuanbao platform tools - group info, member queries, DM, stickers",
-        "tools": [
-            "yb_query_group_info",
-            "yb_query_group_members",
-            "yb_send_dm",
-            "yb_search_sticker",
-            "yb_send_sticker",
-        ],
-        "includes": []
-    },
-
-    "feishu_doc": {
-        "description": "Read Feishu/Lark document content",
-        "tools": ["feishu_doc_read"],
-        "includes": []
-    },
-
-    "feishu_drive": {
-        "description": "Feishu/Lark document comment operations (list, reply, add)",
-        "tools": [
-            "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
-            "feishu_drive_reply_comment", "feishu_drive_add_comment",
-        ],
-        "includes": []
-    },
-
-    "spotify": {
-        "description": "Native Spotify playback, search, playlist, album, and library tools",
-        "tools": [
-            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
-            "spotify_playlists", "spotify_albums", "spotify_library",
-        ],
-        "includes": []
-    },
-
+    # GUI-renderer affordances, enabled per desktop-sourced SESSION by the GUI
+    # gateway (tui_gateway/server.py::_load_enabled_toolsets) — never by a
+    # process env var, which is blind to a desktop client on a remote backend.
+    "desktop_ui": _ts(
+        "Desktop GUI affordances — in-app terminal/browser panes, pane focus, "
+        "reactions (GUI sessions only)",
+        ["read_terminal", "close_terminal", "desktop_preview", "drive_preview",
+         "annotate_preview", "read_window_below", "focus_pane", "react_to_message",
+         "setup_mcp", "gui_tour", "show_tip"],
+    ),
+    "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
+    "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
+    "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
+    "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),
+    "kanban": _ts(
+        "Kanban multi-agent coordination — only active when the agent is spawned by "
+        "the kanban dispatcher (HERMES_KANBAN_TASK env set). The dispatcher runs "
+        "inside the gateway by default; see `kanban.dispatch_in_gateway` in "
+        "config.yaml. Lets workers mark tasks done with structured handoffs, enter "
+        "first-class review (request_review — not a block), return review changes, "
+        "block for human input, heartbeat during long ops, comment on threads, attach "
+        "files, and (for orchestrators) list, unblock, and fan out tasks.",
+        [t for t in _HERMES_CORE_TOOLS if t.startswith("kanban_")],
+    ),
+    "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
+    "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),
+    "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
+    "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
+    "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
+    "spotify": _ts(
+        "Native Spotify playback, search, playlist, album, and library tools",
+        ["spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
+         "spotify_playlists", "spotify_albums", "spotify_library"],
+    ),
 
     # Scenario-specific toolsets
-    
-    "debugging": {
-        "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal", "process"],
-        "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
-    },
-    
-    "safe": {
-        "description": "Safe toolkit without terminal access",
-        "tools": [],
-        "includes": ["web", "vision", "image_gen"]
-    },
+    "debugging": _ts("Debugging and troubleshooting toolkit", ["terminal", "process_manage"], includes=["web", "file"]),
+    "safe": _ts("Safe toolkit without terminal access", [], includes=["web", "vision", "image_gen"]),
 
-    # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
-    # code workspace; see agent/coding_context.py. Keeps everything you reach
-    # for while pairing on code and drops the rest (messaging, tts, image_gen,
-    # spotify, home-assistant, cron, computer-use).
-    #
-    # The GUI pane/browser affordances are NOT listed here: they belong to the
-    # client surface, not the posture, so the GUI gateway folds `desktop_ui`
-    # in alongside this selection for a desktop-sourced session (see
-    # tui_gateway/server.py::_load_enabled_toolsets).
-    "coding": {
-        "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
-            "todo", "memory",
-            "session_search", "clarify",
-            "execute_code", "delegate_task",
-        ],
-        "includes": [],
-        # Posture toolset: selected per-session by agent/coding_context.py,
-        # never auto-recovered into per-platform tool config (see the
-        # non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
-        "posture": True,
-    },
-    
-    # ==========================================================================
-    # Full Hermes toolsets (CLI + messaging platforms)
-    #
-    # All platforms share the same core tools. Note: agents do NOT get an
-    # agent-callable send_message tool — outbound platform messaging is handled
-    # outside the agent loop (cron delivery, the gateway kanban notifier, and
-    # the `hermes send` CLI), not by the model deciding to send on its own.
-    # ==========================================================================
+    # Coding posture, auto-selected in a code workspace (agent/coding_context.py).
+    # `desktop_ui` is folded in separately by the GUI gateway for desktop sessions.
+    # posture=True: per-session posture, never auto-recovered into platform tool
+    # config (see the non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
+    "coding": _ts(
+        "Coding-focused toolset: files, terminal, search, web docs, skills, todo, "
+        "delegate, vision, browser",
+        _CODING_TOOLS,
+        posture=True,
+    ),
 
-    "hermes-acp": {
-        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
-            "todo", "memory",
-            "session_search",
-            "execute_code", "delegate_task",
-        ],
-        "includes": []
-    },
+    # Full Hermes toolsets (CLI + messaging platforms). All share the core tools;
+    # there is deliberately no agent-callable send_message tool. hermes-acp is the
+    # coding posture minus the interactive clarify UI.
+    "hermes-acp": _ts(
+        "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without "
+        "messaging, audio, or clarify UI",
+        [t for t in _CODING_TOOLS if t != "clarify"],
+    ),
+    "hermes-api-server": _ts(
+        "OpenAI-compatible API server — full agent tools accessible via HTTP (no "
+        "interactive UI tools like clarify or send_message)",
+        _core_without("text_to_speech", "clarify", "computer_use", kanban=False),
+    ),
+    "hermes-cli": _bundle("Full interactive CLI toolset - all default tools plus cronjob management"),
 
-    "hermes-api-server": {
-        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
-        "tools": [
-            # Web
-            "web_search", "web_extract",
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Vision + image generation
-            "vision_analyze", "image_generate",
-            # Skills
-            "skills_list", "skill_view", "skill_manage",
-            # Browser automation
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "browser_exec",
-            # Planning & memory
-            "todo", "memory",
-            # Session history search
-            "session_search",
-            # Code execution + delegation
-            "execute_code", "delegate_task",
-            # Cronjob management
-            "cronjob",
-            # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
-            "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-
-        ],
-        "includes": []
-    },
-    
-    "hermes-cli": {
-        "description": "Full interactive CLI toolset - all default tools plus cronjob management",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-cron": {
-        # Mirrors hermes-cli so cron's "default" toolset is the same set of
-        # core tools users see interactively — then `hermes tools` filters
-        # them down per the platform config. _DEFAULT_OFF_TOOLSETS (moa,
-        # homeassistant) are excluded by _get_platform_tools() unless
-        # the user explicitly enables them.
-        "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-telegram": {
-        "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-    
-    "hermes-discord": {
-        "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
-        "tools": _HERMES_CORE_TOOLS + [
-            "discord",
-            "discord_admin",
-        ],
-        "includes": []
-    },
-    
-    "hermes-whatsapp": {
-        "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-    
-    "hermes-slack": {
-        "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-    
-    "hermes-signal": {
-        "description": "Signal bot toolset - encrypted messaging platform (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-bluebubbles": {
-        "description": "BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-homeassistant": {
-        "description": "Home Assistant bot toolset - smart home event monitoring and control",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-email": {
-        "description": "Email bot toolset - interact with Hermes via email (IMAP/SMTP)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-mattermost": {
-        "description": "Mattermost bot toolset - self-hosted team messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-matrix": {
-        "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-dingtalk": {
-        "description": "DingTalk bot toolset - enterprise messaging platform (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-feishu": {
-        "description": "Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)",
-        "tools": _HERMES_CORE_TOOLS + [
-            "feishu_doc_read",
-            "feishu_drive_list_comments",
-            "feishu_drive_list_comment_replies",
-            "feishu_drive_reply_comment",
-            "feishu_drive_add_comment",
-        ],
-        "includes": []
-    },
-
-    "hermes-weixin": {
-        "description": "Weixin bot toolset - personal WeChat messaging via iLink (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-qqbot": {
-        "description": "QQBot toolset - QQ messaging via Official Bot API v2 (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-wecom": {
-        "description": "WeCom bot toolset - enterprise WeChat messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-wecom-callback": {
-        "description": "WeCom callback toolset - enterprise self-built app messaging (full access)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
+    # Mirrors hermes-cli; `hermes tools` platform config filters it down and
+    # _get_platform_tools() drops _DEFAULT_OFF_TOOLSETS unless user-enabled.
+    "hermes-cron": _bundle("Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`"),
+    "hermes-telegram": _bundle("Telegram bot toolset - full access for personal use (terminal has safety checks)"),
+    "hermes-discord": _bundle(
+        "Discord bot toolset - full access (terminal has safety checks via dangerous "
+        "command approval)",
+        ["discord", "discord_admin"],
+    ),
+    "hermes-whatsapp": _bundle("WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)"),
+    "hermes-slack": _bundle("Slack bot toolset - full access for workspace use (terminal has safety checks)"),
+    "hermes-signal": _bundle("Signal bot toolset - encrypted messaging platform (full access)"),
+    "hermes-bluebubbles": _bundle("BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server"),
+    "hermes-homeassistant": _bundle("Home Assistant bot toolset - smart home event monitoring and control"),
+    "hermes-email": _bundle("Email bot toolset - interact with Hermes via email (IMAP/SMTP)"),
+    "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
+    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)"),
+    "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
+    "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
+    "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),
+    "hermes-qqbot": _bundle("QQBot toolset - QQ messaging via Official Bot API v2 (full access)"),
+    "hermes-wecom": _bundle("WeCom bot toolset - enterprise WeChat messaging (full access)"),
+    "hermes-wecom-callback": _bundle("WeCom callback toolset - enterprise self-built app messaging (full access)"),
     "hermes-yuanbao": {
         "description": "Yuanbao Bot 元宝消息平台工具集 - 群信息、成员查询、私聊、贴纸表情",
-        "tools": _HERMES_CORE_TOOLS + [
-            "yb_query_group_info",
-            "yb_query_group_members",
-            "yb_send_dm",
-            "yb_search_sticker",
-            "yb_send_sticker",
-        ],
+        "tools": _HERMES_CORE_TOOLS + _YUANBAO_TOOLS,
         "module": "tools.yuanbao_tools",
-        "includes": []
+        "includes": [],
     },
-
-    "hermes-sms": {
-        "description": "SMS bot toolset - interact with Hermes via SMS (Twilio)",
-        "tools": _HERMES_CORE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-webhook": {
-        "description": "Webhook toolset - receive and process external webhook events",
-        "tools": _HERMES_WEBHOOK_SAFE_TOOLS,
-        "includes": []
-    },
-
-    "hermes-gateway": {
-        "description": "Gateway toolset - union of all messaging platform tools",
-        "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
-    }
+    "hermes-sms": _bundle("SMS bot toolset - interact with Hermes via SMS (Twilio)"),
+    "hermes-webhook": _ts("Webhook toolset - receive and process external webhook events", _HERMES_WEBHOOK_SAFE_TOOLS),
+    "hermes-gateway": _ts(
+        "Gateway toolset - union of all messaging platform tools",
+        [],
+        includes=[
+            "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack",
+            "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email",
+            "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk",
+            "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin",
+            "hermes-qqbot", "hermes-webhook", "hermes-yuanbao",
+        ],
+    ),
 }
 
 
-
-def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
-    """
-    Get a toolset definition by name.
-
-    Args:
-        name (str): Name of the toolset
-        include_registry (bool): When True (default), merge in tools that
-            plugins/overlays registered into this toolset via the registry.
-            When False, return only the static ``TOOLSETS`` definition (the
-            composite-authored view). Platform reverse-mapping in
-            ``_get_platform_tools`` uses False so that a tool registered into a
-            toolset but absent from a platform's static composite does not drop
-            the whole toolset from inference. See issue #49622.
-
-    Returns:
-        Dict: Toolset definition with description, tools, and includes
-        None: If toolset not found. With include_registry=False the static
-            view only recognizes names literally present in ``TOOLSETS``, so
-            registry/MCP-only toolsets AND registry-derived aliases return None
-            (they have no static counterpart).
-    """
-    toolset = TOOLSETS.get(name)
-
-    if not include_registry:
-        # Static view only: return the built-in definition (copying the nested
-        # tools/includes lists so callers can't mutate TOOLSETS), or None for
-        # registry/MCP-only toolsets that have no static counterpart.
-        if not toolset:
-            return None
-        return {
-            **toolset,
-            "tools": list(toolset.get("tools", [])),
-            "includes": list(toolset.get("includes", [])),
-        }
-
+def _registry():
+    """Live tool registry, or None when tools.registry can't be imported."""
     try:
         from tools.registry import registry
+        return registry
     except Exception:
+        return None
+
+
+def _registry_call(method: str, default):
+    """registry.<method>() or *default* when the registry is unavailable or the call fails."""
+    try:
+        return getattr(_registry(), method)()
+    except Exception:  # registry None (AttributeError) or the call failed
+        return default
+
+
+def _registry_generation() -> Tuple[int, int]:
+    reg = _registry()
+    return (id(reg), getattr(reg, "_generation", 0)) if reg is not None else (0, 0)
+
+
+def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[str, Any]]:
+    """Toolset definition, or None if unknown.
+
+    include_registry=True merges plugin/overlay tools registered into this toolset
+    and resolves registry-only (plugin/MCP) toolsets and aliases; False returns a
+    copy of the static TOOLSETS entry only, so platform reverse-mapping is
+    unaffected by registry additions.
+
+    Args: name (str): Name of the toolset include_registry (bool): When True (default), merge in tools that
+    plugins/overlays registered into this toolset via the registry. Platform reverse-mapping in
+    ``_get_platform_tools`` uses False so that a tool registered into a toolset but absent from a platform's
+    static composite does not drop the whole toolset from inference. See issue #49622.
+    """
+    toolset = TOOLSETS.get(name)
+    if not include_registry:
+        return {**toolset, "tools": list(toolset.get("tools", [])), "includes": list(toolset.get("includes", []))} if toolset else None
+
+    registry = _registry()
+    if registry is None:
         return toolset if toolset else None
 
     if toolset:
-        merged_tools = sorted(
-            set(toolset.get("tools", []))
-            | set(registry.get_tool_names_for_toolset(name))
-        )
+        merged_tools = sorted(set(toolset.get("tools", [])) | set(registry.get_tool_names_for_toolset(name)))
         return {**toolset, "tools": merged_tools}
 
-    registry_toolset = name
-    description = f"Plugin toolset: {name}"
-    alias_target = registry.get_toolset_alias_target(name)
-
-    if name not in _get_plugin_toolset_names():
-        registry_toolset = alias_target
+    if name in _get_plugin_toolset_names():
+        # Plugin toolset; shown as its MCP server alias when one exists.
+        registry_toolset = name
+        alias = _display_alias(name, _get_registry_toolset_aliases())
+        description = f"MCP server '{alias}' tools" if alias else f"Plugin toolset: {name}"
+    else:
+        registry_toolset = registry.get_toolset_alias_target(name)
         if not registry_toolset:
             return None
         description = f"MCP server '{name}' tools"
-    else:
-        reverse_aliases = {
-            canonical: alias
-            for alias, canonical in _get_registry_toolset_aliases().items()
-            if alias not in TOOLSETS
-        }
-        alias = reverse_aliases.get(name)
-        if alias:
-            description = f"MCP server '{alias}' tools"
-
-    return {
-        "description": description,
-        "tools": registry.get_tool_names_for_toolset(registry_toolset),
-        "includes": [],
-    }
+    return {"description": description, "tools": registry.get_tool_names_for_toolset(registry_toolset), "includes": []}
 
 
 def bundle_non_core_tools(toolset_name: str) -> Set[str]:
-    """Return a ``hermes-*`` bundle's platform-specific tools, excluding core.
+    """A bundle's tools minus _HERMES_CORE_TOOLS (one level of includes).
 
-    Platform bundles are defined as ``_HERMES_CORE_TOOLS + [platform extras]``.
-    When a bundle name appears in ``disabled_toolsets``, subtracting the whole
-    bundle would strip core tools (terminal, read_file, …) shared by every
-    other enabled toolset, emptying the model's tool list (#33924). This
-    returns only the bundle's non-core delta (its own extras plus those of any
-    one-level ``includes``), so disabling a bundle removes its platform tools
-    while leaving core intact.
-
-    Bundle nesting is one level deep in practice (only ``hermes-gateway``
-    includes other bundles, and those leaves don't nest further), so a single
-    ``includes`` pass is sufficient. Unknown/garbage names fall back to the
-    full resolution minus core — never re-introducing the core wipe.
+    Disabling a `core + extras` bundle must not strip the core tools every other
+    toolset shares. One `includes` pass suffices (only hermes-gateway nests
+    bundles). Unknown names: full resolution minus core.
     """
     core = set(_HERMES_CORE_TOOLS)
     ts_def = get_toolset(toolset_name)
     if not (ts_def and "tools" in ts_def):
         return set(resolve_toolset(toolset_name)) - core
-    to_remove = set(ts_def["tools"]) - core
-    for inc in ts_def.get("includes", []):
-        inc_def = get_toolset(inc)
+    to_remove = set(ts_def["tools"])
+    for inc_def in map(get_toolset, ts_def.get("includes", [])):
         if inc_def and "tools" in inc_def:
-            to_remove.update(set(inc_def["tools"]) - core)
-    return to_remove
+            to_remove.update(inc_def["tools"])
+    return to_remove - core
 
 
-# Resolution memo keyed on (toolset name, include_registry, registry
-# generation). resolve_toolset() recursively walks toolset includes and, with
-# include_registry=True, merges registry-registered tools on every call —
-# measured ~2us/toolset in isolation but called dozens of times per
-# _get_platform_tools() (per-keystroke /tools completion) and per picker
-# render. The registry exposes a monotonic _generation counter (bumped on
-# every register/deregister/alias/MCP refresh — see tools/registry.py), so a
-# cache entry is valid for as long as the generation is unchanged; external
-# callers never pass ``visited``, so the memo engages exactly at the public
-# entry and the internal cycle-detection recursion stays untouched.
+# Memo keyed on (name, include_registry, id(registry), registry generation);
+# engages only at the public entry (visited is None).
 _resolve_toolset_memo: Dict[Tuple[str, bool, int, int], List[str]] = {}
 
 
+def _plugin_platform_bundle(name: str) -> List[str]:
+    """Implicit `hermes-<platform>` bundle for a registered plugin platform: core
+    tools plus whatever the plugin registered under the platform name. [] otherwise."""
+    if not name.startswith("hermes-"):
+        return []
+    platform_name = name[len("hermes-"):]
+    try:
+        from gateway.platform_registry import platform_registry
+        if not platform_registry.is_registered(platform_name):
+            return []
+    except Exception:
+        return []
+    tools = set(_HERMES_CORE_TOOLS)
+    try:
+        tools.update(e.name for e in _registry_call("get_all_entries", ()) if e.toolset == platform_name)
+    except Exception:
+        pass
+    return list(tools)
+
+
 def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bool = True) -> List[str]:
-    """
-    Recursively resolve a toolset to get all tool names.
+    """Recursively resolve a toolset (and its includes) to a sorted tool-name list.
+    include_registry=False resolves the static TOOLSETS view only.
 
-    This function handles toolset composition by recursively resolving
-    included toolsets and combining all tools.
-
-    Args:
-        name (str): Name of the toolset to resolve
-        visited (Set[str]): Set of already visited toolsets (for cycle detection)
-        include_registry (bool): When True (default), include tools that
-            plugins/overlays registered into a toolset. When False, resolve only
-            the static ``TOOLSETS`` definition (includes are still resolved, but
-            statically). Platform reverse-mapping uses False so a registry-added
-            tool cannot drop the whole toolset from inference (see #49622 and
-            ``_get_platform_tools``).
-
-    Returns:
-        List[str]: List of all tool names in the toolset
+    Args: name (str): Name of the toolset to resolve visited (Set[str]): Set of already visited toolsets
+    (for cycle detection) include_registry (bool): When True (default), include tools that plugins/overlays
+    registered into a toolset. Platform reverse-mapping uses False so a registry-added tool cannot drop the
+    whole toolset from inference (see #49622 and ``_get_platform_tools``).
     """
     external_call = visited is None
     if external_call:
-        try:
-            from tools.registry import registry
-
-            registry_id = id(registry)
-            generation = getattr(registry, "_generation", 0)
-        except Exception:
-            registry_id = 0
-            generation = 0
-        memo_key = (name, include_registry, registry_id, generation)
+        memo_key = (name, include_registry, *_registry_generation())
         cached = _resolve_toolset_memo.get(memo_key)
         if cached is not None:
             return list(cached)
-
-    if visited is None:
         visited = set()
 
-    # Special aliases that represent all tools across every toolset
-    # This ensures future toolsets are automatically included without changes.
+    # "all"/"*" span every toolset so new toolsets are included automatically.
     if name in {"all", "*"}:
         all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
-            # Use a fresh visited set per branch to avoid cross-branch contamination
-            resolved = resolve_toolset(toolset_name, visited.copy(), include_registry=include_registry)
-            all_tools.update(resolved)
+            all_tools.update(resolve_toolset(toolset_name, visited.copy(), include_registry=include_registry))
         return sorted(all_tools)
 
-    # Check for cycles / already-resolved (diamond deps).
-    # Silently return [] — either this is a diamond (not a bug, tools already
-    # collected via another path) or a genuine cycle (safe to skip).
+    # Diamond include or cycle: [] silently — the tools are collected via another path.
     if name in visited:
         return []
-
     visited.add(name)
 
-    # Get toolset definition
     toolset = get_toolset(name, include_registry=include_registry)
     if not toolset:
-        # Auto-generate a toolset for plugin platforms (hermes-<name>).
-        # Gives them _HERMES_CORE_TOOLS plus any tools the plugin registered
-        # into a toolset matching the platform name. This is a registry-derived
-        # view, so it only applies when registry tools are requested; the static
-        # view (include_registry=False) has no plugin-platform definition.
-        if include_registry and name.startswith("hermes-"):
-            platform_name = name[len("hermes-"):]
-            try:
-                from gateway.platform_registry import platform_registry
-                if platform_registry.is_registered(platform_name):
-                    plugin_tools = set(_HERMES_CORE_TOOLS)
-                    try:
-                        from tools.registry import registry
-                        plugin_tools.update(
-                            e.name for e in registry.get_all_entries()
-                            if e.toolset == platform_name
-                        )
-                    except Exception:
-                        pass
-                    return list(plugin_tools)
-            except Exception:
-                pass
+        return _plugin_platform_bundle(name) if include_registry else []
 
-        return []
-
-    # Collect direct tools
     tools = set(toolset.get("tools", []))
-
-    # Recursively resolve included toolsets, sharing the visited set across
-    # sibling includes so diamond dependencies are only resolved once and
-    # cycle warnings don't fire multiple times for the same cycle.
     for included_name in toolset.get("includes", []):
-        included_tools = resolve_toolset(included_name, visited, include_registry=include_registry)
-        tools.update(included_tools)
+        tools.update(resolve_toolset(included_name, visited, include_registry=include_registry))
 
     result = sorted(tools)
     if external_call:
-        try:
-            from tools.registry import registry
-
-            registry_id = id(registry)
-            generation = getattr(registry, "_generation", 0)
-        except Exception:
-            registry_id = 0
-            generation = 0
-        # Entries from previous registry generations are never hit again;
-        # keep the memo bounded across long sessions with many MCP refreshes.
-        if len(_resolve_toolset_memo) >= 256:
+        if len(_resolve_toolset_memo) >= 256:  # stale-generation entries are never hit again
             _resolve_toolset_memo.clear()
-        _resolve_toolset_memo[(name, include_registry, registry_id, generation)] = list(result)
+        _resolve_toolset_memo[memo_key] = list(result)
     return result
 
 
-def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
-    """
-    Resolve multiple toolsets and combine their tools.
-    
-    Args:
-        toolset_names (List[str]): List of toolset names to resolve
-        
-    Returns:
-        List[str]: Combined list of all tool names (deduplicated)
-    """
-    all_tools = set()
-    
-    for name in toolset_names:
-        tools = resolve_toolset(name)
-        all_tools.update(tools)
-    
-    return sorted(all_tools)
-
-
 def _get_plugin_toolset_names() -> Set[str]:
-    """Return toolset names registered by plugins (from the tool registry).
-
-    These are toolsets that exist in the registry but not in the static
-    ``TOOLSETS`` dict — i.e. they were added by plugins at load time.
-    """
-    try:
-        from tools.registry import registry
-        return {
-            toolset_name
-            for toolset_name in registry.get_registered_toolset_names()
-            if toolset_name not in TOOLSETS
-        }
-    except Exception:
-        return set()
+    """Registry toolset names absent from the static TOOLSETS dict."""
+    return {n for n in _registry_call("get_registered_toolset_names", ()) if n not in TOOLSETS}
 
 
 def _get_registry_toolset_aliases() -> Dict[str, str]:
-    """Return explicit toolset aliases registered in the live registry."""
-    try:
-        from tools.registry import registry
-        return registry.get_registered_toolset_aliases()
-    except Exception:
-        return {}
+    return _registry_call("get_registered_toolset_aliases", {})
+
+
+def _display_alias(ts_name: str, aliases: Dict[str, str]) -> Optional[str]:
+    """First non-static alias pointing at *ts_name*, or None."""
+    return next((a for a, canonical in aliases.items() if canonical == ts_name and a not in TOOLSETS), None)
+
+
+def _plugin_display_names() -> List[str]:
+    """Plugin toolset names, shown under their first non-static alias when one exists."""
+    aliases = _get_registry_toolset_aliases()
+    return [_display_alias(n, aliases) or n for n in _get_plugin_toolset_names()]
 
 
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
-    """
-    Get all available toolsets with their definitions.
-
-    Includes both statically-defined toolsets and plugin-registered ones.
-    
-    Returns:
-        Dict: All toolset definitions
-    """
+    """All toolset definitions: static plus plugin-registered."""
     result = dict(TOOLSETS)
-    aliases = _get_registry_toolset_aliases()
-    for ts_name in _get_plugin_toolset_names():
-        display_name = ts_name
-        for alias, canonical in aliases.items():
-            if canonical == ts_name and alias not in TOOLSETS:
-                display_name = alias
-                break
-        if display_name in result:
-            continue
-        toolset = get_toolset(display_name)
+    for display_name in _plugin_display_names():
+        toolset = None if display_name in result else get_toolset(display_name)
         if toolset:
             result[display_name] = toolset
     return result
 
 
 def get_toolset_names() -> List[str]:
-    """
-    Get names of all available toolsets (excluding aliases).
-
-    Includes plugin-registered toolset names.
-    
-    Returns:
-        List[str]: List of toolset names
-    """
-    names = set(TOOLSETS.keys())
-    aliases = _get_registry_toolset_aliases()
-    for ts_name in _get_plugin_toolset_names():
-        for alias, canonical in aliases.items():
-            if canonical == ts_name and alias not in TOOLSETS:
-                names.add(alias)
-                break
-        else:
-            names.add(ts_name)
-    return sorted(names)
-
-
+    """Sorted names of all toolsets (static + plugin), excluding aliases."""
+    return sorted(set(TOOLSETS.keys()) | set(_plugin_display_names()))
 
 
 def validate_toolset(name: str) -> bool:
-    """
-    Check if a toolset name is valid.
-    
-    Args:
-        name (str): Toolset name to validate
-        
-    Returns:
-        bool: True if valid, False otherwise
-    """
-    # Accept special alias names for convenience
-    if name in {"all", "*"}:
-        return True
-    if name in TOOLSETS:
-        return True
-    if name in _get_plugin_toolset_names():
-        return True
-    return name in _get_registry_toolset_aliases()
+    return (name in {"all", "*"} or name in TOOLSETS
+            or name in _get_plugin_toolset_names() or name in _get_registry_toolset_aliases())
 
 
-def create_custom_toolset(
-    name: str,
-    description: str,
-    tools: List[str] = None,
-    includes: List[str] = None
-) -> None:
-    """
-    Create a custom toolset at runtime.
-    
-    Args:
-        name (str): Name for the new toolset
-        description (str): Description of the toolset
-        tools (List[str]): Direct tools to include
-        includes (List[str]): Other toolsets to include
-    """
-    TOOLSETS[name] = {
-        "description": description,
-        "tools": tools or [],
-        "includes": includes or []
-    }
-
-
+def create_custom_toolset(name: str, description: str, tools: List[str] = None, includes: List[str] = None) -> None:
+    """Register a runtime toolset in TOOLSETS."""
+    TOOLSETS[name] = _ts(description, tools or [], includes or [])
 
 
 def get_toolset_info(name: str) -> Dict[str, Any]:
-    """
-    Get detailed information about a toolset including resolved tools.
-    
-    Args:
-        name (str): Toolset name
-        
-    Returns:
-        Dict: Detailed toolset information
-    """
+    """Toolset definition plus its resolved tools, or None if unknown."""
     toolset = get_toolset(name)
     if not toolset:
         return None
-    
     resolved_tools = resolve_toolset(name)
-    
     return {
-        "name": name,
-        "description": toolset["description"],
-        "direct_tools": toolset["tools"],
-        "includes": toolset["includes"],
-        "resolved_tools": resolved_tools,
-        "tool_count": len(resolved_tools),
-        "is_composite": bool(toolset["includes"])
+        "name": name, "description": toolset["description"],
+        "direct_tools": toolset["tools"], "includes": toolset["includes"],
+        "resolved_tools": resolved_tools, "tool_count": len(resolved_tools),
+        "is_composite": bool(toolset["includes"]),
     }
 
 
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
 
+def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
+    """
+    Resolve multiple toolsets and combine their tools.
 
-if __name__ == "__main__":
-    print("Toolsets System Demo")
-    print("=" * 60)
-    
-    print("\nAvailable Toolsets:")
-    print("-" * 40)
-    for name, toolset in get_all_toolsets().items():
-        info = get_toolset_info(name)
-        composite = "[composite]" if info["is_composite"] else "[leaf]"
-        print(f"  {composite} {name:20} - {toolset['description']}")
-        print(f"     Tools: {len(info['resolved_tools'])} total")
-    
-    print("\nToolset Resolution Examples:")
-    print("-" * 40)
-    for name in ["web", "terminal", "safe", "debugging"]:
+    Args:
+        toolset_names (List[str]): List of toolset names to resolve
+
+    Returns:
+        List[str]: Combined list of all tool names (deduplicated)
+    """
+    all_tools = set()
+
+    for name in toolset_names:
         tools = resolve_toolset(name)
-        print(f"\n  {name}:")
-        print(f"    Resolved to {len(tools)} tools: {', '.join(sorted(tools))}")
-    
-    print("\nMultiple Toolset Resolution:")
-    print("-" * 40)
-    combined = resolve_multiple_toolsets(["web", "vision", "terminal"])
-    print("  Combining ['web', 'vision', 'terminal']:")
-    print(f"    Result: {', '.join(sorted(combined))}")
-    
-    print("\nCustom Toolset Creation:")
-    print("-" * 40)
-    create_custom_toolset(
-        name="my_custom",
-        description="My custom toolset for specific tasks",
-        tools=["web_search"],
-        includes=["terminal", "vision"]
-    )
-    custom_info = get_toolset_info("my_custom")
-    print("  Created 'my_custom' toolset:")
-    print(f"    Description: {custom_info['description']}")
-    print(f"    Resolved tools: {', '.join(custom_info['resolved_tools'])}")
+        all_tools.update(tools)
+
+    return sorted(all_tools)
+# ---- END PLUGIN-COMPAT ----

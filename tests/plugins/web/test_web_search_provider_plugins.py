@@ -3,7 +3,7 @@
 Covers:
 
 - All bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  firecrawl, keenable, xai) instantiate and self-report the expected
+  tavily, firecrawl, keenable, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -35,6 +35,8 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL",
         "KEENABLE_API_KEY",
+        "TAVILY_API_KEY",
+        "TAVILY_BASE_URL",
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "PARALLEL_SEARCH_MODE",
@@ -81,7 +83,9 @@ class TestBundledPluginsRegister:
             "firecrawl",
             "keenable",
             "parallel",
+            "perplexity",
             "searxng",
+            "tavily",
             "xai",
         ]
 
@@ -94,6 +98,8 @@ class TestBundledPluginsRegister:
             ("exa", True, True),
             ("parallel", True, True),
             ("keenable", True, True),
+            ("tavily", True, True),
+            ("perplexity", True, True),
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
@@ -115,7 +121,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "firecrawl", "keenable", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "perplexity", "firecrawl", "keenable", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -163,6 +169,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("KEENABLE_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_tavily_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("tavily")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("TAVILY_API_KEY", "real")
         assert p.is_available() is True
 
     def test_exa_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:

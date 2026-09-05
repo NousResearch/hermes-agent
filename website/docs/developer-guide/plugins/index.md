@@ -162,6 +162,21 @@ from an isolated `HERMES_HOME`. Those tests load and invoke the plugin through
 `PluginManager`; they assert real registration and callback outcomes rather
 than internal symbol lists or source-code shape.
 
+### Sep 2026 module decomposition: old import paths end 2026-09-14
+
+Hermes's internals were split into `<stem>_<topic>` sibling modules in Sep 2026 (PR #102117). **Internal
+import paths were never part of the plugin contract** above, but many plugins used them. Every moved name
+still resolves from its old module until **2026-09-14**, then the compatibility layer is removed.
+
+- **Check your plugin:** `hermes plugins compat /path/to/your/plugin` lists every `file:line` with the
+  old path and the new one, and exits 1 while any remain. `COMPAT_MANIFEST.md` in the repo is the full map.
+- **What users see:** a notice under the CLI banner, in `hermes doctor` and after `hermes update`, and a
+  one-time Desktop dialog naming the plugin. Each resolution through an old path also emits a
+  `HermesPluginCompatWarning` once per process.
+- **From 2026-09-14:** plugins that still import old paths are **not loaded** (the reason shows in
+  `hermes plugins list`). Users can force-load with `plugins.allow_deprecated_imports: true` until the
+  layer is actually removed, at which point the old paths raise `ImportError`.
+
 ## What you're building
 
 A **calculator** plugin with two tools:

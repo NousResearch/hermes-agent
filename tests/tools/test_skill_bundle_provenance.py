@@ -13,7 +13,10 @@ import pytest
 from rich.console import Console
 
 from tools.skills_guard import SCANNER_VERSION, scan_skill_cached
-from tools.skills_hub import GitHubAuth, GitHubSource, HubLockFile, SkillBundle, UrlSource
+from tools.skills_hub import HubLockFile
+from tools.skills_hub_github import GitHubAuth, GitHubSource
+from tools.skills_hub_models import SkillBundle
+from tools.skills_hub_sources import UrlSource
 
 
 SKILL_MD = """---
@@ -144,7 +147,7 @@ def test_same_dir_traversal_link_is_rejected(monkeypatch):
 
 def test_same_dir_link_without_extension_is_ignored(monkeypatch):
     """Prose targets that aren't file links (no extension) never fetch."""
-    from tools.skills_hub import _referenced_support_paths
+    from tools.skills_hub_models import _referenced_support_paths
 
     skill = "---\nname: x\ndescription: x\n---\nsee [notes](NOTES) and `README`\n"
     assert _referenced_support_paths(skill) == set()
@@ -152,7 +155,7 @@ def test_same_dir_link_without_extension_is_ignored(monkeypatch):
 
 def test_same_dir_link_query_and_fragment_are_stripped():
     """?query and #fragment never leak into the fetched bundle path."""
-    from tools.skills_hub import _referenced_support_paths
+    from tools.skills_hub_models import _referenced_support_paths
 
     skill = (
         "---\nname: x\ndescription: x\n---\n"
@@ -163,7 +166,7 @@ def test_same_dir_link_query_and_fragment_are_stripped():
 
 def test_case_variant_of_skill_md_is_never_a_sibling_entry():
     """skill.md must not ship as a bundle file (case-insensitive FS collision)."""
-    from tools.skills_hub import _referenced_support_paths
+    from tools.skills_hub_models import _referenced_support_paths
 
     skill = "---\nname: x\ndescription: x\n---\n[home](skill.md)\n"
     assert _referenced_support_paths(skill) == set()
@@ -171,7 +174,7 @@ def test_case_variant_of_skill_md_is_never_a_sibling_entry():
 
 def test_case_folded_sibling_collision_drops_the_pair():
     """A.md + a.md would collide on install — neither ships."""
-    from tools.skills_hub import _referenced_support_paths
+    from tools.skills_hub_models import _referenced_support_paths
 
     skill = "---\nname: x\ndescription: x\n---\n[a](A.md) [a2](a.md)\n"
     assert _referenced_support_paths(skill) == set()
@@ -329,14 +332,13 @@ def test_lock_file_persists_scan_provenance(tmp_path):
 
 def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path):
     from hermes_cli.skills_hub import do_install
-    import tools.skills_hub as hub
 
     _repo, url = served_repo
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
     monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
@@ -386,7 +388,6 @@ def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
     entry without a content_hash (which then poisons 'hermes skills check').
     """
     from hermes_cli.skills_hub import do_install
-    import tools.skills_hub as hub
 
     _repo, url = served_repo
     home = tmp_path / "home"
@@ -400,7 +401,7 @@ def test_install_with_junctioned_skills_dir(served_repo, monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
     monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
@@ -469,14 +470,13 @@ def test_install_skips_unreachable_support_file_e2e(served_repo_missing_support,
     scan, install, and lock provenance, with only the reachable files landing
     on disk and recorded in the lock file (#66760)."""
     from hermes_cli.skills_hub import do_install
-    import tools.skills_hub as hub
 
     _repo, url = served_repo_missing_support
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
     monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
-    monkeypatch.setattr(hub, "create_source_router", lambda auth=None: [UrlSource()])
+    monkeypatch.setattr("tools.skills_hub_search.create_source_router", lambda auth=None: [UrlSource()])
 
     sink = StringIO()
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
@@ -499,7 +499,7 @@ def test_install_skips_unreachable_support_file_e2e(served_repo_missing_support,
 
 
 def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypatch):
-    from tools.skills_hub import OptionalSkillSource
+    from tools.skills_hub_official import OptionalSkillSource
 
     root = tmp_path / "optional-skills"
     skill = root / "category" / "official-demo"
@@ -530,7 +530,8 @@ metadata:
 def test_optional_source_upstream_stub_fetches_from_external_repo(tmp_path, monkeypatch):
     """A catalog stub with metadata.hermes.upstream installs the upstream repo's
     content (relabelled official/trusted), not the stub itself."""
-    from tools.skills_hub import OptionalSkillSource, SkillBundle
+    from tools.skills_hub_models import SkillBundle
+    from tools.skills_hub_official import OptionalSkillSource
 
     root = tmp_path / "optional-skills"
     skill = root / "creative" / "upstream-demo"
@@ -569,7 +570,7 @@ def test_optional_source_upstream_stub_fetches_from_external_repo(tmp_path, monk
 
 
 def test_optional_source_upstream_pointer_rejects_malformed(tmp_path):
-    from tools.skills_hub import OptionalSkillSource
+    from tools.skills_hub_official import OptionalSkillSource
 
     source = OptionalSkillSource()
     bad = [
@@ -587,7 +588,8 @@ def test_unified_search_trust_rank_survives_limit_cut():
     """Official/builtin results must survive the limit truncation even when a
     high-volume community source floods the merged list first."""
     from unittest.mock import patch as _patch
-    from tools.skills_hub import unified_search, SkillMeta
+    from tools.skills_hub_models import SkillMeta
+    from tools.skills_hub_search import unified_search
 
     community = [
         SkillMeta(name=f"s{i}", description="", source="skills.sh",
@@ -597,7 +599,7 @@ def test_unified_search_trust_rank_survives_limit_cut():
     official = [SkillMeta(name="s-official", description="", source="official",
                           identifier="official/cat/s-official", trust_level="builtin")]
 
-    with _patch("tools.skills_hub.parallel_search_sources",
+    with _patch("tools.skills_hub_search.parallel_search_sources",
                 return_value=(community + official, {}, [])):
         results = unified_search("s", [], source_filter="all", limit=10)
 

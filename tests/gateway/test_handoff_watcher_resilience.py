@@ -219,13 +219,13 @@ async def test_reclaim_runs_per_profile_store(monkeypatch):
         def __init__(self, home):
             self.home = home
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *exc):
+        async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(run, "_profile_runtime_scope", _Scope)
+    monkeypatch.setattr(run, "_async_profile_runtime_scope", _Scope)
 
     async def _no_sleep(_seconds):
         return None

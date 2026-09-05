@@ -151,8 +151,8 @@ Examples from the repo:
 That same id should appear in:
 
 - `PROVIDER_REGISTRY` in `hermes_cli/auth.py`
-- `_PROVIDER_LABELS` in `hermes_cli/models.py`
-- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models.py`
+- `_PROVIDER_LABELS` in `hermes_cli/models_catalog_static.py` (re-exported by `hermes_cli/models.py`)
+- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models_catalog_static.py`
 - CLI `--provider` choices in `hermes_cli/main.py`
 - setup / model selection branches
 - auxiliary-model defaults

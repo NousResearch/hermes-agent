@@ -1,7 +1,7 @@
 # Session Lifecycle
 
 > **Audience:** Gateway developers and maintainers
-> **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
+> **Source files:** `gateway/session.py` (~1200 lines + `session_*.py` siblings), `gateway/run.py` (~5500 lines facade + `run_*.py` phases), `gateway/config.py`
 > **Last updated:** 2026-06-16
 
 ## Overview
@@ -14,9 +14,10 @@ The session system lives primarily in two modules:
 
 - `gateway/session.py` — Data model (`SessionSource`, `SessionEntry`, `SessionContext`),
   key generation (`build_session_key`), and the main store (`SessionStore`).
-- `gateway/run.py` — Gateway runner (`GatewayRunner`) that wires sessions into the message
-  processing pipeline: session expiry watching, agent caching, restart recovery, and message
-  queuing.
+- `gateway/run.py` — Gateway runner (`GatewayRunner`) facade that wires sessions into the message
+  processing pipeline; the phases live in `run_*.py` siblings: session expiry watching
+  (`run_watchers.py`), agent caching (`run_agent_cache.py`), restart recovery
+  (`session_recovery.py`), and message queuing (`run_busy.py`).
 
 ---
 

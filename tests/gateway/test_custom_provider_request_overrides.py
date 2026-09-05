@@ -172,7 +172,6 @@ def test_turn_route_merges_fast_mode_with_provider_request_overrides():
 @pytest.mark.asyncio
 async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(
@@ -229,7 +228,6 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     fast-mode key while the provider extra_body survives.
     """
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
-    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
     monkeypatch.setattr(

@@ -72,7 +72,7 @@ async def test_in_process_scoped_transport_contract_finishes_headlessly(
         PlatformConfig(enabled=True, extra={"key": "target-peer-key-1234567890"})
     )
     target._run_idempotency_store.close()
-    from gateway.platforms.api_server import RunIdempotencyStore
+    from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 
     target._run_idempotency_store = RunIdempotencyStore(
         str(tmp_path / "target-runs.db")

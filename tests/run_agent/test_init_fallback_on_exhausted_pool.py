@@ -30,9 +30,9 @@ def test_init_tries_fallback_when_primary_returns_none():
         return None, None  # primary exhausted
 
     with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
-         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("run_agent.check_toolset_requirements", return_value={}), \
-         patch("run_agent.OpenAI", return_value=MagicMock()):
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
             provider="alibaba-coding-plan",
@@ -52,9 +52,9 @@ def test_init_tries_fallback_when_primary_returns_none():
 def test_init_raises_when_no_fallback_configured():
     """When primary returns None and no fallback is set, should raise."""
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
-         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("run_agent.check_toolset_requirements", return_value={}), \
-         patch("run_agent.OpenAI", return_value=MagicMock()):
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         with pytest.raises(RuntimeError, match="no API key was found"):
             AIAgent(
@@ -88,9 +88,9 @@ def test_init_tries_fallback_when_openrouter_pool_exhausted():
         return None, None  # openrouter pool exhausted
 
     with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
-         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("run_agent.check_toolset_requirements", return_value={}), \
-         patch("run_agent.OpenAI", return_value=MagicMock()):
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
             provider="openrouter",
@@ -115,9 +115,9 @@ def test_init_openrouter_exhausted_without_chain_keeps_generic_error():
     """openrouter exhausted + no usable fallback keeps the generic
     'No LLM provider configured' error (not the named-provider one)."""
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
-         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("run_agent.check_toolset_requirements", return_value={}), \
-         patch("run_agent.OpenAI", return_value=MagicMock()):
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         with pytest.raises(RuntimeError, match="No LLM provider configured"):
             AIAgent(

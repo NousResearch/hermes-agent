@@ -189,3 +189,30 @@ def test_combined_review_prompt_teaches_read_before_write():
 # ---------------------------------------------------------------------------
 # _MEMORY_REVIEW_PROMPT — unchanged, still memory-focused
 # ---------------------------------------------------------------------------
+
+
+def _assert_lesson_layer_guidance(prompt: str, label: str) -> None:
+    """Skill writes must be lessons (rule + why), not incident logs or per-session reference files."""
+    lower = prompt.lower()
+    assert "specifications" in lower and "procedure" in lower, (
+        f"{label}: must state the primary purpose — how to do the task, to the user's specifications")
+    assert "why" in lower and "rule" in lower, f"{label}: must ask for rule + why"
+    assert "pr/issue numbers" in lower or "pr numbers" in lower, f"{label}: must ban PR/issue numbers as content"
+    assert "one rule" in lower, f"{label}: must collapse repeated lessons into one rule"
+    assert "agents.md" in lower, f"{label}: must forbid duplicating always-loaded context"
+    assert "per-session" in lower or "per-incident" in lower, f"{label}: must forbid per-session reference files"
+
+
+def test_skill_review_prompt_teaches_lesson_layer():
+    _assert_lesson_layer_guidance(AIAgent._SKILL_REVIEW_PROMPT, "_SKILL_REVIEW_PROMPT")
+
+
+def test_combined_review_prompt_teaches_lesson_layer():
+    _assert_lesson_layer_guidance(AIAgent._COMBINED_REVIEW_PROMPT, "_COMBINED_REVIEW_PROMPT")
+
+
+def test_curator_prompt_consolidates_by_distilling():
+    from agent.curator import CURATOR_REVIEW_PROMPT
+    lower = CURATOR_REVIEW_PROMPT.lower()
+    assert "distill" in lower, "curator must distill absorbed content, not file it"
+    assert "verbatim" in lower and "per-incident" in lower, "curator must not copy siblings verbatim into references/"

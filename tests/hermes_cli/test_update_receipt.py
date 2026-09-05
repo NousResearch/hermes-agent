@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 import hermes_cli.update_receipt as ur
+from hermes_cli import update_cmd
 
 
 @pytest.fixture()
@@ -93,7 +94,12 @@ class TestReceiptLifecycle:
 
         payload = json.loads(path.read_text(encoding="utf-8"))
         persisted = payload["gateway_restart"]["fresh_recovery"]
-        assert persisted == recovery
+        assert {key: persisted[key] for key in recovery} == recovery
+        # Serve coverage is always persisted, even when the pass had nothing
+        # to report, so a reader can tell "no serve runtime" from "the field
+        # predates #92145".
+        assert persisted["serve_units"] == {"verified": [], "failed": []}
+        assert persisted["stale_runtimes"] == []
         # The conservative vocabulary is the persisted contract: no bucket may
         # rebrand an unverified relaunch as supervisor-backed success.
         assert "succeeded" not in persisted
@@ -212,7 +218,7 @@ class TestCommandBoundaryFinalization:
             ur.record_step("windows_preflight", False, "hermes.exe holds venv")
             sys.exit(2)
 
-        monkeypatch.setattr(hermes_main, "_cmd_update_impl", _fake_impl)
+        monkeypatch.setattr(update_cmd, "_cmd_update_impl", _fake_impl)
         monkeypatch.setattr(
             hermes_main, "detect_install_method", lambda *a, **k: "git", raising=False
         )

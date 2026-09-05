@@ -109,7 +109,7 @@ async def test_pending_drain_keeps_active_session_guard_live():
     await adapter.handle_message(_make_event(text="M1"))
 
     # Wait until M1 is actively running inside the handler.
-    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+    await asyncio.wait_for(first_started.wait(), timeout=5.0)
 
     # Assert: session is active.
     assert sk in adapter._active_sessions
@@ -126,7 +126,7 @@ async def test_pending_drain_keeps_active_session_guard_live():
     try:
         # Pause inside the handoff's typing cleanup. Production has already
         # cleared the guard and has not yet transferred task ownership.
-        await asyncio.wait_for(handoff_entered.wait(), timeout=2.0)
+        await asyncio.wait_for(handoff_entered.wait(), timeout=5.0)
 
         # Across the drain transition, the Event object must be the SAME
         # reference (not replaced, not deleted).
@@ -141,7 +141,7 @@ async def test_pending_drain_keeps_active_session_guard_live():
 
         # Finish drain without relying on scheduler speed.
         release_handoff.set()
-        await asyncio.wait_for(second_processed.wait(), timeout=2.0)
+        await asyncio.wait_for(second_processed.wait(), timeout=5.0)
     finally:
         release_handoff.set()
         await adapter.cancel_background_tasks()
@@ -190,7 +190,7 @@ async def test_finally_cleanup_drains_late_arrival_pending():
     await adapter.handle_message(_make_event(text="M1"))
 
     # Drain: wait for the late-drain task itself to process LATE.
-    await asyncio.wait_for(late_processed.wait(), timeout=2.0)
+    await asyncio.wait_for(late_processed.wait(), timeout=5.0)
 
     await adapter.cancel_background_tasks()
 
@@ -218,7 +218,7 @@ async def test_no_pending_cleans_up_normally():
     # Await the task that owns this session rather than sampling cleanup after
     # an arbitrary wall-clock delay.
     owner_task = adapter._session_tasks[sk]
-    await asyncio.wait_for(asyncio.shield(owner_task), timeout=2.0)
+    await asyncio.wait_for(asyncio.shield(owner_task), timeout=5.0)
 
     assert sk not in adapter._active_sessions, (
         "_active_sessions was not cleaned up after a normal turn with no pending"

@@ -49,20 +49,22 @@ class TestTelegramWebhookSecretRequired:
 
 
     def test_polling_branch_has_no_secret_guard(self):
-        """Polling mode (else-branch) must NOT require the webhook secret —
-        polling authenticates via the bot token, not a webhook secret."""
+        """Polling mode must NOT require the webhook secret — polling
+        authenticates via the bot token, not a webhook secret.
+
+        connect() dispatches to ``_start_webhook_mode`` / ``_start_polling_mode``;
+        the guard must live in the webhook method only.
+        """
+        import ast
+
         src = self._get_source()
-        # The guard should appear inside the `if webhook_url:` branch,
-        # not the `else:` polling branch. Rough check: the raise is
-        # followed (within ~60 lines) by an `else:` that starts the
-        # polling branch, and there's no secret-check in that polling
-        # branch.
-        webhook_block = re.search(
-            r'if webhook_url:\s*\n(.*?)\n            else:\s*\n(.*?)\n',
-            src, re.DOTALL,
-        )
-        if webhook_block:
-            webhook_body = webhook_block.group(1)
-            polling_body = webhook_block.group(2)
-            assert "TELEGRAM_WEBHOOK_SECRET" in webhook_body
-            assert "TELEGRAM_WEBHOOK_SECRET" not in polling_body
+        bodies = {
+            node.name: ast.get_source_segment(src, node)
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in ("_start_webhook_mode", "_start_polling_mode")
+        }
+        assert set(bodies) == {"_start_webhook_mode", "_start_polling_mode"}
+        assert "TELEGRAM_WEBHOOK_SECRET" in bodies["_start_webhook_mode"]
+        assert "if not webhook_secret:" in bodies["_start_webhook_mode"]
+        assert "TELEGRAM_WEBHOOK_SECRET" not in bodies["_start_polling_mode"]

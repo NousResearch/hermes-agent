@@ -6,7 +6,8 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
+from tools.environments.base import BaseEnvironment
+from tools.environments.base_output import _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
@@ -418,7 +419,7 @@ class TestSanitizeTaskIdForPath:
     """
 
     def test_docker_unsafe_characters_are_replaced(self):
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         out = sanitize_task_id_for_path("session:agent:main:telegram:dm:12345")
         assert ":" not in out
@@ -426,13 +427,13 @@ class TestSanitizeTaskIdForPath:
 
     def test_safe_ids_pass_through_verbatim(self):
         """Existing sandboxes keep resolving to their current directory."""
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         for value in ("default", "task-01.abc_def", "astropy__astropy-12907"):
             assert sanitize_task_id_for_path(value) == value
 
     def test_deterministic_and_collision_free_for_distinct_inputs(self):
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         assert sanitize_task_id_for_path("a:b") == sanitize_task_id_for_path("a:b")
         # substitution alone is not injective — the digest must disambiguate
@@ -440,7 +441,7 @@ class TestSanitizeTaskIdForPath:
         assert sanitize_task_id_for_path("!!!") != sanitize_task_id_for_path("@@@")
 
     def test_empty_and_traversal_inputs_are_neutralized(self):
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         assert sanitize_task_id_for_path("") == "default"
         for value in (".", "..", "../../etc", "..\\..\\escape"):
@@ -449,7 +450,7 @@ class TestSanitizeTaskIdForPath:
             assert "/" not in out and "\\" not in out
 
     def test_oversized_input_truncates_with_unique_digest(self):
-        from tools.environments.base import (
+        from tools.environments.path_utils import (
             _SANDBOX_DIR_MAX_LEN,
             sanitize_task_id_for_path,
         )
@@ -463,7 +464,7 @@ class TestSanitizeTaskIdForPath:
         assert out_a != out_b
 
     def test_sanitized_dir_is_creatable(self, tmp_path):
-        from tools.environments.base import sanitize_task_id_for_path
+        from tools.environments.path_utils import sanitize_task_id_for_path
 
         target = tmp_path / "docker" / sanitize_task_id_for_path(
             "session:agent:main:telegram:dm:12345"

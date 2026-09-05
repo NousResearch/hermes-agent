@@ -101,6 +101,45 @@ describe('useRouteResume', () => {
     expect(resumeSession).not.toHaveBeenCalled()
   })
 
+  it('honors an explicit resume request on /:sid even while a fresh draft is staged', () => {
+    // A gateway/profile switch stages a fresh draft (wipeSessionListsForGatewaySwitch)
+    // but deliberately leaves the URL on /:sid. In that state pathnameChanged,
+    // gatewayBecameOpen and stuckOnRoutedSession are all false, so an explicit
+    // request (plugin/SDK reselect, 4001 recovery) is the ONLY lever left — it
+    // must still fire. Filtering doomed ids happens at requestSessionResume and
+    // resumeSession, not by guessing from freshDraftReady.
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map<string, string>() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    const props = {
+      activeSessionId: null,
+      activeSessionIdRef,
+      creatingSessionRef,
+      currentView: 'chat',
+      freshDraftReady: true,
+      gatewayState: 'open',
+      locationPathname: '/session-1',
+      resumeSession,
+      routedSessionId: 'session-1',
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionId: null,
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...props} />)
+
+    resumeSession.mockClear()
+
+    rerender(<RouteResumeHarness {...props} sessionResumeRequest={{ sequence: 1, sessionId: 'session-1' }} />)
+
+    expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
   it('self-heals a stranded routed session (null selected/active, same pathname, not a fresh draft)', () => {
     const resumeSession = vi.fn(async () => undefined)
     const startFreshSessionDraft = vi.fn()

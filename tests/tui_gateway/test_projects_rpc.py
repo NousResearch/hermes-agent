@@ -763,11 +763,13 @@ def test_projects_reads_are_scoped_to_the_requested_profile(monkeypatch, tmp_pat
     assert coder_tree["projects"][0]["sessionCount"] == 1
     assert launch_tree["scoped_session_ids"] == ["launch-session"]
     assert coder_tree["scoped_session_ids"] == ["coder-session"]
+    assert [s["profile"] for s in coder_tree["projects"][0]["previewSessions"]] == ["coder"]
 
     assert coder_sessions["project"]["id"] == coder_project["id"]
     assert coder_sessions["project"]["sessionCount"] == 1
     lane = coder_sessions["project"]["repos"][0]["groups"][0]
     assert [s["id"] for s in lane["sessions"]] == ["coder-session"]
+    assert [s["profile"] for s in lane["sessions"]] == ["coder"]
 
 
 def test_projects_tree_is_scoped_to_the_requested_profile(monkeypatch, tmp_path):

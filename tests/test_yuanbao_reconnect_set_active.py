@@ -1,7 +1,7 @@
 """test_yuanbao_reconnect_set_active.py - Verify _do_reconnect restores the active singleton.
 
 Regression test for #58363: after a WS disconnect/reconnect cycle,
-``get_active_adapter()`` must return the live adapter (not ``None``).
+``YuanbaoAdapter.get_active()`` must return the live adapter (not ``None``).
 The original ``_do_reconnect()`` succeeded but never called
 ``YuanbaoAdapter.set_active()``, leaving the singleton permanently
 ``None`` until a full gateway restart.
@@ -20,7 +20,6 @@ import pytest
 from gateway.platforms.yuanbao import (
     YuanbaoAdapter,
     ConnectionManager,
-    get_active_adapter,
 )
 
 
@@ -65,7 +64,7 @@ async def test_do_reconnect_calls_set_active_on_success():
     ):
         # Clear any existing active instance
         YuanbaoAdapter.set_active(None)
-        assert get_active_adapter() is None
+        assert YuanbaoAdapter.get_active() is None
 
         # Run reconnect
         result = await cm._do_reconnect()
@@ -74,7 +73,7 @@ async def test_do_reconnect_calls_set_active_on_success():
         assert result is True
 
         # After successful reconnect, get_active() must return the adapter
-        assert get_active_adapter() is adapter
+        assert YuanbaoAdapter.get_active() is adapter
 
 
 @pytest.mark.asyncio
@@ -94,7 +93,7 @@ async def test_do_reconnect_does_not_set_active_on_failure():
     ):
         # Clear any existing active instance
         YuanbaoAdapter.set_active(None)
-        assert get_active_adapter() is None
+        assert YuanbaoAdapter.get_active() is None
 
         # Run reconnect - should fail
         result = await cm._do_reconnect()
@@ -103,4 +102,4 @@ async def test_do_reconnect_does_not_set_active_on_failure():
         assert result is False
 
         # get_active() should still be None
-        assert get_active_adapter() is None
+        assert YuanbaoAdapter.get_active() is None

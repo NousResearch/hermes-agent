@@ -1,8 +1,22 @@
-"""Default configuration data for Hermes Agent.
+"""Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
-Pure-data leaf module: DEFAULT_CONFIG and OPTIONAL_ENV_VARS, extracted
-verbatim from hermes_cli/config.py. Must not import from hermes_cli.config.
+Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
+docs of config.yaml.
 """
+
+
+def _aux(timeout, *, reasoning_effort=True, **extra):
+    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
+
+    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
+    ``extra`` keys are appended after the standard ones.
+    """
+    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
+    if reasoning_effort:
+        d["reasoning_effort"] = ""
+    d.update(extra)
+    return d
+
 
 DEFAULT_CONFIG = {
     "model": "",
@@ -10,542 +24,318 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
-    # SQLite journal mode used by every Hermes database opener. WAL is the
-    # normal default; set DELETE for weak-fsync/shared filesystems where WAL is
-    # not crash-safe (for example macOS virtiofs, NFS, or SMB).
+    # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
+    # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).
     "database": {
         "journal_mode": "wal",
-        # Optional WAL sizing pragmas, applied when set to integers.
-        # None = SQLite defaults (autocheckpoint 1000 pages, no size limit).
+        # WAL sizing pragmas (ints). None = SQLite defaults (autocheckpoint 1000 pages, no limit).
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
-    # Soft file-descriptor limit for long-running Hermes server processes.
-    # Clamped to the OS hard limit; 0/false/null disables the adjustment.
-    "runtime": {
-        "nofile_soft_limit": 4096,
-    },
-    # Global active chat session cap across CLI, TUI/dashboard, and messaging.
-    # None/0 = unbounded.
+    # Soft fd limit for long-running server processes; clamped to OS hard limit. 0/false/null = off.
+    "runtime": {"nofile_soft_limit": 4096},
+    # Global active chat session cap across CLI, TUI/dashboard, and messaging. None/0 = unbounded.
     "max_concurrent_sessions": None,
-    # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. When more than
-    # this many are live, the gateway evicts the least-recently-active DETACHED
-    # sessions (no live client) so accumulated agents don't pile up under memory
-    # pressure. Reopening one re-resumes it from disk. 0/null disables.
+    # Soft LRU cap on in-memory TUI/desktop/dashboard sessions. Above it the gateway evicts the
+    # least-recently-active DETACHED sessions (no live client); reopening re-resumes from disk.
+    # 0/null disables.
     "max_live_sessions": 16,
     "session": {
-        # Per-terminal `hermes -c`: each CLI session drops a breadcrumb file
-        # under $HERMES_HOME/terminal-sessions/<terminal-id>, and a bare
-        # -c/--continue resumes THIS terminal's session (tmux pane, kitty
-        # window, wezterm pane, plain tty, ...) instead of the globally
-        # most-recent one. Set false to restore the old latest-session
-        # behavior everywhere.
+        # Per-terminal `hermes -c`: each CLI session writes a breadcrumb under
+        # $HERMES_HOME/terminal-sessions/<terminal-id>, so bare -c/--continue resumes THIS
+        # terminal's session (tmux/kitty/wezterm pane, tty). false = resume globally most-recent.
         "terminal_continue": True,
     },
     "agent": {
-        # Unlimited by default. The agent turn cap caused more problems than
-        # it solved (silent mid-task truncation). null = unlimited; set a
-        # positive integer to cap, or use "none"/"unlimited"/"inf"/0/-1 —
-        # all normalized by hermes_cli.config.resolve_turn_limit.
+        # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
+        # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
         "max_turns": None,
-        # Optional wall-clock budget in seconds per conversation run.
-        # null/absent = feature fully off (zero behavior change). When set,
-        # the agent gets a one-time wrap-up notice at 80% elapsed and
-        # implicit provider stale timeouts are capped to the remaining
-        # budget. CLI one-shot equivalent: `hermes chat --run-budget N`.
+        # Wall-clock budget (seconds) per run. null = off. When set: one-time wrap-up notice at 80%
+        # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
+        # `hermes chat --run-budget N`.
         "run_budget_seconds": None,
-        # Inactivity timeout for gateway agent execution (seconds).
-        # The agent can run indefinitely as long as it's actively calling
-        # tools or receiving API responses.  Only fires when the agent has
-        # been completely idle for this duration.  0 = unlimited.
+        # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
+        # while calling tools or receiving API responses. 0 = unlimited.
         "gateway_timeout": 1800,
-        # Maximum time an alias routing key waits for the active turn holding
-        # the same resolved session lease. On expiry the inbound message is
-        # rejected with a resend notice rather than run without serialization.
-        # Keep this short: Telegram dispatches updates sequentially, so an
-        # inline lease waiter also delays unrelated topics. Non-positive values
-        # fall back to the five-second safety default.
+        # Max seconds an alias routing key waits for the active turn holding the same session lease;
+        # on expiry the message is rejected with a resend notice. Keep short: Telegram dispatches
+        # sequentially, so a waiter delays unrelated topics. Non-positive -> 5s.
         "gateway_turn_lease_timeout": 5,
-        # Per-session AIAgent cache in the gateway. Each cached agent keeps a
-        # warm prompt prefix AND the session's full transcript, so the cache
-        # trades memory for cost: too small and every turn re-pays an uncached
-        # prompt, too large and tool-heavy transcripts fill the heap.
+        # Per-session AIAgent cache in the gateway. Each entry keeps a warm prompt prefix AND the
+        # full transcript: too small re-pays uncached prompts, too large fills the heap.
         "agent_cache": {
-            # LRU entry cap.
-            "max_size": 128,
-            # Evict an agent that has been idle this long (seconds).
-            "idle_ttl_secs": 3600,
-            # Anonymous-RSS budget (MB) above which the gateway starts shedding
-            # least-recently-used transcripts, which reload from the persisted
-            # session on the next turn. "auto" derives the budget from the
-            # cgroup memory limit the gateway runs under (or total RAM when
-            # uncapped); a number sets it explicitly; 0/off disables the pass
-            # and lets memory grow to whatever the two bounds above allow.
+            "max_size": 128,  # LRU entry cap
+            "idle_ttl_secs": 3600,  # evict agents idle this long
+            # Anonymous-RSS budget (MB) above which LRU transcripts are shed (reloaded from disk
+            # next turn). "auto" = derive from cgroup memory limit (or total RAM); number =
+            # explicit; 0/off = disable the pass.
             "memory_high_mb": "auto",
-            # Upper bound on how many sessions one pressure pass sheds, so a
-            # burst of teardowns cannot stall the gateway.
+            # Max sessions shed per pass (teardown bursts can't stall the gateway) and the number of
+            # most-recently-used sessions the pass never touches.
             "max_evictions_per_pass": 16,
-            # Most-recently-used sessions the pressure pass never touches —
-            # they are the ones actively paying for a warm prompt cache.
             "protect_recent": 8,
         },
-        # Force-interrupt budget once gateway stop()/drain has begun
-        # (seconds). Applies to SIGTERM/external stop and to the final
-        # phase of in-band restart after any after-turn wait. 0 = interrupt
-        # immediately (the default).
-        #
-        # Keep this short and under systemd TimeoutStopSec — a long value
-        # here invites SIGKILL-mid-cleanup. For in-band restart
-        # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
-        # active turns finish *before* stop() begins (#77184).
+        # Force-interrupt budget (seconds) once gateway stop()/drain has begun (SIGTERM, and the
+        # final phase of in-band restart). 0 = interrupt immediately. Keep under systemd
+        # TimeoutStopSec or risk SIGKILL mid-cleanup; for /restart prefer restart_after_turn_timeout
+        # so turns finish BEFORE stop().
         "restart_drain_timeout": 0,
-        # Cron-only floor under the stop()/drain wait (seconds). A chat turn
-        # interrupted by a restart is announced to the user and resumed on
-        # their next message; an interrupted cron run is written to jobs.json
-        # as a permanent failure that nobody is waiting on, so it must not
-        # inherit restart_drain_timeout's 0 (#82161). Clamped at runtime to
-        # the shutdown-watchdog leash minus teardown headroom, so raising it
-        # past ~50s has no effect unless TimeoutStopSec is raised too.
-        # 0 = opt out (cron drains on restart_drain_timeout, legacy).
+        # Cron-only floor under the stop()/drain wait (seconds). Interrupted chat turns resume on
+        # the next message, but an interrupted cron run is recorded as a permanent failure, so it
+        # must not inherit restart_drain_timeout's 0. Clamped to the shutdown-watchdog leash minus
+        # teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
+        # A chat turn interrupted by a restart is announced to the user and resumed on their next message;
+        # an interrupted cron run is written to jobs.json as a permanent failure that nobody is waiting on,
+        # so it must not inherit restart_drain_timeout's 0 (#82161).
         "cron_drain_timeout": 30,
-        # In-band restart wait for active turns to finish before stop()
-        # (seconds). /restart and SIGUSR1 refuse new work, then wait up to
-        # this cap for in-flight agents/cron/api runs to complete naturally
-        # so the requesting turn is not amputated by restart_drain_timeout.
-        # 0 = legacy behaviour (enter stop()/drain immediately). Default
-        # 30 min is a safety valve for wedged agents, not a target latency —
-        # an interactive `hermes gateway restart` must never block for hours
-        # on a turn that wedged (#79133). Long unattended turns can raise
-        # this in config.yaml.
+        # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
+        # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
+        # min is a safety valve for wedged agents, not a target; raise for long unattended turns.
+        # Default 30 min is a safety valve for wedged agents, not a target latency — an interactive `hermes
+        # gateway restart` must never block for hours on a turn that wedged (#79133).
         "restart_after_turn_timeout": 1800,
-        # Upper bound (seconds) a submitted prompt waits for the deferred
-        # agent build (MCP discovery, model metadata, skills scan) before
-        # failing with a visible error (#63078). The gateway's wait is
-        # patient — the prompt is delivered the moment the build completes
-        # and a progress notice is emitted past 30s — so this cap only fires
-        # on a genuinely hung build. Raise it for deployments with many slow
-        # or unreachable MCP servers.
+        # Max seconds a submitted prompt waits for the deferred agent build (MCP discovery, model
+        # metadata, skills scan) before failing visibly. The prompt is delivered as soon as the
+        # build completes (progress notice past 30s), so this only fires on a hung build. Raise for
+        # many slow/unreachable MCP servers.
+        # See #63078.
         "build_wait_timeout": 600,
-        # Max app-level retry attempts for API errors (connection drops,
-        # provider timeouts, 5xx, etc.) before the agent surfaces the
-        # failure.  The OpenAI SDK already does its own low-level retries
-        # (max_retries=2 default) for transient network errors; this is
-        # the Hermes-level retry loop that wraps the whole call.  Lower
-        # this to 1 if you use fallback providers and want fast failover
-        # on flaky primaries; raise it if you prefer to tolerate longer
-        # provider hiccups on a single provider.
+        # Hermes-level retry attempts for API errors (connection drops, timeouts, 5xx) wrapping the
+        # whole call; the OpenAI SDK also retries transient errors (max_retries=2). Set 1 for fast
+        # failover to fallback providers; raise to tolerate longer provider hiccups.
         "api_max_retries": 3,
-        # Empty-response retry guard (NS-503).  The empty-retry loop
-        # re-sends the full conversation input at full price on every
-        # attempt; these settings stop it from re-billing *deterministic*
-        # empties (unsignaled provider refusals with zero output tokens)
-        # while failing open on any ambiguous evidence (missing usage,
-        # any generated tokens, model/provider change mid-streak).
+        # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
+        # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
+        # open on ambiguous evidence (missing usage, any tokens, model/provider change).
         "empty_response_guard": {
-            # Master switch for both guards below. False restores the
-            # legacy fixed 3-retry behaviour unconditionally.
-            "enabled": True,
-            # When the estimated input cost of a single empty attempt
-            # meets or exceeds this many USD, the retry budget for the
-            # streak drops from 3 to 1. Unknown pricing or missing usage
-            # leaves the budget untouched.
+            "enabled": True,  # False = legacy fixed 3 retries unconditionally
+            # When one empty attempt's estimated input cost >= this USD, the streak's retry budget
+            # drops from 3 to 1. Unknown pricing / missing usage leaves it untouched.
             "cost_threshold_usd": 0.25,
         },
+        # Fast mode: "" / "normal" (off), "fast" (always), "auto" (first fast_auto_seconds of every
+        # turn), "cold" (first turn of a session only).
         "service_tier": "",
-        # Tool-use enforcement: injects system prompt guidance that tells the
-        # model to actually call tools instead of describing intended actions.
-        # Values: "auto" (default — applies to gpt/codex models), true/false
-        # (force on/off for all models), or a list of model-name substrings
-        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
+        "fast_auto_seconds": 60,
+        # System-prompt guidance telling the model to call tools instead of describing actions.
+        # "auto" = gpt/codex models; true/false = force for all models; or a list of model-name
+        # substrings (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
-        # Execution-discipline guidance: injects a system prompt block covering
-        # tool persistence, mandatory tool use for arithmetic/system facts,
-        # external-write read-back, count reconciliation, literal preservation
-        # of identifiers, and verification-gated completion.  Chosen once at
-        # session start keyed on model name (prompt stays byte-stable).
-        # Values: "auto" (default — applies to gpt/codex/grok/deepseek/kimi/
-        # qwen/glm/minimax/mimo/mistral models), true/false (force on/off for
-        # all models), or a list of model-name substrings to match.
+        # Execution-discipline prompt block (tool persistence, tools for arithmetic/system facts,
+        # read-back after external writes, count reconciliation, literal identifiers,
+        # verification-gated completion). Chosen once per session by model name (byte-stable).
+        # "auto" = gpt/codex/grok/deepseek/kimi/qwen/glm/minimax/mimo/mistral; true/false = force;
+        # or a list of model-name substrings.
         "execution_guidance": "auto",
-        # Intent-ack continuation: when the model opens a turn by narrating an
-        # action it will take ("I'll go check the logs...") but emits no tool
-        # call, intercept the turn-end, inject a "continue now, execute the
-        # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
-        # per turn). This is the corrective sibling of tool_use_enforcement (the
-        # preventive prompt-side guard). Values: "auto" (default — fires only on
-        # the codex_responses api_mode, the historical behavior), true (all
-        # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
-        # false (never), or a list of model-name substrings to match.
+        # When the model narrates an action ("I'll go check the logs...") but emits no tool call,
+        # inject a "continue now, execute the tools" nudge and loop (max 2 nudges/turn). Corrective
+        # sibling of tool_use_enforcement. "auto" = codex_responses api_mode only; true = all
+        # api_modes (fixes Gemini/Claude "stops after stating intent"); false = never; or a list of
+        # model-name substrings.
         "intent_ack_continuation": "auto",
-        # Runtime anti-stall guards. When True (default), two conservative
-        # guards run: (1) an identical-call loop breaker that appends a short
-        # notice to the tool result when the same tool is called 3+ consecutive
-        # times with identical arguments AND identical results (never blocks;
-        # pollers like `process` are exempt), and (2) a continue-intent
-        # extension of the empty-response recovery that re-prompts once when
-        # the model ends its turn saying it will continue but takes no action.
-        # Set False to disable both.
+        # Anti-stall guards: (1) identical-call loop breaker appends a notice when the same tool is
+        # called 3+ times with identical args AND results (never blocks; pollers like `process`
+        # exempt); (2) continue-intent extension of empty-response recovery re-prompts once when the
+        # model says it will continue but takes no action. False disables both.
         "stall_guards": True,
-        # Universal "finish the job" guidance — short prompt block applied to
-        # all models that targets two cross-family failure modes: (1) stopping
-        # after a stub instead of finishing the artifact, (2) fabricating
-        # plausible-looking output when a real path is blocked.  Costs ~80
-        # tokens in the cached system prompt.  Set False to disable globally.
+        # "Finish the job" prompt block for all models: don't stop at a stub, never fabricate output
+        # when the real path is blocked. ~80 cached tokens. False disables.
         "task_completion_guidance": True,
-        # Universal parallel-tool-call guidance — short prompt block applied to
-        # all models that tells the model to batch independent tool calls
-        # (reads, searches, web fetches, read-only commands) into one turn
-        # instead of one call per turn.  The runtime already runs independent
-        # calls concurrently, so this just steers the model to produce the
-        # batch — cutting round-trips and the resent-context cost that
-        # compounds over a long conversation.  Costs ~70 tokens in the cached
-        # system prompt.  Set False to disable globally.
+        # Prompt block for all models steering independent tool calls (reads, searches, fetches,
+        # read-only commands) into one batched turn; the runtime already runs them concurrently. ~70
+        # cached tokens. False disables.
         "parallel_tool_call_guidance": True,
-        # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
-        # state in the system prompt when something non-default is detected
-        # (e.g. python3 has no pip module, pip→python version mismatch, PEP
-        # 668 enforcement without uv).  Costs zero tokens when the env is
-        # clean (probe emits nothing).  Skipped for remote terminal backends
-        # (docker/modal/ssh — they have their own probe).  Set False to
-        # disable entirely.
+        # Toolchain probe: surfaces Python/pip/uv/PEP-668 state in the system prompt only when
+        # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
+        # uv); zero tokens when clean. Skipped for docker/modal/ssh backends (own probe).
         "environment_probe": True,
-        # Bot Mode teammate-messaging protocol section (silent unless a
-        # profile is managed by the desktop's Bot Mode).
+        # Bot Mode teammate-messaging protocol section (silent unless desktop Bot Mode manages it).
         "bot_mode_protocol": True,
-        # Embedder-supplied environment description appended to the system
-        # prompt's environment-hints block. Lets a host that wraps Hermes
-        # (sandbox runner, managed platform) explain the runtime environment
-        # — proxy, credential handling, mount layout — without editing the
-        # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
-        # env var overrides this (build-time/container mechanism).
+        # Embedder-supplied text appended to the system prompt's environment-hints block, so a host
+        # wrapping Hermes (sandbox runner, managed platform) can describe proxy/credential/ mount
+        # layout without editing SOUL.md. Env HERMES_ENVIRONMENT_HINT overrides it.
         "environment_hint": "",
-        # Coding posture — on interactive coding surfaces (CLI, TUI, desktop
-        # app, ACP) in a code workspace, Hermes adds a coding operating brief
-        # + a live git/workspace snapshot to the system prompt. See
-        # agent/coding_context.py.
-        #   "auto" (default) — prompt-only posture when the surface is
-        #                      interactive AND cwd is a code workspace.
-        #                      Toolsets are never touched; messaging platforms
-        #                      unaffected.
-        #   "focus"          — auto + collapse the toolset to the lean coding
-        #                      set (+ enabled MCP servers) + demote non-coding
-        #                      skill categories to names-only in the prompt's
-        #                      skill index. Explicit opt-in.
-        #   "on"             — force the prompt posture everywhere.
-        #   "off"            — disable entirely.
+        # Coding posture: on interactive coding surfaces (CLI, TUI, desktop, ACP) in a code
+        # workspace, add a coding brief + live git/workspace snapshot to the system prompt
+        # (agent/coding_context.py). "auto" = prompt-only when interactive AND cwd is a code
+        # workspace (toolsets untouched, messaging platforms unaffected); "focus" = auto + collapse
+        # toolset to the lean coding set (+ enabled MCP servers) + demote non-coding skill
+        # categories to names-only (explicit opt-in); "on" = force everywhere; "off" = disable.
         "coding_context": "auto",
-        # Standing operator instructions for the coding posture. A string (or
-        # list of strings) appended to the coding brief as an extra stable
-        # system block — pin project-wide workflow rules here instead of editing
-        # the shipped brief, e.g. "For UI work, don't run tsc/lint until I
-        # approve. Clean the diff before you commit and push." Cache-safe:
-        # takes effect next session. Empty by default.
+        # Standing operator instructions (string or list) appended to the coding brief as an extra
+        # stable system block — project-wide workflow rules, e.g. "Don't run tsc/lint until I
+        # approve." Cache-safe: takes effect next session.
         "coding_instructions": "",
-        # When verify-on-stop finds edited code without fresh verification
-        # evidence, append guidance for creative UI work (avoid broad
-        # tsc/lint/test before visual approval) and clean-diff expectations.
-        # Set false to keep the evidence nudge terse.
+        # When verify-on-stop finds edits without fresh verification evidence, add guidance for
+        # creative UI work (no broad tsc/lint/test before visual approval) and clean-diff
+        # expectations. false = keep the evidence nudge terse.
         "verify_guidance": True,
-        # Upper bound on consecutive `pre_verify` "continue" nudges in a single
-        # turn, so a user/plugin hook can never trap the loop.
+        # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
-        # Verification closure: after the agent edits files in a code workspace,
-        # do not accept a final answer until fresh verification evidence exists
-        # or the agent explains why it cannot run checks. The loop is bounded
-        # and uses the passive verification ledger. Default is False (opt-in):
-        # the v31/v32 config migrations already switch existing installs off
-        # because the verification narrative proved more noise than signal,
-        # and the docs tell users to treat off as the effective default — a
-        # fresh install must not be the one population that still gets the
-        # nudges. Set true to force on everywhere, or "auto" for the legacy
-        # surface-aware behavior (on for interactive coding surfaces — CLI,
-        # TUI, desktop — and programmatic callers, off for conversational
-        # messaging surfaces). Doc/markdown/skill-only edits never fire it.
+        # Verification closure: after code edits in a workspace, refuse a final answer until fresh
+        # verification evidence exists or the agent explains why it can't check (bounded loop,
+        # passive ledger). False (default) because the nudges proved more noise than signal; true =
+        # force on everywhere; "auto" = on for interactive coding surfaces and programmatic callers,
+        # off for messaging surfaces. Doc/markdown/skill-only edits never fire.
         "verify_on_stop": False,
-        # Staged inactivity warning: send a warning to the user at this
-        # threshold before escalating to a full timeout.  The warning fires
-        # once per run and does not interrupt the agent.  0 = disable warning.
+        # Inactivity warning (seconds), once per run before gateway_timeout; no interrupt. 0 = off.
         "gateway_timeout_warning": 900,
-        # Maximum time (seconds) the gateway will block an agent waiting for
-        # a clarify-tool response from the user.  Hit this and the agent
-        # unblocks with "[user did not respond within Xm]" so it can adapt
-        # rather than pinning the running-agent guard forever.  CLI clarify
-        # blocks indefinitely (input() is synchronous) and ignores this.
-        # Default 3600 (1h): real users step away (meetings, AFK) and the
-        # old 600s default evicted the entry mid-think, so a later button
-        # tap landed on a dead entry (#32762).  Tradeoff: a higher value
-        # holds the gateway's running-agent guard longer for a genuinely
-        # abandoned prompt — lower it if a single session must free up the
-        # guard sooner.
+        # Max seconds the gateway blocks an agent awaiting a clarify-tool reply; then it unblocks
+        # with "[user did not respond within Xm]". CLI clarify blocks indefinitely and ignores this.
+        # 1h because users step away and a shorter value evicted the entry mid-think so a later
+        # button tap hit a dead entry. Lower it to free the running-agent guard sooner.
+        # Maximum time (seconds) the gateway will block an agent waiting for a clarify-tool response from
+        # the user. Tradeoff: a higher value holds the gateway's running-agent guard longer for a genuinely
+        # abandoned prompt — lower it if a single session must free up the guard sooner. See #32762.
         "clarify_timeout": 3600,
-        # Periodic "still working" notification interval (seconds).
-        # Sends a status message every N seconds so the user knows the
-        # agent hasn't died during long tasks.  0 = disable notifications.
-        # Lower values mean faster feedback on slow tasks but more chat
-        # noise; 180s is a compromise that catches spinning weak-model runs
-        # (60+ tool iterations with tiny output) before users assume the
-        # bot is dead and /restart.
+        # "Still working" status interval (seconds); 0 = off. Lower = faster feedback, more noise;
+        # 180 catches spinning weak-model runs before users /restart.
         "gateway_notify_interval": 180,
-        # Session stall watchdog (seconds). Scope (#76354): this is a
-        # RECOVERY notifier for an in-process AIAgent that has an
-        # adapter-queued follow-up (pending inbound / queued event) while its
-        # activity clock is stale — NOT a general gateway/session stall
-        # detector. It does not observe startup restoration, build sentinels,
-        # turn leases, debounce state, or work owned by another process; the
-        # scan cadence is per AIAgent instance, not globally coordinated per
-        # durable session. Notify-only: warns the user to try /new. Distinct
-        # from gateway_timeout (which kills the turn) and
-        # gateway_notify_interval ("still working" heartbeats). 0 = disable.
+        # Session stall watchdog (seconds): RECOVERY notifier for an in-process AIAgent with an
+        # adapter-queued follow-up while its activity clock is stale — NOT a general stall detector
+        # (ignores startup restore, build sentinels, leases, debounce, other processes; scan cadence
+        # per AIAgent). Notify-only: tells the user to try /new. Distinct from gateway_timeout
+        # (kills the turn) and gateway_notify_interval. 0 = disable.
+        # See #76354.
         "session_stall_timeout": 300,
-        # Transcript-sanitiser repeated-heal escalation threshold (#96870).
-        # After this many pre-send heal passes within a 10-minute session
-        # window, log one ERROR (session id + heal pattern) and queue a
-        # ONE-TIME out-of-band user notice pointing at /debug share or
-        # `hermes doctor`. Delivered via the status channel only —
-        # conversation context / prompt caching untouched. 0 = disable
-        # escalation (per-window WARNINGs still fire).
+        # Transcript-sanitiser heal escalation: after this many pre-send heal passes within a
+        # 10-minute window, log one ERROR and queue a ONE-TIME out-of-band notice pointing at /debug
+        # share or `hermes doctor` (status channel only; prompt cache untouched). 0 = no escalation
+        # (per-window WARNINGs still fire).
+        # See #96870.
         "sanitizer_heal_escalation_threshold": 3,
-        # Long-lived reconnect-loop escalation (seconds). A platform that has
-        # been continuously failing/reconnecting for this long gets
-        # needs_attention flagged in gateway runtime status (visible in
-        # `hermes status` / fleet monitoring). Retries never stop — this is a
-        # signal, not a circuit breaker. 0 = disable.
+        # Seconds of continuous reconnect failure before a platform gets needs_attention flagged in
+        # gateway status (`hermes status` / fleet monitoring). Retries never stop — a signal, not a
+        # circuit breaker. 0 = disable.
         "reconnect_attention_after": 7200,
-        # Freshness window for the gateway auto-continue note (seconds).
-        # After a gateway crash/restart/SIGTERM mid-run, the next user
-        # message gets a "[System note: your previous turn was
-        # interrupted — process the unfinished tool result(s) first]"
-        # prepended so the model picks up where it left off.  That's the
-        # right behaviour while the interruption is fresh, but stale
-        # markers (transcript last touched hours or days ago) can revive
-        # an unrelated old task when the user's next message starts new
-        # work.  This window is the max age of the last persisted
-        # transcript row for which we still inject the continue note.
-        # Default 3600s comfortably covers a long turn (gateway_timeout
-        # default is 1800s) plus runtime slack.  Set to 0 to disable the
-        # gate and restore pre-fix behaviour (always inject).
+        # Freshness window (seconds) for the auto-continue note. After a crash/restart mid-run the
+        # next user message gets "[System note: your previous turn was interrupted...]" prepended;
+        # only when the last persisted transcript row is younger than this, so stale markers don't
+        # revive an unrelated old task. Covers gateway_timeout (1800) plus slack. 0 = always inject.
         "gateway_auto_continue_freshness": 3600,
-        # Max seconds the gateway waits for boot auto-resume turns to finish
-        # before it releases the startup-restore inbound gate.  While startup
-        # restore is in progress the gateway QUEUES every inbound message
-        # instead of replying, so no channel gets an answer until this gate
-        # opens.  Without a bound, one pathologically long resumed turn holds
-        # the gate shut and every channel's inbound piles up unanswered for as
-        # long as that turn runs.  On timeout the gate releases and the slow
-        # resume turn keeps running in the background; duplicate-agent
-        # protection is unaffected because the resume slot is claimed
-        # synchronously before the gate runs.  Set to 0 to disable the bound
-        # (historical "wait forever" behaviour).
+        # Max seconds the gateway waits for boot auto-resume turns before releasing the
+        # startup-restore inbound gate (all inbound is QUEUED while shut, so one long resumed turn
+        # would leave every channel unanswered). On timeout the gate opens and the resume keeps
+        # running in the background; duplicate-agent protection is unaffected because the resume
+        # slot is claimed synchronously first. 0 = wait forever.
         "gateway_startup_restore_drain_timeout": 30,
-        # Max seconds the boot turn-machinery warm-up (#99373) may hold the
-        # gateway's inbound gate shut.  On a fresh boot the gateway warms the
-        # agent-side turn prerequisites (run_agent import graph, tool schemas
-        # + availability probes, context-file tier) BEFORE accepting inbound
-        # messages, so a message seconds after boot is no longer served with
-        # a skeleton system prompt (missing context files / tool schemas).
-        # On timeout the gate opens anyway and warm-up finishes in the
-        # background — a wedged init can't make the gateway permanently
-        # unavailable.  Set to 0 to disable the warm-up (historical
-        # lazy-init behaviour).
+        # Max seconds the boot turn-machinery warm-up (run_agent import graph, tool schemas +
+        # availability probes, context-file tier) may hold the inbound gate shut, so an early
+        # message isn't served with a skeleton system prompt. On timeout the gate opens and warm-up
+        # finishes in the background. 0 = disable warm-up (lazy init).
         "gateway_startup_warmup_timeout": 20,
-        # Stale-stream ceiling for local providers (Ollama, oMLX, llama-cpp) in
-        # seconds. When the base stale timeout is at its default (180s) and a
-        # local endpoint is detected, this finite ceiling replaces the former
-        # infinite disable so a wedged local server eventually trips the
-        # detector instead of hanging forever. The env var
-        # ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch use.
+        # Stale-stream ceiling (seconds) for local providers (Ollama, oMLX, llama-cpp). Applied when
+        # the base stale timeout is at its 180s default and a local endpoint is detected, so a
+        # wedged local server eventually trips the detector instead of hanging forever. Env
+        # HERMES_LOCAL_STREAM_STALE_TIMEOUT overrides.
         "local_stream_stale_timeout": 900,
-        # How user-attached images are presented to the main model on each turn.
-        #   "auto"   — attach natively when the active model reports
-        #              supports_vision=True AND the user hasn't explicitly
-        #              configured auxiliary.vision.provider.  Otherwise fall
-        #              back to text (vision_analyze pre-analysis).
-        #   "native" — always attach natively; non-vision models will either
-        #              error at the provider or get a last-chance text fallback
-        #              (see run_agent._prepare_messages_for_api).
-        #   "text"   — always pre-analyze with vision_analyze and prepend the
-        #              description as text; the main model never sees pixels.
-        # Affects gateway platforms, the TUI, and CLI /attach.  vision_analyze
-        # remains available as a tool regardless of this setting — the routing
-        # only controls how inbound user images are presented.
+        # How user-attached images reach the main model (gateway, TUI, CLI /attach). "auto" = native
+        # when the model reports supports_vision=True AND auxiliary.vision.provider is not
+        # explicitly set, else text; "native" = always attach (non-vision models error at the
+        # provider or get a last-chance text fallback); "text" = always pre-analyze with
+        # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
-
-        # Per-model reasoning effort overrides (spelling-tolerant).
-        # Dict mapping model names (any reasonable spelling) to effort levels.
-        # Takes precedence over agent.reasoning_effort when the current model
-        # matches a key in this dict.
-        # Edit directly in config.yaml (no CLI support due to dots in keys).
+        # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
+        # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},
-
-        # Per-provider opt-in to preserve assistant ``reasoning_content``
-        # when replaying history.  The built-in echo families (DeepSeek,
-        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name
-        # and base-URL host.  Custom providers and OpenAI-compatible
-        # gateways that proxy those same models (or other thinking-mode
-        # backends) are not covered by the host-based rules.
-        #
-        # Set ``reasoning_echo: true`` on a ``model:`` entry (primary) or a
-        # ``fallback_providers:`` entry (per-fallback) to preserve
-        # ``reasoning_content`` on replay for that provider only.  Default
-        # ``false`` keeps the historical strict-provider behavior (Mistral,
-        # Groq, Cerebras reject the field with HTTP 400).
+        # Preserve assistant `reasoning_content` on history replay. Echo families (DeepSeek,
+        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host; custom
+        # providers and OpenAI-compatible gateways proxying them are not. Set `reasoning_echo: true`
+        # on a `model:` entry or a `fallback_providers:` entry to opt in per provider. Default
+        # false: strict providers (Mistral, Groq, Cerebras) reject the field.
         "reasoning_echo": False,
-        # Turn liveness watchdog (#95548): a turn that shows no observable
-        # progress (activity-clock idle, never touched by lease renewal) for
-        # `timeout_s` seconds is logged loudly, force-interrupted so the UI
-        # can retry it, and its durable turn lease stops renewing so TTL
-        # expiry lets stale-turn cleanup reclaim the session even when the
-        # hard interrupt cannot unwind a wedged frame. `timeout_s` <= 0
-        # disables the watchdog; `poll_s` is the sampling interval. Invalid
-        # values (typo, NaN, Inf, non-positive poll) warn and fall back to
-        # the default instead of crashing startup or silently disabling the
-        # watchdog. See agent/turn_liveness.py.
-        "turn_liveness": {
-            "timeout_s": 600.0,
-            "poll_s": 15.0,
-        },
+        # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
+        # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
+        # cleanup can reclaim the session even if the interrupt can't unwind a wedged frame.
+        # timeout_s <= 0 disables; poll_s = sampling interval. Invalid values (NaN, Inf,
+        # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
+        "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
     },
 
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
-        # Remote-backend graceful degradation: when a connection-class
-        # infrastructure failure occurs (SSH host unreachable, Docker daemon
-        # down), "warn" (default) returns a structured degraded tool result
-        # with a reason + retry hint so the model can act on it; "fail"
-        # preserves the historical error + traceback behavior.
+        # Remote-backend connection-class failures (SSH host unreachable, Docker daemon down):
+        # "warn" = structured degraded tool result with reason + retry hint; "fail" = raise error +
+        # traceback.
         "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
-        # Root directory for Hermes' terminal session temp files (background
-        # logs/pid/exit files, code-execution sandboxes, etc.). When empty,
-        # Hermes uses TMPDIR/TMP/TEMP if set, otherwise a managed dir on real
-        # storage at HERMES_HOME/cache/terminal (auto-pruned after 72h) — NOT
-        # tmpfs /tmp, which is RAM-capped and small on many distros (e.g.
-        # Arch-based setups) and fills up under load. Set this to redirect
-        # session temp anywhere else; must be an absolute POSIX path that
-        # exists. User-set paths are never auto-pruned.
+        # Root for terminal session temp files (background logs/pid/exit files, code-exec
+        # sandboxes). Empty = TMPDIR/TMP/TEMP if set, else HERMES_HOME/cache/terminal (auto-pruned
+        # after 72h) — NOT tmpfs /tmp, which is RAM-capped and fills under load. Must be an existing
+        # absolute POSIX path; user-set paths are never auto-pruned.
         "temp_dir": "",
-        # Terminal font family for the desktop app's embedded xterm.js terminal.
-        # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
-        # the desktop terminal uses this as the CSS font-family value, with the
-        # built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo,
-        # Consolas, monospace") as fallback when the field is empty or unset.
-        # This lets users install a Nerd Font (or any custom font) and configure
-        # it here without patching the built desktop app.
+        # CSS font-family for the desktop app's xterm.js terminal (e.g. "'CaskaydiaCoveNerdFont',
+        # monospace"). Empty = built-in default ("'JetBrains Mono', 'Cascadia Code', 'SF Mono',
+        # Menlo, Consolas, monospace"). Lets users use a Nerd Font without patching the app.
         "font_family": "",
         "timeout": 180,
-        # Bounded grace period (seconds) between SIGTERM and an escalated
-        # SIGKILL when terminating a host process tree (browser daemons, etc.).
-        # A daemon that stalls in its SIGTERM handler is force-killed after this
-        # window so it can't leak indefinitely. 0 disables escalation (SIGTERM
-        # only — the historical behavior). Floored internally at 0.
+        # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
+        # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
-        # Bounded linger (seconds) for one-shot CLI runs (-q/-Q/-z) that exit
-        # while background processes spawned with notify_on_complete=true are
-        # still running. The dying parent owns those children's stdout pipes,
-        # so exiting immediately kills the delivery a few seconds later —
-        # destroying Bot Mode handoff replies dispatched via message_agent /
-        # bot_relay from a short-lived `hermes -p <bot> chat -Q` recipient
-        # (#90879). The parent instead waits (up to this bound) for tracked
-        # notify_on_complete processes to finish before exiting. Plain
-        # background processes without notify_on_complete (servers, daemons)
-        # are never waited on. 0 disables the linger.
+        # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
+        # background processes to finish. The dying parent owns their stdout pipes, so exiting
+        # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /
+        # bot_relay). Plain background processes without notify_on_complete are never waited on. 0
+        # disables.
+        # Bounded linger (seconds) for one-shot CLI runs (-q/-Q/-z) that exit while background processes
+        # spawned with notify_on_complete=true are still running. See #90879.
         "oneshot_completion_wait_seconds": 600.0,
-        # Environment variables to pass through to sandboxed execution
-        # (terminal and execute_code).  Skill-declared required_environment_variables
-        # are passed through automatically; this list is for non-skill use cases.
+        # Env vars passed into sandboxed terminal/execute_code (skill-declared
+        # required_environment_variables pass through automatically).
         "env_passthrough": [],
-        # HOME handling for host tool subprocesses:
-        #   auto    — host keeps the real OS-user HOME; containers use
-        #             HERMES_HOME/home for persistent state (default)
-        #   real    — force the real OS-user HOME
-        #   profile — force HERMES_HOME/home when it exists (old strict
-        #             per-profile CLI config isolation)
+        # HOME for host tool subprocesses: "auto" = host keeps the real OS-user HOME, containers use
+        # HERMES_HOME/home; "real" = force real HOME; "profile" = force HERMES_HOME/home when it
+        # exists (strict per-profile isolation).
         "home_mode": "auto",
-        # Extra files to source in the login shell when building the
-        # per-session environment snapshot.  Use this when tools like nvm,
-        # pyenv, asdf, or custom PATH entries are registered by files that
-        # a bash login shell would skip — most commonly ``~/.bashrc``
-        # (bash doesn't source bashrc in non-interactive login mode) or
-        # zsh-specific files like ``~/.zshrc`` / ``~/.zprofile``.
-        # Paths support ``~`` / ``${VAR}``. Missing files are silently
-        # skipped. When empty, Hermes auto-sources ``~/.profile``,
-        # ``~/.bash_profile``, and ``~/.bashrc`` (in that order) if the
-        # snapshot shell is bash (this is the ``auto_source_bashrc``
-        # behaviour — disable with that key if you want strict login-only
-        # semantics).
+        # Extra files sourced in the login shell when building the per-session env snapshot — for
+        # nvm/pyenv/asdf/PATH entries registered by files a bash login shell skips (~/.bashrc,
+        # ~/.zshrc, ~/.zprofile). Supports ~ and ${VAR}; missing files skipped. When empty and the
+        # shell is bash, ~/.profile, ~/.bash_profile, ~/.bashrc are auto-sourced in that order (see
+        # auto_source_bashrc).
         "shell_init_files": [],
-        # When true (default), Hermes sources the user's shell rc files
-        # (``~/.profile``, ``~/.bash_profile``, ``~/.bashrc``) in the
-        # login shell used to build the environment snapshot. This
-        # captures PATH additions, shell functions, and aliases — which a
-        # plain ``bash -l -c`` would otherwise miss because bash skips
-        # bashrc in non-interactive login mode, and because a default
-        # Debian/Ubuntu ``~/.bashrc`` short-circuits on non-interactive
-        # sources. ``~/.profile`` and ``~/.bash_profile`` are tried first
-        # because ``n`` / ``nvm`` / ``asdf`` installers typically write
-        # their PATH exports there without an interactivity guard. Turn
-        # this off if your rc files misbehave when sourced
-        # non-interactively (e.g. one that hard-exits on TTY checks).
+        # Source ~/.profile, ~/.bash_profile, ~/.bashrc in the snapshot login shell to capture PATH
+        # additions, functions, and aliases that `bash -l -c` misses (bash skips bashrc when
+        # non-interactive; Debian/Ubuntu ~/.bashrc short-circuits). ~/.profile and ~/.bash_profile
+        # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
+        # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
-        # Explicit environment variables to set inside Docker containers.
-        # Unlike docker_forward_env (which reads values from the host process),
-        # docker_env lets you specify exact key-value pairs — useful when Hermes
-        # runs as a systemd service without access to the user's shell environment.
-        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
+        # Exact key-value env pairs set inside Docker containers (unlike docker_forward_env, which
+        # reads host values) — useful under systemd without the user's shell env. Example:
+        # {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
         "docker_env": {},
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Vercel Sandbox runtime (vercel_sandbox backend only).
-        # Supported: node24, node22, python3.13.
-        "vercel_runtime": "node24",
-        # Container resource limits (docker, singularity, modal, daytona, vercel_sandbox — ignored for local/ssh)
+        "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
+        # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
-        # Docker volume mounts — share host directories with the container.
-        # Each entry is "host_path:container_path" (standard Docker -v syntax).
-        # Example:
-        # ["/home/user/projects:/workspace/projects",
-        #  "/home/user/.hermes/cache/documents:/output"]
-        # For gateway MEDIA delivery, write inside Docker to /output/... and emit
-        # the host-visible path in MEDIA:, not the container path.
+        # Docker volume mounts, "host_path:container_path" (docker -v syntax), e.g.
+        # ["/home/user/.hermes/cache/documents:/output"]. For gateway MEDIA delivery, write to
+        # /output/... inside Docker and emit the host-visible path in MEDIA:, not the container one.
         "docker_volumes": [],
-        # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
-        # Default off because passing host directories into a sandbox weakens isolation.
-        "docker_mount_cwd_to_workspace": False,
-        # Opt-in egress lockdown for Docker terminal sessions. When false,
-        # Docker runs with --network=none so commands cannot reach the network.
-        "docker_network": True,
+        "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
+        "docker_network": True,  # false = --network=none, no network access from commands
         "docker_extra_args": [],        # Extra flags passed verbatim to docker run
-        # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently
-        # breaks Chromium/Playwright and PyTorch DataLoader workers; tmpfs is
-        # lazily allocated so the higher ceiling costs nothing until used.
-        # Set to "" (or "0") to omit the flag and use Docker's default.
+        # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
+        # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
+        # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).
         "docker_shm_size": "1g",
-        # Explicit opt-in: run the Docker container as the host user's uid:gid
-        # (via `--user`).  When enabled, files written into bind-mounted dirs
-        # (docker_volumes, the persistent workspace, or the auto-mounted cwd)
-        # are owned by your host user instead of root, which avoids needing
-        # `sudo chown` after container runs. Default off to preserve behavior
-        # for images whose entrypoints expect to start as root (e.g. the
-        # bundled Hermes image, which drops to the `hermes` user via
-        # s6-setuidgid inside each supervised service).
-        # When on, SETUID/SETGID caps are omitted from the container since
-        # no privilege drop is needed.
+        # Run the container as the host uid:gid (`--user`) so files written to bind mounts
+        # (docker_volumes, persistent workspace, mounted cwd) are owned by you, not root. Off by
+        # default for images whose entrypoints must start as root (e.g. the bundled Hermes image,
+        # which drops to `hermes` via s6-setuidgid). When on, SETUID/SETGID caps are omitted.
         "docker_run_as_host_user": False,
-        # Explicit opt-in for trusted profiles to reuse the same Docker
-        # container identity. Empty preserves the active-profile boundary.
+        # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
-        # Persistent shell — keep a long-lived bash shell across execute() calls
-        # so cwd/env vars/shell variables survive between commands.
-        # Enabled by default for non-local backends (SSH); local is always opt-in
-        # via TERMINAL_LOCAL_PERSISTENT env var.
+        # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
+        # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,
     },
 
@@ -553,1302 +343,657 @@ DEFAULT_CONFIG = {
         "backend": "",           # shared fallback — applies to both search and extract
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
-        "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
-        # Keyless free-tier ring: with NO web backend configured or keyed,
-        # web_search/web_extract rotate round-robin across five vendors'
-        # public free tiers (exa, parallel, firecrawl, keenable),
-        # failing over to the next ring vendor on rate limits. Never
-        # pre-empts a configured or keyed backend. Set false to disable.
+        # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
+        "extract_char_limit": 15000,
+        # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
+        # rotate round-robin across exa, parallel, firecrawl, keenable public free tiers, failing
+        # over on rate limits. Never pre-empts a configured/keyed backend. false = disable.
         "keyless_fallback": True,
-        # One-shot keyless rescue: when the chosen/keyed backend fails a
-        # web_search/web_extract call, THAT call retries once on the keyless
-        # free-tier ring — the next call attempts the chosen backend again
-        # (no sticky failover). Off when keyless_fallback is false.
+        # One-shot rescue: when the chosen/keyed backend fails a call, THAT call retries once on the
+        # keyless ring; the next call tries the chosen backend again (no sticky failover). Off when
+        # keyless_fallback is false.
         "keyless_rescue": True,
-        # Per-provider tier selection for ring vendors with both a keyless
-        # free endpoint and a keyed paid path (exa, parallel,
-        # firecrawl, keenable). Set by the `hermes tools` picker's
-        # "Free (keyless)" / "Paid (API key)" rows.
-        #   free  — always use the anonymous free endpoint (even with a key)
-        #   paid  — always use the keyed path (missing key = error; vendor
-        #           is also excluded from the keyless ring)
-        #   unset — auto: keyed when the API key is present, else the ring
+        # Per-vendor tier for vendors with both a keyless free endpoint and a keyed paid path (exa,
+        # parallel, firecrawl, keenable; tavily is opt-in keyless via `hermes tools`, not a ring
+        # member). Set by the `hermes tools` picker. "free" = always anonymous endpoint even with a
+        # key; "paid" = always keyed (missing key = error; vendor excluded from the ring); unset =
+        # keyed when the key is present, else the ring.
         "provider_tier": {},
-        # TTL result caching for web_search + web_extract. Repeat searches
-        # (same query, same provider) within the TTL are served from an
-        # in-process memo; repeat extracts of the same URL are served from
-        # the cache/web full-text store. Concurrent identical searches
-        # (parallel subagents) coalesce into one vendor request. Only
-        # successful responses are cached.
+        # TTL caching for web_search + web_extract: repeat searches (same query + provider) within
+        # the TTL come from an in-process memo; repeat extracts from the cache/web store. Concurrent
+        # identical searches coalesce into one vendor request. Only successes cached.
         "cache_enabled": True,
         "cache_ttl_minutes": 20,
-        # Hosts whose pages must always be fetched live, never from the
-        # extract cache — sites you're actively developing but testing over
-        # the public internet (staging deploys, tunnel URLs, preview
-        # builds). Entries match exactly, as "*.wildcard", or as a domain
-        # suffix ("mysite.dev" also covers "preview.mysite.dev").
-        # localhost/private-IP URLs are always exempt automatically.
-        #   cache_exempt_hosts: ["mysite.vercel.app", "*.ngrok-free.app"]
+        # Hosts always fetched live, never from the extract cache (staging deploys, tunnel URLs,
+        # preview builds). Entries match exactly, as "*.wildcard", or as a domain suffix
+        # ("mysite.dev" also covers "preview.mysite.dev"). localhost/private IPs always exempt.
         "cache_exempt_hosts": [],
     },
 
     "browser": {
-        # Browser tool implementation.
-        # ""            — DEFAULT: Browser Use mode when the browser-use CLI
-        #                 (or uvx) is available; otherwise the built-in
-        #                 browser tools. Camofox setups always keep the
-        #                 built-in tools (no CDP surface).
-        # "browser-use" — force Browser Use mode: one browser_exec tool
-        #                 driving the Browser Use CLI 3.0 over any CDP
-        #                 backend (local Chrome, cloud browsers)
-        # "off"         — force the built-in browser tools
-        #                 (browser_navigate, browser_click, …)
+        # "" = Browser Use mode when the browser-use CLI (or uvx) is available, else built-in tools
+        # (Camofox setups always keep built-in tools: no CDP surface); "browser-use" = force one
+        # browser_exec tool driving the Browser Use CLI over any CDP backend (local Chrome, cloud);
+        # "off" = force the built-in browser_navigate/browser_click/... tools.
         "backend": "",
         "inactivity_timeout": 120,
-        "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
-        "snapshot_threshold": 15000,  # Max chars before snapshot truncate-and-store (min 1000)
-        "record_sessions": False,  # Auto-record browser sessions as WebM videos
-        "headed": False,  # Local mode: launch Chromium with a visible window (also skips per-turn cleanup so the window persists between turns; idle reaper still applies)
-        "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
-        # Local browser engine, for both drivers:
-        #   Browser Use mode (default) — "lightpanda" makes Hermes spawn
-        #     ``lightpanda serve`` per session and point browser_exec at it.
-        #   Built-in tools (backend: off) — passed as ``--engine <value>`` to
-        #     agent-browser v0.25.3+ (with automatic Chrome fallback).
-        # "auto"       — Chrome (default)
-        # "lightpanda" — Lightpanda (faster navigation, no screenshots)
-        # "chrome"     — explicitly request Chrome
-        # Ignored while a cloud provider, Camofox, browser.cdp_url or
-        # browser.use_real_profile is active — `/browser status` and
-        # `hermes doctor` say so. Also settable via AGENT_BROWSER_ENGINE.
+        "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
+        "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
+        "record_sessions": False,  # auto-record browser sessions as WebM videos
+        # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
+        "headed": False,
+        "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
+        # Local browser engine for both drivers. "auto" = Chrome; "lightpanda" = faster navigation,
+        # no screenshots (Browser Use mode spawns `lightpanda serve` per session; built-in tools
+        # pass `--engine <value>` to agent-browser with Chrome fallback); "chrome" = explicit.
+        # Ignored while a cloud provider, Camofox, cdp_url or use_real_profile is active. Also
+        # settable via AGENT_BROWSER_ENGINE.
         "engine": "auto",
-        "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
-        "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        # Consent to browse with the user's REAL logins for local browsing.
-        # When true, local browsing (the Browser Use CLI, or the built-in
-        # browser tools) runs on a Hermes-managed SNAPSHOT of the user's
-        # ACTIVE default-Chromium profile (Local State -> profile.last_used) —
-        # its cookies, logins and preferences copied in and re-synced when a
-        # fresh session launches — driven by Hermes' packaged Chromium. Only
-        # the active profile is copied. The snapshot is a non-default dir, so it
-        # sidesteps Chrome 136+'s block on debugging the default profile and
-        # never contends with the user's running browser. Turning this back off
-        # deletes the snapshot store (~/.hermes/browser-profile/) so copied
-        # credentials don't outlive consent. Only Chromium-family default
-        # browsers are supported (Chrome, Edge, Brave, Brave Origin, Chromium); a non-Chromium
-        # default (e.g. Firefox) fails closed with a clear message. Default
-        # false. Also gates the browser_exec ``local`` argument, which forces a
-        # real-profile local session even under a cloud browser backend. Toggle
-        # in the desktop Settings → Browser section.
+        # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
+        "auto_local_for_private_urls": True,
+        "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
+        # of the ACTIVE default-Chromium profile (Local State -> profile.last_used; cookies, logins,
+        # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The
+        # snapshot dir sidesteps Chrome 136+'s default-profile debugging block and never contends
+        # with the running browser. Turning off deletes ~/.hermes/browser-profile/ so credentials
+        # don't outlive consent. Chromium-family only (Chrome, Edge, Brave, Brave Origin, Chromium);
+        # Firefox etc. fails closed. Also gates the browser_exec `local` argument (real-profile
+        # local session even under a cloud backend). Desktop Settings -> Browser.
         "use_real_profile": False,
-        # When real-profile browsing needs the browser closed (Windows: a
-        # running Chrome/Edge/Brave locks its cookie DB deny-all, so it must be
-        # fully quit before its profile can be copied), arm the "offer to close
-        # it" flow. This does NOT auto-kill: when the profile is locked the
-        # snapshot always blocks and the agent asks the user first; only on
-        # approval does it run `hermes browser close-profile` (terminates the
-        # browser process tree bound to that profile, losing unsaved tabs) and
-        # retry. Still locked afterward → stays blocked, no loop, no auto-kill.
-        # OFF by default. No effect on macOS/Linux (copy-while-running works).
+        # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
+        # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
+        # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
+        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux
+        # (copy-while-running works).
         "real_profile_autoclose": False,
-        # Pin WHICH source browser profile directory gets snapshotted for
-        # real-profile browsing (e.g. "Profile 2"). Unset/empty: follows the
-        # browser's last-used profile (Local State → profile.last_used). On a
-        # machine with several profiles (work + personal), last-used roulette
-        # can silently hand the agent the wrong identity; a pin locks it. A pin
-        # naming a directory that doesn't exist FAILS CLOSED with a fixable
-        # message rather than falling back to last-used.
+        # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
+        # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the
+        # agent the wrong identity. A pin naming a missing directory FAILS CLOSED.
         "real_profile_pin": "",
-        "allow_unsafe_evaluate": False,  # Legacy override: when true, browser_console(expression=...) bypasses the restrict_evaluate denylist entirely
-        "restrict_evaluate": False,  # Opt-in denylist blocking sensitive JS primitives (cookies/storage/clipboard/network/form values) in browser_console(expression=...)
-        # CDP supervisor — dialog + frame detection via a persistent WebSocket.
-        # Active only when a CDP-capable backend is attached (Browserbase or
-        # local Chrome via /browser connect). See
+        # restrict_evaluate: opt-in denylist blocking sensitive JS primitives (cookies/storage/
+        # clipboard/network/form values) in browser_console(expression=...); allow_unsafe_evaluate
+        # is the legacy override that bypasses that denylist entirely.
+        "allow_unsafe_evaluate": False,
+        "restrict_evaluate": False,
+        # CDP supervisor: dialog + frame detection over a persistent WebSocket; active only with a
+        # CDP-capable backend (Browserbase, or local Chrome via /browser connect). See
         # website/docs/developer-guide/browser-supervisor.md.
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
-        "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
+        "dialog_timeout_s": 300,  # safety auto-dismiss after N seconds under must_respond
         "camofox": {
-            # When true, Hermes sends a stable profile-scoped userId to Camofox
-            # so the server maps it to a persistent Firefox profile automatically.
-            # When false (default), each session gets a random userId (ephemeral).
+            # true = send a stable profile-scoped userId so Camofox maps it to a persistent Firefox
+            # profile; false = random ephemeral userId per session.
             "managed_persistence": False,
-            # Optional externally managed Camofox identity. Useful when another
-            # app owns the visible browser and Hermes should operate in it.
+            # Externally managed Camofox identity, for when another app owns the visible browser.
             "user_id": "",
             "session_key": "",
-            # Rehydrate tab_id from Camofox before creating a new tab.
-            "adopt_existing_tab": False,
-            # Docker Camofox opens page URLs from inside the container. Enable
-            # this to rewrite loopback page URLs (localhost/127.0.0.1/::1) to a
-            # host alias while leaving CAMOFOX_URL itself unchanged.
+            "adopt_existing_tab": False,  # rehydrate tab_id from Camofox before creating a tab
+            # Docker Camofox opens page URLs from inside the container: rewrite loopback page URLs
+            # (localhost/127.0.0.1/::1) to the host alias; CAMOFOX_URL itself is unchanged.
             "rewrite_loopback_urls": False,
             "loopback_host_alias": "host.docker.internal",
         },
-        # Authenticated browser-extension controller lane. When enabled, an
-        # extension that registers through the gateway can become the exact
-        # controller for a session's browser_* tools (fail-closed once bound).
-        # Local API registration additionally requires the API server bearer
-        # key. developer_mode gates the privileged capabilities
-        # (browser_cdp / browser_evaluate) — never negotiable without it.
-        "extension_control": {
-            "enabled": False,
-            "developer_mode": False,
-        },
+        # Authenticated browser-extension controller lane: a registered extension can become the
+        # exact controller for a session's browser_* tools (fail-closed once bound). Local API
+        # registration also requires the API server bearer key. developer_mode gates the privileged
+        # browser_cdp / browser_evaluate capabilities.
+        "extension_control": {"enabled": False, "developer_mode": False},
     },
-
-    # Filesystem checkpoints — automatic snapshots before destructive file ops.
-    # When enabled, the agent takes a snapshot of the working directory once
-    # per conversation turn (on first write_file/patch call).  Use /rollback
-    # to restore.
-    #
-    # Defaults changed in v2 (single shared shadow store, real pruning):
-    #   - enabled: True -> False   (opt-in; most users never use /rollback)
-    #   - max_snapshots: 50 -> 20  (now actually enforced via ref rewrite)
-    #   - auto_prune:   False -> True (orphans/stale pruned automatically)
-    # Opt in via ``hermes chat --checkpoints`` or set enabled=True here.
+    # Filesystem checkpoints: snapshot the working directory once per turn (on the first
+    # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
+    # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.
     "checkpoints": {
         "enabled": False,
-        # Max checkpoints to keep per working directory.  Pre-v2 this only
-        # limited the `/rollback` listing; v2 actually rewrites the ref and
-        # garbage-collects older commits.
+        # Max checkpoints per working directory; enforced by ref rewrite + GC of older commits.
         "max_snapshots": 20,
-        # Hard ceiling on total ``~/.hermes/checkpoints/`` size (MB).  When
-        # exceeded, the oldest checkpoint per project is dropped in a
-        # round-robin pass until total size falls under the cap.
-        # 0 disables the size cap.
+        # Hard ceiling on total ~/.hermes/checkpoints/ size (MB); the oldest checkpoint per project
+        # is dropped round-robin until under the cap. 0 disables.
         "max_total_size_mb": 500,
-        # Skip any single file larger than this when staging a checkpoint.
-        # Prevents accidental snapshotting of datasets, model weights, and
-        # other large generated assets.  0 disables the filter.
+        # Skip files larger than this (MB) when staging (datasets, model weights). 0 = no filter.
         "max_file_size_mb": 10,
-        # Auto-maintenance: hermes sweeps the checkpoint base at startup
-        # (at most once per ``min_interval_hours``) and:
-        #   * deletes project entries whose last_touch is older than
-        #     ``retention_days``
-        #   * GCs the single shared store to reclaim unreachable objects
-        #   * enforces ``max_total_size_mb`` across remaining projects
-        #   * deletes ``legacy-*`` archives older than ``retention_days``
-        #
-        # NOTE: this automatic sweep never deletes "orphan" entries (workdir
-        # no longer found on disk). A missing workdir at startup is
-        # ambiguous — it can mean the project was deleted, or that an
-        # external volume / network share / VPN is simply not mounted yet —
-        # and this sweep runs unattended, so it must never guess. Orphan
-        # cleanup is only available via the explicit
-        # ``hermes checkpoints prune`` command (add ``--keep-orphans`` to
-        # skip it), where a human is looking at the output.
+        # Startup sweep (at most once per min_interval_hours): deletes projects whose last_touch is
+        # older than retention_days, GCs the shared store, enforces max_total_size_mb, deletes
+        # legacy-* archives older than retention_days. It NEVER deletes orphans (workdir missing on
+        # disk) — a missing workdir may just be an unmounted volume/VPN, and an unattended sweep
+        # must not guess. Orphans: `hermes checkpoints prune` (`--keep-orphans` to skip).
         "auto_prune": True,
         "retention_days": 7,
         "min_interval_hours": 24,
     },
-
-    # Hard cap (chars) for a single automatic context file such as SOUL.md,
-    # AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes applies
-    # head/tail truncation. ``null`` (the default) lets the cap scale with the
-    # model's context window (floor 20K, ceiling 500K) so large-context models
-    # rarely truncate a project doc. Set a positive integer to pin a fixed cap
-    # and override the dynamic behavior. Separate from read_file tool limits.
+    # Hard cap (chars) for one auto-loaded context file (SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md,
+    # .cursorrules) before head/tail truncation. null = scale with the model's context window (floor
+    # 20K, ceiling 500K); a positive int pins a fixed cap. Separate from read_file limits.
     "context_file_max_chars": None,
-
-    # Maximum characters returned by a single read_file call.  Reads that
-    # exceed this are rejected with guidance to use offset+limit.
-    # 100K chars ≈ 25–35K tokens across typical tokenisers.
+    # Seconds to wait for a single context file read before skipping it with a warning. Guards startup
+    # against network-backed filesystems (iCloud Drive, OneDrive, NFS) that can block a cold read.
+    "context_file_read_timeout": 5.0,
+    # Max chars per read_file call; larger reads are rejected with offset+limit guidance. 100K chars
+    # ≈ 25–35K tokens.
     "file_read_max_chars": 100_000,
-
-    # Seconds to wait at agent-build time for in-flight MCP server discovery
-    # to finish before the agent snapshots its tool list.  MCP discovery runs
-    # in a background thread so a slow/dead server can't freeze startup; this
-    # bounds how long the first agent build blocks on it.  The wait returns
-    # the INSTANT discovery completes, so users with no MCP servers (the common
-    # case) or fast servers pay ~0s regardless of this value — the bound is
-    # only reached when a server is genuinely still connecting.  The old 0.75s
-    # default was a touch short for HTTP/OAuth servers on a cold connect; a
-    # modest bump lets more of them land in the FIRST turn's snapshot.  This is
-    # only a turn-1 latency/UX knob: a server that misses this window is still
-    # picked up automatically on the next turn by the between-turns refresh
-    # (see agent/turn_context.py), so correctness never depends on it.  Keep it
-    # small so a slow/dead server adds little to first-response latency.
+    # Seconds the first agent build waits for background MCP discovery before snapshotting its tool
+    # list. Returns the instant discovery completes (no MCP servers → ~0s); the bound only bites
+    # when a server is still connecting. Turn-1 latency knob only: a server that misses it is picked
+    # up by the between-turns refresh (agent/turn_context.py), so keep it small — a dead server adds
+    # this much to first-response latency.
     "mcp_discovery_timeout": 1.5,
-
-    # Single-query (``hermes -q/-z "..."``) variant of mcp_discovery_timeout.
-    # In one-shot mode there is only ONE turn, so the between-turns late-binding
-    # refresh never runs: a server that misses the small interactive bound is
-    # invisible to the LLM for the whole session.  This larger bound gives slow
-    # cold-start servers (npx, uvx, remote HTTP) a chance to land in the one
-    # tool snapshot.  ``thread.join(timeout)`` returns the instant discovery
-    # completes, so reachable servers only wait for their real handshake time
-    # while unavailable servers remain bounded.
+    # Same bound for single-query mode (``hermes -q/-z``). With only ONE turn there is no
+    # between-turns refresh, so a server that misses the window is invisible for the whole session;
+    # the larger bound lets slow cold-start servers (npx, uvx, remote HTTP) land. Reachable servers
+    # still only wait their real handshake time.
     "mcp_single_query_discovery_timeout": 15.0,
-
-    # MCP runtime behavior (distinct from the per-server definitions in
-    # mcp_servers: and from the auxiliary.mcp side-LLM task settings).
-    "mcp": {
-        # Auto-reload MCP connections when config.yaml's mcp_servers section
-        # changes at runtime (CLI file watcher, default on).
-        # Set to false to stop the automatic reload: every automatic reload
-        # rebuilds the agent tool surface and INVALIDATES the provider
-        # prompt cache (the next message re-sends the full input prefix),
-        # which is expensive on long-context / high-reasoning models.
-        # When disabled, the watcher still detects the change and prints
-        # guidance to apply it deliberately via /reload-mcp.
+    "mcp": {  # MCP runtime behavior (distinct from mcp_servers: definitions and auxiliary.mcp).
+        # Auto-reload MCP connections when config.yaml's mcp_servers changes (CLI watcher). Every
+        # reload rebuilds the tool surface and INVALIDATES the provider prompt cache (next message
+        # re-sends the full prefix) — costly on long-context models. When false the watcher still
+        # detects the change and prints /reload-mcp guidance.
         "auto_reload_on_config_change": True,
     },
-
-    # Tool-output truncation thresholds. When terminal output or a
-    # single read_file page exceeds these limits, Hermes truncates the
-    # payload sent to the model (keeping head + tail for terminal,
-    # enforcing pagination for read_file). Tuning these trades context
-    # footprint against how much raw output the model can see in one
-    # shot. Ported from anomalyco/opencode PR #23770.
-    #
-    # - max_bytes:       terminal_tool output cap, in chars
-    #                    (default 50_000 ≈ 12-15K tokens).
-    # - max_lines:       read_file pagination cap — the maximum `limit`
-    #                    a single read_file call can request before
-    #                    being clamped (default 2000).
-    # - max_line_length: per-line cap applied when read_file emits a
-    #                    line-numbered view (default 2000 chars).
-    "tool_output": {
-        "max_bytes": 50_000,
-        "max_lines": 2000,
-        "max_line_length": 2000,
-    },
-
-    # Tool loop guardrails nudge models when they repeat failed or
-    # non-progressing tool calls. Soft warnings are always-on by default;
-    # hard stops are opt-in so interactive CLI/TUI sessions keep flowing.
+    # Tool-output truncation. max_bytes: terminal_tool output cap in chars (head+tail kept; 50_000 ≈
+    # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.
+    # max_line_length: per-line cap in read_file's line-numbered view (chars).
+    "tool_output": {"max_bytes": 50000, "max_lines": 2000, "max_line_length": 2000},
+    # Tool loop guardrails nudge models that repeat failed/non-progressing tool calls. Soft warnings
+    # are always on; hard stops are opt-in so interactive sessions keep flowing.
     "tool_loop_guardrails": {
         "warnings_enabled": True,
         "hard_stop_enabled": False,
-        "warn_after": {
-            "exact_failure": 2,
-            "same_tool_failure": 3,
-            "idempotent_no_progress": 2,
-        },
+        # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
+        # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
+        "non_interactive_hard_stop_enabled": True,
+        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
         "hard_stop_after": {
-            "exact_failure": 5,
-            "same_tool_failure": 8,
-            "idempotent_no_progress": 5,
+            "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
         },
-        # Per-turn runaway-loop caps (inspired by Claude Code v2.1.212,
-        # Week 29, July 2026). Hard ceilings on how many times a runaway-prone
-        # tool may be called within a SINGLE agent loop (turn); the counters
-        # reset at the start of every turn, so a legitimate multi-turn session
-        # is never starved. They are always-on and fire regardless of the
-        # warn/hard-stop thresholds above. A single turn issuing dozens of web
-        # searches or spawning dozens of subagents is already pathological, so
-        # the defaults are low. Set either to 0 to disable that cap (unlimited).
+        # Per-turn hard ceilings for runaway-prone tools; counters reset every turn, always on
+        # regardless of the thresholds above. Dozens of searches/subagents in ONE turn is already
+        # pathological, hence low defaults. 0 = unlimited.
         "loop_caps": {
-            "max_web_searches": 50,   # max web_search calls per turn (0 = unlimited)
-            "max_subagents": 50,      # max subagents spawned per turn (0 = unlimited)
+            "max_web_searches": 50,   # web_search calls per turn
+            "max_subagents": 50,      # subagents spawned per turn
         },
     },
 
     "compression": {
         "enabled": True,
-        "checkpoint_required": False, # Fail closed before lossy compaction unless an
-                                      # active memory provider confirms checkpoint API
-                                      # compatibility and completes the checkpoint.
-        "progress_notices": False,    # opt-in (#52995): when True, routine compression
-                                      # progress statuses (compacting/preflight/pre-API/
-                                      # idle/retry) are delivered to chat gateway
-                                      # platforms instead of being suppressed by the
-                                      # gateway noise filter. Default False keeps
-                                      # routine compression silent-by-design on chat
-                                      # surfaces (server-side logging only). Failure
-                                      # notices and manual /compress feedback are
-                                      # always visible regardless of this setting.
-        "threshold": 0.50,            # compress when context usage exceeds this ratio.
-                                      # Models with context windows below 512K are
-                                      # floored at 0.75 (raise-only) so compaction
-                                      # doesn't fire with half the window still free;
-                                      # set this above 0.75 to override the floor.
-        "threshold_tokens": None,     # absolute token cap — when set, compression
-                                      # triggers at the lower of the ratio-based
-                                      # threshold and this token count. Clamped to
-                                      # the model's context length at apply-time.
+        # checkpoint_required: fail closed before lossy compaction unless an active memory provider
+        # confirms checkpoint API compatibility and completes the checkpoint.
+        "checkpoint_required": False,
+        # progress_notices: when True, routine compression progress statuses (compacting/
+        # preflight/pre-API/idle/retry) reach chat gateways instead of being filtered as noise.
+        # Failure notices and manual /compress feedback are always visible.
+        "progress_notices": False,
+        # threshold: compress when context usage exceeds this ratio. Models with windows below 512K
+        # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
+        # above 0.75 to override the floor.
+        "threshold": 0.50,
+        # threshold_tokens: absolute token cap — compression triggers at the lower of the ratio
+        # threshold and this count. Clamped to the model's context length.
+        "threshold_tokens": None,
+        # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "tail_mode": "lean",          # tail retention policy (#87326):
-                                      #   "lean"   — clamped 2.5%-of-window tail (default)
-                                      #              (10K floor / 25K cap) plus chunked
-                                      #              digests, a mechanical anchor index,
-                                      #              verbatim user messages, and
-                                      #              session_search recovery pointers in
-                                      #              the summary. ~3x fewer retained
-                                      #              tokens after compaction; costs a few
-                                      #              extra summarizer calls at the
-                                      #              compaction boundary.
-                                      #   "legacy" — pre-#87326 0.20×threshold verbatim
-                                      #              tail (100-240K tokens on big-window
-                                      #              or raised-threshold setups).
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "min_tail_user_messages": 1,  # REAL (actionable) user messages guaranteed to
-                                      # survive in the uncompressed tail. 1 = existing
-                                      # single last-user anchor (default, behavior-
-                                      # preserving); raise to e.g. 3 to keep the last
-                                      # 3 real user turns verbatim when bulky tool
-                                      # outputs fill the tail token budget.
-        "max_attempts": 3,            # compression retry rounds before a turn gives up
-                                      # with "max compression attempts reached". Raise
-                                      # (e.g. 6) for tool-schema-heavy sessions where 3
-                                      # rounds cannot clear the request estimate.
-                                      # Validated >= 1, hard-capped at 10.
-        "proactive_prune_tokens": 0,  # opt-in trigger (tokens) for the deterministic,
-                                      # no-LLM tool-result prune, run independently of
-                                      # `threshold` above. On large-window models
-                                      # `threshold` (≈50% of the window) rarely fires,
-                                      # so old tool output otherwise rides in history
-                                      # and is re-sent every turn; a low value like
-                                      # 48000 reclaims it early. 0 = off. Recent tail
-                                      # protected by `protect_last_n`. Built-in
-                                      # compressor only (other engines inherit a no-op).
-                                      # NOTE: each committed prune rewrites already-sent
-                                      # history, breaking the provider prompt-cache
-                                      # prefix — the min_reclaim gate below keeps those
-                                      # breaks episodic rather than per-turn.
-        "proactive_prune_min_result_chars": 8000,  # the prune's summarize pass only
-                                      # touches tool results larger than this (chars);
-                                      # clamped to >= 200 so a generated summary can't
-                                      # itself be re-summarized.
-        "proactive_prune_min_reclaim_tokens": 4096,  # a proactive prune only commits
-                                      # when it reclaims at least this many tokens
-                                      # (measured on the pruned output), then waits
-                                      # for a full trigger-sized token runway to
-                                      # regrow before rearming. Keeps prompt-cache
-                                      # breaks episodic. 0 = no minimum-savings gate.
-        "micro_compact": False,       # opt-in: after each completed turn, fold the
-                                      # oldest un-absorbed exchange into a rolling
-                                      # summary, amortizing compression cost instead
-                                      # of paying it in one batch stall. Default False
-                                      # because a pass rewrites already-sent history
-                                      # and so breaks the provider prompt-cache prefix
-                                      # EVERY turn — the per-turn cache break that
-                                      # `proactive_prune_min_reclaim_tokens` above
-                                      # exists to avoid. Enable only when you have
-                                      # measured that the amortized stall is worth
-                                      # more to you than the cached-prefix discount.
-                                      # See docs/micro-compaction.md.
-        "micro_compact_every_n_turns": 1,  # cadence: run a pass every Nth completed
-                                      # turn. Since each pass costs one prompt-cache
-                                      # break, this is the dial for how often that
-                                      # cost is paid — 1 reclaims most aggressively
-                                      # at one break per turn, 5 trades reclaim rate
-                                      # for a fifth of the breaks. Clamped to >= 1.
-                                      # Ignored unless `micro_compact` is true.
-        "micro_compact_defrag_threshold_tokens": 2000,  # once the rolling summary
-                                      # exceeds this many tokens, the next pass
-                                      # re-summarizes the summary itself instead of
-                                      # letting it grow without bound.
-        "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
-        "hygiene_timeout_seconds": 30,  # max seconds gateway waits for pre-agent hygiene compression
-                                      # WITHOUT forward progress. The summary call streams, so
-                                      # this is an inactivity budget: a slow model still
-                                      # producing tokens keeps extending the wait; only a
-                                      # silent/hung call is cut off.
-        "hygiene_total_ceiling_seconds": 600,  # absolute cap on the hygiene compression wait even
-                                      # while tokens are still moving — bounds a degenerate
-                                      # trickle stream. Clamped to >= hygiene_timeout_seconds.
-        "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts for this session
-        "hygiene_max_turn_hold_seconds": 10,  # max seconds an ARRIVING user turn is held while a
-                                      # still-streaming hygiene summary finishes. Distinct from
-                                      # hygiene_timeout_seconds (compressor inactivity budget):
-                                      # this bounds user-visible latency once real input is
-                                      # waiting. Kept well under chat-transport idle timeouts
-                                      # (Telegram ~30s). On expiry the turn proceeds
-                                      # uncompressed — an availability boundary, not a failure.
-        "context_timeout_seconds": 120,  # inactivity budget for in-agent compress_context
-                                      # (conversation loop, /compress, preflight, etc.).
-                                      # Same progress-aware semantics as hygiene_timeout_seconds:
-                                      # streamed summary tokens extend the wait; only a silent
-                                      # worker is cut off. 0 = disable the owned wrapper
-                                      # (callers that already pass commit_fence, e.g. gateway
-                                      # hygiene, never use this path).
-        "context_total_ceiling_seconds": 600,  # absolute cap on the *pre-commit*
-                                      # in-agent compress_context wait (summary /
-                                      # stream phase) even while tokens are still
-                                      # moving. Clamped to >= context_timeout_seconds
-                                      # when the idle budget is > 0. Guarantee:
-                                      # the summary phase is bounded by this
-                                      # ceiling; an already-started SessionDB
-                                      # commit is never abandoned mid-flight —
-                                      # if the commit itself runs past the
-                                      # ceiling it is logged (WARNING, then
-                                      # ERROR) and surfaced to the user via the
-                                      # warning channel while the host keeps
-                                      # waiting in bounded increments for the
-                                      # commit to finish.
-        "protect_first_n": 3,         # non-system head messages always preserved
-                                      # verbatim, in ADDITION to the system prompt
-                                      # (which is always implicitly protected). Set to
-                                      # 0 for long-running rolling-compaction sessions
-                                      # where you want nothing pinned except the
-                                      # system prompt + rolling summary + recent tail.
-        "abort_on_summary_failure": False,  # When True, auto-compression that fails
-                                      # to generate a summary (aux LLM errored / returned
-                                      # non-JSON / timed out) aborts entirely instead of
-                                      # dropping the middle window with a static
-                                      # "summary unavailable" placeholder.  Messages are
-                                      # preserved unchanged and the session "freezes" at
-                                      # its current size until the user runs /compress
-                                      # (which bypasses the failure cooldown) or /new.
-                                      # Default False matches historical behavior; set to
-                                      # True if you'd rather pause than silently lose
-                                      # context turns when your aux model is flaky.
-        "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
-                                      # When True, gpt-5.4 / gpt-5.5 / gpt-5.6 on the
-                                      # ChatGPT Codex OAuth route raise their compaction
-                                      # trigger to 85% (vs the global `threshold` above).
-                                      # Codex hard-caps these families at a 272K window, so
-                                      # the default 50% would compact at ~136K and waste half
-                                      # the usable context. Set to False to opt back down to
-                                      # the global threshold (e.g. 0.50) for those Codex
-                                      # sessions. Only this exact route is affected —
-                                      # gpt-5.4 / 5.5 / 5.6 on OpenAI's direct API,
-                                      # OpenRouter, and Copilot keep the global threshold
-                                      # regardless.
-        "codex_gpt55_autoraise_notice": True,  # Display the one-time Codex gpt-5.4/5.5/5.6
-                                      # autoraise banner. Set False to keep the
-                                      # 85% threshold autoraise but suppress the
-                                      # user-facing notice in CLI/gateway output.
-        "codex_app_server_auto": "native",  # Codex app-server (codex CLI runtime) thread
-                                      # compaction mode. The codex agent owns the real
-                                      # thread context, so Hermes' summarizer cannot
-                                      # shrink it (#36801). native = codex decides when
-                                      # to compact its own thread (default); hermes =
-                                      # Hermes' compression threshold triggers
-                                      # thread/compact/start; off = never auto-trigger
-                                      # (codex may still compact natively).
-        "codex_responses_native": False,  # Opt in to OpenAI's server-side compaction
-                                      # on the Responses API. Engages ONLY for
-                                      # gpt-5.6-family models on api.openai.com or
-                                      # the ChatGPT Codex backend; every other
-                                      # route/model is unaffected. Hermes' local
-                                      # compression stays armed as the fallback.
-        "codex_responses_compact_threshold": None,  # Optional absolute server compaction
-                                      # trigger in input tokens. None follows the
-                                      # resolved local compression trigger with a
-                                      # safety margin. Explicit values only clamp
-                                      # downward so the server compacts first.
-        "in_place": True,             # When True, compaction rewrites the message
-                                      # list and rebuilds the system prompt WITHOUT
-                                      # rotating the session id — the conversation
-                                      # keeps one durable id for its whole life
-                                      # (no parent_session_id chain, no `name #N`
-                                      # renumbering). Eliminates the session-rotation
-                                      # bug cluster (#33618 /goal loss, #14238 lost
-                                      # response, #33907 orphans, #45117 search gaps,
-                                      # #42228 null cwd) — see #38763. Non-destructive:
-                                      # the live context is compacted (lossy for what
-                                      # the model reloads), but the pre-compaction
-                                      # turns are soft-archived under the same id
-                                      # (active=0, compacted=1) — still searchable via
-                                      # session_search and recoverable, not deleted.
-                                      # Default True since 2107b86024; set False to
-                                      # restore the legacy rotating-compaction path.
-        "model_thresholds": {},       # Per-model threshold overrides. Keys are
-                                      # substring-matched against the model name
-                                      # (longest match wins); values replace the
-                                      # global `threshold` for that model, e.g.
-                                      #   model_thresholds:
-                                      #     "glm-5.2": 0.40
-                                      #     "claude-sonnet": 0.35
-                                      # The small-context floor (0.75 for <512K
-                                      # models) still applies on top of overrides
-                                      # (raise-only: an override above the floor
-                                      # wins; one below it is raised to the floor).
-        "idle_compact_after_seconds": 0,  # Opt-in idle compaction (0 = disabled).
-                                      # When > 0, a session that resumes after at
-                                      # least this many seconds of inactivity
-                                      # compacts its accumulated history up front,
-                                      # before the first reply — so a long-lived
-                                      # thread resumed hours later doesn't re-read
-                                      # its full stale context on every turn.
-                                      # Time-based; complements (does not replace)
-                                      # the size-based `threshold` above. Skipped
-                                      # when the context is already at/below the
-                                      # post-compression target (threshold ×
-                                      # target_ratio) and it honors the same
-                                      # failure-cooldown / anti-thrash / per-session
-                                      # lock guards as every automatic compaction.
-                                      # Example: 1800 = compact after 30 min idle.
+        # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
+        # digests, anchor index, verbatim user messages and session_search pointers in the summary
+        # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
+        # 0.20×threshold verbatim tail (100-240K tokens on big windows).
+        "tail_mode": "lean",
+        "protect_last_n": 20,         # minimum recent messages kept uncompressed
+        # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
+        # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
+        "min_tail_user_messages": 1,
+        # max_attempts: retry rounds before a turn gives up with "max compression attempts reached".
+        # Raise (e.g. 6) for tool-schema-heavy sessions. Validated >= 1, cap 10.
+        "max_attempts": 3,
+        # proactive_prune_tokens: opt-in trigger (tokens) for the deterministic no-LLM tool-result
+        # prune, independent of `threshold` (which rarely fires on large windows, so old tool output
+        # is re-sent every turn); e.g. 48000 reclaims early. 0 = off. Tail protected by
+        # `protect_last_n`. Built-in compressor only. Each committed prune rewrites sent history and
+        # breaks the prompt-cache prefix — the min_reclaim gate below keeps those breaks episodic.
+        "proactive_prune_tokens": 0,
+        # Prune's summarize pass only touches tool results larger than this (chars); clamped >= 200
+        # so a generated summary can't be re-summarized.
+        "proactive_prune_min_result_chars": 8000,
+        # A prune only commits when it reclaims at least this many tokens, then waits for a
+        # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
+        "proactive_prune_min_reclaim_tokens": 4096,
+        # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
+        # rolling summary, amortizing compression cost. Off by default because every pass rewrites
+        # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized
+        # stall beats the cached-prefix discount. See docs/micro-compaction.md.
+        "micro_compact": False,
+        # Cadence: run a pass every Nth completed turn (1 = one cache break per turn, 5 = a fifth of
+        # the breaks). Clamped >= 1; ignored unless micro_compact is true.
+        "micro_compact_every_n_turns": 1,
+        # Once the rolling summary exceeds this many tokens, the next pass re-summarizes it.
+        "micro_compact_defrag_threshold_tokens": 2000,
+        # Gateway session-hygiene force-compress threshold, by message count.
+        "hygiene_hard_message_limit": 5000,
+        # Max seconds the gateway waits for pre-agent hygiene compression WITHOUT forward progress.
+        # Inactivity budget: a slow model still streaming tokens extends the wait.
+        "hygiene_timeout_seconds": 30,
+        # Absolute cap on the hygiene wait even while tokens are moving (bounds a trickle stream).
+        # Clamped >= hygiene_timeout_seconds.
+        "hygiene_total_ceiling_seconds": 600,
+        "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts
+        # Max seconds an ARRIVING user turn is held while a streaming hygiene summary finishes;
+        # bounds user-visible latency (keep under chat idle timeouts, Telegram ~30s). On expiry the
+        # turn proceeds uncompressed; the detached worker keeps its watermark-fenced commit, so the
+        # summary is adopted at the next safe boundary.
+        "hygiene_max_turn_hold_seconds": 10,
+        # Inactivity budget for in-agent compress_context (loop, /compress, preflight); same
+        # progress-aware semantics as hygiene_timeout_seconds. 0 = disable the owned wrapper
+        # (callers passing commit_fence, e.g. gateway hygiene, never use it).
+        "context_timeout_seconds": 120,
+        # Absolute cap on the *pre-commit* compress_context wait (summary/stream phase) even while
+        # tokens move. Clamped >= context_timeout_seconds when that is > 0. A started SessionDB
+        # commit is never abandoned: past the ceiling it is logged (WARNING, then ERROR) and
+        # surfaced on the warning channel while the host keeps waiting.
+        "context_total_ceiling_seconds": 600,
+        # Non-system head messages always kept verbatim, in ADDITION to the (always protected)
+        # system prompt. 0 = pin nothing but system prompt + summary + tail.
+        "protect_first_n": 3,
+        # When True, auto-compression whose summary fails (aux error / non-JSON / timeout) aborts
+        # instead of dropping the middle with a "summary unavailable" placeholder; the session
+        # freezes at its size until /compress (bypasses the cooldown) or /new.
+        "abort_on_summary_failure": False,
+        # (Historical key name.) When True, gpt-5.4/5.5/5.6 on the ChatGPT Codex OAuth route raise
+        # their compaction trigger to 85%: Codex hard-caps them at a 272K window, so the global 50%
+        # would compact at ~136K. False = global `threshold`. Only that route; the same models via
+        # OpenAI direct, OpenRouter or Copilot keep the global value.
+        "codex_gpt55_autoraise": True,
+        # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
+        "codex_gpt55_autoraise_notice": True,
+        # Codex app-server thread compaction mode. The codex agent owns the thread context, so
+        # Hermes' summarizer cannot shrink it. native = codex decides; hermes = Hermes' threshold
+        # triggers thread/compact/start; off = never auto-trigger.
+        "codex_app_server_auto": "native",
+        # Opt in to OpenAI server-side compaction on the Responses API. Only gpt-5.6-family on
+        # api.openai.com or the Codex backend; local compression stays as fallback.
+        "codex_responses_native": False,
+        # Absolute server compaction trigger (input tokens). None follows the local trigger with a
+        # safety margin; explicit values only clamp downward so the server goes first.
+        "codex_responses_compact_threshold": None,
+        # in_place: compaction rewrites the message list and system prompt WITHOUT rotating the
+        # session id (no parent_session_id chain, no `name #N` renumbering), avoiding the
+        # session-rotation bug cluster. Pre-compaction turns are soft-archived under the same id
+        # (active=0, compacted=1) — still session_search-able. False = legacy rotating-compaction
+        # path.
+        "in_place": True,
+        # Per-model threshold overrides: keys substring-match the model name (longest wins), values
+        # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. The <512K floor (0.75) still
+        # applies raise-only on top.
+        "model_thresholds": {},
+        # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
+        # up front, before the first reply. Time-based complement to `threshold`; skipped when
+        # already at/below threshold × target_ratio; honors the same cooldown/ anti-thrash/lock
+        # guards. Example: 1800 = 30 min.
+        "idle_compact_after_seconds": 0,
     },
-
-    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
-    # cache_ttl: "5m" or "1h" (Anthropic-supported tiers). Other non-falsy
-    # values are silently ignored. Falsy values (false, null, "off",
-    # "disabled", "no", "none") disable prompt caching entirely.
-    "prompt_caching": {
-        "cache_ttl": "5m",
-    },
-
-    # OpenRouter-specific settings.
-    # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
-    #   When enabled, identical requests return cached responses for free (zero billing).
-    #   This is separate from Anthropic prompt caching and works alongside it.
-    #   See: https://openrouter.ai/docs/guides/features/response-caching
-    # response_cache_ttl: how long cached responses remain valid, in seconds (1-86400).
-    #   Default 300 (5 minutes). Only used when response_cache is enabled.
-    # min_coding_score: knob for the openrouter/pareto-code router (0.0-1.0).
-    #   Only applied when model.model is "openrouter/pareto-code". Higher
-    #   values route to stronger (more expensive) coders; lower values open
-    #   up cheaper, faster options. Default 0.65 lands on the mid-tier
-    #   coder on the current Pareto frontier. Empty string = let OpenRouter
-    #   pick the strongest available coder (router's documented default
-    #   when the plugins block is omitted).
-    #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
-    "openrouter": {
-        "response_cache": True,
-        "response_cache_ttl": 300,
-        "min_coding_score": 0.65,
-    },
-
-    # AWS Bedrock provider configuration.
-    # Only used when model.provider is "bedrock".
-    "bedrock": {
-        "region": "",  # AWS region for Bedrock API calls (empty = AWS_REGION env var → us-east-1)
+    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h"; other
+    # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
+    # caching.
+    "prompt_caching": {"cache_ttl": "5m"},
+    # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
+    # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
+    # seconds (1-86400), only used when response_cache is on. min_coding_score (0.0-1.0):
+    # pareto-code router knob, applied only when model.model is "openrouter/pareto-code"; higher =
+    # stronger/pricier coders, 0.65 = mid-tier, "" = let OpenRouter pick the strongest. Docs:
+    # openrouter.ai/docs/guides/routing/routers/pareto-router
+    "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
+    "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
+        "region": "",  # empty = AWS_REGION env var → us-east-1
         "discovery": {
-            "enabled": True,           # Auto-discover models via ListFoundationModels
-            "provider_filter": [],     # Only show models from these providers (e.g. ["anthropic", "amazon"])
-            "refresh_interval": 3600,  # Cache discovery results for this many seconds
+            "enabled": True,           # auto-discover models via ListFoundationModels
+            "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]
+            "refresh_interval": 3600,  # cache discovery results (seconds)
         },
+        # Bedrock Guardrails: create one in the console, then set ID and version.
+        # https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
         "guardrail": {
-            # Amazon Bedrock Guardrails — content filtering and safety policies.
-            # Create a guardrail in the Bedrock console, then set the ID and version here.
-            # See: https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
             "guardrail_identifier": "",  # e.g. "abc123def456"
             "guardrail_version": "",     # e.g. "1" or "DRAFT"
-            "stream_processing_mode": "async",  # "sync" or "async"
-            "trace": "disabled",         # "enabled", "disabled", or "enabled_full"
+            "stream_processing_mode": "async",  # "sync" | "async"
+            "trace": "disabled",         # "enabled" | "disabled" | "enabled_full"
         },
     },
-
-    # Auxiliary model config — provider:model for each side task.
-    # Format: provider is the provider name, model is the model slug.
-    # "auto" for provider = auto-detect best available provider.
-    # Empty model = use provider's default auxiliary model.
-    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
-    # the configured provider is unavailable.
-    #
-    # extra_body: forwarded verbatim as request body fields on every aux call
-    # for that task. Use this to set provider-specific knobs (independent of
-    # main-agent settings). On OpenRouter you can set provider routing prefs
-    # and the Pareto Code coding-score floor here. Example:
-    #
+    # Auxiliary model config — provider/model per side task. provider "auto" = auto-detect;
+    # empty model = provider's default aux model; all tasks fall back to
+    # openrouter:google/gemini-3-flash-preview when the configured provider is unavailable.
+    # extra_body is forwarded verbatim as request body fields for that task, e.g. OpenRouter
+    # routing prefs / Pareto Code floor:
     #   auxiliary:
     #     compression:
-    #       provider: openrouter
-    #       model: openrouter/pareto-code
     #       extra_body:
-    #         provider:           # OpenRouter provider routing
-    #           order: [anthropic, google]
-    #           sort: throughput  # or price | latency
-    #         plugins:            # OpenRouter Pareto Code router
-    #           - id: pareto-router
-    #             min_coding_score: 0.5
-    #
-    # Each aux task is independent — main-agent provider_routing and
-    # openrouter.min_coding_score do NOT propagate to aux calls by design.
+    #         provider: {order: [anthropic, google], sort: throughput}  # or price | latency
+    #         plugins: [{id: pareto-router, min_coding_score: 0.5}]
+    # Each task is independent — main-agent provider_routing and openrouter.min_coding_score
+    # do NOT propagate to aux calls by design.
     "auxiliary": {
-        # Same-provider retries for a transient transport blip (connection
-        # reset / timeout / 5xx / 408) on ANY auxiliary call before falling
-        # back. Default 2 (→ 3 total attempts), clamped [0,6]. Matters most for
-        # pinned calls like MoA reference advisors, where provider fallback is
-        # not a meaningful recovery, so an unretried blip silently loses the
-        # call.
+        # Same-provider retries for a transient blip (reset/timeout/5xx/408) on ANY aux call before
+        # falling back; clamped [0,6]. Matters for pinned calls (MoA advisors) where provider
+        # fallback is not meaningful recovery.
         "transient_retries": 2,
-        # Restrict the auxiliary auto-chain's OpenRouter fallback to free
-        # (:free) SKUs. When true, the OpenRouter step is skipped entirely
-        # unless the resolved fallback model ends in ":free" — a PAID lane
-        # is never engaged for background auxiliary traffic (compression,
-        # title generation, session search, vision, web extract) even when
-        # OPENROUTER_API_KEY is present. Default false keeps the historical
-        # paid fallback for users who want it.
+        # When true, the auto-chain's OpenRouter step is skipped unless the fallback model ends in
+        # ":free" — a PAID lane is never used for background aux traffic even with
+        # OPENROUTER_API_KEY set.
         "free_only": False,
-        # Override the auxiliary auto-chain's OpenRouter fallback model
-        # (default: google/gemini-3.6-flash, a PAID model). Set e.g.
-        # "nvidia/nemotron-3-ultra-550b-a55b:free" together with
-        # free_only: true to keep auxiliary traffic free-only. A one-time
+        # Override the auto-chain's OpenRouter fallback model (default google/gemini-3.6-flash,
+        # PAID). Pair e.g. "nvidia/nemotron-3-ultra-550b-a55b:free" with free_only: true. A one-time
         # WARNING is logged whenever a non-":free" model is engaged.
         "openrouter_model": "",
-        # Endpoints that reject NON-streaming chat requests outright (e.g.
-        # Tencent Copilot returns HTTP 400 "Non-stream chat request is
-        # currently not supported"). Auxiliary calls to a matching endpoint
-        # are sent with stream=True and aggregated client-side. Entries are
-        # case-insensitive substrings matched against the endpoint URL;
-        # copilot.tencent.com is always treated as stream-only.
+        # Endpoints that reject NON-streaming chat (HTTP 400): aux calls are sent with stream=True
+        # and aggregated. Case-insensitive URL substrings; copilot.tencent.com is always
+        # stream-only.
         "stream_only_base_urls": [],
-        "vision": {
-            "provider": "auto",    # auto | openrouter | nous | codex | custom
-            "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
-            "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
-            "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
-            "extra_body": {},      # OpenAI-compatible provider-specific request fields
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-            "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
-        },
-        # Note: web_extract no longer uses an auxiliary LLM — pages are
-        # truncate-and-stored with a read_file pointer (no summarization),
-        # and browser snapshots follow the same pattern. The old
-        # ``auxiliary.web_extract.*`` block was removed here. Existing
-        # values in user config.yaml files are harmless leftovers and ignored.
-        "compression": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-            # Guarded fast lane: only honored with a concrete provider/model
-            # and an explicit ``reasoning_effort: none`` certification.
-            # Zero preserves the historic uncapped compression request.
-            "max_output_tokens": 0,
-        },
-        # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
-        # single-shape tool returns DB content directly). The old
-        # ``auxiliary.session_search.*`` block was removed here. Existing
-        # values in user config.yaml files are harmless leftovers and ignored.
-        "skills_hub": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        "approval": {
-            "provider": "auto",
-            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # /review — the independent reviewer subagent's model. Unlike other
-        # aux tasks this is not a single LLM call: the reviewer is a full
-        # subagent (all normal subagent tools) spawned on the async
-        # delegation rail. provider/model/base_url/api_key/api_mode are
-        # resolved through the same credential system as delegation.provider
-        # pins. Leave provider "auto" + model empty to run the reviewer on
-        # the main agent's model.
-        "review": {
-            "provider": "auto",    # auto (= inherit main model) | openrouter | nous | anthropic | ...
-            "model": "",           # e.g. "anthropic/claude-opus-4.6" — a strong reviewer model
-            "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
-            "api_key": "",         # API key for base_url / provider override
-            "api_mode": "",        # force transport: chat_completions | anthropic_messages | codex_responses
-        },
-        "mcp": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
+        # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url
+        # overrides provider; api_key falls back to OPENAI_API_KEY; reasoning_effort:
+        # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
+        # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
+        "vision": _aux(120, download_timeout=30),
+        # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
+        # are ignored. Compression: raise timeout for local models. max_output_tokens is only
+        # honored with a concrete provider/model AND ``reasoning_effort: none``; 0 = uncapped.
+        "compression": _aux(120, max_output_tokens=0),
+        "skills_hub": _aux(30),
+        "approval": _aux(30),   # classifier — a fast/cheap model is recommended
+        # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
+        # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
+        # chat_completions | anthropic_messages | codex_responses.
+        "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
+        "mcp": _aux(30),
+        # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {
             "enabled": True,
+            # Note: session_search no longer uses an auxiliary LLM (PR #27590 — single-shape tool returns DB
+            # content directly). The old ``auxiliary.session_search.*`` block was removed here. Existing
+            # values in user config.yaml files are harmless leftovers and ignored.
             "provider": "auto",
             "model": "",
-            "prefer_fast_model": False,  # opt in to provider fast tier; auto otherwise uses the main model
+            "prefer_fast_model": False,
             "base_url": "",
             "api_key": "",
             "timeout": 30,
             "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            "reasoning_effort": "",
             "language": "",
         },
-        "memory_query_rewrite": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 8,
-            "extra_body": {},
-        },
-        "tts_audio_tags": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Triage specifier — flesh out a rough one-liner in the Kanban
-        # Triage column into a concrete spec, then promote it to ``todo``.
-        # Invoked by ``hermes kanban specify`` (single id or --all). Set a
-        # cheap, capable model here (gemini-flash works well); the main
-        # model is overkill for short spec expansion.
-        "triage_specifier": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 120,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Kanban decomposer — decomposes a triage task into a graph of
-        # child tasks routed to specialist profiles by description.
-        # Invoked by ``hermes kanban decompose`` and the kanban
-        # auto-decompose dispatcher tick. Returns a JSON task graph;
-        # uses more tokens than the specifier so allow more headroom.
-        "kanban_decomposer": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 180,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Profile describer — auto-generates a 1-2 sentence description
-        # of what a profile is good at. Invoked by
-        # ``hermes profile describe <name> --auto`` and the dashboard's
-        # auto-generate button. Short, cheap call.
-        "profile_describer": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 60,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Goal judge — evaluates whether a /goal run's latest response
-        # satisfies the goal/contract, and drafts goal contracts. Short
-        # structured-JSON calls; a fast cheap model is fine.
-        "goal_judge": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 60,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Curator — skill-usage review fork. Timeout is generous because the
-        # review pass can take several minutes on reasoning models (umbrella
-        # building over hundreds of candidate skills). "auto" = use main chat
-        # model; override via `hermes model` → auxiliary → Curator to route
-        # to a cheaper aux model (e.g. openrouter google/gemini-3-flash-preview).
-        "curator": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 600,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Monitor — urgency/importance classifier used by the important-mail
-        # monitor catalog automation (cron/scripts/classify_items.py). Scores
-        # candidate items 0-10 against the user's criteria so only above-
-        # threshold items get delivered. "auto" = main chat model; override to
-        # a cheap fast model (e.g. openrouter google/gemini-3-flash-preview,
-        # haiku) since per-item scoring is high-volume and a small model is fine.
-        "monitor": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 60,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
-        # Background review — the post-turn self-improvement fork that decides
-        # whether to save a memory / patch a skill. "auto" (default) = run on
-        # the main chat model, replaying the full conversation, which is already
-        # warm in the prompt cache (cheap cache reads) — unchanged, optimal.
-        # Set provider/model to a cheaper model (e.g. openrouter
-        # google/gemini-3-flash-preview) to run the review there for ~3-5x lower
-        # cost. A different model can't reuse the main prompt cache anyway, so
-        # the fork automatically replays a compact digest instead of the full
-        # transcript when routed (minimises the cold-write). Same model = full
-        # replay; different model = digest. Quality holds (memory capture
-        # identical, skill near-identical in benchmarks).
-        "background_review": {
-            # Master switch for automatic post-turn memory/skill review forks.
-            # false = skip automatic spawns (manual /refine still works).
-            "enabled": True,
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 120,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-            # Aggregate INPUT-token budget for one review fork (issue #93057).
-            # The fork's FIRST request replays the full snapshot as a warm
-            # prompt-cache read (compaction is deferred until the first
-            # provider response arrives); after that it compacts an oversized
-            # snapshot in memory before further provider calls. This caps the
-            # SUM of input tokens replayed across the whole review tool loop
-            # (iterations are separately capped at 16). The loop stops before
-            # the provider call that would cross the budget. 0 or a negative
-            # value = unlimited.
-            "max_input_tokens": 600000,
-        },
-        "moa_reference": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 900,
-            "extra_body": {},
-            # NOTE: no reasoning_effort here by design — MoA reasoning depth is
-            # configured PER SLOT in the MoA preset (moa.presets.<name>.
-            # reference_models[].reasoning_effort / aggregator.reasoning_effort),
-            # not at the auxiliary-task level.
-        },
-        "moa_aggregator": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 900,
-            "extra_body": {},
-            # NOTE: no reasoning_effort here by design — see moa_reference above.
-        },
+        "memory_query_rewrite": _aux(8, reasoning_effort=False),
+        "tts_audio_tags": _aux(30),
+        # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
+        # kanban_decomposer emits a JSON graph of child tasks (more tokens).
+        "triage_specifier": _aux(120),
+        "kanban_decomposer": _aux(180),
+        "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
+        "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
+        # of skills); route cheaper via `hermes model` → auxiliary → Curator.
+        "curator": _aux(600),
+        "monitor": _aux(60),   # important-mail 0-10 scorer; high-volume, small model fine
+        # Post-turn self-improvement fork (save memory / patch skill). "auto" = main model replaying
+        # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
+        # enabled=false skips auto spawns (/refine still works). max_input_tokens caps the SUM of
+        # replayed input tokens over the review loop (iterations capped at 16); the loop stops
+        # before crossing it. <= 0 = unlimited.
+        "background_review": {"enabled": True, **_aux(120), "max_input_tokens": 600000},
+        # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
+        # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
+        "moa_reference": _aux(900, reasoning_effort=False),
+        "moa_aggregator": _aux(900, reasoning_effort=False),
     },
-    
+
     "display": {
         "compact": False,
         "personality": "",
         "resume_display": "full",
-        # Recap tuning for /resume and startup resume. The defaults match the
-        # historical hardcoded values; expose them as config so power users can
-        # widen or tighten the snapshot to taste.
+        # Recap tuning for /resume and startup resume.
         "resume_exchanges": 10,            # max user+assistant pairs to show
         "resume_max_user_chars": 300,      # truncate user message text
         "resume_max_assistant_chars": 200, # truncate non-last assistant text
         "resume_max_assistant_lines": 3,   # truncate non-last assistant lines
-        # When True (default), assistant entries that are *only* tool calls
-        # (no visible text) are skipped in the recap. This prevents the recap
-        # from being dominated by `[2 tool calls: terminal, read_file]` lines
-        # when an exchange was tool-heavy. Set False to restore the legacy
-        # behavior of showing tool-call summaries inline.
+        # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
+        # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
-        # When busy_input_mode="steer", suppress only the visible
-        # "Steered into current run" confirmation bubble by setting this false.
-        # The mid-turn steering itself still happens.
+        # steer mode: false hides only the "Steered into current run" bubble; steering itself still
+        # happens.
         "busy_steer_ack_enabled": True,
-        # Classic CLI multiline fallbacks beyond Alt+Enter.
-        # Default true matches Claude Code / Codex / OpenCode: Ctrl+J inserts
-        # a newline, a trailing backslash followed by Enter continues the draft,
-        # and supported terminals are asked to report Shift+Enter distinctly.
-        # Set false to restore the legacy c-j submit fallback on unusual POSIX
-        # PTYs whose plain Enter arrives as LF instead of CR.
+        # Classic CLI multiline beyond Alt+Enter: Ctrl+J newline, trailing backslash+Enter
+        # continues, Shift+Enter reported distinctly. False restores the c-j submit fallback for
+        # POSIX PTYs whose plain Enter arrives as LF.
         "cli_multiline_shortcuts": True,
-        # Which interface bare `hermes` (and `hermes chat`) launches by default:
-        #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
-        #   "tui" — the modern Ink TUI (same as passing `--tui`)
-        # Explicit flags always win over this setting: `--cli` forces the classic
-        # REPL and `--tui` (or HERMES_TUI=1) forces the TUI regardless of config.
+        # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL) | "tui" (Ink).
+        # Flags win: `--cli` forces the REPL, `--tui` / HERMES_TUI=1 forces the TUI.
         "interface": "cli",
-        # When true, `hermes --tui` auto-resumes the most recent human-
-        # facing session on launch instead of forging a fresh one.
-        # Mirrors `hermes -c` muscle memory.  Default off so existing
-        # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
+        # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
+        # HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
-        # When true (default), `hermes --tui` drops a one-time hint
-        # ("subagents working · /agents to watch live") the first time a turn
-        # starts delegating, nudging the user toward the live spawn-tree
-        # dashboard. Set false to suppress the hint.
+        # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
+        "resume_last_session": True,
+        # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
-        # Stream the model's reasoning/thinking live before the response.
-        # Default ON: on thinking models the reasoning phase can run tens of
-        # seconds, and with this off the user stares at a spinner the whole
-        # time even though tokens are streaming. Set false for quiet output.
+        "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
+        # Stream reasoning live before the response; otherwise thinking models show only a spinner
+        # for tens of seconds.
         "show_reasoning": True,
-        # When reasoning display is on, the post-response "Reasoning" recap box
-        # collapses long thinking to the first 10 lines. Set true to print the
-        # complete thinking text uncollapsed (live streaming is always full).
+        # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
+        # is always full).
         "reasoning_full": False,
-        # Background self-improvement review notifications surfaced in chat.
-        #   "off"     — no chat notification (the review still runs and writes)
-        #   "on"      — generic "💾 Memory updated" line (default)
-        #   "verbose" — include a compact content preview of what changed
-        # Per-platform overrides via display.platforms.<platform>.memory_notifications.
+        # Background self-improvement notices in chat: "off" (review still runs) | "on" (generic "💾
+        # Memory updated") | "verbose" (content preview). Per-platform via
+        # display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
-        # Gateway notifications when a terminal(background=true) process
-        # finishes:
-        #   "concise" — one-line status message; failures append a short
-        #               output tail (default)
-        #   "all"     — running-output updates + final raw-output message
-        #   "result"  — final raw-output message only
-        #   "error"   — final raw-output message only on non-zero exit
-        #   "off"     — no watcher messages at all
+        # Gateway notices when a terminal(background=true) process finishes: "concise" (one line;
+        # failures append an output tail) | "all" (running updates + final raw output) | "result"
+        # (final raw only) | "error" (raw only on non-zero exit) | "off".
         "background_process_notifications": "concise",
         "streaming": False,
-        "timestamps": False,      # Show message timestamps (CLI labels, TUI rows, desktop transcript)
-        "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
+        "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
+        "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw
-        # Preserve recent classic CLI output across Ctrl+L, /redraw, and
-        # terminal resize full-screen clears. Disable if a terminal emulator
-        # behaves badly with replayed scrollback.
+        # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
+        # emulator misbehaves with replayed scrollback.
         "persistent_output": True,
         "persistent_output_max_lines": 200,
-        # Clear terminal scrollback as well as the visible viewport when the
-        # classic CLI performs a full redraw/resize recovery. Disabled by
-        # default because some users prefer preserving terminal history;
-        # enable when a terminal/tmux stack stamps stale prompt chrome into
-        # scrollback during fullscreen/restore window transitions.
+        # Also clear terminal scrollback on classic-CLI full redraw/resize recovery; enable when a
+        # terminal/tmux stack stamps stale prompt chrome into scrollback.
         "cli_rebuild_scrollback_on_redraw": False,
-        # Print a one-line summary of resolved modal prompts (approval /
-        # clarify) into scrollback so the question and decision survive the
-        # panel repaint. Set false to keep scrollback untouched.
+        # Print a one-line summary of resolved modal prompts (approval/clarify) to scrollback.
         "persist_prompts": True,
-        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
-        # File-mutation verifier footer.  When true (default), the agent
-        # appends a one-line advisory to its final response whenever a
-        # write_file / patch call failed during the turn and was never
-        # superseded by a successful write to the same path.  This catches
-        # the "batch of parallel patches, half fail, model claims success"
-        # class of over-claim that otherwise forces users to run
-        # `git status` to verify edits landed.  Set false to suppress.
+        "inline_diffs": True,     # inline diff previews for write_file/patch/skill_manage
+        # Append a one-line advisory to the final response when a write_file/patch failed this turn
+        # and was never superseded by a successful write to the same path (catches "half the
+        # parallel patches failed, model claims success").
         "file_mutation_verifier": True,
-        # Nous credits status-bar notices (usage bands, grant-spent, depleted /
-        # restored).  When false, no credits notices are emitted — balance data
-        # is still captured and /usage keeps working.  Off switch for sub +
-        # top-up users who find the gauge noisy.
+        # Nous credits status-bar notices (usage bands, grant-spent, depleted/restored). False mutes
+        # them; balance data and /usage keep working.
         "credits_notices": True,
-        # Turn-completion explainer.  When true (default), the agent appends a
-        # one-line explanation to its final response whenever a turn ends
-        # abnormally with no usable reply — empty content after retries, a
-        # partial/truncated stream, a still-pending tool result, or an
-        # iteration/budget limit.  Replaces the bare "(empty)" sentinel so the
-        # failure isn't silent from the UI's perspective.  Set false to suppress.
+        # Append a one-line explanation when a turn ends with no usable reply (empty after retries,
+        # truncated stream, pending tool result, iteration/budget limit) instead of the bare
+        # "(empty)" sentinel.
         "turn_completion_explainer": True,
-        "show_cost": False,       # Show $ cost in the status bar (off by default)
-        # Show a color-coded battery read-out as the first status-bar element in
-        # the CLI/TUI (off by default). No-op on machines without a battery.
-        "battery": False,
-        # Focus view (/focus): display-only reduced-output mode. When true the
-        # CLI/TUI pins tool_progress to "off" (reusing the existing suppression
-        # path), reports a per-turn hidden-line count with a recovery hint, and
-        # pins a "focus" segment in the status bar. focus_saved_tool_progress
-        # holds the mode /focus off restores. Never affects what is sent to the
-        # model — see hermes_cli/focus_view.py.
+        "show_cost": False,       # $ cost in the status bar
+        "battery": False,         # battery read-out first in status bar; no-op w/o battery
+        # Focus view (/focus): display-only. Pins tool_progress to "off", reports per-turn
+        # hidden-line count, pins a "focus" status segment. focus_saved_tool_progress holds the mode
+        # /focus off restores. Never affects what the model sees (focus_view.py).
         "focus_view": False,
         "focus_saved_tool_progress": "all",
         "skin": "default",
-        # UI language for static user-facing messages (approval prompts, a
-        # handful of gateway slash-command replies).  Does NOT affect agent
-        # responses, log lines, tool outputs, or slash-command descriptions.
-        # Supported: en, zh, ja, de, es, fr, tr, uk.  Unknown values fall back to en.
+        # UI language for static messages (approval prompts, some gateway slash replies); not agent
+        # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",
-        # TUI busy indicator style: kaomoji (default), emoji, unicode (braille
-        # spinner), or ascii.  Live-swappable via `/indicator <style>`.
+        # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
-        # Seconds between prompt_toolkit redraws in the classic CLI when idle.
-        # Default 1.0 keeps the wall-clock status-bar read-outs (idle-since-
-        # last-turn) ticking and keeps the bottom chrome alive during idle —
-        # without it prompt_toolkit stops repainting the status bar after a
-        # turn and it can go stale/disappear (#45592).
-        # Set 0 to disable the background refresh if it fights terminal
-        # auto-scroll in non-fullscreen mode on some emulators (#48309).
+        # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
+        # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
+        # fights terminal auto-scroll in non-fullscreen mode.
+        # See #45592.
         "cli_refresh_interval": 1.0,
-        "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
+        "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
             "first_lines": 2,
             "last_lines": 2,
         },
-        "interim_assistant_messages": True,  # Gateway: send natural mid-turn assistant status messages. Desktop: keep mid-turn narration between tool calls instead of collapsing to the final message.
-        # Codex Responses models narrate progress in a dedicated commentary
-        # channel. When true (default), completed commentary messages are
-        # delivered as visible mid-turn updates via the interim message path.
-        # When false, commentary falls back to the reasoning channel and is
-        # only visible when show_reasoning is enabled.
+        # Gateway: natural mid-turn assistant status messages. Desktop: keep mid-turn narration
+        # between tool calls instead of collapsing to the final message.
+        "interim_assistant_messages": True,
+        # Codex Responses commentary channel: true delivers completed commentary as mid-turn interim
+        # updates; false routes it to reasoning (visible only with show_reasoning).
         "show_commentary": True,
-        "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        # NOTE: display.tool_progress_overrides is deprecated and no longer
-        # seeded here — use display.platforms. A user-set value is still
-        # honored at runtime (gateway display_config back-compat read) and
-        # folded into display.platforms by the v15→16 migration.
-        "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
-        # Human-phrased tool status labels for built-in tools: "Searching the
-        # web for ...", "Reading <file>", "Browsing <url>" instead of the raw
-        # tool name. Applies to CLI spinner + gateway/desktop tool-progress.
-        # Custom/plugin/MCP tools always fall back to the raw preview.
+        "tool_progress_command": False,  # enable /verbose command in messaging gateway
+        # display.tool_progress_overrides is deprecated (use display.platforms); a user-set value is
+        # still honored at runtime and folded into platforms by migration.
+        "tool_preview_length": 0,  # max chars for tool call previews (0 = no limit)
+        # Human-phrased status labels for built-in tools ("Reading <file>") in CLI spinner and
+        # gateway/desktop tool-progress; custom/plugin/MCP tools use the raw preview.
         "friendly_tool_labels": True,
-        # CLI-only post-turn accounting line printed after each interactive turn:
-        # "⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3 commands".
-        # Observed from the tool-progress feed the CLI already receives; never
-        # printed in quiet/non-interactive paths or in gateway/messaging
-        # surfaces (those have their own runtime footer).
+        # CLI-only post-turn line: "⋯ 12.4s · edited 2 files +18 -3 · read 4 files · ran 3
+        # commands". Never in quiet/non-interactive or gateway surfaces (own footer).
         "turn_summary": True,
-        # CLI-only: append cumulative turn output tokens to the live spinner
-        # timer ("⚡ Reading file  ( 2.3s · ↓ 1.2k tok)"). Updates as each API
-        # call in the turn reports usage.
+        # CLI-only: cumulative turn output tokens on the live spinner ("· ↓ 1.2k tok").
         "spinner_token_flow": True,
-        # How gateway tool-progress is grouped on platforms that support message
-        # editing: "accumulate" (default) edits one bubble in place; "separate"
-        # sends one message per tool (the pre-v0.9 behavior, noisier). Only
-        # applies where tool_progress is already enabled. Per-platform override
-        # via display.platforms.<platform>.tool_progress_grouping.
+        # Gateway tool-progress grouping where edits are supported: "accumulate" edits one bubble |
+        # "separate" one message per tool (noisier). Needs tool_progress enabled. Per-platform:
+        # display.platforms.<platform>.tool_progress_grouping.
         "tool_progress_grouping": "accumulate",
-        # Optional custom phrases for generic long-running status messages.
-        # Built-in defaults live in gateway/assets/status_phrases.yaml. Users
-        # can set `path`/`paths` to HERMES_HOME-relative YAML files/directories
-        # (or rely on conventional status_phrases.yaml / status_phrases/*.yaml).
-        # Keys: status, generic. Use
-        # mode: "append" (default) to add phrases, or "replace" to fully
-        # replace configured surfaces. Per-platform overrides live under
-        # display.platforms.<platform>.status_phrases.
+        # Custom long-running status phrases. Defaults: gateway/assets/status_phrases.yaml.
+        # `path`/`paths` = HERMES_HOME-relative YAML files/dirs (or conventional status_phrases.yaml
+        # / status_phrases/*.yaml). Keys: status, generic. mode: "append" (default) | "replace".
+        # Per-platform: display.platforms.<platform>.status_phrases.
         "status_phrases": {},
-        # How a reasoning/thinking summary renders when show_reasoning is on.
-        # "code" (default) = 💭 fenced code block; "blockquote" = "> " lines;
-        # "subtext" = "-# " lines (Discord small grey metadata text). Discord
-        # defaults to "subtext"; override per-platform via
+        # Reasoning summary rendering: "code" (💭 fenced block) | "blockquote" ("> ") | "subtext"
+        # ("-# " Discord small grey text; Discord's default). Per-platform via
         # display.platforms.<platform>.reasoning_style.
         "reasoning_style": "code",
-        # Auto-delete system-notice replies (e.g. "✨ New session started!",
-        # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
-        # that support message deletion (currently Telegram; other platforms
-        # ignore and leave the message in place).  Only affects slash-command
-        # replies wrapped with gateway.platforms.base.EphemeralReply — agent
-        # responses and content messages are never touched.  Default 0
-        # (disabled) preserves prior behavior.
+        # Auto-delete EphemeralReply system notices ("✨ New session started!", …) after N seconds
+        # where deletion is supported (Telegram; others ignore). Agent responses are never touched.
+        # 0 = disabled.
         "ephemeral_system_ttl": 0,
-        # Per-platform display/streaming overrides. Each key is a gateway
-        # platform ("telegram", "discord", "slack", …) mapping to a dict of
-        # display settings that override the global value for that platform
-        # only. A setting left unset here falls through to the global default.
-        #
-        # Shipped defaults encode the streaming experience that works best
-        # per platform:
-        #   - Telegram has native animated draft streaming (sendMessageDraft),
-        #     which is smooth, so streaming is on by default there.
-        #   - Discord and Slack only have edit-based streaming (repeated
-        #     editMessage), which flickers and is noticeably jankier, so
-        #     streaming is off by default for both.
-        # These are gap-fillers: a user who explicitly sets, e.g.,
-        # display.platforms.discord.streaming: true keeps their value
-        # (config deep-merge has user values win over defaults). The global
-        # streaming.enabled master switch still gates everything — these
-        # per-platform flags only take effect once streaming is enabled.
+        # Per-platform display/streaming overrides; unset keys fall through to the global. Telegram
+        # has smooth native draft streaming (on); Discord/Slack only edit-based streaming, which
+        # flickers (off). Gap-fillers only: explicit user values win, and the global
+        # streaming.enabled master switch still gates everything.
         "platforms": {
             "telegram": {"streaming": True},
             "discord": {"streaming": False},
             "slack": {"streaming": False},
-            # WeCom uses native streaming (msgtype: "stream") via
-            # aibot_respond_msg — opt in by default so the WeCom client
-            # renders the typing animation and cumulative content updates.
+            # WeCom native streaming (msgtype "stream" via aibot_respond_msg).
             "wecom": {"streaming": True},
         },
-        # Gateway runtime-metadata footer appended to the FINAL message of a turn
-        # (disabled by default to keep replies minimal). When enabled, renders
-        # e.g. `model · 68% · ~/projects/hermes`. Per-platform overrides go under
-        # display.platforms.<platform>.runtime_footer.
+        # Gateway runtime footer on the FINAL message, e.g. `model · 68% · ~/projects/hermes`.
+        # Per-platform: display.platforms.<platform>.runtime_footer.
         "runtime_footer": {
             "enabled": False,
-            "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
+            "fields": ["model", "context_pct", "cwd"],  # order shown; drop any to hide
         },
-        # CLI/TUI interactive status bar field customization (mirrors the
-        # runtime_footer.fields pattern above). When the list is non-empty,
-        # only the listed fields appear; the built-in order is preserved
-        # (the config controls visibility, not ordering). Empty = show the
-        # default set. Available: model, context_detail, context_pct,
-        # cache_hit, latency, tps, compressions, bg_tasks, bg_processes,
-        # bg_subagents, goal, duration, prompt_elapsed, idle_since, focus,
-        # yolo, stash, battery, title, total_tokens.
-        # total_tokens (session Σ) is opt-in only — it never shows unless
-        # listed here. Narrow terminals still drop wide-mode-only fields
-        # (context_detail, prompt_elapsed, idle_since) regardless of config.
+        # CLI/TUI status bar fields. Non-empty = only listed fields show (built-in order kept,
+        # config controls visibility not ordering); empty = default set. Available: model,
+        # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
+        # bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since, focus, yolo,
+        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
+        # context_detail/prompt_elapsed/idle_since.
         "status_bar": {
-            "fields": [],  # empty = built-in defaults (all fields)
+            "fields": [],
         },
-        "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
-        # Petdex animated mascot (https://github.com/crafter-station/petdex).
-        # A purely cosmetic sprite that reacts to agent activity across the
-        # CLI, TUI, and desktop app. Manage with `hermes pets`. Disabled until
-        # a pet is installed + selected (no effect on prompt caching — this is
-        # a display concern only).
+        "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
+        # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across
+        # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.
         "pet": {
             "enabled": False,
-            # Active pet slug; resolved against installed pets in
-            # get_hermes_home()/pets/. Empty → first installed pet.
-            "slug": "",
-            # Terminal render protocol for CLI/TUI:
-            #   auto  — detect kitty/iTerm2/sixel, else unicode half-blocks
-            #   kitty | iterm | sixel | unicode | off
+            "slug": "",   # active pet slug in get_hermes_home()/pets/; empty → first installed
+            # auto (detect kitty/iTerm2/sixel, else unicode half-blocks) | kitty | iterm | sixel |
+            # unicode | off
             "render_mode": "auto",
-            # Master size scalar (relative to native 192×208 frames). One knob
-            # shrinks every surface: the desktop canvas scales its pixels by it
-            # and the CLI/TUI derive their terminal column width from it. The
-            # half-block fallback clamps to a legibility floor (it can't shrink
-            # as far as true-pixel kitty/GUI without turning to mush).
+            # Size scalar relative to native 192×208 frames, shared by desktop canvas and CLI/TUI
+            # column width. Half-block fallback clamps to a legibility floor.
             "scale": 0.33,
-            # Hard override for terminal column width. 0 = auto (derive from
-            # scale); set a positive int only to pin the half-block/kitty width
-            # independently of scale.
-            "unicode_cols": 0,
+            "unicode_cols": 0,  # Hard override for terminal column width; 0 = derive from scale.
         },
     },
 
-    # Web dashboard settings
     "dashboard": {
-        "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
-        # Process-isolation rollout controls. Runtime reads these through the
-        # raw config loader, so tui_gateway.server also owns explicit defaults.
+        # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
+        "theme": "default",
+        # Process-isolation rollout controls. Read via the raw config loader, so tui_gateway.server
+        # also owns explicit defaults.
         "turn_isolation": False,
         "compute_host_heartbeat_secs": 15,
         "compute_host_respawn_max": 3,
-        # Hide the token/cost analytics surfaces (Analytics page, token bars and
-        # cost figures on the Models page) by default.  The numbers shown there
-        # are a local debug estimate: they only count successful main-agent
-        # responses with a usable ``response.usage``, and silently exclude every
-        # auxiliary call (context compression, title generation, vision,
-        # session search, web extract, smart approval, MCP routing, plugin LLM
-        # access) plus provider-side retries, fallback attempts, and any call
-        # whose usage block didn't come back.  Cache writes are also missing
-        # from the API response.  On models with heavy auxiliary traffic
-        # (Kimi K2.6, MiniMax M2.7) the local total can be 10x-100x lower than
-        # the provider bill, which is worse than hiding the numbers entirely
-        # because they look precise enough to compare against the provider.
-        # Set this to True to re-enable the surfaces with the understanding
-        # that the numbers are a local lower-bound estimate, not billing.
+        # Token/cost analytics surfaces are hidden by default: the numbers are a local LOWER-BOUND
+        # estimate, not billing — only successful main-agent responses with a response.usage count;
+        # auxiliary calls, retries, fallbacks and cache writes are missed, so the total can be
+        # 10x-100x under the provider bill.
         "show_token_analytics": False,
-        # IP addresses or bounded CIDR networks of reverse proxies allowed to
-        # supply X-Forwarded-Proto / X-Forwarded-For. Loopback remains trusted
-        # automatically. Wildcards and /0 networks are rejected so arbitrary
-        # clients cannot spoof their scheme or source address.
+        # IPs / bounded CIDRs of reverse proxies trusted to supply X-Forwarded-Proto/-For. Loopback
+        # always trusted; wildcards and /0 rejected (spoofing guard).
         "trusted_proxies": [],
-        # WebSocket keepalive for the dashboard/desktop web server (#79635).
-        # Applied to NON-loopback binds only: loopback always disables the
-        # protocol ping (see hermes_cli/web_server.py — an event-loop stall
-        # must never kill a healthy local connection). Values are seconds.
+        # WebSocket keepalive (seconds), NON-loopback binds only: loopback always disables the
+        # protocol ping so an event-loop stall never kills a healthy local connection.
         "ws_ping_interval": 20.0,
         "ws_ping_timeout": 20.0,
-        # Grace window (seconds) before a WS-orphaned gateway session is
-        # interrupted/reaped after its client disconnects (#79635). The
-        # HERMES_TUI_WS_ORPHAN_REAP_GRACE_S env var remains an internal
-        # override for backward compatibility. 0 disables the reap
-        # (park forever).
+        # Grace (seconds) before a WS-orphaned gateway session is interrupted/reaped after its
+        # client disconnects. 0 = park forever. Env: HERMES_TUI_WS_ORPHAN_REAP_GRACE_S.
         "ws_orphan_reap_grace_s": 20.0,
-        # Startup sweep of session rows orphaned by a dead gateway process
-        # (#65194).  The ws-orphan grace timer above is in-process, so a
-        # gateway restart (update, crash, systemd) leaves disconnected
-        # sessions ``ended_at IS NULL`` forever — phantom "active" rows in
-        # /resume and dashboards.  On every gateway boot (stdio TUI *and*
-        # the desktop/dashboard WS sidecar), tui/desktop/subagent rows whose
-        # start time AND newest message are both older than the session TTL
-        # (HERMES_TUI_SESSION_TTL_S, default 6h) are closed with
-        # end_reason='startup_orphan_reap'.  Messaging-gateway sessions
-        # (telegram, discord, ...) are never touched; live in-memory
-        # sessions are excluded; swept sessions stay resumable.
+        # A detached RUNNING turn is only interrupted once its activity clock (API waits, stream
+        # tokens, tool heartbeats) has been idle this many seconds; an active turn runs to
+        # completion. Default = agent.turn_liveness.timeout_s. 0 = interrupt at grace.
+        # See #100325, #98028.
+        "ws_orphan_activity_stale_s": 600.0,
+        # On gateway boot, close tui/desktop/subagent rows orphaned by a dead gateway (start AND
+        # newest message older than HERMES_TUI_SESSION_TTL_S, default 6h) with
+        # end_reason='startup_orphan_reap'; otherwise they stay phantom "active" forever.
+        # Messaging-gateway and live sessions are never touched; swept rows stay resumable.
+        # The ws-orphan grace timer above is in-process, so a gateway restart (update, crash, systemd)
+        # leaves disconnected sessions ``ended_at IS NULL`` forever — phantom "active" rows in /resume and
+        # dashboards. See #65194.
         "startup_orphan_sweep": True,
-        # OAuth gate configuration (engaged when ``--host`` is set and
-        # ``--insecure`` is not). The bundled Nous Portal plugin reads
-        # both keys at startup; they are the canonical surface for these
-        # settings. Each can be overridden by an environment variable —
-        # ``HERMES_DASHBOARD_OAUTH_CLIENT_ID`` and
-        # ``HERMES_DASHBOARD_PORTAL_URL`` respectively — and the env var
-        # wins when set to a non-empty value. The override path is what
-        # Fly.io's platform-secret injection uses to push the per-deploy
-        # client_id at provisioning time without operators needing to
-        # touch config.yaml. Local dev / non-Fly deploys can set either
-        # surface; missing values fall through to the plugin's defaults
-        # (no provider registered when ``client_id`` is empty;
-        # ``portal_url`` defaults to https://portal.nousresearch.com).
+        # OAuth gate (engaged when --host is set and --insecure is not), read by the Nous Portal
+        # plugin. Env HERMES_DASHBOARD_OAUTH_CLIENT_ID / HERMES_DASHBOARD_PORTAL_URL win when
+        # non-empty. Empty client_id = no provider; empty portal_url = production.
         "oauth": {
             "client_id": "",  # agent:{instance_id} — Portal provisions this
-            "portal_url": "",  # blank → use plugin default (production Portal)
+            "portal_url": "",
         },
-        # Username/password gate configuration — read by the bundled
-        # ``dashboard_auth/basic`` plugin (a self-hosted "just put a
-        # password on my dashboard" provider that needs no OAuth IDP).
-        # The plugin registers a password provider when ``username`` plus
-        # either ``password_hash`` (preferred — no plaintext at rest) or
-        # ``password`` (plaintext, hashed in-memory at load) are set. Each
-        # key is overridable by an env var
-        # (``HERMES_DASHBOARD_BASIC_AUTH_USERNAME`` /
-        # ``_PASSWORD_HASH`` / ``_PASSWORD`` / ``_SECRET`` /
-        # ``_TTL_SECONDS``), env winning when non-empty. Leave ``username``
-        # empty (the default) to keep the plugin a no-op — loopback /
-        # ``--insecure`` operators and OAuth users are unaffected.
-        #
-        # ``secret`` is the HMAC key used to sign the stateless session
-        # tokens this provider mints. When empty, a random per-process key
-        # is generated — fine for a single process, but sessions then
-        # don't survive a restart or span multiple workers. Set an
-        # explicit ``secret`` (32+ random bytes, base64/hex/raw) for
-        # stable multi-worker / restart-surviving sessions. Compute a
-        # ``password_hash`` with
-        # ``python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"``.
+        # Username/password gate (dashboard_auth/basic plugin, no OAuth IDP). Active when username
+        # plus password_hash (preferred) or password (hashed in-memory) are set; empty username =
+        # no-op. Env HERMES_DASHBOARD_BASIC_AUTH_USERNAME / _PASSWORD_HASH / _PASSWORD / _SECRET /
+        # _TTL_SECONDS win when non-empty. secret signs session tokens; empty = random per-process
+        # key (sessions die on restart, no multi-worker) — set 32+ random bytes. Hash:
+        # plugins.dashboard_auth.basic.hash_password('PW').
         "basic_auth": {
-            "username": "",  # blank → plugin no-op (no password provider)
-            "password_hash": "",  # scrypt$... (preferred — no plaintext at rest)
-            "password": "",  # plaintext fallback (hashed in-memory at load)
-            "secret": "",  # token-signing key; blank → random per-process
+            "username": "",
+            "password_hash": "",  # scrypt$...
+            "password": "",
+            "secret": "",
             "session_ttl_seconds": 0,  # 0 → plugin default (12h)
         },
-        # Drain-control service-credential configuration — read by the
-        # bundled ``dashboard_auth/drain`` plugin (the first consumer of the
-        # generic non-interactive token-auth capability). The SECRET itself
-        # is a credential and is NOT configured here: it is provisioned by
-        # nous-account-service at deploy time via the
-        # ``HERMES_DASHBOARD_DRAIN_SECRET`` env var (the .env-is-for-secrets
-        # rule). These are the behavioural knobs only. The plugin is a no-op
-        # unless that env var is set to a >=256-bit secret; a weak secret is
-        # rejected at registration (fail-closed) and the drain endpoint stays
-        # disabled. ``scope`` is the capability label attached to the verified
-        # principal; ``min_secret_chars`` is the entropy bar (url-safe-b64
-        # chars; 43 ~= 256 bits).
-        "drain_auth": {
-            "scope": "drain",
-            "min_secret_chars": 43,
-        },
-        # Public URL override (env: ``HERMES_DASHBOARD_PUBLIC_URL``).
-        # When set, this is the complete authority — scheme + host +
-        # optional path prefix (e.g. ``https://example.com/hermes``) —
-        # the OAuth ``redirect_uri`` is built from. Its exact hostname is also
-        # trusted by the HTTP Host / WebSocket Origin guards and engages the
-        # auth gate when it is non-loopback, even if the backend binds to
-        # loopback. Set this for deploys behind reverse proxies that don't
-        # reliably forward
-        # ``X-Forwarded-Host`` / ``X-Forwarded-Proto`` / ``X-Forwarded-Prefix``
-        # (manual nginx setups, on-prem ingresses, custom-domain Fly
-        # deploys without proper proxy headers). When set,
-        # ``X-Forwarded-Prefix`` is IGNORED on the OAuth path because
-        # the operator has declared the public URL — we no longer need
-        # to guess from proxy headers, and stacking the prefix on top
-        # would double-prefix the common case where the prefix is
-        # already baked into ``public_url``. Leave empty to use the
-        # existing proxy-header reconstruction (the default).
-        #
-        # Validation: rejects values without ``http(s)://`` scheme or
-        # without a host, and any string containing quote / angle /
-        # whitespace / control characters. A malformed value silently
-        # falls through to request reconstruction rather than breaking
-        # the login flow.
+        # Drain-control token auth (dashboard_auth/drain plugin). The secret is NOT here: env
+        # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
+        # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
+        "drain_auth": {"scope": "drain", "min_secret_chars": 43},
+        # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
+        # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
+        # trusted by Host/Origin guards and engages the auth gate when non-loopback. For proxies
+        # that don't forward X-Forwarded-Host/-Proto/-Prefix; X-Forwarded-Prefix is then IGNORED on
+        # the OAuth path. Empty or malformed (no http(s):// + host, or quote/angle/whitespace chars)
+        # = reconstruct from headers.
         "public_url": "",
     },
 
-    # Privacy settings
     "privacy": {
-        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        "redact_pii": False,  # hash user IDs and strip phone numbers from LLM context
     },
-
-    # Text-to-speech configuration
-    # Each provider supports an optional `max_text_length:` override for the
-    # per-request input-character cap. Omit it to use the provider's documented
-    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # Text-to-speech. Each provider accepts an optional `max_text_length:` override for the
+    # per-request input-character cap; omit to use the provider's documented limit (OpenAI 4096, xAI
+    # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
+    # NeuTTS/KittenTTS 2000).
     "tts": {
-        # Set explicitly to pin a backend:
-        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
+        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "provider": "edge",
         "edge": {
-            "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
+            "voice": "en-US-AriaNeural",
         },
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
@@ -1856,28 +1001,23 @@ DEFAULT_CONFIG = {
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
+            # gpt-4o-mini-tts voices: alloy, ash, ballad, cedar, coral, echo, fable, marin, nova,
+            # onyx, sage, shimmer, verse
             "voice": "alloy",
-            # Voices: alloy, ash, ballad, cedar, coral, echo, fable, marin,
-            # nova, onyx, sage, shimmer, verse (gpt-4o-mini-tts; the tts-1
-            # era stopped at alloy/echo/fable/onyx/nova/shimmer)
         },
         "gemini": {
             "model": "gemini-2.5-flash-preview-tts",
             "voice": "Kore",
-            # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
-            # pass to insert freeform square-bracket audio tags into the TTS
-            # script. Visible chat replies are unchanged.
+            # Gemini 3.1: aux-model rewrite inserts [audio tags] into the TTS script only.
             "audio_tags": False,
-            # Optional local Markdown/text file with Gemini TTS performance
-            # direction. It may include AUDIO PROFILE, SCENE, DIRECTOR'S NOTES,
-            # SAMPLE CONTEXT, and either a `{transcript}` placeholder or no
-            # transcript section; Hermes appends the live transcript when absent.
+            # Optional local text file with performance direction; may include a `{transcript}`
+            # placeholder, else the live transcript is appended.
             "persona_prompt_file": "",
         },
         "xai": {
-            "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
+            "voice_id": "eve",  # or a custom voice ID (docs.x.ai custom voices)
             "language": "en",  # BCP-47 code ("en", "pt-BR") or "auto"
-            "speed": 1.0,  # 0.7–1.5, playback speed
+            "speed": 1.0,  # 0.7–1.5
             "auto_speech_tags": False,  # insert expressive audio tags via LLM rewrite
             "optimize_streaming_latency": 0,  # 0–2, trades quality for lower latency
             "sample_rate": 24000,  # 22050 / 24000 / 44100 / 48000
@@ -1887,370 +1027,263 @@ DEFAULT_CONFIG = {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
         },
-        "minimax": {
-            "model": "speech-02-hd",
-            "voice_id": "English_expressive_narrator",
-        },
+        "minimax": {"model": "speech-02-hd", "voice_id": "English_expressive_narrator"},
         "kittentts": {
             "model": "KittenML/kitten-tts-nano-0.8-int8",  # nano 25MB; micro 41MB; mini 80MB
             "voice": "Jasper",
         },
         "neutts": {
-            "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
-            "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
+            "ref_audio": "",  # path to reference voice audio (empty = bundled default)
+            "ref_text": "",   # path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
             "device": "cpu",  # cpu, cuda, or mps
         },
         "piper": {
-            # Voice name (e.g. "en_US-lessac-medium") downloaded on first
-            # use, OR an absolute path to a pre-downloaded .onnx file.
-            # Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md
+            # Voice name (downloaded on first use) or absolute path to a .onnx file; list:
+            # github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md. Optional keys: voices_dir
+            # (~/.hermes/cache/piper-voices/), use_cuda, length_scale (2.0 = twice as slow),
+            # noise_scale, noise_w_scale, volume, normalize_audio.
             "voice": "en_US-lessac-medium",
-            # "voices_dir": "",        # Override voice cache dir; default = ~/.hermes/cache/piper-voices/
-            # "use_cuda": False,       # Requires onnxruntime-gpu
-            # "length_scale": 1.0,     # 2.0 = twice as slow
-            # "noise_scale": 0.667,
-            # "noise_w_scale": 0.8,
-            # "volume": 1.0,
-            # "normalize_audio": True,
         },
         "deepinfra": {
             "model": "",  # empty = first tts-tagged model from the live catalog
             "voice": "default",
-            # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
+            # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
     },
 
     "stt": {
         "enabled": True,
-        # When true, gateway voice messages are transcribed for the agent and
-        # the raw transcript is also echoed back to the user as a 🎙️ message.
-        # Set false to keep STT for the agent while suppressing that user-facing echo.
+        # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
         "echo_transcripts": True,
-        # NOTE: no seeded "provider" key. Strict selection semantics treat a
-        # stored stt.provider as an explicit user pick; seeding "local" here
-        # made a fresh install indistinguishable from a user choice. The
-        # autodetect ladder covers unset. Valid values when set:
-        # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
-        # Global language hint applied to EVERY provider unless a per-provider
-        # language overrides it. Defaults to "en" — Whisper auto-detection
-        # frequently misidentifies short/accented clips, which reads as
-        # "STT transcribed the wrong language". Set to "" to restore
-        # auto-detect, or to your language code ("es", "zh", "uk", ...).
+        # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
+        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
+        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
+        # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
-        # Pre-upload silence trim for cloud providers (groq/openai/mistral/
-        # xai/elevenlabs/deepinfra). Local whisper gets Silero VAD; cloud
-        # endpoints otherwise receive raw audio — silence inflates upload
-        # time, per-audio-minute billing, and hallucination risk. Collapses
-        # pauses with ffmpeg client-side; any failure uploads the original.
+        # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
+        # inflates upload time, billing and hallucinations. Failure = raw upload.
         "cloud_trim_silence": True,
-        "cloud_trim_threshold_db": -40,  # audio quieter than this counts as silence
-        "cloud_trim_keep_ms": 300,  # how much of each pause survives (keeps natural pacing)
+        "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
+        "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "language": "",  # auto-detect; set "en", "es", ... to force
             "initial_prompt": "",
-            # Anti-hallucination hardening (faster-whisper decodes junk tokens
-            # from silence/noise without these):
-            "vad": True,  # Silero VAD filter — silence never reaches whisper. false = old raw behavior (music/ambient).
-            "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks when vad is on
-            "no_speech_prob_threshold": 0.6,  # drop a segment only if no_speech_prob is ABOVE this...
-            "logprob_threshold": -1.0,  # ...AND its avg_logprob is BELOW this (both must hit)
-            "unload_after_idle_seconds": 0,  # 0=never (default); e.g. 300 releases the model after 5min idle
+            # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
+            # (false = raw audio, for music/ambient). A segment is dropped only if no_speech_prob
+            # ABOVE no_speech_prob_threshold AND avg_logprob BELOW logprob_threshold.
+            "vad": True,
+            "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks
+            "no_speech_prob_threshold": 0.6,
+            "logprob_threshold": -1.0,
+            "unload_after_idle_seconds": 0,  # 0 = never; e.g. 300 frees the model after 5min
         },
         "groq": {
-            "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
+            "model": "whisper-large-v3-turbo",
+            "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "openai": {
-            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
+            "model": "whisper-1",
+            "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "xai": {
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "language": "",  # auto-detect; set "en", "es", ... to force
         },
         "elevenlabs": {
             "model_id": "scribe_v2",  # scribe_v2, scribe_v1
-            "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
+            "language_code": "",  # auto-detect; set "eng", "spa", ... to force
             "tag_audio_events": False,
             "diarize": False,
         },
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
-            # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
+            # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
         },
     },
 
     "voice": {
         "record_key": "ctrl+b",
-        "submit_mode": "direct",       # TUI: direct submits immediately; draft leaves an editable transcript
+        "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
         "auto_tts": False,
-        # Desktop remote clients call the profile's STT/TTS providers
-        # DIRECTLY (config + key fetched over the authenticated REST channel
-        # at voice-session start) instead of relaying audio through the
-        # gateway — lowest-hop path in both directions. false = always relay.
+        # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
+        # authenticated REST at session start) instead of relaying via the gateway.
         "client_direct": True,
-        "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
-        "beep_volume": 0.3,           # Beep amplitude multiplier (0.0-1.0, default keeps prior hardcoded value)
-        "thinking_sound": True,       # Calm ambient bubble sound while the agent works in voice chat (volume follows beep_volume)
-        "silence_threshold": 200,     # RMS below this = silence (0-32767)
-        "silence_duration": 3.0,      # Seconds of silence before auto-stop
-        "barge_in": True,             # Interrupt the agent / stop TTS when the user starts talking
-        "barge_in_grace_seconds": 0.5,  # Trip suppression right after TTS playback starts (onset transient); the mic itself is live for the whole turn
-        "barge_in_threshold_multiplier": 3.0,  # Speech trigger = quiet-room floor x this (floor is calibrated BEFORE playback, never against speaker bleed)
-        # Saying EXACTLY one of these phrases (and nothing else) ends the
-        # voice chat instead of being sent to the agent. Case-insensitive,
-        # surrounding punctuation ignored. Set [] to disable.
+        "beep_enabled": True,  # record start/stop beeps in CLI voice mode
+        "beep_volume": 0.3,  # beep amplitude multiplier, 0.0-1.0
+        "thinking_sound": True,  # ambient bubble sound while the agent works (volume = beep_volume)
+        "silence_threshold": 200,  # RMS below this = silence (0-32767)
+        "silence_duration": 3.0,  # seconds of silence before auto-stop
+        "barge_in": True,  # interrupt the agent / stop TTS when the user starts talking
+        # Trip suppression after TTS onset (mic stays live the whole turn).
+        "barge_in_grace_seconds": 0.5,
+        # Speech trigger = quiet-room floor x this (floor calibrated BEFORE playback).
+        "barge_in_threshold_multiplier": 3.0,
+        # Saying EXACTLY one of these (case-insensitive, punctuation ignored) ends the voice chat
+        # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
-
-    # "Hey Hermes" hands-free wake word. Always-on, on-device hotword
-    # detection that starts a fresh voice session — the "Hey Siri" pattern.
-    # Off by default; toggle with /wake or `wake_word.enabled: true`.
+    # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
+    # voice session. Off by default; toggle with /wake.
     "wake_word": {
         "enabled": False,
-        "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
-        "input_device": None,          # PortAudio input device index/name; null uses the process default
-        "capture": "auto",            # auto | local | client — where PCM is captured (client = desktop streams mic via wake.feed)
-        "provider": "openwakeword",   # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
-        "phrase": "hey hermes",       # for "sherpa" this IS the detected phrase (any text works); for other engines it's a cosmetic label — detection is keyed by the model/keyword below
-        "sensitivity": 0.6,           # 0.0-1.0 detection threshold, consistent across engines (higher = stricter, fewer false triggers)
-        "confirmation_frames": 3,     # openWakeWord only: consecutive over-threshold frames required to fire (higher = fewer false triggers on ambient speech, slightly more latency; 1 = old single-frame behavior)
-        "start_new_session": True,    # start a fresh session on wake vs. continue the current one
-        "profile_routing": True,      # sherpa only: also listen for every wake-enabled profile's phrase and route the wake to the matching profile
+        "surface": "auto",  # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
+        "input_device": None,  # PortAudio input device index/name; null = process default
+        "capture": "auto",  # auto | local | client (desktop streams mic via wake.feed)
+        # "openwakeword" (free, local) | "sherpa" (free, ANY phrase, no training) | "porcupine"
+        # (premium; needs PORCUPINE_ACCESS_KEY)
+        "provider": "openwakeword",
+        # sherpa: this IS the detected phrase; other engines: cosmetic label (detection is keyed by
+        # the model/keyword below)
+        "phrase": "hey hermes",
+        "sensitivity": 0.6,  # 0.0-1.0 threshold, consistent across engines (higher = stricter)
+        # openWakeWord only: consecutive over-threshold frames to fire (higher = fewer false
+        # triggers, more latency; 1 = single-frame)
+        "confirmation_frames": 3,
+        "start_new_session": True,  # fresh session on wake vs. continue the current one
+        # sherpa only: listen for every wake-enabled profile's phrase and route to it
+        "profile_routing": True,
         "openwakeword": {
-            # "hey_hermes" (the bundled, works-out-of-the-box default) OR a
-            # built-in openWakeWord name ("hey_jarvis", "alexa", "hey_mycroft",
-            # ...) OR a path to a custom .onnx/.tflite model for another phrase.
-            # See the wake-word docs for the custom-model training guide.
+            # "hey_hermes" | built-in openWakeWord name ("hey_jarvis", "alexa", ...) | path to a
+            # custom .onnx/.tflite model
             "model": "hey_hermes",
-            # "" (auto — tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite".
-            # openWakeWord's onnx backend scores near-zero on macOS ARM64
-            # (dscripka/openWakeWord#336), so auto avoids a listener that arms
-            # but never fires. Set explicitly only to override that choice.
+            # "" (auto: tflite on macOS ARM64, onnx elsewhere) | "onnx" | "tflite" — onnx scores
+            # near-zero on macOS ARM64 (arms but never fires)
             "inference_framework": "",
         },
         "sherpa": {
-            # Optional path to a sherpa-onnx KWS model directory. Empty =
-            # auto-download the small English zipformer model on first use.
+            # sherpa-onnx KWS model dir; empty = auto-download the small English zipformer
             "model_dir": "",
         },
         "porcupine": {
-            # Built-in keyword ("jarvis", "computer", "bumblebee", ...) or a path
-            # to a custom .ppn from the Picovoice Console.
+            # built-in keyword ("jarvis", "computer", ...) or path to a custom .ppn
             "keyword": "jarvis",
         },
     },
     
-    "human_delay": {
-        "mode": "off",
-        "min_ms": 800,
-        "max_ms": 2500,
-    },
+    "human_delay": {"mode": "off", "min_ms": 800, "max_ms": 2500},
     
-    # Context engine -- controls how the context window is managed when
-    # approaching the model's token limit.
-    # "compressor" = built-in lossy summarization (default).
-    # Set to a plugin name to activate an alternative engine (e.g. "lcm"
-    # for Lossless Context Management).  The engine must be installed as
-    # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
+    # Context engine — how the context window is managed near the token limit. "compressor" =
+    # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
+    # plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
-        # Return freed glibc allocator pages after long-running agent/TUI
-        # cleanup boundaries. Unsupported platforms are safe no-ops.
+        # Return freed glibc pages at agent/TUI cleanup boundaries (no-op elsewhere).
         "memory_trim": {
             "enabled": True,
             "cooldown_seconds": 60.0,
-            # Successful trim calls are INFO logged every Nth periodic call;
-            # force paths always log so process-close behavior is visible.
-            "log_every_n": 1,
-            # Suppress INFO logs only when a readable RSS change is smaller.
-            # 0 reports every successful configured trim.
+            "log_every_n": 1,  # INFO-log every Nth periodic trim; force paths always log.
+            # Suppress INFO logs when the readable RSS delta is smaller; 0 = log all.
             "info_log_min_delta_mb": 0.0,
         },
     },
-
-    # Persistent memory -- bounded curated memory injected into system prompt
-    "memory": {
+    "memory": {  # Persistent memory — bounded curated memory injected into the system prompt
         "memory_enabled": True,
         "user_profile_enabled": True,
-        # Approval gate for memory writes (add/replace/remove), applied to BOTH
-        # foreground agent turns and the background self-improvement review fork
-        # (the source of unprompted "wrong assumption" saves users reported).
-        #   false (default) — write freely; the gate is off (pre-gate behaviour)
-        #   true            — require approval: foreground writes prompt inline
-        #                     (entries are small enough to review in a chat
-        #                     bubble); background-review writes are staged
-        #                     instead of committed (a daemon thread cannot block
-        #                     on a prompt). Review staged entries with
-        #                     /memory pending, /memory approve <id>,
-        #                     /memory reject <id>.
-        # To disable memory entirely, use memory_enabled: false instead.
+        # Approval gate for memory writes on BOTH foreground turns and the background review fork.
+        # true = foreground writes prompt inline; background writes are staged (/memory
+        # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
-        # Periodic built-in memory review. External providers with automatic
-        # turn/session extraction can set this to 0 and keep the small local
-        # store reserved for explicit high-frequency operational facts.
+        # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
-        # Only ONE external provider is allowed at a time.
+        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
+        # "mem0", "hindsight", "holographic", "retaindb", "byterover".
         "provider": "",
     },
-
-    # Subagent delegation — override the provider:model used by delegate_task
-    # so child agents can run on a different (cheaper/faster) provider and model.
-    # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # Subagent delegation — override the provider:model used by delegate_task so children run on a
+    # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so
+    # every configured provider is supported.
     "delegation": {
-        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
-        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
-        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
-        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
-                           # "codex_responses", or "anthropic_messages". Empty = auto-detect
-                           # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
-                           # explicitly for non-standard endpoints the heuristic can't detect.
-        # Per-child request settings sent on every delegation API call, on all
-        # three resolution branches (direct base_url, named provider, and
-        # parent-inherit). Top-level keys are API kwargs (e.g. service_tier);
-        # an "extra_body" sub-dict is merged into the request's extra_body —
-        # e.g. {"extra_body": {"provider": {"sort": "throughput"}}} routes
-        # OpenRouter delegation children to the fastest provider. Precedence:
-        # these explicit values merge OVER runtime/parent-derived overrides
-        # (explicit keys win; extra_body deep-merged one level).
+        "model": "",  # e.g. "google/gemini-3-flash-preview" (empty = inherit parent)
+        "provider": "",  # e.g. "openrouter" (empty = inherit parent provider + credentials)
+        "base_url": "",  # direct OpenAI-compatible endpoint for subagents
+        "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
+        # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
+        # "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix); set
+        # explicitly for non-standard endpoints.
+        "api_mode": "",
+        # Per-child request settings on every delegation call (all resolution branches). Top-level
+        # keys = API kwargs (e.g. service_tier); "extra_body" sub-dict merges into extra_body, e.g.
+        # {"extra_body": {"provider": {"sort": "throughput"}}}. Explicit values win OVER
+        # runtime/parent overrides (extra_body deep-merged 1 level).
         "request_overrides": {},
-        # When delegate_task narrows child toolsets explicitly, preserve any
-        # MCP toolsets the parent already has enabled. On by default so
-        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
-        # extras" without silently stripping MCP tools the parent already has.
-        # Set to false for strict intersection.
+        # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
+        # toolsets=["web"] doesn't strip MCP). false = strict intersection.
         "inherit_mcp_toolsets": True,
-        "max_iterations": 250,  # per-subagent iteration cap (each subagent gets its own budget,
-                               # independent of the parent's max_iterations)
-        # Subagent summaries return to the parent's context verbatim. A batch
-        # fan-out (N children) returns N summaries at once, which can exceed
-        # the parent's context window and trigger a compression/429 death
-        # spiral. delegate_task sizes each summary against the parent's
-        # remaining context headroom (split across the batch); when it must
-        # trim, the full text is spilled to ~/.hermes/cache/delegation/
-        # (mounted into remote backends) and the in-context summary becomes a
-        # head+tail window plus a footer with the exact read_file offset to
-        # page the omitted middle — the same convention web_extract uses for
-        # large pages. Nothing is lost. max_summary_chars is a hard per-summary
-        # character ceiling layered on top of that dynamic budget
-        # (belt-and-suspenders for models that ignore the "be concise"
-        # instruction). 0 disables the hard ceiling; the dynamic headroom
-        # budget still applies.
+        # Per-subagent iteration cap (own budget, independent of the parent's).
+        "max_iterations": 250,
+        # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
+        # summary is sized to the parent's remaining context headroom; trimmed text spills to
+        # ~/.hermes/cache/delegation/ with a head+tail window + read_file offset footer, nothing
+        # lost). 0 disables the ceiling; the dynamic budget still applies.
         "max_summary_chars": 24000,
-
-        "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
-                                     # = no timeout: children fail only from real errors
-                                     # (API, tools, iteration budget), never a delegation
-                                     # stopwatch. Set a positive number of seconds
-                                     # (floor 30s) to enforce a hard cap.
-        "reasoning_effort": "",  # subagent effort: "ultra", "max", "xhigh", "high",
-                                 # "medium", "low", "minimal", "none" (empty = inherit)
-        "max_concurrent_children": 10,  # unified concurrency cap: max parallel children per batch
-                                       # AND max concurrent background (background=true)
-                                       # delegation units. New async dispatches beyond the cap
-                                       # fall back to synchronous execution. Floor of 1, no ceiling.
-                                       # (Replaces the deprecated max_async_children.)
-        # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
-        # and _get_orchestrator_enabled).  Floored at 1, no upper ceiling —
-        # raise deliberately, each level multiplies API cost.
-        "max_spawn_depth": 1,        # depth (1 = flat [default], 2 = orchestrator→leaf, 3+ = deeper)
+        # Wall-clock cap per child (seconds, floor 30). 0 = no timeout: children fail only from real
+        # errors (API, tools, iteration budget).
+        "child_timeout_seconds": 0,
+        # Subagent effort: "ultra" | "max" | "xhigh" | "high" | "medium" | "low" | "minimal" |
+        # "none" (empty = inherit)
+        "reasoning_effort": "",
+        # Max parallel children per batch AND max concurrent background delegation units; async
+        # dispatches beyond it run synchronously. Floor 1, no ceiling.
+        "max_concurrent_children": 10,
+        # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
+        "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
-        # When a subagent hits a dangerous-command approval prompt, the parent's
-        # prompt_toolkit TUI owns stdin — a thread-local input() call from the
-        # subagent worker would deadlock the parent UI. To avoid the deadlock,
-        # subagent threads ALWAYS resolve approvals non-interactively:
-        #   false (default) → auto-deny with a logger.warning audit line (safe)
-        #   true             → auto-approve "once" with a logger.warning audit line
-        # Flip to true only if you trust delegated work to run dangerous cmds
-        # without human review (cron pipelines, batch automation, etc.).
+        # Subagent threads ALWAYS resolve approvals non-interactively (the parent TUI owns stdin;
+        # input() from a worker would deadlock). false = auto-deny, true = auto-approve "once"; both
+        # log a warning audit line. true only for trusted batch work.
         "subagent_auto_approve": False,
-        # Background processes started by subagents (task_id "sa-...") route
-        # their notify_on_complete / watch_pattern notifications to the PARENT
-        # conversation (children consume their own waits; anything outliving
-        # the child needs a durable consumer). By default those parent-facing
-        # notifications are SUPPRESSED — the child's consolidated delegation
-        # result is the deliverable, and "npm ci finished" walls mid-chat are
-        # noise. Async-delegation results themselves are NEVER suppressed.
-        # Set to true to restore delivery of child process notifications
-        # (with subagent attribution lines).
+        # Subagent background processes (task_id "sa-...") route notify_on_complete / watch_pattern
+        # notifications to the PARENT; false suppresses them (the child's result is the
+        # deliverable). Async-delegation results are NEVER suppressed.
         "surface_child_process_notifications": False,
     },
-
-    # Ephemeral prefill messages file — JSON list of {role, content} dicts
-    # injected at the start of every API call for few-shot priming.
-    # Never saved to sessions, logs, or trajectories.
+    # Ephemeral prefill messages file — JSON list of {role, content} dicts injected at the start of
+    # every API call for few-shot priming. Never saved to sessions/logs/trajectories.
     "prefill_messages_file": "",
-
-    # Goals — persistent cross-turn goals (Ralph-style loop).
-    # After every turn, a lightweight judge call asks the auxiliary model
-    # whether the active /goal is satisfied by the assistant's last
-    # response. If not, Hermes feeds a continuation prompt back into the
-    # same session and keeps working until the goal is done, the turn
-    # budget is exhausted, or the user pauses/clears it. Judge failures
-    # fail OPEN (continue) so a flaky judge never wedges progress — the
-    # turn budget is the real backstop.
+    # Goals — persistent cross-turn /goal loop: after each turn an aux-model judge checks if the
+    # goal is satisfied, else a continuation prompt re-enters the session until done, budget
+    # exhausted, or paused. Judge failures fail OPEN; the budget is the backstop.
     "goals": {
-        # Max continuation turns before Hermes auto-pauses the goal and
-        # asks the user to /goal resume. Protects against judge false
-        # negatives (goal actually done but judge says continue) and
-        # unbounded model spend on fuzzy / unachievable goals.
+        # Max continuation turns before auto-pause (/goal resume) — guards against judge false
+        # negatives and unbounded spend.
         "max_turns": 20,
     },
-
-
-    # Loops — /loop recurring in-session wakeups (Claude Code parity).
-    # A loop re-runs a prompt (or slash command) on a cadence inside the
-    # live session. Fixed-interval mode fires on the user's clock;
-    # self-paced mode (no interval given) starts at the floor and backs
-    # off exponentially while the agent's replies stop changing.
+    # Loops — /loop re-runs a prompt or slash command on a cadence in-session. Fixed interval fires
+    # on the user's clock; self-paced (no interval) starts at the floor and backs off exponentially
+    # while replies stop changing.
     "loops": {
-        # Smallest fixed interval accepted (seconds). Tighter cadences are
-        # raised to this floor — each tick is a full agent turn.
-        "min_interval_seconds": 30,
-        # Backstop tick budget: the loop auto-pauses after this many
-        # wakeups unless the user set --times. 0 = unlimited.
-        "max_ticks": 100,
-        # Self-paced cadence bounds (seconds).
-        "self_paced_floor_seconds": 60,
+        "min_interval_seconds": 30,  # smallest fixed interval; tighter cadences raised to it
+        "max_ticks": 100,  # auto-pause after this many wakeups unless --times set; 0 = unlimited
+        "self_paced_floor_seconds": 60,  # Self-paced cadence bounds (seconds).
         "self_paced_ceiling_seconds": 900,
     },
-
-    # Mixture of Agents — named presets used by /moa. A preset is an execution
-    # mode around the main model, not a provider/model itself: references +
-    # aggregator synthesize private guidance before each main-model iteration.
+    # Mixture of Agents — named presets used by /moa. A preset is an execution mode around the main
+    # model, not a model itself: references + aggregator synthesize private guidance before each
+    # main-model iteration.
     "moa": {
         "default_preset": "default",
         "active_preset": "",
-        # When true, every MoA turn that runs the reference fan-out writes the
-        # FULL turn (each reference's exact input messages + output + usage/cost,
-        # and the aggregator's exact input + output) to a JSONL file at
-        # <hermes_home>/moa-traces/<session_id>.jsonl. Off by default — turn it
-        # on to audit / improve MoA behavior from real runs. Set trace_dir to
-        # override the output directory.
+        # Write each MoA turn (reference + aggregator exact input/output/usage) as JSONL to
+        # <hermes_home>/moa-traces/<session_id>.jsonl (or trace_dir) for auditing.
         "save_traces": False,
         "trace_dir": "",
-        # Privacy redaction filter for advisor (reference) outputs. Advisors
-        # can echo PII from the conversation (emails, formatted phone numbers)
-        # and credential shapes into reference blocks, traces, and the
-        # aggregator prompt. Modes ('' = off, the default):
-        #   "display" — redact user-visible surfaces only (reference blocks
-        #               shown in the UI + saved MoA trace records); the
-        #               aggregator still sees raw advisor text.
-        #   "full"    — additionally redact the advisor text injected into
-        #               the aggregator prompt (issue #59959).
+        # PII/credential redaction of advisor outputs: "" off | "display" (UI reference blocks +
+        # traces only; aggregator sees raw) | "full" (also the aggregator prompt).
+        # Advisors can echo PII from the conversation (emails, formatted phone numbers) and credential
+        # shapes into reference blocks, traces, and the aggregator prompt. Modes ('' = off, the default):
+        # "display" — redact user-visible surfaces only (reference blocks shown in the UI + saved MoA trace
+        # records); the aggregator still sees raw advisor text. "full"    — additionally redact the advisor
+        # text injected into the aggregator prompt (issue #59959).
         "privacy_filter": "",
         "presets": {
             "default": {
@@ -2264,245 +1297,155 @@ DEFAULT_CONFIG = {
             }
         },
     },
-
-    # Skills — external skill directories for sharing skills across tools/agents.
-    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.hermes/skills/.
+    # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
+    # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
-        # Include the <available_skills> catalogue in new sessions. Disable
-        # when a plugin or scripted caller provides its own skill-discovery
-        # surface; skill tools remain available either way.
-        "inject_index": True,
-        # Project-local skill discovery: when a session starts inside a git
-        # checkout, ``<root>/.hermes/skills/`` and ``<root>/.agents/skills/``
-        # are sourced as the highest-precedence skill tier — but ONLY when the
-        # project root is listed in trusted_project_dirs below. Trust a repo
-        # with ``hermes skills trust`` (run from inside it). Set to false to
-        # disable discovery entirely (no scan, no untrusted-skills notice).
+        # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
+        # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
+        # HERMES_HOME, scanned alongside the local dir.
+        "create_dir": "",
+        # In a git checkout, <root>/.hermes/skills/ and <root>/.agents/skills/ load as the
+        # highest-precedence tier — ONLY if the root is in trusted_project_dirs. false = no scan, no
+        # untrusted-skills notice.
         "project_discovery": True,
-        # Absolute paths of project roots whose repo-local skills may load.
-        # Managed by ``hermes skills trust`` / ``hermes skills untrust``.
+        # Trusted project roots; managed by `hermes skills trust` / `untrust`.
         "trusted_project_dirs": [],
-        # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
-        # content with the absolute skill directory and the active session id
-        # before the agent sees it.  Lets skill authors reference bundled
-        # scripts without the agent having to join paths.
+        # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
-        # Pre-execute inline shell snippets written as !`cmd` in SKILL.md
-        # body.  Their stdout is inlined into the skill message before the
-        # agent reads it, so skills can inject dynamic context (dates, git
-        # state, detected tool versions, …).  Off by default because any
-        # content from the skill author runs on the host without approval;
-        # only enable for skill sources you trust.
+        # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
+        # skill-author content would run on the host unapproved — trusted sources only.
         "inline_shell": False,
-        # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
-        "inline_shell_timeout": 10,
-        # Run the keyword/pattern security scanner on skills the agent
-        # writes via skill_manage (create/edit/patch).  Off by default
-        # because the agent can already execute the same code paths via
-        # terminal() with no gate, so the scan adds friction (blocks
-        # skills that mention risky keywords in prose) without meaningful
-        # security.  Turn on if you want the belt-and-suspenders — a
-        # dangerous verdict will then surface as a tool error to the
-        # agent, which can retry with the flagged content removed.
-        # External hub installs (trusted/community sources) are always
-        # scanned regardless of this setting.
+        "inline_shell_timeout": 10,  # seconds per !`cmd` snippet
+        # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
+        # code via terminal() ungated, so it mostly blocks prose with risky keywords. On: a
+        # dangerous verdict is a tool error the agent can retry. Hub installs are always scanned.
         "guard_agent_created": False,
-        # Advisory NVIDIA SkillEvaluator Tier 1 scan on hub installs
-        # (`hermes skills install`). Runs ALONGSIDE the built-in skills
-        # guard (which stays the enforcement layer) and only when the
-        # optional `skillevaluator` binary is on PATH:
-        #   uv tool install --python 3.13 \
-        #     "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git@v0.1.0"
-        # Findings are informational — shown with file/line before the
-        # install confirmation, never blocking. Secrets-class findings
-        # (private keys, tokens, credentialed connection strings) are
-        # highlighted in red. On by default because it is a no-op
-        # without the binary installed.
+        # Advisory NVIDIA SkillEvaluator Tier 1 scan on `hermes skills install` (alongside the
+        # enforcing built-in guard), only if `skillevaluator` is on PATH (uv tool install
+        # "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"). Informational, never
+        # blocking; secrets-class findings shown red. No-op without it.
         "tier1_advisory": True,
-        # Approval gate for skill_manage (create/edit/patch/write_file/delete/
-        # remove_file), applied to BOTH foreground agent turns and the
-        # background self-improvement review fork.
-        #   false (default) — write freely; the gate is off (pre-gate behaviour)
-        #   true            — require approval: stage the write for review
-        #                     instead of committing (a SKILL.md is too large to
-        #                     review inline, so skills always stage rather than
-        #                     prompt). List with /skills pending, inspect with
-        #                     /skills diff <id> (full diff — CLI/dashboard/file,
-        #                     never crammed into a chat bubble), apply with
-        #                     /skills approve <id> or drop with /skills reject <id>.
+        # Approval gate for skill_manage mutations on BOTH foreground turns and the background
+        # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
+        # pending, /skills diff <id>, /skills approve|reject <id>.
         "write_approval": False,
-        # Per-mutation audit ledger (tracker #79686 P3). Every skill mutation
-        # — curator, agent, or user — appends one JSONL entry to
-        # ~/.hermes/skills/.curator_ledger.jsonl with before/after file
-        # hashes; file contents are stored content-addressed (deduped) under
-        # ~/.hermes/.curator_backups/blobs/. Enables `hermes curator ledger`
-        # and single-mutation `hermes curator rollback <entry-id>`.
-        # Telemetry, never a gate: ledger failures cannot block a mutation.
+        # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
+        # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
+        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
+        # See #79686.
         "ledger": True,
     },
-
-    # Curator — background skill maintenance.
-    #
-    # Periodically reviews AGENT-CREATED skills (never bundled or
-    # hub-installed) and keeps the collection tidy: marks long-unused skills
-    # as stale, archives genuinely obsolete ones (archive only, never
-    # deletes), and spawns a forked aux-model agent to consolidate overlaps
-    # and patch drift. Runs inactivity-triggered from session start — no
-    # cron daemon.
-    #
-    # See `hermes curator status` for the last run summary.
+    # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
+    # long-unused skills stale, archives (never deletes) obsolete ones, optionally consolidates
+    # overlaps via a forked aux-model agent. Inactivity-triggered from session start, no cron
+    # daemon. `hermes curator status` shows the last run.
     "curator": {
         "enabled": True,
-        # How long to wait between curator runs (hours).  Default: 7 days.
-        "interval_hours": 24 * 7,
-        # Only run when the agent has been idle at least this long (hours).
-        "min_idle_hours": 2,
-        # Mark a skill as "stale" after this many days without use.
-        "stale_after_days": 30,
-        # Archive a skill (move to skills/.archive/) after this many days
-        # without use. Archived skills are recoverable — no auto-deletion.
-        "archive_after_days": 90,
-        # Run the LLM consolidation (umbrella-building) pass. OFF by default.
-        # When off, a curator run does ONLY the deterministic inactivity prune
-        # (mark stale / archive long-unused skills) and skips the forked
-        # aux-model review entirely — no umbrella-building, no aux-model cost.
-        # Set to true to opt back into merging overlapping skills into
-        # class-level umbrellas. `hermes curator run --consolidate` overrides
-        # this for a single invocation.
+        "interval_hours": 24 * 7,  # hours between runs
+        "min_idle_hours": 2,  # only run after the agent has been idle this long
+        "stale_after_days": 30,  # mark "stale" after this many unused days
+        "archive_after_days": 90,  # move to skills/.archive/ (recoverable) after this many
+        # LLM consolidation (umbrella-building) pass. OFF = deterministic inactivity prune only, no
+        # aux-model cost. `hermes curator run --consolidate` overrides once.
         "consolidate": False,
-        # Also prune (archive) bundled built-in skills after the inactivity
-        # period, not just agent-created ones. ON by default. Built-ins are
-        # normally restored on every `hermes update`, so pruning them only
-        # sticks because a suppression list tells the re-seeder to leave them
-        # archived. Hub-installed skills are NEVER pruned here — they have an
-        # external upstream owner. Built-ins accrue usage telemetry and their
-        # inactivity clock starts the first time the curator sees them, so a
-        # long-unused built-in is archived only after archive_after_days of
-        # genuine non-use (never a mass-prune on the first run). Set to false
-        # to keep all bundled built-ins permanently.
+        # Also prune bundled built-ins (a suppression list stops `hermes update` restoring them);
+        # hub-installed skills are NEVER pruned. A built-in's clock starts when the curator first
+        # sees it, so never a mass-prune on the first run. false = keep all.
         "prune_builtins": True,
-        # TTL purge of skills/.archive/. 0 (default) = never purge — archived
-        # skills are kept forever. When > 0, `hermes curator purge` deletes
-        # archived skills older than this many days (explicit command only,
-        # never automatic; every purge is recorded in the audit ledger).
+        # TTL purge of skills/.archive/: 0 = never; > 0 lets the explicit `hermes curator purge`
+        # delete older archived skills (never automatic; logged in the ledger).
         "archive_ttl_days": 0,
-        # Pre-run backup: before every real curator pass (dry-run is
-        # skipped), snapshot ~/.hermes/skills/ into
-        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
-        # user can roll back with `hermes curator rollback`.
+        # Before every real (non-dry-run) pass, snapshot ~/.hermes/skills/ to
+        # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz (`hermes curator rollback`).
         "backup": {
             "enabled": True,
             "keep": 5,  # retain last N regular snapshots
         },
     },
-
-    # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
-    # This section is only needed for hermes-specific overrides; everything else
-    # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
+    # Honcho AI-native memory — ~/.honcho/config.json is the source of truth (apiKey, workspace,
+    # peerName, sessions, enabled); hermes-specific overrides only here.
     "honcho": {},
-
-    # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
-    # Empty string means use server-local time.
+    # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
 
-    # Slack platform settings (gateway mode)
     "slack": {
-        "require_mention": True,       # Require @mention to respond in channels
-        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
-        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
-        # Channel IDs where @mention is ALWAYS required, even when
-        # require_mention is false globally (per-channel force-mention override).
-        "require_mention_channels": "",
-        # Ignore a channel/thread message addressed to another user (first token
-        # @mentions someone other than the bot) unless the bot is also mentioned.
-        # Opt-in; default off keeps existing behaviour. Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
+        "require_mention": True,  # require @mention to respond in channels
+        "free_response_channels": "",  # comma-separated channel IDs answered without mention
+        "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
+        "require_mention_channels": "",  # channel IDs where @mention is ALWAYS required
+        # Ignore messages whose first token @mentions another user unless the bot is also mentioned.
+        # Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
         "ignore_other_user_mentions": False,
-        # If True, require @mention in Slack thread replies too.
-        "thread_require_mention": False,
-        "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "thread_require_mention": False,  # require @mention in thread replies too
+        "channel_prompts": {},  # per-channel ephemeral system prompts
     },
 
-    # Discord platform settings (gateway mode)
     "discord": {
-        "require_mention": True,       # Require @mention to respond in server channels
-        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
-        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
-        "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
-        "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
-        "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
-        "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
-        "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
+        "require_mention": True,  # require @mention to respond in server channels
+        "free_response_channels": "",  # comma-separated channel IDs answered without mention
+        "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
+        "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
+        "thread_require_mention": False,  # require @mention in threads too (multi-bot threads)
+        # Multi-bot rooms: another bot must type @thisbot (a reply/quote alone won't) to trigger a
+        # reply — stops two bots replying to each other forever. Humans unaffected.
+        "bots_require_inline_mention": False,
+        # Prepend recent channel scrollback when triggered (recovers messages gated out by
+        # require_mention); limit = max messages scanned.
+        "history_backfill": True,
+        "history_backfill_limit": 50,
+        # Replay messages missed while offline, after reconnect/startup.
         "missed_message_backfill": {
-            "enabled": False,             # Replay missed Discord messages after reconnect/startup
-            "channels": "",               # Comma-separated channel IDs; empty uses free_response_channels
-            "window_seconds": 21600,      # Only inspect messages from the last 6 hours
-            "limit": 100,                 # Global cap on messages scanned per reconnect
-            "max_dispatches": 10,         # Cap on recovered messages dispatched per reconnect
+            "enabled": False,
+            "channels": "",  # comma-separated channel IDs; empty uses free_response_channels
+            "window_seconds": 21600,  # only inspect messages from the last 6 hours
+            "limit": 100,  # global cap on messages scanned per reconnect
+            "max_dispatches": 10,  # cap on recovered messages dispatched per reconnect
         },
-        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
-        # Discord Gateway transport health. These settings inspect the active
-        # WebSocket's ready/open/heartbeat state; they never use Discord REST as
-        # proof that Gateway events are still arriving. Set any value to 0 to
-        # disable this compatibility-safe probe during a rollback.
+        "reactions": True,  # add 👀/✅/❌ reactions to messages during processing
+        # Gateway transport health probe: inspects the WebSocket's ready/open/heartbeat state (never
+        # REST) as proof events still arrive. Any value 0 disables it.
         "websocket_liveness_interval_seconds": 15,
         "websocket_liveness_failure_threshold": 2,
         "websocket_heartbeat_ack_max_age_seconds": 60,
         "websocket_max_latency_seconds": 30,
-        "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
-        # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
-        # authorizes only guild messages in the role's own guild — DMs require
-        # DISCORD_ALLOWED_USERS. Set dm_role_auth_guild to a guild ID to also
-        # authorize DMs from members of that one trusted guild holding the
-        # allowed role. Unset / empty / 0 = secure default (DM role-auth off).
+        # per-channel ephemeral system prompts (forum parents apply to child threads)
+        "channel_prompts": {},
+        # Opt-in DM role auth: DISCORD_ALLOWED_ROLES normally authorizes guild messages only (DMs
+        # need DISCORD_ALLOWED_USERS). A guild ID here also authorizes DMs from that guild's members
+        # holding the allowed role. Unset / "" / 0 = off.
+        # See #12136.
         "dm_role_auth_guild": "",
-        # discord / discord_admin tools: restrict which actions the agent may call.
-        # Default (empty) = all actions allowed (subject to bot privileged intents).
-        # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
-        # or YAML list. Unknown names are dropped with a warning at load time.
-        # Actions: list_guilds, server_info, list_channels, channel_info,
-        # list_roles, member_info, search_members, fetch_messages, list_pins,
-        # pin_message, unpin_message, create_thread, add_role, remove_role.
+        # discord / discord_admin tools: allowed actions (comma string or YAML list; empty = all,
+        # subject to bot intents; unknown names dropped with a warning): list_guilds, server_info,
+        # list_channels, channel_info, list_roles, member_info, search_members, fetch_messages,
+        # list_pins, pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
-        # DEPRECATED / no-op. Any uploaded file is now always cached and
-        # surfaced to the agent regardless of file type — authorization to
-        # message the agent is the gate, not the extension. Kept so existing
-        # configs that set it do not error. Env override:
-        # DISCORD_ALLOW_ANY_ATTACHMENT.
+        # DEPRECATED no-op (uploads are always cached; messaging auth is the gate). Kept so existing
+        # configs don't error. Env: DISCORD_ALLOW_ANY_ATTACHMENT.
         "allow_any_attachment": False,
-        # Maximum bytes per attachment the gateway will cache. The whole file
-        # is held in memory while being written, so unlimited uploads carry a
-        # real memory cost. Default 32 MiB matches the historical hardcoded
-        # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
+        # Max bytes per cached attachment (held in memory while written); 0 = no cap. Env:
+        # DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
-        # When True, Discord approval prompts mention numeric allowed users so
-        # owners notice approval requests in shared channels/threads. Env
-        # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
-        # pings.
+        # Mention allowed users on approval prompts so owners notice them in shared channels. Env:
+        # DISCORD_APPROVAL_MENTIONS.
         "approval_mentions": False,
-        # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
-        # keep the bot in VC until an explicit `/voice leave` / disconnect.
+        # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.
         "voice_channel_inactivity_timeout_seconds": 300,
-        # Minimum seconds to wait for a VC playback before force-stopping it.
-        # The adapter also probes clip duration and extends this floor by a
-        # padding window, so long TTS readbacks are not cut at exactly 120s.
+        # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
+        # extends this floor so long TTS isn't cut off.
         "voice_playback_timeout_seconds": 120,
-        # Voice-channel audio effects (the continuous mixer). OFF by default.
-        # When enabled, the bot installs a software mixer on the outgoing voice
-        # stream so a low ambient "thinking" bed, verbal acknowledgements, and
-        # TTS replies can OVERLAP (ducking the ambient under speech) instead of
-        # stop-and-swap — the Grok-voice-mode feel. discord.py ships no mixer;
-        # this is implemented in plugins/platforms/discord/voice_mixer.py.
+        # Voice-channel software mixer (plugins/platforms/discord/voice_mixer.py): ambient
+        # "thinking" bed, verbal acks and TTS OVERLAP (ambient ducked) vs stop-and-swap.
         "voice_fx": {
-            "enabled": False,         # master switch for the mixer subsystem
+            "enabled": False,  # master switch for the mixer subsystem
             "ambient_enabled": True,  # play the idle "thinking" bed while tools run
-            "ambient_path": "",       # custom loop audio file; "" = synthesised pad
-            "ambient_gain": 0.18,     # idle bed loudness, 0.0–1.0
-            "duck_gain": 0.06,        # ambient loudness while speech plays
-            "speech_gain": 1.0,       # TTS / ack loudness, 0.0–1.0
-            "ack_enabled": True,      # speak a short phrase before the first tool call
-            "ack_phrases": [          # picked at random; set [] to disable phrases
+            "ambient_path": "",  # custom loop audio file; "" = synthesised pad
+            "ambient_gain": 0.18,  # idle bed loudness, 0.0–1.0
+            "duck_gain": 0.06,  # ambient loudness while speech plays
+            "speech_gain": 1.0,  # TTS / ack loudness, 0.0–1.0
+            "ack_enabled": True,  # speak a short phrase before the first tool call
+            "ack_phrases": [  # picked at random; [] disables phrases
                 "Let me look into that.",
                 "One moment.",
                 "Checking on that now.",
@@ -2512,662 +1455,396 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # WhatsApp platform settings (gateway mode)
     "whatsapp": {
-        # Reply prefix prepended to every outgoing WhatsApp message.
-        # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
-        # Set to "" (empty string) to disable the header entirely.
-        # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+        # reply_prefix: None = built-in "⚕ *Hermes Agent*" header; "" disables; \n allowed.
     },
 
-    # Telegram platform settings (gateway mode)
     "telegram": {
-        "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
-        "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
-        "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
+        "reactions": False,  # add 👀/✅/❌ reactions to messages during processing
+        # per-chat/topic ephemeral system prompts (topics inherit from parent group)
+        "channel_prompts": {},
+        "allowed_chats": "",  # if set, ONLY respond in these group/supergroup chat IDs
         "extra": {
-            "rich_messages": False,     # Bot API 10.1 rich messages (tables/task lists/details/math) render natively; set True to opt in. Default stays legacy MarkdownV2 because rich messages can be hard to copy as plain text in Telegram clients.
-            "rich_drafts": False,       # Experimental Bot API 10.1 rich draft previews during Telegram DM streaming. Default off because Telegram Desktop/macOS can visually overlay rich draft frames until the chat redraws.
+            # Bot API 10.1 native rich messages (tables/task lists/math). Off = legacy MarkdownV2,
+            # since rich messages are hard to copy as plain text.
+            "rich_messages": False,
+            # Experimental rich draft previews while streaming DMs; off because Telegram
+            # Desktop/macOS can overlay draft frames until the chat redraws.
+            "rich_drafts": False,
         },
     },
 
-    # Mattermost platform settings (gateway mode)
     "mattermost": {
-        "require_mention": True,       # Require @mention to respond in channels
-        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
-        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
-        "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "require_mention": True,  # require @mention to respond in channels
+        "free_response_channels": "",  # comma-separated channel IDs answered without mention
+        "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
+        "channel_prompts": {},  # per-channel ephemeral system prompts
     },
 
-    # Matrix platform settings (gateway mode)
     "matrix": {
-        "require_mention": True,       # Require @mention to respond in rooms
-        "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
-        "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+        "require_mention": True,  # require @mention to respond in rooms
+        "free_response_rooms": "",  # comma-separated room IDs answered without mention
+        "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
     },
-
-    # Approval mode for dangerous commands:
-    #   manual — always prompt the user
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands (default)
-    #   off    — skip all approval prompts (equivalent to --yolo)
-    #
-    # cron_mode — what to do when a cron job hits a dangerous command:
-    #   deny    — block the command and let the agent find another way (default, safe)
-    #   approve — auto-approve all dangerous commands in cron jobs
-    #
-    # single_query_mode — what to do when a single-query (-q) session hits a
-    # dangerous command. -q runs export HERMES_INTERACTIVE=1 (for interactive
-    # sudo prompts) but have NO user waiting to answer approval prompts — an
-    # unanswered prompt just waits the full timeout then fails closed, so the
-    # agent is forced to work around the block (often via execute_code). This
-    # setting makes that intent explicit:
-    #   deny    — block the command and let the agent find another way (default,
-    #             safe; mirrors cron_mode deny)
-    #   approve — auto-approve all dangerous commands in single-query mode
-    #
-    # unattended_mode — what to do when a session on an unattended
-    # programmatic platform (webhook, msgraph_webhook, api_server) hits a
-    # dangerous command. These surfaces bind a session platform like chat
-    # gateways do, but have no send_exec_approval and no /approve channel —
-    # a pending approval there just blocks for the full timeout with nobody
-    # to answer (#37284, #87509):
-    #   deny    — block the command instantly and let the agent find another
-    #             way (default, safe; mirrors cron_mode deny)
-    #   approve — auto-approve all dangerous commands on unattended platforms
-    #
-    # timeout — seconds to wait for the user's approve/deny before failing
-    # closed (deny). Shared by the CLI prompt and gateway/messaging waits.
-    # Messaging approvals arrive as a push notification the user may not see
-    # immediately — 60s proved too tight on Telegram/Discord (the prompt
-    # expired before the user reached their phone), so the default is 300.
+    # Approvals for dangerous commands.
+    # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)
+    # cron_mode / single_query_mode / unattended_mode: deny | approve — what to do when a
+    #   cron job, a -q session (HERMES_INTERACTIVE=1 but nobody to answer), or an unattended
+    #   platform (webhook, msgraph_webhook, api_server; no /approve channel) hits one.
+    #   deny blocks instantly so the agent finds another way instead of waiting out the
+    #   timeout and failing closed.
+    # timeout: seconds before an unanswered prompt fails closed (CLI and gateway). 60s
+    #   proved too tight for Telegram/Discord push notifications, hence 300.
     "approvals": {
+        # single_query_mode — what to do when a single-query (-q) session hits a dangerous command. -q runs
+        # export HERMES_INTERACTIVE=1 (for interactive sudo prompts) but have NO user waiting to answer
+        # approval prompts — an unanswered prompt just waits the full timeout then fails closed, so the
+        # agent is forced to work around the block (often via execute_code). This setting makes that intent
+        # explicit: deny    — block the command and let the agent find another way (default, safe; mirrors
+        # cron_mode deny) approve — auto-approve all dangerous commands in single-query mode These surfaces
+        # bind a session platform like chat gateways do, but have no send_exec_approval and no /approve
+        # channel — a pending approval there just blocks for the full timeout with nobody to answer (#37284,
+        # #87509): deny    — block the command instantly and let the agent find another way (default, safe;
+        # mirrors cron_mode deny) approve — auto-approve all dangerous commands on unattended platforms
+        # Shared by the CLI prompt and gateway/messaging waits. Messaging approvals arrive as a push
+        # notification the user may not see immediately — 60s proved too tight on Telegram/Discord (the
+        # prompt expired before the user reached their phone), so the default is 300.
         "mode": "smart",
         "timeout": 300,
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
-        # Operator-customizable policy text for smart approvals. When
-        # non-empty, this is appended to the smart-approval guardian's
-        # SYSTEM prompt (trusted channel) as additional rules — e.g.
-        # "Always ESCALATE commands touching /etc" or "APPROVE docker
-        # compose restarts under ~/deploys". Inspired by ChatGPT Work's
-        # customizable auto-review guardian policy.
+        # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
+        # commands touching /etc".
         "smart_policy": "",
-        # Consecutive-denial circuit breaker for smart approvals: after this
-        # many guardian DENY verdicts in a row within one session, the deny
-        # message returned to the model escalates to a hard-stop instruction
-        # (report to the user / ask for manual run or /approve) instead of a
-        # plain "Do NOT retry". Any approval resets the count. 0 disables.
-        # Inspired by ChatGPT Work's auto-review circuit breaker.
+        # After this many consecutive guardian DENYs in a session, the deny message escalates to a
+        # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
         "denial_breaker_threshold": 3,
-        # User-defined deny rules: fnmatch globs matched against terminal
-        # commands. A match blocks the command unconditionally — BEFORE the
-        # --yolo / /yolo / mode=off bypass — making this the user-editable
-        # counterpart to the code-shipped hardline blocklist. Patterns are
-        # case-insensitive and must be quoted in YAML when they start with
-        # * or contain {}/!/: sequences. Example:
-        #   deny:
-        #     - "git push --force*"
-        #     - "*curl*|*sh*"
+        # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
+        # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
+        # --force*".
         "deny": [],
-        # When true, /reload-mcp asks the user to confirm before rebuilding
-        # the MCP tool set for the active session.  Reloading invalidates
-        # the provider prompt cache (tool schemas are baked into the system
-        # prompt), so the next message re-sends full input tokens — this can
-        # be expensive on long-context or high-reasoning models.  Users click
-        # "Always Approve" to silence the prompt permanently; that flips
-        # this key to false.
+        # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache,
+        # so the next message re-sends full input). "Always Approve" → false.
         "mcp_reload_confirm": True,
-        # When true, destructive session slash commands (/clear, /new, /reset,
-        # /undo) ask the user to confirm before discarding conversation state.
-        # Three-option prompt (Approve Once / Always Approve / Cancel) routed
-        # through tools.slash_confirm — native yes/no buttons on Telegram,
-        # Discord, and Slack; text fallback elsewhere.  Users click "Always
-        # Approve" to silence the prompt permanently; that flips this key to
-        # false.  TUI also honors this setting for its /clear, /new, and /reset
-        # modal; HERMES_TUI_NO_CONFIRM=1 force-skips that modal regardless of
-        # the configured value.
+        # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
+        # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
+        # Approve" → false. HERMES_TUI_NO_CONFIRM=1 skips the TUI modal.
         "destructive_slash_confirm": True,
     },
-
-    # Permanently allowed dangerous command patterns (added via "always" approval)
+    # Permanently allowed dangerous command patterns (added via "always" approval).
     "command_allowlist": [],
-    # User-defined quick commands that bypass the agent loop (type: exec only)
+    # User-defined quick commands that bypass the agent loop (type: exec only).
     "quick_commands": {},
-
-    # Per-platform system-prompt hint overrides. Lets an admin append to or
-    # replace Hermes' built-in platform hint for a single messaging platform
-    # (WhatsApp, Slack, Telegram, ...) without affecting other platforms.
-    # Useful for enterprise/managed profiles that ship platform-aware skills.
-    # Each key is a platform name; the value is either:
-    #   { "append": "extra text" }   — keep the default hint, append text
-    #   { "replace": "full text" }   — substitute the default hint entirely
-    #   "extra text"                 — shorthand for { "append": ... }
-    # `replace` wins over `append` if both are given. Example:
-    #   platform_hints:
-    #     whatsapp:
-    #       append: >
-    #         When tabular output would be useful, invoke the
-    #         table_formatting skill instead of emitting a Markdown table.
+    # Per-platform system-prompt hint overrides, keyed by platform name (whatsapp, slack, telegram,
+    # ...). Value: {"append": text} keeps the built-in hint and appends; {"replace": text}
+    # substitutes it; a bare string is shorthand for append. `replace` wins over `append` if both
+    # are given.
     "platform_hints": {},
-
-    # Plugin system settings. ``enabled`` / ``disabled`` are written by
-    # ``hermes plugins enable|disable`` and intentionally omitted here so an
-    # empty default does not clobber a user's allow-list on merge.
+    # Plugin system. `enabled`/`disabled` lists are written by `hermes plugins enable|disable` and
+    # deliberately omitted here so an empty default never clobbers a user allow-list.
     "plugins": {
-        # Wall-clock cap (seconds) for a single in-process Python plugin hook
-        # callback. Shell hooks keep their own per-entry ``timeout``. Set to 0
-        # to disable the cap (sync call on the agent thread). Capped at 600.
+        # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
+        # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,
+        # Keep loading external plugins that still import pre-decomposition module paths after the
+        # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
+        # old paths raise ImportError once the compat layer is actually removed.
+        "allow_deprecated_imports": False,
     },
-
-    # Shell-script hooks — declarative bridge that invokes shell scripts
-    # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
-    # subagent_stop, etc.).  Each entry maps an event name to a list of
-    # {matcher, command, timeout} dicts.  First registration of a new
-    # command prompts the user for consent; subsequent runs reuse the
-    # stored approval from ~/.hermes/shell-hooks-allowlist.json.
-    # See `website/docs/user-guide/features/hooks.md` for schema + examples.
+    # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
+    # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;
+    # approvals persist in ~/.hermes/shell-hooks-allowlist.json. Schema + examples:
+    # website/docs/user-guide/features/hooks.md.
     "hooks": {},
-
-    # Auto-accept shell-hook registrations without a TTY prompt.  Also
-    # toggleable per-invocation via --accept-hooks or HERMES_ACCEPT_HOOKS=1.
-    # Gateway / cron / non-interactive runs need this (or one of the other
-    # channels) to pick up newly-added hooks.
+    # Auto-accept shell-hook registrations without a TTY prompt (also --accept-hooks or
+    # HERMES_ACCEPT_HOOKS=1). Gateway/cron/non-interactive runs need one of these to pick up
+    # newly-added hooks.
     "hooks_auto_accept": False,
-    # Custom personalities — add your own entries here
-    # Supports string format: {"name": "system prompt"}
-    # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
+    # Custom personalities: {"name": "system prompt"} or {"name": {"description", "system_prompt",
+    # "tone", "style"}}.
     "personalities": {},
-
-    # Pre-exec security scanning via tirith
-    "security": {
-        "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
+    "security": {  # Security: pre-exec scanning via tirith plus related guards.
+        "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
         "redact_secrets": True,
-        # Persisted acknowledgement for unattended model overrides whose tier
-        # lets the vendor train on prompts/completions. The startup guard still
-        # prints the full warning on every run and never bypasses cost guards.
+        # Persisted acknowledgement for unattended model overrides whose tier lets the vendor train
+        # on prompts. The startup guard still warns every run; cost guards are unaffected.
         "allow_data_training_tiers_noninteractive": False,
-        # Human approval presentation transport. "builtin" preserves the
-        # current CLI/TUI/gateway/ACP surfaces. A plugin transport is used only
-        # when named explicitly here. Transport timeout/error/invalid response
-        # denies unless transport_fallback is explicitly set to "builtin".
-        # This is presentation only: plugins cannot detect, suppress, or
-        # auto-approve commands outside a correlated human response.
-        "approval": {
-            "transport": "builtin",
-            "transport_fallback": "deny",
-        },
-        # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/
-        # .cursorrules, project-local .hermes config) always require human
-        # approval — even under auto-approve/yolo. Extra patterns are
-        # fnmatch globs matched against the basename (e.g. "*.mdc").
+        # Human-approval presentation transport. "builtin" = CLI/TUI/gateway/ACP surfaces; a plugin
+        # transport is used only when named explicitly. Transport timeout/error/invalid response
+        # DENIES unless transport_fallback is "builtin". Presentation only: plugins cannot detect,
+        # suppress, or auto-approve commands outside a correlated human response.
+        "approval": {"transport": "builtin", "transport_fallback": "deny"},
+        # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
+        # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
+        # globs on the basename (e.g. "*.mdc").
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
-        "website_blocklist": {
-            "enabled": False,
-            "domains": [],
-            "shared_files": [],
-        },
-        # Acknowledged supply-chain security advisories. Each entry is the
-        # ID of an advisory the user has read and acted on (uninstalled the
-        # compromised package, rotated credentials). Acked advisories no
-        # longer trigger the startup banner. Add via `hermes doctor --ack
-        # <id>`; remove by editing the list directly. See
-        # ``hermes_cli/security_advisories.py`` for the catalog.
+        "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
+        # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
+        # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:
+        # hermes_cli/security_advisories.py.
         "acked_advisories": [],
-        # Allow Hermes to lazy-install opt-in backend packages from PyPI
-        # the first time the user enables a backend that needs them
-        # (e.g. installing ``elevenlabs`` when the user picks ElevenLabs as
-        # their TTS provider). Set to false to require explicit
-        # ``pip install`` for everything beyond the base set — appropriate
-        # for restricted networks, audited environments, or air-gapped
-        # systems where any runtime install is unacceptable.
+        # Lazy-install opt-in backend packages from PyPI when a backend that needs them is first
+        # enabled (e.g. `elevenlabs`). False = require explicit pip install for everything beyond
+        # the base set (restricted/audited/air-gapped environments).
         "allow_lazy_installs": True,
     },
 
     "cron": {
-        # Allow cron-spawned agents to use the cronjob toolset (create/edit/
-        # remove scheduled jobs from within a cron run — the "cron-librarian"
-        # pattern). Off by default: the cronjob toolset is policy-denied in
-        # cron context to prevent unattended scheduling loops. Jobs created
-        # this way are user-owned in the same flat jobs table as every other
-        # job. Interactive toolsets (messaging/clarify) stay denied in cron
-        # context regardless of this setting.
+        # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
+        # default: policy-denied in cron context to prevent unattended scheduling loops. Jobs
+        # created this way are user-owned in the same flat jobs table. Interactive toolsets
+        # (messaging/clarify) stay denied in cron regardless.
         "allow_agent_scheduling": False,
-        # Pre-dispatch configuration validation (T1-26): before constructing
-        # any agent machinery for a job, verify the provider API key resolves
-        # (unless a fallback chain is configured), attached skills are ready
-        # (required env/commands present), and delivery platforms are
-        # configured. A failing job is recorded as last_status=blocked_config
-        # with ONE alert (no re-alert every tick) and NO LLM call is made.
-        # Set to false to restore the old behavior (fail during the run).
+        # Pre-dispatch validation: before building any agent machinery, verify the provider API key
+        # resolves (unless a fallback chain exists), attached skills are ready, and delivery
+        # platforms are configured. Failure -> last_status=blocked_config, ONE alert, no LLM call.
+        # False = fail during the run instead.
         "preflight": True,
-        # Fail closed when an unpinned job's current global model/provider
-        # differs from its creation-time snapshot. This prevents unattended
-        # jobs from silently inheriting a paid default. Set to false only when
-        # jobs should deliberately track changing global inference defaults.
+        # Fail closed when an unpinned job's current global model/provider differs from its
+        # creation-time snapshot, so unattended jobs never silently inherit a paid default. False
+        # only when jobs should track changing global inference defaults.
         "model_drift_guard": True,
-        # Default inference model for cron jobs (Axis A — WHAT model an
-        # agent job runs on). Resolution at fire time: per-job user pin >
-        # cron.model > global model.default. When set, unpinned jobs follow
-        # this deliberately, so the #44585 model-drift fail-closed guard does
-        # not engage for the model axis — cron spend no longer shadows chat
-        # `/model` switches. Empty string = fall through to model.default.
+        # Default model for cron jobs (WHAT model runs). Fire-time resolution: per-job pin >
+        # cron.model > model.default. When set, unpinned jobs follow it deliberately and the drift
+        # guard does not engage for the model axis. "" = fall through to model.default.
         "model": "",
-        # Inference provider paired with cron.model (NOT the scheduler
-        # provider below). Empty string = resolve from global config.
+        # Inference provider paired with cron.model (NOT the scheduler provider below). "" = resolve
+        # from global config.
         "model_provider": "",
-        # Active cron SCHEDULER provider (Axis B — the trigger that decides
-        # WHEN a due job fires). Empty string = the built-in in-process 60s
-        # ticker (default). Name an installed provider (plugins/cron_providers/<name>/ or
-        # $HERMES_HOME/plugins/<name>/) to relocate the trigger — e.g. "chronos",
-        # the NAS-mediated managed-cron provider for scale-to-zero deployments.
-        # An unknown or unavailable provider falls back to the built-in, so cron
-        # never loses its trigger.
+        # Cron SCHEDULER provider (WHEN a due job fires). "" = built-in in-process 60s ticker. Name
+        # an installed provider (plugins/cron_providers/<name>/ or $HERMES_HOME/plugins/ <name>/),
+        # e.g. "chronos" (NAS-mediated managed cron for scale-to-zero). An unknown or unavailable
+        # provider falls back to the built-in so cron never loses its trigger.
         "provider": "",
-        # Chronos (NAS-mediated managed cron) settings. Only consulted when
-        # provider == "chronos". All non-secret (URLs + the JWT audience): the
-        # agent holds NO external-scheduler credentials. For hosted agents, NAS
-        # sets these at provision time. The outbound provision call reuses the
-        # agent's existing Nous Portal token — there is no token key here.
+        # Chronos settings; consulted only when provider == "chronos". All non-secret — the agent
+        # holds NO scheduler credentials (provision reuses the Nous Portal token).
         "chronos": {
-            # NAS / portal base URL the agent calls to arm/cancel one-shots
-            # and that mints the inbound fire JWT (used as the expected issuer).
+            # NAS/portal base URL that arms/cancels one-shots and mints the inbound fire JWT (used
+            # as the expected issuer).
             "portal_url": "https://portal.nousresearch.com",
-            # The agent's OWN publicly-reachable base URL for NAS→agent fires
-            # (NAS POSTs {callback_url}/api/cron/fire). Empty → Chronos is
-            # unavailable and the resolver falls back to the built-in ticker.
+            # This agent's publicly reachable base URL; NAS POSTs {callback_url}/api/cron/fire. ""
+            # -> Chronos unavailable, resolver falls back to the built-in ticker.
             "callback_url": "",
-            # This agent's expected JWT audience (e.g. "agent:{instance_id}").
-            "expected_audience": "",
-            # NAS JWKS URL for verifying the inbound fire JWT's signature.
-            # Empty → the fire endpoint refuses all tokens (no unsigned decode).
+            "expected_audience": "",  # Expected JWT audience (e.g. "agent:{instance_id}").
+            # NAS JWKS URL for verifying the fire JWT signature. "" -> the fire endpoint refuses all
+            # tokens (never an unsigned decode).
             "nas_jwks_url": "",
         },
-        # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
+        # Wrap delivered cron responses with a task-name header and "The agent cannot see this
+        # message" footer. False = clean output.
         "wrap_response": True,
-        # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
-        # and the agent has it in context (no "what is Task #2?" amnesia).
-        # Default False preserves the historical isolation guarantee (cron
-        # deliveries live only in the cron job's own session). Per-job
-        # `attach_to_session` overrides this for a single job.
-        #
-        # Behaviour is THREAD-PREFERRED, scoped to the job's origin chat:
-        #   - Thread-capable platforms (Telegram forum/DM topics, Discord
-        #     threads, Slack threads): a dedicated thread is opened for the job
-        #     via the adapter's create_handoff_thread, the brief is delivered
-        #     into it, and that thread's session is seeded so the user's reply
-        #     in-thread continues with full context. Each continuable job gets
-        #     its own scrollback, isolated from the parent channel.
-        #   - DM-only platforms (WhatsApp / Signal / SMS): no threads exist, so
-        #     the brief is mirrored into the origin DM session instead — the
-        #     DM itself is the continuation surface.
-        # Both paths ride the shipped gateway.mirror.mirror_to_session and are
-        # alternation- and cache-safe (appended at a turn boundary, never
-        # mid-loop, never mutating the cached system prompt). Only the origin
-        # chat is ever touched — fan-out / broadcast targets are never mirrored.
+        "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
+            # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
+            # otherwise sends with disable_notification=True and briefs look undelivered). False =
+            # silent, no-push deliveries.
+            "notify": True,
+        },
+        # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
+        # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.
+        # Thread-capable platforms (Telegram topics, Discord/Slack threads) get a seeded thread per
+        # job via create_handoff_thread; DM-only platforms mirror the brief into the origin DM
+        # session. Appended at a turn boundary via mirror_to_session, cached system prompt
+        # untouched; fan-out/broadcast targets are never mirrored.
         "mirror_delivery": False,
-        # Maximum number of due jobs to run in parallel per tick.
-        # null/0 = unbounded (limited only by thread count).
-        # 1 = serial (pre-v0.9 behaviour).
-        # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
+        # Max due jobs run in parallel per tick. None/0 = unbounded (thread count only); 1 = serial.
+        # Env override: HERMES_CRON_MAX_PARALLEL.
         "max_parallel_jobs": None,
-        # Per-job output-file retention: save_job_output keeps the N most
-        # recent .md files and prunes older ones. 0 or negative disables
-        # pruning (for operators who manage cleanup externally). Default 50.
+        # save_job_output keeps the N most recent .md files per job; 0 or negative disables pruning
+        # (for externally managed cleanup).
         "output_retention": 50,
-        # Timeout (seconds) for a no-agent cron script. Also overridable via
-        # HERMES_CRON_SCRIPT_TIMEOUT. Keep this in sync with
-        # cron.scheduler._DEFAULT_SCRIPT_TIMEOUT so config set recognizes the
-        # same setting the scheduler reads.
+        # Timeout (seconds) for a no-agent cron script. Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in
+        # sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
         "script_timeout_seconds": 3600,
-        # Timeout (seconds) for SessionDB() init inside cron jobs.
-        # SessionDB opens/migrates state.db synchronously and has no timeout
-        # of its own against a wedged sqlite3.connect. An unbounded hang here
-        # wedges the job's dispatch guard forever. Also overridable via
-        # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
+        # Timeout (seconds) for SessionDB() init inside cron jobs: state.db open/migrate has no
+        # timeout of its own against a wedged sqlite3.connect, and an unbounded hang wedges the
+        # job's dispatch guard forever. Env: HERMES_CRON_SESSION_DB_TIMEOUT. 0 = unlimited.
         "session_db_timeout_seconds": 10,
-        # Timeout (seconds) for each media attachment send during cron
-        # delivery via a live gateway adapter. Large attachments (long TTS
-        # audio, big exports) can exceed the old fixed 30s window. Also
-        # overridable via HERMES_CRON_MEDIA_SEND_TIMEOUT env var. Keep in
-        # sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
+        # Timeout (seconds) per media attachment send during gateway delivery; large attachments
+        # (long TTS audio, big exports) need more than 30s. Env: HERMES_CRON_MEDIA_SEND_TIMEOUT.
+        # Keep in sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
         "media_send_timeout_seconds": 300,
     },
-
-    # Kanban multi-agent coordination — controls the dispatcher loop that
-    # spawns workers for ready tasks. The dispatcher ticks every N seconds
-    # (default 60), reclaims stale claims, promotes dependency-satisfied
-    # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
-    # each claimable ready task. One dispatcher per profile is sufficient;
-    # running more than one on the same kanban.db will race for claims.
+    # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
+    # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
+    # claimable task. Run ONE dispatcher per profile; two on the same kanban.db race for claims.
     "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to task
-        # completion + block events when ``kanban_create`` is called from
-        # inside a session that has a persistent delivery channel. The
-        # agent that dispatched the task will get notified automatically
-        # instead of having to poll. Disable to mirror pre-feature
-        # behaviour — e.g. for a profile that prefers explicit
-        # ``kanban_notify-subscribe`` calls per task.
+        # Auto-subscribe the originating gateway/TUI session to completion + block events when
+        # kanban_create is called from a session with a persistent delivery channel. Disable for
+        # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
-        # Run the dispatcher inside the gateway process. On by default —
-        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
-        # and gateway is the supervisor users already have. Set to false
-        # only if you run the dispatcher as a separate systemd unit or
-        # don't want the gateway to spawn workers.
+        # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
+        # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,
-        # Automatically claim tasks in the first-class review column and spawn
-        # the assigned profile with the bundled sdlc-review skill. Disable for
-        # boards where every review is performed manually from the dashboard.
+        # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
+        # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
-        # Seconds between dispatcher ticks (idle or not). Lower = snappier
-        # pickup of newly-ready tasks; higher = less SQL pressure.
+        # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
-        # Auto-block after this many consecutive non-success attempts for the
-        # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
-        # resets the streak for the new profile.
+        # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
+        # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
-        # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
-        # the historical 2 MiB + one-backup behavior; long-running workers can
-        # raise these to keep more early failure evidence.
+        # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
+        # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
-        # Profile assigned to the root/orchestration task after Triage
-        # decomposition. When unset, falls back to the default profile (the
-        # one `hermes` launches with no -p flag). This does not control the
-        # decomposer prompt, model, or skills; configure that LLM path under
-        # auxiliary.kanban_decomposer.
+        # Profile for the root/orchestration task after Triage decomposition; "" = default profile.
+        # Does not control the decomposer LLM path (see auxiliary.kanban_decomposer).
         "orchestrator_profile": "",
-        # Where a child task lands if the orchestrator can't match an
-        # assignee to any installed profile. When unset, falls back to the
-        # default profile. A task never ends up with assignee=None.
+        # Assignee when the orchestrator can't match one to an installed profile; "" = default
+        # profile. A task never ends up with assignee=None.
         "default_assignee": "",
-        # Global concurrency cap (#33488): when set to a positive int, the
-        # HOST never has more than N tasks in 'running' at once — counted
-        # across every active board and across both the ready and review
-        # dispatch lanes (workers are OS processes sharing one machine's
-        # memory, so the cap bounds the machine, not each board; OOF-30).
-        # Unset (None) means
-        # "derive from system memory" (OOF-30/OOF-77): the dispatcher caps
-        # concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] —
-        # e.g. 2 workers on a 1 GiB VM. On hosts where total memory can't
-        # be read (macOS/Windows), unset falls back to no cap. Set an
-        # explicit value to override the derived default in either
-        # direction.
+        # Global cap: positive int = the HOST never has more than N tasks 'running' across all
+        # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
+        # MemTotal is unreadable (macOS/Windows) None means no cap.
+        # Global concurrency cap (#33488): when set to a positive int, the HOST never has more than N tasks
+        # in 'running' at once — counted across every active board and across both the ready and review
+        # dispatch lanes (workers are OS processes sharing one machine's memory, so the cap bounds the
+        # machine, not each board; OOF-30). Unset (None) means "derive from system memory" (OOF-30/OOF-77):
+        # the dispatcher caps concurrency at roughly MemTotal / 512 MiB, clamped to [2, 8] — e.g. 2 workers
+        # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
+        # cap. Set an explicit value to override the derived default in either direction.
         "max_in_progress": None,
-        # Per-profile concurrency cap (#21582). When set to a positive int,
-        # no single profile can have more than N workers running at once,
-        # even if the global max_in_progress / max_spawn caps would allow
-        # it. Tasks blocked this way defer to the next dispatcher tick.
-        # Unset (None) means "no per-profile cap" — backward-compatible
-        # with existing installs. Useful for fan-out workflows that would
-        # otherwise saturate one profile's local model / API quota /
-        # browser pool while leaving other profiles idle.
+        # Per-profile cap: positive int = no single profile runs more than N workers even if the
+        # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful
+        # when fan-out would saturate one profile's model/API quota/browser pool.
+        # Unset (None) means "no per-profile cap" — backward-compatible with existing installs. Useful for
+        # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
+        # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
-        # When true, the kanban dispatcher auto-runs the decomposer on
-        # tasks that land in Triage (every dispatcher tick). When false,
-        # decomposition is manual via `hermes kanban decompose <id>` or
-        # the dashboard's Decompose button.
+        # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
+        # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,
-        # Max triage tasks to decompose per dispatcher tick. Prevents a
-        # large bulk-load of triage tasks from spending a burst of aux
-        # LLM calls in one tick. Excess tasks defer to the next tick.
+        # Max triage tasks decomposed per tick, bounding the aux-LLM burst from a bulk load. Excess
+        # defers to the next tick.
         "auto_decompose_per_tick": 3,
-        # Stale detection: running tasks that have exceeded this many
-        # seconds without a heartbeat (since ``last_heartbeat_at``) are
-        # auto-reclaimed to ``ready`` on the next dispatcher tick. The
-        # worker process (if still running host-locally) is terminated
-        # before the reclaim.  0 disables stale detection entirely.
+        # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
+        # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,
-        # Orphaned-card reconciliation: each dispatcher tick, requeue
-        # 'running' cards whose claim bookkeeping is broken (claim_lock or
-        # claim_expires NULL with a dead/gone worker) — zombies invisible
-        # to the TTL/crash/stale recovery paths. Set false to keep orphans
-        # frozen for manual forensics.
+        # Each tick, requeue 'running' cards with broken claim bookkeeping (claim_lock or
+        # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
+        # keeps orphans frozen for manual forensics.
         "reconcile_orphans": True,
-        # Notify subscriptions survive a task reaching ``done`` (completion
-        # is reversible — controllers reopen done work for review
-        # corrections), and are normally removed on archive. On boards that
-        # never archive, the notifier GC purges subscriptions for tasks
-        # that have been ``done`` with no new activity for this many days,
-        # so stale rows don't accumulate and get scanned on every notifier
-        # tick forever. Set 0 to disable the sweep.
+        # Notify subscriptions survive `done` (completion is reversible) and are removed on archive.
+        # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
+        # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
     },
-
-    # Bot Mode cross-connection relay (tools/bot_relay.py). Envelopes queued
-    # by message_agent for agents on other connections wait in an on-disk
-    # outbox until the Desktop drains them.
+    # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
+    # agents on other connections wait in an on-disk outbox until the Desktop drains them.
     "bot_mode": {
-        # Drain-time TTL (seconds): an envelope older than this is NOT
-        # delivered when the Desktop finally drains the outbox — the sender
-        # gets an error reply (reason 'queued_expired') instead, so a DM
-        # written while the Desktop was away can't land hours late as a
-        # confusing zombie message. 0 disables drain-time expiry (the 6h
-        # stale-artifact sweep still applies).
+        # Drain-time TTL (seconds): older envelopes are NOT delivered on drain; the sender gets an
+        # error reply (reason 'queued_expired') so a DM can't land hours late as a zombie. 0 = no
+        # drain-time expiry (the 6h stale-artifact sweep still applies).
         "envelope_ttl_seconds": 900,
-        # How long a second delivery into an already-busy target profile
-        # queues behind the current turn before failing with a structured
-        # 'target_busy' error. Deliveries are serialized per profile with a
-        # cross-process file lock so two turns never race one Bot Chat.
+        # How long a second delivery into a busy target profile queues behind the current turn
+        # before failing with a structured 'target_busy' error. Deliveries are serialized per
+        # profile with a cross-process file lock.
         "turn_wait_seconds": 120,
     },
-
-    # execute_code settings — controls the tool used for programmatic tool calls.
-    "code_execution": {
-        # Execution mode:
-        #   project (default) — scripts run in the session's working directory
-        #     with the active virtualenv/conda env's python, so project deps
-        #     (pandas, torch, project packages) and relative paths resolve.
-        #   strict            — scripts run in an isolated temp directory with
-        #     hermes-agent's own python (sys.executable). Maximum isolation
-        #     and reproducibility; project deps and relative paths won't work.
-        # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
-        # tool whitelist apply identically in both modes.
+    "code_execution": {  # execute_code settings (programmatic tool calls).
+        # project = run in the session cwd with the active venv/conda python so project deps and
+        # relative paths resolve. strict = isolated temp dir with hermes-agent's own python
+        # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
+        # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
-        # Kernel lifetime:
-        #   per-call (default) — a fresh child process per execute_code call;
-        #     no state carries over. Today's behavior.
-        #   session            — one persistent kernel per (session owner,
-        #     mode, interpreter, cwd, tool-set): variables, imports, and
-        #     loaded data survive across calls AND across the user turns of
-        #     one conversation (the owner is the conversation's approval
-        #     session key; delegated subagent sessions get their own).
-        #     Kernels are disposed with their session (session clear/new),
-        #     reaped after kernel_idle_timeout seconds idle, and capped at
-        #     max_session_kernels live children process-wide (LRU evicted).
-        #     A timed-out or interrupted cell kills the kernel (state lost,
-        #     next call starts fresh), and the child environment is frozen
-        #     at kernel spawn — pass reset=true after changing env
-        #     passthrough. Tool RPC authority is rebound to each cell: a
-        #     later cell's tool calls run under that cell's approval and
-        #     session context, never the first cell's. Security scrubbing,
-        #     the tool whitelist, and output redaction are identical in
-        #     both modes. NOTE for per-script static policy (see
-        #     check_execute_code_guard): a persistent namespace lets cell
-        #     N+1 reach objects cell N created, which a single-cell static
-        #     scan cannot see — the runtime RPC boundary (allow-list, call
-        #     budget, per-cell authority) is the operative cross-cell
-        #     enforcement in this mode.
-        # kernel_mode is retired: session kernels are always on for local
-        # execution. Remote terminal backends still run per-call — their
-        # file-based RPC path has no kernel host yet (tracked follow-up,
-        # not a design limit). A leftover kernel_mode key in user config
-        # is ignored.
-        # Lifecycle bounds for session kernels.
+        # Session kernels are always on locally (`kernel_mode` is ignored; remote backends run
+        # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
+        # across calls and turns; subagents get their own. Kernels die with the session, after
+        # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
+        # timed-out/interrupted cell kills the kernel; env is frozen at spawn (reset=true after
+        # changing passthrough). Tool RPC authority (approval, session, allow-list, call budget) is
+        # rebound per cell — that runtime boundary is the cross-cell enforcement.
         "kernel_idle_timeout": 1800,
         "max_session_kernels": 4,
     },
-
-    # Tool Search (progressive disclosure for large tool surfaces).
-    # When the model is connected to many MCP servers or non-core plugin
-    # tools, their JSON schemas can consume a substantial fraction of the
-    # context window on every turn. When enabled, those tools are replaced
-    # in the model-facing tools array with three bridge tools —
-    # tool_search / tool_describe / tool_call — and surfaced on demand.
-    #
-    # Core Hermes tools (terminal, read_file, write_file, patch,
-    # search_files, todo, memory, browser_*, etc.) are NEVER deferred.
-    # See tools/tool_search.py for full design notes and the
-    # openclaw-tool-search-report PDF in this PR for the rationale.
+    # Tool Search: deferrable (MCP / non-core plugin) tools are replaced in the model-facing array
+    # by tool_search / tool_describe / tool_call bridges and surfaced on demand. Core Hermes tools
+    # (terminal, file tools, todo, memory, browser_*, ...) are NEVER deferred.
     "tools": {
         "tool_search": {
-            # Tiered disclosure: any deferrable (MCP/plugin) tool activates
-            # the bridge; the listing then scales with catalog size.
-            #   Tier 0 — no MCP/plugin tools: everything stays eager.
-            #   Tier 1 — catalog listing fits the budget: bridge + skills-style
-            #     name+description manifest (degrades to names-only).
-            #   Tier 2 — per-tool listing over budget even names-only (e.g.
-            #     Cloudflare's ~3,300-tool flat API surface): bare bridge +
-            #     a one-line-per-server summary (name + tool count) so the
-            #     model knows which domains are reachable; individual tools
-            #     discoverable through tool_search only.
-            # "auto"/"on" — activate when at least one deferrable tool exists.
-            #   Today "auto" is an alias of "on"; it stays the default so a
-            #   future budget-gated mode (inline schemas when they fit, defer
-            #   only when they don't) can land on "auto" without changing
-            #   behavior for anyone who pinned "on" or "off" explicitly.
-            # "off" — disable entirely. Tools-array assembly is a pass-through.
+            # Tiered: tier 0 (no deferrable tools) = everything eager; tier 1 = bridge + a
+            # name+description manifest when it fits the budget (degrades to names-only); tier 2
+            # (over budget even names-only, e.g. ~3,300-tool APIs) = bare bridge + a
+            # one-line-per-server summary (name + tool count). "auto"|"on" = activate when at least
+            # one deferrable tool exists ("auto" is an alias of "on" today, reserved for a future
+            # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
+            # "off" = pass-through, no bridge.
             "enabled": "auto",
-            # Listing budget as a percentage of the active model's context
-            # length. Effective budget = min(this % of context,
-            # listing_max_tokens). Range 0..100.
+            # Listing budget as % of the model's context length; effective budget = min(this % of
+            # context, listing_max_tokens). Range 0..100.
             "threshold_pct": 5,
-            # When the model calls tool_search without a ``limit`` argument,
-            # how many hits to return PER QUERY. Range 1..max_search_limit.
+            # Hits per query when the model omits `limit`. Range 1..max_search_limit.
             "search_default_limit": 5,
-            # Hard upper bound the model can request via ``limit`` (per
-            # query). Range 1..50.
+            # Hard upper bound the model may request via `limit` (per query). Range 1..50.
             "max_search_limit": 25,
-            # Skills-style catalog listing embedded in the tool_search bridge
-            # description: every deferred tool's name + first sentence of its
-            # description (≤60 chars), grouped by MCP server / toolset. Keeps
-            # capabilities discoverable while schemas stay deferred.
-            # "auto" (default) — include when the listing fits the budget
-            #   (falls back to names-only, then to the bare tier-2 bridge).
-            # "on"  — same rendering, but explicit intent to always list.
-            # "off" — always the bare bridge (tier 2 for every catalog).
+            # Catalog listing embedded in the bridge description (name + first sentence ≤60 chars,
+            # grouped by server/toolset). "auto" = include when it fits (falls back to names-only,
+            # then bare tier-2 bridge); "on" = same rendering, explicit intent; "off" = always the
+            # bare bridge.
             "listing": "auto",
-            # Absolute cap on the embedded listing in tokens (chars/4
-            # estimate), regardless of context size. Range 200..60000.
+            # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
+            # Range 200..60000.
             "listing_max_tokens": 4000,
         },
     },
-
-    # Logging — controls file logging to ~/.hermes/logs/.
-    # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
-    "logging": {
-        "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
-        "max_size_mb": 5,      # Max size per log file before rotation
-        "backup_count": 3,     # Number of rotated backup files to keep
+    "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
+        "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
+        "max_size_mb": 5,      # max size per log file before rotation
+        "backup_count": 3,     # rotated backups to keep
     },
-
-    # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
-    # curated model lists for OpenRouter and Nous Portal from this URL,
-    # falling back to the in-repo snapshot on network failure.  Lets us
-    # update model picker lists without shipping a hermes-agent release.
-    # The default URL is served by the docs site GitHub Pages deploy.
+    # Remote model-catalog manifest: curated OpenRouter / Nous Portal model lists fetched from this
+    # URL (falls back to the in-repo snapshot on network failure), so picker lists update without a
+    # release. Default URL is served by the docs-site GitHub Pages deploy.
     "model_catalog": {
         "enabled": True,
         "url": "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json",
-        # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
-        # next /model or `hermes model` invocation; network failures
-        # silently fall back to the stale cache.
-        "ttl_hours": 1,
-        # Optional per-provider override URLs for third parties that want
-        # to self-host their own curation list using the same schema.
-        # Example:
-        #   providers:
-        #     openrouter:
-        #       url: https://example.com/my-curation.json
+        # Disk cache TTL in minutes. The gateway refreshes in the background on this cadence; the
+        # CLI refetches on the next /model or `hermes model` once the cache is older. Network
+        # failures silently use the stale cache. Legacy `ttl_hours` is honoured if set.
+        "ttl_minutes": 20,
+        # Per-provider override URLs for self-hosted curation lists using the same schema, e.g.
+        # providers: {openrouter: {url: https://example.com/my-curation.json}}.
         "providers": {},
     },
-
-    # Per-model metadata overrides — manually declare context_window,
-    # max_output_tokens, capabilities, or model family for any
-    # provider+model. Recognized fields: context_window,
-    # max_output_tokens, supports_tools, supports_vision,
-    # supports_reasoning, model_family.
-    #
-    # Semantics:
-    #   1. Explicit (model_overrides.<provider>.<model_id>): wins over
-    #      models.dev, OpenRouter, and hardcoded defaults for the fields
-    #      it sets. NOTE: an explicit model.context_length (global) and a
-    #      custom_providers per-model context_length are user settings at
-    #      other layers and are consulted in the resolution chain order
-    #      documented in agent/model_metadata.py.
-    #   2. Fill-gap defaults (model_overrides.<provider>._default and
-    #      model_overrides._default): apply ONLY to models the catalog
-    #      does not know. They never displace catalog data for known
-    #      models, so a _default cannot accidentally clamp every model
-    #      of a provider.
-    #
-    # An unknown model id (not in models.dev) starts from safe defaults
-    # (200K context, tools on, vision/reasoning off) and the override
-    # patches the fields it sets — overriding a model the catalog
-    # doesn't know yet is the supported self-unblock path (#84482,
-    # #8731).
-    #
-    # Provider keys accept the Hermes provider id (as used elsewhere in
-    # this file) or the models.dev provider id; model ids match
-    # case-insensitively.
-    #
-    # Example:
-    #   model_overrides:
-    #     upstage:
-    #       solar-pro4:
-    #         context_window: 524288
-    #       syn-pro:
-    #         context_window: 65536
-    #     custom:my-local-vllm:
-    #       my-llava-model:
-    #         context_window: 8192
-    #         supports_vision: true
-    #         supports_reasoning: false
-    #         supports_tools: true
-    #     _default:            # fill-gap only: models not in the catalog
-    #       context_window: 128000
+    # Per-model metadata overrides. Fields: context_window, max_output_tokens, supports_tools,
+    # supports_vision, supports_reasoning, model_family. <provider>.<model_id> wins over
+    # models.dev/OpenRouter/hardcoded defaults for the fields it sets (chain order in
+    # agent/model_metadata.py). <provider>._default and top-level _default fill gaps ONLY for models
+    # the catalog does not know, so they never clamp known models. Unknown ids start from safe
+    # defaults (200K context, tools on, vision/reasoning off) and get patched. Provider keys: Hermes
+    # or models.dev id; model ids match case-insensitively. Example: {"custom:my-local-vllm":
+    # {"my-llava-model": {"context_window": 8192}}}
+    # Semantics: 1. NOTE: an explicit model.context_length (global) and a custom_providers per-model
+    # context_length are user settings at other layers and are consulted in the resolution chain order
+    # documented in agent/model_metadata.py. 2. See #84482, #8731.
     "model_overrides": {},
-
-    # models.dev registry — provider/model metadata (context windows,
-    # capabilities, pricing, modalities).  The agent fetches this on startup
-    # and serves from cache; a background daemon refreshes stale data.
-    # Override ``url`` to point at a mirror (e.g. a self-hosted copy behind
-    # a corporate proxy).  ETag conditional GET ensures refreshes are
-    # cheap (304 = no download).
+    # models.dev registry (context windows, capabilities, pricing, modalities): fetched on startup,
+    # served from cache, refreshed by a background daemon with ETag conditional GET. Override `url`
+    # to point at a mirror (e.g. behind a corporate proxy).
     "models_dev": {
         "url": "",  # empty = default https://models.dev/api.json
     },
 
-    # Network settings — workarounds for connectivity issues.
     "network": {
-        # Force IPv4 connections.  On servers with broken or unreachable IPv6,
-        # Python tries AAAA records first and hangs for the full TCP timeout
-        # before falling back to IPv4.  Set to true to skip IPv6 entirely.
+        # Force IPv4. With broken/unreachable IPv6, Python tries AAAA first and hangs for the full
+        # TCP timeout before falling back. True skips IPv6 entirely.
         "force_ipv4": False,
     },
-
-    # Gateway monitoring — Service Health Monitoring plus redacted Operational
-    # Diagnostics for the gateway daemon, exported over OTLP to an
-    # operator-configured endpoint (OTEL Collector, DataDog, ...). Content-free
-    # by construction: no prompts, messages, tool args/results, session
-    # history, usage analytics, audit logs, or trajectories. Off by default;
-    # nothing is collected or sent until an operator enables it and sets an
-    # endpoint.
+    # Gateway monitoring: service health + redacted operational diagnostics exported over OTLP to an
+    # operator endpoint (OTEL Collector, DataDog, ...). Content-free by construction: no prompts,
+    # messages, tool args/results, session history, usage analytics, audit logs, or trajectories.
+    # Nothing is collected or sent until enabled with an endpoint.
     "monitoring": {
-        # Stable install identifier attached to exported health signals so an
-        # operator can tell instances apart in their collector. Empty string
-        # means "mint a fresh UUID on first use"; clear it to rotate. Carries
-        # no account identity.
+        # Stable install identifier on exported signals so operators can tell instances apart. "" =
+        # mint a fresh UUID on first use; clear it to rotate. Carries no account identity.
         "install_id": "",
-        # Gateway health & diagnostics export.
-        "gateway_health_export": {
+        "gateway_health_export": {  # Gateway health & diagnostics export.
             "enabled": False,
             "metrics_enabled": True,
             "diagnostic_events_enabled": True,
@@ -3175,2023 +1852,917 @@ DEFAULT_CONFIG = {
             "export_interval_seconds": 60,
             "logs_export_interval_seconds": 5,
             "resource_attributes": {
-                "service.name": "hermes-gateway",
-                "deployment.environment.name": "production",
+                "service.name": "hermes-gateway", "deployment.environment.name": "production"
             },
         },
-        # OTLP destination. headers_env maps header names to ENVIRONMENT
-        # VARIABLE NAMES (never secret values); values are read from the
-        # environment at export time.
-        "export": {
-            "otlp": {
-                "enabled": False,
-                "endpoint": "",
-                "headers_env": {},
-            },
-        },
+        # OTLP destination. headers_env maps header names to ENVIRONMENT VARIABLE NAMES (never
+        # secret values); values are read from the environment at export time.
+        "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
-
-    # Gateway settings — control how messaging platforms (Telegram, Discord,
-    # Slack, etc.) deliver agent-produced files as native attachments.
-    "gateway": {
-        # Optional named-profile allowlist for multiplex mode. None preserves
-        # the historical serve-all behavior; [] serves only the default.
+    "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+        # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
         "multiplex_profile_allowlist": None,
-
-        # After an unexpected SIGTERM interrupts a running gateway agent,
-        # wait this many seconds for it to unwind before adapter and database
-        # teardown proceeds. Keep this short so service-manager shutdowns do
-        # not exhaust their stop budget before resource cleanup begins.
+        # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
+        # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,
-
-        # Durable delivery-obligation ledger: final agent responses are
-        # recorded in state.db around the platform send, and a gateway that
-        # died between finalize and platform ACK redelivers the stored
-        # response on the next boot (ambiguous cases carry a visible
-        # "recovered reply — may be a duplicate" marker; honest
-        # at-least-once). Disable to lose in-flight final responses on
-        # crash/restart, as before.
+        # Durable delivery-obligation ledger: final responses are recorded in state.db around the
+        # platform send; a gateway that died between finalize and platform ACK redelivers on next
+        # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
+        # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
-
-        # Seconds the gateway waits for a single messaging platform to finish
-        # connecting during startup (and on reconnect). Discord in particular
-        # can blow past the old fixed 30s when an account has many slash
-        # commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this
-        # if your gateway hits "discord connect timed out" / "Timeout waiting
-        # for connection to Discord" restart loops. ``0`` or negative disables
-        # the timeout entirely (wait indefinitely). Bridged at startup to the
-        # internal HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT env var, which still
-        # works as a manual override and wins if set explicitly.
+        # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
+        # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
+        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
+        # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
+        # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
+        # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
+        # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
+        # negative disables the timeout entirely (wait indefinitely).
         "platform_connect_timeout": 30,
-
-        # In-process event-loop liveness watchdog (#69089). A daemon OS thread
-        # probes the gateway asyncio loop; after consecutive missed probes it
-        # dumps all-thread stacks and hard-exits with the service-restart exit
-        # code so the supervisor (systemd/launchd) revives the process instead
-        # of leaving a wedged-but-alive zombie. Set to false to disable.
+        # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
+        # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
+        # systemd/launchd revives the process instead of leaving a wedged-but-alive zombie.
+        # Set to false to disable. See #69089.
         "loop_watchdog": True,
-
-        # Loop-liveness watchdog tuning (defaults mirror
-        # gateway/shutdown_watchdog.py constants). probe_interval = seconds
-        # between liveness probes; probe_timeout = seconds a probe may go
-        # unprocessed before counting as a miss; max_strikes = consecutive
-        # misses before the watchdog hard-exits 75 for a service respawn
-        # (~90-120s of sustained loop block at the defaults).
+        # Watchdog tuning (defaults mirror gateway/shutdown_watchdog.py): probe_interval = seconds
+        # between probes; probe_timeout = seconds before an unprocessed probe counts as a miss;
+        # max_strikes = consecutive misses before hard-exit 75 (~90-120s of sustained loop block at
+        # the defaults).
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
-
-        # Startup-liveness watchdog (OOF-298): plain daemon thread armed at
-        # process entry for gateway runs, hard-exits 75 if the event loop is
-        # not confirmed live within the deadline. The watchdog module itself
-        # is stdlib-only and armed before config can load, so run_gateway()
-        # bridges these keys to the internal HERMES_STARTUP_WATCHDOG /
-        # HERMES_STARTUP_WATCHDOG_TIMEOUT_S env vars AND applies them to the
-        # already-armed handle (disarm on disable, disarm+re-arm on a config
-        # timeout) — config.yaml is the user-facing surface; explicit env
-        # values win as operator override.
+        # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
+        # hard-exits 75 if the loop isn't live within the deadline. Armed before config loads, so
+        # run_gateway() bridges these to HERMES_STARTUP_WATCHDOG / HERMES_STARTUP_WATCHDOG_TIMEOUT_S
+        # and re-arms the live handle; explicit env wins.
         "startup_watchdog": True,
         "startup_watchdog_timeout_seconds": 300,
-
-        # Whether the gateway keeps writing the legacy sessions.json mirror of
-        # its routing index. The primary copy lives in state.db (the
-        # gateway_routing table). Default True for backward compatibility with
-        # external tooling and downgrade safety; set to false to stop
-        # producing ~/.hermes/sessions/sessions.json entirely.
+        # Keep writing the legacy ~/.hermes/sessions/sessions.json mirror of the routing index
+        # (primary copy: state.db gateway_routing table). True for external tooling and downgrade
+        # safety; False stops producing the file.
         "write_sessions_json": True,
-
-        # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
-        # and, when an instance is opted in via the NAS "Labs" toggle (carried as
-        # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
-        # AND a wakeUrl is registered, drives the relay transport dormant so the
-        # platform (e.g. Fly autostop:"suspend") can suspend the now-idle machine;
-        # it wakes on the connector's wakeUrl poke. This is the idle TIMEOUT only
-        # — whether the feature is enabled at all is the Labs toggle, never a
-        # config key (decisions.md D2/D11). 0/negative falls back to the default.
-        "scale_to_zero": {
-            "idle_timeout_minutes": 2,
-        },
-
-        # Auto-resume restart-loop breaker (#30719, defense-3). When the
-        # gateway is killed mid-turn (SIGTERM) and revived by a supervisor
-        # (launchd KeepAlive / systemd Restart=), it auto-resumes the
-        # restart-interrupted session on the next boot. If the resumed turn
-        # keeps triggering another kill (e.g. the agent runs a raw
-        # `launchctl kickstart ai.hermes.gateway` that defenses 1-2 don't
-        # cover), the result is a tight SIGTERM-respawn loop. This breaker
-        # chains restart-interrupted boots together and, once `max_restarts`
-        # of them chain up, SKIPS auto-resume for that boot — the gateway
-        # still starts and serves real inbound messages, it just stops
-        # replaying the session that keeps killing it. Set `max_restarts` to
-        # 0 to disable the breaker.
-        # Two boots belong to the same chain when they are no more than
-        # `max_gap_seconds` apart (floored by `window_seconds`). Chaining on
-        # the GAP rather than on a fixed window is what makes the breaker see
-        # SLOW crash cycles: a loop whose period exceeds the window used to
-        # prune its own history on every boot, so the counter never left 1 and
-        # the breaker never tripped — e.g. the ~150s wedged-event-loop cycle in
-        # #81642 (stall -> ~90s liveness-watchdog hard-exit -> respawn ->
-        # auto-resume replays the same session), which also makes
-        # `hermes update` hang because it can never drain the gateway.
-        "restart_loop_guard": {
-            "max_restarts": 3,
-            "window_seconds": 60,
-            "max_gap_seconds": 300,
-        },
-
-        # Portable respawn-storm circuit breaker (complements
-        # ``restart_loop_guard`` above). Counts gateway (re)starts in a sliding
-        # window and, when too many land, sleeps an exponential backoff before
-        # booting so a crash-looping supervisor (launchd KeepAlive, systemd
-        # Restart=always) can't hammer the process into a respawn storm.
-        # ``max_starts <= 0`` disables the breaker. The env vars
-        # ``HERMES_GATEWAY_MAX_STARTS`` / ``HERMES_GATEWAY_START_WINDOW_S``
-        # override these defaults for escape-hatch use.
-        "respawn_storm": {
-            "max_starts": 5,
-            "window_seconds": 120,
-        },
-
-        # Inject a human-readable timestamp prefix (e.g.
-        # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
-        # CONTEXT so the agent has temporal awareness of when each message was
-        # sent. Off by default — when off, the model sees clean message text.
-        # Persisted transcripts always stay clean (the timestamp is stored as
-        # message metadata regardless of this toggle), so turning it on later
-        # surfaces send-times for past messages too.
-        "message_timestamps": {
-            "enabled": False,
-        },
-
-        # Maximum bytes for an inbound image / audio / video payload the
-        # gateway will buffer into memory and cache to disk. Inbound media is
-        # read fully into RAM before being written, so an unbounded upload
-        # (Discord Nitro allows 500 MB) or a remote media URL pointing at a
-        # huge file can spike memory and OOM-kill the gateway on constrained
-        # deployments. Enforced in the shared cache helpers
-        # (gateway/platforms/base.py), so the cap holds across every platform
-        # adapter. ``0`` disables the cap. Default 128 MiB.
+        # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
+        # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
+        # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can
+        # suspend the machine; it wakes on the wakeUrl poke. Enablement is the Labs toggle, never a
+        # config key. 0/negative = default.
+        "scale_to_zero": {"idle_timeout_minutes": 2},
+        # Auto-resume restart-loop breaker. A supervisor-revived gateway auto-resumes the
+        # SIGTERM-interrupted session; if that turn keeps triggering the kill, boots no more than
+        # `max_gap_seconds` apart (floored by `window_seconds`) chain, and after `max_restarts`
+        # auto-resume is SKIPPED for that boot (inbound messages still served). Gap-based chaining
+        # also catches SLOW ~150s crash cycles. max_restarts=0 disables.
+        "restart_loop_guard": {"max_restarts": 3, "window_seconds": 60, "max_gap_seconds": 300},
+        # Respawn-storm circuit breaker (complements restart_loop_guard): counts (re)starts in a
+        # sliding window and sleeps an exponential backoff before booting so a crash-looping
+        # supervisor can't hammer the process. max_starts <= 0 disables. Env escape hatches:
+        # HERMES_GATEWAY_MAX_STARTS / HERMES_GATEWAY_START_WINDOW_S.
+        "respawn_storm": {"max_starts": 5, "window_seconds": 120},
+        # Prefix user messages IN THE MODEL'S CONTEXT with a timestamp (e.g. "[Tue 2026-04-28
+        # 13:40:53 CEST]") for temporal awareness. Persisted transcripts stay clean (timestamp is
+        # message metadata regardless), so enabling later surfaces past send-times too.
+        "message_timestamps": {"enabled": False},
+        # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
+        # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
+        # huge remote URLs can OOM-kill constrained deployments. Enforced in
+        # gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
-
-        # When false (default), any file path the agent emits is delivered
-        # as a native attachment as long as it isn't under the credential /
-        # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
-        # auth.json, etc.). This matches the symmetry of inbound delivery
-        # — we accept any document type the user uploads, and the agent
-        # can hand back any file that isn't a credential.
-        #
-        # When true, fall back to the older allowlist+recency-window
-        # behavior: files must live under the Hermes cache, under
-        # ``media_delivery_allow_dirs``, or be freshly produced inside the
-        # ``trust_recent_files_seconds`` window. Recommended for
-        # public-facing gateways where prompt injection from one user
-        # shouldn't be able to exfiltrate the host's secrets to that same
-        # user. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
+        # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
+        # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must
+        # not use (e.g. a scheduled task picking up a Clash/V2Ray HTTP_PROXY -> "Cannot connect to
+        # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, TELEGRAM_PROXY, ...) are still
+        # honored.
+        "trust_env": True,
+        # Media delivery. False: any emitted file path is delivered natively unless under the
+        # credential/system denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env, auth.json). True:
+        # files must be under the Hermes cache, media_delivery_allow_dirs, or fresher than
+        # trust_recent_files_seconds — recommended for public-facing gateways so prompt injection
+        # can't exfiltrate host secrets. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
         "strict": False,
-        # Extra directories from which model-emitted bare file paths may be
-        # uploaded as native gateway attachments. Files inside the Hermes
-        # cache (~/.hermes/cache/{documents,images,audio,video,screenshots})
-        # are always trusted; this list adds operator-controlled roots
-        # (project dirs, scratch dirs, mounted shares). Accepts a list of
-        # absolute paths or a single os.pathsep-separated string. Bridged
-        # to HERMES_MEDIA_ALLOW_DIRS at gateway startup. Tilde paths are
-        # expanded. Honored in both default and strict mode.
+        # Extra roots (project/scratch dirs, mounted shares) from which bare file paths may be
+        # uploaded; the Hermes cache is always trusted. List of absolute paths or one
+        # os.pathsep-separated string; tildes expanded. Bridged to HERMES_MEDIA_ALLOW_DIRS. Honored
+        # in both modes.
         "media_delivery_allow_dirs": [],
-        # When true, files whose mtime is within ``trust_recent_files_seconds``
-        # of "now" are trusted for native delivery even outside the cache /
-        # operator allowlist — useful for ``pandoc -o /tmp/report.pdf`` or
-        # PDFs the agent writes into a working directory. System paths
-        # (/etc, /proc, ~/.ssh, ~/.aws, etc.) remain blocked regardless.
-        # Disable to fall back to pure-allowlist mode. Bridged to
-        # HERMES_MEDIA_TRUST_RECENT_FILES. Only consulted when ``strict``
-        # is true; in default mode the denylist alone gates delivery.
+        # Trust files whose mtime is within trust_recent_files_seconds even outside the cache/
+        # allowlist (e.g. `pandoc -o /tmp/report.pdf`); system paths stay blocked. False =
+        # pure-allowlist mode. Bridged to HERMES_MEDIA_TRUST_RECENT_FILES. Only consulted when
+        # strict is true.
         "trust_recent_files": True,
-        # Recency window in seconds. 600 (10 min) comfortably covers a
-        # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
-        # Only consulted when ``strict`` is true.
+        # Recency window in seconds; 600 covers a multi-tool turn. Bridged to
+        # HERMES_MEDIA_TRUST_RECENT_SECONDS. Only consulted when strict is true.
         "trust_recent_files_seconds": 600,
-
-        # OpenAI-compatible API server platform
-        # (gateway/platforms/api_server.py).
-        "api_server": {
-            # Maximum number of agent runs the API server will service
-            # concurrently. Requests to /v1/chat/completions, /v1/responses,
-            # and /v1/runs that arrive while this many runs are already
-            # in flight are rejected with HTTP 429 + a Retry-After header,
-            # bounding CPU / memory / upstream-LLM-quota exhaustion from a
-            # request flood. Set to 0 to disable the cap entirely.
+        "api_server": {  # OpenAI-compatible API server platform (gateway/platforms/api_server.py).
+            # Max concurrent agent runs. Requests to /v1/chat/completions, /v1/responses, and
+            # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
+            # exhaustion from a request flood. 0 = no cap.
             "max_concurrent_runs": 10,
         },
     },
-
-    # Real-time token streaming to messaging platforms (Telegram, Discord,
-    # Slack, etc.). Read at the top level by the gateway; absent this block the
-    # gateway falls back to these same defaults, so adding it here only makes
-    # the feature discoverable in config.yaml — it does not change behavior.
-    #
-    # Disabled by default: streaming costs extra edit/draft API calls per
-    # response. Set ``enabled: true`` and restart the gateway to turn it on.
+    # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by
+    # default: costs extra edit/draft API calls per response.
     "streaming": {
-        # Master switch. When false, each response is delivered as a single
-        # final message (no progressive updates).
-        "enabled": False,
-        # Transport selection:
-        #   "auto"  — prefer native draft streaming where the platform
-        #             supports it (Telegram DMs via sendMessageDraft,
-        #             Bot API 9.5+) and fall back to edit-based elsewhere.
-        #             Safe global default: platforms without draft support
-        #             (Discord, Slack, Matrix, Telegram groups) transparently
-        #             use the edit path, so "auto" only upgrades chats that
-        #             can render the smoother native preview.
-        #   "draft" — explicitly request native drafts; falls back to edit
-        #             when the platform/chat doesn't support them.
-        #   "edit"  — progressive editMessageText only (legacy behavior).
-        #   "off"   — disable streaming entirely (same as enabled: false).
+        "enabled": False,  # When false, each response is delivered as one final message.
+        # auto = native drafts where supported (Telegram DMs, Bot API 9.5+), edits elsewhere
+        # (Discord, Slack, Matrix, Telegram groups); draft = drafts with edit fallback; edit =
+        # progressive editMessageText only; off = disabled.
         "transport": "auto",
-        # Minimum seconds between progressive edits — tuned for Telegram's
-        # ~1 edit/s flood envelope.
+        # Minimum seconds between progressive edits (Telegram's ~1 edit/s flood envelope).
         "edit_interval": 0.8,
-        # Flush the buffer to the platform once this many characters have
-        # accumulated, so short replies feel near-instant.
+        # Flush the buffer once this many chars accumulate, so short replies feel instant.
         "buffer_threshold": 24,
-        # Cursor glyph appended to the in-progress message while streaming.
-        "cursor": " \u2589",
-        # When >0, the final edit for a long-running streamed response is
-        # delivered as a fresh message if the preview has been visible at
-        # least this many seconds, so the platform timestamp reflects
-        # completion time. Telegram only; other platforms ignore it.
+        "cursor": " \u2589",  # Cursor glyph appended to the in-progress message.
+        # Telegram only: when >0, if the preview was visible at least this many seconds the final
+        # edit is sent as a fresh message so the timestamp reflects completion.
         "fresh_final_after_seconds": 0.0,
     },
-
-    # Session storage — controls automatic cleanup of ~/.hermes/state.db.
-    # state.db accumulates every session, message, tool call, and FTS5 index
-    # entry forever.  Without auto-pruning, a heavy user (gateway + cron)
-    # reports 384MB+ databases with 68K+ messages, which slows down FTS5
+    # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
-        # When true, prune ended sessions inactive for retention_days once
-        # per (roughly) min_interval_hours at CLI/gateway/cron startup.
-        # Activity is the latest message timestamp, falling back to creation
-        # time for empty sessions. Active sessions are always preserved.
-        # Default false: session history is valuable for search recall, and
-        # silently deleting it could surprise users.  Opt in explicitly.
-        "auto_prune": False,
-        # How many inactive days of ended-session history to keep. Matches
-        # the default of ``hermes sessions prune``.
+        # Prune ENDED sessions inactive for retention_days (activity = latest message, else
+        # creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
+        # are never deleted; stale automation sessions whose process died are *closed*, then get a
+        # full retention window before removal.
+        "auto_prune": True,
+        # Inactive days of ended-session history to keep (= `hermes sessions prune`).
+        # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
+        # at CLI/gateway/cron startup. Activity is the latest message timestamp, falling back to creation
+        # time for empty sessions. Sessions that are still open, pinned, or mid-turn are never deleted — the
+        # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
+        # whose process died without closing them; those are *closed*, not deleted, and get a further full
+        # retention window before removal. Default true since #54189: without it state.db grows without
+        # bound (multi-GB installs reported within weeks).
         "retention_days": 90,
-        # When true, auto-archive (soft-hide, never delete) sessions that
-        # haven't been touched in ``auto_archive_days`` days, once per
-        # (roughly) min_interval_hours.  "Touched" is last activity, not
-        # creation, so an old-but-recently-used session is spared.  Pinned
-        # sessions are always exempt.  Off by default — opt in explicitly.
+        # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
+        # once per min_interval_hours. Pinned sessions are exempt.
         "auto_archive": False,
-        # Idle threshold (days of no activity) before auto-archive hides a
-        # session.  Only applies when auto_archive is true.
+        # Idle days before auto-archive hides a session (only when auto_archive is true).
         "auto_archive_days": 3,
-        # VACUUM after a prune that actually deleted rows.  SQLite does not
-        # reclaim disk space on DELETE — freed pages are just reused on
-        # subsequent INSERTs — so without VACUUM the file stays bloated
-        # even after pruning.  VACUUM blocks writes for a few seconds per
-        # 100MB, so it only runs at startup, and only when prune deleted
-        # ≥1 session.
+        # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE). VACUUM
+        # blocks writes (~seconds per 100MB), so it runs only at startup, only when ≥1 session was
+        # deleted AND freelist/page_count > 25%.
+        # SQLite does not reclaim disk space on DELETE — freed pages are just reused on subsequent INSERTs —
+        # so without VACUUM the file stays bloated even after pruning. See #54189.
         "vacuum_after_prune": True,
-        # Minimum days between successful VACUUM rewrites. Pruning can still
-        # run on its normal cadence while SQLite reuses the freed pages.
+        # Minimum days between VACUUM rewrites; pruning keeps its normal cadence.
         "min_vacuum_interval_days": 30,
-        # Minimum hours between auto-maintenance runs (avoids repeating
-        # the sweep on every CLI invocation).  Tracked via state_meta in
-        # state.db itself, so it's shared across all processes.
+        # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
+        # processes).
         "min_interval_hours": 24,
-        # Legacy per-session JSON snapshot writer.  When true, the agent
-        # rewrites ``~/.hermes/sessions/session_{sid}.json`` on every turn
-        # boundary with the full message list.  state.db is canonical and
-        # has every field the snapshot stored (plus per-message timestamps
-        # and token counts), so this is off by default — the snapshots had
-        # no consumer outside their own overwrite guard and accumulated
-        # GBs of disk on heavy users.  Opt in only if you have an external
-        # tool that consumes the JSON files directly.
+        # Legacy ~/.hermes/sessions/session_{sid}.json snapshots rewritten every turn. state.db is
+        # canonical (superset); snapshots consumed GBs on heavy users. Enable only for an external
+        # tool that reads the JSON files directly.
         "write_json_snapshots": False,
-        # Search-index (FTS) storage optimization — the compact v23 layout
-        # that drops duplicate content copies and stops trigram-indexing tool
-        # output (typically reclaims ~60%+ of state.db on heavy users). It is
-        # OPT-IN: existing databases keep their working legacy index until the
-        # user runs `hermes sessions optimize-storage`, because the rebuild is
-        # disk-heavy and long on large DBs (see that command's disk preflight).
-        #
-        #   "advise" (default): `hermes update` prints a one-line notice with
-        #     the reclaimable size and the command, when a legacy index is
-        #     detected. Nothing is changed automatically.
-        #   "require": the notice is shown as a REQUIRED upgrade (firmer copy),
-        #     and future tooling may gate on it. Flip this default in a future
-        #     release when we're ready to make the v23 layout mandatory — the
-        #     command, progress bar, and resumability are already in place, so
-        #     enforcement is a copy/gating change, not new migration code.
-        #   "off": suppress the notice entirely.
+        # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
+        # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on
+        # large DBs. advise = `hermes update` prints a one-line notice with reclaimable size when a
+        # legacy index is detected; require = shown as a REQUIRED upgrade (tooling may gate on it);
+        # off = none.
         "fts_optimize_notice": "advise",
-        # CJK-bigram search index (messages_fts_cjk, cjk_unicode61 loadable
-        # tokenizer). When the extension is built (native/fts5_cjk/build.sh →
-        # ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms (일본, 项目, ...)
-        # get index-speed exact matching instead of LIKE full-table scans.
-        # True (default): use the index when the extension is present; the
-        # setting is inert when it isn't. False: never load the extension or
-        # serve the cjk index. Bridged to HERMES_CJK_FTS (internal carrier).
+        # CJK-bigram search index (messages_fts_cjk). When the extension is built
+        # (native/fts5_cjk/build.sh → ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms get exact
+        # index matches instead of LIKE scans. True = use when present (inert otherwise); False =
+        # never load/serve it. Bridged to HERMES_CJK_FTS.
         "cjk_fts": True,
-        # Slow session-search log threshold in milliseconds: searches at or
-        # above it log one INFO line with the routing path taken (fts_cjk /
-        # fts5 / trigram / like_scan) so latency regressions stay
-        # attributable per query shape. 0 logs every search. Bridged to
-        # HERMES_SEARCH_SLOW_MS (internal carrier).
+        # Slow session-search threshold (ms): searches at/above it log one INFO line with the
+        # routing path (fts_cjk / fts5 / trigram / like_scan). 0 logs every search. Bridged to
+        # HERMES_SEARCH_SLOW_MS.
         "search_slow_ms": 1000,
-        # Transcript safety limits. A runaway session (hundreds of thousands
-        # of rows) can exhaust memory when its transcript is materialized in
-        # one shot, so interactive resume and in-memory export are guarded by
-        # bounded row counts. Set a limit to 0 to disable that guard.
-        # Max active messages (across the full compression lineage) a session
-        # may hold and still be resumed interactively (CLI/TUI/desktop).
+        # Transcript guards (a runaway 100k+ row session can exhaust memory when materialized at
+        # once; 0 disables). Max active messages (across the compression lineage) for interactive
+        # resume.
         "max_resume_messages": 20000,
-        # Max active messages a single session may hold for an in-memory
-        # (non-streaming) export such as `hermes sessions export`. Checked
-        # per session, so full-DB backups of many small sessions still work.
+        # Max active messages per session for in-memory export (`hermes sessions export`); checked
+        # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
     },
-
-    # Contextual first-touch onboarding hints (see agent/onboarding.py).
-    # Each hint is shown once per install and then latched here so it
-    # never fires again.  Users can wipe the section to re-see all hints.
+    # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
+    # `seen`; wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
-        # Structured profile-build path offered on the very first gateway
-        # message ever. "ask" (default) -> offer to build a user profile
-        # (opt-in, consent-gated; the agent asks before any lookup and never
-        # reads connected accounts silently). "off" -> plain intro only.
-        # The offer fires at most once (latched under onboarding.seen).
+        # First-ever gateway message: ask = offer to build a user profile (consent- gated; never
+        # reads connected accounts silently); off = plain intro only.
         "profile_build": "ask",
     },
-
-    # Privacy-safe aggregate metrics written only to this profile's local
-    # telemetry directory. Collection is opt-in and no remote sink exists.
+    # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
+    # and transmission to Nous (`send`) are SEPARATE opt-ins; see
+    # docs/observability/relay-shared-metrics.md Appendix A for consent/retention.
     "telemetry": {
         "shared_metrics": {
             "enabled": False,
+            # Requires `enabled` (`send` alone logs an error). A package is sent only if its whole
+            # period is inside a recorded consent window.
+            "send": False,
+            # Ingest endpoint (override for staging/local). Deliberately NOT env- overridable.
+            # Non-HTTPS refused unless the host is localhost.
+            "endpoint": "https://telemetry.nousresearch.com/v1/telemetry",
         },
     },
 
-    # ``hermes doctor`` behaviour.
     "doctor": {
-        # Per-probe timeout (seconds) for the opt-in `hermes doctor --live`
-        # real-call backend probes (Firecrawl/FAL/browser/MCP/TTS/STT).
+        # Per-probe timeout (seconds) for `hermes doctor --live` real-call probes.
         "live_probe_timeout": 10,
     },
 
-    # ``hermes update`` behaviour.
     "updates": {
-        # Pre-update safety backup — ONE consolidated mechanism, three modes:
-        #
-        #   quick (default) — snapshot critical small state files (pairing
-        #     JSONs, cron jobs, config.yaml, .env, auth.json, per-profile
-        #     DBs) into <HERMES_HOME>/state-snapshots/ before the update.
-        #     Files over 1 GiB (e.g. a bloated state.db) are skipped with a
-        #     warning so the snapshot stays fast. Restore via ``/snapshot``.
-        #     This is the #15733 (lost pairing data) / #34600 (emptied cron
-        #     jobs) safety net.
-        #   full — the quick snapshot PLUS a full ``hermes backup``-style zip
-        #     of HERMES_HOME into <HERMES_HOME>/backups/, restorable with
-        #     ``hermes import``. Can add minutes on large homes. This is the
-        #     #48200 (wrong-path wipe) safety net. ``--backup`` forces this
-        #     for a single run.
-        #   off — no pre-update backup of any kind. ``--no-backup`` forces
-        #     this for a single run.
-        #
-        # Legacy boolean values are honored: true -> full, false -> off.
+        # Pre-update backup. quick = snapshot small critical state (pairing JSONs, cron jobs,
+        # config.yaml, .env, auth.json, profile DBs) into <HERMES_HOME>/state-snapshots/, skipping
+        # files >1 GiB; restore via ``/snapshot``. full = quick PLUS a ``hermes backup`` zip in
+        # <HERMES_HOME>/backups/ (``hermes import`` restores; slow on large homes; ``--backup``
+        # forces once). off = none (``--no-backup`` forces once). Legacy booleans: true -> full,
+        # false -> off.
+        # Pre-update safety backup — ONE consolidated mechanism, three modes: Files over 1 GiB (e.g. a
+        # bloated state.db) are skipped with a warning so the snapshot stays fast. This is the #48200
+        # (wrong-path wipe) safety net.
         "pre_update_backup": "quick",
-        # How many full pre-update backup zips to retain (mode ``full``).
-        # Older ones are pruned automatically after each successful backup.
-        # Values below 1 are floored to 1 — the backup just created is
-        # always preserved. The quick snapshot always keeps exactly 1.
+        # Full backup zips to retain (older pruned after each success; floored to 1 so the newest is
+        # always kept). The quick snapshot always keeps exactly 1.
         "backup_keep": 5,
-        # What `hermes update` does with uncommitted local changes to the
-        # source tree when it runs NON-interactively — i.e. triggered from
-        # the desktop/chat app or the gateway, where there's no TTY to answer
-        # a restore prompt. Interactive (terminal) updates are unaffected:
-        # they always stash the changes and ask whether to restore, exactly
-        # as they always have.
-        #   "stash"   — auto-stash the changes, pull, then auto-restore them
-        #               on top of the updated code (the safe default; nothing
-        #               is ever lost — conflicts are preserved in a git stash).
-        #   "discard" — auto-stash the changes and throw the stash away after
-        #               the pull. Use this only if you never intend to keep
-        #               local edits to the source tree on this machine.
-        #               Stash-and-drop (not `reset --hard` + `clean -fd`) so
-        #               ignored paths — node_modules, venv, build outputs —
-        #               are never touched.
+        # Uncommitted source-tree changes during NON-interactive updates (desktop, gateway — no TTY;
+        # interactive updates always stash and ask). stash = stash, pull, restore on top (conflicts
+        # stay in a git stash). discard = stash and drop after the pull (stash-and-drop, not reset
+        # --hard + clean -fd, so ignored paths like node_modules/venv are never touched).
         "non_interactive_local_changes": "stash",
-        # When `hermes update` finds the source checkout parked on a feature
-        # branch (left behind by tooling or a manual checkout), switch back
-        # to the update target automatically whenever the working tree is
-        # clean. Committed-but-unmerged work is safe — `git checkout` never
-        # discards commits; the branch keeps them and the update prints a
-        # loud notice naming the branch and count. This keeps non-
-        # interactive updates (desktop update button, gateway /update,
-        # cron) working: they have no way to resolve a skip. Only a DIRTY
-        # tree (uncommitted changes) blocks the switch — the code update is
-        # then SKIPPED with a loud warning instead of pretending success
-        # (2026-08-17 incident: "✓ Code updated!" printed while the
-        # checkout stayed days behind main on a stale branch). Set false to
-        # never auto-switch.
+        # If the checkout is parked on a feature branch and the tree is clean, switch to the update
+        # target (commits stay on the branch; a loud notice names it) so non-interactive updates
+        # keep working. A DIRTY tree blocks the switch and the code update is SKIPPED with a loud
+        # warning. False = never auto-switch.
         "auto_switch_parked_branch": True,
-        # HOW a clean parked branch with unmerged commits is handled:
-        #   "switch" (default)  — switch to the update target; the commits
-        #                         stay on the branch (git checkout never
-        #                         discards committed work) and a loud notice
-        #                         names the branch + count. Deterministic —
-        #                         never conflicts — so desktop/gateway/cron
-        #                         updates always land on current code.
-        #   "update_in_place"   — for a deliberately maintained custom branch
-        #                         (local patches on top of main): merge
-        #                         origin/<target> INTO the branch instead.
-        #                         The checkout never moves and local commits
-        #                         survive; a conflict stops the update
-        #                         cleanly with nothing changed. A safety tag
-        #                         (pre-update-<stamp>) is left before the
-        #                         merge. `hermes update --switch-branch`
-        #                         overrides back to the switch path for one
-        #                         run (e.g. a deep feature branch that must
-        #                         not accumulate update merge commits).
+        # Clean parked branch with unmerged commits: switch = move to the update target, commits
+        # stay on the branch (never conflicts). update_in_place = for a maintained custom branch:
+        # merge origin/<target> INTO it after leaving a pre-update-<stamp> tag; a conflict stops the
+        # update cleanly. `hermes update --switch-branch` overrides to switch for one run.
         "parked_branch_strategy": "switch",
-        # Refresh an already-installed cua-driver during `hermes update`.
-        # The refresh is best-effort and macOS-only. Turn this off if the
-        # upstream installer is not appropriate for the machine, for example
-        # on non-admin accounts where `/Applications` is not writable.
+        # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
+        # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,
     },
-
-    # Language Server Protocol — semantic diagnostics from real
-    # language servers (pyright, gopls, rust-analyzer, etc.) wired
-    # into the post-write lint check used by ``write_file`` and
-    # ``patch``.
-    #
-    # LSP is gated on git-workspace detection: when the agent's
-    # cwd (or the file being edited) is inside a git worktree, LSP
-    # runs against that workspace.  When neither is in a git repo,
-    # LSP stays dormant and the in-process syntax check is the only
-    # tier — handy for Telegram/Discord chats where the cwd is the
-    # user's home directory.
+    # LSP diagnostics (pyright, gopls, rust-analyzer...) in the post-write lint check of
+    # write_file/patch. Runs only when the cwd or edited file is inside a git worktree; otherwise
+    # dormant and the in-process syntax check is the only tier.
     "lsp": {
-        # Master toggle.  Setting this to false disables the entire
-        # subsystem — no servers spawn, no background event loop, no
-        # cost.
-        "enabled": True,
-
-        # Diagnostic-wait mode for the post-write check.
-        # ``"document"`` waits up to ``wait_timeout`` seconds for the
-        # current file's diagnostics; ``"full"`` additionally requests
-        # workspace-wide diagnostics (slower).
+        "enabled": True,  # False disables the whole subsystem: no servers, no event loop, no cost.
+        # document = wait up to wait_timeout seconds for the current file's diagnostics; full = also
+        # request workspace-wide diagnostics (slower).
         "wait_mode": "document",
         "wait_timeout": 5.0,
-
-        # How to handle missing server binaries.
-        # ``"auto"`` — try to install via npm/go/pip into
-        #              ``<HERMES_HOME>/lsp/bin/`` on first use.
-        # ``"manual"`` — only use binaries already on PATH.
-        # ``"off"`` — alias for ``manual``.
+        # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
+        # first use; manual = only binaries on PATH; off = alias for manual.
         "install_strategy": "auto",
-
-        # Idle language servers are shut down automatically after this
-        # many seconds with no file activity, then respawned on demand.
-        # Prevents long-running gateway/CLI processes from accumulating
-        # stale pyright/gopls/tsserver children (hundreds of MB each,
-        # plus pipe FDs) as the agent moves across worktrees.  Set to 0
-        # to disable idle reaping and keep servers for process lifetime.
+        # Idle seconds before a server is shut down (respawned on demand), so long- running
+        # processes don't accumulate stale children (hundreds of MB + pipe FDs each) across
+        # worktrees. 0 = keep servers for process lifetime.
         "idle_timeout": 600.0,
-
-        # Per-server overrides.  Each key is a server_id from the
-        # registry (``pyright``, ``typescript``, ``gopls``,
-        # ``rust-analyzer``, etc.) and accepts:
-        #   disabled: true
-        #     — skip this server even when its extensions match
-        #   command: ["full/path/to/server", "--stdio"]
-        #     — pin a custom binary path; bypasses auto-install
-        #   env: {"KEY": "value"}
-        #     — extra env vars passed to the spawned process
-        #   initialization_options: {...}
-        #     — merged into the LSP ``initializationOptions``
-        # Empty by default; the registry defaults work for typical
-        # setups.
+        # Per-server overrides keyed by registry server_id (pyright, gopls...): disabled: true;
+        # command: ["path/to/server", "--stdio"] (bypasses auto- install); env: {...};
+        # initialization_options: {...} (merged into LSP initializationOptions).
         "servers": {},
     },
-
-
-    # X (Twitter) Search via xAI's built-in x_search Responses tool.
-    # The tool registers when xAI credentials are available (SuperGrok
-    # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
-    # `hermes tools`. These settings tune the backing Responses API call.
+    # X (Twitter) Search via xAI's x_search Responses tool. Registers when xAI creds exist
+    # (SuperGrok OAuth or XAI_API_KEY) AND the toolset is enabled in `hermes tools`.
     "x_search": {
-        # xAI model used for the Responses call. grok-4.5 is the
-        # recommended default; any Grok model with x_search tool
-        # access works.
+        # xAI model for the Responses call; any Grok model with x_search access works.
         "model": "grok-4.5",
-        # Optional reasoning effort sent to xAI Responses API models that
-        # support it. Leave null to preserve the selected model's default.
+        # Reasoning effort for models that support it; null keeps the model default.
         "reasoning_effort": None,
-        # Request timeout in seconds (minimum 30). x_search can take
-        # 60-120s for complex queries — the default is generous.
+        # Request timeout in seconds (minimum 30); complex queries can take 60-120s.
         "timeout_seconds": 180,
-        # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
-        # Each retry backs off (1.5x attempt seconds, capped at 5s).
+        # Retries on 5xx / ReadTimeout / ConnectionError (backoff 1.5x attempt s, cap 5s).
         "retries": 2,
     },
-
-    # =========================================================================
-    # External secret sources
-    # =========================================================================
-    # Pull credentials from external secret managers at process startup
-    # rather than storing them in ~/.hermes/.env.
+    # External secret sources — pull credentials from secret managers at startup instead of storing
+    # them in ~/.hermes/.env.
     "secrets": {
-        # Optional explicit ordering of enabled secret sources.  When
-        # omitted, sources run in registration order (bundled first,
-        # then plugin-registered).  Regardless of this list, "mapped"
-        # sources (explicit VAR→ref bindings, e.g. a future 1Password
-        # env: map) always take precedence over "bulk" sources
-        # (project dumps like Bitwarden BSM), and the first source to
-        # claim a var wins — later claims are skipped with a warning.
-        # Example: sources: [onepassword, bitwarden]
-        # "sources": [],
+        # Optional ordering of enabled sources (e.g. [onepassword, bitwarden]); default registration
+        # order. Mapped sources (explicit VAR→ref) always beat bulk sources (BSM project dumps);
+        # first claim on a var wins, later ones warn. "sources": [],
         "bitwarden": {
-            # Master switch.  When false, BSM is never contacted and the
-            # bws binary is never auto-installed — same as not having
-            # this section at all.
-            "enabled": False,
-            # Name of the env var that holds the Bitwarden machine-account
-            # access token.  This is the one bootstrap secret; it lives
-            # in ~/.hermes/.env (or your shell) and never in config.yaml.
+            "enabled": False,  # When false, BSM is never contacted and bws is never auto-installed.
+            # Env var holding the machine-account token — the one bootstrap secret; lives in
+            # ~/.hermes/.env (or the shell), never in config.yaml.
             "access_token_env": "BWS_ACCESS_TOKEN",
-            # UUID of the BSM project to sync from.
-            "project_id": "",
-            # Seconds to reuse a fresh disk/memory cache entry before contacting
-            # Bitwarden again. 0 disables normal fresh-cache reuse.
+            "project_id": "",  # UUID of the BSM project to sync from.
+            # Seconds to reuse a fresh disk/memory cache entry before contacting Bitwarden again. 0
+            # disables fresh-cache reuse.
             "cache_ttl_seconds": 300,
-            # Optional encrypted last-good fallback for network/timeout outages.
-            # When enabled, successful BWS fetches write AES-GCM encrypted cache
-            # material under ~/.hermes/cache/. If a later startup cannot reach
-            # Bitwarden due to NETWORK/TIMEOUT, Hermes may use this encrypted
-            # cache for up to max_stale_seconds. Auth failures do not fall back.
-            "encrypted_cache": {
-                "enabled": False,
-                "max_stale_seconds": 0,
-            },
-            # When True, BSM values overwrite existing env vars.  Default
-            # True because the point of using BSM is centralized rotation —
-            # if .env had the final say, rotating in Bitwarden wouldn't
-            # take effect until you also cleared the matching .env line.
+            # Last-good fallback for NETWORK/TIMEOUT outages: AES-GCM cache under ~/.hermes/cache/,
+            # reused up to max_stale_seconds. Auth failures never fall back.
+            "encrypted_cache": {"enabled": False, "max_stale_seconds": 0},
+            # BSM values overwrite existing env vars, so rotating in Bitwarden takes effect without
+            # clearing the matching .env line.
             "override_existing": True,
-            # When True, the bws binary is auto-downloaded into
-            # ~/.hermes/bin/ on first use.  When False you must install
-            # bws yourself and have it on PATH.
+            # Auto-download bws into ~/.hermes/bin/ on first use; False = bws must be on PATH.
             "auto_install": True,
-            # Bitwarden region / self-hosted endpoint.  Empty string
-            # means use the bws CLI default (US Cloud,
-            # https://vault.bitwarden.com).  Set to
-            # https://vault.bitwarden.eu for EU Cloud, or your own URL
-            # for self-hosted Bitwarden.  Plumbed into the bws subprocess
-            # as BWS_SERVER_URL.  Prompted for during
-            # `hermes secrets bitwarden setup`.
+            # Passed to bws as BWS_SERVER_URL. Empty = US Cloud (bws default);
+            # https://vault.bitwarden.eu for EU; your own URL for self-hosted.
             "server_url": "",
         },
         "onepassword": {
-            # Master switch.  When false, the op CLI is never invoked —
-            # same as not having this section at all.
-            "enabled": False,
-            # Mapping of env-var name → 1Password secret reference
-            # (op://vault/item/field).  Each entry is resolved with a
-            # single `op read` at startup.
-            "env": {},
-            # Optional account shorthand / sign-in address passed as
-            # `op read --account <account>`.  Empty = op's default account.
+            "enabled": False,  # When false, the op CLI is never invoked.
+            "env": {},  # env-var name → op://vault/item/field; each resolved with one `op read`.
+            # Account shorthand / sign-in address for `op read --account`; empty = default.
             "account": "",
-            # Name of the env var holding a 1Password service-account token
-            # for headless auth.  Sourced from ~/.hermes/.env (or the shell)
-            # and exported to the op child as OP_SERVICE_ACCOUNT_TOKEN.
-            # Leave the var unset to use an interactive/desktop op session.
+            # Env var holding a service-account token for headless auth (exported to op as
+            # OP_SERVICE_ACCOUNT_TOKEN). Unset = interactive/desktop op session.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
-            # Optional absolute path to the op binary.  When set it is used
-            # verbatim (PATH is not consulted) — pin this to avoid trusting
-            # whatever `op` appears first on PATH.  Empty = resolve via PATH.
+            # Absolute path to op, used verbatim (avoids trusting PATH). Empty = PATH.
             "binary_path": "",
-            # Seconds to cache resolved values in-process and on disk.  0
-            # disables BOTH cache layers (no values are written to disk).
+            # Seconds to cache values in-process and on disk; 0 disables BOTH layers.
             "cache_ttl_seconds": 300,
-            # When True (default), resolved values overwrite existing env
-            # vars so rotating a secret in 1Password takes effect on next
-            # start.  Flip to false to let .env / shell exports win locally.
+            # Overwrite existing env vars so rotation takes effect; False lets .env win.
             "override_existing": True,
         },
     },
-
-    # Paste collapse thresholds (TUI + CLI).
-    #
-    # paste_collapse_threshold (default 5)
-    #   Bracketed-paste handler. Pastes with this many newlines or more
-    #   collapse to a file reference. Set 0 to disable.
-    #
-    # paste_collapse_threshold_fallback (default 5)
-    #   Fallback heuristic for terminals without bracketed paste support.
-    #   Same line count test but heuristically gated by chars-added /
-    #   newlines-added to avoid false positives from normal typing.
-    #   Set 0 to disable.
-    #
-    # paste_collapse_char_threshold (default 2000)
-    #   Long single-line paste guard. Pastes whose total char length
-    #   reaches this value collapse to a file reference even if line
-    #   count is below the line threshold. Catches the "8000 chars of
-    #   minified JSON / log output on one line" case. Set 0 to disable.
+    # Paste collapse thresholds (TUI + CLI); 0 disables each. threshold: bracketed pastes with this
+    # many newlines collapse to a file reference. fallback: same test for terminals without
+    # bracketed paste, gated by chars/newlines-added heuristics. char_threshold: single-line pastes
+    # this long collapse too.
     "paste_collapse_threshold": 5,
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
-    # Computer Use (cua-driver) toolset settings.
     "computer_use": {
-        # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
-        # by default upstream. Hermes disables it for our users unless they
-        # explicitly opt in here. When false (default), Hermes sets
-        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in the cua-driver child env for
-        # every invocation (MCP backend, status, doctor, install). Set true
-        # to let cua-driver use its own default (telemetry on).
+        # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
+        # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,
-        # Cap driver screenshot longest edge (pixels) via set_config on
-        # session start. Shrinks SOM multimodal payloads; 0 disables.
+        "native_wayland": False,
+        # Cap driver screenshot longest edge (pixels) via set_config at session start; shrinks SOM
+        # multimodal payloads. 0 disables.
         "max_image_dimension": 1456,
-        # Mode for capture_after follow-ups: som (screenshot + overlays —
-        # default), ax (elements only, no PNG — faster), vision (pixels only).
+        # capture_after mode: som = screenshot + overlays; ax = elements only, no PNG (faster);
+        # vision = pixels only.
         "capture_after_mode": "som",
-        # Disable the cursor overlay rendered by cua-driver. The overlay
-        # shows where agent actions land but can peg a core when idle
-        # (macOS vImage redraw loop #47032; Linux/WSL2 idle spin #28152).
-        # cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
+        # Disable cua-driver's cursor overlay, which can peg a core when idle (macOS redraw loop;
+        # Linux/WSL2 idle spin). None = auto (off on macOS + headless/ WSL2 Linux, on elsewhere);
+        # True = always disable; False = always enable.
+        # The overlay shows where agent actions land but can peg a core when idle (macOS vImage redraw loop
+        # #47032; Linux/WSL2 idle spin #28152). cua-driver ≥ 0.6.x supports --no-overlay; Hermes also calls
         # set_agent_cursor_enabled(false) after start_session when this is on.
-        #   None  = auto-detect (off on macOS + headless/WSL2 Linux; on elsewhere)
-        #   True  = always disable the overlay
-        #   False = always enable the overlay
         "no_overlay": None,
-        # cua-driver permission mode for each Hermes computer-use runtime.
-        #   standard (default) — cua-driver's own approval boundary.
-        #   bounded — repeatable automation under a user-reviewed session
-        #     capability manifest (set capability_manifest below). No runtime
-        #     prompts; anything outside the manifest fails closed inside
-        #     cua-driver.
-        # `unrestricted` is intentionally NOT accepted here: it stays bound to
-        # the explicit per-session YOLO toggle so a config line can never
-        # silently bypass approvals.
+        # standard = cua-driver's own approval boundary; bounded = no runtime prompts, anything
+        # outside capability_manifest fails closed. `unrestricted` is NOT accepted here: it stays on
+        # the per-session YOLO toggle so config can't bypass approvals.
         "permission_mode": "standard",
-        # Absolute or ~ path to the reviewed cua-driver capability
-        # manifest used when permission_mode is "bounded". Hermes passes the
-        # canonical --capability-manifest and --approve-capability-manifest
-        # flags when it launches the runtime. See
-        # https://cua.ai/docs/reference/cua-driver/permission-modes
+        # Path (~ ok) to the reviewed manifest for permission_mode bounded; passed as
+        # --capability-manifest. See cua.ai/docs/reference/cua-driver/permission-modes
         "capability_manifest": "",
-        # macOS only: allow launching an UNSIGNED (ad-hoc / TeamIdentifier
-        # not set) CuaDriver.app for the private-session daemon. The default
-        # (false) fails closed unless the bundle is signed with the official
-        # cua-driver identity (com.trycua.driver / an official signing team).
-        # Enable only when developing the driver locally from source.
+        # macOS only: allow an UNSIGNED CuaDriver.app for the private-session daemon. False fails
+        # closed unless signed with the official com.trycua.driver identity. Only for local driver
+        # development from source.
         "allow_unsigned_driver": False,
     },
-
-    # =========================================================================
-    # Egress credential-injection proxy (iron-proxy)
-    # =========================================================================
-    # When enabled, outbound traffic from remote terminal sandboxes (Docker
-    # today; Modal/SSH in follow-ups) is routed through a managed iron-proxy
-    # subprocess.  The sandbox sees opaque proxy tokens; iron-proxy swaps in
-    # real API credentials at the egress boundary.  Compromising the sandbox
-    # leaks tokens that only work behind the configured trusted proxy boundary
-    # (CA private key + proxy endpoint integrity are part of that boundary).
-    #
-    # Configure with `hermes egress setup`.  Disabled by default — the rest of
-    # Hermes works exactly as before with `enabled: false`.
+    # Egress credential-injection proxy (iron-proxy) for remote terminal sandboxes (Docker today):
+    # the sandbox sees opaque tokens and iron-proxy swaps in real credentials at egress, so a
+    # compromised sandbox leaks only tokens that work behind the trusted proxy. Configure with
+    # `hermes egress setup`.
     "proxy": {
-        # Master switch.  When false, iron-proxy is never started, no docker
-        # mounts are added, no binaries are auto-installed — feature is a
-        # complete no-op.
-        "enabled": False,
-        # Tunnel listener port.  Sandboxes get `HTTPS_PROXY=http://<host>:<port>`.
-        # 9090 is the default; collide-aware setup wizard can reassign.
+        "enabled": False,  # When false, nothing starts, no docker mounts, no binary installs.
+        # Tunnel listener port; sandboxes get HTTPS_PROXY=http://<host>:<port>.
         "tunnel_port": 9090,
-        # Auto-download the pinned iron-proxy binary into ~/.hermes/bin/ on
-        # first use.  When false, you must place `iron-proxy` on PATH yourself.
+        # Auto-download the pinned binary into ~/.hermes/bin/; False = iron-proxy on PATH.
         "auto_install": True,
-        # Where iron-proxy looks up the real upstream secrets at egress time.
-        # "env"        — process env (default; what bitwarden integration
-        #                already populates if you use it)
-        # "bitwarden"  — refetch via `bws secret list` on each proxy restart;
-        #                rotation in the Bitwarden web app propagates without
-        #                touching .env (requires `secrets.bitwarden.enabled`).
+        # Upstream secret source: env = process env; bitwarden = refetch via `bws secret list` on
+        # each proxy restart (requires secrets.bitwarden.enabled).
         "credential_source": "env",
-        # When true, the Docker backend refuses to start a sandbox if the
-        # proxy is enabled but not running.  False = fall back to direct
-        # outbound with real credentials in the sandbox (the legacy posture).
+        # True: the Docker backend refuses to start a sandbox if the proxy is enabled but not
+        # running. False: fall back to direct outbound with real credentials.
         "enforce_on_docker": True,
-        # NOTE: ``fail_on_uncovered_providers`` was removed.  It gated a
-        # refuse-start when Anthropic / Azure OpenAI / Gemini env vars were
-        # present — those providers are now first-class swapped providers
-        # via per-provider match_headers rules (x-api-key, api-key,
-        # x-goog-api-key), so the fail-closed tier is empty.  A leftover
-        # key in existing user configs is ignored harmlessly.
-        # When credential_source is bitwarden but the BWS access token /
-        # project_id is missing OR the bws fetch returns no values for
-        # mapped providers, the daemon raises by default.  Set this to
-        # True to opt back in to the legacy "silently fall back to host
-        # env" behaviour — useful for migrations where the operator wants
-        # to switch credential_source to bitwarden but hasn't fully wired
-        # BWS yet.  Defaults to false (strict).
+        # With credential_source bitwarden, a missing BWS token/project_id or an empty fetch makes
+        # the daemon raise. True silently falls back to host env (useful mid-migration). A leftover
+        # fail_on_uncovered_providers key is ignored.
         "allow_env_fallback": False,
-        # SSRF deny list applied to outbound traffic.  Omit / leave empty
-        # to use the safe default: loopback, link-local (incl. cloud
-        # metadata IPs at 169.254.169.254), and RFC1918.  Set to an
-        # explicit ``[]`` to opt out entirely (only sensible in hermetic
-        # tests that need to reach a loopback upstream).
+        # SSRF deny list. None/empty = loopback, link-local (incl. 169.254.169.254 metadata),
+        # RFC1918. Explicit [] opts out (only for hermetic loopback tests).
         "upstream_deny_cidrs": None,
-        # Extra allowed upstream hosts beyond the bundled defaults (which
-        # cover OpenRouter, OpenAI, Anthropic, Google, xAI, Mistral, Groq,
-        # Together, DeepSeek, Nous).  Wildcards (`*.foo.com`) are supported.
+        # Extra allowed upstream hosts beyond the bundled major-provider defaults; wildcards
+        # (`*.foo.com`) supported.
         "extra_allowed_hosts": [],
     },
-
-    # Hermes Desktop (Electron app) launch options. These only affect
-    # `hermes desktop`; they do not touch the CLI/gateway.
-    "desktop": {
-        # Git repository discovery for the Desktop Projects sidebar. Empty
-        # roots preserve the historical bounded scan of the user's home.
+    "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
+        # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
         "repo_scan_exclude_paths": [],
-        # Extra Electron command-line flags appended to every desktop launch,
-        # e.g. ["--ozone-platform=x11"] on headless/VM X11 hosts that need an
-        # explicit ozone backend, or GPU workaround flags. A list of strings;
-        # a single string is also accepted and shell-split.
+        # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
+        # strings; a single string is shell-split.
         "electron_flags": [],
-        # Linux Ozone backend hint, bridged to ELECTRON_OZONE_PLATFORM_HINT
-        # at launch (an explicit env var still wins). "auto" is Chromium's
-        # default — Wayland on a Wayland session, X11 otherwise.
-        # Set "x11" to run under XWayland when a compositor ignores
-        # always-on-top for native Wayland clients (COSMIC, issue #84011).
-        # That also lands the HUD on the solid-window input path, because
-        # setIgnoreMouseEvents is a one-way door on X11.
-        # "wayland" forces a native Wayland surface.
+        # Linux Ozone backend, bridged to ELECTRON_OZONE_PLATFORM_HINT (explicit env wins). auto =
+        # Chromium default; x11 = XWayland, for compositors that ignore always-on-top for Wayland
+        # clients (e.g. COSMIC) — also puts the HUD on the solid-window input path; wayland = force
+        # a native Wayland surface.
+        # See #84011.
         "ozone_platform_hint": "auto",
-        # GPU hardware acceleration policy for the desktop app:
-        #   "auto"  - let the app detect remote displays (SSH/VNC/RDP) and
-        #             disable GPU only then (default; current behavior).
-        #   true    - always disable GPU acceleration (software rendering).
-        #             Use on no-GPU VMs / Proxmox hosts where the GPU path hangs.
-        #   false   - always keep GPU acceleration on, even over a remote display.
-        # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
+        # Bridged to HERMES_DESKTOP_DISABLE_GPU: auto = disable GPU only on remote displays
+        # (SSH/VNC/RDP); true = always software rendering (no-GPU VMs where the GPU path hangs);
+        # false = always keep GPU on.
         "disable_gpu": "auto",
-        # Linux keychain backend for secure token storage (Chromium's
-        # --password-store switch, which safeStorage needs before it can
-        # encrypt remote gateway tokens):
-        #   "auto"  - detect the session keychain: KWallet via KDE session env
-        #             vars, GNOME Keyring / any org.freedesktop.secrets
-        #             provider (e.g. KeePassXC) via D-Bus (default).
-        #   "gnome-libsecret" / "kwallet" / "kwallet5" / "kwallet6" / "basic"
-        #           - force a specific backend ("basic" = unencrypted store).
-        # Ignored on macOS/Windows. Bridged to the HERMES_DESKTOP_PASSWORD_STORE
-        # env var the Electron app reads, so an explicit env var still wins.
+        # Linux keychain for token storage (Chromium --password-store). auto = detect KWallet (KDE
+        # env) or any org.freedesktop.secrets provider via D-Bus;
+        # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
+        # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
-        # macOS only: optional persistent code-signing identity (a cert in the
-        # login keychain — a self-signed "Code Signing" cert from Keychain
-        # Access works; no Apple Developer account needed) used to re-sign
-        # locally rebuilt desktop apps. A certificate-anchored Designated
-        # Requirement stays stable across rebuilds, so TCC grants (Full Disk
-        # Access, Desktop/Downloads/Documents, Accessibility, Automation,
-        # microphone) survive every update. Empty keeps the default stable
-        # ad-hoc signing (identifier-pinned requirement).
+        # macOS only: code-signing identity (login-keychain cert; self-signed works) to re-sign
+        # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
+        # updates. Empty = default ad-hoc identifier-pinned signing.
         "macos_signing_identity": "",
-        # Auto-continue a turn that was killed mid-run by an app/backend/machine
-        # crash: resuming that session re-submits the interrupted prompt (shown
-        # as a "resumed interrupted turn" event) if the interruption is fresh.
-        # A stale interruption just shows the recovered partial transcript.
+        # Auto-continue a turn killed by a crash: resuming re-submits the interrupted prompt if
+        # fresh; a stale one just shows the recovered partial transcript.
         "auto_continue": {
             "enabled": True,
             # How recent the interruption must be to auto-continue (minutes).
             "freshness_minutes": 15,
-            # Crash-loop breaker: max automatic re-runs of one interrupted turn.
-            "max_attempts": 2,
+            "max_attempts": 2,  # Crash-loop breaker: max automatic re-runs of one interrupted turn.
         },
     },
 
-
-    # Google Vertex AI provider (Gemini via the OpenAI-compatible endpoint).
-    # Auth is OAuth2 (short-lived access tokens minted from a service-account
-    # JSON or Application Default Credentials) — NOT a static API key. The
-    # credential *path* is a secret-adjacent pointer and lives in .env
-    # (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS); these two
-    # settings are non-secret routing config and live here. Both are bridged to
-    # the VERTEX_PROJECT_ID / VERTEX_REGION env vars the adapter reads, so an
-    # explicit env var still wins over config.yaml.
+    "nous": {
+        # Upper bound (seconds) on the Nous auth keepalive tick, which derives from the
+        # server-issued credential lifetime (raising above it has no effect). 0 disables the
+        # keepalive thread.
+        "keepalive_interval_seconds": 900,
+    },
+    # Google Vertex AI (Gemini). Auth is OAuth2 from a service-account JSON or ADC, NOT an API key;
+    # the credential path lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS).
+    # Bridged to VERTEX_PROJECT_ID / VERTEX_REGION.
     "vertex": {
-        # GCP project ID. Empty → use the project_id embedded in the service
-        # account JSON (or ADC-resolved project).
+        # GCP project ID. Empty → project_id from the service-account JSON (or ADC).
         "project_id": "",
-        # Vertex region. "global" is required for the Gemini 3.x preview models
-        # (regional endpoints silently 404 them). Override to a regional value
-        # (e.g. "us-central1") only if your models are pinned to a region.
+        # "global" is required for Gemini 3.x preview models (regional endpoints silently 404); use
+        # e.g. "us-central1" only if your models are region-pinned.
         "region": "global",
     },
-
-    # Config schema version - bump this when adding new required fields
-    "_config_version": 39,
+    # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
+    # llama-server in router mode. No context/VRAM knobs by design.
+    "local_runtime": {
+        # Off = detection-only (Hermes still finds an external llama-server you run).
+        "enabled": False,
+        # Pinned llama.cpp release tag; bumped by Hermes releases after validation.
+        "tag": "b10679",
+        # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
+        # cuda|metal|vulkan|hip|cpu.
+        "backend": "auto",
+        "models_max": 4,  # Router process: how many models may be resident at once.
+        "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
+        # Extra ports detection probes for an external llama-server (besides 8080).
+        "detect_ports": [],
+    },
+    "_config_version": 40,  # Config schema version - bump this when adding new required fields
 }
 
-# Optional environment variables that enhance functionality
+
+def _env(description, prompt, **keys):
+    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
+    return {"description": description, "prompt": prompt, **keys}
+
+
+_OMIT = object()
+
+
+def _category(category, password, advanced):
+    """Entry factory for one category with its usual password/advanced defaults.
+
+    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
+    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
+    """
+    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
+             advanced=advanced):
+        d = {"description": description, "prompt": prompt}
+        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
+        if password is not None:
+            d["password"] = password
+        d["category"] = category
+        if advanced:
+            d["advanced"] = True
+        return d
+    return make
+
+
+_prov = _category("provider", password=True, advanced=True)
+_tool = _category("tool", password=True, advanced=False)
+_msg = _category("messaging", password=False, advanced=False)
+_skill = _category("skill", password=True, advanced=True)
+_setting = _category("setting", password=False, advanced=False)
+
+
+def _base_url(name, prompt_name=None):
+    """Provider ``*_BASE_URL`` override entry (advanced, not a secret)."""
+    prompt = f"{prompt_name or name} base URL (leave empty for default)"
+    return _prov(f"{name} base URL override", prompt, None, password=False)
+
+
+# Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup
+# checklists; category: provider|tool|skill|messaging|setting, advanced=True hides from checklists,
+# tools=[...] lists the model tools the key unlocks.
 OPTIONAL_ENV_VARS = {
     # ── Provider (handled in provider selection, not shown in checklists) ──
-    "NOUS_BASE_URL": {
-        "description": "Nous Portal base URL override",
-        "prompt": "Nous Portal base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENROUTER_API_KEY": {
-        "description": "OpenRouter API key (for vision, web scraping helpers, and MoA)",
-        "prompt": "OpenRouter API key",
-        "url": "https://openrouter.ai/keys",
-        "password": True,
-        "tools": ["vision_analyze"],
-        "category": "provider",
-        "advanced": True,
-    },
-    "GOOGLE_API_KEY": {
-        "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
-        "prompt": "Google AI Studio API key",
-        "url": "https://aistudio.google.com/app/apikey",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GEMINI_API_KEY": {
-        "description": "Google AI Studio API key (alias for GOOGLE_API_KEY)",
-        "prompt": "Gemini API key",
-        "url": "https://aistudio.google.com/app/apikey",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GEMINI_BASE_URL": {
-        "description": "Google AI Studio base URL override",
-        "prompt": "Gemini base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "VERTEX_CREDENTIALS_PATH": {
-        "description": "Path to a Google Cloud service account JSON for Vertex AI (Gemini). "
-                       "Vertex uses OAuth2, not a static API key — this points at the "
-                       "credentials Hermes mints short-lived tokens from. Falls back to "
-                       "GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
-                       "application-default login). Set project/region under vertex: in config.yaml.",
-        "prompt": "Vertex service account JSON path (leave empty to use ADC / GOOGLE_APPLICATION_CREDENTIALS)",
-        "url": "https://cloud.google.com/iam/docs/keys-create-delete",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "XAI_API_KEY": {
-        "description": "xAI API key",
-        "prompt": "xAI API key",
-        "url": "https://console.x.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "XAI_BASE_URL": {
-        "description": "xAI base URL override",
-        "prompt": "xAI base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "NVIDIA_API_KEY": {
-        "description": "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
-        "prompt": "NVIDIA NIM API key",
-        "url": "https://build.nvidia.com/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "NVIDIA_BASE_URL": {
-        "description": "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
-        "prompt": "NVIDIA NIM base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "LM_API_KEY": {
-        "description": "LM Studio bearer token for auth-enabled local servers",
-        "prompt": "LM Studio API key / bearer token",
-        "url": None,
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "LM_BASE_URL": {
-        "description": "LM Studio base URL override",
-        "prompt": "LM Studio base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GLM_API_KEY": {
-        "description": "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
-        "prompt": "Z.AI / GLM API key",
-        "url": "https://z.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ZAI_API_KEY": {
-        "description": "Z.AI API key (alias for GLM_API_KEY)",
-        "prompt": "Z.AI API key",
-        "url": "https://z.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "Z_AI_API_KEY": {
-        "description": "Z.AI API key (alias for GLM_API_KEY)",
-        "prompt": "Z.AI API key",
-        "url": "https://z.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GLM_BASE_URL": {
-        "description": "Z.AI / GLM base URL override",
-        "prompt": "Z.AI / GLM base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "KIMI_API_KEY": {
-        "description": "Kimi / Moonshot API key",
-        "prompt": "Kimi API key",
-        "url": "https://platform.moonshot.cn/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "KIMI_BASE_URL": {
-        "description": "Kimi / Moonshot base URL override",
-        "prompt": "Kimi base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "KIMI_CN_API_KEY": {
-        "description": "Kimi / Moonshot China API key",
-        "prompt": "Kimi (China) API key",
-        "url": "https://platform.moonshot.cn/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "STEPFUN_API_KEY": {
-        "description": "StepFun Step Plan API key",
-        "prompt": "StepFun Step Plan API key",
-        "url": "https://platform.stepfun.com/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "STEPFUN_BASE_URL": {
-        "description": "StepFun Step Plan base URL override",
-        "prompt": "StepFun Step Plan base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ARCEEAI_API_KEY": {
-        "description": "Arcee AI API key",
-        "prompt": "Arcee AI API key",
-        "url": "https://chat.arcee.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ARCEE_BASE_URL": {
-        "description": "Arcee AI base URL override",
-        "prompt": "Arcee base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GMI_API_KEY": {
-        "description": "GMI Cloud API key",
-        "prompt": "GMI Cloud API key",
-        "url": "https://www.gmicloud.ai/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "GMI_BASE_URL": {
-        "description": "GMI Cloud base URL override",
-        "prompt": "GMI Cloud base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ACTUAL_API_KEY": {
-        "description": "Actual Computer inference key (ac_...)",
-        "prompt": "Actual Computer inference key",
-        "url": "https://actual.inc/user/keys",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "ACTUAL_BASE_URL": {
-        "description": "Actual Computer base URL override (set to http://127.0.0.1:8080 for the local offline daemon)",
-        "prompt": "Actual Computer base URL (leave empty for hosted relay)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "FIREWORKS_API_KEY": {
-        "description": "Fireworks AI API key",
-        "prompt": "Fireworks AI API key",
-        "url": "https://app.fireworks.ai/settings/users/api-keys",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_API_KEY": {
-        "description": "MiniMax API key (international)",
-        "prompt": "MiniMax API key",
-        "url": "https://www.minimax.io/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_BASE_URL": {
-        "description": "MiniMax base URL override",
-        "prompt": "MiniMax base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_CN_API_KEY": {
-        "description": "MiniMax API key (China endpoint)",
-        "prompt": "MiniMax (China) API key",
-        "url": "https://www.minimaxi.com/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "MINIMAX_CN_BASE_URL": {
-        "description": "MiniMax (China) base URL override",
-        "prompt": "MiniMax (China) base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "DEEPSEEK_API_KEY": {
-        "description": "DeepSeek API key for direct DeepSeek access",
-        "prompt": "DeepSeek API Key",
-        "url": "https://platform.deepseek.com/api_keys",
-        "password": True,
-        "category": "provider",
-    },
-    "DEEPSEEK_BASE_URL": {
-        "description": "Custom DeepSeek API base URL (advanced)",
-        "prompt": "DeepSeek Base URL",
-        "url": "",
-        "password": False,
-        "category": "provider",
-    },
-    "DASHSCOPE_API_KEY": {
-        "description": "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
-        "prompt": "DashScope API Key",
-        "url": "https://modelstudio.console.alibabacloud.com/",
-        "password": True,
-        "category": "provider",
-    },
-    "DASHSCOPE_BASE_URL": {
-        "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
-        "prompt": "DashScope Base URL",
-        "url": "",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HERMES_QWEN_BASE_URL": {
-        "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
-        "prompt": "Qwen Portal base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_ZEN_API_KEY": {
-        "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
-        "prompt": "OpenCode Zen API key",
-        "url": "https://opencode.ai/auth",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "COMMANDCODE_API_KEY": {
-        "description": "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
-        "prompt": "CommandCode API key",
-        "url": "https://commandcode.ai/studio/",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_ZEN_BASE_URL": {
-        "description": "OpenCode Zen base URL override",
-        "prompt": "OpenCode Zen base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_GO_API_KEY": {
-        "description": "OpenCode Go API key ($10/month subscription for open models)",
-        "prompt": "OpenCode Go API key",
-        "url": "https://opencode.ai/auth",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OPENCODE_GO_BASE_URL": {
-        "description": "OpenCode Go base URL override",
-        "prompt": "OpenCode Go base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "HF_TOKEN": {
-        "description": "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
-        "prompt": "Hugging Face Token",
-        "url": "https://huggingface.co/settings/tokens",
-        "password": True,
-        "category": "provider",
-    },
-    "HF_BASE_URL": {
-        "description": "Hugging Face Inference Providers base URL override",
-        "prompt": "HF base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OLLAMA_API_KEY": {
-        "description": "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
-        "prompt": "Ollama Cloud API key",
-        "url": "https://ollama.com/settings",
-        "password": True,
-        "category": "provider",
-        "advanced": True,
-    },
-    "OLLAMA_BASE_URL": {
-        "description": "Ollama Cloud base URL override (default: https://ollama.com/v1)",
-        "prompt": "Ollama base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "XIAOMI_API_KEY": {
-        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
-        "prompt": "Xiaomi MiMo API Key",
-        "url": "https://platform.xiaomimimo.com",
-        "password": True,
-        "category": "provider",
-    },
-    "XIAOMI_BASE_URL": {
-        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
-        "prompt": "Xiaomi base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "UPSTAGE_API_KEY": {
-        "description": "Upstage API key for Solar LLM models",
-        "prompt": "Upstage API Key",
-        "url": "https://console.upstage.ai/api-keys",
-        "password": True,
-        "category": "provider",
-    },
-    "UPSTAGE_BASE_URL": {
-        "description": "Upstage base URL override (default: https://api.upstage.ai/v1)",
-        "prompt": "Upstage base URL (leave empty for default)",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "AWS_REGION": {
-        "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
-        "prompt": "AWS Region",
-        "url": "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "AWS_PROFILE": {
-        "description": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
-        "prompt": "AWS Profile",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
-    "AZURE_FOUNDRY_API_KEY": {
-        "description": "Azure Foundry API key for custom Azure endpoints",
-        "prompt": "Azure Foundry API Key",
-        "url": "https://ai.azure.com/",
-        "password": True,
-        "category": "provider",
-    },
-    "AZURE_FOUNDRY_BASE_URL": {
-        "description": "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
-        "prompt": "Azure Foundry base URL",
-        "url": None,
-        "password": False,
-        "category": "provider",
-        "advanced": True,
-    },
+    "NOUS_BASE_URL": _base_url("Nous Portal"),
+    "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
+        "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
+        category="provider", advanced=True),
+    "GOOGLE_API_KEY": _prov("Google AI Studio API key (also recognized as GEMINI_API_KEY)",
+        "Google AI Studio API key", "https://aistudio.google.com/app/apikey"),
+    "GEMINI_API_KEY": _prov("Google AI Studio API key (alias for GOOGLE_API_KEY)", "Gemini API key",
+        "https://aistudio.google.com/app/apikey"),
+    "GEMINI_BASE_URL": _base_url("Google AI Studio", "Gemini"),
+    "VERTEX_CREDENTIALS_PATH": _prov(
+        "Path to a Google Cloud service account JSON for Vertex AI (Gemini). Vertex uses "
+        "OAuth2, not a static API key — this points at the credentials Hermes mints short-lived "
+        "tokens from. Falls back to GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
+        "application-default login). Set project/region under vertex: in config.yaml.",
+        "Vertex service account JSON path (leave empty to use ADC / "
+        "GOOGLE_APPLICATION_CREDENTIALS)", "https://cloud.google.com/iam/docs/keys-create-delete",
+        password=False),
+    "XAI_API_KEY": _prov("xAI API key", "xAI API key", "https://console.x.ai/"),
+    "XAI_BASE_URL": _base_url("xAI"),
+    "NVIDIA_API_KEY": _prov("NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
+        "NVIDIA NIM API key", "https://build.nvidia.com/"),
+    "NVIDIA_BASE_URL": _prov(
+        "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
+        "NVIDIA NIM base URL (leave empty for default)", None, password=False),
+    "LM_API_KEY": _prov("LM Studio bearer token for auth-enabled local servers",
+        "LM Studio API key / bearer token", None),
+    "LM_BASE_URL": _base_url("LM Studio"),
+    "GLM_API_KEY": _prov("Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
+        "Z.AI / GLM API key", "https://z.ai/"),
+    "ZAI_API_KEY": _prov("Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"),
+    "Z_AI_API_KEY": _prov("Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"),
+    "GLM_BASE_URL": _base_url("Z.AI / GLM"),
+    "KIMI_API_KEY": _prov("Kimi / Moonshot API key", "Kimi API key",
+        "https://platform.moonshot.cn/"),
+    "KIMI_BASE_URL": _base_url("Kimi / Moonshot", "Kimi"),
+    "KIMI_CN_API_KEY": _prov("Kimi / Moonshot China API key", "Kimi (China) API key",
+        "https://platform.moonshot.cn/"),
+    "STEPFUN_API_KEY": _prov("StepFun Step Plan API key", "StepFun Step Plan API key",
+        "https://platform.stepfun.com/"),
+    "STEPFUN_BASE_URL": _base_url("StepFun Step Plan"),
+    "ARCEEAI_API_KEY": _prov("Arcee AI API key", "Arcee AI API key", "https://chat.arcee.ai/"),
+    "ARCEE_BASE_URL": _base_url("Arcee AI", "Arcee"),
+    "GMI_API_KEY": _prov("GMI Cloud API key", "GMI Cloud API key", "https://www.gmicloud.ai/"),
+    "GMI_BASE_URL": _base_url("GMI Cloud"),
+    "ACTUAL_API_KEY": _prov("Actual Computer inference key (ac_...)",
+        "Actual Computer inference key", "https://actual.inc/user/keys"),
+    "ACTUAL_BASE_URL": _prov(
+        "Actual Computer base URL override (set to http://127.0.0.1:8080 for the local offline "
+        "daemon)", "Actual Computer base URL (leave empty for hosted relay)", None, password=False),
+    "FIREWORKS_API_KEY": _prov("Fireworks AI API key", "Fireworks AI API key",
+        "https://app.fireworks.ai/settings/users/api-keys"),
+    "MINIMAX_API_KEY": _prov("MiniMax API key (international)", "MiniMax API key",
+        "https://www.minimax.io/"),
+    "MINIMAX_BASE_URL": _base_url("MiniMax"),
+    "MINIMAX_CN_API_KEY": _prov("MiniMax API key (China endpoint)", "MiniMax (China) API key",
+        "https://www.minimaxi.com/"),
+    "MINIMAX_CN_BASE_URL": _base_url("MiniMax (China)"),
+    "DEEPSEEK_API_KEY": _prov("DeepSeek API key for direct DeepSeek access", "DeepSeek API Key",
+        "https://platform.deepseek.com/api_keys", advanced=False),
+    "DEEPSEEK_BASE_URL": _prov("Custom DeepSeek API base URL (advanced)", "DeepSeek Base URL", "",
+        password=False, advanced=False),
+    "DASHSCOPE_API_KEY": _prov("Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
+        "DashScope API Key", "https://modelstudio.console.alibabacloud.com/", advanced=False),
+    "DASHSCOPE_BASE_URL": _prov(
+        "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
+        "DashScope Base URL", "", password=False),
+    "HERMES_QWEN_BASE_URL": _prov(
+        "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
+        "Qwen Portal base URL (leave empty for default)", None, password=False),
+    "OPENCODE_ZEN_API_KEY": _prov("OpenCode Zen API key (pay-as-you-go access to curated models)",
+        "OpenCode Zen API key", "https://opencode.ai/auth"),
+    "COMMANDCODE_API_KEY": _prov(
+        "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
+        "CommandCode API key", "https://commandcode.ai/studio/"),
+    "OPENCODE_ZEN_BASE_URL": _base_url("OpenCode Zen"),
+    "OPENCODE_GO_API_KEY": _prov("OpenCode Go API key ($10/month subscription for open models)",
+        "OpenCode Go API key", "https://opencode.ai/auth"),
+    "OPENCODE_GO_BASE_URL": _base_url("OpenCode Go"),
+    "HF_TOKEN": _prov(
+        "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
+        "Hugging Face Token", "https://huggingface.co/settings/tokens", advanced=False),
+    "HF_BASE_URL": _base_url("Hugging Face Inference Providers", "HF"),
+    "OLLAMA_API_KEY": _prov("Ollama Cloud API key (ollama.com — cloud-hosted open models)",
+        "Ollama Cloud API key", "https://ollama.com/settings"),
+    "OLLAMA_BASE_URL": _prov("Ollama Cloud base URL override (default: https://ollama.com/v1)",
+        "Ollama base URL (leave empty for default)", None, password=False),
+    "XIAOMI_API_KEY": _prov(
+        "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, "
+        "mimo-v2-omni, mimo-v2-flash)", "Xiaomi MiMo API Key", "https://platform.xiaomimimo.com",
+        advanced=False),
+    "XIAOMI_BASE_URL": _prov(
+        "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
+        "Xiaomi base URL (leave empty for default)", None, password=False),
+    "UPSTAGE_API_KEY": _prov("Upstage API key for Solar LLM models", "Upstage API Key",
+        "https://console.upstage.ai/api-keys", advanced=False),
+    "UPSTAGE_BASE_URL": _prov("Upstage base URL override (default: https://api.upstage.ai/v1)",
+        "Upstage base URL (leave empty for default)", None, password=False),
+    "AWS_REGION": _prov("AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
+        "AWS Region", "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
+        password=False),
+    "AWS_PROFILE": _prov("AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
+        "AWS Profile", None, password=False),
+    "AZURE_FOUNDRY_API_KEY": _prov("Azure Foundry API key for custom Azure endpoints",
+        "Azure Foundry API Key", "https://ai.azure.com/", advanced=False),
+    "AZURE_FOUNDRY_BASE_URL": _prov(
+        "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
+        "Azure Foundry base URL", None, password=False),
     # ── Tool API keys ──
-    "EXA_API_KEY": {
-        "description": "Exa API key for AI-native web search and contents",
-        "prompt": "Exa API key",
-        "url": "https://exa.ai/",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "PARALLEL_API_KEY": {
-        "description": "Parallel API key for AI-native web search and extract",
-        "prompt": "Parallel API key",
-        "url": "https://parallel.ai/",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "FIRECRAWL_API_KEY": {
-        "description": "Firecrawl API key for web search and scraping",
-        "prompt": "Firecrawl API key",
-        "url": "https://firecrawl.dev/",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "FIRECRAWL_API_URL": {
-        "description": "Firecrawl API URL for self-hosted instances (optional)",
-        "prompt": "Firecrawl API URL (leave empty for cloud)",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "FIRECRAWL_GATEWAY_URL": {
-        "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
-        "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_DOMAIN": {
-        "description": "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
-        "prompt": "Tool-gateway domain suffix",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_SCHEME": {
-        "description": "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts (`https` by default, set `http` for local gateway testing)",
-        "prompt": "Tool-gateway URL scheme",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "TOOL_GATEWAY_USER_TOKEN": {
-        "description": "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise read from the Hermes auth store)",
-        "prompt": "Tool-gateway user token",
-        "url": None,
-        "password": True,
-        "category": "tool",
-        "advanced": True,
-    },
-    "KEENABLE_API_KEY": {
-        "description": "Keenable API key for fast independent-index web search and page fetch (optional — keyless free tier works without it)",
-        "prompt": "Keenable API key",
-        "url": "https://keenable.ai",
-        "tools": ["web_search", "web_extract"],
-        "password": True,
-        "category": "tool",
-    },
-    "SEARXNG_URL": {
-        "description": "URL of your SearXNG instance for free self-hosted web search",
-        "prompt": "SearXNG URL (e.g. http://localhost:8080)",
-        "url": "https://searxng.github.io/searxng/",
-        "tools": ["web_search"],
-        "password": False,
-        "category": "tool",
-    },
-    "BRAVE_SEARCH_API_KEY": {
-        "description": "Brave Search API subscription token (free tier: 2,000 queries/mo)",
-        "prompt": "Brave Search subscription token",
-        "url": "https://brave.com/search/api/",
-        "tools": ["web_search"],
-        "password": True,
-        "category": "tool",
-    },
-    "BROWSERBASE_API_KEY": {
-        "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
-        "prompt": "Browserbase API key",
-        "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-    },
-    "BROWSERBASE_PROJECT_ID": {
-        "description": "Browserbase project ID (optional — only needed for cloud browser)",
-        "prompt": "Browserbase project ID",
-        "url": "https://browserbase.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "BROWSER_USE_API_KEY": {
-        "description": "Browser Use API key for cloud browser (optional — local browser works without this)",
-        "prompt": "Browser Use API key",
-        "url": "https://browser-use.com/",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-    },
-    "FIRECRAWL_BROWSER_TTL": {
-        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "prompt": "Browser session TTL (seconds)",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "AGENT_BROWSER_ENGINE": {
-        "description": "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode spawns lightpanda serve), chrome",
-        "prompt": "Browser engine (auto/lightpanda/chrome)",
-        "url": "https://lightpanda.io/docs/run-locally/installation/one-liner",
-        "tools": ["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-    "CAMOFOX_URL": {
-        "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
-        "prompt": "Camofox server URL",
-        "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": False,
-        "category": "tool",
-    },
-    "CAMOFOX_API_KEY": {
-        "description": "Optional bearer token sent as Authorization header to a remote/authenticated Camofox server",
-        "prompt": "Camofox API key",
-        "url": "https://github.com/jo-inc/camofox-browser",
-        "tools": ["browser_navigate", "browser_click"],
-        "password": True,
-        "category": "tool",
-        "advanced": True,
-    },
-    "FAL_KEY": {
-        "description": "FAL API key for image and video generation",
-        "prompt": "FAL API key",
-        "url": "https://fal.ai/",
-        "tools": ["image_generate", "video_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "KREA_API_KEY": {
-        "description": "Krea API key for Krea 2 image generation (Medium + Large)",
-        "prompt": "Krea API key",
-        "url": "https://www.krea.ai/settings/api-tokens",
-        "tools": ["image_generate"],
-        "password": True,
-        "category": "tool",
-    },
-    "VOICE_TOOLS_OPENAI_KEY": {
-        "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
-        "prompt": "OpenAI API Key (for Whisper STT + TTS)",
-        "url": "https://platform.openai.com/api-keys",
-        "tools": ["voice_transcription", "openai_tts"],
-        "password": True,
-        "category": "tool",
-    },
-    "ELEVENLABS_API_KEY": {
-        "description": "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
-        "prompt": "ElevenLabs API key",
-        "url": "https://elevenlabs.io/",
-        "tools": ["elevenlabs_tts", "voice_transcription"],
-        "password": True,
-        "category": "tool",
-    },
-    "MISTRAL_API_KEY": {
-        "description": "Mistral API key for Voxtral TTS and transcription (STT)",
-        "prompt": "Mistral API key",
-        "url": "https://console.mistral.ai/",
-        "password": True,
-        "category": "tool",
-    },
-    "PORCUPINE_ACCESS_KEY": {
-        "description": "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; openWakeWord is the free default)",
-        "prompt": "Picovoice access key",
-        "url": "https://console.picovoice.ai/",
-        "password": True,
-        "category": "tool",
-    },
-    "GITHUB_TOKEN": {
-        "description": "GitHub token for Skills Hub (higher API rate limits, skill publish)",
-        "prompt": "GitHub Token",
-        "url": "https://github.com/settings/tokens",
-        "password": True,
-        "category": "tool",
-    },
-
-    # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
-    # These use category="skill" (distinct from "tool") so the sandbox
-    # env blocklist in tools/environments/local.py does NOT rewrite them —
-    # skills legitimately need these passed through to curl via
-    # tools/env_passthrough.py when the user's skill calls out.
-    "NOTION_API_KEY": {
-        "description": "Notion integration token (used by the `notion` skill)",
-        "prompt": "Notion API key",
-        "url": "https://www.notion.so/my-integrations",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "LINEAR_API_KEY": {
-        "description": "Linear personal API key (used by the `linear` skill)",
-        "prompt": "Linear API key",
-        "url": "https://linear.app/settings/account/security",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "AIRTABLE_API_KEY": {
-        "description": "Airtable personal access token (used by the `airtable` skill)",
-        "prompt": "Airtable API key",
-        "url": "https://airtable.com/create/tokens",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-    "TENOR_API_KEY": {
-        "description": "Tenor API key for GIF search (used by the `gif-search` skill)",
-        "prompt": "Tenor API key",
-        "url": "https://developers.google.com/tenor/guides/quickstart",
-        "password": True,
-        "category": "skill",
-        "advanced": True,
-    },
-
+    "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",
+        "https://exa.ai/", tools=["web_search", "web_extract"]),
+    "PARALLEL_API_KEY": _tool("Parallel API key for AI-native web search and extract",
+        "Parallel API key", "https://parallel.ai/", tools=["web_search", "web_extract"]),
+    "FIRECRAWL_API_KEY": _tool("Firecrawl API key for web search and scraping", "Firecrawl API key",
+        "https://firecrawl.dev/", tools=["web_search", "web_extract"]),
+    "FIRECRAWL_API_URL": _tool("Firecrawl API URL for self-hosted instances (optional)",
+        "Firecrawl API URL (leave empty for cloud)", None, password=False, advanced=True),
+    "FIRECRAWL_GATEWAY_URL": _tool(
+        "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
+        "Firecrawl gateway URL (leave empty to derive from domain)", None, password=False,
+        advanced=True),
+    "TOOL_GATEWAY_DOMAIN": _tool(
+        "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor "
+        "hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
+        "Tool-gateway domain suffix", None, password=False, advanced=True),
+    "TOOL_GATEWAY_SCHEME": _tool(
+        "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts "
+        "(`https` by default, set `http` for local gateway testing)", "Tool-gateway URL scheme",
+        None, password=False, advanced=True),
+    "TOOL_GATEWAY_USER_TOKEN": _tool(
+        "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise "
+        "read from the Hermes auth store)", "Tool-gateway user token", None, advanced=True),
+    "TAVILY_API_KEY": _tool(
+        "Tavily API key for AI-native web search and extract (optional — keyless works when "
+        "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",
+        tools=["web_search", "web_extract"]),
+    "PERPLEXITY_API_KEY": _tool(
+        "Perplexity API key for the Search API web backend (ranked results + query-relevant page "
+        "snippets)", "Perplexity API key", "https://www.perplexity.ai/account/api",
+        tools=["web_search", "web_extract"]),
+    "KEENABLE_API_KEY": _tool(
+        "Keenable API key for fast independent-index web search and page fetch (optional — "
+        "keyless free tier works without it)", "Keenable API key", "https://keenable.ai",
+        tools=["web_search", "web_extract"]),
+    "SEARXNG_URL": _tool("URL of your SearXNG instance for free self-hosted web search",
+        "SearXNG URL (e.g. http://localhost:8080)", "https://searxng.github.io/searxng/",
+        tools=["web_search"], password=False),
+    "BRAVE_SEARCH_API_KEY": _tool(
+        "Brave Search API subscription token (free tier: 2,000 queries/mo)",
+        "Brave Search subscription token", "https://brave.com/search/api/", tools=["web_search"]),
+    "BROWSERBASE_API_KEY": _tool(
+        "Browserbase API key for cloud browser (optional — local browser works without this)",
+        "Browserbase API key", "https://browserbase.com/",
+        tools=["browser_navigate", "browser_click"]),
+    "BROWSERBASE_PROJECT_ID": _tool(
+        "Browserbase project ID (optional — only needed for cloud browser)",
+        "Browserbase project ID", "https://browserbase.com/",
+        tools=["browser_navigate", "browser_click"], password=False),
+    "BROWSER_USE_API_KEY": _tool(
+        "Browser Use API key for cloud browser (optional — local browser works without this)",
+        "Browser Use API key", "https://browser-use.com/",
+        tools=["browser_navigate", "browser_click"]),
+    "FIRECRAWL_BROWSER_TTL": _tool(
+        "Firecrawl browser session TTL in seconds (optional, default 300)",
+        "Browser session TTL (seconds)", tools=["browser_navigate", "browser_click"],
+        password=False),
+    "AGENT_BROWSER_ENGINE": _env(
+        "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode "
+        "spawns lightpanda serve), chrome", "Browser engine (auto/lightpanda/chrome)",
+        url="https://lightpanda.io/docs/run-locally/installation/one-liner",
+        tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
+        password=False, category="tool", advanced=True),
+    "CAMOFOX_URL": _tool(
+        "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
+        "Camofox server URL", "https://github.com/jo-inc/camofox-browser",
+        tools=["browser_navigate", "browser_click"], password=False),
+    "CAMOFOX_API_KEY": _tool(
+        "Optional bearer token sent as Authorization header to a remote/authenticated Camofox "
+        "server", "Camofox API key", "https://github.com/jo-inc/camofox-browser",
+        tools=["browser_navigate", "browser_click"], advanced=True),
+    "FAL_KEY": _tool("FAL API key for image and video generation", "FAL API key", "https://fal.ai/",
+        tools=["image_generate", "video_generate"]),
+    "KREA_API_KEY": _tool("Krea API key for Krea 2 image generation (Medium + Large)",
+        "Krea API key", "https://www.krea.ai/settings/api-tokens", tools=["image_generate"]),
+    "VOICE_TOOLS_OPENAI_KEY": _tool(
+        "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
+        "OpenAI API Key (for Whisper STT + TTS)", "https://platform.openai.com/api-keys",
+        tools=["voice_transcription", "openai_tts"]),
+    "ELEVENLABS_API_KEY": _tool(
+        "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
+        "ElevenLabs API key", "https://elevenlabs.io/",
+        tools=["elevenlabs_tts", "voice_transcription"]),
+    "MISTRAL_API_KEY": _tool("Mistral API key for Voxtral TTS and transcription (STT)",
+        "Mistral API key", "https://console.mistral.ai/"),
+    "PORCUPINE_ACCESS_KEY": _tool(
+        "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; "
+        "openWakeWord is the free default)", "Picovoice access key",
+        "https://console.picovoice.ai/"),
+    "GITHUB_TOKEN": _tool("GitHub token for Skills Hub (higher API rate limits, skill publish)",
+        "GitHub Token", "https://github.com/settings/tokens"),
+    # ── Bundled skills (opt-in) ── category="skill" (not "tool") so the sandbox env blocklist in
+    # tools/environments/local.py does NOT rewrite them; skills need them passed through to curl
+    # via tools/env_passthrough.py.
+    "NOTION_API_KEY": _skill("Notion integration token (used by the `notion` skill)",
+        "Notion API key", "https://www.notion.so/my-integrations"),
+    "LINEAR_API_KEY": _skill("Linear personal API key (used by the `linear` skill)",
+        "Linear API key", "https://linear.app/settings/account/security"),
+    "AIRTABLE_API_KEY": _skill("Airtable personal access token (used by the `airtable` skill)",
+        "Airtable API key", "https://airtable.com/create/tokens"),
+    "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
+        "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
     # ── Honcho ──
-    "HONCHO_API_KEY": {
-        "description": "Honcho API key for AI-native persistent memory",
-        "prompt": "Honcho API key",
-        "url": "https://app.honcho.dev",
-        "tools": ["honcho_context"],
-        "password": True,
-        "category": "tool",
-    },
-    "HONCHO_BASE_URL": {
-        "description": "Base URL for self-hosted Honcho instances (no API key needed)",
-        "prompt": "Honcho base URL (e.g. http://localhost:8000)",
-        "category": "tool",
-    },
-
+    "HONCHO_API_KEY": _tool("Honcho API key for AI-native persistent memory", "Honcho API key",
+        "https://app.honcho.dev", tools=["honcho_context"]),
+    "HONCHO_BASE_URL": _tool("Base URL for self-hosted Honcho instances (no API key needed)",
+        "Honcho base URL (e.g. http://localhost:8000)", password=None),
     # ── Hindsight ──
-    "HINDSIGHT_API_KEY": {
-        "description": "Hindsight API key for graph-aware persistent memory",
-        "prompt": "Hindsight API key",
-        "url": "https://hindsight.vectorize.io",
-        "tools": ["hindsight_recall"],
-        "password": True,
-        "category": "tool",
-    },
-    "HINDSIGHT_API_URL": {
-        "description": "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)",
-        "prompt": "Hindsight API URL",
-        "category": "tool",
-        "advanced": True,
-    },
-
+    "HINDSIGHT_API_KEY": _tool("Hindsight API key for graph-aware persistent memory",
+        "Hindsight API key", "https://hindsight.vectorize.io", tools=["hindsight_recall"]),
+    "HINDSIGHT_API_URL": _tool(
+        "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)",
+        "Hindsight API URL", password=None, advanced=True),
     # ── Supermemory ──
-    "SUPERMEMORY_API_KEY": {
-        "description": "Supermemory API key for conversation-scoped persistent memory",
-        "prompt": "Supermemory API key",
-        "url": "https://supermemory.ai",
-        "tools": ["supermemory_search"],
-        "password": True,
-        "category": "tool",
-    },
-
+    "SUPERMEMORY_API_KEY": _tool("Supermemory API key for conversation-scoped persistent memory",
+        "Supermemory API key", "https://supermemory.ai", tools=["supermemory_search"]),
     # ── Mem0 ──
-    "MEM0_API_KEY": {
-        "description": "Mem0 Platform API key for semantic persistent memory",
-        "prompt": "Mem0 API key",
-        "url": "https://app.mem0.ai",
-        "tools": ["mem0_search"],
-        "password": True,
-        "category": "tool",
-    },
-
+    "MEM0_API_KEY": _tool("Mem0 Platform API key for semantic persistent memory", "Mem0 API key",
+        "https://app.mem0.ai", tools=["mem0_search"]),
     # ── RetainDB ──
-    "RETAINDB_API_KEY": {
-        "description": "RetainDB API key for persistent memory",
-        "prompt": "RetainDB API key",
-        "url": "https://retaindb.com",
-        "tools": ["retaindb_search"],
-        "password": True,
-        "category": "tool",
-    },
-    "RETAINDB_BASE_URL": {
-        "description": "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)",
-        "prompt": "RetainDB base URL",
-        "category": "tool",
-        "advanced": True,
-    },
-
+    "RETAINDB_API_KEY": _tool("RetainDB API key for persistent memory", "RetainDB API key",
+        "https://retaindb.com", tools=["retaindb_search"]),
+    "RETAINDB_BASE_URL": _tool(
+        "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)",
+        "RetainDB base URL", password=None, advanced=True),
     # ── ByteRover ──
-    "BRV_API_KEY": {
-        "description": "ByteRover API key (optional, for cloud sync — local-first by default)",
-        "prompt": "ByteRover API key",
-        "url": "https://app.byterover.dev",
-        "tools": ["brv_query"],
-        "password": True,
-        "category": "tool",
-    },
-
+    "BRV_API_KEY": _tool("ByteRover API key (optional, for cloud sync — local-first by default)",
+        "ByteRover API key", "https://app.byterover.dev", tools=["brv_query"]),
     # ── OpenViking ──
-    "OPENVIKING_API_KEY": {
-        "description": "OpenViking API key (leave blank for local dev mode)",
-        "prompt": "OpenViking API key",
-        "tools": ["viking_search"],
-        "password": True,
-        "category": "tool",
-    },
-    "OPENVIKING_ENDPOINT": {
-        "description": "OpenViking server URL (default: http://127.0.0.1:1933)",
-        "prompt": "OpenViking endpoint",
-        "category": "tool",
-        "advanced": True,
-    },
-
+    "OPENVIKING_API_KEY": _tool("OpenViking API key (leave blank for local dev mode)",
+        "OpenViking API key", tools=["viking_search"]),
+    "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
+        "OpenViking endpoint", password=None, advanced=True),
     # ── Langfuse observability ──
-    "HERMES_LANGFUSE_PUBLIC_KEY": {
-        "description": "Langfuse project public key (pk-lf-...)",
-        "prompt": "Langfuse public key",
-        "url": "https://cloud.langfuse.com",
-        "password": False,
-        "category": "tool",
-    },
-    "HERMES_LANGFUSE_SECRET_KEY": {
-        "description": "Langfuse project secret key (sk-lf-...)",
-        "prompt": "Langfuse secret key",
-        "url": "https://cloud.langfuse.com",
-        "password": True,
-        "category": "tool",
-    },
-    "HERMES_LANGFUSE_BASE_URL": {
-        "description": "Langfuse server URL (default: https://cloud.langfuse.com)",
-        "prompt": "Langfuse server URL (leave empty for cloud.langfuse.com)",
-        "url": None,
-        "password": False,
-        "category": "tool",
-        "advanced": True,
-    },
-
+    "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
+        "Langfuse public key", "https://cloud.langfuse.com", password=False),
+    "HERMES_LANGFUSE_SECRET_KEY": _tool("Langfuse project secret key (sk-lf-...)",
+        "Langfuse secret key", "https://cloud.langfuse.com"),
+    "HERMES_LANGFUSE_BASE_URL": _tool("Langfuse server URL (default: https://cloud.langfuse.com)",
+        "Langfuse server URL (leave empty for cloud.langfuse.com)", None, password=False,
+        advanced=True),
     # ── Messaging platforms ──
-    "TELEGRAM_BOT_TOKEN": {
-        "description": "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon and secret)",
-        "prompt": "Telegram bot token",
-        "url": "https://t.me/BotFather",
-        "password": True,
-        "category": "messaging",
-    },
-    "TELEGRAM_ALLOWED_USERS": {
-        "description": "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to approve new users through DM pairing",
-        "prompt": "Allowed Telegram user IDs (comma-separated)",
-        "url": "https://t.me/userinfobot",
-        "password": False,
-        "category": "messaging",
-    },
-    "TELEGRAM_PROXY": {
-        "description": "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, https://, socks5://",
-        "prompt": "Telegram proxy URL (optional)",
-        "password": False,
-        "category": "messaging",
-    },
-    "DISCORD_BOT_TOKEN": {
-        "description": "Discord bot token from Developer Portal",
-        "prompt": "Discord bot token",
-        "url": "https://discord.com/developers/applications",
-        "password": True,
-        "category": "messaging",
-    },
-    "DISCORD_ALLOWED_USERS": {
-        "description": "Comma-separated Discord user IDs allowed to use the bot",
-        "prompt": "Allowed Discord user IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "DISCORD_REPLY_TO_MODE": {
-        "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
-        "prompt": "Discord reply mode (off/first/all)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "SLACK_BOT_TOKEN": {
-        "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
-                       "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
-                       "im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, files:write",
-        "prompt": "Slack Bot Token (xoxb-...)",
-        "help": "In your Slack app, add the required bot scopes, install the app to the workspace, then copy OAuth & Permissions > Bot User OAuth Token.",
-        "url": "https://api.slack.com/apps",
-        "password": True,
-        "category": "messaging",
-    },
-    "SLACK_APP_TOKEN": {
-        "description": "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → "
-                       "App-Level Tokens. Also ensure Event Subscriptions include: message.im, "
-                       "message.channels, message.groups, message.mpim, app_mention",
-        "prompt": "Slack App Token (xapp-...)",
-        "help": "In your Slack app, enable Socket Mode, then create Basic Information > App-Level Tokens with the connections:write scope.",
-        "url": "https://api.slack.com/apps",
-        "password": True,
-        "category": "messaging",
-    },
-    "SLACK_ALLOWED_USERS": {
-        "description": "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without this, Slack may connect but deny messages by default.",
-        "prompt": "Allowed Slack member IDs",
-        "help": "In Slack, open your profile, choose More or the three-dot menu, then Copy member ID. Add multiple IDs comma-separated.",
-        "url": "https://api.slack.com/apps",
-        "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_URL": {
-        "description": "Mattermost server URL (e.g. https://mm.example.com)",
-        "prompt": "Mattermost server URL",
-        "url": "https://mattermost.com/deploy/",
-        "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_TOKEN": {
-        "description": "Mattermost bot token or personal access token",
-        "prompt": "Mattermost bot token",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-    },
-    "MATTERMOST_ALLOWED_USERS": {
-        "description": "Comma-separated Mattermost user IDs allowed to use the bot",
-        "prompt": "Allowed Mattermost user IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_REQUIRE_MENTION": {
-        "description": "Require @mention in Mattermost channels (default: true). Set to false to respond to all messages.",
-        "prompt": "Require @mention in channels",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATTERMOST_FREE_RESPONSE_CHANNELS": {
-        "description": "Comma-separated Mattermost channel IDs where bot responds without @mention",
-        "prompt": "Free-response channel IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_HOMESERVER": {
-        "description": "Matrix homeserver URL (e.g. https://matrix.example.org)",
-        "prompt": "Matrix homeserver URL",
-        "url": "https://matrix.org/ecosystem/servers/",
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_ACCESS_TOKEN": {
-        "description": "Matrix access token (preferred over password login)",
-        "prompt": "Matrix access token",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-    },
-    "MATRIX_USER_ID": {
-        "description": "Matrix user ID (e.g. @hermes:example.org)",
-        "prompt": "Matrix user ID (@user:server)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_ALLOWED_USERS": {
-        "description": "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
-        "prompt": "Allowed Matrix user IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "MATRIX_REQUIRE_MENTION": {
-        "description": "Require @mention in Matrix rooms (default: true). Set to false to respond to all messages.",
-        "prompt": "Require @mention in rooms (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_FREE_RESPONSE_ROOMS": {
-        "description": "Comma-separated Matrix room IDs where bot responds without @mention",
-        "prompt": "Free-response room IDs (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_AUTO_THREAD": {
-        "description": "Auto-create threads for messages in Matrix rooms (default: true)",
-        "prompt": "Auto-create threads in rooms (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_DM_AUTO_THREAD": {
-        "description": "Auto-create threads for DM messages in Matrix (default: false)",
-        "prompt": "Auto-create threads in DMs (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_DEVICE_ID": {
-        "description": "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
-        "prompt": "Matrix device ID (stable across restarts)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "MATRIX_RECOVERY_KEY": {
-        "description": "Matrix recovery key for cross-signing verification after device key rotation (from Element: Settings → Security → Recovery Key)",
-        "prompt": "Matrix recovery key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "BLUEBUBBLES_SERVER_URL": {
-        "description": "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)",
-        "prompt": "BlueBubbles server URL",
-        "url": "https://bluebubbles.app/",
-        "password": False,
-        "category": "messaging",
-    },
-    "BLUEBUBBLES_PASSWORD": {
-        "description": "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
-        "prompt": "BlueBubbles server password",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-    },
-    "BLUEBUBBLES_ALLOWED_USERS": {
-        "description": "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
-        "prompt": "Allowed iMessage addresses (comma-separated)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "BLUEBUBBLES_ALLOW_ALL_USERS": {
-        "description": "Allow all BlueBubbles users without allowlist",
-        "prompt": "Allow All BlueBubbles Users",
-        "category": "messaging",
-    },
-    "QQ_APP_ID": {
-        "description": "QQ Bot App ID from QQ Open Platform (q.qq.com)",
-        "prompt": "QQ App ID",
-        "url": "https://q.qq.com",
-        "category": "messaging",
-    },
-    "QQ_CLIENT_SECRET": {
-        "description": "QQ Bot Client Secret from QQ Open Platform",
-        "prompt": "QQ Client Secret",
-        "password": True,
-        "category": "messaging",
-    },
-    "QQ_ALLOWED_USERS": {
-        "description": "Comma-separated QQ user IDs allowed to use the bot",
-        "prompt": "QQ Allowed Users",
-        "category": "messaging",
-    },
-    "QQ_GROUP_ALLOWED_USERS": {
-        "description": "Comma-separated QQ group IDs allowed to interact with the bot",
-        "prompt": "QQ Group Allowed Users",
-        "category": "messaging",
-    },
-    "QQ_ALLOW_ALL_USERS": {
-        "description": "Allow all QQ users without an allowlist (true/false)",
-        "prompt": "Allow All QQ Users",
-        "category": "messaging",
-    },
-    "QQBOT_HOME_CHANNEL": {
-        "description": "Default QQ channel/group for cron delivery and notifications",
-        "prompt": "QQ Home Channel",
-        "category": "messaging",
-    },
-    "QQBOT_HOME_CHANNEL_NAME": {
-        "description": "Display name for the QQ home channel",
-        "prompt": "QQ Home Channel Name",
-        "category": "messaging",
-    },
-    "QQ_SANDBOX": {
-        "description": "Enable QQ sandbox mode for development testing (true/false)",
-        "prompt": "QQ Sandbox Mode",
-        "category": "messaging",
-    },
-    "IRC_SERVER": {
-        "description": "IRC server hostname (e.g. irc.libera.chat)",
-        "prompt": "IRC server",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "IRC_CHANNEL": {
-        "description": "IRC channel to join (e.g. #hermes)",
-        "prompt": "IRC channel",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "IRC_NICKNAME": {
-        "description": "Bot nickname on IRC (default: hermes-bot)",
-        "prompt": "IRC nickname",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "IRC_SERVER_PASSWORD": {
-        "description": "IRC server password (if required)",
-        "prompt": "IRC server password",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "IRC_NICKSERV_PASSWORD": {
-        "description": "NickServ password for nick identification",
-        "prompt": "NickServ password",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "GATEWAY_ALLOW_ALL_USERS": {
-        "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
-        "prompt": "Allow all users (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_ENABLED": {
-        "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect.",
-        "prompt": "Enable API server (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_KEY": {
-        "description": "Bearer token for API server authentication. Required whenever the API server is enabled; server refuses to start without it.",
-        "prompt": "API server auth key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_PORT": {
-        "description": "Port for the API server (default: 8642).",
-        "prompt": "API server port",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_HOST": {
-        "description": "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still required even on loopback binds.",
-        "prompt": "API server host",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "API_SERVER_MODEL_NAME": {
-        "description": "Model name advertised on /v1/models. Defaults to the profile name (or 'hermes-agent' for the default profile). Useful for multi-user setups with OpenWebUI.",
-        "prompt": "API server model name",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "GATEWAY_PROXY_URL": {
-        "description": "URL of a remote Hermes API server to forward messages to (proxy mode). When set, the gateway handles platform I/O only — all agent work is delegated to the remote server. Use for Docker E2EE containers that relay to a host agent. Also configurable via gateway.proxy_url in config.yaml.",
-        "prompt": "Remote Hermes API server URL (e.g. http://192.168.1.100:8642)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "GATEWAY_PROXY_KEY": {
-        "description": "Bearer token for authenticating with the remote Hermes API server (proxy mode). Must match the API_SERVER_KEY on the remote host.",
-        "prompt": "Remote API server auth key",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-        "advanced": True,
-    },
-    "WEBHOOK_ENABLED": {
-        "description": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
-        "prompt": "Enable webhooks (true/false)",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "WEBHOOK_PORT": {
-        "description": "Port for the webhook HTTP server (default: 8644).",
-        "prompt": "Webhook port",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
-    "WEBHOOK_SECRET": {
-        "description": "Global HMAC secret for webhook signature validation (overridable per route in config.yaml).",
-        "prompt": "Webhook secret",
-        "url": None,
-        "password": True,
-        "category": "messaging",
-    },
-
-    # ── Agent settings ──
-    # NOTE: MESSAGING_CWD was removed here — use terminal.cwd in config.yaml
-    # instead.  The gateway reads TERMINAL_CWD (bridged from terminal.cwd).
-    "SUDO_PASSWORD": {
-        "description": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting",
-        "prompt": "Sudo password",
-        "url": None,
-        "password": True,
-        "category": "setting",
-    },
-    # HERMES_TOOL_PROGRESS_MODE is deprecated — tool progress is configured via
-    # display.tool_progress in config.yaml (off|new|all|verbose|log). The
-    # gateway still falls back to HERMES_TOOL_PROGRESS_MODE for backward
-    # compatibility, so it lives in _EXTRA_ENV_KEYS (known to reload and
-    # compatibility paths) but is intentionally NOT listed here:
-    # OPTIONAL_ENV_VARS feeds user-facing surfaces (dashboard keys page, setup
-    # checklists) and deprecated knobs shouldn't be offered there. The boolean
-    # HERMES_TOOL_PROGRESS is fully unsupported since the v12 config support
-    # floor retired its only consumer (the v3→4 migration).
-    "HERMES_PREFILL_MESSAGES_FILE": {
-        "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
-        "prompt": "Prefill messages file path",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
-    "HERMES_EPHEMERAL_SYSTEM_PROMPT": {
-        "description": "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
-        "prompt": "Ephemeral system prompt",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
+    "TELEGRAM_BOT_TOKEN": _msg(
+        "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon "
+        "and secret)", "Telegram bot token", "https://t.me/BotFather", password=True),
+    "TELEGRAM_ALLOWED_USERS": _msg(
+        "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to "
+        "approve new users through DM pairing", "Allowed Telegram user IDs (comma-separated)",
+        "https://t.me/userinfobot"),
+    "TELEGRAM_PROXY": _msg(
+        "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, "
+        "https://, socks5://", "Telegram proxy URL (optional)"),
+    "DISCORD_BOT_TOKEN": _msg("Discord bot token from Developer Portal", "Discord bot token",
+        "https://discord.com/developers/applications", password=True),
+    "DISCORD_ALLOWED_USERS": _msg("Comma-separated Discord user IDs allowed to use the bot",
+        "Allowed Discord user IDs (comma-separated)", None),
+    "DISCORD_REPLY_TO_MODE": _msg(
+        "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first "
+        "message only, default), 'all' (reply on every chunk)",
+        "Discord reply mode (off/first/all)", None),
+    "SLACK_BOT_TOKEN": _msg(
+        "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
+        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
+        "im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, "
+        "files:write", "Slack Bot Token (xoxb-...)", "https://api.slack.com/apps",
+        help=("In your Slack app, add the required bot scopes, install the app to the workspace, "
+        "then copy OAuth & Permissions > Bot User OAuth Token."), password=True),
+    "SLACK_APP_TOKEN": _msg(
+        "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → App-Level "
+        "Tokens. Also ensure Event Subscriptions include: message.im, message.channels, "
+        "message.groups, message.mpim, app_mention", "Slack App Token (xapp-...)",
+        "https://api.slack.com/apps",
+        help=("In your Slack app, enable Socket Mode, then create Basic Information > App-Level "
+        "Tokens with the connections:write scope."), password=True),
+    "SLACK_ALLOWED_USERS": _msg(
+        "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without "
+        "this, Slack may connect but deny messages by default.", "Allowed Slack member IDs",
+        "https://api.slack.com/apps",
+        help=("In Slack, open your profile, choose More or the three-dot menu, then Copy member "
+        "ID. Add multiple IDs comma-separated.")),
+    "MATTERMOST_URL": _msg("Mattermost server URL (e.g. https://mm.example.com)",
+        "Mattermost server URL", "https://mattermost.com/deploy/"),
+    "MATTERMOST_TOKEN": _msg("Mattermost bot token or personal access token",
+        "Mattermost bot token", None, password=True),
+    "MATTERMOST_ALLOWED_USERS": _msg("Comma-separated Mattermost user IDs allowed to use the bot",
+        "Allowed Mattermost user IDs (comma-separated)", None),
+    "MATTERMOST_REQUIRE_MENTION": _msg(
+        "Require @mention in Mattermost channels (default: true). Set to false to respond to "
+        "all messages.", "Require @mention in channels", None),
+    "MATTERMOST_FREE_RESPONSE_CHANNELS": _msg(
+        "Comma-separated Mattermost channel IDs where bot responds without @mention",
+        "Free-response channel IDs (comma-separated)", None),
+    "MATRIX_HOMESERVER": _msg("Matrix homeserver URL (e.g. https://matrix.example.org)",
+        "Matrix homeserver URL", "https://matrix.org/ecosystem/servers/"),
+    "MATRIX_ACCESS_TOKEN": _msg("Matrix access token (preferred over password login)",
+        "Matrix access token", None, password=True),
+    "MATRIX_USER_ID": _msg("Matrix user ID (e.g. @hermes:example.org)",
+        "Matrix user ID (@user:server)", None),
+    "MATRIX_ALLOWED_USERS": _msg(
+        "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
+        "Allowed Matrix user IDs (comma-separated)", None),
+    "MATRIX_REQUIRE_MENTION": _msg(
+        "Require @mention in Matrix rooms (default: true). Set to false to respond to all "
+        "messages.", "Require @mention in rooms (true/false)", None, advanced=True),
+    "MATRIX_FREE_RESPONSE_ROOMS": _msg(
+        "Comma-separated Matrix room IDs where bot responds without @mention",
+        "Free-response room IDs (comma-separated)", None, advanced=True),
+    "MATRIX_AUTO_THREAD": _msg("Auto-create threads for messages in Matrix rooms (default: true)",
+        "Auto-create threads in rooms (true/false)", None, advanced=True),
+    "MATRIX_DM_AUTO_THREAD": _msg("Auto-create threads for DM messages in Matrix (default: false)",
+        "Auto-create threads in DMs (true/false)", None, advanced=True),
+    "MATRIX_DEVICE_ID": _msg(
+        "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
+        "Matrix device ID (stable across restarts)", None, advanced=True),
+    "MATRIX_RECOVERY_KEY": _msg(
+        "Matrix recovery key for cross-signing verification after device key rotation (from "
+        "Element: Settings → Security → Recovery Key)", "Matrix recovery key", None, password=True,
+        advanced=True),
+    "BLUEBUBBLES_SERVER_URL": _msg(
+        "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)",
+        "BlueBubbles server URL", "https://bluebubbles.app/"),
+    "BLUEBUBBLES_PASSWORD": _msg(
+        "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
+        "BlueBubbles server password", None, password=True),
+    "BLUEBUBBLES_ALLOWED_USERS": _msg(
+        "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
+        "Allowed iMessage addresses (comma-separated)", None),
+    "BLUEBUBBLES_ALLOW_ALL_USERS": _msg("Allow all BlueBubbles users without allowlist",
+        "Allow All BlueBubbles Users", password=None),
+    "QQ_APP_ID": _msg("QQ Bot App ID from QQ Open Platform (q.qq.com)", "QQ App ID",
+        "https://q.qq.com", password=None),
+    "QQ_CLIENT_SECRET": _msg("QQ Bot Client Secret from QQ Open Platform", "QQ Client Secret",
+        password=True),
+    "QQ_ALLOWED_USERS": _msg("Comma-separated QQ user IDs allowed to use the bot",
+        "QQ Allowed Users", password=None),
+    "QQ_GROUP_ALLOWED_USERS": _msg("Comma-separated QQ group IDs allowed to interact with the bot",
+        "QQ Group Allowed Users", password=None),
+    "QQ_ALLOW_ALL_USERS": _msg("Allow all QQ users without an allowlist (true/false)",
+        "Allow All QQ Users", password=None),
+    "QQBOT_HOME_CHANNEL": _msg("Default QQ channel/group for cron delivery and notifications",
+        "QQ Home Channel", password=None),
+    "QQBOT_HOME_CHANNEL_NAME": _msg("Display name for the QQ home channel", "QQ Home Channel Name",
+        password=None),
+    "QQ_SANDBOX": _msg("Enable QQ sandbox mode for development testing (true/false)",
+        "QQ Sandbox Mode", password=None),
+    "IRC_SERVER": _msg("IRC server hostname (e.g. irc.libera.chat)", "IRC server", None),
+    "IRC_CHANNEL": _msg("IRC channel to join (e.g. #hermes)", "IRC channel", None),
+    "IRC_NICKNAME": _msg("Bot nickname on IRC (default: hermes-bot)", "IRC nickname", None),
+    "IRC_SERVER_PASSWORD": _msg("IRC server password (if required)", "IRC server password", None,
+        password=True, advanced=True),
+    "IRC_NICKSERV_PASSWORD": _msg("NickServ password for nick identification", "NickServ password",
+        None, password=True, advanced=True),
+    "GATEWAY_ALLOW_ALL_USERS": _msg(
+        "Allow all users to interact with messaging bots (true/false). Default: false.",
+        "Allow all users (true/false)", None, advanced=True),
+    "API_SERVER_ENABLED": _msg(
+        "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open "
+        "WebUI, LobeChat, etc. to connect.", "Enable API server (true/false)", None, advanced=True),
+    "API_SERVER_KEY": _msg(
+        "Bearer token for API server authentication. Required whenever the API server is "
+        "enabled; server refuses to start without it.", "API server auth key", None, password=True,
+        advanced=True),
+    "API_SERVER_PORT": _msg("Port for the API server (default: 8642).", "API server port", None,
+        advanced=True),
+    "API_SERVER_HOST": _msg(
+        "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still "
+        "required even on loopback binds.", "API server host", None, advanced=True),
+    "API_SERVER_MODEL_NAME": _msg(
+        "Model name advertised on /v1/models. Defaults to the profile name (or 'hermes-agent' "
+        "for the default profile). Useful for multi-user setups with OpenWebUI.",
+        "API server model name", None, advanced=True),
+    "GATEWAY_PROXY_URL": _msg(
+        "URL of a remote Hermes API server to forward messages to (proxy mode). When set, the "
+        "gateway handles platform I/O only — all agent work is delegated to the remote server. "
+        "Use for Docker E2EE containers that relay to a host agent. Also configurable via "
+        "gateway.proxy_url in config.yaml.",
+        "Remote Hermes API server URL (e.g. http://192.168.1.100:8642)", None, advanced=True),
+    "GATEWAY_PROXY_KEY": _msg(
+        "Bearer token for authenticating with the remote Hermes API server (proxy mode). Must "
+        "match the API_SERVER_KEY on the remote host.", "Remote API server auth key", None,
+        password=True, advanced=True),
+    "WEBHOOK_ENABLED": _msg(
+        "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
+        "Enable webhooks (true/false)", None),
+    "WEBHOOK_PORT": _msg("Port for the webhook HTTP server (default: 8644).", "Webhook port", None),
+    "WEBHOOK_SECRET": _msg(
+        "Global HMAC secret for webhook signature validation (overridable per route in "
+        "config.yaml).", "Webhook secret", None, password=True),
+    # ── Agent settings ── (MESSAGING_CWD is gone: use terminal.cwd in config.yaml, which the
+    # gateway bridges to TERMINAL_CWD.)
+    "SUDO_PASSWORD": _setting(
+        "Sudo password for terminal commands requiring root access; set to an explicit empty "
+        "string to try empty without prompting", "Sudo password", None, password=True),
+    # HERMES_TOOL_PROGRESS_MODE (deprecated; use display.tool_progress) is intentionally NOT listed:
+    # this dict feeds user-facing surfaces (dashboard keys page, setup checklists), so deprecated
+    # knobs stay in config._EXTRA_ENV_KEYS only. HERMES_TOOL_PROGRESS is unsupported.
+    "HERMES_PREFILL_MESSAGES_FILE": _setting(
+        "Path to JSON file with ephemeral prefill messages for few-shot priming",
+        "Prefill messages file path", None),
+    "HERMES_EPHEMERAL_SYSTEM_PROMPT": _setting(
+        "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
+        "Ephemeral system prompt", None),
 }

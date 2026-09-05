@@ -6,17 +6,10 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server
-from gateway.platforms.api_server_run_idempotency import (
-    RunIdempotencyStore as ExtractedRunIdempotencyStore,
-)
-
-
-def test_run_idempotency_store_remains_reexported_from_api_server():
-    assert api_server.RunIdempotencyStore is ExtractedRunIdempotencyStore
 
 
 @pytest.mark.asyncio
-async def test_api_server_constructor_uses_legacy_run_store_monkeypatch(monkeypatch):
+async def test_api_server_constructor_uses_module_run_store_binding(monkeypatch):
     store = MagicMock()
     store_factory = MagicMock(return_value=store)
     monkeypatch.setattr(api_server, "RunIdempotencyStore", store_factory)

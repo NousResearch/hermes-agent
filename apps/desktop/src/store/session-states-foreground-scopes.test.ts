@@ -69,6 +69,25 @@ describe('foregroundSessionScopes: owner hold across the create → foreground g
     expect(foregroundSessionScopes()).toEqual(new Set())
   })
 
+  it('does not retire a hold for a tile that carries neither the route nor a scoped runtime', () => {
+    const pandora = { connectionId: '100-125-133-71-9119', mode: 'remote' as const, profile: 'default' }
+
+    holdSessionOwnerUntilForeground('stored-branch', pandora)
+    // The pre-fix branch path: openSessionTile with no workspaceScope mints a
+    // route-less tile. It pins nothing, so its mere existence must not retire
+    // the hold — that reopened the create→foreground gap and the pruner closed
+    // the owner socket under the draft runtime (resume→reclaim loop, #93892).
+    $sessionTiles.set([{ storedSessionId: 'stored-branch' }])
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:100-125-133-71-9119::default']))
+
+    // Once the tile actually names the owner (persisted route), it covers the
+    // hold and the hold retires for good.
+    $sessionTiles.set([{ ownerRoute: pandora, storedSessionId: 'stored-branch' }])
+    expect(foregroundSessionScopes()).toEqual(new Set(['conn:100-125-133-71-9119::default']))
+    $sessionTiles.set([])
+    expect(foregroundSessionScopes()).toEqual(new Set())
+  })
+
   it('is released explicitly by the caller (failed create / drift close) and expires on its own', () => {
     vi.useFakeTimers()
 

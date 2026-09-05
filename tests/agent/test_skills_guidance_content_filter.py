@@ -18,7 +18,6 @@ drop the behaviour the sentence exists to produce.
 
 from __future__ import annotations
 
-import re
 
 import pytest
 
@@ -87,11 +86,13 @@ class TestBehaviourIsPreserved:
 
 class TestGuidanceReachesTheSystemPrompt:
     def test_guidance_is_wired_into_tool_guidance(self):
-        # A reword is worthless if the constant stopped being appended. Assert the
-        # wiring rather than trusting the constant in isolation.
-        import inspect
+        # A reword is worthless if the constant stopped being emitted. Assert the
+        # wiring behaviorally rather than trusting the constant in isolation.
+        from types import SimpleNamespace
 
         import agent.system_prompt as system_prompt
 
-        source = inspect.getsource(system_prompt)
-        assert re.search(r"tool_guidance\.append\(\s*SKILLS_GUIDANCE\s*\)", source)
+        agent = SimpleNamespace(valid_tool_names={"skill_manage"}, _kanban_worker_guidance="")
+        assert SKILLS_GUIDANCE in (system_prompt._tool_guidance_block(agent) or "")
+        agent.valid_tool_names = {"terminal"}
+        assert SKILLS_GUIDANCE not in (system_prompt._tool_guidance_block(agent) or "")

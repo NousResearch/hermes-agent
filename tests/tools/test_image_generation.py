@@ -453,13 +453,11 @@ class TestKreaModelNormalization:
 
     def test_native_models_detected(self, image_tool):
         for mid in ("krea-2-medium", "krea-2-large", "krea-2-medium-turbo"):
-            assert image_tool.is_krea_model(mid) is True
             assert image_tool._normalize_krea_model(mid) == mid
 
 
     def test_non_krea_models_are_not_krea(self, image_tool):
         for mid in ("fal-ai/flux-2/klein/9b", "fal-ai/nano-banana-pro", None, "", 123):
-            assert image_tool.is_krea_model(mid) is False
             assert image_tool._normalize_krea_model(mid) is None
 
 

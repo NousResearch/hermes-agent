@@ -13,11 +13,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli.main import (
-    _for_each_systemd_gateway_unit,
-    _service_unit_supports_graceful_sigusr1_restart,
-    _warn_incomplete_gateway_fleet_restart,
-)
+from hermes_cli.update_cmd import _for_each_systemd_gateway_unit, _service_unit_supports_graceful_sigusr1_restart, _warn_incomplete_gateway_fleet_restart
 
 
 def _list_units_stdout(names: list[str]) -> str:

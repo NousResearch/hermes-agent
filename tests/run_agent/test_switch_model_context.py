@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.models import LMStudioLoadResult
+from hermes_cli.models_local import LMStudioLoadResult
 from run_agent import AIAgent
-from agent.agent_init import _normalize_route_base_url
+from hermes_cli.route_identity import normalize_route_base_url
 from agent.context_compressor import ContextCompressor
 
 
@@ -26,9 +26,9 @@ class _StubStartupCompressor:
 
 def test_route_url_normalization_preserves_path_slash_before_query():
     """A path slash before a query changes OpenAI SDK URL joining."""
-    assert _normalize_route_base_url(
+    assert normalize_route_base_url(
         "https://example.com/v1/?tenant=large"
-    ) != _normalize_route_base_url("https://example.com/v1?tenant=large")
+    ) != normalize_route_base_url("https://example.com/v1?tenant=large")
 
 
 
@@ -48,9 +48,9 @@ def _make_direct_start_agent(
 ) -> AIAgent:
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
         patch("agent.agent_init.ContextCompressor", new=_StubStartupCompressor),
     ):
         return AIAgent(

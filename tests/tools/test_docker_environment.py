@@ -814,12 +814,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-                # 3-field format: ID, State, EgressLabel.  When egress_label
-                # is "off" the code parses all three fields; <no value> means
-                # the container has no egress label, which is acceptable.
+                # 2-field format: ID, State. The egress posture is enforced
+                # by the label filters on the ps command itself (#99213).
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout=f"reused-cid\t{ps_state}\t<no value>\n",
+                    stdout=f"reused-cid\t{ps_state}\n",
                     stderr="",
                 )
             if sub == "start":
@@ -905,6 +904,58 @@ def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
         if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
     ]
     assert run_invocations, "egress-enabled containers require a fresh docker run"
+
+
+def test_reuse_probe_format_is_podman_compatible(monkeypatch):
+    """Podman does not implement the Docker-only ``{{.Label "key"}}`` template
+    function — a reuse probe using it fails wholesale (``podman ps`` exits
+    125) and cross-process container reuse is silently disabled on every
+    default-config Podman host (#99213).  The probe must stick to fields both
+    runtimes implement (``{{.ID}}``, ``{{.State}}``) and express the egress
+    posture via label FILTERS instead."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/podman")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd) if isinstance(cmd, list) else cmd)
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="podman version", stderr="")
+            if sub == "ps":
+                if "--format" in cmd:
+                    fmt = cmd[cmd.index("--format") + 1]
+                    if "{{.Label" in fmt:
+                        # Mirror podman's real failure mode
+                        return subprocess.CompletedProcess(
+                            cmd, 125, stdout="",
+                            stderr="Error: can't evaluate field Label in type struct",
+                        )
+                    assert any(
+                        str(part) == "label=hermes-egress=off" for part in cmd
+                    ), "egress=off posture must be expressed as a label filter"
+                    return subprocess.CompletedProcess(
+                        cmd, 0, stdout="podman-cid\trunning\n", stderr="",
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="podman-reuse")
+
+    assert env._container_id == "podman-cid", (
+        f"podman backend must reuse the labeled container, got {env._container_id!r}"
+    )
+    run_invocations = [
+        c for c in calls
+        if isinstance(c, list) and len(c) >= 2 and c[1] == "run"
+    ]
+    assert not run_invocations, "docker run should be skipped on podman reuse"
 
 
 def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
@@ -1024,10 +1075,11 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
 
 
 def test_find_reusable_handles_empty_label_string(monkeypatch):
-    """Docker CLI v29.5.3 returns an empty string (NOT ``<no value>``)
-    for absent labels.  The trailing tab produces ``cid\\trunning\\t\\n``;
-    we must not strip the trailing tab or the three-field parser drops the
-    container.  Regression test for the egilewski review on #48073."""
+    """Robustness against trailing-tab sloppiness in ps output: the
+    ``ID\\tState\\t\\n`` line (Docker CLI v29.5.3 emitted this shape for
+    absent labels when the probe still carried a third column) must not make
+    the parser drop the container — the ID is still parsed and the container
+    still reused. Regression test for the egilewski review on #48073."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
 
@@ -1036,7 +1088,7 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
             if cmd[1] == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
             if cmd[1] == "ps":
-                # Docker v29.5.3: absent label → empty string, trailing tab
+                # Trailing tab after the State column
                 return subprocess.CompletedProcess(
                     cmd, 0,
                     stdout="safe-cid\trunning\t\n",
@@ -1048,7 +1100,7 @@ def test_find_reusable_handles_empty_label_string(monkeypatch):
 
     env = _make_dummy_env(task_id="empty-label")
     assert env._container_id == "safe-cid", (
-        f"container with empty-string label should be reused, got {env._container_id!r}"
+        f"container with a trailing tab in ps output should be reused, got {env._container_id!r}"
     )
 
 
@@ -1149,6 +1201,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     _install_fake_thread(monkeypatch)
 
     from tools import terminal_tool
+    from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
     container_id = env._container_id
@@ -1164,7 +1217,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
 
     try:
-        terminal_tool.cleanup_vm("session-close-test")
+        cleanup_vm("session-close-test")
     finally:
         terminal_tool._active_environments.pop("session-close-test", None)
 
@@ -1725,3 +1778,12 @@ def test_docker_run_secret_values_never_in_argv(monkeypatch):
     assert "MY_TOKEN" in args
     assert all(secret not in str(a) for a in args)
     assert (kwargs.get("env") or {}).get("MY_TOKEN") == secret
+
+
+def test_docker_env_warnings_never_echo_values(caplog):
+    """Values in docker_env can be secrets; a rejected entry is logged by key and type only (#102308)."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
+        docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
+    assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text

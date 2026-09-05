@@ -9,7 +9,7 @@ fetches for every authenticated provider (#72021).
 These tests pin the entrypoint wiring itself (the helper's own worker/once
 guard is covered in ``tests/hermes_cli/test_picker_prewarm.py``):
 
-- ``main()`` invokes ``hermes_cli.model_switch.prewarm_picker_cache_async``
+- ``main()`` invokes ``hermes_cli.model_switch_providers.prewarm_picker_cache_async``
   exactly once, AFTER the ``gateway.ready`` event is written (banner shown,
   user about to type — the idle window the prewarm is meant to fill).
 - The startup path stays non-blocking: with the prewarm spied out, ``main()``
@@ -28,6 +28,8 @@ import io
 
 import hermes_cli.model_switch as ms
 from tui_gateway import entry
+import hermes_cli.model_switch_providers
+from hermes_cli import model_switch_providers
 
 
 def _run_main(monkeypatch, events, *, prewarm=None):
@@ -58,7 +60,7 @@ def _run_main(monkeypatch, events, *, prewarm=None):
             events.append(("prewarm",))
             return None  # fire-and-forget handle; never blocks
 
-    monkeypatch.setattr(ms, "prewarm_picker_cache_async", prewarm)
+    monkeypatch.setattr(model_switch_providers, "prewarm_picker_cache_async", prewarm)
 
     # Empty stdin -> immediate EOF -> main() returns after entering the loop.
     monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))

@@ -52,11 +52,6 @@ class TestDeterministicCallId:
         out = deterministic_call_id("t", "bad \ud800 arg", 0)
         assert out.startswith("call_")
 
-    def test_codex_adapter_wrapper_delegates(self):
-        from agent.codex_responses_adapter import _deterministic_call_id
-        assert _deterministic_call_id("terminal", '{"command":"ls"}', 0) == \
-            deterministic_call_id("terminal", '{"command":"ls"}', 0)
-
     def test_run_agent_static_delegates(self):
         from run_agent import AIAgent
         assert AIAgent._deterministic_call_id("terminal", '{"command":"ls"}', 0) == \

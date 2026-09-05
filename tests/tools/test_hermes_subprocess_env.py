@@ -14,11 +14,8 @@ full credential environment. Two tiers:
 import os
 from unittest.mock import patch
 
-from tools.environments.local import (
-    hermes_subprocess_env,
-    _ALWAYS_STRIP_KEYS,
-    _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-)
+from tools.environments.local import hermes_subprocess_env
+from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX
 
 
 _TIER1_SAMPLE = {

@@ -443,6 +443,20 @@ class TestTickLifecycle:
             decision = mgr.complete_tick("3 tests still failing")
         assert decision["stopped"] is False
 
+    def test_until_judge_blocked_pauses(self, hermes_home):
+        """An unachievable stop condition pauses the loop instead of spinning to the tick budget."""
+        from hermes_cli.loops import LoopManager
+
+        mgr = LoopManager(session_id="t11b")
+        state = mgr.set("poll", interval_seconds=300, until="the deleted repo's CI is green")
+        state.next_due_at = time.time() - 1
+        mgr.fire_tick()
+        with patch("hermes_cli.goals.judge_goal", return_value=("blocked", "repo no longer exists", False, None, False)):
+            decision = mgr.complete_tick("The repository was deleted; there is no CI to watch.")
+        assert decision["stopped"] is True
+        assert decision["status"] == "paused"
+        assert "unachievable" in decision["message"]
+
     def test_until_judge_error_fails_open(self, hermes_home):
         from hermes_cli.loops import LoopManager
 

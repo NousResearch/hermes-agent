@@ -483,8 +483,8 @@ def test_review_registered_in_every_aux_surface():
     mirror _AUX_TASK_SLOTS by convention (shared "Must match" comments).
     """
     from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main import _AUX_TASKS
-    from hermes_cli.web_server import _AUX_TASK_SLOTS
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     assert "review" in DEFAULT_CONFIG["auxiliary"], \
         "review missing from DEFAULT_CONFIG['auxiliary']"

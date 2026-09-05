@@ -59,7 +59,7 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 const noop = () => undefined
 
 function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} />)
+  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
 
   return screen.getByRole('button')
 }
@@ -132,14 +132,14 @@ describe('the row delegates the open and claims no activation authority', () => 
   })
 })
 
-describe('the menu carries the explicit ask for the forever-chat', () => {
-  it('opens the canonical chat, which a plain row click deliberately does not', async () => {
+describe('the menu opens the same forever-chat a row click does', () => {
+  it('opens the canonical chat', async () => {
     const bot = { name: 'alpha' } as RosterRow
 
     fireEvent.contextMenu(renderRow(bot))
     fireEvent.click(await screen.findByText('Open Bot Chat'))
 
-    expect(openRosterBot.mock.calls).toEqual([[bot, { canonical: true }]])
+    expect(openRosterBot.mock.calls).toEqual([[bot]])
   })
 })
 

@@ -41,13 +41,14 @@ DEFAULT = {
     "uv_lock": True,
     "npm_lock": True,
     "installer": True,
+    "desktop_updater": True,
     "rust": True,
     "mcp_catalog": False,
     "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, installer=False, desktop_updater=False, rust=False, mcp_catalog=False, docker_meta=False, ci_review=False, python_prod=None, nix=None, docker=None) -> dict[str, bool]:
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -69,6 +70,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "uv_lock": uv_lock,
         "npm_lock": npm_lock,
         "installer": installer,
+        "desktop_updater": desktop_updater,
         "rust": rust,
         "mcp_catalog": mcp_catalog,
         "ci_review": ci_review,
@@ -78,7 +80,9 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
 CASES = {
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
-    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True)),
+    # pyproject.toml declares the pytest markers the OS lanes select on, so it
+    # also re-arms the desktop_updater integration tests (fail-open).
+    "dep manifest → python": (["pyproject.toml"], _lanes(python=True, scan=True, deps=True, uv_lock=True, desktop_updater=True)),
     "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True)),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
@@ -141,6 +145,23 @@ CASES = {
         _lanes(python=True, installer=True),
     ),
     "python source alone → no installer lane": (["run_agent.py"], _lanes(python=True, scan=True)),
+    # The Windows desktop-update hand-off is a PowerShell integration surface:
+    # its tests spawn the real script and poll its loopback server. They run
+    # when the script, the Electron side that launches it, or their own test
+    # files change — not on every hermes_state.py PR.
+    "windows.ps1 → desktop_updater": (
+        ["scripts/desktop-update/windows.ps1"],
+        _lanes(python=True, desktop_updater=True),
+    ),
+    "desktop-update test → desktop_updater": (
+        ["tests/test_desktop_update_windows_progress.py"],
+        _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
+    ),
+    "updater-process.ts → desktop_updater": (
+        ["apps/desktop/electron/updater-process.ts"],
+        _lanes(frontend=True, desktop_updater=True),
+    ),
+    "python source alone → no desktop_updater lane": (["hermes_state.py"], _lanes(python=True, scan=True)),
     # `.rs` lives under apps/, so it matches `frontend` too. That lane builds
     # TypeScript and cannot notice a Rust error — before `rust` existed it was
     # the ONLY lane a Rust change ran, and the crate's tests never executed.
@@ -168,8 +189,14 @@ CASES = {
     # tests-only diffs: pytest lanes stay ON, product jobs (Desktop E2E,
     # Docker) gate on python_prod and skip.
     "tests-only → python without python_prod": (
-        ["tests/agent/test_foo.py", "tests/conftest.py"],
+        ["tests/agent/test_foo.py"],
         _lanes(python=True, python_prod=False, scan=True),
+    ),
+    # conftest.py owns the _OS_MARKS skip logic, so it re-arms the
+    # desktop_updater integration tests too (fail-open).
+    "conftest → python + desktop_updater": (
+        ["tests/conftest.py"],
+        _lanes(python=True, python_prod=False, scan=True, desktop_updater=True),
     ),
     "tests + prod source → both lanes": (
         ["tests/agent/test_foo.py", "agent/x.py"],

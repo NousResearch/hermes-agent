@@ -127,10 +127,10 @@ def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
             side_effect=RuntimeError("simulated anthropic build failure"),
         ),
         patch(
-            "agent.anthropic_adapter.resolve_anthropic_token",
+            "agent.anthropic_credentials.resolve_anthropic_token",
             return_value="sk-ant-resolved",
         ),
-        patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+        patch("agent.anthropic_credentials._is_oauth_token", return_value=False),
         patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
     ):
         with pytest.raises(RuntimeError, match="simulated anthropic build failure"):

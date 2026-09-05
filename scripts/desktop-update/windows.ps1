@@ -212,6 +212,36 @@ function Start-UiServer([string]$HtmlPath) {
         })
         [void]$ps.BeginInvoke()
 
+        # Readiness handshake. BeginInvoke returns before the runspace has
+        # opened its pipeline and JIT'd the script block — on a loaded machine
+        # that is seconds, during which the kernel ACCEPTS connections into
+        # the listener's backlog and nobody answers them. Anything that
+        # trusted "listener bound" as "server serving" (the browser window
+        # opening to a page that never loads; the -SelfTestUi URL that CI
+        # polls) raced that gap. Prove one /progress round-trip before
+        # handing the port out, so the URL means "serving", not "bound".
+        $ready = $false
+        $readyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not $ready -and [DateTime]::UtcNow -lt $readyDeadline) {
+            try {
+                $probe = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:$port/progress")
+                $probe.Timeout = 1000
+                $probe.ReadWriteTimeout = 1000
+                $probe.KeepAlive = $false
+                $resp = $probe.GetResponse()
+                try { $ready = ([int]$resp.StatusCode -eq 200) } finally { $resp.Close() }
+            } catch {
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        if (-not $ready) {
+            Write-HandoffLog "progress server did not answer /progress within 15s; continuing without UI"
+            try { $listener.Stop() } catch {}
+            try { $ps.Stop() } catch {}
+            try { $rs.Close() } catch {}
+            return $null
+        }
+
         return @{ Listener = $listener; Runspace = $rs; PowerShell = $ps; Port = $port; BrowserProc = $null; Profile = $null }
     } catch {
         try { if ($listener) { $listener.Stop() } } catch {}

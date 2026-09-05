@@ -197,7 +197,7 @@ class TestConversationLoopWiring:
     def test_413_branch_scores_bytes_not_tokens(self):
         import inspect
 
-        import agent.conversation_loop as loop
+        import agent.turn_overflow as loop  # 413 handler lives in recover_from_overflow
 
         src = inspect.getsource(loop)
         # The byte measurement is taken before and after the 413 compression

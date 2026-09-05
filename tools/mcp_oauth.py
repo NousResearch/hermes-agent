@@ -542,15 +542,23 @@ _SSH_HINT_LOOPBACK = (
     "  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n")
 
 
-def _announce_authorization_url(authorization_url: str, port: int, redirect_uri: str | None) -> None:
-    """Print the URL (always, as the fallback) and open the browser when possible."""
+def _announce_authorization_url(
+    authorization_url: str,
+    port: int,
+    redirect_uri: str | None,
+    *,
+    auto_open: bool = True,
+) -> None:
+    """Print the URL (always, as the fallback) and open the browser when allowed."""
     print(f"\n  MCP OAuth: authorization required.\n  Open this URL in your browser:\n\n    {authorization_url}\n", file=sys.stderr)
     if os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"):
         if redirect_uri:
             print(_SSH_HINT_PROXY.format(redirect_uri=redirect_uri), file=sys.stderr)
         elif port:
             print(_SSH_HINT_LOOPBACK.format(port=port), file=sys.stderr)
-    if not _can_open_browser():
+    if not auto_open:
+        note = "Automatic browser open is limited to the first URL for this login — open the updated URL manually."
+    elif not _can_open_browser():
         note = "Headless environment detected — open the URL manually."
     else:
         opened = False
@@ -564,10 +572,13 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
     """Redirect handler closing over this flow's port (a closure, not ``_oauth_port``, keeps concurrent
     flows isolated). ``redirect_uri`` is a configured proxy callback (None for loopback) and only tailors the hint.
 
-    Using a closure instead of reading the module-level ``_oauth_port`` avoids cross-server state pollution
-    when multiple MCP servers run OAuth concurrently (fixes #44588).
+    The closure also limits automatic browser opening to one attempt while still printing any updated URL
+    supplied by an SDK retry. A new handler represents a new OAuth flow and gets its own browser-open attempt.
     """
+    auto_open_allowed = True
+
     async def _redirect_handler(authorization_url: str) -> None:
+        nonlocal auto_open_allowed
         dashboard_flow = get_dashboard_oauth_flow()
         if dashboard_flow is not None:
             await dashboard_flow.publish_authorization_url(authorization_url)
@@ -583,7 +594,14 @@ def _make_redirect_handler(port: int, redirect_uri: str | None = None):
         _raise_if_non_interactive(
             "MCP OAuth requires browser authorization but no interactive session is available (non-interactive/background context)."
         )
-        _announce_authorization_url(authorization_url, port, redirect_uri)
+        auto_open = auto_open_allowed
+        auto_open_allowed = False
+        _announce_authorization_url(
+            authorization_url,
+            port,
+            redirect_uri,
+            auto_open=auto_open,
+        )
 
     return _redirect_handler
 

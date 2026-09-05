@@ -372,6 +372,27 @@ class TestUtilities:
         assert _can_open_browser() is True
 
 
+class TestRedirectHandlerBrowserOpen:
+    def test_browser_opens_once_per_handler(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr(mod, "_can_open_browser", lambda: True)
+        opened = MagicMock(return_value=False)
+        monkeypatch.setattr(mod.webbrowser, "open", opened)
+
+        first_handler = _make_redirect_handler(49199)
+        asyncio.run(first_handler("https://example.com/auth?attempt=1"))
+        asyncio.run(first_handler("https://example.com/auth?attempt=2"))
+        asyncio.run(_make_redirect_handler(49198)("https://example.com/auth?attempt=3"))
+
+        assert [args.args[0] for args in opened.call_args_list] == [
+            "https://example.com/auth?attempt=1",
+            "https://example.com/auth?attempt=3",
+        ]
+        assert "https://example.com/auth?attempt=2" in capsys.readouterr().err
+
+
 class TestRedirectHandlerSshHint:
     """_make_redirect_handler must print an SSH tunnel hint on remote sessions."""
 

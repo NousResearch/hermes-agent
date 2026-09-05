@@ -118,6 +118,36 @@ def test_restart_safe_gateway_child_never_probes_systemd_off_linux(monkeypatch):
     probe.assert_not_called()
 
 
+def test_systemd_scope_probe_retries_without_unsupported_oom_policy(monkeypatch):
+    import tools.process_registry as process_registry
+
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_AVAILABLE", None)
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_USE_OOM_POLICY", True, raising=False)
+    monkeypatch.setattr(process_registry, "_worker_memory_max_bytes", lambda: 536_870_912)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(list(argv))
+        if "OOMPolicy=kill" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, stdout=b"", stderr=b"Unknown assignment: OOMPolicy=kill\n"
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(process_registry.subprocess, "run", run)
+
+    assert process_registry._systemd_run_user_scope_available() is True
+    assert len(calls) == 2
+    assert "OOMPolicy=kill" in calls[0]
+    assert "OOMPolicy=kill" not in calls[1]
+    assert "MemoryMax=536870912" in calls[1]
+    assert "OOMPolicy=kill" not in process_registry._build_systemd_scope_argv(
+        ["python", "worker.py"], unit_suffix="cron-job-1"
+    )
+
+
 def test_external_worker_adopts_execution_and_runs_payload_once(
     tmp_path, monkeypatch
 ):

@@ -77,6 +77,7 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # exist on the PATH while the user D-Bus session is unavailable — common for system services and
 # containers), and cache the result for the process lifetime. See #70716.
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
+_SYSTEMD_SCOPE_USE_OOM_POLICY = True
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
 _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
@@ -124,16 +125,26 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
+def _systemd_scope_argv(
+    binary: str, unit_name: str, *argv: str, include_oom_policy: Optional[bool] = None
+) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
-    return [
+    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+    Older systemd releases reject ``OOMPolicy`` for transient scopes, while still
+    supporting the cgroup ``MemoryMax`` limit that protects the gateway."""
+    use_oom_policy = (
+        _SYSTEMD_SCOPE_USE_OOM_POLICY
+        if include_oom_policy is None
+        else include_oom_policy
+    )
+    command = [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
-        "--", *argv,
     ]
+    if use_oom_policy:
+        command.extend(("--property", "OOMPolicy=kill"))
+    return [*command, "--", *argv]
 
 
 def _systemd_scope_cached() -> Optional[bool]:
@@ -150,7 +161,7 @@ def _systemd_run_user_scope_available() -> bool:
     ``shutil.which`` alone is insufficient: system services and containers may lack
     the user D-Bus bus even with the binary on PATH (every spawn would fail with
     ``Failed to connect to user bus``), so a cheap ``/bin/true`` probe is run and cached."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_SCOPE_USE_OOM_POLICY
     verdict = _systemd_scope_cached()
     if verdict is not None:
         return verdict
@@ -172,6 +183,24 @@ def _systemd_run_user_scope_available() -> bool:
                     result = subprocess.run(
                         _systemd_scope_argv(binary, probe_unit, "/bin/true"), capture_output=True, timeout=3,
                     )
+                    if (
+                        result.returncode != 0
+                        and _SYSTEMD_SCOPE_USE_OOM_POLICY
+                        and b"OOMPolicy" in (result.stderr or b"")
+                    ):
+                        result = subprocess.run(
+                            _systemd_scope_argv(
+                                binary, probe_unit, "/bin/true", include_oom_policy=False
+                            ),
+                            capture_output=True,
+                            timeout=3,
+                        )
+                        if result.returncode == 0:
+                            _SYSTEMD_SCOPE_USE_OOM_POLICY = False
+                            logger.info(
+                                "systemd-run transient scopes do not support OOMPolicy; "
+                                "continuing with MemoryMax isolation"
+                            )
                     available = result.returncode == 0
                     if not available:
                         logger.debug(

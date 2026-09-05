@@ -120,6 +120,17 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
             for entry in fleet
         )
 
+    # A completed catch-up already restarted the fleet onto ``expected_sha``, so the
+    # pre-pull plan snapshot below is history, not a live obligation. SHA-matched: a
+    # later pull that advances HEAD owes its own restart (#98022).
+    catchup = receipt.get("fleet_restart_catchup")
+    if (
+        isinstance(catchup, dict)
+        and catchup.get("completed")
+        and str(catchup.get("expected_sha") or "") == str(expected_sha)
+    ):
+        return False
+
     if not _receipt_looks_unfinished(receipt):
         return False
     plan = receipt.get("plan")
@@ -282,6 +293,26 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
+def _retire_unfinished_fleet_restart_receipt() -> None:
+    """Overwrite ``update_receipts/latest.json`` once a catch-up restarted the fleet.
+
+    ``_pending_fleet_restart_needed()`` triggers on the marker OR the unfinished receipt
+    pointer; clearing only the marker left an interrupted run's pre-pull
+    ``plan.runtimes[].code_sha`` in place as a live obligation, so every later
+    ``hermes update`` — already-up-to-date ones included — restarted the whole fleet
+    again. Only called after a COMPLETED restart; an incomplete catch-up must keep the
+    unfinished receipt. Never raises.
+
+    See #98022.
+    """
+    with _best_effort('Could not retire the unfinished update receipt: %s'):
+        from hermes_cli.update_cmd import _current_checkout_sha
+        from hermes_cli.update_receipt import record_fleet_restart_catchup
+        record_fleet_restart_catchup(
+            expected_sha=_current_checkout_sha() or "", detail="pending fleet restart completed",
+        )
+
+
 def _apply_pending_fleet_restart_catchup() -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
@@ -296,6 +327,7 @@ def _apply_pending_fleet_restart_catchup() -> None:
     print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
+        _retire_unfinished_fleet_restart_receipt()
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     sys.exit(1)

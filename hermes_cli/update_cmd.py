@@ -50,7 +50,7 @@ from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _restart_gateway_fleet_after_update, _restart_launchd_gateway_after_update,
     _restart_macos_launchd_gateways, _restart_phase_failure_is_incomplete,
     _restart_systemd_gateway_units, _restart_systemd_gateway_units_best_effort,
-    _run_pending_fleet_restart, _service_restart_sec,
+    _retire_unfinished_fleet_restart_receipt, _run_pending_fleet_restart, _service_restart_sec,
     _service_unit_supports_graceful_sigusr1_restart, _surviving_gateway_pids_after_failed_restart,
     _systemctl, _systemctl_reset_and_restart, _verify_fleet_after_update,
     _wait_for_service_active, _warn_gateway_restart_phase_aborted,

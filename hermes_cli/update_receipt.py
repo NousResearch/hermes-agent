@@ -172,10 +172,19 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
             receipt.data["stop_reason"] = stop_reason
         if fleet is not None:
             receipt.data["fleet"] = fleet
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not finalize update receipt: %s", exc)
+        return None
+    return _persist_receipt(receipt.data)
+
+
+def _persist_receipt(data: dict[str, Any]) -> Optional[Path]:
+    """Write *data* as a timestamped receipt plus the ``latest.json`` pointer. Never raises."""
+    try:
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"update_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
-        body = json.dumps(receipt.data, indent=2, default=str)
+        body = json.dumps(data, indent=2, default=str)
         path.write_text(body, encoding="utf-8")
         with suppress(OSError):  # stable pointer for the dashboard/desktop
             (directory / "latest.json").write_text(body, encoding="utf-8")
@@ -184,6 +193,37 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not write update receipt: %s", exc)
         return None
+
+
+def record_fleet_restart_catchup(expected_sha: str = "", detail: str = "") -> Optional[Path]:
+    """Retire the unfinished receipt that triggered a now-completed fleet-restart catch-up.
+
+    The catch-up's persistent trigger is a receipt's ``plan.runtimes[].code_sha``, captured
+    before that run's pull; once the catch-up has actually restarted the fleet onto
+    ``expected_sha`` those SHAs are history, not a live obligation, or every later
+    ``hermes update`` restarts the whole fleet again (#98022). Two writes, because two
+    receipts describe the obligation: the in-flight run's receipt is stamped in place (so
+    whatever finalizes it — including the command boundary, which overwrites
+    ``latest.json``) records the discharge, and a finished success receipt is persisted over
+    the pointer for the interrupted run that is still sitting there. Never raises.
+    """
+    stamp: dict[str, Any] = {
+        "completed": True, "at": _utc_now_iso(), "expected_sha": str(expected_sha or ""),
+    }
+    with suppress(Exception):
+        if _current is not None:
+            _current.data["fleet_restart_catchup"] = dict(stamp)
+    try:
+        receipt = UpdateReceipt()
+        receipt.step("pending_fleet_restart_catchup", True, detail)
+        receipt.gateway_restart_result(incomplete=False)
+        receipt.finalize("success")
+        receipt.data["exit_code"] = 0
+        receipt.data["fleet_restart_catchup"] = dict(stamp)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not build fleet-restart catch-up receipt: %s", exc)
+        return None
+    return _persist_receipt(receipt.data)
 
 
 def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason: str = "") -> Optional[Path]:

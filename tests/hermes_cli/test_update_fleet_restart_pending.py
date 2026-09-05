@@ -506,6 +506,81 @@ def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
     assert "did not restart running gateways" in out
 
 
+def test_successful_catchup_retires_the_unfinished_receipt(
+    monkeypatch, tmp_path, capsys
+):
+    """#98022: a completed catch-up must also retire its own trigger.
+
+    Clearing only ``fleet_restart_pending`` left the interrupted run's
+    ``latest.json`` — pre-pull ``plan.runtimes[].code_sha`` and all — in place,
+    so every later already-up-to-date ``hermes update`` restarted the fleet
+    again, forever.
+    """
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect())
+
+    disk_sha = "e" * 40
+    old_sha = "7" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+    # The run's OWN plan snapshot is taken before the catch-up restarts anything, so
+    # it records the same pre-pull SHA the interrupted receipt does.
+    stale_plan = {
+        "expected_sha": disk_sha,
+        "runtimes": [
+            {"kind": "gateway", "profile": "default", "pid": 42, "code_sha": old_sha}
+        ],
+    }
+    monkeypatch.setattr(
+        "hermes_cli.update_inventory.collect_runtime_inventory",
+        lambda: SimpleNamespace(runtimes=[], to_dict=lambda: dict(stale_plan)),
+    )
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    latest = receipt_dir / "latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "exit_code": 1,
+                "stop_reason": "KeyboardInterrupt: ",
+                "outcome": "failed",
+                "plan": dict(stale_plan),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runs = {"n": 0}
+
+    def _restart():
+        runs["n"] += 1
+        return True
+
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _restart)
+    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", _restart)
+
+    hermes_main.cmd_update(args)
+
+    assert runs["n"] == 1
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    # The unfinished trigger is retired: whatever receipt now backs latest.json
+    # records the completed catch-up, so its pre-pull plan SHAs are history.
+    receipt = json.loads(latest.read_text(encoding="utf-8"))
+    assert receipt["fleet_restart_catchup"] == {
+        "completed": True,
+        "at": receipt["fleet_restart_catchup"]["at"],
+        "expected_sha": disk_sha,
+    }
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+    # A second already-up-to-date update must not restart the fleet again.
+    capsys.readouterr()
+    hermes_main.cmd_update(args)
+
+    assert runs["n"] == 1
+    assert "did not restart running gateways" not in capsys.readouterr().out
+
+
 def test_already_up_to_date_skips_restart_when_nothing_pending(
     monkeypatch, tmp_path, capsys
 ):

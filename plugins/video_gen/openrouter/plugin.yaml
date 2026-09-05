@@ -1,0 +1,7 @@
+name: openrouter
+version: 1.0.0
+description: "OpenRouter MiniMax H3 Max video generation via the asynchronous /api/v1/videos API."
+author: Nous Research
+kind: backend
+requires_env:
+  - OPENROUTER_API_KEY

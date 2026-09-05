@@ -30,10 +30,12 @@ logger = logging.getLogger(__name__)
 
 # Advertised as an enum hint in the tool schema; providers may accept a narrower
 # or wider set and are responsible for clamping.
-COMMON_ASPECT_RATIOS: Tuple[str, ...] = ("16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3")
+COMMON_ASPECT_RATIOS: Tuple[str, ...] = (
+    "16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3", "21:9"
+)
 DEFAULT_ASPECT_RATIO = "16:9"
 
-COMMON_RESOLUTIONS: Tuple[str, ...] = ("480p", "540p", "720p", "1080p")
+COMMON_RESOLUTIONS: Tuple[str, ...] = ("480p", "540p", "720p", "768p", "1080p")
 DEFAULT_RESOLUTION = "720p"
 
 
@@ -83,7 +85,13 @@ _URL_VIDEO_CONTENT_TYPES = {
 
 
 def save_url_video(
-    url: str, *, prefix: str = "video", timeout: float = 180.0, max_bytes: int = 200 * 1024 * 1024
+    url: str,
+    *,
+    prefix: str = "video",
+    timeout: float = 180.0,
+    max_bytes: int = 200 * 1024 * 1024,
+    headers: Optional[Dict[str, str]] = None,
+    require_video_content_type: bool = False,
 ) -> Path:
     """Download an (often ephemeral) video URL into ``$HERMES_HOME/cache/videos/``;
     raises on network / HTTP / oversize / empty errors so callers can fall back to the URL."""
@@ -92,6 +100,7 @@ def save_url_video(
         chunk_size=256 * 1024, content_types=_URL_VIDEO_CONTENT_TYPES,
         url_extensions=("mp4", "webm", "mov", "mkv"), default_extension="mp4",
         label="Video", empty_error="Video at {url} was empty (0 bytes).",
+        headers=headers, require_known_content_type=require_video_content_type,
     )
 
 

@@ -12,7 +12,15 @@ import { Codecs, persistentAtom } from '@/lib/persisted'
 
 import { refreshRepoStatus, repoStatusForCwd } from './coding-status'
 import { stampSessionPrBranch } from './pull-requests'
-import { $busy, $currentCwd, $selectedStoredSessionId, $sessions } from './session'
+import {
+  $busy,
+  $currentCwd,
+  $freshDraftReady,
+  $selectedStoredSessionId,
+  $sessions,
+  $workspaceCwdOwner,
+  workspaceCwdBelongsToSelectedSession
+} from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
@@ -97,7 +105,19 @@ export const $reviewScopeTarget = atom('main')
 
 /** The repo the pane is reading right now: its pinned scope, else the active
  *  session's cwd. Exported for pane helpers that join repo-relative paths. */
-export const reviewRepoCwd = (): null | string => $reviewScopeCwd.get()?.trim() || $currentCwd.get()?.trim() || null
+export const reviewRepoCwd = (): null | string => {
+  const scoped = $reviewScopeCwd.get()?.trim()
+
+  if (scoped) {
+    return scoped
+  }
+
+  if ($freshDraftReady.get() || !workspaceCwdBelongsToSelectedSession()) {
+    return null
+  }
+
+  return $currentCwd.get()?.trim() || null
+}
 
 const repoCwd = reviewRepoCwd
 
@@ -607,6 +627,14 @@ $currentCwd.subscribe(() => {
     onReviewRepoMoved()
   }
 })
+
+for (const gate of [$freshDraftReady, $selectedStoredSessionId, $workspaceCwdOwner]) {
+  gate.subscribe(() => {
+    if (!$reviewScopeCwd.get()) {
+      onReviewRepoMoved()
+    }
+  })
+}
 
 let prevScopeCwd = $reviewScopeCwd.get()
 

@@ -62,11 +62,13 @@ import {
   $currentReasoningEffort,
   $messages,
   $newChatWorkspaceTarget,
+  $newChatWorkspaceTargetGeneration,
   $sessions,
   $yoloActive,
   getCurrentModelSource,
   getSessionOwnerHint,
   type NewChatWorkspaceTarget,
+  releaseWorkspaceCwdOwner,
   resolveComposerSessionKey,
   sessionPinId,
   setActiveSessionId,
@@ -517,11 +519,17 @@ export function useSessionActions({
         setCurrentCwd(workspaceTarget)
       }
 
-      // A fresh draft resolves its own workspace right here, so it owns it. The
-      // selected stored id is null for a draft, and so is the owner — they match,
-      // which keeps workspace surfaces live on a new chat instead of treating the
-      // draft as an un-re-homed switch (#71254).
-      setWorkspaceCwdOwner(null)
+      // An implicit target is only the BASE used by session.create. The gateway
+      // may bind the conversation to a newly-created linked worktree, so claiming
+      // that base as the draft's own workspace leaks the previous/base branch and
+      // file tree until session.create returns the authoritative cwd. Explicit
+      // targets are already authoritative user choices and remain visible.
+      if (hasWorkspaceTarget) {
+        setWorkspaceCwdOwner(null)
+      } else {
+        releaseWorkspaceCwdOwner()
+      }
+
       setCurrentBranch('')
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
@@ -533,6 +541,7 @@ export function useSessionActions({
     async (preview: string | null = null): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
+      const startingWorkspaceGeneration = $newChatWorkspaceTargetGeneration.get()
 
       creatingSessionRef.current = true
 
@@ -664,7 +673,6 @@ export function useSessionActions({
           broadcastSessionsChanged()
         }
 
-        setFreshDraftReady(false)
         setNewChatWorkspaceTarget(undefined)
         setActiveSessionId(created.session_id)
         setSelectedStoredSessionId(stored)
@@ -676,6 +684,10 @@ export function useSessionActions({
           updateSessionState(created.session_id, state => ({ ...state, ...runtimeInfo }), stored)
         }
 
+        // Keep old workspace surfaces hidden until the newly-created session's
+        // authoritative cwd/worktree has been applied.
+        setFreshDraftReady(false)
+
         // User may have armed YOLO on the new-chat draft before the runtime
         // session existed — apply it to the freshly created session.
         if (yoloArmed) {
@@ -684,6 +696,13 @@ export function useSessionActions({
 
         return created.session_id
       } finally {
+        // A rejected/aborted create must not leave the draft-only paint gate
+        // latched forever. Do not clear it when the user started a newer draft
+        // while this request was in flight; that draft owns the next generation.
+        if ($newChatWorkspaceTargetGeneration.get() === startingWorkspaceGeneration) {
+          setFreshDraftReady(false)
+        }
+
         window.setTimeout(() => {
           creatingSessionRef.current = false
         }, 0)

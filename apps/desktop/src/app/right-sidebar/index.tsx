@@ -1,6 +1,8 @@
 import { useStore } from '@nanostores/react'
 import type { ComponentProps } from 'react'
+import { useLocation } from 'react-router'
 
+import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
@@ -13,7 +15,7 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
-import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
+import { $currentCwd, $freshDraftReady, $selectedStoredSessionId, $workspaceCwdOwner } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
@@ -27,16 +29,26 @@ interface RightSidebarPaneProps {
 
 export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSidebarPaneProps) {
   const { t } = useI18n()
+  const location = useLocation()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
-  const currentCwd = useStore($currentCwd).trim()
+  const rawCurrentCwd = useStore($currentCwd).trim()
+  const freshDraftReady = useStore($freshDraftReady)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const workspaceCwdOwner = useStore($workspaceCwdOwner)
 
-  // A transition intentionally retains the old CWD until the new session
-  // confirms its workspace. Do not issue a filesystem read against that path:
-  // under a gateway switch it may belong to a different remote machine.
-  const hasWorkspace = Boolean(currentCwd) && (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+  const workspaceCanPaint =
+    location.pathname !== NEW_CHAT_ROUTE &&
+    !freshDraftReady &&
+    (workspaceCwdOwner ?? null) === (selectedStoredSessionId ?? null)
+
+  const currentCwd = workspaceCanPaint ? rawCurrentCwd : ''
+
+  // Browse only a cwd known to belong to the selected conversation. During a
+  // fresh draft/session switch the raw atom can intentionally retain the old
+  // path to preserve pane state. A fresh draft has no conversation worktree yet,
+  // so it stays hidden until session.create applies the authoritative cwd.
+  const hasWorkspace = Boolean(currentCwd)
 
   const {
     collapseAll,

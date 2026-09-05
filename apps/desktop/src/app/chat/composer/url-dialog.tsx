@@ -11,11 +11,29 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
-import { Globe } from '@/lib/icons'
+import { Globe, Pencil } from '@/lib/icons'
 
 const URL_HINT = /^https?:\/\//i
 
+/** A value that will serialize as an `@kind:` reference or a slash chip —
+ *  non-empty after trimming. Edit mode applies to any reference kind, so this
+ *  is intentionally looser than attach mode's URL check. */
+function isUsableValue(value: string, editMode: boolean): boolean {
+  const trimmed = value.trim()
+
+  if (trimmed.length === 0) {
+    return false
+  }
+
+  if (editMode) {
+    return true
+  }
+
+  return URL_HINT.test(trimmed)
+}
+
 export function UrlDialog({
+  chipEdit,
   inputRef,
   onChange,
   onOpenChange,
@@ -23,6 +41,7 @@ export function UrlDialog({
   open,
   value
 }: {
+  chipEdit: { chip: HTMLElement; value: string } | null
   inputRef: React.RefObject<HTMLInputElement | null>
   onChange: (value: string) => void
   onOpenChange: (open: boolean) => void
@@ -32,15 +51,19 @@ export function UrlDialog({
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const editMode = chipEdit !== null
   const trimmed = value.trim()
   const looksLikeUrl = trimmed.length > 0 && URL_HINT.test(trimmed)
+  const usable = isUsableValue(value, editMode)
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent bodyClassName="gap-5" className="max-w-md">
         <DialogHeader>
-          <DialogTitle icon={Globe}>{c.attachUrlTitle}</DialogTitle>
-          <DialogDescription>{c.attachUrlDesc}</DialogDescription>
+          <DialogTitle icon={editMode ? Pencil : Globe}>
+            {editMode ? c.editRefTitle : c.attachUrlTitle}
+          </DialogTitle>
+          <DialogDescription>{editMode ? c.editRefDesc : c.attachUrlDesc}</DialogDescription>
         </DialogHeader>
         <form
           className="grid gap-4"
@@ -53,14 +76,14 @@ export function UrlDialog({
             <Input
               autoComplete="off"
               autoCorrect="off"
-              inputMode="url"
+              inputMode={editMode ? 'text' : 'url'}
               onChange={e => onChange(e.target.value)}
-              placeholder={c.urlPlaceholder}
+              placeholder={editMode ? (chipEdit?.value ?? '') : c.urlPlaceholder}
               ref={inputRef}
               spellCheck={false}
               value={value}
             />
-            {trimmed.length > 0 && !looksLikeUrl && (
+            {!editMode && trimmed.length > 0 && !looksLikeUrl && (
               <p className="text-xs text-muted-foreground/85">
                 {c.urlHintPre}
                 <span className="font-mono">https://…</span>
@@ -71,8 +94,8 @@ export function UrlDialog({
             <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
               {t.common.cancel}
             </Button>
-            <Button disabled={!looksLikeUrl} type="submit">
-              {c.attach}
+            <Button disabled={!usable} type="submit">
+              {editMode ? t.common.save : c.attach}
             </Button>
           </DialogFooter>
         </form>

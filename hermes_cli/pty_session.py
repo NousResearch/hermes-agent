@@ -7,6 +7,8 @@ opaque token replays the buffer and resumes live.
 from __future__ import annotations
 
 import asyncio
+import json
+import secrets
 import time
 from typing import Callable, Dict, Optional, Tuple
 
@@ -16,22 +18,49 @@ TUI_FORCE_REDRAW = b"\x0c"
 
 
 class RingBuffer:
-    """Keeps only the most recent ``capacity`` bytes appended to it."""
+    """Keeps only the most recent ``capacity`` bytes appended to it.
+
+    Tracks ``total_appended`` so a reconnecting client can request an incremental
+    replay from its last-known byte offset instead of re-receiving the buffer.
+    """
 
     def __init__(self, capacity: int) -> None:
         self._cap = capacity
         self._buf = bytearray()
-        self.truncated = False
+        self._truncated = False
+        self._total_appended = 0
 
     def append(self, data: bytes) -> None:
         self._buf.extend(data)
+        self._total_appended += len(data)
         overflow = len(self._buf) - self._cap
         if overflow > 0:
             del self._buf[:overflow]
-            self.truncated = True
+            self._truncated = True
 
     def snapshot(self) -> bytes:
         return bytes(self._buf)
+
+    def snapshot_from(self, offset: int) -> bytes | None:
+        """Return bytes appended after ``offset``, or ``None`` if it is outside the window."""
+        earliest = self.start_offset
+        if offset < earliest or offset > self._total_appended:
+            return None
+        skip = offset - earliest
+        return bytes(self._buf[skip:])
+
+    @property
+    def start_offset(self) -> int:
+        """Absolute offset of the first byte still retained."""
+        return self._total_appended - len(self._buf)
+
+    @property
+    def total_appended(self) -> int:
+        return self._total_appended
+
+    @property
+    def truncated(self) -> bool:
+        return self._truncated
 
 
 async def _close_ws(ws, code: int) -> None:
@@ -55,6 +84,8 @@ class PtySession:
         self._attach_generation = 0
         self._drain_task: Optional[asyncio.Task] = None
         self._write_lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
+        self.epoch = secrets.token_hex(16)
 
     async def start(self) -> None:
         self._drain_task = asyncio.create_task(self._drain())
@@ -63,19 +94,22 @@ class PtySession:
         loop = asyncio.get_running_loop()
         while True:
             chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
-            if chunk is None:                       # EOF — the agent process exited
-                self.alive = False
-                await _close_ws(self._ws, WS_CLOSE_PROCESS_EXITED)
+            if chunk is None:
+                async with self._send_lock:
+                    self.alive = False
+                    await _close_ws(self._ws, WS_CLOSE_PROCESS_EXITED)
                 return
-            if not chunk:                            # idle tick
+            if not chunk:
                 await asyncio.sleep(0)
                 continue
-            self.buffer.append(chunk)
-            try:
-                if self._ws is not None:
-                    await self._ws.send_bytes(chunk)
-            except Exception:
-                pass                                 # detached mid-send; keep buffering
+            async with self._send_lock:
+                self.buffer.append(chunk)
+                ws = self._ws
+                if ws is not None:
+                    try:
+                        await ws.send_bytes(chunk)
+                    except Exception:
+                        pass
 
     async def write(self, ws, data: bytes) -> bool:
         """Serialize input and discard bytes from a superseded socket."""
@@ -84,9 +118,6 @@ class PtySession:
                 return True
             generation = self._attach_generation
             delivered = await self.bridge.write(data)
-            # A replacement socket can attach while the bridge write is
-            # suspended on backpressure. A late failure from the superseded
-            # socket must not poison the replacement's shared PTY session.
             if (
                 not delivered
                 and self._ws is ws
@@ -95,28 +126,82 @@ class PtySession:
                 self.alive = False
             return delivered
 
-    async def attach(self, ws, *, force_redraw: bool = False) -> bool:
-        """Attach a browser terminal and replay buffered PTY output.
+    async def attach(
+        self,
+        ws,
+        client_offset: Optional[int] = None,
+        client_epoch: Optional[str] = None,
+        *,
+        force_redraw: bool = False,
+    ) -> bool:
+        """Attach ``ws`` and replay from a byte cursor when it is safe.
 
-        The TUI renders differentially on an alternate screen, so a bounded ANSI tail is not a
-        self-contained frame; ``force_redraw`` asks the live TUI for one full redraw after replay.
+        A text control frame always precedes binary PTY bytes. ``reset`` tells
+        the browser to discard its old terminal state before applying the
+        retained snapshot.
         """
-        if self._ws is not ws:
-            await _close_ws(self._ws, WS_CLOSE_SUPERSEDED)
-        self._ws = ws
-        self._attach_generation += 1
-        self.attached = True
-        self.last_detached_at = None
-        if snap := self.buffer.snapshot():
-            await ws.send_bytes(snap)
-        if force_redraw:
-            return await self.write(ws, TUI_FORCE_REDRAW)
-        return True
+        async with self._send_lock:
+            old = self._ws
+            self._ws = ws
+            self._attach_generation += 1
+            self.attached = True
+            self.last_detached_at = None
+            if old is not None and old is not ws:
+                await _close_ws(old, WS_CLOSE_SUPERSEDED)
+
+            reset = True
+            reason = "initial"
+            start_offset = self.buffer.start_offset
+            replay = self.buffer.snapshot()
+
+            if client_offset is not None or client_epoch is not None:
+                if client_epoch != self.epoch:
+                    reason = "epoch_mismatch"
+                elif client_offset is None:
+                    reason = "invalid_cursor"
+                else:
+                    incremental = self.buffer.snapshot_from(client_offset)
+                    if incremental is not None:
+                        reset = False
+                        reason = "resume"
+                        start_offset = client_offset
+                        replay = incremental
+                    elif client_offset > self.buffer.total_appended:
+                        reason = "offset_ahead"
+                    else:
+                        reason = "offset_rolled_out"
+
+            cutover_offset = start_offset + len(replay)
+            control = json.dumps(
+                {
+                    "type": "pty.replay",
+                    "epoch": self.epoch,
+                    "start_offset": start_offset,
+                    "replay_end_offset": cutover_offset,
+                    "reset": reset,
+                    "reason": reason,
+                },
+                separators=(",", ":"),
+            )
+            try:
+                await ws.send_text(control)
+                if replay:
+                    await self._send_chunked(ws, replay)
+            except BaseException:
+                self.detach(ws)
+                raise
+            if force_redraw and reset:
+                return await self.write(ws, TUI_FORCE_REDRAW)
+            return True
+
+    async def _send_chunked(self, ws, data: bytes, chunk_size: int = 16384) -> None:
+        """Send ``data`` in ``chunk_size`` frames, yielding between frames."""
+        for i in range(0, len(data), chunk_size):
+            await ws.send_bytes(data[i:i + chunk_size])
+            if i + chunk_size < len(data):
+                await asyncio.sleep(0)
 
     def detach(self, ws) -> None:
-        # Only the currently-attached socket may mark the session detached: a superseded socket's
-        # handler also calls detach on its way out (after the new tab attached), and flipping
-        # ``attached`` then would make a session with a live viewer look idle and reapable.
         if self._ws is not ws:
             return
         self._ws = None
@@ -132,8 +217,6 @@ class PtySession:
             except (asyncio.CancelledError, Exception):
                 pass
         try:
-            # bridge.close() joins the child — blocking; keep it off the event loop.
-            # See #53227.
             await asyncio.to_thread(self.bridge.close)
         except Exception:
             pass
@@ -166,13 +249,11 @@ class PtySessionRegistry:
         existing = self._sessions.get(key)
         if existing is not None and existing.alive:
             return existing, False
-        if existing is not None:                       # dead remnant
+        if existing is not None:
             await existing.close()
             self._sessions.pop(key, None)
         if len(self._sessions) >= self._max:
             self._reap_one_idle_or_raise()
-        # PTY spawn does blocking fork/exec work — keep it off the event loop.
-        # See #53227.
         bridge = await asyncio.to_thread(spawn)
         session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
         await session.start()

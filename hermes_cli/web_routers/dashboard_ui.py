@@ -7,7 +7,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 import asyncio
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -19,7 +19,8 @@ from hermes_cli.web_server_dashboard import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginProvidersPutBody, _PluginVisibilityBody,
+    FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _AgentPluginUpdateBody,
+    _PluginProvidersPutBody, _PluginVisibilityBody,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -210,9 +211,20 @@ async def post_agent_plugin_disable(request: Request, name: str):
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
-async def post_agent_plugin_update(request: Request, name: str):
+async def post_agent_plugin_update(request: Request, name: str, body: Optional[_AgentPluginUpdateBody] = None):
+    """Stage or accept a plugin update through the staged transaction carrier.
+
+    Without a ``review_token`` the remote is fetched into the private quarantine
+    and the live tree stays untouched: the response carries ``review_required``
+    + ``review_token`` + the review payload (Dashboard review surface). With the
+    token the exact reviewed candidate is revalidated and promoted atomically.
+    """
+    _require_token(request)
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
-    return _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
+    token = body.review_token if body is not None else None
+    return _named_plugin_action(
+        request, name, lambda n: dashboard_update_user_plugin(n, review_token=token),
+        "Update failed.", rescan=True)
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")

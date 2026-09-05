@@ -384,22 +384,30 @@ class GatewaySlashCommandsMixin(
         if not (platform_str and chat_id):
             return False
 
+        source_target = dict(
+            platform=platform_str, chat_id=chat_id, chat_type=chat_type,
+            thread_id=_field("thread_id"), user_id=_field("user_id"),
+            # Also persist the stable alt id (Signal UUID, Feishu union_id): build_session_key
+            # keys the participant on ``user_id_alt or user_id``, so a replayed wake rebuilds
+            # the same session key only when the alt id survives the round-trip.
+            user_id_alt=_field("user_id_alt"),
+            notifier_profile=(getattr(self, "_kanban_notifier_profile", None)
+                              or getattr(self, "_active_profile_name", lambda: "default")()),
+            # Default chat-origin behavior is still passive message + active wake;
+            # kanban_notify_policy narrows iMessage-like sources to wake-only only
+            # when it can add the paired private Telegram raw-notify route.
+            delivery_mode="notify+wake", delivery_metadata=delivery_metadata,
+        )
+
         def _sub():
             from hermes_cli import kanban_db as _kb
             from hermes_cli import kanban_db_connect as _kbc
             from hermes_cli import kanban_db_notify as _kbn
+            from hermes_cli.kanban_notify_policy import kanban_auto_subscribe_targets
             conn = _kbc.connect(board=requested_board)
             try:
-                _kbn.add_notify_sub(
-                    conn, task_id=task_id, platform=platform_str, chat_id=chat_id, chat_type=chat_type,
-                    thread_id=_field("thread_id"), user_id=_field("user_id"),
-                    # Also persist the stable alt id (Signal UUID, Feishu union_id): build_session_key
-                    # keys the participant on ``user_id_alt or user_id``, so a replayed wake rebuilds
-                    # the same session key only when the alt id survives the round-trip.
-                    user_id_alt=_field("user_id_alt"),
-                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                    # Subscribing from chat: deliver the passive message and wake the destination agent.
-                    delivery_mode="notify+wake", delivery_metadata=delivery_metadata)
+                for target in kanban_auto_subscribe_targets(source_target):
+                    _kbn.add_auto_notify_sub(conn, task_id=task_id, **target)
             finally:
                 conn.close()
         await asyncio.to_thread(_sub)

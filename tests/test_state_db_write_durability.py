@@ -29,7 +29,6 @@ only the repair-connection durability half.)
 
 from __future__ import annotations
 
-import ast
 import sqlite3
 import sys
 from pathlib import Path
@@ -78,7 +77,7 @@ def test_connect_repair_durable_sets_macos_barriers(tmp_path: Path) -> None:
             "boundaries; macOS fsync() does not flush the drive cache"
         )
     else:
-        # Elsewhere the helper is a plain connect — no behaviour change.
+        # Other hosts retain SQLite's default synchronous setting.
         assert synchronous in (0, 1, 2, 3)
 
 
@@ -94,78 +93,72 @@ def test_connect_repair_durable_is_autocommit(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_repair_path_has_no_bare_connects() -> None:
-    """No repair/probe site may bypass the durability helper.
+def test_corrupt_schema_probe_releases_tracked_connection(tmp_path: Path) -> None:
+    """Malformed-schema diagnostics must retain raw-read protection until close."""
+    from contextlib import closing
 
-    Source-level guard: the bare form is exactly what regressed, and a unit
-    test on the helper alone would not notice a sixth site being added.
-    """
-    # The repair/probe helpers live in hermes_state_repair; hermes_state only
-    # re-imports them.
-    import hermes_state_repair
+    import pytest
 
-    source = Path(hermes_state_repair.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(hermes_state_repair.__file__))
+    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+    from hermes_state_repair import _db_opens_cleanly, _repair_conn
 
-    def is_db_path_connect(node: ast.AST) -> bool:
-        if not isinstance(node, ast.Call):
-            return False
-        callee = node.func
-        if not (
-            isinstance(callee, ast.Attribute)
-            and isinstance(callee.value, ast.Name)
-            and callee.value.id == "sqlite3"
-            and callee.attr == "connect"
-        ):
-            return False
-        if not node.args:
-            return False
-        first = node.args[0]
-        return (
-            isinstance(first, ast.Call)
-            and isinstance(first.func, ast.Name)
-            and first.func.id == "str"
-            and len(first.args) == 1
-            and isinstance(first.args[0], ast.Name)
-            and first.args[0].id == "db_path"
-        )
-
-    helper = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and node.name == "_connect_repair_durable"
-    )
-    helper_calls = [node for node in ast.walk(helper) if is_db_path_connect(node)]
-    assert len(helper_calls) == 1, (
-        "_connect_repair_durable must own exactly one sqlite3.connect(str(db_path), ...)"
-    )
-
-    all_calls = [node for node in ast.walk(tree) if is_db_path_connect(node)]
-    elsewhere = [node for node in all_calls if node not in helper_calls]
-    assert elsewhere == [], (
-        f"{len(elsewhere)} repair/probe connection(s) still bypass "
-        "_connect_repair_durable() and write state.db without the macOS "
-        "fsync barriers"
-    )
-
-
-def test_repair_still_works_through_durable_connection(tmp_path: Path) -> None:
-    """Routing every strategy through the helper must not break the path.
-
-    The helper is entered once per strategy, so a plumbing fault (recursion,
-    a leaked connection, a refused pragma) surfaces as an exception rather
-    than a report. Whether this fixture's minimal schema is *repairable* is
-    beside the point — the assertion is that the path runs to completion.
-    """
     db = _make_db(tmp_path)
-    report = repair_state_db_schema(db, backup=False)
-    assert isinstance(report, dict)
-    assert set(report) >= {"repaired", "strategy", "backup_path"}
-    # The file must still open afterwards — repair may fail, but it must not
-    # leave the database less usable than it found it.
-    conn = sqlite3.connect(str(db))
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
-    finally:
-        conn.close()
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "INSERT INTO sqlite_master SELECT * FROM sqlite_master WHERE name='sessions'"
+        )
+        conn.commit()
+    with _repair_conn(db) as conn:
+        assert has_live_connection(db)
+        assert read_header_bytes_preopen(db) is None
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute("PRAGMA journal_mode")
+    assert not has_live_connection(db)
+    assert _db_opens_cleanly(db) is not None
+    assert not has_live_connection(db)
+    header = read_header_bytes_preopen(db)
+    assert header is not None and header.startswith(b"SQLite format 3")
+
+
+def test_repair_still_works_through_durable_connection(tmp_path: Path, monkeypatch) -> None:
+    """Exercise source, scratch, strategy and promotion handles, not their source shape."""
+    from contextlib import closing
+
+    from hermes_cli.sqlite_safe_read import has_live_connection
+    from hermes_state import SessionDB
+
+    path = tmp_path / "state.db"
+    with SessionDB(db_path=path) as db:
+        db.create_session("repair", source="cli")
+        db.append_message("repair", role="user", content="durable pizza")
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE messages_fts_data SET block=X'BADC0FFEE0DDF00D'")
+        conn.commit()
+
+    connect = sqlite3.connect
+    observations = []
+
+    def observed_connect(database, *args, **kwargs):
+        conn = connect(database, *args, **kwargs)
+        db_path = Path(database)
+
+        def trace(sql):
+            # Connection setup pragmas precede registration; inspect actual
+            # diagnostic and repair work, including scratch-file strategies.
+            if sql.lstrip().upper().startswith(("SELECT", "INSERT", "UPDATE", "DELETE", "REINDEX", "VACUUM")):
+                observations.append((db_path, has_live_connection(db_path)))
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    with monkeypatch.context() as m:
+        m.setattr(sqlite3, "connect", observed_connect)
+        report = repair_state_db_schema(path)
+    assert report["repaired"], report
+    assert observations
+    assert all(tracked for _, tracked in observations), observations
+    assert any(p != path for p, _ in observations), "exercise scratch repair too"
+    assert all(not has_live_connection(p) for p, _ in observations)
+    with SessionDB(db_path=path) as db:
+        assert db.search_messages("pizza")

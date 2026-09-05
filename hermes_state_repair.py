@@ -576,7 +576,10 @@ def _connect_repair_durable(db_path: Path, *, timeout: float = 5.0) -> sqlite3.C
     half-written b-tree pages. Autocommit (``isolation_level=None``): DDL and ``VACUUM`` are illegal inside an
     implicit transaction. Barriers are best-effort: on a malformed schema even ``PRAGMA synchronous=FULL`` raises,
     so whole-file rewrites call :func:`_reapply_durability_barriers` once the schema parses again."""
-    conn = sqlite3.connect(str(db_path), timeout=timeout, isolation_level=None)
+    from hermes_state_dbfile import _connect_tracked_db
+    # Repair/probe handles also hold SQLite locks; raw readers must see them
+    # for their entire lifetime, including while the schema is malformed.
+    conn = _connect_tracked_db(db_path, tracking_path=db_path, timeout=timeout, isolation_level=None)
     _reapply_durability_barriers(conn)
     return conn
 
@@ -706,29 +709,38 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             # tokenizer absence must never classify as corruption.
             load_fts5_cjk_extension(conn)
             conn.execute("PRAGMA journal_mode").fetchone()
-            rows = conn.execute("PRAGMA integrity_check").fetchall()
+            try:
+                rows = conn.execute("PRAGMA integrity_check").fetchall()
+            except sqlite3.OperationalError as exc:
+                if not SessionDB._is_fts5_unavailable_error(exc):
+                    raise
+                # Some SQLite versions instantiate virtual tables during the
+                # global check. A missing optional tokenizer is not corruption.
+                # Still check every ordinary B-tree (including FTS shadow tables).
+                # Partial checks cannot verify global page allocation or FTS
+                # segment semantics; this is a degraded-runtime health probe.
+                rows = []
+                tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND rootpage > 0").fetchall()
+                for (table,) in tables:
+                    quoted = table.replace("'", "''")
+                    rows.extend(conn.execute(f"PRAGMA integrity_check('{quoted}')").fetchall())
             problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
             if problems:
                 return "; ".join(problems[:3])
             conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
-            # FTS5 read probe: partial shadow-table corruption makes MATCH/snippet/rank raise while integrity_check
-            # reports healthy. MATCH '""' (empty phrase) parses, scans zero rows and exercises the shadow tables;
-            # FTS5 rejects MATCH ''.
+            # Keep read diagnostics outside the writer reservation. Full FTS5
+            # integrity-check commands scan all segments under a write lock;
+            # those belong in an offline diagnostic, not a live health probe.
             for fts_table in _FTS_TABLES:
                 try:
                     conn.execute(f"SELECT 1 FROM {fts_table} WHERE {fts_table} MATCH '\"\"' LIMIT 1").fetchone()
                 except sqlite3.DatabaseError as exc:
-                    # Builds without fts5/trigram raise "no such module|tokenizer"; calling that corruption would
-                    # send the DB into repair, whose final fallback deletes messages_fts%. "no such table/column" =
-                    # not built yet.
-                    benign = SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc)
-                    if not (isinstance(exc, sqlite3.OperationalError) and benign):
-                        # This is the corruption class #66724 actually wants caught: partial shadow-table
-                        # damage where MATCH / snippet / rank queries raise DatabaseError("database disk
-                        # image is malformed") while reads of the FTS5 table itself parse fine.
+                    benign = isinstance(exc, sqlite3.OperationalError) and (
+                        SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc))
+                    if not benign:
                         return f"fts5 read probe failed on {fts_table}: {exc}"
-            # FTS write probe: drive a row through the messages_fts* triggers in a transaction that is always
-            # rolled back.
+            # FTS write probe: only the two inserts hold the writer reservation,
+            # and every exit (including DatabaseError) rolls them back.
             probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -736,16 +748,16 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
                              (probe_session_id, "user", "_fts_health_probe", time.time()))
-                conn.execute("ROLLBACK")
             except sqlite3.OperationalError as exc:
-                with contextlib.suppress(sqlite3.Error):
-                    conn.execute("ROLLBACK")
                 # Missing messages/sessions tables = brand new file mid-init, not corruption. "no such tokenizer":
                 # this process lacks the cjk extension the DB's index needs — capability gap; a tokenizer-less
                 # SessionDB drops the triggers itself.
                 if _schema_not_built(exc) or "no such tokenizer: cjk_unicode61" in str(exc).lower():
                     return None
                 return str(exc)
+            finally:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.execute("ROLLBACK")
             return None
     except sqlite3.DatabaseError as exc:
         return str(exc)

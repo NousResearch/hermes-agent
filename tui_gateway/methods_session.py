@@ -805,6 +805,16 @@ def _(rid, params: dict) -> dict:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
+        # Cold resume: session was evicted from _sessions. If a stale on-disk
+        # active-session lease lingers for this session_key (e.g. the previous
+        # runtime's process is still alive but evicted the session), clear it
+        # so this surface can claim its own lease on the next submit.
+        # See #101619.
+        with contextlib.suppress(Exception):
+            from hermes_cli.active_sessions import drop_lease_for_session
+            drop_lease_for_session(
+                ctx.target, profile_home=ctx.profile_home,
+            )
         if ctx.lazy:
             return _resume_lazy(ctx)
         if ctx.eager_build:

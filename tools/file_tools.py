@@ -22,6 +22,8 @@ from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
+from tools.markdown_outline import (
+    MARKDOWN_EXTENSIONS, OUTLINE_HEADING_MAX_CHARS, OUTLINE_MAX_ENTRIES, markdown_outline)
 from tools import file_state
 from agent.redact import redact_sensitive_text
 from tools.file_tools_paths import (
@@ -536,15 +538,140 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default") -> str:
+def _read_file_outline(path: str, resolved: Path, offset: int, limit: int,
+                   task_id: str) -> str:
+    """read_file(mode="outline") implementation: Markdown heading structure.
+
+    Runs AFTER the device-path blocklist, special-file guard, Hermes-internal
+    denylist and negative-result cache shared with the content path.
+    Non-Markdown paths return an empty outline with a clear note (no body
+    read happens). Markdown files are scanned whole via ``file_ops.read_file_raw``
+    (same backend + per-heading sensitive-text redaction), but the OUTPUT is
+    bounded: at most ``min(limit, OUTLINE_MAX_ENTRIES)`` headings per call,
+    starting at the 1-based heading ordinal ``offset``; when more headings
+    exist the result is marked ``truncated`` and the hint names the next
+    ``offset`` to continue from. Outline reads are recorded as PARTIAL reads:
+    the body was never served, so read-before-write checks must not treat it
+    as a full read.
+    """
+    resolved_str = str(resolved)
+    suffix = resolved.suffix.lower()
+    if suffix not in MARKDOWN_EXTENSIONS:
+        # Clear, read-free answer for non-Markdown paths: no body read happens.
+        return json.dumps({
+            "mode": "outline",
+            "path": path,
+            "outline": [],
+            "note": (
+                f"Outline mode only supports Markdown files — '{path}' is not "
+                f"Markdown (extension '{suffix or '(none)'}'). Read the file "
+                "with the default mode (no mode argument) to see its content."),
+        }, ensure_ascii=False)
+
+    dedup_key = (resolved_str, "outline", offset, limit)
+    with _read_tracker_lock:
+        task_data = _task_data(task_id)
+        cached_mtime = task_data["dedup"].get(dedup_key)
+        content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
+    if cached_mtime is not None:
+        try:
+            if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
+                return _dedup_stub_or_block(task_data, dedup_key, path)
+        except OSError:
+            pass  # stat failed — fall through to a fresh outline read
+
+    result = _get_file_ops(task_id).read_file_raw(path)
+    result_dict = result.to_dict()
+
+    # Cache a not-found result for retries (mirrors the content path).
+    _err = result_dict.get("error") or ""
+    if isinstance(_err, str) and _err.startswith("File not found:"):
+        _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
+
+    if result_dict.get("error"):
+        # e.g. a binary blob with a .md name, or an unreadable path: surface the
+        # backend's error unchanged instead of an outline.
+        payload = result_dict
+    else:
+        content = result.content or ""
+        total_lines = len(content.splitlines())
+        entries = markdown_outline(content)
+        total_headings = len(entries)
+        start = max(offset - 1, 0)
+        headings_per_call = max(1, min(limit, OUTLINE_MAX_ENTRIES))
+        page = [
+            {
+                "line": e["line"],
+                "level": e["level"],
+                # Redact then cap: a single pathological "heading" line must not
+                # dominate the budget.
+                "heading": redact_sensitive_text(e["heading"], file_read=True)[:OUTLINE_HEADING_MAX_CHARS],
+            }
+            for e in entries[start:start + headings_per_call]
+        ]
+        truncated = start + len(page) < total_headings
+        payload = {
+            "mode": "outline",
+            "path": path,
+            "file_size": result_dict.get("file_size", 0),
+            "total_lines": total_lines,
+            "total_headings": total_headings,
+            "outline": page,
+            "truncated": truncated,
+        }
+        if truncated:
+            payload["_hint"] = (
+                f"Outline truncated: showing {len(page)} of {total_headings} headings. "
+                f"Continue the outline with read_file(mode='outline', "
+                f"offset={start + len(page) + 1}, limit={limit}).")
+        if total_lines > 2000:
+            payload["_hint"] = (payload.get("_hint") + " " if payload.get("_hint") else "") + (
+                "The file is long; after choosing a section, read just that "
+                "range with the default mode (offset/limit) to save context.")
+
+    count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
+                                    dedup_key, partial=True)
+    if count >= 4:
+        return tool_error(
+            f"BLOCKED: You have read this exact file region {count} times in a row. "
+            "The content has NOT changed. You already have this information. "
+            "STOP re-reading and proceed with your task.",
+            path=path,
+            already_read=count)
+    if count >= 3:
+        payload["_warning"] = (
+            f"You have read this exact file region {count} times consecutively. "
+            "The content has not changed since your last read. Use the information you already have. "
+            "If you are stuck in a loop, stop reading and proceed with writing or responding.")
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str = "default",
+                   mode: str = "read") -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: device-path blocklist (no I/O) → stat-based special-file
     guard (host only) → document extraction → binary-extension guard → Hermes
     internal denylist → negative-result cache → dedup stub → real read.
+
+    Optional ``mode="outline"`` (opt-in; the default ``"read"`` is unchanged):
+    returns the document's Markdown heading structure — each heading's text,
+    level (1-6), and 1-based source line — instead of the body content, for
+    quick orientation in long documents. ``offset``/``limit`` then bound the
+    returned HEADINGS (1-based ordinal of the first heading, maximum headings
+    per call capped at 500) rather than lines. Non-Markdown paths return an
+    empty outline with a note. Backend access, dedup/loop tracking and
+    sensitive-text redaction are reused; outline reads never count as having
+    read the file's body.
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+        mode = (mode or "read").strip().lower()
+        if mode not in ("read", "outline"):
+            return tool_error(
+                f"read_file: unknown mode {mode!r} — supported modes: "
+                "'read' (default, current behavior) and 'outline' "
+                "(Markdown heading structure only).")
 
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
@@ -565,6 +692,18 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                         "it would block indefinitely, so no read was "
                         "attempted. Use terminal utilities if you need to "
                         "interact with it.")})
+
+        if mode == "outline":
+            # Hermes-internal denylist + negative-result cache BEFORE any scan
+            # (the shared content path re-checks these below after extraction;
+            # outline must not probe internal or previously-not-found files).
+            block_error = get_read_block_error(str(_resolved))
+            if block_error:
+                return tool_error(block_error)
+            cached_not_found = _check_not_found_cache("read", str(_resolved), task_id)
+            if cached_not_found is not None:
+                return cached_not_found
+            return _read_file_outline(path, _resolved, offset, limit, task_id)
 
         extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
         if extracted is not None:
@@ -973,13 +1112,14 @@ READ_FILE_SCHEMA = {
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning
     # (read_extract.py); the schema doesn't pre-teach it.
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB. Cannot read images/binary — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are truncated on a line boundary and return a next_offset; continue with offset to read the rest. Documents auto-extract to readable text: .ipynb, Office (.docx/.xlsx/.pptx and legacy .doc/.ppt/.xls), PDF (text layer), OpenDocument, RTF, EPUB. Cannot read images/binary — use vision_analyze for images. Optional mode='outline' (Markdown only) returns the document's heading structure — level, heading text, and 1-based source line, in source order — instead of the body content: a compact structural view for quick orientation in long documents.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": 2000, "maximum": 2000}
+            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1). In outline mode: 1-based ordinal of the first heading to return.", "default": 1, "minimum": 1},
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation. In outline mode: maximum headings to return per call (capped at 500; continue with a new offset when the outline is truncated).", "default": 2000, "maximum": 2000},
+            "mode": {"type": "string", "enum": ["read", "outline"], "default": "read", "description": "Read mode: 'read' (default) paginates file content exactly as before. 'outline' (opt-in, Markdown only) returns the file's heading structure — each heading's text, level, and 1-based source line — instead of its body, for quick orientation in long documents. Non-Markdown files return an empty outline with a note."}
         },
         "required": ["path"]
     }
@@ -1123,7 +1263,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid, mode=args.get("mode", "read"))
 
 
 def _handle_write_file(args, **kw):

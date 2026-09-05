@@ -126,7 +126,7 @@ def neutralize_completed_incomplete_tool_calls(
     if not neutralized_calls:
         return messages if len(request_messages) == len(messages) else request_messages
     neutralized_results = {pairs[position] for position in neutralized_calls}
-    note_boundaries: set[int] = set()
+    coalesce_boundaries: set[int] = set()
     for assistant_index in {position[0] for position in neutralized_calls}:
         tool_calls = request_messages[assistant_index].get("tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
@@ -142,13 +142,14 @@ def neutralize_completed_incomplete_tool_calls(
         if next_index < len(request_messages):
             following = request_messages[next_index]
             if following.get("role") == "assistant":
-                note_boundaries.add(boundary)
+                coalesce_boundaries.add(boundary)
 
     sanitized: list[dict[str, Any]] = []
+    merge_positions: set[int] = set()
     for message_index, message in enumerate(request_messages):
         if message_index in neutralized_results:
-            if message_index in note_boundaries:
-                sanitized.append({"role": "user", "content": _WIRE_HISTORY_NOTE})
+            if message_index in coalesce_boundaries:
+                merge_positions.add(len(sanitized))
             continue
         if message.get("role") != "assistant":
             sanitized.append(message)
@@ -179,7 +180,36 @@ def neutralize_completed_incomplete_tool_calls(
         if kept_calls:
             rebuilt["tool_calls"] = deepcopy(kept_calls)
         sanitized.append(rebuilt)
-    return sanitized
+    # Removing a complete tool round joins two assistant continuations, not
+    # two user turns. Coalesce only those newly adjacent continuations. Rebuild
+    # both participants from canonical fields: signed/native replay sidecars
+    # cannot describe the new combined content or block ordering safely.
+    projected: list[dict[str, Any]] = []
+    for index, message in enumerate(sanitized):
+        if (
+            index not in merge_positions
+            or not projected
+            or projected[-1].get("role") != "assistant"
+            or message.get("role") != "assistant"
+        ):
+            projected.append(message)
+            continue
+        previous = projected.pop()
+        left, right = previous.get("content"), message.get("content")
+        if isinstance(left, list) or isinstance(right, list):
+            content = []
+            for part in (left, right):
+                if isinstance(part, list):
+                    content.extend(deepcopy(part))
+                elif isinstance(part, str) and part:
+                    content.append({"type": "text", "text": part})
+        else:
+            content = "\n".join(part for part in (left, right) if isinstance(part, str) and part)
+        merged = {"role": "assistant", "content": content}
+        if message.get("tool_calls"):
+            merged["tool_calls"] = deepcopy(message["tool_calls"])
+        projected.append(merged)
+    return projected
 
 
 def incomplete_tool_arguments_block_message(value: Any) -> Optional[str]:
@@ -262,6 +292,11 @@ def _decode_schema_containers(
             or (accepts_object and isinstance(parsed, dict))
         ):
             return value
+        # coerce_tool_args returns immediately for a direct top-level array
+        # string. Its items are not recursively normalized on that path;
+        # previewing recursive normalization here would reject valid data.
+        if direct_container_required and schema.get("type") == "array":
+            return parsed
         value = parsed
         decoded_from_string = True
     if isinstance(value, list):

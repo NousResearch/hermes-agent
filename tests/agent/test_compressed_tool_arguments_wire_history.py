@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 import json
 
+import pytest
+
 from agent.codex_responses_adapter import _chat_messages_to_responses_input
 from agent.transports.chat_completions import ChatCompletionsTransport
 from agent.transports.anthropic import AnthropicTransport
@@ -160,6 +162,9 @@ def test_all_compressed_chat_history_preserves_role_sequence_and_visible_text():
     converted = ChatCompletionsTransport().convert_messages(history, model="gpt-5.6")
 
     assert history == original
+    assert [m for m in converted if m.get("role") == "user"] == [
+        m for m in original if m.get("role") == "user"
+    ]
     assert "__hermes_incomplete_tool_arguments__" not in json.dumps(converted)
     assert all(
         left.get("role") != "assistant" or right.get("role") != "assistant"
@@ -289,3 +294,57 @@ def test_direct_bedrock_build_kwargs_neutralizes_completed_marker_call():
     assert "call_incomplete" not in serialized
     assert "call_complete" in serialized
     assert "README contents" in serialized
+
+
+@pytest.mark.parametrize("shape", ["text", "blocks", "empty", "chain", "mixed", "orphan"])
+def test_projection_preserves_authorship_across_removed_tool_boundaries(shape):
+    history = _all_compressed_history()
+    if shape == "blocks":
+        history[1]["content"] = [{"type": "text", "text": "first block"}]
+        history[3]["content"] = [{"type": "text", "text": "second block"}]
+    elif shape == "empty":
+        history[1]["content"] = None
+    elif shape == "chain":
+        more = _all_compressed_history("second round")[1:3]
+        more[0]["tool_calls"][0]["id"] = "round_two"
+        more[1]["tool_call_id"] = "round_two"
+        history[3:3] = more
+    elif shape == "mixed":
+        history[3:4] = _mixed_history()[1:5]
+    elif shape == "orphan":
+        history.insert(2, {"role": "tool", "tool_call_id": "unknown", "content": "orphan"})
+    history.insert(0, {"role": "system", "content": "byte-stable instructions"})
+    original = copy.deepcopy(history)
+    projected = neutralize_completed_incomplete_tool_calls(history)
+    assert history == original
+    assert neutralize_completed_incomplete_tool_calls(projected) == projected
+    assert [m for m in projected if m["role"] in {"user", "system"}] == [
+        m for m in history if m["role"] in {"user", "system"}
+    ]
+    assert [m for m in projected if m["role"] == "tool"] == [
+        m for m in history if m.get("tool_call_id") in {"unknown", "call_complete"}
+    ]
+    assert all(a["role"] != "assistant" or b["role"] != "assistant"
+               for a, b in zip(projected, projected[1:]))
+    visible = json.dumps([m.get("content") for m in projected if m["role"] == "assistant"])
+    for message in history:
+        if message["role"] == "assistant" and message.get("content"):
+            content = message["content"]
+            texts = [p["text"] for p in content] if isinstance(content, list) else [content]
+            assert all(text in visible for text in texts)
+    assert "__hermes_incomplete_tool_arguments__" not in json.dumps(projected)
+    # All-compressed histories have no tool-result user blocks, so actual user
+    # utterances can also be compared through every real provider converter.
+    if shape not in {"mixed", "orphan"}:
+        conversions = [
+            ChatCompletionsTransport().convert_messages(history, model="gpt-5.6"),
+            _chat_messages_to_responses_input(history),
+            AnthropicTransport().convert_messages(history)[1],
+            BedrockTransport().build_kwargs(model="anthropic.claude", messages=history)["messages"],
+        ]
+        for converted in conversions:
+            users = [m for m in converted if m.get("role") == "user"]
+            assert len(users) == 2
+            assert "inspect" in json.dumps(users[0])
+            assert "continue" in json.dumps(users[1])
+            assert "compressed historical tool call" not in json.dumps(users)

@@ -220,3 +220,33 @@ def test_nested_union_items_remain_preview_decoded():
         {"items": [encoded]}, schema
     )
     assert json.loads(result or "{}")["error_type"] == "incomplete_historical_tool_arguments"
+
+@pytest.mark.parametrize("array_type", ["array", ["array", "string"]])
+@pytest.mark.parametrize("encoded", [False, True])
+@pytest.mark.parametrize("item", ["literal", "provenance", "malformed"])
+def test_schema_integrity_preview_matches_runtime_array_strings(
+    monkeypatch, array_type, encoded, item
+):
+    from copy import deepcopy
+    from tools.arg_coercion import coerce_tool_args
+    from tools.registry import registry
+
+    marker = {RESERVED: {"version": 1, "replayable": False}}
+    value = {"literal": json.dumps(marker), "provenance": marker,
+             "malformed": "[not json"}[item]
+    items = [value]
+    args = {"items": json.dumps(items) if encoded else items}
+    original = deepcopy(args)
+    parameters = {
+        "type": "object",
+        "properties": {"items": {
+            "type": array_type,
+            "items": {"oneOf": [{"type": "object"}, {"type": "string"}]},
+        }},
+    }
+    monkeypatch.setattr(registry, "get_schema", lambda name: {"parameters": parameters})
+    runtime = coerce_tool_args("parity_probe", deepcopy(args))
+    assert incomplete_tool_arguments_after_schema_decode(args, parameters) == (
+        incomplete_tool_arguments_error_result(runtime)
+    )
+    assert args == original

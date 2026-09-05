@@ -291,3 +291,45 @@ def test_clean_arguments_skip_schema_integrity_preview(
 
     assert len(messages) == 1
     assert messages[0]["content"] == "ok"
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.parametrize("encoded", [False, True])
+@pytest.mark.parametrize("array_type", ["array", ["array", "string"]])
+def test_literal_array_item_follows_runtime_coercion_through_dispatch(
+    agent, monkeypatch, concurrent, encoded, array_type
+):
+    from copy import deepcopy
+    from tools.arg_coercion import coerce_tool_args
+    from tools.registry import registry
+
+    name = "integrity_literal_array_probe"
+    handled = []
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: False)
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager",
+                        lambda: SimpleNamespace(_middleware={}))
+    registry.register(
+        name=name, toolset="integrity-lifecycle",
+        schema={"name": name, "description": "Local literal-string probe",
+                "parameters": {"type": "object", "properties": {"items": {
+                    "type": array_type,
+                    "items": {"oneOf": [{"type": "object"}, {"type": "string"}]},
+                }}}},
+        handler=lambda args, **kwargs: handled.append(deepcopy(args)) or "ok",
+    )
+    items = [json.dumps({RESERVED: {"version": 1}})]
+    args = {"items": json.dumps(items) if encoded else items}
+    runtime = coerce_tool_args(name, deepcopy(args))
+    # The real dispatcher/coercer/registry path runs only this local handler.
+    from agent.tool_argument_integrity import incomplete_tool_arguments_error_result
+    expected_error = incomplete_tool_arguments_error_result(runtime)
+    messages = []
+    call = _mock_tool_call(name=name, arguments=json.dumps(args), call_id="literal")
+    _run(agent, concurrent, call, messages)
+    assert len(messages) == 1
+    if expected_error is None:
+        assert handled == [runtime]
+        assert messages[0]["content"] == "ok"
+    else:
+        assert handled == []
+        assert messages[0]["content"] == expected_error

@@ -15,9 +15,11 @@ def _build_exec_approval_metadata(
     """Preserve transport context and attach the pending approval identity: the core
     ``request_id``, carried under the card transports' ``approval_id`` key."""
     metadata = dict(base or {})
-    request_id = str(approval_data.get("request_id") or "")
+    request_id = str(approval_data.get("request_id") or approval_data.get("approval_id") or "")
     if request_id:
         metadata["approval_id"] = request_id
+    if "expires_at" in approval_data:
+        metadata["expires_at"] = approval_data["expires_at"]
     return metadata
 
 

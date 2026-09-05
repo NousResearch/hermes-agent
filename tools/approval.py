@@ -198,6 +198,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
         return 0
     target_id = request_id or approval_id
     with _lock:
+        for queue_key in _gateway_queue_keys_locked(session_key):
+            queue = _gateway_queues.get(queue_key, [])
+            for entry in list(queue):
+                if time.monotonic() >= entry.expires_at:
+                    queue.remove(entry)
+                    _record_gateway_resolution_locked(queue_key, entry, "expired")
+                    entry.event.set()
+            if not queue:
+                _gateway_queues.pop(queue_key, None)
         candidates = [
             (queue_key, entry)
             for queue_key in _gateway_queue_keys_locked(session_key)

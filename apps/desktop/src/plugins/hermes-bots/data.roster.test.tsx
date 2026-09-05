@@ -34,6 +34,7 @@ const { hostMock } = vi.hoisted(() => ({
     profileRoutes: undefined as unknown,
     request: vi.fn(),
     requestProfile: vi.fn(),
+    retainProfileSocket: vi.fn(),
     state: { connectionId: { get: vi.fn(() => 'local') }, profile: { get: () => 'default' } }
   }
 }))
@@ -114,6 +115,27 @@ afterEach(() => {
 })
 
 describe('no union roster', () => {
+  it('retains the polled profile socket for the query observer lifetime', async () => {
+    const release = vi.fn()
+    hostMock.retainProfileSocket.mockReturnValueOnce(release)
+    hostMock.request.mockResolvedValue({ profiles: [] })
+    hostMock.agents.mockResolvedValue({ agents: [], sources: [] })
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    )
+
+    const { result, unmount } = renderHook(() => useRoster(), { wrapper })
+
+    await waitFor(() => expect(result.current.data).toBeTruthy())
+    expect(hostMock.retainProfileSocket).toHaveBeenCalledWith('default')
+
+    unmount()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
   it('leaves the local list exactly as it was', async () => {
     const rows = await mergedRoster(
       { profiles: [{ last_session: { id: 's1', last_active: 1 }, name: 'default' }] },

@@ -1284,15 +1284,18 @@ export const host = {
     timeoutMs?: number
   ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
 
-  /** Pin a route's pooled gateway socket open across repeated `requestProfile`
-   *  calls (#93594: the bot-relay drain loop was dialing and tearing down a
+  /** Pin a route's pooled gateway socket open across repeated profile polls
+   *  (#93594: the bot-relay drain loop was dialing and tearing down a
    *  fresh WebSocket per registered connection per tick). Returns a once-only
-   *  release. Local routes are exempt (no-op release) so the idle reaper can
-   *  still reclaim spawned local backends. Feature-detect on older desktops
-   *  (`typeof host.retainProfileSocket === 'function'`). */
+   *  release. The bare-profile overload retains the legacy/local profile pool;
+   *  explicit registry-local routes stay exempt so the idle reaper can still
+   *  reclaim spawned backends. Feature-detect on older desktops. */
   retainProfileSocket: (route: PluginProfileRoute | string): (() => void) => {
-    if (typeof route === 'string' || !route) {
-      // Bare-profile compatibility overload: local/legacy routing — exempt.
+    if (typeof route === 'string') {
+      return retainGatewayForRelay(null, route.trim() || 'default')
+    }
+
+    if (!route) {
       return () => undefined
     }
 

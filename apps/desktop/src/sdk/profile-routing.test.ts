@@ -117,6 +117,7 @@ vi.mock('@/store/gateway', async () => {
       params,
       profile
     })),
+    retainGatewayForRelay: vi.fn(() => vi.fn()),
     retireLocalProfileGateways: vi.fn()
   }
 })
@@ -132,6 +133,7 @@ const {
   openGatewayForProfile,
   requestGatewayForAgent,
   requestGatewayForProfile,
+  retainGatewayForRelay,
   retireLocalProfileGateways
 } = await import('@/store/gateway')
 
@@ -545,6 +547,14 @@ describe('connection-aware plugin host APIs', () => {
     expect(requestGatewayForProfile).toHaveBeenCalledWith('legacy-worker', 'profiles.list', {
       include_sessions: true
     })
+  })
+
+  it('retains a profile-only socket for recurring plugin polls', () => {
+    const release = vi.fn()
+    vi.mocked(retainGatewayForRelay).mockReturnValueOnce(release)
+
+    expect(host.retainProfileSocket('legacy-worker')).toBe(release)
+    expect(retainGatewayForRelay).toHaveBeenCalledWith(null, 'legacy-worker')
   })
 
   it('rejects a profile-only request when the current registry makes it ambiguous', async () => {

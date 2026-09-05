@@ -7,6 +7,7 @@
  */
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
+import { useEffect } from 'react'
 
 import { displayName } from './labels'
 import {
@@ -633,6 +634,27 @@ interface UnionRoster {
 
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
+  const activeProfile = String(useValue(host.state.profile) || 'default').trim() || 'default'
+
+  // The five-second roster refresh is recurring ownership, not a succession
+  // of unrelated one-shot requests. Keep its profile socket leased for this
+  // query observer's lifetime so a background profile does not dial and tear
+  // down a fresh WebSocket on every tick. Explicit remote sources retain their
+  // composite route; the local/legacy path uses the bare-profile pool.
+  useEffect(() => {
+    if (typeof host.retainProfileSocket !== 'function') {
+      return undefined
+    }
+
+    const connectionId = String(activeConnectionId || '').trim()
+
+    const route: ProfileRoute | string =
+      connectionId && connectionId !== 'local'
+        ? { connectionId, mode: 'remote', profile: activeProfile, targetProfile: activeProfile }
+        : activeProfile
+
+    return host.retainProfileSocket(route)
+  }, [activeConnectionId, activeProfile])
 
   return useQuery({
     queryKey: [...ROSTER_KEY, activeConnectionId],
@@ -664,9 +686,7 @@ export function useRoster() {
 
       // Owner routing is ambient in the SDK now (post-#92731): requestForBot
       // resolves the active owner itself, no captured route needed here.
-      const activeBot = {
-        name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
-      }
+      const activeBot = { name: activeProfile }
 
       const local = await requestForBot<RosterSnapshot>(activeBot, 'profiles.list', {})
       // Newer backends inject the teammate-messaging protocol into every

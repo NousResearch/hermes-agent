@@ -245,6 +245,21 @@ class GatewayAuthorizationMixin:
             return None
         owner = self._transport_owner(source)
         if owner is not None:
+            # Per-credential routing: when a profile_route stamps a secondary
+            # profile that owns its own adapter for this platform, replies must
+            # go out that profile's bot — not the transport that received the
+            # inbound event.  The transport-authoritative shortcut (ff4637661)
+            # is only correct when the transport and the routed profile share
+            # the same credential (shared-token scenario).  When they differ,
+            # the routed profile's adapter is the right delivery path.
+            profile = getattr(source, "profile", None)
+            if profile and profile not in ("default", ""):
+                profile_maps = self._profile_adapters_map()
+                routed = profile_maps.get(profile, {})
+                platform = getattr(source, "platform", None)
+                routed_adapter = routed.get(platform) if platform else None
+                if routed_adapter is not None and routed_adapter is not owner[0]:
+                    return routed_adapter
             return owner[0]
         # Relay ingress keeps the underlying platform on the source, but delivery must use the one
         # process-level RelayAdapter owning the connector socket; a profile-aware lookup would

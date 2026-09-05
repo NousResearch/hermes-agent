@@ -339,13 +339,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     return expand_result.stdout.strip() + path[1 + len(username):]
         return path
 
+    @staticmethod
+    def _quote_shell_arg(arg: str) -> str:
+        """Quote arbitrary shell data without rewriting it as a path."""
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
     def _escape_shell_arg(self, arg: str) -> str:
         """Single-quote ``arg`` for the shell. On Windows, native drive paths and
         mixed MSYS leftovers are first rewritten to the Git Bash ``/c/Users/x``
         form via the env-layer ``_bash_safe_path`` (bash eats backslashes; MSYS
         mangles drive paths), so shell file ops and the terminal ``cd`` agree."""
         from tools.environments.local import _bash_safe_path
-        return "'" + _bash_safe_path(arg).replace("'", "'\"'\"'") + "'"
+        return self._quote_shell_arg(_bash_safe_path(arg))
 
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Quote a path for a NATIVE Windows binary (rg, node, git ...): those don't
@@ -355,7 +360,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
         if _IS_WINDOWS and arg:
             arg = _msys_to_windows_path(arg).replace("\\", "/")
-        return "'" + arg.replace("'", "'\"'\"'") + "'"
+        return self._quote_shell_arg(arg)
 
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` atomically: stdin → temp file in the SAME directory →

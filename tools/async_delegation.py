@@ -323,8 +323,17 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
+def is_interim_delegation_event(evt: Dict[str, Any]) -> bool:
+    """An early per-task notice for a batch that is still running. It shares the batch's
+    ``delegation_id`` but is NOT the durable completion: it must never claim, acknowledge or
+    dedup against the final result's row (independent review reproduced exactly that loss)."""
+    return evt.get("type") == "async_delegation" and bool(evt.get("task_failure_notice"))
+
+
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
-    """Claim a durable delegation event; non-durable events need no token."""
+    """Claim a durable delegation event; non-durable events (and interim notices) need no token."""
+    if is_interim_delegation_event(evt):
+        return ""
     delegation_id = str(evt.get("delegation_id") or "") if evt.get("type") == "async_delegation" else ""
     if not delegation_id:
         return ""
@@ -676,6 +685,41 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s: failed to enqueue completion event; "
                      "result lost: %s", record.get("delegation_id"), exc)
+
+
+def push_task_failure_notice(delegation_id: str, entry: Dict[str, Any], *, n_tasks: int) -> None:
+    """Surface ONE failed child of a still-running detached batch to the parent now, instead of
+    when the slowest sibling finishes. In a 1,393-agent run every wave-1 child died in a 401 storm
+    at 08:29 and the parent learned of it at 09:36, when the batch's "unknown outcome" block finally
+    arrived: 66 minutes of a dead wave with nothing running. The notice rides the same
+    ``type="async_delegation"`` event shape as the batch result (so every drain/route/format path
+    treats it identically) with ``task_failure_notice=True`` and a single-entry ``results`` list; the
+    batch record is NOT finalized and its consolidated result still arrives as before."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is None or record.get("status") not in _ACTIVE_STATES:
+            return
+        snapshot = dict(record)
+    try:
+        from tools.process_registry import process_registry
+    except Exception as exc:  # pragma: no cover
+        logger.error("Async delegation batch %s: task failure notice dropped (process_registry import): %s", delegation_id, exc)
+        return
+    evt = {
+        "type": "async_delegation", "task_failure_notice": True, "is_batch": True, "n_tasks": n_tasks,
+        "delegation_id": delegation_id, "results": [entry],
+        "session_key": snapshot.get("session_key", ""),
+        "origin_ui_session_id": snapshot.get("origin_ui_session_id", ""),
+        "origin_session_id": snapshot.get("origin_session_id", ""),
+        "parent_session_id": snapshot.get("parent_session_id"),
+        "goal": snapshot.get("goal", ""), "goals": snapshot.get("goals"), "context": snapshot.get("context"),
+        "toolsets": snapshot.get("toolsets"), "role": snapshot.get("role"), "model": snapshot.get("model"),
+        "status": "running", "dispatched_at": snapshot.get("dispatched_at") or time.time(), "completed_at": time.time(),
+        **{k: snapshot[k] for k in _ROUTING_KEYS if snapshot.get(k)}}
+    try:
+        process_registry.completion_queue.put(evt)
+    except Exception as exc:  # pragma: no cover
+        logger.error("Async delegation batch %s: failed to enqueue task failure notice: %s", delegation_id, exc)
 
 
 # ── Stale monitor ───────────────────────────────────────────────────────────

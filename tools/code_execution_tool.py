@@ -44,6 +44,7 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
+DEFAULT_MAX_MCP_TOOL_CALLS = 10
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
 # Hard ceiling on the spilled file (as web_tools' MAX_STORED_TEXT_CHARS): a runaway print loop must not fill the disk.
@@ -146,7 +147,8 @@ def _missing_hermes_tools_import_hint(m, enabled_tools) -> str:
     if missing in {"json_parse", "shell_quote", "retry"}:
         return (f"{missing} is a BUILT-IN helper in the sandbox — no import "
                 f"needed. Remove it from the import line and call {missing}(...) directly.")
-    available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+    enabled = set(enabled_tools or SANDBOX_ALLOWED_TOOLS)
+    available = sorted((SANDBOX_ALLOWED_TOOLS & enabled) | {n for n in enabled if n.startswith("mcp__")})
     return (f"'{missing}' is not available inside the execute_code sandbox. "
             f"Importable tools here: {', '.join(available)}. For anything "
             "else, use the normal tool call instead of execute_code.")
@@ -186,15 +188,84 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
     return None
 
 
+def _sandbox_mcp_tools(enabled_tools, config: Optional[dict] = None) -> frozenset:
+    """Resolve session-visible, explicitly enabled read-only MCP tools.
+
+    Exposure is off by default. ``expose_mcp_tools: true`` enables every
+    visible MCP tool whose discovery annotation was exactly
+    ``readOnlyHint=True``. A string/list can instead select exact raw server
+    names or registry tool names. Unknown state fails closed.
+    """
+    available = set(enabled_tools or ())
+    if not available:
+        return frozenset()
+    cfg = _load_config() if config is None else config
+    exposure = cfg.get("expose_mcp_tools", False)
+    if exposure is False or exposure is None:
+        return frozenset()
+    selectors = None
+    if exposure is not True:
+        if isinstance(exposure, str):
+            selectors = {exposure}
+        elif isinstance(exposure, (list, tuple, set, frozenset)):
+            selectors = {str(item) for item in exposure if str(item)}
+        else:
+            logger.warning(
+                "code_execution.expose_mcp_tools must be false, true, or a "
+                "list of MCP server/tool names; disabling MCP exposure"
+            )
+            return frozenset()
+    try:
+        from tools.mcp_tool_discovery import get_read_only_mcp_tools
+        read_only = get_read_only_mcp_tools()
+    except Exception:
+        logger.debug("Could not resolve read-only MCP tools", exc_info=True)
+        return frozenset()
+    return frozenset(
+        tool_name
+        for tool_name, server_name in read_only.items()
+        if tool_name in available
+        and (selectors is None or tool_name in selectors or server_name in selectors)
+    )
+
+
+def _max_mcp_tool_calls(config: dict) -> int:
+    """Return the non-negative per-cell MCP sub-budget."""
+    raw = config.get("max_mcp_tool_calls", DEFAULT_MAX_MCP_TOOL_CALLS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "code_execution.max_mcp_tool_calls must be an integer; using %d",
+            DEFAULT_MAX_MCP_TOOL_CALLS,
+        )
+        return DEFAULT_MAX_MCP_TOOL_CALLS
+    if value < 0:
+        logger.warning(
+            "code_execution.max_mcp_tool_calls cannot be negative; using %d",
+            DEFAULT_MAX_MCP_TOOL_CALLS,
+        )
+        return DEFAULT_MAX_MCP_TOOL_CALLS
+    return value
+
+
 def generate_hermes_tools_module(enabled_tools: List[str],
-                                 transport: str = "uds") -> str:
-    """Source of the hermes_tools.py stub module for SANDBOX_ALLOWED_TOOLS ∩ *enabled_tools*.
-    ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends)."""
+                                 transport: str = "uds",
+                                 mcp_tools: Optional[List[str]] = None) -> str:
+    """Build built-in and explicitly gated MCP RPC stubs.
+
+    ``transport`` is ``"uds"`` locally or ``"file"`` for remote backends.
+    MCP stubs stay generic because their full schemas are already model-visible.
+    """
     header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
-    return header + "\n".join(
+    stubs = [
         f"def {name}({sig}):\n    {doc}\n    return _call({name!r}, {args_expr})\n"
         for name, (sig, doc, args_expr) in sorted(_TOOL_STUBS.items()) if name in set(enabled_tools)
-    )
+    ]
+    for name in sorted(set(mcp_tools or ()) & set(enabled_tools)):
+        if name.startswith("mcp__") and name.isidentifier():
+            stubs.append(f"def {name}(**kwargs):\n    return _call({name!r}, kwargs)\n")
+    return header + "\n".join(stubs)
 
 
 # ---- Shared helpers section (embedded in both transport headers) ----------
@@ -491,16 +562,21 @@ def _with_timeout_notice(stdout_text: str, timeout_msg: str) -> str:
     return stdout_text + f"\n\n⏰ {timeout_msg}" if stdout_text else f"⏰ {timeout_msg}"
 
 
-def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0) -> str:
+def _error_result(error: str, *, tool_calls_made: int = 0,
+                  mcp_tool_calls_made: int = 0, duration: float = 0) -> str:
     return json.dumps({"status": "error", "error": error, "tool_calls_made": tool_calls_made,
+                       "mcp_tool_calls_made": mcp_tool_calls_made,
                        "duration_seconds": duration}, ensure_ascii=False)
 
 
-def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int) -> str:
+def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int,
+                    mcp_tool_calls_made: int = 0) -> str:
     duration = round(time.monotonic() - exec_start, 2)
     logger.error("execute_code remote failed after %ss with %d tool calls: %s: %s",
                  duration, tool_calls_made, type(exc).__name__, exc, exc_info=True)
-    return _error_result(str(exc), tool_calls_made=tool_calls_made, duration=duration)
+    return _error_result(
+        str(exc), tool_calls_made=tool_calls_made,
+        mcp_tool_calls_made=mcp_tool_calls_made, duration=duration)
 
 
 _REMOTE_EXIT_STATUS = {124: "timeout", 130: "interrupted"}
@@ -536,7 +612,8 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
         # the output under one marker so the model sees the failure inline.
         stdout_text = stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
-                            {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
+                            {"tool_calls_made": kernel_result.get("tool_calls_made", 0),
+                             "mcp_tool_calls_made": kernel_result.get("mcp_tool_calls_made", 0)},
                             kernel=kernel_result.get("kernel", {"remote": True}))
     if result["status"] == "timeout":
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
@@ -552,19 +629,22 @@ def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
-                         sandbox_tools: frozenset, *, timeout: int, max_tool_calls: int,
+                         sandbox_tools: frozenset, *, mcp_tools: frozenset,
+                         timeout: int, max_tool_calls: int, max_mcp_tool_calls: int,
                          exec_start: float) -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
     quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
-    tool_call_counter, stop_event, rpc_thread = [0], threading.Event(), None
+    tool_call_counter, mcp_tool_call_counter = [0], [0]
+    stop_event, rpc_thread = threading.Event(), None
     try:
         env.execute(f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10)
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
-                             generate_hermes_tools_module(list(sandbox_tools), transport="file"))
+                             generate_hermes_tools_module(
+                                 list(sandbox_tools), transport="file", mcp_tools=list(mcp_tools)))
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
@@ -572,7 +652,9 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
-                  max_tool_calls, sandbox_tools, stop_event, rpc_token))
+                  max_tool_calls, sandbox_tools, stop_event, rpc_token),
+            kwargs={"mcp_tools": mcp_tools, "mcp_tool_call_counter": mcp_tool_call_counter,
+                    "max_mcp_tool_calls": max_mcp_tool_calls})
         rpc_thread.start()
         env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
                       "PYTHONDONTWRITEBYTECODE=1")
@@ -587,7 +669,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # Backend exit codes: 124 = timeout wrapper, 130 = SIGINT.
         status = _REMOTE_EXIT_STATUS.get(exit_code, "success")
     except Exception as exc:
-        return _remote_failure(exc, exec_start, tool_call_counter[0])
+        return _remote_failure(
+            exc, exec_start, tool_call_counter[0], mcp_tool_call_counter[0])
     finally:
         stop_event.set()
         if rpc_thread is not None:
@@ -597,7 +680,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
-                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]})
+                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0],
+                             "mcp_tool_calls_made": mcp_tool_call_counter[0]})
     if status == "timeout":
         _apply_timeout(result, f"Script timed out after {timeout}s and was killed.")
         logger.warning("execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
@@ -617,7 +701,12 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
     _cfg = _load_config()
     timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
-    sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
+    max_mcp_tool_calls = _max_mcp_tool_calls(_cfg)
+    session_tools = set(enabled_tools or ())
+    builtin_tools = _sandbox_tools_for(enabled_tools)
+    mcp_tools = _sandbox_mcp_tools(session_tools, _cfg)
+    sandbox_tools = frozenset(builtin_tools | mcp_tools)
+    effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
     try:
@@ -635,8 +724,9 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
             from tools.code_kernel_remote import execute_in_remote_kernel
             kernel_result = execute_in_remote_kernel(
                 code, env=env, env_type=env_type, task_env_id=effective_task_id,
-                sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
-                max_tool_calls=max_tool_calls, reset=bool(reset),
+                sandbox_tools=frozenset(sandbox_tools), mcp_tools=frozenset(mcp_tools),
+                timeout=timeout, max_tool_calls=max_tool_calls,
+                max_mcp_tool_calls=max_mcp_tool_calls, reset=bool(reset),
                 idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
             )
         except Exception:
@@ -647,8 +737,10 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
         logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
     except Exception as exc:
         return _remote_failure(exc, exec_start, 0)
-    return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
-                                timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
+    return _run_remote_per_call(
+        env, env_type, code, effective_task_id, sandbox_tools,
+        mcp_tools=mcp_tools, timeout=timeout, max_tool_calls=max_tool_calls,
+        max_mcp_tool_calls=max_mcp_tool_calls, exec_start=exec_start)
 
 
 # ---- Main entry point ----
@@ -721,12 +813,17 @@ def execute_code(
     from tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
+    session_tools = set(enabled_tools or ())
+    builtin_tools = _sandbox_tools_for(enabled_tools)
+    mcp_tools = _sandbox_mcp_tools(session_tools, _cfg)
     return execute_in_session_kernel(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
-        sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
+        sandbox_tools=frozenset(builtin_tools | mcp_tools),
+        mcp_tools=frozenset(mcp_tools),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+        max_mcp_tool_calls=_max_mcp_tool_calls(_cfg),
         reset=bool(reset), is_interrupted=_is_interrupted,
     )
 
@@ -808,16 +905,26 @@ _TOOL_DOC_LINES = [
 
 
 def build_execute_code_schema(enabled_sandbox_tools: set = None,
-                              mode: str = None) -> dict:
+                              mode: str = None,
+                              enabled_mcp_tools: set = None) -> dict:
     """execute_code schema listing only *enabled_sandbox_tools* — a disabled tool (e.g. web off)
     must not appear or the model keeps trying it. ``mode`` (None → config) picks the cwd sentence."""
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    enabled_mcp_tools = set(enabled_mcp_tools or ())
     if mode is None:
         mode = _get_execution_mode()
-    tool_lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools)
+    builtin_lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools)
+    tool_sections = [builtin_lines] if builtin_lines else []
+    if enabled_mcp_tools:
+        names = ", ".join(f"{name}(**kwargs)" for name in sorted(enabled_mcp_tools))
+        tool_sections.append(
+            "  Read-only MCP tools (same keyword args as their model-visible schemas):\n"
+            f"    {names}"
+        )
+    tool_lines = "\n".join(tool_sections)
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
-    import_examples = import_examples or sorted(enabled_sandbox_tools)[:2]
+    import_examples = import_examples or sorted(set(enabled_sandbox_tools) | enabled_mcp_tools)[:2]
     import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
     if mode == "strict":
         cwd_note = (
@@ -847,7 +954,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "work instead of re-loading it. A timed-out or interrupted call loses that state.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
+        "Limits: 5-minute timeout, max 50 tool calls per call; read-only MCP calls "
+        "also have a separate configurable sub-limit. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"
         "Built-in helpers (no import): json_parse(text) — tolerant "

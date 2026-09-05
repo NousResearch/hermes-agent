@@ -1644,13 +1644,19 @@ stt:
 code_execution:
   timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
+  expose_mcp_tools: false     # true, or exact MCP server/registry tool names
+  max_mcp_tool_calls: 10      # Separate cap for exposed read-only MCP calls
   # Local execution uses a persistent session kernel: variables, imports, and
   # loaded data survive across execute_code calls in one conversation, so
   # multi-step data work stops re-loading its inputs every call. Pass
   # reset=true on a call to discard state; a timed-out/interrupted cell kills
-  # the kernel (next call starts fresh). Remote terminal backends currently
-  # run per-call (remote kernel host is tracked follow-up work). Security
-  # scrubbing, tool whitelist, and output redaction are identical either way.
+  # the kernel (next call starts fresh). Remote terminal backends use the same
+  # persistent-cell contract when their host can sustain a detached runner,
+  # and fail open to per-call execution otherwise. Security scrubbing, tool
+  # whitelist, and output redaction are identical either way.
+  # MCP tools remain off by default. When enabled, only session-visible tools
+  # with discovery-time readOnlyHint=true are eligible; missing/false hints
+  # and write-capable tools fail closed.
   # kernel_idle_timeout: 1800   # Reap kernels idle longer than this (seconds)
   # max_session_kernels: 4      # Process-wide LRU cap on live kernels
 

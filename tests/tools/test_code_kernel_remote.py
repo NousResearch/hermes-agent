@@ -74,12 +74,20 @@ def _cell(status="ok", stdout="", execution_count=1, **kw):
     return payload
 
 
-def _run(env, code="print(1)", *, task="t1", reset=False, timeout=10,
-         tools=frozenset({"read_file"})):
+def _run(
+    env,
+    code="print(1)",
+    *,
+    task="t1",
+    reset=False,
+    timeout=10,
+    tools=frozenset({"read_file"}),
+    mcp_tools=frozenset(),
+):
     return execute_in_remote_kernel(
         code, env=env, env_type="ssh", task_env_id=task,
         sandbox_tools=tools, timeout=timeout,
-        max_tool_calls=5, reset=reset,
+        max_tool_calls=5, reset=reset, mcp_tools=mcp_tools,
     )
 
 
@@ -93,7 +101,7 @@ class RemoteKernelBase(unittest.TestCase):
         )
         self._ship.start()
         self._poll = patch(
-            "tools.code_execution_tool._rpc_poll_loop",
+            "tools.code_execution_rpc._rpc_poll_loop",
         )
         self._poll.start()
 
@@ -131,6 +139,17 @@ class TestSpawnAndReuse(RemoteKernelBase):
         _run(env)
         result = _run(env, reset=True)
         self.assertTrue(result["kernel"].get("state_reset"))
+        self.assertFalse(result["kernel"]["reused"])
+        self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
+
+    def test_changed_mcp_tool_set_spawns_matching_stubs(self):
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))
+        _run(env, tools=frozenset({"read_file"}))
+        result = _run(
+            env,
+            tools=frozenset({"read_file", "mcp__docs__search"}),
+            mcp_tools=frozenset({"mcp__docs__search"}),
+        )
         self.assertFalse(result["kernel"]["reused"])
         self.assertEqual(sum(1 for c in env.commands if "nohup" in c), 2)
 

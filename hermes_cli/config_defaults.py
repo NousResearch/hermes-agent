@@ -1753,9 +1753,15 @@ DEFAULT_CONFIG = {
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
-        # Session kernels are always on locally (`kernel_mode` is ignored; remote backends run
-        # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
-        # across calls and turns; subagents get their own. Kernels die with the session, after
+        # Off by default. true exposes every discovery-time readOnlyHint=true MCP tool;
+        # a list narrows that set to exact raw server names or registry tool names.
+        "expose_mcp_tools": False,
+        # Separate per-cell sub-budget within the overall tool-call cap.
+        "max_mcp_tool_calls": 10,
+        # Session kernels are always on locally (`kernel_mode` is ignored). Remote backends use
+        # the same persistent-cell contract when they can sustain a detached runner and fall back
+        # to per-call execution otherwise. One kernel per (session owner, mode, interpreter, cwd,
+        # tool-set) keeps state across calls and turns; subagents get their own. Kernels die after
         # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
         # timed-out/interrupted cell kills the kernel; env is frozen at spawn (reset=true after
         # changing passthrough). Tool RPC authority (approval, session, allow-list, call budget) is

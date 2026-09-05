@@ -2400,6 +2400,8 @@ code_execution:
   mode: project                # project (default) | strict
   timeout: 300                 # Max execution time in seconds
   max_tool_calls: 50           # Max tool calls within code execution
+  expose_mcp_tools: false      # Off by default; true or a server/tool name list
+  max_mcp_tool_calls: 10       # Separate cap for exposed read-only MCP calls
 ```
 
 **`mode`** controls the working directory and Python interpreter for scripts:
@@ -2408,6 +2410,10 @@ code_execution:
 - **`strict`** — scripts run in a temp staging directory with `sys.executable` (Hermes's own python). Maximum reproducibility, but project deps and relative paths won't resolve.
 
 Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PASSWD`, `*_AUTH`) and the tool whitelist apply identically in both modes — switching mode does not change the security posture.
+
+**`expose_mcp_tools`** controls whether MCP tools can be imported from `hermes_tools` inside `execute_code`. The default is `false`. Set it to `true` to expose every session-visible MCP tool whose discovery annotation is exactly `readOnlyHint: true`, or use a list of exact MCP server names and/or full registry tool names (for example, `[linear, mcp__notion__search]`). Tools with a missing or false read-only hint are never exposed. MCP calls count toward both `max_tool_calls` and the lower `max_mcp_tool_calls` sub-budget.
+
+`readOnlyHint` is metadata supplied by the MCP server, so only enable this for servers you trust to classify their tools honestly.
 
 ## Web Search Backends
 

@@ -39,6 +39,9 @@ def test_dropped_public_names_methods_and_test_defs_are_reported_and_moves_are_n
             def pub(self): ...
             def __len__(self): return 0
             def _hidden(self): ...
+        class Big:
+            def stays(self): ...
+            def extracted(self): ...
     '''), encoding="utf-8")
     (repo / "agent" / "moved.py").write_text("def relocated(): ...\n", encoding="utf-8")
     (repo / "tests" / "test_x.py").write_text("def test_a(): ...\ndef test_b(): ...\nasync def test_c(): ...\n", encoding="utf-8")
@@ -55,6 +58,10 @@ def test_dropped_public_names_methods_and_test_defs_are_reported_and_moves_are_n
         LIMIT = 3
         def keep(): ...
         class K: ...
+        class _BigMixin:
+            def extracted(self): ...   # moved into an in-module base: still reachable on Big
+        class Big(_BigMixin):
+            def stays(self): ...
     '''), encoding="utf-8")
     (repo / "agent" / "moved.py").write_text("def relocated(): ...\ndef relocated2(): ...\n", encoding="utf-8")
     (repo / "tests" / "test_x.py").write_text("def test_a(): ...\nasync def test_c(): ...\n", encoding="utf-8")
@@ -70,3 +77,15 @@ def test_dropped_public_names_methods_and_test_defs_are_reported_and_moves_are_n
     assert mod.main(["--base", "HEAD~1", "--head", "HEAD"]) == 0          # advisory
     assert mod.main(["--base", "HEAD~1", "--head", "HEAD", "--strict"]) == 1
     assert mod.main(["--base", "HEAD", "--head", "HEAD", "--strict"]) == 0  # nothing dropped
+
+
+def test_unresolvable_refs_are_an_error_not_a_clean_report(tmp_path, monkeypatch):
+    """Independent-review witness: a nonexistent base ref under --strict reported zero drops and exited 0,
+    which would make a mis-fetched CI job look clean."""
+    repo = tmp_path
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "init", "-q", "-b", "main"); _git(repo, "add", "."); _git(repo, "commit", "-qm", "base")
+    monkeypatch.chdir(repo)
+    mod = _load()
+    assert mod.main(["--base", "origin/does-not-exist", "--head", "HEAD", "--strict"]) == 2
+    assert mod.main(["--base", "origin/does-not-exist", "--head", "HEAD"]) == 2

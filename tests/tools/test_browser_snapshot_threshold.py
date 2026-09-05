@@ -1,6 +1,7 @@
 """Behavior tests for config-driven browser snapshot thresholds."""
 
 import json
+import os
 from unittest.mock import Mock
 
 import pytest
@@ -17,6 +18,14 @@ def isolated_snapshot_threshold(tmp_path, monkeypatch):
     """Use a real, isolated config file and reset module-level caches."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
+    # hermes_cli.config.read_raw_config caches on (mtime_ns, size); on
+    # filesystems with coarse/multigrain timestamps two rapid same-size
+    # rewrites can share one cache key and serve stale content, which is
+    # orthogonal to the browser-tool cache lifecycle under test here.
+    from hermes_cli import config as _config_mod
+
+    _config_mod._RAW_CONFIG_CACHE.clear()
+
     original_cached = browser_tool._cached_snapshot_threshold
     original_resolved = browser_tool._snapshot_threshold_resolved
     browser_tool._cached_snapshot_threshold = None
@@ -24,13 +33,29 @@ def isolated_snapshot_threshold(tmp_path, monkeypatch):
     yield tmp_path
     browser_tool._cached_snapshot_threshold = original_cached
     browser_tool._snapshot_threshold_resolved = original_resolved
+    _config_mod._RAW_CONFIG_CACHE.clear()
+
+
+_MTIME_FLOOR: dict = {}
 
 
 def _write_threshold(hermes_home, value):
-    (hermes_home / "config.yaml").write_text(
+    path = hermes_home / "config.yaml"
+    path.write_text(
         f"browser:\n  snapshot_threshold: {value}\n",
         encoding="utf-8",
     )
+    # read_raw_config caches on (mtime_ns, size); on filesystems with
+    # coarse/multigrain timestamps two rapid same-size rewrites can share one
+    # cache key and serve stale content. Force a strictly increasing,
+    # fine-grained mtime so the cache contract is what this test actually
+    # exercises (a plain "+1ms" bump is not enough: each rewrite first
+    # resets mtime to the same coarse tick).
+    st = path.stat()
+    key = str(path)
+    new_mtime = max(st.st_mtime_ns, _MTIME_FLOOR.get(key, 0)) + 1_000_000_000
+    os.utime(path, ns=(st.st_atime_ns, new_mtime))
+    _MTIME_FLOOR[key] = new_mtime
 
 
 def _long_snapshot(chars: int) -> str:

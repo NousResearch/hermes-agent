@@ -304,7 +304,9 @@ def _(rid, params: dict) -> dict:
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
-    _enable_gateway_prompts()
+    single_query = params.get("_single_query_proof") is _IN_PROCESS_SINGLE_QUERY_PROOF
+    if not single_query:
+        _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
@@ -326,6 +328,7 @@ def _(rid, params: dict) -> dict:
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
+            "single_query": single_query,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport}
         _register_session_cwd(_sessions[sid])
@@ -1626,7 +1629,10 @@ def _(rid, params: dict, session: dict) -> dict:
         f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
         f"Tokens: {int(_session_usage_snapshot(session).get('total') or 0):,}",
         f"Agent Running: {'Yes' if session.get('running') else 'No'}"]
-    return _ok(rid, {"output": "\n".join(lines)})
+    running = bool(session.get("running"))
+    thread = session.get("_run_thread")
+    turn_settled = not running and not (thread is not None and thread.is_alive())
+    return _ok(rid, {"output": "\n".join(lines), "running": running, "turn_settled": turn_settled})
 
 
 @_session_method("session.history")

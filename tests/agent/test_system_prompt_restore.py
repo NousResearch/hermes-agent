@@ -16,7 +16,7 @@ instead of rebuilding).  Covers:
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -113,6 +113,39 @@ class TestStoredPromptReuse:
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
+    def test_existing_cli_chat_migrates_to_bot_mode_prompt_once(self):
+        stored = "Stored prompt from before CLI Bot Mode messaging"
+        rebuilt = "Rebuilt prompt with Bot Mode messaging\n\nCapability epoch: abc123def456"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db, prebuilt_prompt=rebuilt)
+        agent._session_title_hint = "Project discussion"
+
+        with (
+            patch(
+                "tools.bot_mode_probe.bot_mode_session_state",
+                return_value={"managed": True, "session_kind": "user"},
+            ),
+            patch(
+                "tools.bot_mode_probe.stored_prompt_capability_stale",
+                return_value=False,
+            ),
+            patch(
+                "tools.bot_mode_probe.stored_bot_mode_user_prompt_needs_upgrade",
+                return_value=True,
+            ),
+        ):
+            _restore_or_build_system_prompt(
+                agent,
+                None,
+                [{"role": "user", "content": "Ask the researcher."}],
+            )
+
+        assert agent._cached_system_prompt == rebuilt
+        assert agent._session_title_hint == "Project discussion"
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(agent.session_id, rebuilt)
+
 
 # ---------------------------------------------------------------------------
 # Legitimate fresh-build paths (no history, no DB)
@@ -188,6 +221,139 @@ class TestSilentFailureWarnings:
         # No "rebuilding from scratch" warning because history is empty
         warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
         assert not any("rebuilding" in m for m in warnings)
+
+
+class TestBotModeGatewayPromptRestore:
+    """Persisted routed chats migrate without changing session identity."""
+
+    @staticmethod
+    def _gateway_agent(tmp_path, stored_prompt):
+        home = tmp_path / ".hermes"
+        yuki_home = home / "profiles" / "yuki"
+        yuki_home.mkdir(parents=True)
+        (yuki_home / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots:\n    shape: cloud\n", encoding="utf-8"
+        )
+        db = MagicMock()
+        db.db_path = str(yuki_home / "state.db")
+        db.get_session.return_value = {"system_prompt": stored_prompt}
+        db.get_session_title.return_value = "Group: 42"
+        agent = _make_agent(db, prebuilt_prompt="REBUILT GATEWAY PROMPT")
+        agent.platform = "discord"
+        agent._session_title_hint = None
+        agent._bot_mode_protocol = True
+        return agent
+
+    def test_unstamped_gateway_prompt_upgrades_once(self, tmp_path, monkeypatch):
+        from agent import conversation_loop
+        from tools import bot_mode_probe
+
+        bot_mode_probe._reset_cache_for_tests()
+        agent = self._gateway_agent(tmp_path, "legacy prompt without protocol")
+        monkeypatch.setattr(
+            conversation_loop, "_stored_prompt_matches_runtime", lambda *_: True
+        )
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == "REBUILT GATEWAY PROMPT"
+        assert agent._session_title_hint is None
+        agent._session_db.update_system_prompt.assert_called_once()
+
+    def test_stale_gateway_prompt_rebuild_preserves_title(self, tmp_path, monkeypatch):
+        from agent import conversation_loop
+        from tools import bot_mode_probe
+
+        bot_mode_probe._reset_cache_for_tests()
+        agent = self._gateway_agent(tmp_path, "stamped but stale prompt")
+        monkeypatch.setattr(
+            conversation_loop, "_stored_prompt_matches_runtime", lambda *_: True
+        )
+        monkeypatch.setattr(
+            bot_mode_probe, "stored_prompt_capability_stale", lambda *_: True
+        )
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == "REBUILT GATEWAY PROMPT"
+        assert agent._session_title_hint is None
+
+    @pytest.mark.parametrize(
+        ("roster_profile", "platform"),
+        ((False, "discord"), (True, "desktop"), (True, "not-a-platform")),
+    )
+    def test_stale_prompt_does_not_migrate_denied_session(
+        self, tmp_path, monkeypatch, roster_profile, platform
+    ):
+        from agent import conversation_loop
+        from tools import bot_mode_probe
+
+        bot_mode_probe._reset_cache_for_tests()
+        stored = "stale capability stamp from a prior surface"
+        agent = self._gateway_agent(tmp_path, stored)
+        agent.platform = platform
+        agent._session_db.get_session_title.return_value = "Ordinary chat"
+        if not roster_profile:
+            # Keep the install managed via another profile while tombstoning
+            # the current routed profile out of profiles.list.
+            tombstone = tmp_path / ".hermes" / "profiles" / ".deleted" / "yuki"
+            tombstone.parent.mkdir(parents=True)
+            tombstone.write_text("deleted\n", encoding="utf-8")
+            other = tmp_path / ".hermes" / "profiles" / "researcher"
+            other.mkdir(parents=True)
+            (other / "profile.yaml").write_text(
+                "ui_meta:\n  hermes-bots:\n    shape: cloud\n", encoding="utf-8"
+            )
+        monkeypatch.setattr(
+            conversation_loop, "_stored_prompt_matches_runtime", lambda *_: True
+        )
+        monkeypatch.setattr(
+            bot_mode_probe, "stored_prompt_capability_stale", lambda *_: True
+        )
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        agent._session_db.update_system_prompt.assert_not_called()
+
+    def test_bot_mode_prompt_is_not_restored_into_denied_task_source(
+        self, tmp_path, monkeypatch
+    ):
+        """A trusted CLI Bot Chat prompt cannot cross into a tool-owned turn."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import bot_mode_probe
+
+        bot_mode_probe._reset_cache_for_tests()
+        yuki_home = tmp_path / ".hermes" / "profiles" / "yuki"
+        stored = (
+            "trusted prompt\n"
+            "## Messaging other agents\n"
+            f"{bot_mode_probe.epoch_line(yuki_home)}\n"
+            "Platform: cli"
+        )
+        agent = self._gateway_agent(tmp_path, stored)
+        agent.platform = "cli"
+        agent._session_db.get_session_title.return_value = "Bot Chat"
+
+        tokens = set_session_vars(source="tool")
+        try:
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+        finally:
+            clear_session_vars(tokens)
+
+        assert agent._cached_system_prompt == "REBUILT GATEWAY PROMPT"
+        agent._session_db.update_system_prompt.assert_called_once_with(
+            agent.session_id, "REBUILT GATEWAY PROMPT"
+        )
 
 
 # ---------------------------------------------------------------------------

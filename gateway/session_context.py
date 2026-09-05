@@ -37,6 +37,7 @@ _SESSION_VARS = (
     _SESSION_USER_NAME, _SESSION_SCOPE_ID, _SESSION_KEY, _SESSION_ID,
     _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
     _BROWSER_CONTROL_PRINCIPAL, _BROWSER_CONTROL_TRANSPORT_FAMILY, _CRON_SESSION,
+    _SINGLE_QUERY_SESSION,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
     "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
@@ -45,6 +46,7 @@ _SESSION_VARS = (
     "HERMES_UI_SESSION_ID", "HERMES_SESSION_MESSAGE_ID", "HERMES_SESSION_PROFILE",
     "HERMES_BROWSER_CONTROL_PRINCIPAL", "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY",
     "HERMES_CRON_SESSION",
+    "HERMES_SINGLE_QUERY_SESSION",
 ))
 
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
@@ -107,7 +109,7 @@ def set_session_vars(
     user_name: str = "", scope_id: str = "", session_key: str = "", session_id: str = "",
     message_id: str = "", profile: str = "", browser_control_principal: str = "",
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
-    ui_session_id: str = "", cron_session: Any = _UNSET,
+    ui_session_id: str = "", cron_session: Any = _UNSET, single_query: Any = _UNSET,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -118,6 +120,7 @@ def set_session_vars(
         platform, source, chat_id, chat_type, chat_name, thread_id, user_id, user_id_alt,
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
         browser_control_principal, browser_control_transport_family, cron_session,
+        single_query,
     )
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
@@ -153,6 +156,20 @@ def get_session_env(name: str, default: str = "") -> str:
     if var is not None and (value := var.get()) is not _UNSET:
         return value
     return os.getenv(name, default)
+
+
+def resolve_session_source(platform: str | None) -> str:
+    """Return the authoritative source for an agent-backed session.
+
+    A task-local ``HERMES_SESSION_SOURCE`` takes precedence over the agent's
+    platform. This is shared by persistence and authorization callers so a
+    machine/task turn cannot inherit trust from a human-facing platform hint.
+    """
+    try:
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+    except Exception:
+        source = os.environ.get("HERMES_SESSION_SOURCE", "")
+    return str(source or "").strip() or platform or "cli"
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

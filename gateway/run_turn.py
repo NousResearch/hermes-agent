@@ -1927,10 +1927,17 @@ class GatewayTurnMixin:
             (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
         )
 
+        chain_request = await self._prepare_bot_chain_request(event, source)
+        if isinstance(chain_request, str):
+            return chain_request
         resolved = await self._hmwa_resolve_session(event, source)
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        if chain_request is not None:
+            await self._hmwa_open_session(session_entry, session_key, source)
+            with self._profile_scope_for_source(source):
+                return await self._handle_bot_chain_turn(event, session_entry, _quick_key, chain_request)
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )

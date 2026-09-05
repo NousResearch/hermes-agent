@@ -40,6 +40,7 @@ def test_context_overflow_compresses_then_resumes():
         bfr.AGENT_BLOCKED,
         bfr.CANCELLED,
         bfr.QUEUED_EXPIRED,
+        bfr.SESSION_BUSY,
         bfr.UNKNOWN,
         "",
         "not-a-reason",

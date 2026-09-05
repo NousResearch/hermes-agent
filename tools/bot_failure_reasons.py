@@ -18,6 +18,7 @@ QUEUED_EXPIRED = "queued_expired"
 DELIVERY_TIMEOUT = "delivery_timeout"
 AGENT_BLOCKED = "agent_blocked"
 CANCELLED = "cancelled"
+SESSION_BUSY = "session_busy"
 
 # agent-side
 PROVIDER_AUTH_OR_ACCESS = "provider_auth_or_access"
@@ -30,7 +31,7 @@ MODEL_UNAVAILABLE = "model_unavailable"
 UNKNOWN = "unknown"
 
 ALL_REASONS = frozenset({
-    RUNTIME_OFFLINE, QUEUED_EXPIRED, DELIVERY_TIMEOUT, AGENT_BLOCKED, CANCELLED,
+    RUNTIME_OFFLINE, QUEUED_EXPIRED, DELIVERY_TIMEOUT, AGENT_BLOCKED, CANCELLED, SESSION_BUSY,
     PROVIDER_AUTH_OR_ACCESS, PROVIDER_QUOTA_LIMIT, PROVIDER_RATE_LIMIT,
     PROVIDER_SERVER_ERROR, CONTEXT_OVERFLOW, MISSING_CONFIG, MODEL_UNAVAILABLE, UNKNOWN,
 })
@@ -69,6 +70,7 @@ _STATUS = r"(?:error code:?\s*|status(?:\s*code)?:?\s*|http\s*)"
 _RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(pat, re.IGNORECASE), code)
     for pat, code in (
+        (r"SESSION_NOT_OWNED|already has a live owner", SESSION_BUSY),
         (rf"authentication_error|invalid api key|{_STATUS}(?:401|403)\b", PROVIDER_AUTH_OR_ACCESS),
         (rf"{_STATUS}402\b|out of funds|quota|balance", PROVIDER_QUOTA_LIMIT),
         (rf"{_STATUS}429\b|rate.?limit", PROVIDER_RATE_LIMIT),
@@ -88,3 +90,20 @@ def classify_agent_error(text: str) -> str:
             if pattern.search(raw):
                 return code
     return UNKNOWN
+
+
+_MACHINE_REASON_ALIASES = {
+    "session_not_owned": SESSION_BUSY,
+    "rate_limit": PROVIDER_RATE_LIMIT,
+    "billing": PROVIDER_QUOTA_LIMIT,
+    "server_error": PROVIDER_SERVER_ERROR,
+    "model_not_found": MODEL_UNAVAILABLE,
+}
+
+
+def classify_session_error(machine_reason: object, text: str = "") -> str:
+    """Prefer the session RPC's authoritative reason over display-text inference."""
+    normalized = str(machine_reason or "").strip().lower()
+    if normalized in ALL_REASONS:
+        return normalized
+    return _MACHINE_REASON_ALIASES.get(normalized) or classify_agent_error(text)

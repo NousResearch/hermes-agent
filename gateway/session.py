@@ -18,6 +18,7 @@ from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
+from gateway.session_bot_chain import SessionBotChainStoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -739,6 +740,7 @@ class AsyncSessionStore:
 
 class SessionStore(
     SessionPersistenceMixin, SessionRecoveryMixin, SessionLifecycleMixin, SessionTranscriptMixin,
+    SessionBotChainStoreMixin,
 ):
     """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
 

@@ -1752,12 +1752,12 @@ def cmd_proxy(args):
         raise SystemExit(rc)
 
 
-def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = False, doc: str = ""):
+def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = True, doc: str = ""):
     """A ``hermes <cmd>`` handler that hands ``args`` to ``<module>.<attr>``.
 
     Imports at CALL time so fast paths never pay for it and
     ``patch("<module>.<attr>")`` keeps intercepting. ``forward_return``
-    surfaces the return code to ``main()`` (only kanban/project propagate).
+    surfaces the return code to ``main()``.
     """
 
     def _cmd(args):
@@ -1778,8 +1778,8 @@ cmd_auth = _forward_command("cmd_auth", "hermes_cli.auth_commands", "auth_comman
 cmd_status = _forward_command("cmd_status", "hermes_cli.status", "show_status", doc='Show status of all components.')
 cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", "cron_command", doc='Cron job management.')
 cmd_webhook = _forward_command("cmd_webhook", "hermes_cli.webhook", "webhook_command", doc='Webhook subscription management.')
-cmd_kanban = _forward_command("cmd_kanban", "hermes_cli.kanban", "kanban_command", forward_return=True, doc='Multi-profile collaboration board.')
-cmd_project = _forward_command("cmd_project", "hermes_cli.projects_cmd", "projects_command", forward_return=True, doc='Manage projects (named, multi-folder workspaces).')
+cmd_kanban = _forward_command("cmd_kanban", "hermes_cli.kanban", "kanban_command", doc='Multi-profile collaboration board.')
+cmd_project = _forward_command("cmd_project", "hermes_cli.projects_cmd", "projects_command", doc='Manage projects (named, multi-folder workspaces).')
 cmd_hooks = _forward_command("cmd_hooks", "hermes_cli.hooks", "hooks_command", doc='Shell-hook inspection and management.')
 cmd_doctor = _forward_command("cmd_doctor", "hermes_cli.doctor", "run_doctor", doc='Check configuration and dependencies.')
 cmd_dump = _forward_command("cmd_dump", "hermes_cli.dump", "run_dump", doc='Dump setup summary for support/debugging.')

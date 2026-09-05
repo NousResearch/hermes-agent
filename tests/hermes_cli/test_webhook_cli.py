@@ -130,14 +130,16 @@ class TestWebhookEnabledGate:
 
     def test_blocks_list_when_disabled(self, capsys, monkeypatch):
         monkeypatch.setattr("hermes_cli.webhook._is_webhook_enabled", lambda: False)
-        webhook_command(_make_args(webhook_action="list"))
+        rc = webhook_command(_make_args(webhook_action="list"))
         out = capsys.readouterr().out
+        assert rc != 0
         assert "not enabled" in out.lower()
 
     def test_allows_when_enabled(self, capsys):
         # _is_webhook_enabled already patched to True by autouse fixture
-        webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
+        rc = webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
         out = capsys.readouterr().out
+        assert rc == 0
         assert "Created" in out
         assert "allowed" in _load_subscriptions()
 
@@ -152,4 +154,28 @@ class TestWebhookEnabledGate:
         )
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
+
+
+class TestWebhookCommandExitCodes:
+
+    def test_missing_subcommand_returns_nonzero(self):
+        rc = webhook_command(_make_args(webhook_action=None))
+        assert rc != 0
+
+    def test_invalid_name_returns_nonzero(self):
+        rc = webhook_command(_make_args(webhook_action="subscribe", name="INVALID NAME!"))
+        assert rc != 0
+
+    def test_invalid_deliver_only_returns_nonzero(self):
+        rc = webhook_command(_make_args(webhook_action="subscribe", name="valid-route", deliver_only=True, deliver="log"))
+        assert rc != 0
+
+    def test_remove_nonexistent_returns_nonzero(self):
+        rc = webhook_command(_make_args(webhook_action="remove", name="nonexistent"))
+        assert rc != 0
+
+    def test_test_nonexistent_returns_nonzero(self):
+        rc = webhook_command(_make_args(webhook_action="test", name="nonexistent"))
+        assert rc != 0
+
 

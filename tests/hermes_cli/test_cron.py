@@ -586,3 +586,28 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "(ok)" in out
+
+
+class TestCronCommandExitCodes:
+
+    def test_cron_edit_nonexistent_returns_nonzero(self, tmp_cron_dir):
+        rc = cron_command(Namespace(cron_command="edit", job_id="nope000000", name="x"))
+        assert rc != 0
+
+    def test_cron_pause_nonexistent_returns_nonzero(self, tmp_cron_dir):
+        rc = cron_command(Namespace(cron_command="pause", job_id="nope000000"))
+        assert rc != 0
+
+    def test_cron_remove_nonexistent_returns_nonzero(self, tmp_cron_dir):
+        rc = cron_command(Namespace(cron_command="remove", job_id="nope000000"))
+        assert rc != 0
+
+    def test_cron_run_nonexistent_returns_nonzero(self, tmp_cron_dir):
+        rc = cron_command(Namespace(cron_command="run", job_id="nope000000"))
+        assert rc != 0
+
+    def test_cmd_cron_forward_return_code(self, tmp_cron_dir):
+        from hermes_cli.main import cmd_cron
+        rc = cmd_cron(Namespace(cron_command="remove", job_id="nope000000"))
+        assert rc != 0
+

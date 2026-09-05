@@ -679,6 +679,7 @@ def start_task(
     *,
     expected_cancel_generation: int,
     clock: Clock,
+    not_before: float | None = None,
 ) -> TaskAttempt | None:
     """Move one queued task to running under the current driver lease."""
     if lease.room_id != identity.room_id:
@@ -689,6 +690,8 @@ def start_task(
     ):
         raise DriverValidationError("expected_cancel_generation must be non-negative")
     now = _timestamp(clock)
+    if not_before is not None:
+        not_before = _finite(lambda: not_before, "not_before must be a finite number")
     with _transaction(db_path) as conn:
         _require_active_lease(conn, lease, now=now)
         row = _load_task(conn, identity)
@@ -699,6 +702,9 @@ def start_task(
                 f"cannot start task in state '{row['status']}'"
             )
         if _cancel_task_behind_stop_fence(conn, row, now=now) is not None:
+            return None
+        # Stop must settle a queued task even while its route is cooling down.
+        if not_before is not None and now < not_before:
             return None
         unresolved = conn.execute(
             """SELECT task_id, status FROM hosted_room_driver_tasks

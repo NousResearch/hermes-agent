@@ -1260,7 +1260,8 @@ def test_active_lease_revalidation_does_not_extend_expiry(db):
         driver.require_active_lease(db, lease, clock=clock)
 
 
-def test_start_task_atomically_honors_room_stop_fence(db):
+@pytest.mark.parametrize("cooldown", [None, 10.0])
+def test_start_task_atomically_honors_room_stop_fence(db, cooldown):
     clock = FakeClock()
     identity = _identity()
     lease = _lease(db, clock)
@@ -1290,10 +1291,27 @@ def test_start_task_atomically_honors_room_stop_fence(db):
             lease,
             expected_cancel_generation=0,
             clock=clock,
+            not_before=clock() + cooldown if cooldown is not None else None,
         )
         is None
     )
     assert driver.get_task(db, identity)["status"] == "cancelled"
+
+
+def test_start_task_preserves_attempt_until_cooldown_finishes(db):
+    clock = FakeClock()
+    identity = _identity()
+    lease = _lease(db, clock)
+    before = _admit(db, identity, clock)
+    ready_at = clock() + 10
+    assert driver.start_task(db, identity, lease, expected_cancel_generation=0,
+                             clock=clock, not_before=ready_at) is None
+    assert driver.get_task(db, identity) == before
+    clock.advance(10)
+    attempt = driver.start_task(db, identity, lease, expected_cancel_generation=0,
+                                clock=clock, not_before=ready_at)
+    assert attempt.execution_generation == 1
+    assert driver.get_task(db, identity)["status"] == "running"
 
 
 @pytest.mark.parametrize("retry_state", ["deferred", "indeterminate"])

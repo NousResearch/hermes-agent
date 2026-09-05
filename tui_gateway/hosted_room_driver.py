@@ -626,7 +626,8 @@ class HostedRoomRuntime:
             lease = self._renew_lease_if_needed(lease)
             attempt = state.start_task(
                 self.db_path, task["identity"], lease,
-                expected_cancel_generation=task["cancel_generation"], clock=self.clock)
+                expected_cancel_generation=task["cancel_generation"], clock=self.clock,
+                not_before=retry["next_attempt_at"] if retry is not None else None)
             if attempt is None:
                 continue
             self._execute_attempt(binding, task, attempt)

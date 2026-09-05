@@ -39,6 +39,8 @@ class ToolRoundVerdict:
     failed: Any
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
+    length_continue_retries: Any
+    truncated_response_parts: Any
     result: Optional[Dict[str, Any]] = None
 
 
@@ -47,7 +49,7 @@ def run_tool_round(
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
-    truncated_tool_call_retries: Any,
+    truncated_tool_call_retries: Any, length_continue_retries: Any, truncated_response_parts: Any,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -61,6 +63,8 @@ def run_tool_round(
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
             truncated_tool_call_retries=truncated_tool_call_retries, result=result,
+            length_continue_retries=length_continue_retries,
+            truncated_response_parts=truncated_response_parts,
         )
 
     if not agent.quiet_mode:
@@ -177,6 +181,14 @@ def run_tool_round(
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
+    # A validated, executed tool response settles the text continuation. The next
+    # response gets its own ceiling and must not inherit earlier commentary parts.
+    length_continue_retries = 0
+    truncated_response_parts = []
+    for fragment in messages:
+        if isinstance(fragment, dict):
+            fragment.pop("_length_continuation_fragment", None)
+            fragment.pop("_length_continuation_nudge", None)
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real
     # text arrives, so tool iterations don't stack blank lines.
     agent._stream_needs_break = True

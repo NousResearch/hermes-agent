@@ -214,6 +214,25 @@ Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are se
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
 
+### Voice-bubble re-encode quality
+
+When a provider emits mp3/wav, the Telegram and Feishu voice senders re-encode it to Ogg/Opus
+with ffmpeg before upload. The defaults (`32k`, `-application voip`) are tuned for
+microphone-grade speech and are deliberately small. A synthesized voice is already clean
+full-band audio, and squeezing it through the voip tuning can leave it thin or choppy on a
+phone speaker. Override the encoder in `~/.hermes/config.yaml`:
+
+```yaml
+tts:
+  voice_transcode:
+    bitrate: "48k"          # ffmpeg -b:a ("32k" default; "48k"-"64k" for TTS voices)
+    application: "audio"    # voip (default) | audio | lowdelay
+```
+
+Malformed values are ignored with a warning and the defaults apply, so a bad edit can never
+break voice delivery. Providers that emit Ogg/Opus natively (or a command provider whose
+`output_format` is `ogg`) bypass this re-encode entirely — the file is uploaded as-is.
+
 ### xAI Custom Voices (voice cloning)
 
 xAI supports cloning your voice and using it with TTS. Create a custom voice in the [xAI Console](https://console.x.ai/team/default/voice/voice-library), then set the resulting `voice_id` in your config:

@@ -1509,6 +1509,12 @@ platform_toolsets:
 #     optimize_streaming_latency: 0  # 0-2, trades quality for lower latency
 #     sample_rate: 24000    # 22050 / 24000 / 44100 / 48000
 #     bit_rate: 128000      # MP3 bitrate (codec=mp3 only)
+#   # Ogg/Opus re-encode applied by the Telegram / Feishu voice senders when the provider
+#   # emitted mp3/wav; providers that emit Ogg/Opus natively skip it. Defaults are tuned for
+#   # microphone speech — synthesized voices sound fuller at "audio" with 48k-64k.
+#   voice_transcode:
+#     bitrate: "32k"          # ffmpeg -b:a
+#     application: "voip"     # voip | audio | lowdelay
 
 # =============================================================================
 # Voice Transcription (Speech-to-Text)

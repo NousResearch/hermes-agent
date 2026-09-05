@@ -17,7 +17,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from gateway.platforms.base import should_send_media_as_audio, transcode_to_ogg_opus
+from gateway.platforms.base import (
+    should_send_media_as_audio,
+    transcode_to_ogg_opus,
+    voice_transcode_settings,
+)
 
 
 class TestVoiceRouting(unittest.TestCase):
@@ -123,6 +127,63 @@ class TestTelegramSendVoiceTranscode(unittest.TestCase):
                     os.unlink(p)
                 except OSError:
                     pass
+
+
+class TestTranscodeSettings(unittest.TestCase):
+    """``tts.voice_transcode`` drives the ffmpeg argv; anything malformed keeps the voip defaults."""
+
+    def _argv_with_config(self, tts_config, **kwargs):
+        """Run transcode_to_ogg_opus against a fake ffmpeg and return the argv it received."""
+        import subprocess
+
+        captured = {}
+
+        def fake_run(argv, **_kw):
+            captured["argv"] = list(argv)
+            with open(argv[-1], "wb") as fh:  # pretend ffmpeg produced output
+                fh.write(b"OggS")
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout=b"", stderr=b"")
+
+        with patch("shutil.which", return_value="ffmpeg"), \
+             patch("subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"tts": tts_config}):
+            out = transcode_to_ogg_opus("/tmp/x.mp3", **kwargs)
+        self.assertIsNotNone(out)
+        os.unlink(out)
+        argv = captured["argv"]
+        return argv[argv.index("-b:a") + 1], argv[argv.index("-application") + 1]
+
+    def test_defaults_are_voip_32k(self):
+        """No config section: the #73508/#97873 voip tuning is byte-for-byte unchanged."""
+        self.assertEqual(self._argv_with_config({}), ("32k", "voip"))
+
+    def test_config_overrides_bitrate_and_application(self):
+        cfg = {"voice_transcode": {"bitrate": "64k", "application": "audio"}}
+        self.assertEqual(self._argv_with_config(cfg), ("64k", "audio"))
+
+    def test_numeric_and_uppercase_values_are_normalised(self):
+        cfg = {"voice_transcode": {"bitrate": 48000, "application": "AUDIO"}}
+        self.assertEqual(self._argv_with_config(cfg), ("48000", "audio"))
+
+    def test_malformed_values_fall_back_to_defaults(self):
+        """A bad edit must never break voice delivery: each bad key falls back independently."""
+        cfg = {"voice_transcode": {"bitrate": "loud", "application": "cinema"}}
+        self.assertEqual(self._argv_with_config(cfg), ("32k", "voip"))
+        cfg = {"voice_transcode": {"bitrate": "48k", "application": "cinema"}}
+        self.assertEqual(self._argv_with_config(cfg), ("48k", "voip"))
+        cfg = {"voice_transcode": "48k"}  # not a mapping
+        self.assertEqual(self._argv_with_config(cfg), ("32k", "voip"))
+
+    def test_explicit_arguments_win_over_config(self):
+        cfg = {"voice_transcode": {"bitrate": "64k", "application": "audio"}}
+        self.assertEqual(
+            self._argv_with_config(cfg, bitrate="24k", application="lowdelay"),
+            ("24k", "lowdelay"),
+        )
+
+    def test_config_loader_failure_keeps_defaults(self):
+        with patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("boom")):
+            self.assertEqual(voice_transcode_settings(), ("32k", "voip"))
 
 
 if __name__ == "__main__":

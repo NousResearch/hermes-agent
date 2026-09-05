@@ -421,6 +421,19 @@ class StreamTransportMixin:
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
         if not result.success:
+            raw_response = getattr(result, "raw_response", None)
+            if isinstance(raw_response, dict) and raw_response.get("partial_bubble_delivery"):
+                delivered_prefix = raw_response.get("delivered_prefix")
+                if isinstance(delivered_prefix, str) and delivered_prefix:
+                    self._last_sent_text = delivered_prefix
+                    self._fallback_preserve_partial_messages = True
+                    self._enter_fallback_mode(delivered_prefix)
+                last_message_id = (raw_response.get("last_message_id")
+                                   or getattr(result, "message_id", None))
+                if last_message_id:
+                    self._adopt_message_id(str(last_message_id))
+                else:
+                    self._message_id = "__no_edit__"
             self._edit_supported = False
             return False
         self._already_sent = True

@@ -803,7 +803,8 @@ class TurnRunner:
                 adapter = self._runner._adapter_for_source(ctx.source)
                 if adapter:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
-                        ctx.source, scfg, adapter, on_missing_cursor="raise",
+                        ctx.source, scfg, adapter,
+                        on_missing_cursor="fallback" if want_interim_messages else "raise",
                     )
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
@@ -1274,8 +1275,12 @@ class TurnRunner:
             except Exception as e:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
-        # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        # in Slack threads and reserved by Matrix clients. Button-less texting surfaces
+        # (``conversational_approval``) get plain-language wording instead of slash instructions;
+        # gateway.plaintext_approval resolves the "yes"/"no" reply.
+        msg = _format_exec_approval_fallback(
+            cmd, desc, getattr(adapter, "typed_command_prefix", "/"),
+            conversational=bool(getattr(adapter, "conversational_approval", False)), **flags)
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}

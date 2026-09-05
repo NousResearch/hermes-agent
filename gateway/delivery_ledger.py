@@ -186,6 +186,17 @@ def mark_failed(obligation_id: str, error: str = "") -> None:
     _update_state(obligation_id, "failed", error=error)
 
 
+def mark_failed_with_content(obligation_id: str, content: str, error: str = "") -> None:
+    """Mark a partial delivery failed while retaining only the owed suffix."""
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            """UPDATE delivery_obligations
+               SET content=?, state='failed', updated_at=?, last_error=?
+               WHERE obligation_id=?""",
+            (content, time.time(), error[:500] if error else None, obligation_id),
+        )
+
+
 def release_runtime_claim(obligation_id: str, error: str = "") -> bool:
     """Return an unsent runtime claim to ``failed`` without spending an attempt.
 

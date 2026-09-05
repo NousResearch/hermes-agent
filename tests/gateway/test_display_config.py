@@ -168,6 +168,42 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "long_running_notifications") is False
         assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
+    def test_photon_surfaces_real_interim_commentary_without_token_streaming(self):
+        """iMessage gets completed assistant thoughts, not permanent token fragments."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "photon", "interim_assistant_messages") is True
+        assert resolve_display_setting({}, "photon", "streaming") is False
+        assert resolve_display_setting({}, "photon", "tool_progress") == "off"
+        assert resolve_display_setting({}, "photon", "long_running_notifications") is False
+
+
+def test_non_editing_interim_consumer_is_buffer_only() -> None:
+    from gateway.config import StreamingConfig
+    from gateway.platforms.base import Platform, SessionSource
+    from gateway.run import GatewayRunner
+
+    class _PermanentMessageAdapter:
+        SUPPORTS_MESSAGE_EDITING = False
+        SUPPORTS_NATIVE_STREAMING = False
+
+    source = SessionSource(
+        platform=Platform("photon"),
+        chat_id="space-1",
+        chat_name="space-1",
+        chat_type="dm",
+        user_id="user-1",
+    )
+    cfg, _ = GatewayRunner.__new__(GatewayRunner)._build_stream_consumer_config(
+        source,
+        StreamingConfig(),
+        _PermanentMessageAdapter(),
+        on_missing_cursor="fallback",
+    )
+
+    assert cfg.buffer_only is True
+    assert cfg.cursor == ""
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

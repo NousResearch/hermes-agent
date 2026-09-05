@@ -195,6 +195,61 @@ Common issues:
 - **Sidecar won't start** — confirm `node --version` is 18.17+ and that
   `hermes photon install-sidecar` completed without errors.
 
+## Conversation behavior
+
+Each Photon space maps to one persistent Hermes session. Normal messages keep
+using that session across gateway restarts, so routine conversation does not
+require `/resume` or `/new`. Hermes compresses older context automatically when
+context compression is enabled (the default). `/new` remains an explicit reset.
+
+For tasks that require tools or research, Hermes first sends a brief natural
+acknowledgment describing what it is about to do. This is visible commentary,
+not private reasoning. It then sends completed mid-turn commentary as work
+progresses and splits the final reply into conversational iMessage bubbles.
+Blank-line-separated sections become separate bubbles. Every bare URL on its own
+line becomes a separate native rich-link card, including links between text
+sections. Blank lines inside fenced code blocks stay in the same message. Set
+`PHOTON_MARKDOWN=false` to disable Markdown and rich-link rendering; section
+splitting still applies.
+
+Hermes also treats research verbs as research: asking it to *find*, *check*, or
+*compare* something means it reports back rather than booking, buying, cancelling,
+or messaging on your behalf. When it does complete an action, it closes with a
+short receipt naming the concrete result (confirmation number, final time, amount,
+who it contacted). If it gets stuck on a login code or a CAPTCHA, it asks for that
+one thing in the thread and resumes the rest of the task.
+
+## Approving a flagged command
+
+When a command needs your approval, Hermes asks in plain language instead of
+telling you to type a slash command:
+
+```
+⚠️ This needs your OK first:
+rm -rf ~/.cache/build
+Why: recursive delete
+
+Reply "yes" to do it this once, "for this session" to stop asking until we're
+done, "always" to stop asking entirely, or "no" to skip it.
+```
+
+Answer the way you would answer a person: `yes`, `sure, go ahead`, `do it`,
+`no`, `don't do that`, or a 👍 / 👎 tapback. `for this session` and `always`
+widen the approval; `/approve` and `/deny` still work if you prefer them.
+
+Two deliberate limits:
+
+- Hermes only reads a reply as an approval **while a command is actually
+  waiting**. A conversational "sure" at any other moment is just conversation and
+  can never trigger a command.
+- Matching is exact and does not involve the model. Anything conditional or
+  unclear ("yes but not the second one", "are you sure?") leaves the command
+  waiting so you can answer again, rather than being resolved on a guess.
+
+Approval policy itself is unchanged and lives in
+[Security](/user-guide/security) (`approvals.mode`, default `smart`) — this is
+only how the question gets asked and answered over iMessage.
+
 ## Limits today
 
 - **Inbound attachments are metadata-only.** Inbound events carry the

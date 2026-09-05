@@ -1877,6 +1877,12 @@ class BasePlatformAdapter(ABC):
     splits_long_messages: bool = False
     # Prefix users can always TYPE for Hermes commands ("!" where the client eats a leading "/").
     typed_command_prefix: str = "/"
+    # Button-less conversational surface (iMessage, SMS): approval prompts are worded in plain
+    # language ("reply yes") instead of advertising `/approve`, because a slash command reads as
+    # operating a machine in a text thread. The slash forms keep working either way — this only
+    # changes what we TELL the user to send. Adapters with interactive buttons leave this False and
+    # never reach the text fallback. Read generically via getattr() at the call site.
+    conversational_approval: bool = False
     # ``in_channel`` continuable-cron surface: job delivered FLAT, plain replies continue it via
     # the whole-channel bucket ``(platform, chat_id, None)``; needs a flat-reply outbound gate too
     # (Slack ``reply_in_thread: false``). False fails SAFE -> ``thread``.
@@ -3686,12 +3692,17 @@ class BasePlatformAdapter(ABC):
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
         before this failure landed; atomic claiming keeps it idempotent)."""
         try:
-            from gateway.delivery_ledger import mark_delivered, mark_failed
+            from gateway.delivery_ledger import mark_delivered, mark_failed, mark_failed_with_content
             if getattr(result, "success", False):
                 await asyncio.to_thread(mark_delivered, obligation_id)
                 return
             error = str(getattr(result, "error", "") or "")
-            await asyncio.to_thread(mark_failed, obligation_id, error)
+            raw = getattr(result, "raw_response", None)
+            undelivered = raw.get("undelivered_content") if isinstance(raw, dict) else None
+            if isinstance(undelivered, str) and undelivered:
+                await asyncio.to_thread(mark_failed_with_content, obligation_id, undelivered, error)
+            else:
+                await asyncio.to_thread(mark_failed, obligation_id, error)
             if error == "send_path_degraded":
                 redeliver = getattr(
                     self.gateway_runner, "_redeliver_failed_obligations_for_platform", None)

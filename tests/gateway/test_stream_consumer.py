@@ -558,6 +558,43 @@ class TestFinalResponseDeliveryGuard:
     promotion can taint)."""
 
     @pytest.mark.asyncio
+    async def test_first_send_partial_bubbles_falls_back_to_missing_tail(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import SendResult
+        from plugins.platforms.photon.adapter import PhotonAdapter
+
+        adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
+        adapter._sidecar_send = AsyncMock(side_effect=[
+            SendResult(success=True, message_id="m1"),
+            SendResult(success=False, error="second bubble failed"),
+            SendResult(success=True, message_id="m2"),
+        ])
+        adapter.send = AsyncMock(wraps=adapter.send)
+        adapter.edit_message = AsyncMock()
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_1",
+            StreamConsumerConfig(buffer_only=True, cursor=""),
+        )
+
+        consumer.on_delta("First.\n\nSecond.")
+        consumer.finish()
+        await consumer.run()
+
+        assert [call.kwargs["content"] for call in adapter.send.await_args_list] == [
+            "First.\n\nSecond.",
+            "Second.",
+        ]
+        assert [call.args[1] for call in adapter._sidecar_send.await_args_list] == [
+            "First.",
+            "Second.",
+            "Second.",
+        ]
+        assert consumer.final_response_sent
+        adapter.edit_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_split_overflow_failed_send_does_not_mark_final_sent(self):
         """Split-overflow path: if every chunk send fails on done frame,
         _final_response_sent must stay False so the gateway falls back."""

@@ -583,9 +583,29 @@ def _redact_approval_command(cmd: "str | None") -> str:
 
 def _format_exec_approval_fallback(
     command: str, description: str, command_prefix: str, *, allow_permanent: bool = True,
-    allow_session: bool = True, smart_denied: bool = False) -> str:
-    """Render the text fallback from approval capabilities, not platform names."""
+    allow_session: bool = True, smart_denied: bool = False, conversational: bool = False) -> str:
+    """Render the text fallback from approval capabilities, not platform names.
+
+    ``conversational=True`` (button-less texting surfaces like iMessage, set from the
+    adapter's ``conversational_approval`` flag) asks in plain language instead of
+    advertising slash commands: on those platforms the user answers "yes" / "no" and
+    ``gateway.plaintext_approval`` resolves it. The slash forms still work — they are
+    simply not what we tell a person to type in a text message.
+    """
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    if conversational:
+        heading = ("⚠️ I was blocked from doing this automatically. Want me to run it anyway?"
+                   if smart_denied else "⚠️ This needs your OK first:")
+        choices = ['Reply "yes" to do it this once']
+        if not smart_denied and allow_session:
+            choices.append('"for this session" to stop asking until we\'re done')
+            if allow_permanent:
+                choices.append('"always" to stop asking entirely')
+        choices.append('"no" to skip it')
+        return (
+            f"{heading}\n```\n{cmd_preview}\n```\nWhy: {description}\n\n"
+            + ", ".join(choices[:-1]) + f", or {choices[-1]}.")
+
     heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
                else "⚠️ **Dangerous command requires approval:**")
 

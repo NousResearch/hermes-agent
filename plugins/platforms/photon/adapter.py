@@ -312,6 +312,41 @@ def _richlink_candidate(text: str) -> Optional[str]:
     return _url_only_candidate(text) if _markdown_enabled() else None
 
 
+def _outgoing_bubbles(text: str) -> List[str]:
+    """Split an iMessage reply into conversational bubbles.
+
+    Blank-line-separated response sections become individual messages, except
+    inside fenced code blocks. Bare URL lines become their own messages so
+    Photon can render native rich-link previews wherever a source appears.
+    """
+    from gateway.platforms.helpers import split_markdown_paragraphs
+
+    paragraphs = split_markdown_paragraphs(text)
+    bubbles: List[str] = []
+    for paragraph in paragraphs:
+        prose_lines: List[str] = []
+
+        def _flush_prose() -> None:
+            prose = "\n".join(prose_lines).strip()
+            if prose:
+                bubbles.append(prose)
+            prose_lines.clear()
+
+        in_fence = False
+        for line in paragraph.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+            url = None if in_fence else _url_only_candidate(stripped)
+            if url:
+                _flush_prose()
+                bubbles.append(url)
+            else:
+                prose_lines.append(line)
+        _flush_prose()
+    return bubbles or [text]
+
+
 def _format_richlink_content(content: Dict[str, Any]) -> str:
     url, title, summary = (str(content.get(k) or "").strip() for k in ("url", "title", "summary"))
     parts = [p for p in (title, summary if summary != title else "", url) if p]
@@ -476,6 +511,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    conversational_approval = True  # iMessage: ask "reply yes", not "/approve"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
@@ -1130,9 +1166,60 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Outbound ------------------------------------------------------------------
 
+    def _outgoing_chunks(self, content: str) -> List[str]:
+        bubbles = _outgoing_bubbles(content)
+        return [chunk for bubble in bubbles for chunk in (
+            [bubble] if len(bubble) <= self.MAX_MESSAGE_LENGTH
+            else self.truncate_message(bubble, self.MAX_MESSAGE_LENGTH))]
+
+    @staticmethod
+    def _bubble_send_result(message_ids: List[str]) -> SendResult:
+        return SendResult(
+            success=True,
+            message_id=message_ids[-1] if message_ids else None,
+            continuation_message_ids=tuple(message_ids[:-1]),
+            raw_response={"message_ids": message_ids},
+        )
+
+    @staticmethod
+    def _partial_bubble_result(
+        result: SendResult, message_ids: List[str], delivered_count: int, bubbles: List[str]
+    ) -> SendResult:
+        if not delivered_count:
+            return result
+        raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+        delivered_prefix = "\n\n".join(bubbles[:delivered_count])
+        last_message_id = message_ids[-1] if message_ids else None
+        raw.update({
+            "partial_bubble_delivery": True,
+            "message_ids": message_ids,
+            "delivered_bubbles": delivered_count,
+            "total_bubbles": len(bubbles),
+            "delivered_prefix": delivered_prefix,
+            "last_message_id": last_message_id,
+            "undelivered_content": "\n\n".join(bubbles[delivered_count:]),
+        })
+        result.message_id = last_message_id
+        result.continuation_message_ids = tuple(message_ids[:-1])
+        result.raw_response = raw
+        return result
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        bubbles = [self.format_message(bubble) for bubble in self._outgoing_chunks(content)]
+        if len(bubbles) == 1:
+            return await self._sidecar_send(chat_id, bubbles[0])
+        message_ids: List[str] = []
+        delivered_count = 0
+        for bubble in bubbles:
+            result = await self._sidecar_send(chat_id, bubble)
+            if not result.success:
+                return self._partial_bubble_result(
+                    result, message_ids, delivered_count, bubbles)
+            delivered_count += 1
+            if result.message_id:
+                message_ids.append(str(result.message_id))
+        return self._bubble_send_result(message_ids)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1328,46 +1415,54 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _send_with_retry(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                                metadata: Any = None, max_retries: int = 1, base_delay: float = 2.0) -> SendResult:
-        """Retry sends without the generic Markdown banner (replies are markdown or
-        already-stripped plain text, so it never applies)."""
-        text = self.format_message(content)
+        """Deliver each bubble in order under one retry budget per bubble.
 
-        async def _send() -> SendResult:
-            return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
+        Splitting happens before Markdown stripping, so the plain-text kill switch
+        cannot turn blank lines inside a code fence into extra messages.
+        """
+        chunks = self._outgoing_chunks(content)
+        formatted = [self.format_message(chunk) for chunk in chunks]
+        use_richlinks = _markdown_enabled()
+        message_ids: List[str] = []
+        delivered_count = 0
 
-        result = await _send()
-        if result.success:
-            return result
-        if self._is_permanent_sidecar_failure(result):
-            return result  # structured failure already carries the user-facing explanation
-        error_str = result.error or ""
-        is_network = result.retryable or self._is_retryable_error(error_str)
-        if not is_network and self._is_timeout_error(error_str):
-            return result
-        if is_network:
-            for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1))
-                logger.warning("[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
-                               attempt, max_retries, delay, error_str)
-                await asyncio.sleep(delay)
-                result = await _send()
-                if result.success:
-                    return result
-                error_str = result.error or ""
-                if self._is_permanent_sidecar_failure(result):
-                    return result
-                if not (result.retryable or self._is_retryable_error(error_str)):
-                    break
-            else:
-                logger.error("[photon] Failed to deliver response after %d retries: %s", max_retries, error_str)
-                # Fall through to plain text; for URL-only responses this bypasses richlink()
-                # so a rich-link outage doesn't strand a sendable URL.
-        logger.warning("[photon] Send failed: %s - retrying plain-text message", error_str)
-        fallback_result = await self._sidecar_send(
-            chat_id, text[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
-        if not fallback_result.success:
-            logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
-        return fallback_result
+        for index, bubble in enumerate(formatted):
+            result = await self._sidecar_send(chat_id, bubble, richlink=use_richlinks)
+            error_str = result.error or ""
+            if not result.success and not self._is_permanent_sidecar_failure(result):
+                is_network = result.retryable or self._is_retryable_error(error_str)
+                if not (not is_network and self._is_timeout_error(error_str)):
+                    if is_network:
+                        for attempt in range(1, max_retries + 1):
+                            delay = base_delay * (2 ** (attempt - 1))
+                            logger.warning(
+                                "[photon] Send failed (attempt %d/%d, retrying in %.1fs): %s",
+                                attempt, max_retries, delay, error_str)
+                            await asyncio.sleep(delay)
+                            result = await self._sidecar_send(
+                                chat_id, bubble, richlink=use_richlinks)
+                            if result.success or self._is_permanent_sidecar_failure(result):
+                                break
+                            error_str = result.error or ""
+                            if not (result.retryable or self._is_retryable_error(error_str)):
+                                break
+                        if not result.success:
+                            logger.error(
+                                "[photon] Failed to deliver bubble after %d retries: %s",
+                                max_retries, error_str)
+                    if not result.success and not self._is_permanent_sidecar_failure(result):
+                        logger.warning(
+                            "[photon] Send failed: %s - retrying plain-text bubble", error_str)
+                        result = await self._sidecar_send(
+                            chat_id, bubble[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
+            if not result.success:
+                return self._partial_bubble_result(
+                    result, message_ids, delivered_count, formatted)
+            delivered_count = index + 1
+            if result.message_id:
+                message_ids.append(str(result.message_id))
+
+        return self._bubble_send_result(message_ids)
 
     async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries
@@ -1606,7 +1701,23 @@ def register(ctx) -> None:
         allow_update_command=True,
         platform_hint=(
             "You are communicating via Photon Spectrum (iMessage). "
-            "Treat replies like regular text messages — short and friendly. "
+            "Treat replies like regular text messages — short and friendly. When "
+            "the task requires tools or research, first send one brief natural "
+            "acknowledgment saying what you are about to do, then start the work. "
+            "Do not expose private reasoning. Structure the final answer as distinct "
+            "blank-line-separated sections so each section becomes an iMessage bubble; "
+            "use single line breaks within a section. Put every bare URL on its own line "
+            "so it becomes a full link-preview card. "
+            "Honor the boundary of what was asked: research verbs like find, check, "
+            "look up, compare, or see mean report back, so confirm before any step that "
+            "spends money, sends a message on the user's behalf, cancels or books "
+            "something, or changes an account. "
+            "After finishing an action, close with a short receipt naming the concrete "
+            "result — confirmation number, final time, amount charged, who you contacted, "
+            "or what changed — never just 'done'. "
+            "If you get blocked on a login code, a CAPTCHA, or a step only the user can "
+            "complete, say exactly what you need in this thread and keep the rest of the "
+            "task ready to resume; do not abandon the work or restart from scratch. "
             "Markdown is rendered (bold, italics, lists, code), but keep "
             "formatting light and conversational. Recipient identifiers are "
             "E.164 phone numbers; never expose them in responses unless the "

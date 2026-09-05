@@ -228,8 +228,9 @@ from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_lightpanda_fallback as _lp
 
 
-# Single shared real-profile copy-browser session: concurrent tasks reuse it
-# instead of each launching a rival Chromium on the same copied user-data-dir.
+# Single shared real-profile copy-browser session: concurrent tasks and Hermes
+# process generations reuse it instead of launching rival Chromium processes on
+# the same copied user-data-dir. Durable owners live beside its socket state.
 _REAL_PROFILE_SESSION = "hermes-real-profile"
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}

@@ -80,6 +80,8 @@ def _emergency_cleanup_all_sessions():
     # Real-profile Chrome is launched directly (not by agent-browser), so the
     # session cleanup never reaps it.
     _best_effort("Real-profile chrome cleanup on exit", _real_profile._terminate_real_profile_chrome)
+    from tools import browser_tool_real_profile_daemon as _real_profile_daemon
+    _best_effort("Real-profile attach daemon cleanup on exit", _real_profile_daemon.cleanup_owned)
     if _bt._active_sessions:
         _bt.logger.info("Emergency cleanup: closing %s active session(s)...", len(_bt._active_sessions))
         try:
@@ -219,6 +221,22 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
     except (psutil.AccessDenied, OSError) as exc:
         return refuse("could not read process identity (%s)", exc)
 
+    real_profile_daemon = session_name == _bt._REAL_PROFILE_SESSION or session_name.startswith("hermes-real-profile-")
+    if real_profile_daemon:
+        # This session is security-sensitive: its directory stores durable owner
+        # authority and it attaches to a copy carrying real login state. Require
+        # exact daemon-name and environment binding; argv substring/basename
+        # matches are insufficient authority to signal a user's visible Chrome.
+        if not name.startswith("agent-browser"):
+            return refuse("not an agent-browser daemon executable (name=%r)", name)
+        try:
+            env_dir = (proc.environ() or {}).get("AGENT_BROWSER_SOCKET_DIR", "")
+        except (psutil.AccessDenied, psutil.NoSuchProcess, OSError) as exc:
+            return refuse("could not read daemon environment binding (%s)", exc)
+        if not env_dir or os.path.normcase(os.path.realpath(env_dir)) != os.path.normcase(os.path.realpath(socket_dir)):
+            return refuse("not exactly bound to real-profile socket dir %s", socket_dir)
+        return True
+
     if "agent-browser" not in name and "agent-browser" not in cmdline:
         return refuse("not an agent-browser process (name=%r)", name)
 
@@ -357,6 +375,8 @@ def _reap_orphaned_browser_sessions():
         from tools.browser_lightpanda import reap_orphaned_lightpanda
         reap_orphaned_lightpanda()
     _best_effort("Lightpanda orphan reap", _reap_lp)
+    from tools import browser_tool_real_profile_daemon as _real_profile_daemon
+    _best_effort("Real-profile attach daemon orphan reap", _real_profile_daemon.reap_orphans)
 
     tmpdir = _bt._socket_safe_tmpdir()
     socket_dirs = []
@@ -371,6 +391,8 @@ def _reap_orphaned_browser_sessions():
     reaped = 0
     for socket_dir in socket_dirs:
         session_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
+        if session_name == _bt._REAL_PROFILE_SESSION or session_name.startswith("hermes-real-profile-"):
+            continue  # dedicated owner-incarnation lifecycle above; never fall back to legacy PID-only rules
         if session_name and _reap_socket_dir(socket_dir, session_name, tracked_names):
             reaped += 1
 
@@ -681,6 +703,8 @@ def cleanup_all_browsers() -> None:
     except Exception:
         pass
 
+    from tools import browser_tool_real_profile_daemon as _real_profile_daemon
+    _best_effort("Real-profile attach daemon cleanup", _real_profile_daemon.cleanup_owned)
     _install._discover_homebrew_node_dirs.cache_clear()
     # Each resolved flag flips BEFORE its cache is nulled so a concurrent reader never
     # sees ``resolved=True`` with ``cache=None``.

@@ -919,7 +919,7 @@ Upload a debug report (system info + recent logs) to a paste service and get a s
 | `--local` | Print the report locally instead of uploading. |
 | `--no-redact` | Disable upload-time secret redaction. By default, uploads are redacted. |
 
-The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), and redacted API key status. By default, uploads are redacted so secrets are not included.
+The report includes system info (OS, Python version, Hermes version), recent agent, gateway, GUI/dashboard, and desktop logs (512 KB limit per file), plus the update and Desktop update hand-off logs when present, and redacted API key status. By default, uploads are redacted so secrets are not included.
 
 Default uploads use public paste services tried in order: paste.rs, dpaste.com. `--nous` uploads the same debug bundle to private Nous diagnostics storage instead; the returned viewer link is for the Nous team and auto-deletes after 14 days.
 
@@ -1056,12 +1056,14 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
 | `gui` | `gui.log` | Dashboard / TUI-gateway / PTY-bridge / websocket events |
 | `desktop` | `desktop.log` | Electron desktop app — boot, backend spawn output, and recent Python tracebacks |
+| `update` | `update.log` | Full stdout/stderr mirror of `hermes update` runs (append-only) — the root cause of update/dependency failures |
+| `handoff` | `desktop-update-handoff.log` | Desktop-driven update hand-off stages, including the Desktop rebuild retry output |
 
 ### Options
 
 | Option | Description |
 |--------|-------------|
-| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, or `list` to show available files with sizes. |
+| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, `gui`, `desktop`, `update`, `handoff`, or `list` to show available files with sizes. |
 | `-n`, `--lines <N>` | Number of lines to show (default: 50). |
 | `-f`, `--follow` | Follow the log in real time, like `tail -f`. Press Ctrl+C to stop. |
 | `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |

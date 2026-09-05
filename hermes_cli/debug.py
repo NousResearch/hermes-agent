@@ -315,8 +315,8 @@ def _capture_log_snapshot(
 
 # Logs the debug report tails, in output order. ``agent`` gets the full ``--lines`` budget;
 # the rest are capped at 100 lines. Every log but ``errors`` is also uploaded in full.
-_REPORT_LOGS = ("agent", "errors", "gateway", "gui", "desktop")
-_FULL_LOGS = ("agent", "gateway", "gui", "desktop")
+_REPORT_LOGS = ("agent", "errors", "gateway", "gui", "desktop", "update", "handoff")
+_FULL_LOGS = ("agent", "gateway", "gui", "desktop", "update", "handoff")
 
 
 def _tail_budget(name: str, log_lines: int) -> int:
@@ -363,9 +363,14 @@ def collect_debug_report(
                 buf.write(f"session {sess}: {st['heal_events']} heal events, "
                           f"{st['messages_healed']} messages healed, escalated={st['escalated']}\n")
     buf.write("\n")
+    from hermes_cli.logs import LOG_FILES
     for name in _REPORT_LOGS:
-        buf.write(f"\n--- {name}.log (last {_tail_budget(name, log_lines)} lines) ---\n"
-                  f"{log_snapshots[name].tail_text}\n")
+        snap = log_snapshots.get(name)
+        if snap is None:
+            continue
+        filename = LOG_FILES.get(name, f"{name}.log")
+        buf.write(f"\n--- {filename} (last {_tail_budget(name, log_lines)} lines) ---\n"
+                  f"{snap.tail_text}\n")
     return buf.getvalue()
 
 
@@ -385,9 +390,11 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
                                   log_snapshots=log_snapshots)
     banner = _REDACTION_BANNER if redact else ""
     bundle: dict[str, str] = {"report": banner + report}
+    from hermes_cli.logs import LOG_FILES
     for name in _FULL_LOGS:
         if full := log_snapshots[name].full_text:
-            bundle[f"{name}.log"] = banner + dump_text + f"\n\n--- full {name}.log ---\n" + full
+            filename = LOG_FILES.get(name, f"{name}.log")
+            bundle[filename] = banner + dump_text + f"\n\n--- full {filename} ---\n" + full
     return bundle
 
 
@@ -426,8 +433,20 @@ def build_debug_share(
     failures: list[str] = []
     # The summary report is required (raises so callers can fall back); full logs are optional.
     urls = {"Report": upload_to_pastebin(report, expiry_days=expiry)}
-    for label, content in bundle.items():
-        if label == "report":
+    # Full logs to upload (the source of this list is checked by tests to ensure
+    # new logs aren't silently skipped).
+    for label in (
+        "agent.log",
+        "gateway.log",
+        "gui.log",
+        "desktop.log",
+        # Update-failure diagnostics: the only files holding the root cause
+        # of a failed update/Desktop rebuild (#100874).
+        "update.log",
+        "desktop-update-handoff.log",
+    ):
+        content = bundle.get(label)
+        if not content:
             continue
         try:
             urls[label] = upload_to_pastebin(content, expiry_days=expiry)
@@ -469,9 +488,20 @@ def run_debug_share(args):
         print("Collecting debug report...")
         bundle = collect_share_bundle(log_lines=log_lines, redact=redact)
         print(bundle["report"])
-        for label, body in bundle.items():
-            if label != "report":
-                print(f"\n\n{'=' * 60}\nFULL {label}\n{'=' * 60}\n\n{body}")
+        for title, label in (
+            ("FULL agent.log", "agent.log"),
+            ("FULL gateway.log", "gateway.log"),
+            ("FULL gui.log", "gui.log"),
+            ("FULL desktop.log", "desktop.log"),
+            ("FULL update.log", "update.log"),
+            ("FULL desktop-update-handoff.log", "desktop-update-handoff.log"),
+        ):
+            body = bundle.get(label)
+            if body:
+                print(f"\n\n{'=' * 60}")
+                print(title)
+                print(f"{'=' * 60}\n")
+                print(body)
         return
 
     if getattr(args, "nous", False):
@@ -503,7 +533,9 @@ _NOUS_PRIVACY_NOTICE = """\
   • System info (OS, Python/Hermes version, provider, which API keys are
     configured — NOT the actual keys)
   • Full agent.log, gateway.log, and desktop.log (up to 512 KB each — likely
-    contains conversation content, tool outputs, and file paths)
+    contains conversation content, tool outputs, and file paths), plus
+    update.log and desktop-update-handoff.log when present (update/hand-off
+    output — the root cause of update failures)
 
   • The bundle is viewable only by Nous staff (and allowlisted Discord mods)
     via a Google-login-gated viewer.

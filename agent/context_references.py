@@ -438,7 +438,18 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
     try:
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
-        from tools.credential_files import to_agent_visible_cache_path
+        from tools.credential_files import to_agent_visible_cache_path, map_cache_path_to_container
+        backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+        if backend in ("docker", "modal", "ssh", "daytona", "vercel_sandbox", "singularity"):
+            if map_cache_path_to_container(str(path)) is None and path.is_file():
+                import shutil
+                from hermes_constants import get_hermes_dir
+                attachments_dir = get_hermes_dir("attachments", "attachments")
+                attachments_dir.mkdir(parents=True, exist_ok=True)
+                staged_path = attachments_dir / path.name
+                if not staged_path.exists() or staged_path.stat().st_mtime < path.stat().st_mtime:
+                    shutil.copy2(str(path), str(staged_path))
+                path = staged_path
         visible = to_agent_visible_cache_path(str(path))
     except Exception:
         visible = str(path)

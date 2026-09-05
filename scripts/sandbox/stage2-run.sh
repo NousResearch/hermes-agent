@@ -17,6 +17,31 @@
 
 set -euo pipefail
 
+# Does a nodedir resolved on the HOST still exist inside the mount plan built
+# below? Pure string logic over the plan's prefixes, kept free of filesystem
+# access so tests can source this file and table-test it (see the guard after
+# the definition). The caller still has to check the headers are really there.
+#
+#   nodedir_visible <dir> <use_host_runtime>
+#
+# /usr/local is never visible: the sandbox binds its own near-empty copy over
+# it in both modes. In nix mode only /nix is bound in; in host mode the
+# runtime prefixes /usr /bin /sbin /lib /lib64 are. The sandbox HOME is a
+# fresh directory ($DEV_SANDBOX_ROOT/home), NOT the host's, so a node under
+# ~/.nvm or similar is invisible inside no matter what it contains.
+nodedir_visible() {
+  case "$1" in
+    /usr/local|/usr/local/*) return 1 ;;
+    /nix|/nix/*) [ "$2" = false ] ;;
+    /usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*)
+      [ "$2" = true ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Sourced (by the tests) rather than executed: expose the function and stop.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
 : "${DEV_SANDBOX_ROOT:?missing DEV_SANDBOX_ROOT}"
 : "${DEV_SANDBOX_BASH:?missing DEV_SANDBOX_BASH}"
 : "${DEV_SANDBOX_INTERACTIVE:?missing DEV_SANDBOX_INTERACTIVE}"
@@ -48,9 +73,6 @@ fi
 home_mounts+=(--bind "$DEV_SANDBOX_ROOT/home" "$DEV_SANDBOX_HOME")
 
 node_env=()
-if [ -n "${DEV_SANDBOX_NODE_DIR:-}" ]; then
-  node_env+=(--setenv npm_config_nodedir "$DEV_SANDBOX_NODE_DIR")
-fi
 electron_env=()
 if [ -n "${DEV_SANDBOX_ELECTRON_LD_LIBRARY_PATH:-}" ]; then
   electron_env+=(
@@ -109,6 +131,22 @@ else
   # The git-upload-pack shim standing in for github.com is the only file that
   # must beat the host's copy; sh/ls/env are already there for real.
   shim_mounts+=(--bind "$DEV_SANDBOX_ROOT/root/usr/bin/ssh" /usr/bin/ssh)
+fi
+
+# npm_config_nodedir points node-gyp at a Node install's bundled headers
+# (include/node/common.gypi). NODE_DIR was resolved on the HOST by stage 1
+# (dev-sandbox.sh, from `command -v node`), and most host paths do not
+# survive the mount plan above -- nodedir_visible (top of this file) encodes
+# which ones do, keyed on the USE_HOST_RUNTIME decision made just above. A
+# nodedir that is empty inside the sandbox breaks every node-gyp build
+# ("gyp: <nodedir>/common.gypi not found" while compiling node-pty), whereas
+# with no nodedir node-gyp fetches version-matched headers through the proxy
+# -- exactly what a real install does. So pass the nodedir through only when
+# the directory is visible inside the sandbox and really contains the headers.
+if [ -n "${DEV_SANDBOX_NODE_DIR:-}" ] \
+  && nodedir_visible "$DEV_SANDBOX_NODE_DIR" "$USE_HOST_RUNTIME" \
+  && [ -f "$DEV_SANDBOX_NODE_DIR/include/node/common.gypi" ]; then
+  node_env+=(--setenv npm_config_nodedir "$DEV_SANDBOX_NODE_DIR")
 fi
 
 # /etc: start from a copy of the host's and overwrite only the files we fake.

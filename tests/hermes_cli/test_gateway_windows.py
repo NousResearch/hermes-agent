@@ -340,6 +340,51 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert content.endswith("\r\n")
 
 
+def test_gateway_vbs_skips_launch_when_profile_gateway_alive(monkeypatch):
+    """The .vbs launcher must check its own profile's gateway.pid + live process
+    BEFORE sh.Run so logon autostart doesn't duplicate a running gateway
+    (issue #103597). Single site: Scheduled Task and Startup shim both funnel
+    through gateway.vbs."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "--profile work",
+    )
+    # Profile-scoped liveness probe: own HERMES_HOME's pid file + per-PID WMI check.
+    assert "gateway.pid" in content
+    assert "Win32_Process" in content
+    # The guard quits BEFORE the fire-and-forget spawn.
+    assert content.index("WScript.Quit") < content.index("sh.Run")
+    # The spawn itself is untouched (console-less detached invariant from #45599).
+    assert content.count("sh.Run") == 1
+    assert ", 0, False" in content
+
+
+def test_gateway_vbs_prelaunch_guard_fails_open(monkeypatch):
+    """A broken guard (missing pid file, dead WMI) must never suppress a
+    legitimate start: inspection errors resume into the normal spawn path."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), []),
+    )
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "",
+    )
+    guard_at = content.index("gateway.pid")
+    assert content.index("On Error Resume Next") < guard_at < content.index("On Error Goto 0")
+    assert content.index("On Error Goto 0") < content.index("sh.Run")
+
+
 
 
 

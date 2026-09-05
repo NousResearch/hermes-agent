@@ -454,6 +454,31 @@ def test_already_up_to_date_runs_pending_restart_when_marker_present(
     assert "did not restart running gateways" in out
 
 
+def test_windows_handoff_finishes_current_restart_without_stale_warning(
+    monkeypatch, capsys
+):
+    """The re-exec child continues this update; it is not repairing a prior one."""
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="def456")
+    monkeypatch.setenv(hermes_main._UPDATE_REEXEC_ENV, "1")
+
+    seen = {"ran": False}
+
+    def _restart():
+        seen["ran"] = True
+        return True
+
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", _restart)
+    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", _restart)
+
+    update_cmd._apply_pending_fleet_restart_catchup()
+
+    assert seen["ran"] is True
+    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    out = capsys.readouterr().out
+    assert "fleet restart handed off by hermes.exe" in out
+    assert "A previous `hermes update`" not in out
+
+
 def test_already_up_to_date_runs_pending_restart_when_receipt_skewed(
     monkeypatch, tmp_path, capsys
 ):

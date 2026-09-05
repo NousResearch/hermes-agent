@@ -139,7 +139,43 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
-def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] = None) -> None:
+def _has_usable_max_iteration_summary(response: Optional[str], result: dict) -> bool:
+    """Match cron's success contract for a usable iteration-limit fallback."""
+    return bool(
+        not result.get("failed")
+        and not result.get("partial")
+        and result.get("completed") is False
+        and str(result.get("turn_exit_reason") or "").startswith("max_iterations_reached(")
+        and (response or "").strip()
+    )
+
+
+def _result_is_unsuccessful(response: Optional[str], result: dict) -> bool:
+    """Return whether the agent reported an unambiguously unsuccessful turn."""
+    return bool(
+        result.get("failed")
+        or result.get("partial")
+        or (
+            result.get("completed") is False
+            and not _has_usable_max_iteration_summary(response, result)
+        )
+    )
+
+
+def _result_exit_code(response: Optional[str], result: dict) -> int:
+    """Map the structured turn outcome to the public oneshot exit contract."""
+    if _result_is_unsuccessful(response, result):
+        return 2
+    return 0 if (response or "").strip() else 1
+
+
+def _write_usage_file(
+    path: Optional[str],
+    result: dict,
+    failure: Optional[str] = None,
+    *,
+    exit_code: Optional[int] = None,
+) -> None:
     """Best-effort JSON usage report for pipelines (``-z --usage-file``).
 
     Written even on failure so callers can always account for spend. Never raises — a broken usage
@@ -148,8 +184,25 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
     if not path:
         return
     try:
+        effective_exit_code = exit_code
+        if effective_exit_code is None:
+            if failure is not None:
+                effective_exit_code = 1
+            elif _result_is_unsuccessful(result.get("final_response"), result):
+                effective_exit_code = 2
+            elif result.get("completed") is True or _has_usable_max_iteration_summary(
+                result.get("final_response"), result
+            ):
+                effective_exit_code = 0
         report = {key: result.get(key) for key in _USAGE_KEYS}
         report["failed"] = bool(result.get("failed")) or failure is not None
+        report["partial"] = bool(result.get("partial"))
+        report["successful"] = (
+            effective_exit_code == 0 if effective_exit_code is not None else None
+        )
+        report["exit_code"] = effective_exit_code
+        report["failure_reason"] = result.get("failure_reason")
+        report["turn_exit_reason"] = result.get("turn_exit_reason")
         report["service_tier"] = result.get("service_tier")
         if failure is not None:
             report["failure"] = failure
@@ -232,12 +285,13 @@ def run_oneshot(
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
             _write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
-        _write_usage_file(usage_file, result, failure=str(failure))
+        _write_usage_file(usage_file, result, failure=str(failure), exit_code=1)
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
         return 1
 
-    _write_usage_file(usage_file, result)
+    exit_code = _result_exit_code(response, result)
+    _write_usage_file(usage_file, result, exit_code=exit_code)
 
     if response:
         # Lone UTF-16 surrogates would raise UnicodeEncodeError on a real stdout and abort with
@@ -251,9 +305,9 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if not (response or "").strip():
-        if result.get("failed") or result.get("partial"):
-            return 2
+    if exit_code == 2:
+        return 2
+    if exit_code == 1:
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1

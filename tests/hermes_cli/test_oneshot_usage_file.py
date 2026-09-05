@@ -31,13 +31,16 @@ class TestWriteUsageFile:
     def test_writes_report_with_cost_and_tokens(self, tmp_path):
         path = tmp_path / "usage.json"
         _write_usage_file(str(path), _result())
-        report = json.loads(path.read_text())
+        report = json.loads(path.read_text(encoding="utf-8"))
         assert report["estimated_cost_usd"] == 0.1234
         assert report["input_tokens"] == 1000
         assert report["output_tokens"] == 200
         assert report["model"] == "openai/gpt-5.5"
         assert report["api_calls"] == 3
         assert report["failed"] is False
+        assert report["partial"] is False
+        assert report["successful"] is True
+        assert report["exit_code"] == 0
         assert "failure" not in report
 
     def test_none_path_is_noop(self, tmp_path):
@@ -48,10 +51,28 @@ class TestWriteUsageFile:
     def test_failure_marks_failed_and_records_message(self, tmp_path):
         path = tmp_path / "usage.json"
         _write_usage_file(str(path), {}, failure="boom")
-        report = json.loads(path.read_text())
+        report = json.loads(path.read_text(encoding="utf-8"))
         assert report["failed"] is True
+        assert report["successful"] is False
+        assert report["exit_code"] == 1
         assert report["failure"] == "boom"
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
 
+    def test_max_iteration_summary_is_successful_without_explicit_exit_code(
+        self,
+        tmp_path,
+    ):
+        path = tmp_path / "usage.json"
+        _write_usage_file(
+            str(path),
+            _result(
+                completed=False,
+                final_response="Iteration-limit summary.",
+                turn_exit_reason="max_iterations_reached(60/60)",
+            ),
+        )
 
+        report = json.loads(path.read_text(encoding="utf-8"))
+        assert report["exit_code"] == 0
+        assert report["successful"] is True

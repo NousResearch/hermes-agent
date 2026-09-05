@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import run_job, _teardown_cron_agent
+from cron.scheduler import (
+    _defer_cron_worker_teardown_if_running,
+    _teardown_cron_agent,
+    run_job,
+)
 
 
 _RUNTIME = {
@@ -94,6 +99,35 @@ def test_agent_teardown_is_bounded():
         release.set()
 
 
+def test_detached_worker_teardown_waits_for_future():
+    """A timed-out worker keeps its agent and SessionDB until completion."""
+    future = Future()
+    worker_state = {"future": future}
+    fake_db = MagicMock()
+    agent = MagicMock()
+
+    with patch("cron.scheduler._teardown_detached_cron_worker") as teardown_worker:
+        assert _defer_cron_worker_teardown_if_running(
+            worker_state,
+            fake_db,
+            agent,
+            "detached-worker",
+            "detached worker",
+            "cron_detached-worker",
+        ) is True
+        teardown_worker.assert_not_called()
+
+        future.set_result({"final_response": "late"})
+
+        teardown_worker.assert_called_once_with(
+            fake_db,
+            agent,
+            "detached-worker",
+            "detached worker",
+            "cron_detached-worker",
+        )
+
+
 def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
     """A second scheduler tick can fire the same job after cleanup times out."""
     import cron.scheduler as sched
@@ -138,3 +172,34 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         release.set()
         sched._running_job_ids.discard("cleanup-guard-hang")
         sched._shutdown_parallel_pool()
+
+
+def test_finalize_cron_session_disarms_end_session_on_close_only_on_success():
+    """_end_session_on_close is disarmed ONLY when session_db.end_session succeeds."""
+    from cron.scheduler import _finalize_cron_session
+
+    # Case 1: end_session succeeds -> _end_session_on_close is disarmed (False)
+    fake_db_success = MagicMock()
+    fake_agent_success = MagicMock()
+    fake_agent_success._end_session_on_close = True
+
+    with patch("hermes_state_registry.release_or_close"):
+        _finalize_cron_session(
+            fake_db_success, fake_agent_success, "job-1", "job one", "cron_session_1"
+        )
+    assert fake_agent_success._end_session_on_close is False
+    fake_db_success.end_session.assert_called_once()
+
+    # Case 2: end_session raises -> _end_session_on_close remains armed (True)
+    fake_db_fail = MagicMock()
+    fake_db_fail.end_session.side_effect = RuntimeError("database locked")
+    fake_agent_fail = MagicMock()
+    fake_agent_fail._end_session_on_close = True
+
+    with patch("hermes_state_registry.release_or_close"):
+        _finalize_cron_session(
+            fake_db_fail, fake_agent_fail, "job-2", "job two", "cron_session_2"
+        )
+    assert fake_agent_fail._end_session_on_close is True
+    fake_db_fail.end_session.assert_called_once()
+

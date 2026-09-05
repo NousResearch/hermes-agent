@@ -16,6 +16,10 @@ Lifecycle rules:
   its holders release. If the replacement open fails the registry keeps NO path entry.
 - All teardown happens OUTSIDE the registry lock: a final release's WAL checkpoint must
   never stall acquisition for every state.db.
+- A final close/checkpoint is serialized with the next open for the same path; no new
+  generation is published while the previous generation is still tearing down.
+- Maintenance callers borrow handles with a temporary registry reference instead of
+  iterating an unpinned snapshot.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ import contextlib
 import logging
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Tuple
 
 from hermes_state_common import stat_db_file_identity as _stat_db_file_identity
 
@@ -37,9 +41,10 @@ logger = logging.getLogger(__name__)
 class _Generation:
     """One shared SessionDB generation: instance, refcount, file identity."""
 
-    __slots__ = ("db", "refcount", "identity", "retired")
+    __slots__ = ("path", "db", "refcount", "identity", "retired")
 
-    def __init__(self, db: "SessionDB", identity: Optional[Tuple[int, int]]) -> None:
+    def __init__(self, path: Path, db: "SessionDB", identity: Optional[Tuple[int, int]]) -> None:
+        self.path = path
         self.db = db
         self.refcount = 1
         self.identity = identity
@@ -55,6 +60,15 @@ _retired: Dict[int, _Generation] = {}
 # (schema reconciliation can take seconds), but peers for the SAME file must wait or
 # every cold caller opens its own writer before a winner is chosen.
 _opening: Dict[Path, threading.Event] = {}
+# A final close/checkpoint must finish before a replacement writer is opened
+# for the same path. The event is installed while holding _lock and removed
+# only after physical teardown, so acquire cannot slip through the
+# generation-removal/open gap.
+_tearing_down: Dict[Path, threading.Event] = {}
+# Open and close are both performed outside _lock. This per-path mutex closes
+# the race between checking _tearing_down and entering sqlite3.connect(),
+# including retired-generation drains after an inode replacement.
+_path_lifecycle_locks: Dict[Path, threading.Lock] = {}
 
 
 def _open_session_db(path: Path) -> "SessionDB":
@@ -72,6 +86,40 @@ def _teardown(db: "SessionDB") -> None:
         db.close()
     except Exception:
         logger.debug("Error closing shared SessionDB", exc_info=True)
+
+
+def _path_lifecycle_lock_locked(path: Path) -> threading.Lock:
+    """Return the lifecycle mutex for *path* (caller holds ``_lock``)."""
+    lock = _path_lifecycle_locks.get(path)
+    if lock is None:
+        lock = threading.Lock()
+        _path_lifecycle_locks[path] = lock
+    return lock
+
+
+def _finish_teardown(path: Path, event: threading.Event) -> None:
+    """Publish completion of a path teardown and wake blocked acquirers."""
+    with _lock:
+        if _tearing_down.get(path) is event:
+            _tearing_down.pop(path, None)
+        event.set()
+
+
+def _teardown_generation(
+    path: Path,
+    db: "SessionDB",
+    *,
+    event: Optional[threading.Event] = None,
+) -> None:
+    """Close *db* under its path lifecycle mutex, then release the barrier."""
+    with _lock:
+        lifecycle_lock = _path_lifecycle_lock_locked(path)
+    try:
+        with lifecycle_lock:
+            _teardown(db)
+    finally:
+        if event is not None:
+            _finish_teardown(path, event)
 
 
 def _db_path_of(db: "SessionDB") -> Optional[Path]:
@@ -105,6 +153,7 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
         path = raw_path
 
     while True:
+        wait_for: Optional[threading.Event] = None
         with _lock:
             generation = _generations.get(path)
             if generation is not None:
@@ -119,36 +168,62 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
                 else:
                     generation.refcount += 1
                     return generation.db
-            opening = _opening.get(path)
-            if opening is None:
-                opening = _opening[path] = threading.Event()
-                break
+            teardown = _tearing_down.get(path)
+            if teardown is not None:
+                wait_for = teardown
+            else:
+                opening = _opening.get(path)
+                if opening is None:
+                    opening = _opening[path] = threading.Event()
+                    lifecycle_lock = _path_lifecycle_lock_locked(path)
+                    break
+                wait_for = opening
         # Another caller is constructing this path; wait without holding the global
         # lock. A failed opener signals too, so a waiter can retry.
-        opening.wait()
+        wait_for.wait()
 
     # Open OUTSIDE the lock; the per-path marker prevents redundant writers without
     # serialising other files.
     try:
-        db = _open_session_db(path)
-        db._shared_registry_owned = True
-        identity = _stat_db_file_identity(path)
+        # Serialize connection construction with a final close/checkpoint for
+        # this path, while keeping unrelated paths independent.
+        with lifecycle_lock:
+            db = _open_session_db(path)
+            db._shared_registry_owned = True
+            identity = _stat_db_file_identity(path)
     except BaseException:
         with _lock:
             _finish_opening(path, opening)
         raise
 
+    discard_event: Optional[threading.Event] = None
     with _lock:
-        existing = _generations.get(path)
-        if existing is not None:  # Defensive: installed by explicit registry manipulation mid-open.
-            existing.refcount += 1
-            winner = existing.db
+        teardown = _tearing_down.get(path)
+        if teardown is not None:
+            # A shutdown or retired-generation final release began while this
+            # opener was constructing the handle. Do not publish a new
+            # generation into that teardown window; close this speculative
+            # connection and retry after the barrier.
+            discard_event = teardown
+            winner = None
         else:
-            _generations[path] = _Generation(db, identity)
-            winner = db
+            existing = _generations.get(path)
+            if existing is not None:  # Defensive: installed by explicit registry manipulation mid-open.
+                existing.refcount += 1
+                winner = existing.db
+            else:
+                _generations[path] = _Generation(path, db, identity)
+                winner = db
         _finish_opening(path, opening)
+    if discard_event is not None:
+        with lifecycle_lock:
+            _teardown(db)
+        discard_event.wait()
+        return acquire(path)
+    assert winner is not None
     if winner is not db:
-        _teardown(db)
+        with lifecycle_lock:
+            _teardown(db)
     return winner
 
 
@@ -160,6 +235,8 @@ def release(db: "SessionDB") -> bool:
     if db is None:
         return False
     key = id(db)
+    teardown_path: Optional[Path] = None
+    teardown_event: Optional[threading.Event] = None
     with _lock:
         generation = _retired.get(key)
         if generation is None:
@@ -172,28 +249,64 @@ def release(db: "SessionDB") -> bool:
                 return False
         generation.refcount -= 1
         needs_teardown = generation.refcount <= 0
-        if needs_teardown and generation.retired:
-            _retired.pop(key, None)
-        elif needs_teardown and (path := _db_path_of(db)) is not None:
-            _generations.pop(path, None)
+        if needs_teardown:
+            teardown_path = generation.path
+            if generation.retired:
+                _retired.pop(key, None)
+            elif _generations.get(generation.path) is generation:
+                _generations.pop(generation.path, None)
+            # Remove the lendable entry before dropping _lock, then keep the
+            # path blocked until checkpoint/close completes.
+            if not generation.retired or generation.path not in _generations:
+                teardown_event = _tearing_down.get(generation.path)
+                if teardown_event is None:
+                    teardown_event = threading.Event()
+                    _tearing_down[generation.path] = teardown_event
     # Teardown OUTSIDE the lock: stopping the token writer, WAL checkpoint and read-pool
     # drain must not block acquisition for every other state.db.
     if needs_teardown:
-        _teardown(db)
+        assert teardown_path is not None
+        _teardown_generation(teardown_path, db, event=teardown_event)
     return True
 
 
 def close_all() -> int:
     """Close every shared SessionDB regardless of refcount; returns the count. For gateway
     shutdown, after all agents and cron jobs finished. Idempotent."""
+    teardown_events: Dict[Path, threading.Event] = {}
     with _lock:
+        active_teardowns = list(_tearing_down.values())
         generations = list(_generations.values()) + list(_retired.values())
+        for path in {generation.path for generation in generations}:
+            event = _tearing_down.get(path)
+            if event is None:
+                event = threading.Event()
+                _tearing_down[path] = event
+            teardown_events[path] = event
         _generations.clear()
         _retired.clear()
         for generation in generations:
             generation.retired = True
+    # Teardown outside the lock, one path at a time. Holding the lifecycle
+    # mutex across all generations for a path prevents an old retired handle
+    # and the current handle from checkpointing the same sidecars concurrently.
+    by_path: Dict[Path, List[_Generation]] = {}
     for generation in generations:
-        _teardown(generation.db)
+        by_path.setdefault(generation.path, []).append(generation)
+    for path, path_generations in by_path.items():
+        with _lock:
+            lifecycle_lock = _path_lifecycle_lock_locked(path)
+        try:
+            with lifecycle_lock:
+                for generation in path_generations:
+                    _teardown(generation.db)
+        finally:
+            _finish_teardown(path, teardown_events[path])
+    # A concurrent final release may have removed its generation before this
+    # sweep took the registry lock. It still owns the physical close; wait for
+    # that barrier rather than returning while SQLite teardown is in flight.
+    for event in active_teardowns:
+        event.wait()
     return len(generations)
 
 
@@ -203,6 +316,30 @@ def live_shared_session_dbs() -> List["SessionDB"]:
     case the callee sees ``_conn is None``."""
     with _lock:
         return [g.db for g in _generations.values() if not g.retired]
+
+
+@contextlib.contextmanager
+def borrow_live_shared_session_dbs() -> Iterator[List["SessionDB"]]:
+    """Borrow live handles with registry references pinned for the whole block.
+
+    Maintenance must not operate on the unowned snapshot returned by
+    :func:`live_shared_session_dbs`: the last real owner could otherwise
+    release and physically close the connection between the snapshot and the
+    maintenance call. Each borrowed generation gets one temporary reference;
+    the ``finally`` block releases it even when maintenance raises.
+    """
+    with _lock:
+        borrowed_generations = [
+            generation for generation in _generations.values() if not generation.retired
+        ]
+        borrowed = [generation.db for generation in borrowed_generations]
+        for generation in borrowed_generations:
+            generation.refcount += 1
+    try:
+        yield borrowed
+    finally:
+        for db in reversed(borrowed):
+            release(db)
 
 
 def stats() -> Dict[str, int]:

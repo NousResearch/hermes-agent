@@ -17,9 +17,6 @@ Covers the three ownership invariants the PR review demanded:
    every state.db in the process).
 """
 
-import contextlib
-import os
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -36,27 +33,32 @@ def _clean_registry():
     registry._generations.clear()
     registry._retired.clear()
     registry._opening.clear()
+    registry._tearing_down.clear()
     yield
     registry.close_all()
     registry._generations.clear()
     registry._retired.clear()
     registry._opening.clear()
+    registry._tearing_down.clear()
 
 
-def _replace_file_preserving_schema(src: Path, dst: Path) -> None:
-    """Simulate snapshot-restore / recovery: new inode, same logical DB.
+def _replace_file_preserving_schema(monkeypatch, db_path: Path, old_db=None) -> None:
+    """Simulate a replacement identity without unlinking an open SQLite file.
 
-    Copies the live DB to a temp name, removes the original, and renames
-    the copy into place — the replacement has a different inode.
+    Windows correctly refuses to unlink a file with an open connection. The
+    registry contract is about observing a changed identity, so use its probe
+    seam here and, when requested, mark the old handle as replaced for the
+    SessionDB-level guard as well.
     """
-    tmp = dst.with_suffix(".replacement.tmp")
-    shutil.copy2(dst, tmp)
-    os.unlink(dst)
-    os.rename(tmp, dst)
+    original = registry._stat_db_file_identity(db_path)
+    replacement = (original[0] + 1, original[1]) if original is not None else (1, 1)
+    monkeypatch.setattr(registry, "_stat_db_file_identity", lambda _path: replacement)
+    if old_db is not None:
+        monkeypatch.setattr(old_db, "_db_file_was_replaced", lambda: True)
 
 
 class TestInodeReplacement:
-    def test_live_holders_keep_working_handle_across_replacement(self, tmp_path):
+    def test_live_holders_keep_working_handle_across_replacement(self, tmp_path, monkeypatch):
         """Two active refs → inode replacement → third caller gets NEW
         generation; the first two keep a working handle and their
         releases tear down only their own generation."""
@@ -66,7 +68,7 @@ class TestInodeReplacement:
         b = registry.acquire(db_path)
         assert a is b
 
-        _replace_file_preserving_schema(db_path, db_path)
+        _replace_file_preserving_schema(monkeypatch, db_path, old_db=a)
 
         c = registry.acquire(db_path)
         assert c is not a, "new caller must get the fresh generation"
@@ -114,14 +116,14 @@ class TestInodeReplacement:
         assert stats["live_generations"] == 0
         assert stats["retired_generations"] == 0
 
-    def test_retired_generation_never_relent_even_after_drain(self, tmp_path):
+    def test_retired_generation_never_relent_even_after_drain(self, tmp_path, monkeypatch):
         """After replacement, repeated acquires all return the NEW
         generation — the retired one is never lent again, even while it
         still has live holders."""
         db_path = tmp_path / "state.db"
         first = registry.acquire(db_path)
 
-        _replace_file_preserving_schema(db_path, db_path)
+        _replace_file_preserving_schema(monkeypatch, db_path)
 
         second = registry.acquire(db_path)
         third = registry.acquire(db_path)
@@ -137,7 +139,7 @@ class TestInodeReplacement:
         db_path = tmp_path / "state.db"
         old = registry.acquire(db_path)
 
-        _replace_file_preserving_schema(db_path, db_path)
+        _replace_file_preserving_schema(monkeypatch, db_path)
 
         calls = {"n": 0}
 
@@ -386,6 +388,131 @@ class TestTeardownOutsideLock:
         stats = registry.stats()
         assert stats["live_generations"] == 0
         assert stats["retired_generations"] == 0
+
+
+class TestLifecycleBarrier:
+    def test_acquire_waits_for_final_teardown(self, tmp_path, monkeypatch):
+        """A replacement writer cannot open while the old generation is closing."""
+        db_path = tmp_path / "state.db"
+        db = registry.acquire(db_path)
+        teardown_started = threading.Event()
+        allow_teardown = threading.Event()
+        acquire_started = threading.Event()
+        acquire_finished = threading.Event()
+        release_finished = threading.Event()
+        acquired = []
+        errors = []
+        original_teardown = registry._teardown
+
+        def _blocked_teardown(target):
+            teardown_started.set()
+            if not allow_teardown.wait(5.0):
+                raise AssertionError("timed out waiting to release teardown")
+            original_teardown(target)
+
+        monkeypatch.setattr(registry, "_teardown", _blocked_teardown)
+
+        def _release():
+            try:
+                assert registry.release(db) is True
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+            finally:
+                release_finished.set()
+
+        def _acquire():
+            try:
+                acquire_started.set()
+                acquired.append(registry.acquire(db_path))
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+            finally:
+                acquire_finished.set()
+
+        release_thread = threading.Thread(target=_release)
+        release_thread.start()
+        assert teardown_started.wait(5.0)
+
+        acquire_thread = threading.Thread(target=_acquire)
+        acquire_thread.start()
+        assert acquire_started.wait(2.0)
+        # The teardown gate is still closed, so this cannot have returned
+        # unless acquire bypassed the path barrier.
+        assert not acquire_finished.is_set()
+
+        allow_teardown.set()
+        release_thread.join(10.0)
+        acquire_thread.join(10.0)
+        assert release_finished.is_set()
+        assert acquire_finished.is_set()
+        assert errors == []
+        assert len(acquired) == 1
+        assert acquired[0] is not db
+        assert registry.release(acquired[0]) is True
+
+    def test_final_release_waits_for_inflight_write(self, tmp_path, monkeypatch):
+        """Physical close waits for a write holding the SessionDB lock."""
+        db_path = tmp_path / "state.db"
+        db = registry.acquire(db_path)
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        close_started = threading.Event()
+        release_finished = threading.Event()
+        errors = []
+        original_teardown = registry._teardown
+
+        def _observed_teardown(target):
+            close_started.set()
+            original_teardown(target)
+
+        monkeypatch.setattr(registry, "_teardown", _observed_teardown)
+
+        def _write(conn):
+            write_started.set()
+            if not allow_write.wait(5.0):
+                raise AssertionError("timed out waiting to finish write")
+            conn.execute("SELECT 1")
+
+        def _run_write():
+            try:
+                db._execute_write(_write)
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        def _release():
+            try:
+                assert registry.release(db) is True
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+            finally:
+                release_finished.set()
+
+        writer = threading.Thread(target=_run_write)
+        writer.start()
+        assert write_started.wait(5.0)
+        releaser = threading.Thread(target=_release)
+        releaser.start()
+        assert close_started.wait(5.0)
+        assert not release_finished.is_set()
+
+        allow_write.set()
+        writer.join(10.0)
+        releaser.join(10.0)
+        assert errors == []
+        assert release_finished.is_set()
+        assert db._conn is None
+
+    def test_maintenance_borrow_pins_connection_until_scope_exits(self, tmp_path):
+        """Maintenance gets a temporary holder, not an unpinned snapshot."""
+        db_path = tmp_path / "state.db"
+        db = registry.acquire(db_path)
+
+        with registry.borrow_live_shared_session_dbs() as borrowed:
+            assert borrowed == [db]
+            assert registry.release(db) is True
+            assert db._conn is not None
+
+        assert db._conn is None
 
 
 class TestLegacyCloseSemantics:

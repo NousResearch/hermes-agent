@@ -33,18 +33,16 @@ def _require_identity(db: SessionDB) -> None:
         pytest.skip("filesystem does not expose st_dev/st_ino for identity checks")
 
 
-def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path):
+def _mark_replaced_handle(monkeypatch, db: SessionDB) -> None:
+    """Exercise the replacement guard without unlinking an open DB on Windows."""
+    monkeypatch.setattr(db, "_db_file_was_replaced", lambda: True)
+
+
+def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path, monkeypatch):
     live = tmp_path / "state.db"
-    other = tmp_path / "other.db"
     db = _make_db(live, "live-sess", "original")
     _require_identity(db)
-    alt = _make_db(other, "other-sess", "replacement")
-    alt.close()
-
-    recorded = db._db_file_identity
-    assert recorded is not None
-    os.replace(other, live)
-    assert _stat_changed(live, recorded)
+    _mark_replaced_handle(monkeypatch, db)
 
     with pytest.raises(StateDbReplacedError, match="replaced underneath"):
         db.append_message("live-sess", role="user", content="after-replace")
@@ -56,14 +54,11 @@ def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path):
     db.close()
 
 
-def test_second_write_after_halt_does_not_attempt_repair(tmp_path):
+def test_second_write_after_halt_does_not_attempt_repair(tmp_path, monkeypatch):
     live = tmp_path / "state.db"
-    other = tmp_path / "other.db"
     db = _make_db(live, "s", "a")
     _require_identity(db)
-    alt = _make_db(other, "t", "b")
-    alt.close()
-    os.replace(other, live)
+    _mark_replaced_handle(monkeypatch, db)
     with pytest.raises(StateDbReplacedError):
         db.append_message("s", role="user", content="first")
     with pytest.raises(StateDbReplacedError):
@@ -125,17 +120,14 @@ def test_new_sessiondb_on_replaced_path_records_new_identity(tmp_path):
         reopened.close()
 
 
-def test_fts_scoped_error_on_replaced_file_skips_fts_fail_open(tmp_path):
+def test_fts_scoped_error_on_replaced_file_skips_fts_fail_open(tmp_path, monkeypatch):
     """Even FTS-provenance corruption must not authorize surgery on a
     replaced file. (A generic malformed error never reaches fail-open at
     all since the provenance classifier of #99652 rejects it earlier.)"""
     live = tmp_path / "state.db"
-    other = tmp_path / "other.db"
     db = _make_db(live, "s", "a")
     _require_identity(db)
-    alt = _make_db(other, "t", "b")
-    alt.close()
-    os.replace(other, live)
+    _mark_replaced_handle(monkeypatch, db)
 
     with pytest.raises(StateDbReplacedError):
         db._enter_fts_fail_open(
@@ -185,11 +177,6 @@ def test_divert_session_transcript_jsonl_appends(tmp_path, monkeypatch):
     lines = path.read_text(encoding="utf-8").strip().splitlines()
     assert json.loads(lines[-1])["content"] == "hello-jsonl"
     assert divert_session_transcript_jsonl("sess-jsonl", []) is None
-
-
-def _stat_changed(path: Path, recorded) -> bool:
-    st = os.stat(path)
-    return (st.st_dev, st.st_ino) != recorded
 
 
 # ---------------------------------------------------------------------------

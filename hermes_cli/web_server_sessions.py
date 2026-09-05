@@ -110,12 +110,13 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     import sqlite3
 
     from hermes_state import SessionDB, is_malformed_schema_error
+    from hermes_state_registry import acquire, release_or_close
 
     # Read-only file/sidecar preflight (port of kilocode#12508): repair-or-refuse BEFORE the first
     # connection so users get an actionable message instead of an opaque "attempt to write a readonly
     # database" from deep inside _init_schema.
     if not read_only:
-        return SessionDB(db_path=db_path, read_only=False)
+        return acquire(db_path)
 
     def _needs_bootstrap() -> bool:
         try:
@@ -128,7 +129,8 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
     if _needs_bootstrap():
         with _session_db_bootstrap_lock:
             if _needs_bootstrap():
-                SessionDB(db_path=db_path, read_only=False).close()
+                db = acquire(db_path)
+                release_or_close(db)
 
     def _open_probed():
         db = SessionDB(db_path=db_path, read_only=True)
@@ -156,7 +158,8 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             or is_malformed_schema_error(exc)
             or isinstance(exc, UnicodeDecodeError)):
             raise
-        SessionDB(db_path=db_path, read_only=False).close()
+        db = acquire(db_path)
+        release_or_close(db)
         try:
             return _open_probed()
         except (sqlite3.DatabaseError, UnicodeDecodeError) as still_stale:
@@ -222,7 +225,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
                 idle_days=float(cfg.get("auto_archive_days", 3)),
                 min_interval_hours=int(cfg.get("min_interval_hours", 24)))
         finally:
-            db.close()
+            release_or_close(db)
     except Exception as exc:
         _log.debug("opportunistic auto-archive skipped: %s", exc)
 

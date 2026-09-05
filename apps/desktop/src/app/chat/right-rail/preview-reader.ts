@@ -49,18 +49,14 @@ type PageReader = () => Promise<PreviewPage>
  *  this crosses the gateway into model context. Page with start/count. */
 export const PREVIEW_READ_MAX_CHARS = 24_000
 
-/** Default + hard cap on one read — a page's innerText can be megabytes, and
- *  this crosses the gateway into model context. Page with start/count. */
-export const PREVIEW_READ_MAX_CHARS = 24_000
-
 const readers = new Map<RightRailTabId, PageReader>()
 
 /** Owning session for each registered reader (tabId -> sessionId). */
 const readerSessions = new Map<RightRailTabId, string>()
 
 /** True when the given preview tab is a LIVE reader owned by `sessionId` and
- *  still open in `$previewTabs`. This asks about ONE specific tab � the one
- *  the mutation targets � rather than selecting an arbitrary tab owned by the
+ *  still open in `$previewTabs`. This asks about ONE specific tab — the one
+ *  the mutation targets — rather than selecting an arbitrary tab owned by the
  *  session and comparing afterwards, so authorization depends on the identity
  *  of the preview being acted on, never on Map insertion order (#95459). */
 export function isLivePreviewTabOwnedBySession(tabId: RightRailTabId, sessionId: string): boolean {

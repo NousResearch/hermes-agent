@@ -567,10 +567,40 @@ function Remove-MarkerIfOwned {
     } catch {}
 }
 
+function Confirm-DesktopWindow([int]$TargetPid, [int]$TimeoutSeconds = 20) {
+    # Launch acceptance for a detached Hermes.exe pid: $true only if the pid
+    # exposes a main window within the bound. A live-but-windowless survivor
+    # is the #102259 frozen main thread (Not Responding, DDE Server Window
+    # only) still holding the single-instance lock — callers must treat it
+    # as a FAILED launch so the hand-off downgrades to manual, never success.
+    if (-not $script:Win32) { return $true }  # ponytail: no user32 (headless), liveness check is the ceiling
+    try { [HermesHandoff.Win32]::AllowSetForegroundWindow($TargetPid) | Out-Null } catch {}
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $hwnd = (Get-Process -Id $TargetPid -ErrorAction Stop).MainWindowHandle
+        } catch {
+            Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
+            return $false
+        }
+        if ($hwnd -ne [System.IntPtr]::Zero) {
+            try {
+                [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+            } catch {}
+            Write-HandoffLog "focused relaunched desktop window"
+            return $true
+        }
+        Start-Sleep -Milliseconds 400
+    }
+    Write-HandoffLog "WARNING: relaunched desktop (pid $TargetPid) showed no main window within ${TimeoutSeconds}s; treating as failed relaunch (possible frozen main thread holding the single-instance lock)"
+    return $false
+}
+
 function Start-DesktopRelaunch {
-    # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
-    # the pid exists, or the fallback spawn returned a live process). The
-    # finally block downgrades the on-screen/on-disk outcome when it didn't
+    # Returns $true only when a launch VERIFIABLY happened (detached pid
+    # exists AND shows a main window, or the fallback spawn returned a live
+    # process). The finally block downgrades the on-screen/on-disk outcome
     # — the sibling truth contract to posix.sh's launch acceptance.
     if (-not $RelaunchExe) { return $false }
     # electron-builder replaces win-unpacked in place. After a successful
@@ -604,40 +634,10 @@ function Start-DesktopRelaunch {
         if ($r -and $r.ReturnValue -eq 0) {
             Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
             $spawned = $true
-            # Hand our foreground rights to the new Desktop and focus its
-            # main window once it exists. A WMI-spawned process starts
-            # unfocused, and Windows only lets the CURRENT foreground
-            # owner (us, while the progress window is up / just closed)
-            # delegate that right. Poll briefly for the window: Electron
-            # takes a couple seconds to create it.
-            try {
-                if ($script:Win32) {
-                    [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
-                    $deadline = (Get-Date).AddSeconds(20)
-                    while ((Get-Date) -lt $deadline) {
-                        $hwnd = [System.IntPtr]::Zero
-                        try {
-                            $p = Get-Process -Id $r.ProcessId -ErrorAction Stop
-                            $hwnd = $p.MainWindowHandle
-                        } catch {
-                            # Process died before showing a window — that is a
-                            # failed launch, not merely an unfocused one.
-                            Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
-                            $spawned = $false
-                            break
-                        }
-                        if ($hwnd -ne [System.IntPtr]::Zero) {
-                            [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                            [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
-                            Write-HandoffLog "focused relaunched desktop window"
-                            break
-                        }
-                        Start-Sleep -Milliseconds 400
-                    }
-                }
-            } catch {
-                Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
-            }
+            # Window-verified acceptance (#102259): a live pid with no main
+            # window is a frozen main thread holding the single-instance
+            # lock, not a landed relaunch.
+            if (-not (Confirm-DesktopWindow ([int]$r.ProcessId))) { $spawned = $false }
         } else {
             Write-HandoffLog "WARNING: WMI relaunch returned $($r.ReturnValue); falling back"
         }
@@ -663,28 +663,9 @@ function Start-DesktopRelaunch {
                 if ($fresh.Count -gt 0) {
                     Write-HandoffLog "desktop relaunched detached via explorer (pid $($fresh[0].Id))"
                     $spawned = $true
-                    # Same foreground hand-off as the WMI rung: the new process
-                    # starts unfocused and only the current foreground owner
-                    # (us) can delegate that right.
-                    try {
-                        if ($script:Win32) {
-                            [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$fresh[0].Id) | Out-Null
-                            $focusDeadline = (Get-Date).AddSeconds(20)
-                            while ((Get-Date) -lt $focusDeadline) {
-                                $hwnd = [System.IntPtr]::Zero
-                                try { $hwnd = (Get-Process -Id $fresh[0].Id -ErrorAction Stop).MainWindowHandle } catch { break }
-                                if ($hwnd -ne [System.IntPtr]::Zero) {
-                                    [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                                    [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
-                                    Write-HandoffLog "focused relaunched desktop window"
-                                    break
-                                }
-                                Start-Sleep -Milliseconds 400
-                            }
-                        }
-                    } catch {
-                        Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
-                    }
+                    # Same window-verified acceptance as the WMI rung
+                    # (#102259); also covers a pid that dies mid-poll.
+                    if (-not (Confirm-DesktopWindow ([int]$fresh[0].Id))) { $spawned = $false }
                     break
                 }
                 Start-Sleep -Milliseconds 400

@@ -745,7 +745,9 @@ export const en: Translations = {
       shortcutDesc: 'Needs at least one modifier, e.g. CommandOrControl+Shift+Space.',
       active: 'Shortcut is active.',
       takenBy: 'Another app already uses this shortcut — pick a different one.',
-      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.'
+      invalidShortcut: 'Not a valid shortcut. Include at least one modifier key.',
+      sessionUnavailable:
+        'Global shortcuts are unavailable in this desktop session (the shortcut service did not respond). Use the Hermes window directly.'
     },
     credentials: {
       pasteKey: 'Paste key',

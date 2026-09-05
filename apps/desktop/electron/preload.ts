@@ -154,6 +154,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // recent-session options the target picker offers. Main caches the latest
     // payload so a freshly spawned quick window starts from truth.
     pushState: payload => ipcRenderer.send('hermes:quick-entry:state', payload),
+    // Quick window → main: echo of the last adopted state payload, proving a
+    // mounted composer received it (main retries un-acked replays).
+    ackState: payload => ipcRenderer.send('hermes:quick-entry:state-ack', payload),
     // Quick window subscribes to those pushes.
     onState: callback => {
       const listener = (_event, payload) => callback(payload)

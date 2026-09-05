@@ -325,6 +325,7 @@ import {
   tagRegistrySessionResponse
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
+import { createQuickEntryStateRelay, sameQuickEntryState } from './quick-entry-state-relay'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
@@ -14253,6 +14254,11 @@ let quickEntryWindow = null
 // replayed to a quick window that spawns after the push happened.
 let quickEntryLastState = null
 
+// Acknowledged-retry policy delivering that cached truth to the CURRENT quick
+// window; recreated on every spawn, cancelled when the window closes. See
+// electron/quick-entry-state-relay.ts for why the blind replay raced (#95132).
+let quickEntryStateRelay = null
+
 function readQuickEntrySettings() {
   try {
     return sanitizeQuickEntrySettings(JSON.parse(fs.readFileSync(QUICK_ENTRY_CONFIG_PATH, 'utf8')))
@@ -14343,15 +14349,20 @@ function spawnQuickEntryWindow() {
   win.on('closed', () => {
     if (quickEntryWindow === win) {
       quickEntryWindow = null
+      quickEntryStateRelay?.cancel()
+      quickEntryStateRelay = null
     }
   })
 
   // Replay the last known gateway state as soon as the page can hear it — a
   // freshly spawned quick window must not sit "disconnected" when the primary
-  // renderer already reported a live gateway.
+  // renderer already reported a live gateway. `did-finish-load` only promises
+  // that resources finished loading, not that React has mounted and wired its
+  // `hermesDesktop.quickEntry.onState` listener yet (#95132), so delivery goes
+  // through the acknowledged-retry relay instead of one blind send.
   win.webContents.on('did-finish-load', () => {
     if (!win.isDestroyed() && quickEntryLastState) {
-      win.webContents.send('hermes:quick-entry:state', quickEntryLastState)
+      quickEntryStateRelay?.deliver(quickEntryLastState)
     }
   })
 
@@ -14378,6 +14389,13 @@ function showQuickEntryWindow() {
     // points at by the time the event lands.
     const win = spawnQuickEntryWindow()
     quickEntryWindow = win
+    quickEntryStateRelay?.cancel()
+    quickEntryStateRelay = createQuickEntryStateRelay({
+      equals: sameQuickEntryState,
+      isTargetAlive: () => Boolean(quickEntryWindow && !quickEntryWindow.isDestroyed()),
+      latest: () => quickEntryLastState,
+      send: payload => quickEntryWindow?.webContents.send('hermes:quick-entry:state', payload)
+    })
 
     wireWindowReveal(win, {
       show: () => {
@@ -14394,6 +14412,15 @@ function showQuickEntryWindow() {
   quickEntryWindow.focus()
   // Re-summoned: tell the renderer to clear any stale draft and refocus.
   quickEntryWindow.webContents.send('hermes:quick-entry:shown')
+
+  // The renderer keeps its composer state across hides, but a reload (crash
+  // recovery, dev reload) remounts it at the initial disconnected state — the
+  // same gap the did-finish-load replay covers for a cold spawn (#95132).
+  // Re-deliver the cached truth so a re-summoned window never shows "Not
+  // connected" while the primary window is live.
+  if (quickEntryLastState) {
+    quickEntryStateRelay?.deliver(quickEntryLastState)
+  }
 }
 
 function hideQuickEntryWindow() {
@@ -14416,8 +14443,8 @@ function toggleQuickEntryWindow() {
 
 const quickEntryShortcut = createQuickEntryShortcut(globalShortcut, toggleQuickEntryWindow)
 
-function applyQuickEntrySettings(settings) {
-  const state = quickEntryShortcut.apply(settings)
+async function applyQuickEntrySettings(settings) {
+  const state = await quickEntryShortcut.apply(settings)
 
   if (!settings.enabled) {
     // Turning the feature off must not leave an orphan always-on-top window.
@@ -14430,6 +14457,11 @@ function applyQuickEntrySettings(settings) {
 
   if (state.error === 'taken') {
     rememberLog(`[quick-entry] shortcut ${state.shortcut} is already taken by another application`)
+  } else if (state.error === 'unavailable') {
+    rememberLog(
+      `[quick-entry] shortcut ${state.shortcut} cannot be registered in this desktop session ` +
+        `(global shortcut service unreachable${state.detail ? `: ${state.detail}` : ''})`
+    )
   } else if (state.error === 'invalid') {
     rememberLog(`[quick-entry] shortcut ${state.shortcut} is not a valid accelerator`)
   }
@@ -17169,7 +17201,8 @@ ipcMain.handle('hermes:quick-entry:settings:get', async () => {
     enabled: settings.enabled,
     error: state.error,
     registered: state.registered,
-    shortcut: settings.enabled ? state.shortcut : settings.shortcut
+    shortcut: settings.enabled ? state.shortcut : settings.shortcut,
+    ...(state.detail ? { detail: state.detail } : {})
   }
 })
 
@@ -17220,8 +17253,19 @@ ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
   quickEntryLastState = payload ?? null
 
   if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
-    quickEntryWindow.webContents.send('hermes:quick-entry:state', payload)
+    quickEntryStateRelay?.deliver(payload)
   }
+})
+
+// The quick window echoes each adopted state payload back; a matching echo
+// proves a mounted composer received it, so the acknowledged-retry relay can
+// stop resending its replay.
+ipcMain.on('hermes:quick-entry:state-ack', (event, payload) => {
+  if (!quickEntryWindow || quickEntryWindow.isDestroyed() || event.sender !== quickEntryWindow.webContents) {
+    return
+  }
+
+  quickEntryStateRelay?.acknowledge(payload ?? null)
 })
 
 ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())

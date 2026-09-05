@@ -944,7 +944,8 @@ export const zh: Translations = {
       shortcutDesc: '至少需要一个修饰键，例如 CommandOrControl+Shift+Space。',
       active: '快捷键已生效。',
       takenBy: '此快捷键已被其他应用占用，请换一个。',
-      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。'
+      invalidShortcut: '不是有效的快捷键。请至少包含一个修饰键。',
+      sessionUnavailable: '当前桌面会话无法使用全局快捷键（快捷键服务未响应）。请直接使用 Hermes 窗口。'
     },
     credentials: {
       pasteKey: '粘贴密钥',

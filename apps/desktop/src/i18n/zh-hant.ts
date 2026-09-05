@@ -762,7 +762,8 @@ export const zhHant = defineLocale({
       shortcutDesc: '至少需要一個修飾鍵，例如 CommandOrControl+Shift+Space。',
       active: '快速鍵已生效。',
       takenBy: '此快速鍵已被其他應用程式占用，請換一個。',
-      invalidShortcut: '不是有效的快速鍵。請至少包含一個修飾鍵。'
+      invalidShortcut: '不是有效的快速鍵。請至少包含一個修飾鍵。',
+      sessionUnavailable: '此桌面工作階段無法使用全域快速鍵（快速鍵服務未回應）。請直接使用 Hermes 視窗。'
     },
     credentials: {
       pasteKey: '貼上金鑰',

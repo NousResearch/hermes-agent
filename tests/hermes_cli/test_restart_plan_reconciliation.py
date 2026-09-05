@@ -133,6 +133,55 @@ def test_restarted_service_unit_matches_profile():
     assert outcomes[0]["outcome"] == "restarted"
 
 
+def test_launchd_default_gateway_restarted_via_ai_hermes_label():
+    """macOS restart bookkeeping records ``ai.hermes.gateway``, which does not
+    contain the substring ``hermes-gateway``. The default-profile gateway must
+    still count as restarted — otherwise every Desktop update on launchd
+    exits 1 after a successful kickstart (receipt outcome=partial, tripwire
+    'never touched')."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 400, supervisor="launchd")),
+        restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "restarted"
+    assert report_unaccounted_runtimes(outcomes) is False
+
+
+def test_launchd_named_profile_and_failed_label():
+    restarted = match_runtime_outcomes(
+        _plan(_rt("work", 401, supervisor="launchd")),
+        restarted_services=["ai.hermes.gateway-work"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert restarted[0]["outcome"] == "restarted"
+    failed = match_runtime_outcomes(
+        _plan(_rt("default", 402, supervisor="launchd")),
+        restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(),
+        failed_units=["ai.hermes.gateway"],
+    )
+    assert failed[0]["outcome"] == "failed"
+    # Sibling label must not credit the default profile (exact match, not prefix).
+    sibling = match_runtime_outcomes(
+        _plan(_rt("default", 403, supervisor="launchd")),
+        restarted_services=["ai.hermes.gateway-foo"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert sibling[0]["outcome"] == "unaccounted"
+
+
+def test_launchd_gateway_restart_does_not_credit_serve():
+    """#100479 sibling: a launchd gateway restart is still gateway vocabulary."""
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 100, supervisor="launchd"), _serve("default", 900)),
+        restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {100: "restarted", 900: "unaccounted"}
+
+
 def test_untouched_runtime_is_unaccounted_and_escalates(capsys):
     """The tripwire: plan saw it, NO bookkeeping mentions it."""
     outcomes = match_runtime_outcomes(

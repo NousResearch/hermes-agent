@@ -3378,8 +3378,23 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
     )
+    # Honor auxiliary.stream_only_base_urls on the retry path too (mirrors the
+    # _primary wrapper in _call_llm_impl): dropping it here silently downgraded
+    # stream-only endpoints back to non-streaming on recovery retries.
     return _validate_llm_response(
-        _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+        _relay_sync_completion(
+            retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode,
+            create=lambda request: _create_with_progress(
+                retry_client,
+                request,
+                task,
+                force_stream=_provider_requires_stream(
+                    _effective_provider_for_client(retry_client, resolved_provider),
+                    str(getattr(retry_client, "base_url", "") or "") or prep.get("resolved_base_url"),
+                ),
+            ),
+        ),
+        task,
     )
 
 
@@ -3387,8 +3402,28 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
+    # Mirror of the sync-path fix, with the same native-client exclusions as
+    # the initial async path in _async_call_llm_impl (those adapters don't
+    # speak OpenAI-style stream/stream_options kwargs).
+    force_stream = _provider_requires_stream(
+        _effective_provider_for_client(retry_client, resolved_provider),
+        str(getattr(retry_client, "base_url", "") or "") or prep.get("resolved_base_url"),
+    ) and not isinstance(retry_client, (
+        AsyncCodexAuxiliaryClient,
+        AsyncAnthropicAuxiliaryClient,
+        AsyncBedrockAuxiliaryClient,
+    ))
+
+    async def _acreate(_kwargs: Dict[str, Any]) -> Any:
+        if force_stream:
+            return await _acreate_with_stream(retry_client, _kwargs, task)
+        return await retry_client.chat.completions.create(**_kwargs)
+
     return _validate_llm_response(
-        await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
+        await _relay_async_completion(
+            retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode,
+            create=_acreate,
+        ),
         task,
     )
 

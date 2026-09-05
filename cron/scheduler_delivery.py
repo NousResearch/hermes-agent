@@ -1414,9 +1414,19 @@ def _standalone_send(
         try:
             pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             try:
+                def _send_in_fresh_loop():
+                    fresh_coro = _send()
+                    try:
+                        return asyncio.run(fresh_coro)
+                    except BaseException:
+                        fresh_coro.close()
+                        raise
+
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
-                return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
+                return pool.submit(
+                    contextvars.copy_context().run, _send_in_fresh_loop
+                ).result(
                     timeout=30), None
             finally:
                 pool.shutdown(wait=False)

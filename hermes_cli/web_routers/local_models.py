@@ -49,6 +49,13 @@ _LLAMACPP_PROVIDERS = ("llamacpp", "llama.cpp", "llama-cpp")
 _SPLIT_PART_RE = r"-\d{5}-of-\d{5}"
 # One TCP stream to a CDN rarely fills a fast line; 8 ranged connections into a preallocated file saturate gigabit.
 _DOWNLOAD_CONNECTIONS = 8
+# A dropped connection on any one of the 8 range workers must not discard the gigabytes the
+# other workers already wrote: each worker retries its own remaining sub-range from the last
+# byte it wrote (Range: bytes=<high-water>-<end>), with exponential backoff, before the whole
+# download is failed. On a 16 GB GGUF over flaky Wi-Fi/VPN this turns a total restart-from-zero
+# into a few seconds of re-fetching one worker's tail. (#103416)
+_DOWNLOAD_RANGE_RETRIES = 4
+_DOWNLOAD_RANGE_BACKOFF = 1.0
 _CHUNK = 4 << 20
 _SERVER_START_FAILED = "The local server could not start — check the runtime is installed"
 
@@ -333,13 +340,32 @@ def download_file(url: str, dest: Path, job: Dict[str, Any], *, base_done: int =
                 job["done_bytes"] = base_done + file_done[0]
 
     def fetch_range(start: int, end: int) -> None:
-        try:
-            req = urllib.request.Request(url, headers={"Range": f"bytes={start}-{end}"})
-            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
-                f.seek(start)
-                pump(r, f)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(exc)
+        # ``pos`` is the next byte this worker still needs. It advances per chunk as bytes land on
+        # disk — so if a read drops mid-stream, ``pos`` already reflects what was written and the
+        # retry re-requests only bytes=<pos>-<end>, never re-downloading (or re-counting) the head.
+        pos = start
+        for attempt in range(_DOWNLOAD_RANGE_RETRIES + 1):
+            try:
+                req = urllib.request.Request(url, headers={"Range": f"bytes={pos}-{end}"})
+                with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "r+b") as f:
+                    f.seek(pos)
+                    for chunk in iter(lambda: r.read(_CHUNK), b""):
+                        f.write(chunk)
+                        pos += len(chunk)
+                        with progress_lock:
+                            file_done[0] += len(chunk)
+                            job["done_bytes"] = base_done + file_done[0]
+                if pos > end:
+                    return  # full sub-range delivered (ranges are inclusive: last byte is ``end``)
+                # Server closed the stream early without raising — treat the short read as retryable.
+                raise RuntimeError(f"range {start}-{end} ended early at byte {pos}")
+            except Exception as exc:  # noqa: BLE001
+                if pos > end:
+                    return  # the failure arrived after the last needed byte; the range is complete
+                if attempt >= _DOWNLOAD_RANGE_RETRIES:
+                    errors.append(exc)
+                    return
+                time.sleep(_DOWNLOAD_RANGE_BACKOFF * (2 ** attempt))
 
     try:
         # Probe and preallocation take real seconds on a 20+ GB file — narrate them, or the pane shows a dead '— of X GB'.

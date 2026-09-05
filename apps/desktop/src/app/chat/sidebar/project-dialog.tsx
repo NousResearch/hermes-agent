@@ -205,7 +205,10 @@ export function ProjectDialog() {
         )}
 
         {mode === 'create' && (
-          <div className="flex flex-col gap-1.5">
+          // min-w-0: this is a grid item of DialogContent — without it, a long
+          // nowrap folder path propagates its min-content width up and pushes
+          // other contents out of the dialog.
+          <div className="flex min-w-0 flex-col gap-1.5">
             <span className="text-[0.6875rem] font-medium text-(--ui-text-tertiary)">{p.foldersLabel}</span>
             {folders.length === 0 ? (
               <span className="text-[0.75rem] text-(--ui-text-quaternary)">{p.noFolders}</span>

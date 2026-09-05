@@ -171,6 +171,24 @@ def _memory_fields(item: Any, *keys: str) -> dict:
             for k in keys}
 
 
+def _format_conversation_as_document(messages: list[dict]) -> str:
+    """Flatten a role/content message list into one role-tagged document body.
+
+    Used only on the /v3/documents fallback path (see ingest_conversation) —
+    /v4/conversations takes the message list structured, this path needs one
+    text blob.
+    """
+    lines = []
+    for message in messages or []:
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        role = str(message.get("role", "")).strip().lower()
+        label = {"user": "User", "assistant": "Assistant"}.get(role, role.capitalize() or "Message")
+        lines.append(f"{label}: {content}")
+    return "\n\n".join(lines)
+
+
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
@@ -232,6 +250,23 @@ class _SupermemoryClient:
         return {"success": True, "message": f'Forgot: "{(results[0].get("memory") or "")[:100]}"', "id": memory_id}
 
     def ingest_conversation(self, session_id: str, messages: list[dict], metadata: dict | None = None) -> None:
+        if self._base_url != _DEFAULT_BASE_URL:
+            # Self-hosted (or any other non-default) deployment: /v4/conversations
+            # is a platform-only route the self-hosted binary does not implement
+            # (404 — see #101270), so every ingest here silently failed. /v3/documents
+            # is implemented by both cloud and self-hosted; flatten the turns into
+            # one role-tagged document through the SDK instead of the raw POST below.
+            # custom_id keys the document by session, so a later partial/final flush
+            # of the same session updates it rather than piling up duplicates.
+            content = _format_conversation_as_document(messages)
+            if not content:
+                return
+            kwargs: dict[str, Any] = {"content": content, "container_tags": [self._container_tag],
+                                      "custom_id": f"session-{session_id}", "dreaming": "instant",
+                                      **({"metadata": self._merge_metadata(metadata)} if metadata else {})}
+            self._client.documents.add(**kwargs)
+            return
+
         payload: dict = {"conversationId": session_id, "messages": messages, "containerTags": [self._container_tag],
                          **({"metadata": self._merge_metadata(metadata)} if metadata else {})}
         req = urllib.request.Request(f"{self._base_url}/v4/conversations", data=json.dumps(payload).encode("utf-8"), method="POST",

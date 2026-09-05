@@ -605,6 +605,9 @@ class TurnRunner:
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
             return
+        if ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled:
+            await self._send_matrix_activity_progress()
+            return
         # Skip tool progress for platforms that can't edit messages (e.g. iMessage/BlueBubbles):
         # each update would be a separate bubble. getattr, not attribute access: duck-typed
         # adapters (test fakes, minimal plugins) may lack edit_message — treated as "can't edit".
@@ -652,6 +655,57 @@ class TurnRunner:
             except Exception as e:
                 logger.error("Progress message error: %s", e)
                 await asyncio.sleep(1)
+
+    async def _send_matrix_activity_progress(self) -> None:
+        """Drain Matrix tool labels through the turn's shared activity pane."""
+
+        ctx = self._ctx
+        pane = ctx.matrix_activity_pane
+        if pane is None:
+            return
+
+        async def _publish(raw: Any) -> None:
+            if isinstance(raw, tuple) and raw and raw[0] == "__reset__":
+                # Matrix has one root for the whole turn, including across
+                # streamed content segment boundaries.
+                return
+            if (
+                isinstance(raw, tuple)
+                and len(raw) == 3
+                and raw[0] == "__dedup__"
+            ):
+                _, base_msg, count = raw
+                await pane.replace_activity(
+                    str(base_msg),
+                    f"{base_msg} (×{count + 1})",
+                )
+                return
+            await pane.append_activity(str(raw))
+
+        try:
+            while True:
+                if not ctx._run_still_current():
+                    return
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    await asyncio.sleep(0.1)
+                    continue
+                if ctx._run_still_current() and not self._agent_interrupted():
+                    await _publish(raw)
+        except asyncio.CancelledError:
+            while True:
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+                except Exception:
+                    break
+                if ctx._run_still_current() and not self._agent_interrupted():
+                    await _publish(raw)
+            return
+        except Exception:
+            logger.debug("Matrix activity progress failed", exc_info=True)
 
     # ── ID-bearing lifecycle callbacks (agent thread) ───────────────────────────────────────
 
@@ -788,6 +842,10 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        if (ctx.matrix_activity_pane is not None and ctx.matrix_activity_pane.coalescing_enabled
+                and ctx.progress_queue is not None):
+            ctx.progress_queue.put(prepared)
             return
         fut = self._schedule(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),

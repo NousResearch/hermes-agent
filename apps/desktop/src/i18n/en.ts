@@ -1578,6 +1578,15 @@ export const en: Translations = {
     tokens: value => `${value} tok`
   },
 
+  penLibrary: {
+    title: 'Canvases',
+    searchPlaceholder: 'Search canvases…',
+    empty: 'No canvases yet',
+    delete: 'Delete canvas',
+    confirmDelete: 'Delete',
+    cancelDelete: 'Keep'
+  },
+
   commandCenter: {
     close: 'Close command center',
     paletteTitle: 'Command palette',
@@ -2292,6 +2301,9 @@ export const en: Translations = {
     kindImage: 'image',
     kindFile: 'file',
     kindLink: 'link',
+    kindCanvas: 'Pen',
+    tabCanvases: 'Pens',
+    openCanvas: 'Open canvas',
     chat: 'Chat',
     copyUrl: 'Copy URL',
     copyPath: 'Copy path'
@@ -2619,6 +2631,20 @@ export const en: Translations = {
       tip: skill => `You mentioned “${skill}” — click to lead with that skill`,
       done: skill => `Added /${skill}`,
       doneTip: 'The skill loads when you send'
+    },
+    penSuggestions: {
+      reopen: 'Reopen {name}',
+      reopenTip: 'This chat has a canvas — click to bring it back',
+      untitledCanvas: 'canvas',
+      newCanvas: 'New canvas',
+      newCanvasTip: 'Slide out a blank pen.dev canvas beside the chat',
+      openFile: 'Open a .pen file',
+      openFileTip: 'Pick one of your pen.dev designs to open beside the chat',
+      working: 'Opening canvas…',
+      workingTip: 'Click to cancel',
+      done: 'Canvas open',
+      doneTip: 'Design away — Hermes can draw on it too',
+      openFailed: 'Could not open the canvas'
     },
     githubSuggestions: {
       label: 'Set up GitHub',
@@ -3172,6 +3198,10 @@ export const en: Translations = {
     terminalCloseOthers: 'Close others',
     terminalCloseAll: 'Close all',
     addToChat: 'Add to chat'
+  },
+
+  pen: {
+    openFailed: 'Could not open the canvas'
   },
 
   preview: {

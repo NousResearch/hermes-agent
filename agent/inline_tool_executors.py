@@ -195,6 +195,10 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.setup_mcp_tool", "setup_mcp_tool", "setup_mcp_callback",
         ("server", "server", ""), ("action", "action", "install"), ("reason", "reason", ""),
     ),
+    "pen_canvas": _callback_tool(
+        "tools.pen_canvas_tool", "pen_canvas_tool", "pen_canvas_callback",
+        ("action", "action", ""), ("args", "args"),
+    ),
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
 }
 

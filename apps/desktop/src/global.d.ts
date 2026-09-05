@@ -162,6 +162,33 @@ declare global {
         onShown: (callback: () => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      pen?: {
+        status: () => Promise<PenStatus>
+        open: (options?: { name?: string; path?: string; sessionId?: string }) => Promise<PenOpenResult>
+        close: (options?: { keep?: boolean }) => Promise<void>
+        tool: (name: string, payload?: Record<string, unknown>) => Promise<PenToolResult>
+        session: (sessionId: string) => Promise<null | { closed?: boolean; docId: string; path?: null | string; width?: number }>
+        adopt: (sessionId: string) => Promise<boolean>
+        restore: (sessionId: string) => Promise<null | { doc?: PenDocumentInfo; docId?: string; url?: string }>
+        library: () => Promise<{
+          items: Array<{
+            docId: null | string
+            folder: string
+            modifiedAt: number
+            name: string
+            open: boolean
+            path: string
+            previewPath: null | string
+            sessionId: null | string
+            size: number
+          }>
+          root: string
+        }>
+        libraryDelete: (target: string) => Promise<boolean>
+        libraryRename: (target: string, nextName: string) => Promise<null | string>
+        reveal: (target: string) => Promise<void>
+        onEvent: (callback: (payload: { event: string; payload: unknown }) => void) => () => void
+      }
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -1136,6 +1163,32 @@ export interface DesktopBootProgress {
   /** Structured HTTP status when the boot failure carried one (e.g. 503). */
   statusCode?: number | null
   timestamp: number
+}
+
+// Pen canvas types — renderer view of electron/pen/.
+
+export interface PenDocumentInfo {
+  docId: string
+  fileURI: string
+  displayName: string
+}
+
+export interface PenStatus {
+  available: boolean
+  running: boolean
+  openDocuments: PenDocumentInfo[]
+}
+
+export interface PenOpenResult {
+  doc: PenDocumentInfo
+  /** Hosted editor URL the pen tile mounts in its <webview>. */
+  url: string
+}
+
+export interface PenToolResult {
+  success: boolean
+  result?: unknown
+  error?: string
 }
 
 // First-launch install ("bootstrap") event types -- emitted by

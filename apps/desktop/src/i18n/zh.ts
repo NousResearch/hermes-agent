@@ -1751,6 +1751,15 @@ export const zh: Translations = {
     tokens: value => `${value} 词元`
   },
 
+  penLibrary: {
+    title: '画布',
+    searchPlaceholder: '搜索画布…',
+    empty: '还没有画布',
+    delete: '删除画布',
+    confirmDelete: '删除',
+    cancelDelete: '保留'
+  },
+
   commandCenter: {
     close: '关闭命令中心',
     paletteTitle: '命令面板',
@@ -2459,6 +2468,9 @@ export const zh: Translations = {
     kindImage: '图片',
     kindFile: '文件',
     kindLink: '链接',
+    kindCanvas: 'Pen',
+    tabCanvases: 'Pen 文件',
+    openCanvas: '打开画布',
     chat: '对话',
     copyUrl: '复制 URL',
     copyPath: '复制路径'
@@ -2784,6 +2796,20 @@ export const zh: Translations = {
       tip: skill => `你提到了“${skill}” — 点击以该技能开头`,
       done: skill => `已添加 /${skill}`,
       doneTip: '发送时将加载该技能'
+    },
+    penSuggestions: {
+      reopen: '重新打开 {name}',
+      reopenTip: '此对话有一个画布 — 点击以重新打开',
+      untitledCanvas: '画布',
+      newCanvas: '新建画布',
+      newCanvasTip: '在聊天旁展开一个空白 pen.dev 画布',
+      openFile: '打开 .pen 文件',
+      openFileTip: '选择一个 pen.dev 设计文件在聊天旁打开',
+      working: '正在打开画布…',
+      workingTip: '点击取消',
+      done: '画布已打开',
+      doneTip: '尽情设计 — Hermes 也可以在上面绘制',
+      openFailed: '无法打开画布'
     },
     githubSuggestions: {
       label: '设置 GitHub',
@@ -3321,6 +3347,10 @@ export const zh: Translations = {
     terminalCloseOthers: '关闭其他',
     terminalCloseAll: '关闭全部',
     addToChat: '添加到对话'
+  },
+
+  pen: {
+    openFailed: '无法打开画布'
   },
 
   preview: {

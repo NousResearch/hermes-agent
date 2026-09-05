@@ -1392,6 +1392,15 @@ export const ja = defineLocale({
     tokens: value => `${value} トーク`
   },
 
+  penLibrary: {
+    title: 'キャンバス',
+    searchPlaceholder: 'キャンバスを検索…',
+    empty: 'キャンバスがありません',
+    delete: 'キャンバスを削除',
+    confirmDelete: '削除',
+    cancelDelete: '残す'
+  },
+
   commandCenter: {
     close: 'コマンドセンターを閉じる',
     paletteTitle: 'コマンドパレット',
@@ -2784,6 +2793,10 @@ export const ja = defineLocale({
     terminalCloseOthers: '他を閉じる',
     terminalCloseAll: 'すべて閉じる',
     addToChat: 'チャットに追加'
+  },
+
+  pen: {
+    openFailed: 'キャンバスを開けませんでした'
   },
 
   preview: {

@@ -16,7 +16,7 @@ from agent.session_activity import (
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
+    _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _placeholders as _session_ids_placeholders,
 )
 
@@ -31,7 +31,7 @@ def workspace_key(row: Dict[str, Any]) -> Optional[str]:
 
 
 def _delegate_from_json(col: str = "model_config") -> str:
-    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+    return _sql_json_extract(col, "$._delegate_from")
 
 
 # _merge_model_config_json's "no such row" result — distinct from the legal None
@@ -420,10 +420,9 @@ class SessionSessionsMixin:
     # are bound to the queried parent id: continuations inherit model_config verbatim, so
     # presence-matching misclassified them as delegates.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._branched_from'), '') != ?\n"
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._delegate_from'), '') != ?\n  AND COALESCE({alias}source, '') != 'tool'\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._branched_from')}, '') != ?\n"
+        f"  AND COALESCE({_sql_json_extract('{alias}model_config', '$._delegate_from')}, '') != ?\n"
+        "  AND COALESCE({alias}source, '') != 'tool'\n"
     )
 
     def end_session(self, session_id: str, end_reason: str) -> None:
@@ -1213,8 +1212,8 @@ class SessionSessionsMixin:
                     JOIN sessions parent ON parent.id = c.cur_id
                     JOIN sessions child ON child.parent_session_id = c.cur_id
                     WHERE parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND COALESCE(child.source, '') != 'tool'
                 ),
                 chain_max AS (

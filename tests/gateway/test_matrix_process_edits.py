@@ -2,6 +2,7 @@
 own message as a new agent turn (issue: incoming user edits are silently skipped by default).
 """
 
+import os
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -82,8 +83,9 @@ async def test_process_edits_enabled_via_env_forwards_corrected_body(monkeypatch
 
 @pytest.mark.asyncio
 async def test_process_edits_enabled_via_config_extra(monkeypatch):
-    """config.yaml ``matrix.process_edits: true`` (config.extra) works without the env var —
-    the dual config.extra/env path mirrors require_mention/thread_require_mention."""
+    """``_parse_process_edits`` prefers a directly-set ``config.extra["process_edits"]`` over the
+    env var. This does not by itself prove config.yaml's ``matrix.process_edits: true`` works —
+    see ``test_apply_yaml_config_bridges_process_edits`` for the real YAML→env bridge."""
     monkeypatch.delenv("MATRIX_PROCESS_EDITS", raising=False)
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
 
@@ -92,6 +94,19 @@ async def test_process_edits_enabled_via_config_extra(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
+
+
+def test_apply_yaml_config_bridges_process_edits(monkeypatch):
+    """config.yaml's ``matrix.process_edits: true`` must reach ``MATRIX_PROCESS_EDITS`` via the
+    real ``apply_yaml_config_fn`` hook (``_apply_yaml_config``) — the same bridge that already
+    carries ``process_notices`` — not just via a hand-constructed ``PlatformConfig(extra=...)``."""
+    from plugins.platforms.matrix.adapter import _apply_yaml_config
+
+    monkeypatch.delenv("MATRIX_PROCESS_EDITS", raising=False)
+    seeded = _apply_yaml_config({}, {"process_edits": True})
+
+    assert seeded is None  # _apply_yaml_config always returns None; everything flows through env
+    assert os.environ["MATRIX_PROCESS_EDITS"] == "true"
 
 
 @pytest.mark.asyncio

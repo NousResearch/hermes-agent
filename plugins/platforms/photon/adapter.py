@@ -1527,6 +1527,54 @@ def _standalone_token_from_record(port: int) -> Tuple[Optional[str], int, str]:
         "or set PHOTON_SIDECAR_TOKEN in this process's environment." + stale_hint)
 
 
+# Cron jobs, notification fanout, and `hermes send` all deliver through
+# _standalone_send; a brief Photon overflow or connection reset would
+# otherwise drop a scheduled message outright.
+# One retry adds at most 2s of backoff per text or attachment request;
+# sequential fanout accumulates that delay for each failed request.
+_STANDALONE_SEND_RETRIES = 1
+_STANDALONE_RETRY_BASE_DELAY_SECONDS = 2.0
+
+
+async def _standalone_post_with_retry(
+    client: Any,
+    url: str,
+    body: Dict[str, Any],
+    headers: Dict[str, str],
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """POST to the sidecar, retrying transient Photon failures with backoff.
+
+    Returns ``(data, None)`` on success or ``(None, error_dict)`` once the
+    retries are spent or the failure is classified permanent.
+    """
+    last_error: Optional[Dict[str, Any]] = None
+    for attempt in range(_STANDALONE_SEND_RETRIES + 1):
+        resp = await client.post(url, json=body, headers=headers)
+        if resp.status_code == 200:
+            try:
+                data = resp.json() or {}
+            except Exception:
+                data = {}
+            if isinstance(data, dict) and data.get("ok"):
+                return data, None
+        last_error = _standalone_error(resp)
+        if attempt >= _STANDALONE_SEND_RETRIES:
+            break
+        retryable = bool(last_error.get("retryable")) or PhotonAdapter._is_retryable_error(
+            last_error.get("error")
+        )
+        if not retryable:
+            break
+        delay = _STANDALONE_RETRY_BASE_DELAY_SECONDS * (2 ** attempt)
+        logger.warning(
+            "[photon] standalone send failed (attempt %d/%d, retrying in %.1fs): %s",
+            attempt + 1, _STANDALONE_SEND_RETRIES + 1, delay,
+            last_error.get("error"),
+        )
+        await asyncio.sleep(delay)
+    return None, last_error
+
+
 async def _standalone_send(
     pconfig: PlatformConfig, chat_id: str, message: str, *,
     thread_id: Optional[str] = None,  # noqa: ARG001 — Spectrum has no threads yet
@@ -1563,9 +1611,11 @@ async def _standalone_send(
                     send_body: Dict[str, Any] = {"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]}
                     if _markdown_enabled() and not rich_url:
                         send_body["format"] = "markdown"
-                    resp, data = await _post("/send", send_body)
-                    if not data:
-                        return _standalone_error(resp)
+                    data, error = await _standalone_post_with_retry(
+                        client, f"{base}/send", send_body, headers,
+                    )
+                    if error is not None:
+                        return error
                 last_message_id = data.get("messageId")
             # 2. Each attachment as a separate /send-attachment call; media_files is
             #    List[Tuple[path, is_voice]] (filter_media_delivery_paths).
@@ -1576,9 +1626,11 @@ async def _standalone_send(
                     continue
                 att_body = _attachment_body(
                     chat_id, safe_path, kind="voice" if is_voice else "attachment", mime_type=_guess_mime(safe_path))
-                resp, data = await _post("/send-attachment", att_body)
-                if not data:
-                    return _standalone_error(resp)
+                data, error = await _standalone_post_with_retry(
+                    client, f"{base}/send-attachment", att_body, headers,
+                )
+                if error is not None:
+                    return error
                 last_message_id = data.get("messageId") or last_message_id
         return {"success": True, "message_id": last_message_id}
     except Exception as e:

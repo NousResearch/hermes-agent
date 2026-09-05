@@ -557,7 +557,8 @@ async def test_cancel_drain_drops_events_after_run_is_replaced():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled", [True, False])
-async def test_gateway_turn_binds_status_and_heartbeat_then_seals(monkeypatch, tmp_path, enabled):
+@pytest.mark.parametrize("platform_name", ["matrix", "telegram"])
+async def test_gateway_turn_binds_status_and_heartbeat_then_seals(monkeypatch, tmp_path, enabled, platform_name):
     import time
     from gateway.config import Platform
     from tests.gateway.test_run_progress_topics import (
@@ -577,19 +578,19 @@ async def test_gateway_turn_binds_status_and_heartbeat_then_seals(monkeypatch, t
         def run_conversation(self, *args, **kwargs):
             self.status_callback("memory_recall", "Searching past sessions")
             self.tool_progress_callback("tool.started", "terminal", "pwd", {})
-            time.sleep(0.25)
+            time.sleep(1.7)
             return {"final_response": "done", "messages": [], "api_calls": 1}
 
     adapter, result = await _run_with_agent(
         monkeypatch, tmp_path, ActivityAgent, session_id="session-example",
-        platform=Platform.MATRIX, chat_id="!room:example.org", thread_id="$thread",
+        platform=Platform(platform_name), chat_id="!room:example.org", thread_id="$thread",
         adapter_cls=MetadataEditProgressCaptureAdapter,
-        config_data={"display": {"platforms": {"matrix": {
+        config_data={"display": {"platforms": {platform_name: {
             "tool_progress": "all" if enabled else "off", "streaming": False,
         }}}},
     )
     assert result["final_response"] == "done"
-    if not enabled:
+    if not enabled or platform_name != "matrix":
         assert not panes
         assert all("matrix_formatted_body_unprefixed" not in (s["metadata"] or {}) for s in adapter.sent)
         return
@@ -601,6 +602,7 @@ async def test_gateway_turn_binds_status_and_heartbeat_then_seals(monkeypatch, t
     assert any("Working" in e["content"] for e in adapter.edits)
     assert "Working" not in adapter.edits[-1]["content"]
     assert all(e["message_id"] == pane.root_event_id for e in adapter.edits)
+    assert len(adapter.edits) <= 2  # one interval flush plus final seal
     sent_count, edit_count = len(adapter.sent), len(adapter.edits)
     await pane.set_footer("late heartbeat")
     assert (len(adapter.sent), len(adapter.edits)) == (sent_count, edit_count)

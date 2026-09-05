@@ -924,6 +924,37 @@ class TestNovitaProvider:
         assert "prompt" not in result
         assert "completion" not in result
 
+    def test_extract_pricing_skips_dict_typed_values(self):
+        """_extract_pricing must not crash when alias keys hold nested dicts.
+
+        Self-hosted OpenAI-compatible gateways may emit per-model
+        ``capabilities`` objects (nested dicts such as ``modalities.input``).
+        ``_iter_nested_dicts`` walks into them, keys like ``input``/``output``
+        alias-match the pricing map, and the ``not in {None, ""}`` membership
+        check raises ``TypeError: unhashable type: 'dict'`` on dict values —
+        wiping out metadata for every model on the endpoint.
+        """
+        from agent.model_metadata import _extract_pricing
+
+        payload = {
+            "id": "some/model",
+            "capabilities": {
+                "vision": True,
+                "modalities": {
+                    "input": {"text": True},
+                    "output": {"text": True},
+                },
+            },
+            "pricing": {"request": 0.001},
+        }
+        # Must not raise TypeError; dict values are skipped, scalar is kept.
+        result = _extract_pricing(payload)
+        assert "request" in result
+        assert result["request"] == 0.001
+        # Dict-typed modalities fields are silently ignored.
+        assert "prompt" not in result
+        assert "completion" not in result
+
     def test_novita_pricing_cache(self, monkeypatch):
         """_fetch_novita_pricing should cache results in _pricing_cache."""
         from hermes_cli import models as models_mod

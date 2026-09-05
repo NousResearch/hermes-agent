@@ -2095,6 +2095,7 @@ export interface Translations {
       finishedUnread: string
       backgroundRunning: string
       draftSession: string
+      expensiveChat: string
       handoffOrigin: (platform: string) => string
       ownedByProfile: (profile: string) => string
       renamed: string

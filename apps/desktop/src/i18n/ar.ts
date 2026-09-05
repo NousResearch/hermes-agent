@@ -1811,6 +1811,7 @@ export const ar = defineLocale({
       waitingForAnswer: 'بانتظار إجابة',
       backgroundRunning: 'تعمل في الخلفية',
       draftSession: 'مسودة — لم تُرسل بعد',
+      expensiveChat: 'هذه المحادثة مكلفة — إعادة قراءة ذاكرة التخزين المؤقت تكلّف كثيرًا. ابدأ محادثة جديدة حول هذا الموضوع لإعادة الضبط.',
       finishedUnread: 'اكتملت وفيها جديد',
       hideTabBar: 'إخفاء شريط التبويبات',
       openInNewTab: 'فتح في تبويب جديد',

@@ -2117,6 +2117,7 @@ export const ja = defineLocale({
       finishedUnread: '完了 — 未読',
       backgroundRunning: 'バックグラウンドタスク実行中',
       draftSession: '下書き — 未送信',
+      expensiveChat: 'このチャットはコストが高くなっています — キャッシュの再読み込みに多くの費用がかかっています。このトピックで新しいチャットを開始してリセットしてください。',
       handoffOrigin: platform => `${platform} から引き継ぎ`,
       ownedByProfile: profile => `プロファイル: ${profile}`,
       renamed: '名前を変更しました',

@@ -519,6 +519,12 @@ export interface SessionInfo {
    *  why the sidebar only offers a cost sort when some session has spend. */
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
+  /** Cumulative cache-READ tokens billed against this conversation (`sessions.cache_read_tokens`).
+   *  A long-lived chat re-reads its cached prefix every turn, so this grows with conversation
+   *  length even when {@link actual_cost_usd} stays 0 on subscription/OAuth auth. The sidebar's
+   *  cost dot reads it to flag a conversation that has become expensive to keep re-reading.
+   *  Undefined against a backend predating the field; treat that as "no opinion" (never expensive). */
+  cache_read_tokens?: number
   is_active: boolean
   last_active: number
   message_count: number

@@ -4,6 +4,7 @@ Profile-scoped paths and patchable helpers resolve through ``_ss()`` at call tim
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from tools.skill_usage import _toggle_suppressed_name, read_suppressed_names
 from tools.skills_sync_optional import _skill_file_list, _ss
 
 
@@ -24,7 +25,8 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     """Reset a bundled skill's manifest tracking so future syncs work normally. An edited bundled
     skill stays ``user_modified`` forever because the manifest holds the OLD origin hash; clearing
     the entry breaks that loop. ``restore`` also deletes the user's copy so the next sync re-copies
-    bundled. Returns ``{ok, action, message, synced}``; action is manifest_cleared / restored /
+    bundled, and clears a curator suppression entry so that re-copy is not skipped. Returns
+    ``{ok, action, message, synced}``; action is manifest_cleared / restored /
     not_in_manifest / bundled_missing / not_reset."""
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
     in_manifest = name in manifest
@@ -53,6 +55,11 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
     if in_manifest:
         del manifest[name]
         ss._write_manifest(manifest)
+    # A curator-pruned bundled skill stays in .curator_suppressed, which makes sync_skills skip the
+    # re-seed entirely — restore means "bring it back", so the entry must go before syncing (#103115).
+    cleared_suppression = restore and name in read_suppressed_names()
+    if cleared_suppression:
+        _toggle_suppressed_name(name, add=False)
     synced = ss.sync_skills(quiet=True)
     if not restore:
         action, message = "manifest_cleared", (f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
@@ -61,6 +68,8 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         action = "restored"
         message = (f"Restored '{name}' from bundled source." if deleted_user_copy
                    else f"Restored '{name}' (no prior user copy, re-copied from bundled).")
+        if cleared_suppression:
+            message += " Also cleared its curator suppression entry so future updates keep seeding it."
     return {"ok": True, "action": action, "message": message, "synced": synced}
 
 

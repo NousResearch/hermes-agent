@@ -143,12 +143,13 @@ class ContextEngine(ABC):
         """Observe a finished turn (complement of ``select_context()``) to index/update
         routing state for the next request.
 
-        Best-effort, not guaranteed: fires from the normal finalization seam only; some
-        abnormal early returns (content-policy block, provider terminal failure) skip it.
-        ``messages`` is a read-only shallow copy (return value ignored; never rely on
-        transcript mutation). ``usage`` has the ``update_from_response`` shape and is
-        ``None`` when no provider response was reached (interrupt). ``kwargs`` may include
-        ``turn_id``, ``task_id``, ``api_call_count``, ``interrupted``, ``failed``, ``turn_exit_reason``.
+        Best-effort, not guaranteed: fires from the normal finalization seam and from
+        content-policy and provider-terminal exits that persist and return directly from
+        the retry loop. Other abnormal early returns may still skip it. ``messages`` is a
+        read-only shallow copy (return value ignored; never rely on transcript mutation).
+        ``usage`` has the ``update_from_response`` shape and is ``None`` when no provider
+        response was reached (interrupt). ``kwargs`` may include ``turn_id``, ``task_id``,
+        ``api_call_count``, ``interrupted``, ``failed``, ``turn_exit_reason``.
         """
         return None
 

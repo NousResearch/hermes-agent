@@ -119,6 +119,12 @@ class TestOrphanJanitor:
 
     def test_threads_share_one_janitor(self):
         """Concurrent starters still produce exactly one thread."""
+        from unittest.mock import patch
+
+        # A pending (mock-swept) orphan keeps the janitor from self-retiring
+        # on nudges: without it, the losers' wake-up nudges can be consumed
+        # as empty iterations and trip the idle-stop before the assert.
+        lifecycle._orphan_stdio_pids.add(424244)
         barrier = threading.Barrier(4)
         lifecycle._orphan_janitor_interval = 30.0
 
@@ -126,10 +132,11 @@ class TestOrphanJanitor:
             barrier.wait(timeout=10)
             lifecycle._maybe_start_orphan_janitor()
 
-        threads = [threading.Thread(target=_start) for _ in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-        assert lifecycle._orphan_janitor_thread is not None
-        assert lifecycle._orphan_janitor_thread.is_alive()
+        with patch.object(lifecycle, "_kill_orphaned_mcp_children"):
+            threads = [threading.Thread(target=_start) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+            assert lifecycle._orphan_janitor_thread is not None
+            assert lifecycle._orphan_janitor_thread.is_alive()

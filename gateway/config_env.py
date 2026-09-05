@@ -19,6 +19,7 @@ from gateway.config import (
     HomeChannel,
     Platform,
     PlatformConfig,
+    _coerce_bool,
     _getenv_str,
     _has_usable_api_server_key,
 )
@@ -290,7 +291,18 @@ def _sms_api_key(config: GatewayConfig, sms_config: PlatformConfig) -> None:
 
 
 def _api_server(config: GatewayConfig) -> None:
-    """Require a usable key: an unauthenticated adapter refuses to start and the reconnect watcher would spin."""
+    """Require a usable key: an unauthenticated adapter refuses to start and the reconnect watcher would spin.
+
+    ``API_SERVER_ENABLED`` is the documented on/off toggle, but this gated solely on a usable key — and a fresh
+    install auto-generates a usable ``API_SERVER_KEY`` on first boot, so an explicit ``API_SERVER_ENABLED=false``
+    was dead and the listener started anyway (#87856). Read it as a tri-state: an explicit false is a fail-safe
+    off switch that wins over the key-based force-enable (and over ``enabled: true`` in config.yaml); an unset or
+    unrecognized value keeps the historical key-based behavior."""
+    enabled_raw = getenv("API_SERVER_ENABLED")
+    if enabled_raw.strip() and _coerce_bool(enabled_raw, default=True) is False:
+        if Platform.API_SERVER in config.platforms:
+            config.platforms[Platform.API_SERVER].enabled = False
+        return
     key = getenv("API_SERVER_KEY")
     if not _has_usable_api_server_key(key):
         return

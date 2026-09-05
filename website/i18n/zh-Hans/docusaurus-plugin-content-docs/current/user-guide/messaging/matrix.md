@@ -239,7 +239,7 @@ Hermes 支持 Matrix 端对端加密，你可以在加密房间中与机器人�
 
 ### 前提条件
 
-E2EE 需要带有加密扩展的 `mautrix` 库以及 `libolm` C 库：
+E2EE 需要带有加密扩展的 `mautrix` 库：
 
 ```bash
 # 安装带 E2EE 支持的 mautrix
@@ -249,18 +249,39 @@ pip install 'mautrix[encryption]'
 cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
-你还需要在系统上安装 `libolm`：
+该 extra 会引入 `python-olm`，即 olm 加密棘轮算法的 CFFI 绑定。`python-olm`
+自带一份 libolm C 库并以静态方式链接，因此你**不需要**安装系统的 libolm
+软件包 —— 安装了也没有用，因为其构建过程根本不会去查找系统库。
+
+**Linux** —— `python-olm` 为 Python 3.7 至 3.12 发布了 manylinux wheel，pip 会
+直接安装预编译的二进制包。在 Python 3.13 及更新版本上没有对应的 wheel，pip 会从
+源码构建，这需要 C/C++ 编译器和 CMake。
+
+**macOS** —— `python-olm` 没有发布 macOS wheel，而其源码包在当前工具链上已经
+无法构建：CMake 4 拒绝其内置的 `cmake_minimum_required(VERSION 3.4)`，
+Apple Clang 21 拒绝 libolm `list.hh` 中的一处 const 正确性缺陷。请改用
+Homebrew tap 提供的预编译补丁版 wheel：
 
 ```bash
-# Debian/Ubuntu
-sudo apt install libolm-dev
+brew tap donald-jackson/olm
+brew install python-olm
 
-# macOS
-brew install libolm
-
-# Fedora
-sudo dnf install libolm-devel
+# 让 uv 和 pip 能找到该 wheel —— 添加到 ~/.zshrc
+export UV_FIND_LINKS="$(brew --prefix python-olm)/share/python-olm"
+export PIP_FIND_LINKS="$(brew --prefix python-olm)/share/python-olm"
 ```
+
+在 Homebrew 6 及以上版本中，第三方 tap 需要先被信任才能使用：
+`brew trust --tap donald-jackson/olm`。
+
+导出这些变量后，`pip install 'mautrix[encryption]'` 会解析到该预编译 wheel，
+整个过程不会调用编译器。
+
+:::note
+`brew install libolm` 已经无法使用 —— libolm 已被上游归档，并从 homebrew-core
+中移除。即便它还存在也解决不了这个问题，因为 `python-olm` 从不链接系统的
+libolm。
+:::
 
 ### 启用 E2EE
 
@@ -326,7 +347,7 @@ Hermes 在启动时会检测到此情况并拒绝启用 E2EE，日志显示：`d
 :::
 
 :::info
-如果未安装 `mautrix[encryption]` 或缺少 `libolm`，机器人会自动回退到普通（未加密）客户端。你会在日志中看到警告。
+如果未安装 `mautrix[encryption]` 或缺少 `python-olm`，机器人会自动回退到普通（未加密）客户端。你会在日志中看到警告。
 :::
 
 ## 主房间
@@ -432,10 +453,10 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 ### 加密错误/"无法解密事件"
 
-**原因**：缺少加密密钥、未安装 `libolm`，或机器人设备未被信任。
+**原因**：缺少加密密钥、未安装 `python-olm`，或机器人设备未被信任。
 
 **解决方法**：
-1. 确认系统上已安装 `libolm`（参见上方 E2EE 章节）。
+1. 确认 Hermes 环境中已安装 `python-olm`（参见上方 E2EE 章节）。
 2. 确保 `.env` 中设置了 `MATRIX_ENCRYPTION=true`。
 3. 在你的 Matrix 客户端（Element）中，进入机器人的个人资料 → 会话 → 验证/信任机器人的设备。
 4. 如果机器人刚加入加密房间，它只能解密*加入后*发送的消息。更早的消息无法访问。
@@ -508,7 +529,11 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 ## 代理模式（macOS 上的 E2EE）
 
-Matrix E2EE 需要 `libolm`，而该库无法在 macOS ARM64（Apple Silicon）上编译。`hermes-agent[matrix]` extra 仅限 Linux。如果你在 macOS 上，代理模式允许你在 Linux 虚拟机的 Docker 容器中运行 E2EE，而实际的 agent 在 macOS 上原生运行，可完整访问你的本地文件、记忆和技能。
+Matrix E2EE 需要 `python-olm`，而它没有发布 macOS wheel。最简单的解决办法是使用上文
+[前提条件](#前提条件) 中介绍的预编译 wheel，这样 E2EE 就能在 macOS 上原生运行。
+
+如果你不想在本机安装任何原生组件，代理模式仍是一个可选方案：它在 Linux 虚拟机的 Docker
+容器中运行 E2EE，而实际的 agent 在 macOS 上原生运行，可完整访问你的本地文件、记忆和技能。
 
 ### 工作原理
 

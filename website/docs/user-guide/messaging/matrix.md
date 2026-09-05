@@ -356,7 +356,7 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
+E2EE requires the `mautrix` library with encryption extras:
 
 ```bash
 # Install mautrix with E2EE support
@@ -366,18 +366,41 @@ pip install 'mautrix[encryption]'
 cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 ```
 
-You also need `libolm` installed on your system:
+That extra pulls in `python-olm`, the CFFI bindings for the olm cryptographic
+ratchet. `python-olm` vendors its own copy of the libolm C library and links it
+statically, so you do **not** need a system libolm package — and installing one
+does not help, because the build never looks for it.
+
+**Linux** — `python-olm` publishes manylinux wheels for Python 3.7 through 3.12,
+so pip installs a prebuilt binary. On Python 3.13 or newer there is no wheel and
+pip builds from source, which needs a C/C++ compiler and CMake.
+
+**macOS** — `python-olm` publishes no macOS wheel, and its source distribution no
+longer builds on current toolchains: CMake 4 rejects the vendored
+`cmake_minimum_required(VERSION 3.4)`, and Apple Clang 21 rejects a
+const-correctness bug in libolm's `list.hh`. Install a prebuilt, patched wheel
+from a Homebrew tap instead:
 
 ```bash
-# Debian/Ubuntu
-sudo apt install libolm-dev
+brew tap donald-jackson/olm
+brew install python-olm
 
-# macOS
-brew install libolm
-
-# Fedora
-sudo dnf install libolm-devel
+# Let uv and pip find the wheel - add to ~/.zshrc
+export UV_FIND_LINKS="$(brew --prefix python-olm)/share/python-olm"
+export PIP_FIND_LINKS="$(brew --prefix python-olm)/share/python-olm"
 ```
+
+On Homebrew 6 and later, third-party taps must be trusted before use:
+`brew trust --tap donald-jackson/olm`.
+
+With those variables exported, `pip install 'mautrix[encryption]'` resolves
+`python-olm` to the prebuilt wheel and no compiler is invoked.
+
+:::note
+`brew install libolm` no longer works — libolm was archived upstream and removed
+from homebrew-core. Even while it existed it would not have fixed this, since
+`python-olm` never links against a system libolm.
+:::
 
 ### Enable E2EE
 
@@ -497,7 +520,7 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 :::
 
 :::info
-If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
+If `mautrix[encryption]` is not installed or `python-olm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
 
 ## Home Room
@@ -628,10 +651,10 @@ cd ~/.hermes/hermes-agent && uv pip install -e ".[matrix]"
 
 ### Encryption errors / "could not decrypt event"
 
-**Cause**: Missing encryption keys, `libolm` not installed, or the bot's device isn't trusted.
+**Cause**: Missing encryption keys, `python-olm` not installed, or the bot's device isn't trusted.
 
 **Fix**:
-1. Verify `libolm` is installed on your system (see the E2EE section above).
+1. Verify `python-olm` is installed in the Hermes environment (see the E2EE section above).
 2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
 3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
@@ -722,7 +745,9 @@ history, so other clients trust it immediately.
 
 ## Proxy Mode (E2EE on macOS)
 
-Matrix E2EE requires `libolm`, which doesn't compile on macOS ARM64 (Apple Silicon). The `hermes-agent[matrix]` extra is gated to Linux only. If you're on macOS, proxy mode lets you run E2EE in a Docker container on a Linux VM while the actual agent runs natively on macOS with full access to your local files, memory, and skills.
+Matrix E2EE needs `python-olm`, which publishes no macOS wheel. The simplest fix is the prebuilt wheel described in [Requirements](#requirements) above, which lets E2EE run natively on macOS.
+
+Proxy mode remains an alternative if you would rather not install anything native: it runs E2EE in a Docker container on a Linux VM while the actual agent runs natively on macOS with full access to your local files, memory, and skills.
 
 ### How It Works
 

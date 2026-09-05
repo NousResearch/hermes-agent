@@ -18,11 +18,11 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. |
+| **Threads** | Existing Mattermost threads always retain their own Hermes context. Set `mattermost.auto_thread` and `mattermost.dm_auto_thread` to control whether top-level messages automatically start threads. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
-If you want Hermes to reply as threaded conversations (nested under your original message), set `MATTERMOST_REPLY_MODE=thread`. The default is `off`, which sends flat messages in the channel.
+Enable `mattermost.auto_thread` for thread-per-message channel conversations. Direct messages remain flat unless `mattermost.dm_auto_thread` is also enabled.
 :::
 
 ### Session Model in Mattermost
@@ -147,9 +147,6 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 # Multiple allowed users (comma-separated)
 # MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c,8fk2jd9s0a7bncm1xqw4tp6r3e
 
-# Optional: reply mode (thread or off, default: off)
-# MATTERMOST_REPLY_MODE=thread
-
 # Optional: respond without @mention (default: true = require mention)
 # MATTERMOST_REQUIRE_MENTION=false
 
@@ -161,9 +158,14 @@ Optional behavior settings in `~/.hermes/config.yaml`:
 
 ```yaml
 group_sessions_per_user: true
+mattermost:
+  auto_thread: true
+  dm_auto_thread: false
 ```
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
+- `mattermost.auto_thread` promotes handled top-level channel/group messages to thread roots
+- `mattermost.dm_auto_thread` does the same for top-level direct messages
 
 ### Start the Gateway
 
@@ -197,20 +199,33 @@ MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
 
 Replace the ID with the actual channel ID (click the channel name → View Info → copy the ID).
 
-## Reply Mode
+## Threading
 
-The `MATTERMOST_REPLY_MODE` setting controls how Hermes posts responses:
+Configure automatic thread creation in `~/.hermes/config.yaml`:
 
-| Mode | Behavior |
-|------|----------|
-| `off` (default) | Hermes posts flat messages in the channel, like a normal user. |
-| `thread` | Hermes replies in a thread under your original message. Keeps channels clean when there's lots of back-and-forth. |
+```yaml
+mattermost:
+  auto_thread: true       # Top-level channel/group messages (default: false)
+  dm_auto_thread: false   # Top-level direct messages (default: false)
+```
 
-Set it in your `~/.hermes/.env`:
+These settings only control automatic thread creation. If a user writes inside
+an existing Mattermost thread, Hermes always preserves that thread and its
+isolated session context.
+
+Environment variables can override the corresponding config values:
 
 ```bash
-MATTERMOST_REPLY_MODE=thread
+MATTERMOST_AUTO_THREAD=true
+MATTERMOST_DM_AUTO_THREAD=false
 ```
+
+`MATTERMOST_REPLY_MODE` is a deprecated compatibility fallback. When neither new
+setting is provided, `thread` enables automatic threading for both channels and
+DMs, while `off` leaves top-level messages flat. An explicitly configured new
+setting always wins over the legacy fallback. The legacy top-level YAML key
+`mattermost.reply_mode` is not bridged by the gateway config loader; use
+`mattermost.auto_thread` and `mattermost.dm_auto_thread` instead.
 
 ## Mention Behavior
 

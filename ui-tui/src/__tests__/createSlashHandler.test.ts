@@ -104,6 +104,10 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/prompt')).toBe(true)
     expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
+    // Bare /prompt preserves the current composer draft (seed omitted),
+    // matching Ctrl+G / Alt+G behavior.
+    expect(ctx.composer.openEditor).toHaveBeenCalledWith(undefined)
+    expect(ctx.composer.setInput).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
@@ -111,7 +115,8 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/compose draft text')).toBe(true)
-    expect(ctx.composer.setInput).toHaveBeenCalledWith('draft text')
+    expect(ctx.composer.openEditor).toHaveBeenCalledWith('draft text')
+    expect(ctx.composer.setInput).not.toHaveBeenCalled()
     expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
   })
 

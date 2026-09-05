@@ -2303,6 +2303,91 @@ export interface Translations {
     stop: string
     dismiss: string
     exit: (code: number) => string
+    control: {
+      goalActiveTurns: (turn: number, maxTurns: number) => string
+      goalDoneTurns: (turns: number) => string
+      goalTurn: (turn: number) => string
+      goalActions: string
+      viewDetails: string
+      addCriterion: string
+      addCriterionDialogTitle: string
+      addCriterionPlaceholder: string
+      criterionLabel: string
+      pauseGoal: string
+      resumeGoal: string
+      resumeNow: string
+      clearGoal: string
+      clearGoalConfirmTitle: string
+      clearGoalConfirmBody: string
+      copyCriterion: (index: number) => string
+      removeCriterion: (index: number) => string
+      removeCriterionConfirmTitle: (index: number) => string
+      removeCriterionConfirmBody: (index: number) => string
+      clearCriteria: string
+      clearCriteriaConfirmTitle: string
+      clearCriteriaConfirmBody: string
+      criteriaHeader: (count: number) => string
+      noCriteria: string
+      goalDetailsTitle: string
+      objectiveLabel: string
+      contractOutcome: string
+      contractVerification: string
+      contractConstraints: string
+      contractBoundaries: string
+      contractStopWhen: string
+      waitBarrierTitle: string
+      waitUntil: (target: string) => string
+      waitSession: (target: string) => string
+      waitPid: (pid: number) => string
+      qualityGatesTitle: string
+      gateCommand: string
+      gateAttempts: (attempts: number, max: number) => string
+      gateTimeout: (seconds: number) => string
+      gateLastExit: (code: number | null) => string
+      loopActive: string
+      loopPaused: string
+      loopDeferred: string
+      loopFinished: string
+      loopRuns: (runs: number) => string
+      loopRunCount: (current: number, total: number) => string
+      loopNext: (time: string) => string
+      loopEverySeconds: (seconds: number) => string
+      loopEveryMinutes: (minutes: number) => string
+      loopEveryHours: (hours: number) => string
+      loopSelfPaced: string
+      loopActions: string
+      pauseLoop: string
+      resumeLoop: string
+      stopLoop: string
+      stopLoopConfirmTitle: string
+      stopLoopConfirmBody: string
+      dismissLoop: string
+      loopPromptLabel: string
+      loopCadenceLabel: string
+      loopUntilLabel: string
+      loopDeferredNotice: string
+      loopAwaitingResponse: string
+      heartbeatActive: string
+      heartbeatPaused: string
+      heartbeatEveryMinutes: (minutes: number) => string
+      heartbeatEveryHours: (hours: number) => string
+      heartbeatEverySeconds: (seconds: number) => string
+      heartbeatNext: (time: string) => string
+      heartbeatActions: string
+      pauseHeartbeat: string
+      resumeHeartbeat: string
+      clearHeartbeat: string
+      clearHeartbeatConfirmTitle: string
+      clearHeartbeatConfirmBody: string
+      heartbeatFiredCount: (count: number) => string
+      actionFailed: (msg: string) => string
+      actionSucceeded: string
+      copySuccess: string
+      copyFailure: string
+      continuationFailed: string
+      dismissError: string
+      add: string
+    }
     coding: {
       title: string
       noBranch: string

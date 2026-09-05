@@ -357,12 +357,45 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         runtime.get("max_output_tokens"), command=pinned_command, args=list(runtime.get("args") or []),
     )
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
-    """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
-    ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
-    None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
-    with a user-facing message."""
+def _resolve_profile_credentials(profile_name: str, cfg: dict) -> dict:
+    """Credential bundle for a ``delegation.profiles`` route: the standard ``_credential_bundle`` shape plus the
+    profile-only keys (``requested_profile``, ``fallback_model`` as a list of {provider, model} dicts in the
+    ``_fallback_entries`` format, ``reasoning_config``, ``max_iterations``, ``supports_tools``). Raises ValueError
+    (actionable, configured names listed) for an unknown profile — before any child construction."""
+    from agent.delegation_model_routing import resolve_profile_route
+    route = resolve_profile_route(profile_name, cfg)
+    # request_overrides / max_output_tokens carry through identically to the legacy provider branch:
+    # provider request personality from the runtime resolution, merged with explicit
+    # delegation.request_overrides from config.
+    explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
+    bundle = _credential_bundle(
+        route.model, route.provider, route.base_url, route.api_key, route.api_mode,
+        _merge_request_overrides(route.request_overrides, explicit_request_overrides),
+        route.max_output_tokens,
+    )
+    bundle.update({
+        "requested_profile": route.requested_profile,
+        # Profile fallback REPLACES the parent's chain ([] = no model promotion); dict shape matches
+        # agent.agent_init._fallback_entries so it feeds AIAgent(fallback_model=...) directly.
+        "fallback_model": [{"provider": f.provider, "model": f.model} for f in route.fallback],
+        "reasoning_config": route.reasoning_config,
+        "max_iterations": route.max_iterations,
+        "supports_tools": route.supports_tools,
+    })
+    return bundle
+
+def _resolve_delegation_credentials(cfg: dict, parent_agent, model_profile: Optional[str] = None) -> dict:
+    """Child credential bundle from the ``delegation`` config section. A selected profile (explicit
+    ``model_profile`` > ``delegation.default_profile``) resolves ABOVE the legacy branches via
+    ``agent.delegation_model_routing``; otherwise three legacy branches, byte-identical to before profiles
+    existed: ``base_url`` set → direct endpoint (``api_key`` None means inherit the parent's key, so providers
+    keyed outside OPENAI_API_KEY work); ``provider`` set → full bundle via the runtime provider system (same
+    path as CLI/gateway startup); neither → None values, child inherits everything. ``request_overrides`` is
+    honored on every branch. Raises ValueError with a user-facing message."""
+    from agent.delegation_model_routing import select_profile_name
+    profile_name = select_profile_name(model_profile, None, cfg)
+    if profile_name:
+        return _resolve_profile_credentials(profile_name, cfg)
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
@@ -412,6 +445,7 @@ def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_max_tokens: Optional[int], override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    override_fallback_model: Optional[List[Dict[str, Any]]] = None, override_reasoning_config: Optional[dict] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -464,7 +498,7 @@ def _resolve_child_runtime(
         # Forced ACP transport requires provider copilot-acp for run_agent to init the client.
         effective_provider, effective_api_mode = "copilot-acp", "chat_completions"
 
-    # Reasoning: delegation.reasoning_effort > parent. Keep the raw value — a
+    # Reasoning: profile route > delegation.reasoning_effort > parent. Keep the raw value — a
     # YAML ``false`` must disable thinking, not coerce to "" and inherit.
     child_reasoning = getattr(parent_agent, "reasoning_config", None)
     try:
@@ -478,6 +512,8 @@ def _resolve_child_runtime(
                 child_reasoning = parsed
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    if override_reasoning_config is not None:
+        child_reasoning = override_reasoning_config
 
     kwargs: Dict[str, Any] = {
         "base_url": effective_base_url, "api_key": override_api_key or parent_api_key, "model": effective_model,
@@ -487,7 +523,11 @@ def _resolve_child_runtime(
         "reasoning_config": child_reasoning,
         # Inherit the parent's fallback chain EXCEPT under a pinned provider: a mid-run 429/auth failure must not
         # silently reroute the quiet child onto the parent's fallbacks. Predictability > liveness for explicit pins.
-        "fallback_model": None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None),
+        # A profile route supplies its own chain (possibly []), reusing the same isolation seam.
+        "fallback_model": (
+            (override_fallback_model or None) if override_fallback_model is not None
+            else (None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None))
+        ),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},

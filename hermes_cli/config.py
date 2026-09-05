@@ -1216,6 +1216,44 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+def _validate_delegation_profiles(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """delegation.profiles / default_profile: a malformed profile otherwise fails only at the
+    first delegate_task spawn; surface it at startup / `hermes config check` instead. The parse
+    rules live in the resolver (agent/delegation_model_routing.py) — one source of truth."""
+    delegation_cfg = config.get("delegation")
+    if not isinstance(delegation_cfg, dict):
+        return
+    if not (delegation_cfg.get("profiles") or delegation_cfg.get("default_profile")):
+        # legacy config — nothing profile-shaped to validate, but a routing gate with no menu
+        # behind it silently exposes nothing: warn instead of staying quiet.
+        if delegation_cfg.get("agent_routing"):
+            _issue(issues, "warning",
+                   "delegation.agent_routing is enabled but no delegation.profiles are configured; "
+                   "model_profile will not be exposed.",
+                   "Add at least one profile under delegation.profiles in config.yaml, or set "
+                   "delegation.agent_routing: false")
+        return
+    try:
+        from agent.delegation_model_routing import profile_config_errors, parse_profiles
+    except Exception:
+        return
+    if delegation_cfg.get("agent_routing"):
+        try:
+            routable = parse_profiles(delegation_cfg)
+        except ValueError:
+            routable = None  # malformed — the error issues below already tell the story
+        if routable == {}:
+            _issue(issues, "warning",
+                   "delegation.agent_routing is enabled but no delegation.profiles are configured; "
+                   "model_profile will not be exposed.",
+                   "Add at least one profile under delegation.profiles in config.yaml, or set "
+                   "delegation.agent_routing: false")
+    for message in profile_config_errors(delegation_cfg):
+        _issue(issues, "error", message,
+               "Fix the entry under delegation.profiles in config.yaml — each profile needs at "
+               "minimum a 'model', and default_profile must name a configured profile")
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1253,6 +1291,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Move '{key}' under the appropriate section")
 
     _validate_web_backends(config, issues)
+    _validate_delegation_profiles(config, issues)
     return issues
 
 

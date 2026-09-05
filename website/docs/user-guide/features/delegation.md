@@ -173,7 +173,7 @@ delegation:
   provider: "openrouter"              # Optional: route subagents to a different provider
 ```
 
-If omitted, subagents use the same model as the parent.
+If omitted, subagents use the same model as the parent. This single pin applies to every child; for named per-task tiers, see [Worker profiles](#worker-profiles-delegationprofiles) below.
 
 ### Cost strategy: frontier planner, inexpensive workers
 
@@ -190,7 +190,55 @@ delegation:
 
 Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model. Setting `delegation.provider` alongside `delegation.base_url` keeps the explicit endpoint but carries that provider's request overrides and max output tokens into the child. An explicit `delegation.request_overrides` dict is honored on every branch and merges over those runtime-derived values (see [Configuration](#configuration) below).
 
-Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+Note that the pin is global: without profiles, every child in a batch runs on the configured delegation model. For per-task routing, define [worker profiles](#worker-profiles-delegationprofiles), or hand the task to the [kanban board](kanban.md#per-task-model-override), which supports its own per-task model override.
+
+### Worker profiles (`delegation.profiles`)
+
+`delegation.profiles` replaces the single global pin with named worker tiers. Each profile pins a provider/model pair and can optionally set `reasoning_effort`, `max_iterations`, and a `fallback` chain; those five keys are the complete set (profiles never touch toolsets):
+
+```yaml
+# ~/.hermes/config.yaml
+delegation:
+  profiles:
+    small:
+      provider: "openrouter"
+      model: "google/gemini-flash-2.0"
+      reasoning_effort: "low"
+      max_iterations: 60
+      fallback: []                       # empty list = no model promotion, ever
+    review:
+      provider: "anthropic"
+      model: "claude-sonnet-4-5"
+      fallback:
+        - provider: "openrouter"
+          model: "google/gemini-2.5-pro"
+  default_profile: "small"               # applied when a task doesn't pick one
+```
+
+Which route a child gets is decided by a five-level precedence, first match wins:
+
+1. Per-task `model_profile` (a `tasks[]` entry field)
+2. Top-level `model_profile` (batch-wide, applies to every task that doesn't set its own)
+3. `delegation.default_profile`
+4. Legacy `delegation.provider` / `delegation.model` (the single pin above)
+5. Parent inherit (child runs on the parent's provider and model)
+
+A profile's `max_iterations` can only tighten the configured delegation budget, never widen it. An unknown profile name is a configuration error: `hermes config check` reports it, and at spawn time every task's route is resolved before any child is built, so an unknown name anywhere in a batch fails the whole call with zero children spawned.
+
+**Fallback isolation.** A profile pin does not inherit the parent's fallback chain. The profile's own `fallback` list is the child's entire chain: `fallback: []` means the child stays on the pinned model or fails, and a non-empty list promotes only through the pairs you wrote down. The rationale is cost accounting: a worker you pinned to a cheap model must not silently complete on a frontier model because the parent's chain ends there. Profile-less children (levels 4 and 5) keep the legacy behavior and inherit the parent's chain unchanged.
+
+**Letting the model pick a tier (`delegation.agent_routing`).** By default profiles are config-driven only: the parent model never sees them. Setting `delegation.agent_routing: true` (with at least one profile configured) adds a `model_profile` enum of your configured profile names to the `delegate_task` schema, per task and batch-wide, so the parent can route each subtask to a tier. The model picks names, never providers or models: operators define the menu, models choose from it. With the gate off, a model-supplied `model_profile` is rejected with a clean tool error before any child is built.
+
+**Route telemetry.** Profile-routed children carry four provenance fields on delegation result entries, progress events, and lifecycle subagent handles:
+
+| Field | Meaning |
+|-------|---------|
+| `requested_profile` | The profile name the route came from |
+| `resolved_provider` | The provider the profile resolved to at spawn time |
+| `resolved_model` | The model pinned at spawn time (frozen; never updated afterward) |
+| `fallback_policy` | `"none"` (empty profile fallback chain) or `"profile:<name>"` (the profile's own chain) |
+
+All four are omitted on legacy profile-less children, so profile-free result entries keep their original shape. The existing `model` key stays live: when it diverges from `resolved_model`, a fallback fired, which is the requested-versus-effective audit signal.
 
 ## The `/review` Command
 

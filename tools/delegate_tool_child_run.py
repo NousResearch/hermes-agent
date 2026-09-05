@@ -30,11 +30,28 @@ def _num(value: Any, default: int = 0) -> int:
 def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
+def _route_telemetry(child: Any) -> Dict[str, Any]:
+    """Route provenance stamped at spawn time (see _build_child_preserving_parent_tools). Legacy
+    (profile-less) children carry no stamp and get an EMPTY dict, so their result entries stay
+    byte-identical to main (no null provenance keys). NOTE: ``resolved_model`` is the SPAWN-TIME
+    route model, while the sibling ``model`` key stays the child's LIVE model — divergence between
+    the two IS the requested-vs-effective signal when a fallback fires, so both must survive
+    verbatim."""
+    if _str_or_none(getattr(child, "_route_requested_profile", None)) is None:
+        return {}
+    return {
+        "requested_profile": _str_or_none(getattr(child, "_route_requested_profile", None)),
+        "resolved_provider": _str_or_none(getattr(child, "_route_resolved_provider", None)),
+        "resolved_model": _str_or_none(getattr(child, "_route_resolved_model", None)),
+        "fallback_policy": _str_or_none(getattr(child, "_route_fallback_policy", None)),
+    }
+
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> Dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
     return {
         "task_index": idx, "status": status, "summary": None, "error": error, "api_calls": 0,
         "duration_seconds": duration, "_child_role": getattr(child, "_delegate_role", None),
+        **_route_telemetry(child),
     }
 
 def _append_missed_steer(entry: Dict[str, Any], late_steer: Optional[str]) -> None:
@@ -494,6 +511,8 @@ def _build_result_entry(
         "duration_seconds": duration,
         "model": _str_or_none(getattr(child, "model", None)),
         "exit_reason": exit_reason,
+        # Spawn-time route provenance; "model" above is the LIVE model so the pair signals fallback divergence.
+        **_route_telemetry(child),
         # A budget-exhausted child still returns a summary (status stays
         # "completed"), so the parent needs this explicit flag.
         "truncated": exit_reason == "max_iterations",
@@ -620,7 +639,7 @@ class _ChildRun:
         the steer text that won the race with the failure, report the worktree."""
         _safe_progress(
             self.child_progress_cb, "subagent.complete", preview=preview, status=status or entry["status"],
-            duration_seconds=entry["duration_seconds"], summary=summary,
+            duration_seconds=entry["duration_seconds"], summary=summary, **_route_telemetry(self.child),
         )
         _append_missed_steer(entry, late_steer)
         return self.attach_worktree(entry)
@@ -713,6 +732,7 @@ class _ChildRun:
             "timeout_phase": "before_first_llm_call" if before_first_call else "after_llm_calls" if is_timeout else None,
             "_child_role": getattr(child, "_delegate_role", None),
             "diagnostic_path": diagnostic_path,
+            **_route_telemetry(child),
         }
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
@@ -766,6 +786,8 @@ class _ChildRun:
             "files_read": _files_read,
             "files_written": sorted({p for tid, paths in _files_written_map.items() if tid == self.child_task_id for p in paths})[:40],
             "output_tail": _extract_output_tail(result, max_entries=8, max_chars=600),
+            # Spawn-time route provenance (all None for legacy profile-less runs).
+            **_route_telemetry(child),
         }
         _cost_usd = getattr(child, "session_estimated_cost_usd", None)
         if _cost_usd is not None:

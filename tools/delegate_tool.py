@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
     _ChildRun, _attach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
+    _lease_child_credential, _merge_late_steer, _register_child, _route_telemetry, _start_heartbeat,
+    _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
@@ -121,6 +122,13 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Profile-route overrides (delegation.profiles): a resolved profile's fallback chain
+    # (list, possibly empty = no model promotion) and reasoning level. None = legacy behavior.
+    override_fallback_model: Optional[List[Dict[str, Any]]] = None,
+    override_reasoning_config: Optional[Dict[str, Any]] = None,
+    # supports_tools from the profile route (None = legacy, no check) + the profile name for the error.
+    override_supports_tools: Optional[bool] = None,
+    requested_profile: Optional[str] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
 ):
@@ -142,6 +150,14 @@ def _build_child_agent(
 
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    # A profile pinned to a model without tool calling cannot run a tool-bearing child — refuse before
+    # AIAgent construction (text_only tool-less mode is rejected scope; see the plan doc).
+    if override_supports_tools is False and child_toolsets:
+        raise ValueError(
+            f"Delegation profile '{requested_profile}' pins a model that does not support tool calling, "
+            f"but the child would run with toolsets {sorted(child_toolsets)}. Pick a tool-capable profile "
+            f"or remove the profile from this task."
+        )
     child_prompt = _build_child_system_prompt(
         goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
@@ -162,7 +178,8 @@ def _build_child_agent(
         parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
         override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
         override_max_tokens=override_max_tokens, override_acp_command=override_acp_command,
-        override_acp_args=override_acp_args,
+        override_acp_args=override_acp_args, override_fallback_model=override_fallback_model,
+        override_reasoning_config=override_reasoning_config,
     )
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -203,6 +220,17 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    # Spawn-time route provenance (telemetry only; never consulted for routing). Legacy profile-less
+    # children get no stamp so every reader reports all four as None. resolved_model is frozen HERE —
+    # the child's live ``model`` may later diverge when a fallback fires, and that divergence between
+    # the entry's "resolved_model" and "model" keys IS the requested-vs-effective signal.
+    if requested_profile:
+        setattr(child, "_route_requested_profile", requested_profile)
+        setattr(child, "_route_resolved_provider", override_provider)
+        setattr(child, "_route_resolved_model", model)
+        # 'none' = profile route with an empty fallback chain (no model promotion);
+        # 'profile:<name>' = profile route whose own fallback chain replaces the parent's.
+        setattr(child, "_route_fallback_policy", f"profile:{requested_profile}" if override_fallback_model else "none")
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:
@@ -221,7 +249,7 @@ def _build_child_agent(
     _attach_child(parent_agent, child)  # interrupt propagation
     # spawn_requested now — the child may queue for seconds when the pool is
     # saturated — then the subagent_start lifecycle hook.
-    _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
+    _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal, **_route_telemetry(child))
     with _quiet("subagent_start hook invocation failed", exc_info=True):
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
@@ -266,7 +294,7 @@ def _run_single_child(
     _child_close_deferred = False
     try:
         heartbeat.start()
-        _safe_progress(child_progress_cb, "subagent.start", preview=goal)
+        _safe_progress(child_progress_cb, "subagent.start", preview=goal, **_route_telemetry(child))
         run.seed_workspace()
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
@@ -297,23 +325,67 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
+def _profile_task_overrides(c: Dict[str, Any]) -> Dict[str, Any]:
+    """override_* kwargs for one task's credential bundle. Profile-only keys are added ONLY when the bundle
+    came from a profile route, so legacy calls into _build_child_agent stay byte-identical (kwargs included)."""
+    overrides = {
+        "override_provider": c["provider"], "override_base_url": c["base_url"],
+        "override_api_key": c["api_key"], "override_api_mode": c["api_mode"],
+        "override_request_overrides": c.get("request_overrides"),
+        "override_max_tokens": c.get("max_output_tokens"), "override_acp_command": c.get("command"),
+        "override_acp_args": c.get("args"),
+    }
+    if c.get("requested_profile"):
+        overrides.update({
+            "override_fallback_model": c.get("fallback_model"),
+            "override_reasoning_config": c.get("reasoning_config"),
+            "override_supports_tools": c.get("supports_tools"),
+            "requested_profile": c.get("requested_profile"),
+        })
+    return overrides
+
+
+def _resolve_task_credentials(
+    task_list: List[Dict[str, Any]], creds: Dict[str, Any], routing_cfg: dict, parent_agent,
+    top_model_profile: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Per-task credential bundles (profile precedence: per-task > top-level > default_profile, resolved via
+    agent.delegation_model_routing), or ``([], error)``. Every route resolves BEFORE any child is built so an
+    unknown profile anywhere in the batch fails with zero spawns. Tasks without a profile reuse the batch
+    bundle unchanged (legacy path)."""
+    from agent.delegation_model_routing import select_profile_name
+    from tools.delegate_tool_config import _resolve_profile_credentials
+    per_task: List[Dict[str, Any]] = []
+    for t in task_list:
+        name = select_profile_name(t.get("model_profile"), top_model_profile, routing_cfg)
+        if not name or name == creds.get("requested_profile"):
+            per_task.append(creds)
+            continue
+        try:
+            per_task.append(_resolve_profile_credentials(name, routing_cfg))
+        except ValueError as exc:
+            return [], str(exc)
+    return per_task, None
+
+
 def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, live_deleg_id: Optional[str], live_writers: list,
+    task_creds: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_max_tokens": creds.get("max_output_tokens"), "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-    }
     children = []
     for i, t in enumerate(task_list):
+        _creds = task_creds[i] if task_creds and i < len(task_creds) else creds
+        overrides = _profile_task_overrides(_creds)
+        # A profile's max_iterations can only TIGHTEN the config budget, never widen it (#25752 layering).
+        _profile_max_iter = _creds.get("max_iterations") if _creds.get("requested_profile") else None
+        _task_max_iterations = (
+            min(int(_profile_max_iter), max_iterations) if isinstance(_profile_max_iter, int) else max_iterations
+        )
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -322,7 +394,7 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=_creds["model"], max_iterations=_task_max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
@@ -350,6 +422,7 @@ def delegate_task(
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
     output_schema: Optional[Dict[str, Any]] = None, action: Optional[str] = None, subagent_id: Optional[str] = None,
     message: Optional[str] = None, parent_agent=None, credentials_cfg: Optional[Dict[str, Any]] = None,
+    model_profile: Optional[str] = None,
 ) -> str:
     """Spawn child agents (single ``goal`` or ``tasks=[...]`` batch) or control running ones. ``action``
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
@@ -396,8 +469,9 @@ def delegate_task(
         )
     # credentials_cfg (internal callers only, e.g. /review → auxiliary.review) is
     # a per-call override shaped like the delegation config section.
+    routing_cfg = credentials_cfg if credentials_cfg else cfg
     try:
-        creds = _resolve_delegation_credentials(credentials_cfg if credentials_cfg else cfg, parent_agent)
+        creds = _resolve_delegation_credentials(routing_cfg, parent_agent, model_profile=model_profile)
     except ValueError as exc:
         # Explicit-pin preflight failures (e.g. pinned delegation.command missing from PATH) refuse the
         # spawn loudly (#80450).
@@ -406,6 +480,14 @@ def delegate_task(
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
+    if err:
+        return tool_error(err)
+    # Per-task profile routing (delegation.profiles): every task's route resolves BEFORE any child is
+    # built so a batch can mix profiles and an unknown name anywhere fails with zero spawns. Tasks
+    # without a profile keep the batch bundle (legacy, byte-identical when no profiles configured).
+    task_creds, err = _resolve_task_credentials(
+        task_list, creds, routing_cfg, parent_agent, top_model_profile=model_profile,
+    )
     if err:
         return tool_error(err)
 
@@ -421,7 +503,7 @@ def delegate_task(
 
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers,
+        live_deleg_id=live_deleg_id, live_writers=live_writers, task_creds=task_creds,
     )
     if err:
         return tool_error(err)
@@ -496,13 +578,49 @@ def _build_tasks_param_description() -> str:
 
 def _build_dynamic_schema_overrides() -> dict:
     """Per-call schema overrides (ToolEntry.dynamic_schema_overrides): every
-    get_definitions() pass rewrites the descriptions to the user's actual limits."""
+    get_definitions() pass rewrites the descriptions to the user's actual limits, and
+    the delegation.agent_routing gate adds/removes the model_profile enum."""
     overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
     # Copy properties so the static schema dict is never mutated.
     overrides_params["properties"] = {k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()}
     overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
 
+    # Phase 2 gate (delegation.agent_routing, default off): expose model_profile — the operator's
+    # named tiers — per task and batch-wide. Gate off (or no profiles) → schema byte-identical.
+    profile_names = _routable_profile_names()
+    if profile_names is not None:
+        tasks_prop = overrides_params["properties"]["tasks"]
+        items = {**tasks_prop["items"]}
+        items["properties"] = {**items["properties"], "model_profile": _model_profile_property(profile_names)}
+        overrides_params["properties"]["tasks"] = {**tasks_prop, "items": items}
+        overrides_params["properties"]["model_profile"] = _model_profile_property(profile_names, batch_wide=True)
+
     return {"description": _build_top_level_description(), "parameters": overrides_params}
+
+def _routable_profile_names() -> Optional[List[str]]:
+    """Sorted profile names when delegation.agent_routing is truthy AND profiles are configured and
+    parseable, else None (gate off → the public schema must not mention model_profile at all)."""
+    try:
+        cfg = _load_config()
+        if not is_truthy_value(cfg.get("agent_routing")):
+            return None
+        from agent.delegation_model_routing import parse_profiles
+        names = sorted(parse_profiles(cfg))
+        return names or None
+    except Exception as exc:
+        logger.debug("agent_routing: profiles unavailable, hiding model_profile: %s", exc)
+        return None
+
+def _model_profile_property(profile_names: List[str], batch_wide: bool = False) -> dict:
+    scope = "every task in this call (per-task model_profile wins)" if batch_wide else "this task"
+    return _p(
+        "string",
+        f"Model tier for {scope}, from the operator-configured delegation profiles. Use the profile the "
+        "caller requested when one is stated. Otherwise select a small/cheap profile for bounded, "
+        "well-specified work; never pick a more expensive profile without a task-specific reason. "
+        "Omit to use the default profile.",
+        enum=list(profile_names),
+    )
 
 def _p(type_: str, description: str, **extra) -> dict:
     return {"type": type_, **extra, "description": description}
@@ -594,18 +712,42 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
         return tasks
     return [{k: v for k, v in t.items() if k not in _MODEL_HIDDEN_TASK_FIELDS} if isinstance(t, dict) else t for t in tasks]
 
+def _handle_model_call(args: dict, parent_agent=None, background: Optional[bool] = None) -> str:
+    """Single MODEL-facing entry (registry handler and run_agent._dispatch_delegate_task): strips hidden
+    task fields and enforces the delegation.agent_routing gate — when the gate is off, a model-supplied
+    model_profile (task-level or top-level) is rejected with a clean tool_error BEFORE any resolution or
+    child construction (defense in depth: the gated schema never advertises it, but schema honesty must
+    hold even against a fabricated arg)."""
+    tasks = _strip_model_hidden_task_fields(args.get("tasks"))
+    model_profile = args.get("model_profile")
+    if _routable_profile_names() is None:
+        requested = [model_profile] if model_profile else []
+        requested += [
+            t.get("model_profile") for t in (tasks if isinstance(tasks, list) else []) if isinstance(t, dict)
+        ]
+        if any(requested):
+            return tool_error(
+                "model_profile is not enabled: delegation.agent_routing is off (or no delegation.profiles "
+                "are configured). Remove model_profile from the call, or have the operator enable "
+                "delegation.agent_routing in config.yaml."
+            )
+        model_profile = None
+    if background is None:
+        background = _model_background_value(args, parent_agent)
+    return delegate_task(
+        goal=args.get("goal"), context=args.get("context"), tasks=tasks,
+        max_iterations=args.get("max_iterations"), role=args.get("role"),
+        background=background, output_schema=args.get("output_schema"),
+        action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
+        parent_agent=parent_agent, model_profile=model_profile,
+    )
+
 
 registry.register(
     name="delegate_task",
     toolset="delegation",
     schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
-        goal=args.get("goal"), context=args.get("context"), tasks=_strip_model_hidden_task_fields(args.get("tasks")),
-        max_iterations=args.get("max_iterations"), role=args.get("role"),
-        background=_model_background_value(args, kw.get("parent_agent")), output_schema=args.get("output_schema"),
-        action=args.get("action"), subagent_id=args.get("subagent_id"), message=args.get("message"),
-        parent_agent=kw.get("parent_agent"),
-    ),
+    handler=lambda args, **kw: _handle_model_call(args, parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,

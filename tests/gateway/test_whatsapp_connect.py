@@ -251,6 +251,63 @@ class TestBridgeRuntimeFailure:
         assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
+    async def test_poll_marks_retryable_fatal_when_adopted_bridge_refuses_connection(self):
+        import aiohttp
+
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._bridge_process = None
+        adapter._http_session = MagicMock()
+        connection_key = MagicMock(host="127.0.0.1", port=19876, ssl=False)
+        connector_error = aiohttp.ClientConnectorError(
+            connection_key,
+            ConnectionRefusedError("bridge stopped listening"),
+        )
+        adapter._http_session.get = MagicMock(
+            side_effect=[
+                connector_error,
+                asyncio.CancelledError(),
+            ]
+        )
+
+        with patch(
+            "plugins.platforms.whatsapp.adapter.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await adapter._poll_messages()
+
+        assert adapter.fatal_error_code == "whatsapp_bridge_exited"
+        assert adapter.fatal_error_retryable is True
+        assert "unreachable" in (adapter.fatal_error_message or "")
+        fatal_handler.assert_awaited_once_with(adapter)
+        assert adapter._http_session.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_poll_keeps_retrying_non_terminal_http_responses(self):
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._bridge_process = None
+        response = MagicMock(status=503)
+        adapter._http_session = MagicMock()
+        adapter._http_session.get = MagicMock(
+            side_effect=[_AsyncCM(response), asyncio.CancelledError()]
+        )
+
+        with patch(
+            "plugins.platforms.whatsapp.adapter.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            await adapter._poll_messages()
+
+        assert adapter.fatal_error_code is None
+        fatal_handler.assert_not_awaited()
+        assert adapter._http_session.get.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_send_normalizes_bare_phone_numbers_to_jid(self):
         """A bare phone target (with or without +) becomes a full JID.
 

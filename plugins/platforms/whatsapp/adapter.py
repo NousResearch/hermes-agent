@@ -497,6 +497,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 self._bridge_log_fh.close()
             self._bridge_log_fh = None
 
+    async def _report_bridge_failure(self, message: str) -> str:
+        """Surface a retryable bridge failure through the adapter lifecycle."""
+        if not self.has_fatal_error:
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
+            self._close_bridge_log()
+            await self._notify_fatal_error()
+        return self.fatal_error_message or message
+
     async def _check_managed_bridge_exit(self) -> Optional[str]:
         returncode = self._bridge_process.poll() if self._bridge_process is not None else None
         if returncode is None:
@@ -506,12 +515,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.info("[%s] Bridge exited during shutdown (code %d).", self.name, returncode)
             return None
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
-        if not self.has_fatal_error:
-            logger.error("[%s] %s", self.name, message)
-            self._set_fatal_error("whatsapp_bridge_exited", message, retryable=True)
-            self._close_bridge_log()
-            await self._notify_fatal_error()
-        return self.fatal_error_message or message
+        return await self._report_bridge_failure(message)
 
     def _terminate_bridge(self, *, force: bool) -> None:
         try:
@@ -699,6 +703,23 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 break
             except Exception as e:
                 if await self._report_bridge_exit():
+                    break
+                connector_error = getattr(e, "os_error", None)
+                adopted_bridge_refused = (
+                    self._bridge_process is None
+                    and not getattr(self, "_shutting_down", False)
+                    and (
+                        isinstance(e, ConnectionRefusedError)
+                        or (
+                            isinstance(e, aiohttp.ClientConnectorError)
+                            and isinstance(connector_error, ConnectionRefusedError)
+                        )
+                    )
+                )
+                if adopted_bridge_refused:
+                    message = "WhatsApp bridge became unreachable while polling."
+                    print(f"[{self.name}] {message}")
+                    await self._report_bridge_failure(message)
                     break
                 print(f"[{self.name}] Poll error: {e}")
                 await asyncio.sleep(5)

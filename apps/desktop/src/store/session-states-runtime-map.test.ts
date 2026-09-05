@@ -154,10 +154,20 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
     expect(knownOwnerForSession('stored-live')).toEqual({ connectionId: 'local', profile: 'omar' })
   })
 
-  it('keeps failing closed for untagged or unknown runtimes in multi-profile topology (#97511)', () => {
+  it('routes a profile-only orphan runtime through the bare profile its inbound event proved (#103755)', () => {
     $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
-    // Untagged events carry no connectionId and record nothing.
-    recordSessionEventScope({ profile: 'omar', session_id: 'rt-untagged' })
+    // A pooled secondary with no registry connection (createSecondary(profile,
+    // null)) emits profile-tagged events with no connectionId. That still
+    // proves the profile even though it can't prove an exact route.
+    recordSessionEventScope({ profile: 'omar', session_id: 'rt-profile-only' })
+
+    expect(knownOwnerForSession('rt-profile-only')).toBe('omar')
+  })
+
+  it('keeps failing closed for genuinely unknown runtimes in multi-profile topology (#97511)', () => {
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    // Fully untagged events (no profile, no connectionId) record nothing.
+    recordSessionEventScope({ session_id: 'rt-untagged' })
 
     expect(knownOwnerForSession('rt-untagged')).toBeUndefined()
     expect(knownOwnerForSession('rt-never-seen')).toBeUndefined()

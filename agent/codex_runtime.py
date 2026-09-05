@@ -50,6 +50,27 @@ def _codex_request_failure_details(error: BaseException) -> tuple[int | None, st
     return request_body_bytes, " <- ".join(exception_classes)
 
 
+def _has_transport_error_cause(error: BaseException) -> bool:
+    """True when any link of the exception chain is an httpx transport error.
+
+    The OpenAI SDK wraps pre-stream connect/receive failures (``ReadError``,
+    ``RemoteProtocolError``) in ``APIConnectionError``; the wrapped cause is
+    the retryable signal. A watchdog retirement surfaces as ``TimeoutError``
+    instead, so it never matches here.
+    """
+    import httpx as _httpx
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(seen) < 8:
+        seen.add(id(current))
+        if isinstance(current, _httpx.TransportError):
+            return True
+        implicit_chain = current.__cause__ is None and not current.__suppress_context__
+        current = current.__context__ if implicit_chain else current.__cause__
+    return False
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -866,8 +887,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     def _log_failure(exc: BaseException) -> None:
         request_body_bytes, exception_chain = _codex_request_failure_details(exc)
         logger.warning("Codex Responses request failed: serialized_request_body_bytes=%s stream_opened=%s "
-                       "exception_chain=%s model=%s", "unknown" if request_body_bytes is None else request_body_bytes,
-                       str(writer_token["value"] is not None).lower(), exception_chain, getattr(agent, "model", "unknown"))
+                       "exception_chain=%s model=%s attempt=%s", "unknown" if request_body_bytes is None else request_body_bytes,
+                       str(writer_token["value"] is not None).lower(), exception_chain, getattr(agent, "model", "unknown"),
+                       f"{attempt + 1}/{max_stream_retries + 1}")
 
     def _codex_stream_created(_raw_stream: Any) -> None:
         # Claim the delta sink for THIS attempt; a newer attempt supersedes this token.
@@ -951,6 +973,18 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     return event_stream.final_response
                 raise
             except _APIConnectionError as exc:
+                if (attempt < max_stream_retries and writer_token["value"] is None
+                        and _has_transport_error_cause(exc)):
+                    # Pre-stream SDK connect failure (#103673): the request was
+                    # serialized but the stream never opened, so nothing was
+                    # billed and a fresh physical request is safe. Mid-stream
+                    # failures keep the old behavior (raise) to avoid
+                    # duplicating an already-billed inference.
+                    logger.debug(
+                        "Codex Responses pre-stream connect failed (attempt %s/%s); retrying. %s error=%s",
+                        attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,
+                    )
+                    continue
                 _log_failure(exc)
                 raise
             if not agent._interrupt_requested:

@@ -17,6 +17,8 @@ import {
   $activeSessionId,
   $connection,
   $selectedStoredSessionId,
+  $workspaceCwdOwner,
+  setCurrentCwd,
   setSessionOwnerHint,
   setSessions
 } from '@/store/session'
@@ -1258,6 +1260,24 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
 
     expect($focusedStoredSessionId.get()).toBe('stacked')
     expect($focusedWorkspaceCwd.get()).toBe('/repo-stacked')
+  })
+
+  it('falls back to sessions list cwd for primary session when workspaceCwdOwner is mismatched', () => {
+    $selectedStoredSessionId.set('primary-1')
+    $workspaceCwdOwner.set('other-session-from-different-project')
+    setCurrentCwd('/repo-other')
+    setSessions([{ cwd: '/repo-primary-project', id: 'primary-1' } as any])
+    $sessionTiles.set([])
+    $sessionStates.set({})
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { active: 'workspace', id: 'grp-main' })
+      ])
+    )
+    noteActiveTreeGroup('grp-main')
+
+    expect($focusedStoredSessionId.get()).toBe('primary-1')
+    expect($focusedWorkspaceCwd.get()).toBe('/repo-primary-project')
   })
 })
 

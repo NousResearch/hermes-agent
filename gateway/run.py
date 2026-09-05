@@ -4101,6 +4101,7 @@ class GatewayRunner(
             user_name=str(context.source.user_name) if context.source.user_name else "",
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             session_key=context.session_key,
+            session_id=context.session_id,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
             async_delivery=_async_delivery,
@@ -4254,7 +4255,7 @@ class GatewayRunner(
             getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None))
         return None
 
-    def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
+    def _resolve_profile_home_for_source(self, source: SessionSource, *, strict: bool = False) -> "Path":
         """Resolve which profile's HERMES_HOME serves this source: ``source.profile``, then
         ``_profile_name_for_source`` (sources bypassing ``build_source``), then the active profile."""
         from gateway.profile_routing import ProfileRouteRejected
@@ -4268,6 +4269,8 @@ class GatewayRunner(
                 name = get_active_profile_name() or "default"
             profile_dir = get_profile_dir(name)
             if explicit_profile and not profile_exists(name):
+                if strict:
+                    raise ValueError("Explicitly routed profile does not exist")
                 logger.warning(
                     "Profile %r does not exist for source %s/%s (guild_id=%s), "
                     "falling back to global HERMES_HOME",
@@ -4278,6 +4281,8 @@ class GatewayRunner(
         except ProfileRouteRejected:
             raise
         except Exception:
+            if strict:
+                raise
             logger.warning(
                 "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
                 "falling back to global HERMES_HOME: %s",

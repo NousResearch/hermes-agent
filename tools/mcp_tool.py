@@ -461,6 +461,7 @@ def _reset_server_error(server_name: str) -> None:
 # Raw server names opted into parallel tool calls (``foo-bar``/``foo_bar`` sanitize alike but
 # must not share policy).
 _parallel_safe_servers: set = set()
+_session_context_forwarding_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
 _mcp_tool_server_names: Dict[str, str] = {}
 

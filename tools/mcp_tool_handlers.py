@@ -279,7 +279,7 @@ async def _track_inflight_rpc(server: Any, server_name: str, op: str):
             inflight.discard(task)
 
 
-async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict):
+async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str, args: dict, *, meta=None):
     """``session.call_tool`` that fails fast when the stdio child is/gets dead: pre-call (a dead
     child must not hold the slot for the full timeout) and mid-call (race against
     ``_watch_stdio_children``). Both raise :class:`_StdioChildExited` for the respawn path, which
@@ -289,7 +289,10 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     _stdio_dead = getattr(server, "_stdio_children_dead", None)
     if callable(_stdio_dead) and _stdio_dead() is True:
         raise _StdioChildExited(f"MCP stdio subprocess for '{server_name}' had already exited when the call was dispatched")
-    _call_coro = server.session.call_tool(tool_name, arguments=args)
+    call_kwargs = {"arguments": args}
+    if meta is not None:
+        call_kwargs["meta"] = meta
+    _call_coro = server.session.call_tool(tool_name, **call_kwargs)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.
@@ -422,6 +425,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
     def _handler(args: dict, **kwargs) -> str:
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
+        from tools.mcp_tool_session_metadata import build_session_context_meta
+        session_meta = build_session_context_meta(server_name)
         error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
         if error is not None:
             return error
@@ -433,7 +438,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
                 server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
                 try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args, meta=session_meta)
                 finally:
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy

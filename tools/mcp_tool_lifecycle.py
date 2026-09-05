@@ -100,6 +100,14 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None):
     with _core._lock:
         selected = [name for name in _core._servers if scope is None or _core._server_scope_keys.get(name) == scope]
         servers_snapshot = [_core._servers[name] for name in selected]
+        # Revoke disclosure before waiting for transport teardown. Also covers
+        # lazy/failed servers that never entered the live-server map.
+        if scope is None:
+            _core._session_context_forwarding_servers.clear()
+        else:
+            revoked = {name for name in _core._session_context_forwarding_servers
+                       if _core._server_scope_keys.get(name) == scope}
+            _core._session_context_forwarding_servers.difference_update(revoked)
 
     # Fast path: nothing to shut down. The connect-cooldown maps can still be populated here — a server that
     # failed to connect is never recorded in ``_servers`` (that is the very premise of the #50394 cooldown),

@@ -386,6 +386,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `forward_session_context` | bool | Default `false`. Forward authenticated gateway session identifiers in request `_meta` to this trusted server |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -778,6 +779,31 @@ When `supports_parallel_tool_calls` is `true`, Hermes may execute multiple tools
 :::caution
 Only enable parallel calls for MCP servers whose tools are safe to run at the same time. If tools read and write shared state, files, databases, or external resources, review the read/write race conditions before enabling this setting.
 :::
+
+## Forwarding gateway session context
+
+Enable `forward_session_context: true` only for an MCP server you trust to receive
+the current gateway caller and conversation identifiers. It applies to tool calls
+and defaults to `false` for every server.
+
+The host adds the canonical `com.nousresearch.hermes/` keys `platform`, `session_id`,
+`session_key`, `chat_id`, `thread_id`, `user_id`, and `message_id` to MCP request
+`_meta`. The values come from the authenticated gateway event and are separate from
+model-authored arguments. Each dispatch captures one snapshot, including retries;
+queued events bind their own sender and triggering message. An unbound turn, cleared
+context, or unavailable privacy policy omits this metadata. Process environment
+variables and recent sessions are never used as identity fallbacks.
+
+The routed profile's `privacy.redact_pii` decision is captured when the event binds.
+Eligible platforms use the same identifier pseudonyms as gateway privacy, with
+thread, session-key, and message identifiers pseudonymized as well. The durable
+opaque `session_id` remains unchanged. Raw routing context stays local. Unknown or
+malformed policy and redaction failures omit all session metadata. Changing policy
+takes effect at the next event; it cannot change a call already in progress.
+
+Metadata is routing evidence, not permission to execute. The receiver must still
+authenticate the transport, validate the caller and surface, and enforce its own
+authorization. It must not interpret tool arguments as trusted identity.
 
 ## MCP Sampling Support
 

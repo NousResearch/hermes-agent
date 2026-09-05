@@ -40,7 +40,8 @@ from hermes_cli.dashboard_auth.cookies import (
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import render_login_html
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path, scan_session_providers)
+    access_token_max_age, client_device, client_ip as _client_ip, is_safe_next_path,
+    scan_session_providers)
 
 _log = logging.getLogger(__name__)
 
@@ -91,6 +92,18 @@ def _validate_post_login_target(raw: str) -> str:
     at every hop because a ``next=`` value can re-enter via a crafted URL."""
     decoded = unquote(raw) if raw else ""
     return decoded if decoded and is_safe_next_path(decoded) else ""
+
+
+def _prefix(request: Request) -> str:
+    """Resolve the X-Forwarded-Prefix header for the active request.
+
+    Local indirection so the routes pass a consistent value to the
+    cookie helpers (cookie name + Path attribute) and the gate's
+    redirect builders (login_url construction). See
+    ``hermes_cli.dashboard_auth.prefix`` for the normalisation rules.
+    """
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+    return prefix_from_request(request)
 
 
 def _set_pkce(resp, request: Request, payload: dict[str, str]) -> None:
@@ -497,7 +510,8 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)
         return _bearer_payload(session)
-    _audit(request, AuditEvent.REFRESH_FAILURE, reason="all_providers_rejected_rt")
+    _audit(request, AuditEvent.REFRESH_FAILURE, reason="all_providers_rejected_rt",
+           device=client_device(request))
     return JSONResponse(
         {"error": "session_expired",
          "detail": "Refresh token expired or invalid; start a new sign-in."}, status_code=401)

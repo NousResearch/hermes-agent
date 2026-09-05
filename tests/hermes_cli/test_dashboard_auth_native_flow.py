@@ -31,6 +31,7 @@ from hermes_cli.dashboard_auth import (
     register_provider,
 )
 from hermes_cli.dashboard_auth import native_flow
+from hermes_cli.dashboard_auth.audit import AuditEvent
 from hermes_cli.dashboard_auth.base import Session
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
@@ -596,3 +597,88 @@ def test_native_refresh_dead_token_returns_401(gated_client):
     )
     assert r.status_code == 401
     assert r.json()["error"] == "session_expired"
+
+
+# ---------------------------------------------------------------------------
+# Regression #98338: REFRESH_FAILURE audit records must carry a (truncated)
+# device/client identifier derived from the request User-Agent, because the
+# offending IP alone was insufficient to attribute failures behind a home NAT.
+# No token-derived identity is available at this point (rejected before
+# resolution), so the User-Agent is the only synthetic client signal we have.
+# ---------------------------------------------------------------------------
+
+
+def _capture_audit_log(monkeypatch):
+    """Replace routes.audit_log with a recorder; return the recorded calls."""
+    import hermes_cli.dashboard_auth.routes as routes_mod
+
+    calls: list = []
+    monkeypatch.setattr(routes_mod, "audit_log", lambda event, **fields: calls.append((event, fields)))
+    return calls
+
+
+def test_native_refresh_failure_audit_includes_device_from_user_agent(
+    gated_client, monkeypatch,
+):
+    calls = _capture_audit_log(monkeypatch)
+    ua = "HermesDesktop/2.3 (linux x86_64)"
+    r = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+        headers={"User-Agent": ua},
+    )
+    assert r.status_code == 401
+    failures = [c for c in calls if c[0] is AuditEvent.REFRESH_FAILURE]
+    assert failures, f"expected a REFRESH_FAILURE audit record; calls={calls}"
+    fields = failures[0][1]
+    assert fields.get("reason") == "all_providers_rejected_rt"
+    assert "ip" in fields  # existing field preserved
+    assert fields.get("device") == ua  # new device identifier
+
+
+def test_native_refresh_failure_audit_truncates_long_user_agent(
+    gated_client, monkeypatch,
+):
+    from hermes_cli.dashboard_auth.request_utils import _MAX_USER_AGENT_LEN
+
+    calls = _capture_audit_log(monkeypatch)
+    ua = "X" * 2000
+    r = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+        headers={"User-Agent": ua},
+    )
+    assert r.status_code == 401
+    fields = [c for c in calls if c[0] is AuditEvent.REFRESH_FAILURE][0][1]
+    device = fields.get("device", "")
+    assert len(device) == _MAX_USER_AGENT_LEN
+    assert device == ua[:_MAX_USER_AGENT_LEN]
+
+
+def test_native_refresh_failure_audit_device_empty_without_user_agent(
+    gated_client, monkeypatch,
+):
+    # The Starlette TestClient always injects a default ``User-Agent``, so we
+    # exercise the absent-header branch of the helper directly (its contract)
+    # and confirm the integration path records a bounded device string.
+    from hermes_cli.dashboard_auth.request_utils import client_device as _client_device
+
+    class _FakeReq:
+        def __init__(self, headers):
+            self.headers = headers
+
+    assert _client_device(_FakeReq({})) == ""
+    assert _client_device(_FakeReq({"X-Forwarded-For": "1.2.3.4"})) == ""
+
+    calls = _capture_audit_log(monkeypatch)
+    ua = "testclient"  # the default header TestClient sends
+    r = gated_client.post(
+        "/auth/native/refresh",
+        json={"refresh_token": "garbage-not-a-real-rt", "provider": "stub"},
+        headers={"User-Agent": ua},
+    )
+    assert r.status_code == 401
+    fields = [c for c in calls if c[0] is AuditEvent.REFRESH_FAILURE][0][1]
+    # Present-but-default UA is recorded as-is and bounded; never redacted to "".
+    assert fields.get("device") == ua
+    assert len(fields.get("device", "")) <= 256

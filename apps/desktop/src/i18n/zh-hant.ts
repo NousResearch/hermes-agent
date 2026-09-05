@@ -1331,7 +1331,10 @@ export const zhHant = defineLocale({
       description: '說明',
       version: '版本',
       author: '作者',
-      license: '授權'
+      license: '授權',
+      platforms: '平台',
+      prerequisites: '先決條件',
+      metadata: '中繼資料'
     },
     toolCount: count => `${count} 個工具`,
     hub: {

@@ -57,6 +57,9 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('settings.model.notInCatalog')).toBe(
       '不在此提供方的模型清單中；呼叫可能會改用備援模型。'
     )
+    expect(translateNow('skills.metadataLabels.platforms')).toBe('平台')
+    expect(translateNow('skills.metadataLabels.prerequisites')).toBe('先決條件')
+    expect(translateNow('skills.metadataLabels.metadata')).toBe('中繼資料')
 
     setRuntimeI18nLocale('ar')
     expect(translateNow('settings.appearance.reasoningCollapsedTitle')).toBe('طي التفكير افتراضيًا')

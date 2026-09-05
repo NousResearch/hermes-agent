@@ -45,6 +45,8 @@ _EXCLUDED_DIRS = {
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps — reinstalled on demand
     "backups",          # prior auto-backups — don't nest backups exponentially
+    "update-backups",   # hermes update rollback bundles — same nest reason as backups/
+    "worktrees",        # disposable source checkouts (hermes update / hermes -w)
     _QUICK_SNAPSHOTS_DIR,  # each holds a full state.db copy — same reason as ``backups``
     "checkpoints",      # session-hash-keyed trajectory caches — regenerated, don't port
     # Live CDP browser profiles: Chromium holds their SQLite DBs exclusively locked while running

@@ -133,6 +133,14 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_update_backups_and_worktrees(self):
+        """Rollback bundles and disposable source trees must not nest inside a full backup."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("update-backups/20260723-141712-0600/base.bundle"))
+        assert _should_exclude(Path("worktrees/hermes-update-abc/cli.py"))
+        assert _should_exclude(Path("profiles/coder/worktrees/hermes-update-abc/cli.py"))
+        assert not _should_exclude(Path("config.yaml"))
+
     def test_excludes_state_snapshots_dir(self):
         """state-snapshots/ is excluded for the same reason as backups/: every
         quick / pre-update snapshot holds its own copy of state.db, so zipping

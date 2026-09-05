@@ -708,6 +708,39 @@ def _extract_pruned_skill_names(text: str) -> list[str]:
     return list(dict.fromkeys(m.group(1) for m in _SKILL_PRUNED_MARKER_RE.finditer(text or "")))
 
 
+# ---------------------------------------------------------------------------
+# Ghosted skill-view tracking (#32114).
+#
+# When compression demotes a ``skill_view`` tool result (tail protection expired,
+# token-pressure pass 4, stale-tail demotion, lean-tail recovery), the only
+# skill content left in the transcript is a one-line marker/stub.  The
+# ``skill_view`` dedup cache in ``tools.skills_tool_dedup`` still holds the full
+# payload under its (task, name, file_path) key, so a subsequent
+# ``skill_view`` call returns the "unchanged since your last view" stub and the
+# model can never recover the body — the classic [SKILL_PRUNED] deadlock.
+#
+# Compression marks the ghosted skills in the dedup registry itself (single
+# source of truth, shared with the dedup check) so the next skill_view call
+# self-heals with a full disk re-read.
+# ---------------------------------------------------------------------------
+_ghost_forwarder_warned = False
+
+
+def _mark_ghosted_skill_views(names: list[str]) -> None:
+    """Record that the transcript no longer carries the full body of these skills."""
+    global _ghost_forwarder_warned
+    if not names:
+        return
+    try:
+        from tools.skills_tool_dedup import _mark_ghosted_skill_views as _mark
+    except Exception as exc:  # noqa: BLE001 — ghost tracking must never break compression
+        if not _ghost_forwarder_warned:
+            _ghost_forwarder_warned = True
+            logger.debug("skill_view ghost tracking unavailable: %s", exc)
+        return
+    _mark(names)
+
+
 def _collect_ghosted_skill_names(turns: List[Dict[str, Any]]) -> list[str]:
     """Skill names about to be lost in compaction: demoted ``skill_view`` rows and raw, never-demoted bodies."""
     call_id_to_skill: dict[str, str] = {}
@@ -2654,6 +2687,10 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
                 return False
         result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
+        if tool_name == "skill_view":
+            # The full body just left the transcript (#32114): record the ghost so the
+            # skill_view dedup cache stops serving "unchanged" stubs for it.
+            _mark_ghosted_skill_views([str(_json_dict(tool_args).get("name", "") or "")])
         return True
 
     def _pressure_demote_tail(
@@ -3067,6 +3104,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Lean mode: demote tail tool results older than the newest ``_LEAN_TAIL_KEEP_TOOL_ROUNDS`` rounds to
         recovery stubs; skill-marker rows untouched. New list (untouched rows shared, demoted copied)."""
         session_id = getattr(self, "_session_id", "") or ""
+        call_id_to_tool = _tool_calls_by_id(messages)
         rounds_seen = 0
         protected: set[int] = set()
         prev_idx = None
@@ -3078,6 +3116,16 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             protected.add(i)
         result = list(messages)
         demoted = 0
+
+        def _demote_skill_view_at(i: int) -> None:
+            # A lean-tail demotion leaves the transcript with a body-less skill row
+            # (#32114); track it so the dedup check can self-heal, like the
+            # compaction boundary's own _pruned_names accounting does.
+            call_id = str(messages[i].get("tool_call_id") or "")
+            name, args = call_id_to_tool.get(call_id, ("", ""))
+            if name == "skill_view":
+                _mark_ghosted_skill_views([str(_json_dict(args).get("name", "") or "")])
+
         for i in range(tail_start, len(messages)):
             msg = messages[i]
             content = msg.get("content")
@@ -3085,6 +3133,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 continue
             if len(content) < _LEAN_TAIL_DEMOTE_MIN_CHARS or SKILL_PRUNED_MARKER_PREFIX in content or _is_summary_stub(content):
                 continue
+            _demote_skill_view_at(i)
             result[i] = _rewritten(msg, _lean_recovery_stub(msg.get("tool_name") or "", len(content), session_id))
             demoted += 1
         if demoted and not self.quiet_mode:

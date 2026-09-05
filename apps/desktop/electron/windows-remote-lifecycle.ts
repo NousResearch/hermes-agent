@@ -19,6 +19,13 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+// Keep long probes out of the remote command line. Windows' default OpenSSH
+// command shell is commonly cmd.exe, whose command-line limit is 8191 chars.
+// SshConnection.exec already supports streaming stdin to the remote command.
+function powerShellStdinCommand() {
+  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command [ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))).Invoke()'
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -63,9 +70,11 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
     'Assert-NoReparse $python $false',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
-  ].join(';')
+  ].join('\r\n')
 
-  return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
+  const output = await ssh.exec(powerShellStdinCommand(), { stdinData: `${encodedPowerShell(script)}\r\n` })
+
+  return JSON.parse(String(output || '').trim())
 }
 
 function windowsUpdateMarkerProbeCommand(hermesHome) {

@@ -43,6 +43,12 @@ def _computer_use_cfg() -> Dict[str, Any]:
         return (load_config() or {}).get("computer_use") or {}
     return {}
 
+def _remote_cfg() -> Optional[Any]:
+    """Active remote CUA transport config, or None (local mode / broken config falls open to local)."""
+    with contextlib.suppress(Exception):
+        return resolve_remote_cua_config(_computer_use_cfg(), permission_mode="standard")
+    return None
+
 def _cua_no_overlay() -> bool:
     """Pass ``--no-overlay``? ``computer_use.no_overlay`` overrides; else off on macOS (cursor-overlay redraw
     loop can peg a core after a session), headless Linux / WSL2 / containers, and Linux X11 (the overlay is a
@@ -163,6 +169,10 @@ def _linux_session_locked() -> Optional[bool]:
 
 def _empty_discovery_reason() -> str:
     """One-line diagnosis for 'window discovery found nothing'."""
+    # Remote transport: the local session is irrelevant — windows come from the bridge host.
+    if getattr(_remote_cfg(), "url", None):
+        return ("remote desktop returned no windows — check the host bridge connection and the "
+                "remote desktop session state")
     if _linux_session_locked() is True:
         return ("the desktop session is LOCKED (loginctl LockedHint=yes) — unlock the screen; "
                 "a locked compositor hides windows and freezes app renderers")
@@ -308,6 +318,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             logger.debug("cua-driver %s: %s", what, e)
 
     def is_available(self) -> bool:
+        # Remote transport: the bridge host owns the driver, so the local binary is irrelevant.
+        if _remote_cfg() is not None:
+            return True
         return sys.platform in ("darwin", "win32", "linux") and cua_driver_binary_available()  # other Unix-likes untested E2E
 
     def _clear_active_target(self) -> None:

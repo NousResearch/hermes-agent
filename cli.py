@@ -656,11 +656,16 @@ def _prepare_deferred_agent_startup() -> None:
 
 
 def _flush_logging_and_stdio() -> None:
-    """Best-effort ``logging.shutdown()`` + stdout/stderr flush before ``os._exit``."""
+    """Best-effort ``logging.shutdown()`` + stdout/stderr flush before ``os._exit``.
+
+    Catch ``BaseException`` on the stdio flush: a second Ctrl+C during flush is a
+    ``KeyboardInterrupt`` (not ``Exception``) and would otherwise escape the
+    kanban ``os._exit`` path as an ignored-exception traceback.
+    """
     with suppress(Exception):
         logging.shutdown()
     for _stream in (sys.stdout, sys.stderr):
-        with suppress(Exception):
+        with suppress(BaseException):
             _stream.flush()
 
 

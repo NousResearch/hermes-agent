@@ -227,6 +227,18 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     remember: name => ipcRenderer.invoke('hermes:profile:remember', name),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
+  wallpaper: {
+    get: profile => ipcRenderer.invoke('hermes:wallpaper:get', profile),
+    onProfileReset: callback => {
+      const listener = (_event, profile) => callback(String(profile || ''))
+      ipcRenderer.on('hermes:wallpaper:profile-reset', listener)
+
+      return () => ipcRenderer.removeListener('hermes:wallpaper:profile-reset', listener)
+    },
+    palette: profile => ipcRenderer.invoke('hermes:wallpaper:palette', profile),
+    select: profile => ipcRenderer.invoke('hermes:wallpaper:select', profile),
+    remove: profile => ipcRenderer.invoke('hermes:wallpaper:remove', profile)
+  },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),

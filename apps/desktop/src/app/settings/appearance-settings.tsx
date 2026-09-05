@@ -65,6 +65,7 @@ import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitive
 import { APPEARANCE_SETTING_IDS } from './settings-search'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
+import { WallpaperSetting } from './wallpaper-setting'
 
 // display.resume_last_session lives in the backend config record (shared with
 // config.yaml and the cold-start restore in use-desktop-integrations), not a
@@ -781,6 +782,8 @@ export function AppearanceSettings() {
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.backdrop)}
             title={a.backdropTitle}
           />
+
+          <WallpaperSetting profileName={activeProfileName} />
 
           <ListRow
             action={

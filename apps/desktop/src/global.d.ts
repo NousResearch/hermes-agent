@@ -227,6 +227,14 @@ declare global {
         // clear the preference.
         set: (name: string | null) => Promise<DesktopActiveProfile>
       }
+      /** Local, profile-scoped chat wallpaper storage owned by Electron. */
+      wallpaper?: {
+        get: (profile: string) => Promise<DesktopWallpaperAsset | null>
+        onProfileReset?: (callback: (profile: string) => void) => () => void
+        palette?: (profile: string) => Promise<DesktopWallpaperPalette | null>
+        select: (profile: string) => Promise<DesktopWallpaperSelectResult>
+        remove: (profile: string) => Promise<boolean>
+      }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
@@ -551,6 +559,22 @@ declare global {
       onOpenFindBarRequested: (callback: () => void) => () => void
     }
   }
+}
+
+export interface DesktopWallpaperAsset {
+  url: string
+  version?: string
+}
+
+export interface DesktopWallpaperPalette {
+  accent: string
+  dominant: string
+}
+
+export interface DesktopWallpaperSelectResult {
+  asset: DesktopWallpaperAsset | null
+  canceled: boolean
+  palette?: DesktopWallpaperPalette | null
 }
 
 export interface DesktopMarketplaceSearchItem {

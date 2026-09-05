@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { HiddenBackdropScope } from '@/components/Backdrop'
 import { chatMessageText } from '@/lib/chat-messages'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
@@ -339,7 +340,12 @@ export function HudShell() {
           it paints behind the transcript. */}
       <div aria-hidden data-hud-glass />
 
-      <WiredPane part="chatRoutes" />
+      {/* HUD is an overlay on another app, not another wallpaper canvas. Keep
+          every image backdrop out of this window so its transparent dead space
+          stays visually empty and cheap to composite. */}
+      <HiddenBackdropScope>
+        <WiredPane part="chatRoutes" />
+      </HiddenBackdropScope>
 
       {/* CanvasTTY-style resize frame. Windows/macOS/X11 get every edge and
           corner; native Wayland gets the right/bottom handles it can honour

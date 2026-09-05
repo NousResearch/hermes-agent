@@ -6,7 +6,7 @@ import https from 'node:https'
 import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   app,
@@ -18,6 +18,7 @@ import {
   globalShortcut,
   ipcMain,
   Menu,
+  nativeImage,
   nativeTheme,
   Notification,
   powerMonitor,
@@ -304,10 +305,12 @@ import {
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import {
   assertLocalProfileCanStart,
+  completeProfileAppearanceCleanup,
   decideProfileDeleteAction,
   dispatchConnectionScopedProfileDelete,
   localProfilePoolKeys,
   ProfileDeletionGate,
+  profileNameFromCreateRequest,
   profileNameFromDeleteRequest,
   resolveRouteProfile
 } from './profile-delete-routing'
@@ -410,6 +413,22 @@ import {
 import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import {
+  fitWallpaperDimensions,
+  isSupportedWallpaperPath,
+  preferredWallpaperMaxEdge,
+  readWallpaperFileAsset,
+  readWallpaperSourceFile,
+  removeWallpaperFile,
+  WALLPAPER_JPEG_QUALITY,
+  WALLPAPER_MAX_SOURCE_BYTES,
+  WALLPAPER_PROTOCOL,
+  WALLPAPER_PROTOCOL_PRIVILEGES,
+  wallpaperAssetPredatesProfile,
+  wallpaperFilePathFromAsset,
+  writeWallpaperFile
+} from './wallpaper-files'
+import { extractWallpaperPalette } from './wallpaper-palette'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { createWindowOpenHandler } from './window-open-policy'
@@ -480,6 +499,7 @@ const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
 // there and Settings drops the row entirely.
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
+const WALLPAPER_ACCESS_TOKEN = crypto.randomBytes(32).toString('hex')
 
 // Device-local preference: block F12 from opening DevTools.
 // Set dynamically via IPC from the renderer Settings → Advanced.
@@ -1344,6 +1364,10 @@ protocol.registerSchemesAsPrivileged([
       stream: true,
       supportFetchAPI: true
     }
+  },
+  {
+    scheme: WALLPAPER_PROTOCOL,
+    privileges: WALLPAPER_PROTOCOL_PRIVILEGES
   }
 ])
 
@@ -1393,6 +1417,48 @@ function registerMediaProtocol() {
   })
 
   protocol.handle(MEDIA_PROTOCOL, handler)
+}
+
+// Wallpapers are imported into one app-owned JPEG per profile. The renderer
+// receives only this narrow URL; it cannot use the scheme to browse arbitrary
+// files because the handler accepts a hashed asset id under userData/wallpapers.
+function registerWallpaperProtocol() {
+  const userDataDir = app.getPath('userData')
+
+  protocol.handle(WALLPAPER_PROTOCOL, async request => {
+    try {
+      const url = new URL(request.url)
+
+      if (url.hostname !== 'asset') {
+        throw new Error('Unknown wallpaper host.')
+      }
+
+      if (url.searchParams.get('token') !== WALLPAPER_ACCESS_TOKEN) {
+        throw new Error('Wallpaper access token is invalid.')
+      }
+
+      const assetId = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+      const filePath = wallpaperFilePathFromAsset(userDataDir, assetId)
+      const stat = await fs.promises.lstat(filePath)
+
+      if (!stat.isFile()) {
+        throw new Error('Wallpaper is not a file.')
+      }
+
+      const data = await readWallpaperSourceFile(filePath, stat)
+
+      return new Response(new Uint8Array(data), {
+        headers: {
+          'Cache-Control': 'private, max-age=31536000, immutable',
+          'Content-Length': String(data.length),
+          'Content-Type': 'image/jpeg',
+          'X-Content-Type-Options': 'nosniff'
+        }
+      })
+    } catch {
+      return new Response('Wallpaper not found', { status: 404 })
+    }
+  })
 }
 
 let mainWindow = null
@@ -12738,6 +12804,34 @@ async function prepareProfileRenameRequest(request) {
   })
 }
 
+function notifyWallpaperProfileReset(profile) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) {
+      continue
+    }
+
+    try {
+      window.webContents.send('hermes:wallpaper:profile-reset', profile)
+    } catch (error) {
+      rememberLog(
+        `[wallpaper] preference cleanup notification failed for ${profile}: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+}
+
+async function completeProfileAppearanceRequest(profile, result) {
+  return completeProfileAppearanceCleanup(profile, result, {
+    logCleanupFailure: (resetProfile, error) => {
+      rememberLog(
+        `[wallpaper] appearance cleanup failed for profile ${resetProfile}: ${error instanceof Error ? error.message : String(error)}`
+      )
+    },
+    notifyProfileReset: notifyWallpaperProfileReset,
+    removeWallpaper: resetProfile => removeWallpaperFile(app.getPath('userData'), resetProfile)
+  })
+}
+
 async function startHermes() {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
@@ -16454,6 +16548,8 @@ async function teardownConnectionScopedProfileBackend(connectionId, profile) {
 }
 
 async function handleHermesApiRequest(request) {
+  const createdProfile = profileNameFromCreateRequest(request)
+
   // Registry-pinned request (request.connectionId): the renderer is working
   // against a REGISTERED gateway connection, so the data — cron jobs and their
   // run sessions included — lives in THAT host's state.db, not any local
@@ -16465,7 +16561,9 @@ async function handleHermesApiRequest(request) {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (registryConnectionId) {
-    return dispatchRegistryApiRequest(request, registryConnectionId)
+    const result = await dispatchRegistryApiRequest(request, registryConnectionId)
+
+    return completeProfileAppearanceRequest(createdProfile, result)
   }
 
   // Remote-profile session requests would otherwise hit the local primary off
@@ -16567,7 +16665,7 @@ async function handleHermesApiRequest(request) {
 
   await profileRename?.complete()
 
-  return response
+  return completeProfileAppearanceRequest(tornDownProfile ?? createdProfile, response)
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {
@@ -16579,7 +16677,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   const registryConnectionId = apiRequestRegistryConnectionId(request)
 
   if (deletingProfile && registryConnectionId) {
-    return dispatchConnectionScopedProfileDelete(request, {
+    const result = await dispatchConnectionScopedProfileDelete(request, {
       acquire: profile => profileDeletionGate.acquire(profile),
       connectionKind: connectionId => registryConnectionKind(connectionId),
       dispatch: routeProfile =>
@@ -16589,6 +16687,8 @@ ipcMain.handle('hermes:api', async (_event, request) => {
       prepareLocal: localRequest => prepareProfileDeleteRequest(localRequest).then(() => undefined),
       teardownConnection: (connectionId, profile) => teardownConnectionScopedProfileBackend(connectionId, profile)
     })
+
+    return completeProfileAppearanceRequest(deletingProfile, result)
   }
 
   if (!mutatingProfile) {
@@ -16801,6 +16901,167 @@ ipcMain.handle('hermes:readPluginSource', async (_event: unknown, filePath: unkn
     text: await fs.promises.readFile(resolvedPath, 'utf8'),
     truncated: false
   }
+})
+
+async function desktopWallpaperFileAsset(profile) {
+  const asset = await readWallpaperFileAsset(app.getPath('userData'), profile, WALLPAPER_ACCESS_TOKEN)
+
+  if (!asset) {
+    return null
+  }
+
+  const normalizedProfile = String(profile ?? '').trim() || 'default'
+
+  if (normalizedProfile !== 'default') {
+    try {
+      const [assetStat, profileStat] = await Promise.all([
+        fs.promises.lstat(asset.filePath),
+        fs.promises.lstat(path.join(HERMES_HOME, 'profiles', normalizedProfile))
+      ])
+
+      if (profileStat.isDirectory() && wallpaperAssetPredatesProfile(assetStat.mtimeMs, profileStat.birthtimeMs)) {
+        rememberLog(`[wallpaper] removed stale asset from an earlier lifetime of profile ${normalizedProfile}`)
+        await completeProfileAppearanceRequest(normalizedProfile, null)
+
+        return null
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        rememberLog(
+          `[wallpaper] stale asset check failed for profile ${normalizedProfile}: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+    }
+  }
+
+  return asset
+}
+
+async function desktopWallpaperAsset(profile) {
+  const asset = await desktopWallpaperFileAsset(profile)
+
+  return asset ? { url: asset.url, version: asset.version } : null
+}
+
+function assertTrustedWallpaperSender(event): BrowserWindow {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender)
+  const senderFrame = event.senderFrame
+
+  if (!senderWindow || senderWindow.isDestroyed() || !senderFrame || senderFrame !== event.sender.mainFrame) {
+    throw new Error('Wallpaper access requires the main frame of a trusted app window.')
+  }
+
+  let trusted = false
+
+  try {
+    const senderUrl = new URL(senderFrame.url)
+
+    if (DEV_SERVER) {
+      trusted = senderUrl.origin === new URL(DEV_SERVER).origin
+    } else if (senderUrl.protocol === 'file:') {
+      trusted = path.resolve(fileURLToPath(senderUrl)) === path.resolve(resolveRendererIndex())
+    }
+  } catch {
+    trusted = false
+  }
+
+  if (!trusted) {
+    throw new Error('Wallpaper access was rejected for an untrusted renderer.')
+  }
+
+  return senderWindow
+}
+
+ipcMain.handle('hermes:wallpaper:get', (event, profile) => {
+  assertTrustedWallpaperSender(event)
+
+  return desktopWallpaperAsset(profile)
+})
+
+ipcMain.handle('hermes:wallpaper:palette', async (event, profile) => {
+  assertTrustedWallpaperSender(event)
+
+  const asset = await desktopWallpaperFileAsset(profile)
+
+  if (!asset) {
+    return null
+  }
+
+  const stat = await fs.promises.lstat(asset.filePath)
+  const data = await readWallpaperSourceFile(asset.filePath, stat)
+  const image = nativeImage.createFromBuffer(data)
+
+  if (image.isEmpty()) {
+    throw new Error('The saved wallpaper could not be decoded.')
+  }
+
+  return extractWallpaperPalette(image)
+})
+
+ipcMain.handle('hermes:wallpaper:select', async (event, profile) => {
+  const senderWindow = assertTrustedWallpaperSender(event)
+
+  const result = await dialog.showOpenDialog(senderWindow, {
+    title: 'Choose wallpaper',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] }]
+  })
+
+  if (result.canceled || !result.filePaths[0]) {
+    return { asset: null, canceled: true, palette: null }
+  }
+
+  const sourcePath = result.filePaths[0]
+
+  if (!isSupportedWallpaperPath(sourcePath)) {
+    throw new Error('Choose a JPEG, PNG, or WebP image.')
+  }
+
+  const { realPath, stat } = await resolveReadableFileForIpc(sourcePath, {
+    maxBytes: WALLPAPER_MAX_SOURCE_BYTES,
+    purpose: 'Wallpaper import'
+  })
+
+  const sourceData = await readWallpaperSourceFile(realPath, stat, WALLPAPER_MAX_SOURCE_BYTES)
+  const image = nativeImage.createFromBuffer(sourceData)
+
+  if (image.isEmpty()) {
+    throw new Error('The selected image could not be decoded.')
+  }
+
+  const sourceSize = image.getSize()
+
+  const maxEdge = preferredWallpaperMaxEdge(
+    screen.getAllDisplays().map(display => ({
+      height: display.bounds.height,
+      scaleFactor: display.scaleFactor,
+      width: display.bounds.width
+    }))
+  )
+
+  const targetSize = fitWallpaperDimensions(sourceSize.width, sourceSize.height, maxEdge)
+
+  const normalized =
+    targetSize.width === sourceSize.width && targetSize.height === sourceSize.height
+      ? image
+      : image.resize({ ...targetSize, quality: 'best' })
+
+  const palette = extractWallpaperPalette(normalized)
+  const data = normalized.toJPEG(WALLPAPER_JPEG_QUALITY)
+
+  if (data.length === 0) {
+    throw new Error('The selected image could not be converted.')
+  }
+
+  await writeWallpaperFile(app.getPath('userData'), profile, data)
+
+  return { asset: await desktopWallpaperAsset(profile), canceled: false, palette }
+})
+
+ipcMain.handle('hermes:wallpaper:remove', async (event, profile) => {
+  assertTrustedWallpaperSender(event)
+
+  return removeWallpaperFile(app.getPath('userData'), profile)
 })
 
 ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
@@ -17950,6 +18211,7 @@ app.whenReady().then(() => {
   installMediaPermissions()
   installDownloadHandling()
   registerMediaProtocol()
+  registerWallpaperProtocol()
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()

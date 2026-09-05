@@ -127,28 +127,41 @@ function ChatHeader({
   onToggleSelectedPin,
   selectedSessionId
 }: ChatHeaderProps) {
-  const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const profiles = useStore($profiles)
 
-  const activeStoredSession =
-    (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
+  // Scalars only: `$sessions` is republished whenever any row's last_active
+  // moves. Returning the row object here remounts the title menu (and with it
+  // the perceived "whole chat flicker") on that tick.
+  const title = useStoreSelector($sessions, list => {
+    const row = selectedSessionId ? list.find(session => sessionMatchesStoredId(session, selectedSessionId)) : undefined
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
+    return row ? sessionTitle(row) : NEW_SESSION_TITLE
+  })
+  const sessionProfile = useStoreSelector($sessions, list => {
+    const row = selectedSessionId ? list.find(session => sessionMatchesStoredId(session, selectedSessionId)) : undefined
+
+    return row?.profile
+  })
+  const selectedPinId = useStoreSelector($sessions, list => {
+    const row = selectedSessionId ? list.find(session => sessionMatchesStoredId(session, selectedSessionId)) : undefined
+
+    if (row) {
+      return sessionPinId(row)
+    }
+
+    return selectedSessionId
+  })
 
   // Which agent/persona owns this chat — glanceable in the header once a
   // second profile exists, so the open session's ownership is never ambiguous
   // (#66003). Single-profile users see the unchanged header.
-  const showProfileTag = profiles.length > 1 && Boolean(activeStoredSession)
+  const showProfileTag = profiles.length > 1 && Boolean(selectedPinId)
 
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
   // state after auto-compression rotates the id.
-  const selectedIsPinned = activeStoredSession
-    ? pinnedSessionIds.includes(sessionPinId(activeStoredSession))
-    : selectedSessionId
-      ? pinnedSessionIds.includes(selectedSessionId)
-      : false
+  const selectedIsPinned = selectedPinId ? pinnedSessionIds.includes(selectedPinId) : false
 
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // are compact side panels — they drop the session-actions header + border
@@ -166,7 +179,7 @@ function ChatHeader({
             'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
         }}
       >
-        {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
+        {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={sessionProfile} />}
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
@@ -455,7 +468,6 @@ const ChatViewContent = memo(function ChatViewContent({
   const messagesEmpty = useStore(view.$messagesEmpty)
   const lastVisibleIsUser = useStore(view.$lastVisibleIsUser)
   const selectedSessionId = useStore(view.$storedId)
-  const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
   // Durable composer/queue scope (lineage root) so auto-compression tip rotation
@@ -464,13 +476,17 @@ const ChatViewContent = memo(function ChatViewContent({
   // latter can be momentarily null/stale mid-switch, which used to leak into
   // the composer's scope key (#59305). A tile has no route, so it always uses
   // its own selection directly.
-  const queueSessionKey = useMemo(() => {
+  //
+  // SCALAR over $sessions: a 10s sessions.changed list refresh republishes the
+  // whole array whenever any other row's last_active moved. Subscribing to the
+  // array remounts this shell (thread + composer) on that tick.
+  const queueSessionKey = useStoreSelector($sessions, list => {
     const effectiveSelectedSessionId = isPrimary
       ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
       : selectedSessionId
 
-    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
-  }, [isPrimary, location.pathname, selectedSessionId, sessions])
+    return resolveComposerSessionKey(effectiveSelectedSessionId, list)
+  })
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
@@ -480,13 +496,13 @@ const ChatViewContent = memo(function ChatViewContent({
   // migrating on bare inequality would re-home A's queued prompts onto B and
   // auto-drain them into the wrong chat.
   useEffect(() => {
-    if (!shouldMigrateComposerScope(selectedSessionId, queueSessionKey, sessions)) {
+    if (!shouldMigrateComposerScope(selectedSessionId, queueSessionKey, $sessions.get())) {
       return
     }
 
     migrateSessionDraft(selectedSessionId, queueSessionKey)
     migrateQueuedPrompts(selectedSessionId, queueSessionKey)
-  }, [queueSessionKey, selectedSessionId, sessions])
+  }, [queueSessionKey, selectedSessionId])
 
   // Transcript-side stops (the streaming message's hover Stop, the runtime's
   // cancel) are explicit halts, same as the composer's Stop button: park any
@@ -507,7 +523,9 @@ const ChatViewContent = memo(function ChatViewContent({
   // direct nav). Derived in render so the swap reads instantly: the same frame
   // the id changes we drop the old transcript and show the loader, instead of
   // waiting for the resume effect (which paints a frame later) to clear them.
-  const routeSessionMismatch = isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, sessions) : false
+  const routeSessionMismatch = useStoreSelector($sessions, list =>
+    isPrimary ? isRouteSessionMismatch(routedSessionId, selectedSessionId, list) : false
+  )
 
   // The compact new-session pop-out skips the wordmark/tagline intro — it's a
   // scratch window, not the full-height empty state. The Appearance toggle
@@ -537,9 +555,11 @@ const ChatViewContent = memo(function ChatViewContent({
   // session can't blank the current one.
   const resumeExhausted = isPrimary && isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
 
-  const routedHasHistory = Boolean(
-    routedSessionId &&
-    sessions.some(session => sessionMatchesStoredId(session, routedSessionId) && sessionShouldHaveTranscript(session))
+  const routedHasHistory = useStoreSelector($sessions, list =>
+    Boolean(
+      routedSessionId &&
+        list.some(session => sessionMatchesStoredId(session, routedSessionId) && sessionShouldHaveTranscript(session))
+    )
   )
 
   const loadingSession = routedSessionIsLoading({

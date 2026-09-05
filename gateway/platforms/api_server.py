@@ -6616,12 +6616,49 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=500,
                 )
 
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
-        if not final_response:
-            final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
+        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
 
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
+
+        # Failure state, mirroring chat/completions (#22496): the envelope
+        # must carry it structurally instead of flattening everything to
+        # "completed" with the error folded into message prose (#102921).
+        is_partial = bool(result.get("partial"))
+        is_failed = bool(result.get("failed"))
+        completed = bool(result.get("completed", True))
+        raw_err_msg = result.get("error")
+        err_msg = _redact_api_error_text(raw_err_msg) if raw_err_msg else raw_err_msg
+        response_status = (
+            "failed" if is_failed
+            else "incomplete" if (is_partial or not completed)
+            else "completed"
+        )
+
+        response_headers = {}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+
+        # Hard-fail path: no usable assistant text AND a real failure → 502
+        # with an OpenAI-style error envelope so SDK clients raise instead
+        # of silently storing the internal failure string as the answer.
+        if not final_response and (is_failed or is_partial):
+            err_body = _openai_error(
+                err_msg or "Agent run did not produce a response.",
+                err_type="server_error",
+                code="agent_incomplete",
+            )
+            err_body["error"]["hermes"] = {
+                "completed": completed,
+                "partial": is_partial,
+                "failed": is_failed,
+            }
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            return web.json_response(err_body, status=502, headers=response_headers)
+
+        if not final_response:
+            final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
 
         # Build the full conversation history for storage
         # (includes tool calls from the agent run)
@@ -6655,7 +6692,7 @@ class APIServerAdapter(BasePlatformAdapter):
         response_data = {
             "id": response_id,
             "object": "response",
-            "status": "completed",
+            "status": response_status,
             "created_at": created_at,
             "model": body.get("model", self._model_name),
             "output": output_items,
@@ -6665,6 +6702,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 "total_tokens": usage.get("total_tokens", 0),
             },
         }
+        if is_partial or is_failed or not completed:
+            response_data["hermes"] = {
+                "completed": completed,
+                "partial": is_partial,
+                "failed": is_failed,
+                "error": err_msg,
+            }
+            response_headers["X-Hermes-Completed"] = "false"
+            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            if err_msg:
+                response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
 
         # Store the complete response object for future chaining / GET retrieval
         if store:
@@ -6679,9 +6727,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
-        if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        response_headers["X-Hermes-Session-Id"] = _effective_session_id
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------

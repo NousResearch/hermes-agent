@@ -1364,10 +1364,97 @@ class TestResponsesEndpoint:
             assert data["object"] == "response"
             assert data["id"].startswith("resp_")
             assert data["status"] == "completed"
+            assert "hermes" not in data
             assert len(data["output"]) == 1
             assert data["output"][0]["type"] == "message"
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
+
+
+    @pytest.mark.asyncio
+    async def test_failed_run_without_text_returns_502(self, adapter):
+        """Hard-fail path mirrors chat/completions #22496 (#102921).
+
+        A provider failure with no usable assistant text must surface as
+        a 502 error envelope — never HTTP 200 with the raw error stored
+        as a successful answer.
+        """
+        mock_result = {
+            "final_response": "",
+            "messages": [],
+            "failed": True,
+            "error": "HTTP 400: model cannot be served",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi"},
+                )
+
+            assert resp.status == 502
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+            data = await resp.json()
+            assert data["error"]["code"] == "agent_incomplete"
+            assert data["error"]["hermes"]["failed"] is True
+            assert "HTTP 400" in data["error"]["message"]
+
+
+    @pytest.mark.asyncio
+    async def test_failed_run_with_text_signals_failed_status(self, adapter):
+        """Soft-fail path: partial text stays 200 but the envelope says failed."""
+        mock_result = {
+            "final_response": "half an answer",
+            "messages": [],
+            "failed": True,
+            "error": "HTTP 400: model cannot be served",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi"},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Completed") == "false"
+            data = await resp.json()
+            assert data["status"] == "failed"
+            assert data["hermes"]["failed"] is True
+            assert data["hermes"]["error"] == "HTTP 400: model cannot be served"
+            assert data["output"][0]["content"][0]["text"] == "half an answer"
+
+
+    @pytest.mark.asyncio
+    async def test_partial_run_signals_incomplete_status(self, adapter):
+        """Truncated runs report status incomplete with partial details."""
+        mock_result = {
+            "final_response": "truncated text",
+            "messages": [],
+            "partial": True,
+            "error": "output truncated at max tokens",
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi"},
+                )
+
+            assert resp.status == 200
+            assert resp.headers.get("X-Hermes-Partial") == "true"
+            data = await resp.json()
+            assert data["status"] == "incomplete"
+            assert data["hermes"]["partial"] is True
 
 
     @pytest.mark.asyncio

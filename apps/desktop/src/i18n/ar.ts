@@ -68,6 +68,7 @@ export const ar = defineLocale({
     revealInSidebar: 'إظهار في شجرة الملفات',
     copyPath: 'نسخ المسار',
     copyRelativePath: 'نسخ المسار النسبي',
+    openInSystem: 'فتح في تطبيق النظام',
     download: 'تنزيل',
     downloadSaved: 'تم الحفظ',
     downloadFailed: 'فشل التنزيل',

@@ -52,6 +52,7 @@ export const en: Translations = {
     revealInSidebar: 'Reveal in filetree',
     copyPath: 'Copy path',
     copyRelativePath: 'Copy relative path',
+    openInSystem: 'Open in system app',
     download: 'Download',
     downloadSaved: 'Saved',
     downloadFailed: 'Download failed',

@@ -1568,11 +1568,28 @@ def _dispatch_lane_task(
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+    # Spawn-time default budget for verifier/goal-loop cards (see
+    # ``_apply_default_verifier_goal_max_turns``). Returns the
+    # effective value so the spawn log line below shows the resolved
+    # budget; the helper is idempotent so a second tick on the same
+    # claim is a no-op.
+    effective_goal_max = _apply_default_verifier_goal_max_turns(conn, claimed)
+    if effective_goal_max is not None and claimed.goal_max_turns is None:
+        # The helper persisted a default; refresh the in-memory view
+        # so the env-var wiring in ``_default_spawn`` reflects it.
+        claimed = _kb.get_task(conn, claimed.id) or claimed
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
     try:
+        if claimed.goal_mode:
+            _kb._log.info(
+                "kanban dispatcher: spawning goal_mode task %s assignee=%r goal_budget=%s",
+                claimed.id,
+                claimed.assignee,
+                claimed.goal_max_turns if claimed.goal_max_turns is not None else "default",
+            )
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
             _set_worker_pid(conn, claimed.id, int(pid))
@@ -2158,6 +2175,84 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
         command,
         unit_suffix=f"kanban-{task.id}-run-{task.current_run_id}",
     )
+
+
+# Spawn-time default budget for verifier/goal-loop cards.
+# A goal_mode card with ``goal_max_turns`` unset inherits 150 iterations
+# from the goals engine — far more than a stuck verify run needs, and the
+# growing context burns context-window budget every iteration. For
+# review-style cards the empirically-right cap is ~40; we apply that
+# default at spawn time (idempotent against explicit overrides) so future
+# review/verify cards land with the right budget without manual capping.
+#
+# Trigger rule (matches the dispatcher-side spec, see t_bb181168):
+#   - card is goal_mode AND ``goal_max_turns`` is currently NULL, AND
+#   - assignee == "reviewer" OR title starts with one of
+#     {"Verify", "Re-verify", "Review"}.
+_DEFAULT_VERIFIER_GOAL_MAX_TURNS = 40
+_VERIFIER_TITLE_PREFIXES: tuple[str, ...] = (
+    "Verify",
+    "Re-verify",
+    "Review",
+)
+
+
+def _is_verifier_card(task) -> bool:
+    """Return True if ``task`` matches the spawn-time verifier/goal rule.
+
+    Matching is case-sensitive against the spec text; case-insensitive
+    matching would over-match ("verify" in prose mid-title) and is not
+    what the spec asks for.
+    """
+    if not task.goal_mode:
+        return False
+    if task.goal_max_turns is not None:
+        return False
+    if (task.assignee or "").strip() == "reviewer":
+        return True
+    title = (task.title or "").lstrip()
+    for prefix in _VERIFIER_TITLE_PREFIXES:
+        if title.startswith(prefix):
+            return True
+    return False
+
+
+def _apply_default_verifier_goal_max_turns(conn: sqlite3.Connection, task) -> Optional[int]:
+    """Persist the verifier-default budget for matching cards.
+
+    Returns the effective ``goal_max_turns`` value the spawn should use
+    (either the resolved default or the explicit override) so callers
+    can log it without re-reading the DB. Returns ``None`` for non-goal
+    cards or cards whose rule doesn't match (caller leaves the value
+    untouched and the worker falls back to the goals-engine default).
+
+    The UPDATE is gated on ``goal_max_turns IS NULL`` so an explicit
+    override set after create is never stomped; the helper is also
+    idempotent across dispatcher ticks because the second tick sees
+    the column non-NULL.
+    """
+    if not task.goal_mode:
+        return None
+    if task.goal_max_turns is not None:
+        return int(task.goal_max_turns)
+    if not _is_verifier_card(task):
+        return None
+    with _kb.write_txn(conn):
+        # Row-level guard: only stamp when the column is still NULL. A
+        # concurrent dispatcher tick or a post-create override that
+        # arrived between get_task() and here wins.
+        conn.execute(
+            "UPDATE tasks SET goal_max_turns = ? WHERE id = ? AND goal_max_turns IS NULL",
+            (_DEFAULT_VERIFIER_GOAL_MAX_TURNS, task.id),
+        )
+    _kb._log.info(
+        "kanban dispatcher: applied verifier default goal_max_turns=%d for task %s (assignee=%r title=%r)",
+        _DEFAULT_VERIFIER_GOAL_MAX_TURNS,
+        task.id,
+        task.assignee,
+        (task.title or "")[:80],
+    )
+    return _DEFAULT_VERIFIER_GOAL_MAX_TURNS
 
 
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:

@@ -170,6 +170,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         "timestamp": timestamp, "api_content": api_content,
         "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
         "platform_message_id": msg.get("platform_message_id"),  # load-bearing for restart drain-window recovery dedup
+        "_interrupted_tool_tail": bool(msg.get("_interrupted_tool_tail")),
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
@@ -190,7 +191,22 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
         # drop cannot un-write. Skip regardless of position.
-        if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg) or msg.get(_DB_PERSISTED_MARKER):
+        if not isinstance(msg, dict) or _is_ephemeral_scaffolding(msg):
+            continue
+        if msg.get(_DB_PERSISTED_MARKER):
+            # Already-durable tool rows marked interrupted at finalize time still need
+            # the durable provenance column stamped — they were flushed before the
+            # marker existed (#63292).
+            if (
+                msg.get("role") == "tool"
+                and msg.get("_interrupted_tool_tail") is True
+                and not msg.get("_db_interrupted_tail_stamped")
+            ):
+                agent._session_db.mark_tool_tail_interrupted(
+                    agent.session_id,
+                    msg.get("tool_call_id"),
+                )
+                msg["_db_interrupted_tail_stamped"] = True
             continue
         # Already durable (history copy or caller-seeded): stamp so future flushes skip it.
         if id(msg) in history_ids or id(msg) in seed_ids:

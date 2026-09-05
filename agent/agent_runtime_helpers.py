@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
-    _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
+    _FULL_ARGS_LOG_BOUND, INTERRUPTED_TOOL_TAIL_KEY, coalesce_tool_call_id, tool_call_id_variants, tool_result_id_variants
 )
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
@@ -2818,7 +2818,45 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
     messages = _drop_results_without_ids(messages)
     messages = _pair_tool_calls_positionally(messages)
     messages = _dedupe_tool_call_ids(messages)
-    return _realign_tool_result_names(messages)
+    messages = _realign_tool_result_names(messages)
+    # A user redirect after an explicitly interrupted tool-result tail needs
+    # an API-only assistant closure. The same role shape is also a valid normal
+    # redirect, so interruption provenance is mandatory; role adjacency alone
+    # must never synthesize cancellation context (#48879, #63292).
+    closed_tool_tails: List[Dict[str, Any]] = []
+    inserted_closures = 0
+    stripped_markers = 0
+    previous_was_interrupted_tool = False
+    for msg in messages:
+        if msg.get("role") == "user" and previous_was_interrupted_tool:
+            closed_tool_tails.append({
+                "role": "assistant",
+                "content": "Operation interrupted.",
+            })
+            inserted_closures += 1
+
+        api_msg = msg
+        if INTERRUPTED_TOOL_TAIL_KEY in msg:
+            api_msg = {
+                key: value
+                for key, value in msg.items()
+                if key != INTERRUPTED_TOOL_TAIL_KEY
+            }
+            stripped_markers += 1
+        closed_tool_tails.append(api_msg)
+        previous_was_interrupted_tool = (
+            msg.get("role") == "tool"
+            and msg.get(INTERRUPTED_TOOL_TAIL_KEY) is True
+        )
+
+    if inserted_closures or stripped_markers:
+        messages = closed_tool_tails
+    if inserted_closures:
+        logger.debug(
+            "Pre-call sanitizer: closed %d interrupted tool-result tail(s)",
+            inserted_closures,
+        )
+    return messages
 
 
 _ACK_FUTURE_RE = re.compile(r"\b(i['’]ll|i will|let me|i can do that|i can help with that)\b")

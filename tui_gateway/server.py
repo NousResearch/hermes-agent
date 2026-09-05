@@ -878,7 +878,8 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     """_make_agent kwargs for a deferred (first-prompt) build. A lazy-resumed (watch) session carries the
     stored conversation id so the upgrade continues it; a cold deferred resume restores the full persisted
     runtime identity (like the eager resume's overrides splat) so the build can't drop the provider. No
-    stored runtime, or an unroutable provider → this session's picked model/effort/tier, else the default."""
+    stored runtime → this session's picked model/effort/tier, else the default. An unroutable stored
+    provider still restores the stored model/reasoning/tier — only the dead provider pin falls back."""
     kw = {"session_db": session_db, "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(current),
           "platform_override": _session_source(current)}
     if resume_sid := current.get("resume_session_id"):
@@ -889,6 +890,15 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     else:
         if override := current.get("model_override"):
             kw["model_override"] = override
+        if isinstance(resume_overrides, dict):
+            # A dead provider pin must fall back, but the stored model/reasoning/tier are still
+            # this session's identity (#103498): dropping the whole dict silently rebuilds the
+            # agent with the profile defaults while the persisted row stays correct.
+            kw.update({k: v for k, v in (("reasoning_config_override",
+                                          resume_overrides.get("reasoning_config_override")),
+                                         ("service_tier_override",
+                                          resume_overrides.get("service_tier_override")))
+                       if v is not None})
         kw.update({k: v for k, v in (("reasoning_config_override", current.get("create_reasoning_override")),
                                      ("service_tier_override", current.get("create_service_tier_override")))
                    if v is not None})

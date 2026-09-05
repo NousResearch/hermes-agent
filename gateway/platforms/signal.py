@@ -539,7 +539,7 @@ class SignalAdapter(BasePlatformAdapter):
         while len(self._sent_message_timestamps) > self._max_sent_message_timestamps:
             self._sent_message_timestamps.popitem(last=False)
 
-    def _extract_contact_uuid(self, contact: Any, phone_number: str) -> Optional[str]:
+    def _extract_contact_uuid(self, contact: Any, phone_number: Optional[str] = None) -> Optional[str]:
         """Best-effort extraction of a Signal service ID from listContacts output."""
         if not isinstance(contact, dict):
             return None
@@ -547,8 +547,8 @@ class SignalAdapter(BasePlatformAdapter):
         profile = contact.get("profile")
         if not service_id and isinstance(profile, dict):
             service_id = profile.get("serviceId") or profile.get("uuid")
-        if service_id and _is_signal_service_id(service_id) and phone_number in (
-                contact.get("number"), contact.get("recipient")):
+        if service_id and _is_signal_service_id(service_id) and (
+                phone_number is None or phone_number in (contact.get("number"), contact.get("recipient"))):
             return service_id
         return None
 
@@ -568,6 +568,85 @@ class SignalAdapter(BasePlatformAdapter):
                 if number and service_id:
                     self._remember_recipient_identifiers(number, service_id)
             return self._recipient_uuid_by_number.get(chat_id, chat_id)
+
+    async def list_channels(self) -> Optional[List[Dict[str, Any]]]:
+        """Enumerate Signal contacts and groups for the channel directory."""
+        if not self.client:
+            return None
+
+        contacts, groups = await asyncio.gather(
+            self._rpc("listContacts", {"account": self.account, "allRecipients": True}, timeout=10.0),
+            self._rpc("listGroups", {"account": self.account}, timeout=10.0),
+        )
+        # A list replaces session discovery for the whole platform. Fall back
+        # to sessions if either RPC fails instead of publishing a partial list.
+        if not isinstance(contacts, list) or not isinstance(groups, list):
+            return None
+
+        channels: List[Dict[str, Any]] = []
+        for contact in contacts:
+            if not isinstance(contact, dict):
+                continue
+            if contact.get("unregistered") is True or contact.get("isBlocked") is True:
+                continue
+
+            profile = contact.get("profile")
+            if not isinstance(profile, dict):
+                profile = {}
+
+            number = contact.get("number")
+            service_id = self._extract_contact_uuid(contact)
+            recipient = number or service_id or contact.get("recipient")
+            if not recipient:
+                continue
+            recipient = str(recipient)
+            if number and service_id:
+                self._remember_recipient_identifiers(str(number), str(service_id))
+
+            contact_name = " ".join(
+                str(part).strip()
+                for part in (contact.get("givenName"), contact.get("familyName"))
+                if part
+            )
+            profile_name = " ".join(
+                str(part).strip()
+                for part in (profile.get("givenName"), profile.get("familyName"))
+                if part
+            )
+            name = next(
+                (
+                    str(value).strip()
+                    for value in (
+                        contact.get("name"),
+                        contact.get("nickName"),
+                        contact_name,
+                        profile_name,
+                        contact.get("username"),
+                    )
+                    if value and str(value).strip()
+                ),
+                recipient,
+            )
+            channels.append({"id": recipient, "name": name, "type": "dm"})
+
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            if (
+                group.get("isMember") is False
+                or group.get("isBlocked") is True
+                or group.get("isTerminated") is True
+            ):
+                continue
+            group_id = group.get("id")
+            if not group_id:
+                continue
+            group_id = str(group_id)
+            target = group_id if group_id.startswith("group:") else f"group:{group_id}"
+            name = str(group.get("name") or "").strip() or group_id
+            channels.append({"id": target, "name": name, "type": "group"})
+
+        return channels
 
     async def _with_target(self, params: Dict[str, Any], chat_id: str, *, resolve: bool = True) -> Dict[str, Any]:
         """Add the groupId / recipient routing key for *chat_id* to *params* (in place)."""

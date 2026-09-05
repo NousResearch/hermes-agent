@@ -336,6 +336,7 @@ import {
   revalidateRemoteConnection,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
+import { preparePooledRemoteBackend, preparePrimaryRemoteBackend } from './remote-readiness'
 import {
   applyRemoteRequestHeaders,
   createRegistryGatewayWsUrlHandler,
@@ -6446,6 +6447,18 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
   return { probeHealth: fetchPublicJson, probeIsCredentialed: false }
 }
 
+function remoteReadinessDeps(remote) {
+  return {
+    // Keep the established, auth-aware health ladder (including proxy headers)
+    // before exercising the PR's WebSocket readiness leg.
+    fetchStatus: () => waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers),
+    mintTicket: baseUrl => mintGatewayWsTicket(baseUrl, remote.headers),
+    probeWebSocket: (wsUrl, options = {}) =>
+      probeGatewayWebSocket(wsUrl, { ...options, headers: remote.headers }),
+    WebSocketImpl: globalThis.WebSocket
+  }
+}
+
 async function waitForHermes(baseUrl, token, signal?, authMode?, headers = {}) {
   const { probeHealth, probeIsCredentialed } = await buildReadinessHealthProbe(baseUrl, authMode, token)
 
@@ -12414,14 +12427,14 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   profileDeletionGate.assertCanStart(profile)
 
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+    const readyRemote = await preparePooledRemoteBackend(remote, remoteReadinessDeps(remote))
 
     // Recorded on the entry so revalidation can probe this descriptor without
     // awaiting connectionPromise, which may still be pending for a sibling.
-    entry.remoteBaseUrl = remote.baseUrl
+    entry.remoteBaseUrl = readyRemote.baseUrl
 
     return {
-      ...remote,
+      ...readyRemote,
       profile,
       logs: hermesLog.slice(-80),
       ...getWindowState()
@@ -12817,7 +12830,7 @@ async function startHermes() {
       }
 
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+      const readyRemote = await preparePrimaryRemoteBackend(remote, remoteReadinessDeps(remote))
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
@@ -12833,7 +12846,7 @@ async function startHermes() {
         error: null
       })
 
-      return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
+      return createPrimaryRemoteConnection(readyRemote, hermesLog.slice(-80), getWindowState())
     }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)

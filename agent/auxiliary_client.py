@@ -5437,6 +5437,31 @@ def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
         }
 
 
+def _normalize_optional_string(value: object) -> Optional[str]:
+    """Normalize an optional auxiliary-task config string.
+
+    YAML ``null`` and empty / whitespace-only / null-ish values all mean
+    "unset": return None. Otherwise return the stripped string.
+
+    Note on the null-ish literals: this helper treats the case-insensitive
+    strings ``"null"`` / ``"None"`` as unset. A real provider/model name will
+    never collide with either of those tokens in a meaningful way, so the
+    over-match is intentional and documented here. If a future provider ever
+    legitimately uses one of those tokens, this helper must not be applied to
+    that field.
+
+    A previous version used ``str(task_config.get(field, "")).strip() or None``,
+    which stringified the YAML ``null`` token into the string "None" and sent
+    that to the provider as a model ID / base URL / API key (#100835).
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.lower() in {"none", "null"}:
+        return None
+    return s
+
+
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -5450,15 +5475,17 @@ def _resolve_task_provider_model(
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
         task_config = _get_auxiliary_task_config(task)
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        cfg_provider = _normalize_optional_string(task_config.get("provider"))
+        cfg_model = _normalize_optional_string(task_config.get("model"))
+        cfg_base_url = _normalize_optional_string(task_config.get("base_url"))
+        cfg_api_key = _normalize_optional_string(task_config.get("api_key"))
         if not cfg_api_key:  # key_env → env var when api_key is not set directly
-            cfg_key_env = str(task_config.get("key_env") or task_config.get("api_key_env") or "").strip()
+            cfg_key_env = _normalize_optional_string(
+                task_config.get("key_env") or task_config.get("api_key_env")
+            ) or ""
             if cfg_key_env:
                 cfg_api_key = _scoped_key_env(cfg_key_env) or None
-        resolved_api_mode = str(task_config.get("api_mode", "")).strip() or None
+        resolved_api_mode = _normalize_optional_string(task_config.get("api_mode"))
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.

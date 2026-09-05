@@ -4185,7 +4185,7 @@ class GatewayRunner(
 
     _HONCHO_CACHE_BUSTING_KEYS = (
         "honcho.peer_name", "honcho.ai_peer", "honcho.pin_peer_name", "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases")
+        "honcho.user_peer_aliases", "honcho.session_peer_prefix", "honcho.session_ai_peer_prefix")
     _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
 
     @staticmethod

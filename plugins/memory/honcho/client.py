@@ -320,6 +320,7 @@ def _behavior_fields(look: _HostLookup, explicitly_configured: bool) -> dict[str
         **_resolve_observation(observation_mode, look.pick("observation")),
         "session_strategy": look.pick("sessionStrategy", "per-directory"),
         "session_peer_prefix": look.pick_set("sessionPeerPrefix", False),
+        "session_ai_peer_prefix": look.pick_set("sessionAiPeerPrefix", False),
     }
 
 
@@ -381,6 +382,9 @@ class HonchoClientConfig:
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
+    # Prefixes every resolved session name with ``{ai_peer}-``. The gateway_session_key branch is
+    # AI-peer-agnostic, so several AI peers sharing one workspace + peerName + chat key would collide.
+    session_ai_peer_prefix: bool = False
     sessions: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
     # A hosts.<host> block or explicit enabled flag, vs auto-enabled from a stray env key.
@@ -472,10 +476,27 @@ class HonchoClientConfig:
         self, cwd: str | None = None, session_title: str | None = None,
         session_id: str | None = None, gateway_session_key: str | None = None,
     ) -> str | None:
-        """Resolve the Honcho session name. Order: gateway session key (per-chat isolation no
-        cwd/strategy gives) -> per-session strategy's session_id (authoritative, so a generated
-        title never remaps a live conversation) -> sessions map override -> /title ->
-        per-repo (git root name) -> per-directory (basename) -> global (workspace)."""
+        """Resolve the Honcho session name; with ``session_ai_peer_prefix`` the result is prefixed
+        ``{ai_peer}-`` on every path, including the AI-peer-agnostic gateway session key."""
+        import re
+
+        result = self._resolve_session_name_base(cwd=cwd, session_title=session_title,
+                                                 session_id=session_id, gateway_session_key=gateway_session_key)
+        if result and self.session_ai_peer_prefix and self.ai_peer:
+            ai = re.sub(r'[^a-zA-Z0-9_-]+', '-', self.ai_peer).strip('-')
+            if ai:
+                prefixed = f"{ai}-{result}"
+                return self._enforce_session_id_limit(prefixed, prefixed)
+        return result
+
+    def _resolve_session_name_base(
+        self, cwd: str | None = None, session_title: str | None = None,
+        session_id: str | None = None, gateway_session_key: str | None = None,
+    ) -> str | None:
+        """Order: gateway session key (per-chat isolation no cwd/strategy gives) -> per-session
+        strategy's session_id (authoritative, so a generated title never remaps a live conversation)
+        -> sessions map override -> /title -> per-repo (git root name) -> per-directory (basename)
+        -> global (workspace)."""
         import re
 
         def _slug(text: str) -> str:

@@ -498,6 +498,19 @@ class TestSetupWizardDeploymentShape:
         assert host["userPeerAliases"] == {"7654321": "eri"}
 
 
+    def test_mapping_step_points_at_peers_map(self, monkeypatch, tmp_path, capsys):
+        answers = [
+            "cloud",           # deployment
+            "",                # api key (keep)
+            "eri",             # peer name
+            "hermetika",       # ai peer
+            "hermes",          # workspace
+            "s",               # tree: skip
+        ]
+        self._run_setup(monkeypatch, tmp_path, answers=answers)
+        out = capsys.readouterr().out
+        assert "hermes honcho peers map" in out
+
     def test_host_pin_user_peer_true_is_detected_as_single(self, monkeypatch, tmp_path):
         """Host-level ``pinUserPeer: true`` must classify as ``single``.
 
@@ -536,6 +549,28 @@ class TestSetupWizardDeploymentShape:
         # Hybrid materialises the root aliases into the host so subsequent
         # operator edits live on the host block they're inspecting.
         assert host["userPeerAliases"] == {"7654321": "eri"}
+
+    def test_fresh_config_defaults_to_single(self, monkeypatch, tmp_path):
+        """No identity key anywhere → the choice prompt defaults to [1].
+
+        A solo operator pressing Enter gets the pinned personal shape
+        instead of silently fragmenting their gateway account away from
+        peerName's history.
+        """
+        answers = ["cloud", "", "eri", "hermetika", "hermes"]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers)
+        assert host["pinUserPeer"] is True
+
+    def test_configured_multi_still_defaults_to_multi(self, monkeypatch, tmp_path):
+        """An explicit pinUserPeer: false config keeps [3] as its default —
+        the fresh-config [1] default must not override a chosen shape."""
+        initial_cfg = {
+            "apiKey": "***",
+            "hosts": {"hermes": {"pinUserPeer": False, "peerName": "eri"}},
+        }
+        answers = ["cloud", "", "eri", "hermetika", "hermes"]
+        host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
+        assert host["pinUserPeer"] is False
 
 
     def test_no_gateway_connected_skips_mapping_when_declined(self, monkeypatch, tmp_path):

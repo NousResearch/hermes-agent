@@ -102,7 +102,15 @@ def mount_spa(application: FastAPI):
     with a missing dist per-request (404 JSON / ``check_dir=False``), so a long-lived
     ``--skip-build`` process recovers the moment a build appears on disk — no restart.
     """
-    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, _SESSION_TOKEN, app
+    # Read ``web_server._SESSION_TOKEN`` per request. ``from web_server import
+    # _SESSION_TOKEN`` snapshots the string at mount time, which is BEFORE
+    # ``start_server`` applies the Desktop SSH spawn token. Desktop then
+    # scrapes ``/`` and adopts the stale .env / import-time token; ``/api/profiles``
+    # 401s against the live token and the app surfaces "SSH connection failed".
+    # Late-bind via the module (not ``web_deps._server``) so this stays off the
+    # PLUGIN-COMPAT pointer list.
+    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, app
+    import hermes_cli.web_server as _web_server
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
@@ -120,7 +128,7 @@ def mount_spa(application: FastAPI):
             if full_path == "" and not gated:
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
-                    f"window.__HERMES_SESSION_TOKEN__={json.dumps(_SESSION_TOKEN)};"
+                    f"window.__HERMES_SESSION_TOKEN__={json.dumps(_web_server._SESSION_TOKEN)};"
                     "window.__HERMES_AUTH_REQUIRED__=false;"
                     f"</script></head><body>{_HEADLESS_MSG}</body></html>",
                     headers=_NO_STORE,
@@ -151,7 +159,7 @@ def mount_spa(application: FastAPI):
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
-        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+        token_js = "" if gated else f"window.__HERMES_SESSION_TOKEN__={json.dumps(_web_server._SESSION_TOKEN)};"
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"

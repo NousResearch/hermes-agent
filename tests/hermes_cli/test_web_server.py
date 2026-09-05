@@ -5110,6 +5110,32 @@ class TestHeadlessServeTokenPage:
         assert _json.loads(match.group(1)) == ws._SESSION_TOKEN
         assert "window.__HERMES_AUTH_REQUIRED__=false" in resp.text
 
+    def test_root_reflects_ssh_token_applied_after_mount(self, monkeypatch):
+        """Desktop SSH applies the spawn token after mount_spa imported.
+
+        ``from web_server import _SESSION_TOKEN`` used to freeze the import-time
+        / .env token into the ``/`` handler. Desktop then scraped that stale
+        value, ``/api/profiles`` 401'd against the live token, and the UI said
+        SSH connection failed.
+        """
+        import json as _json
+        import re
+
+        client, ws = self._headless_client(monkeypatch, gated=False)
+        original = ws._SESSION_TOKEN
+        applied = "ab" * 32
+        try:
+            ws._apply_ssh_session_token(applied)
+            resp = client.get("/")
+            match = re.search(
+                r'window\.__HERMES_SESSION_TOKEN__\s*=\s*("(?:\\.|[^"\\])*")',
+                resp.text,
+            )
+            assert match, resp.text
+            assert _json.loads(match.group(1)) == applied
+        finally:
+            ws._SESSION_TOKEN = original
+
     def test_root_stays_404_json_when_auth_gated(self, monkeypatch):
         client, ws = self._headless_client(monkeypatch, gated=True)
         resp = client.get("/")

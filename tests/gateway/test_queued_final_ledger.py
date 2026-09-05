@@ -302,3 +302,37 @@ async def test_the_queued_lane_receives_the_session_key_and_inbound_id_from_the_
     assert kwargs["inbound_message_id"] == INBOUND_ID
     assert kwargs["event_message_id"] is None
     assert kwargs["text_already_delivered"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_chained_queued_turn_carries_its_own_inbound_id():
+    """A queued follow-up that itself queues another follow-up (recursive _run_agent) must pass the
+    inbound id on, or the chained turn's own queued final would key on None in a forum topic and
+    collide with a sibling. The recursive call carries pending_event's raw message id."""
+    from gateway.run import GatewayRunner
+
+    runner = _runner()
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._run_agent = AsyncMock(return_value={"final_response": "done", "messages": []})
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._is_goal_continuation_event = MagicMock(return_value=False)
+    runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
+    runner._reply_anchor_for_event = MagicMock(return_value=None)   # forum topic: no anchor
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
+    turn_ctx = SimpleNamespace(
+        source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
+        _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
+        context_prompt=None, result_holder=[None])
+    pending_event = SimpleNamespace(
+        source=topic, message_id="6002", channel_prompt=None, message_type=None)
+
+    await GatewayRunner._run_agent_queued_followup(
+        runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
+        response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
+
+    runner._run_agent.assert_awaited_once()
+    assert runner._run_agent.await_args.kwargs["inbound_message_id"] == "6002"
+    assert runner._run_agent.await_args.kwargs["event_message_id"] is None

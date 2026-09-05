@@ -165,7 +165,15 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+  // Lineage matching may focus main when its route still names an older
+  // compression segment. Canonicalize that route to the clicked tip: the
+  // explicit resume request is consumed only once its id matches the route.
+  const mainRouteNamesAnotherSegment =
+    focused === 'main' && $selectedStoredSessionId.get() !== storedSessionId
+
+  if (mainRouteNamesAnotherSegment || focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

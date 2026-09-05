@@ -7,6 +7,7 @@ linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export h
 import json
 import logging
 import os
+import stat
 import time
 from contextlib import suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -92,6 +93,10 @@ def load_env() -> Dict[str, str]:
     env_path = get_hermes_home() / ".env"
     env_vars: Dict[str, str] = {}
     if env_path.exists():
+        # Bootstrap owns secret-provider streams. Readiness must not consume a
+        # FIFO again; missing file values fall back to the active secret scope.
+        if not stat.S_ISREG(env_path.stat().st_mode):
+            return env_vars
         # utf-8-sig: a Notepad BOM would otherwise glue U+FEFF onto the first key.
         with env_path.open(encoding="utf-8-sig", errors="replace") as f:
             for line in map(str.strip, f):

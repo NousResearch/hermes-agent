@@ -2398,6 +2398,11 @@ def load_env() -> Dict[str, str]:
 
     try:
         st = env_path.stat()
+        # Secret-provider mounts may be FIFOs. Bootstrap owns consuming those;
+        # discovery must use the loaded secret scope rather than block on another
+        # reader. Keep this result uncached so a later regular file is noticed.
+        if not stat.S_ISREG(st.st_mode):
+            return {}
         cache_key = (str(env_path), st.st_mtime, st.st_size)
     except FileNotFoundError:
         cache_key = (str(env_path), None, None)

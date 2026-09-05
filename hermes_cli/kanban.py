@@ -940,6 +940,27 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 
 
+def _cmd_reopen(args: argparse.Namespace) -> int:
+    ids, rc = _require_ids(args)
+    if rc:
+        return rc
+    reason = _stripped_or_none(getattr(args, "reason", None))
+    landing = getattr(args, "landing", "ready") or "ready"
+    kind = getattr(args, "kind", None)
+    author = _profile_author() if reason else None
+    suffix = f": {reason}" if reason else ""
+    with kbc.connect_closing() as conn:
+        op = _commented(conn, reason, author, "REOPENED", lambda tid: kb.reopen_task(
+            conn, tid, reason=reason, landing=landing, kind=kind, author=author or "operator",
+        ))
+        def ok_msg(tid):
+            landed = kb.get_task(conn, tid)
+            where = landed.status if landed else landing
+            return f"Reopened {tid} -> {where}{suffix}"
+        return _bulk_apply(ids, op, ok_msg,
+                           lambda tid: f"cannot reopen {tid} (not done? landing={landing}?)")
+
+
 def _cmd_request_review(args: argparse.Namespace) -> int:
     tid = args.task_id
     summary = _stripped_or_none(getattr(args, "summary", None))
@@ -1227,6 +1248,7 @@ _HANDLERS = {
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "reopen": _cmd_reopen,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
@@ -1254,6 +1276,7 @@ Common subcommands:
   `complete <id>…`      Mark task(s) done
   `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active review to its implementer
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
+  `reopen <id> [--landing ready|todo|blocked] [reason]` Undo a completion (verify-gate veto / wrongly closed)
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts

@@ -69,12 +69,18 @@ class StaticBearerTokenVerifier:
             raise ValueError("bearer token must contain only ASCII characters") from exc
         if len(token_bytes) < 32:
             raise ValueError("bearer token must contain at least 32 bytes")
+        if any(byte < 0x20 or byte == 0x7f for byte in token_bytes):
+            raise ValueError("bearer token must not contain control characters")
         self._token = token_bytes
 
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             token_bytes = token.encode("ascii")
         except UnicodeEncodeError:
+            return None
+        if any(byte < 0x20 or byte == 0x7f for byte in token_bytes):
+            # A control character can never be the configured token (already
+            # rejected at construction); fail the comparison cleanly.
             return None
         if not secrets.compare_digest(token_bytes, self._token):
             return None
@@ -116,7 +122,7 @@ class _TransportSecurityEndpoint:
 
 
 class _MCPMethodEndpoint:
-    """Reject non-MCP methods only after bearer authentication runs."""
+    """Reject non-MCP methods outermost, before transport-security and auth checks."""
 
     _ALLOWED_METHODS = frozenset({"GET", "POST", "DELETE"})
 
@@ -132,6 +138,27 @@ class _MCPMethodEndpoint:
             await response(scope, receive, send)
             return
         await self._app(scope, receive, send)
+
+
+class _NoStoreHeaderEndpoint:
+    """Stamp `Cache-Control: no-store` on every bridge response.
+
+    MCP responses carry session-scoped, desktop-derived payloads (screenshots,
+    window state); no intermediary or browser may cache them.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async def _send(message) -> None:
+            if message.get("type") == "http.response.start":
+                headers = list(message.get("headers") or [])
+                headers.append((b"cache-control", b"no-store"))
+                message["headers"] = headers
+            await send(message)
+
+        await self._app(scope, receive, _send)
 
 
 def create_forwarding_server(child_session: ChildClientSession) -> Server:
@@ -164,7 +191,9 @@ def create_host_bridge_app(
     bearer_token: str,
     allowed_hosts: Sequence[str],
     allowed_origins: Sequence[str],
-    session_idle_timeout: float,
+    # The MCP recommendation for interactive sessions is 1800s; long model
+    # turns must not be reaped mid-call.
+    session_idle_timeout: float = 1800,
 ) -> Starlette:
     """Build the authenticated, stateful streamable-HTTP CUA host app.
 
@@ -185,17 +214,22 @@ def create_host_bridge_app(
         allowed_origins=origins,
     )
 
-    protected_endpoint = AuthenticationMiddleware(
-        RequireAuthMiddleware(
-            _MCPMethodEndpoint(
-                _TransportSecurityEndpoint(
-                    _SessionManagerEndpoint(manager_ref),
-                    security_settings,
-                )
+    # Order: method filter → transport security → bearer auth → session manager.
+    # Transport security runs BEFORE auth so a DNS-rebinding probe (wrong Host,
+    # typically no credentials) is classified and logged as a transport violation
+    # (421) rather than surfacing as auth noise (401); a correct-host request with
+    # a bad token is still a clean 401.
+    protected_endpoint = _MCPMethodEndpoint(
+        _TransportSecurityEndpoint(
+            AuthenticationMiddleware(
+                RequireAuthMiddleware(
+                    _NoStoreHeaderEndpoint(_SessionManagerEndpoint(manager_ref)),
+                    required_scopes=[CUA_HOST_SCOPE],
+                ),
+                backend=BearerAuthBackend(verifier),
             ),
-            required_scopes=[CUA_HOST_SCOPE],
-        ),
-        backend=BearerAuthBackend(verifier),
+            security_settings,
+        )
     )
 
     @contextlib.asynccontextmanager

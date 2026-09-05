@@ -71,7 +71,7 @@ _TOPLEVEL_BRIDGE: tuple = (
     ("session_reset", "default_reset_policy", "presence", lambda v: bool(v) and isinstance(v, dict), None),
     ("quick_commands", "quick_commands", "none", _quick_commands_ok, None),
     ("stt", "stt", "presence", lambda v: isinstance(v, dict), None),
-    *_presence("stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user"),
+    *_presence("stt_echo_transcripts", "audio_mode", "group_sessions_per_user", "thread_sessions_per_user"),
     ("multiplex_profiles", "multiplex_profiles", "gwdata", None, None),
     *_presence("multiplex_profile_allowlist", "room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),

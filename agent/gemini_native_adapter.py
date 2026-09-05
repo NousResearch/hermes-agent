@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
+from agent.audio_routing import normalize_audio_mime
 from agent.bounded_response import read_streaming_error_body
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 
@@ -173,7 +174,27 @@ def _coerce_content_to_text(content: Any) -> str:
 
 
 def _inline_data_part(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """``inlineData`` part for an ``image_url`` item carrying a ``data:`` URL; None otherwise."""
+    """Translate locally encoded OpenAI image/audio content to Gemini ``inlineData``.
+
+    Remote URLs are deliberately not fetched here: doing so would introduce an
+    SSRF boundary and they are not valid Gemini Files API identifiers.
+    """
+    if item.get("type") == "input_audio":
+        audio = item.get("input_audio") or {}
+        encoded = audio.get("data")
+        if not isinstance(encoded, str) or not encoded.strip():
+            return None
+        try:
+            data = base64.b64encode(base64.b64decode(encoded, validate=True)).decode("ascii")
+        except (ValueError, TypeError):
+            return None
+        return {
+            "inlineData": {
+                "mimeType": normalize_audio_mime(str(audio.get("format") or "")),
+                "data": data,
+            }
+        }
+
     url = (item.get("image_url") or {}).get("url") or ""
     if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
         return None

@@ -2147,6 +2147,32 @@ Direct OpenAI API requests and custom proxy endpoints are unchanged.
 
 ## Speech-to-Text (STT)
 
+Gateway voice notes can be sent directly to models that declare native audio
+input, preserving information such as tone and prosody. This policy is separate
+from the STT provider configuration:
+
+```yaml
+gateway:
+  audio_mode: auto             # auto (default) | native | stt
+```
+
+- `auto` uses native audio only when the active session model advertises audio input; unknown capability data falls back to STT.
+- `native` prefers inline audio even without catalog metadata.
+- `stt` always transcribes voice notes before the model turn.
+
+The policy applies to voice notes, not regular audio-file attachments. Meta and
+Muse Spark routes remain on STT because those endpoints reject this native
+payload shape. Each inline clip is limited to 25 MiB after Base64 encoding.
+Direct OpenAI and Azure routes accept MP3/WAV; Hermes uses `ffmpeg` to convert
+other recognized voice containers and falls back to STT when conversion is not
+available.
+
+Unreadable, oversized, or unconvertible clips fall back through the configured
+STT path during request construction. Other valid audio and image attachments
+in the same turn remain native. A provider rejection after the request is sent
+is handled by the normal model error path and is not automatically replayed
+through STT.
+
 ```yaml
 stt:
   enabled: true                # Auto-transcribe inbound voice messages (default: true)

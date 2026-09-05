@@ -2050,6 +2050,8 @@ export const ja = defineLocale({
       reveal: 'フォルダで表示',
       copyPath: 'パスをコピー',
       removeFromSidebar: 'サイドバーから削除',
+      hiddenFromSidebar: 'サイドバーから非表示にしました',
+      undoHide: '元に戻す',
       createFailed: 'プロジェクトを作成できませんでした',
       staleBackend:
         'プロジェクトを作成するには Hermes バックエンドを更新してください。バックエンドがこのデスクトップアプリより古いです（設定 → 更新 → バックエンド）。',

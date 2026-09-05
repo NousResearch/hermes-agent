@@ -1750,6 +1750,8 @@ export const ar = defineLocale({
       reveal: 'إظهار في المجلد',
       copyPath: 'نسخ المسار',
       removeFromSidebar: 'إخفاء من الشريط الجانبي',
+      hiddenFromSidebar: 'تم الإخفاء من الشريط الجانبي',
+      undoHide: 'تراجع',
       createFailed: 'تعذّر إنشاء المشروع',
       deleteConfirm: 'هذا يزيل المشروع المحفوظ من Hermes. تبقى الملفات ومستودعات git وأشجار العمل دون تغيير.',
       startWork: 'شجرة عمل جديدة',

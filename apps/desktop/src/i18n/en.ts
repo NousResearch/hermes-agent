@@ -2380,6 +2380,8 @@ export const en: Translations = {
       reveal: 'Reveal in folder',
       copyPath: 'Copy path',
       removeFromSidebar: 'Hide from sidebar',
+      hiddenFromSidebar: 'Hidden from sidebar',
+      undoHide: 'Undo',
       createFailed: 'Could not create project',
       staleBackend:
         'Update the Hermes backend to create projects — your backend is older than this desktop app (Settings → Updates → Backend).',

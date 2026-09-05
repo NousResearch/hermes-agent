@@ -46,3 +46,25 @@ def test_count_active_delegations_is_scoped_to_the_spawning_session():
         assert goals.count_active_delegations("root") == 1
         assert goals.count_active_delegations("other") == 1
         assert goals.count_active_delegations(None) == 0
+
+
+def test_a_delegation_wait_lifts_when_a_batch_returns_not_only_when_the_timer_runs_out(tmp_path, monkeypatch):
+    """Independent-review witness: results arrived with 1,199 s left on a 1,200 s WAIT and nothing
+    re-judged; integration sat unfinished until the timer ran out."""
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes")); (tmp_path / ".hermes").mkdir()
+    goals._DB_CACHE.clear()
+    mgr = goals.GoalManager(session_id="root-wait")
+    mgr.set("integrate the rounds")
+    with patch.object(goals, "count_active_delegations", return_value=4):
+        mgr.wait_for_seconds(1200, reason="4 batches running", on_delegations=4)
+        assert mgr.is_waiting() is True                     # all four still live: parked
+    with patch.object(goals, "count_active_delegations", return_value=3):
+        assert mgr.is_waiting() is False                    # one returned: barrier lifted early
+    assert mgr.state.waiting_until == 0.0 and mgr.state.waiting_on_delegations == 0
+    # a plain timed wait (no delegations) is unaffected by the delegation count
+    mgr.wait_for_seconds(1200, reason="cooldown")
+    with patch.object(goals, "count_active_delegations", return_value=0):
+        assert mgr.is_waiting() is True
+    goals._DB_CACHE.clear()

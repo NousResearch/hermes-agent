@@ -2387,3 +2387,55 @@ class TestCanonicalCostExport:
         # explicit zeros are treated as authoritative by Langfuse and block
         # its own model-based estimation (#43129).
         assert response_cost == {}
+
+
+class TestDefaultEnvironmentFromProfile:
+    """`environment` falls back to the active profile name.
+
+    Without this every profile exports under Langfuse's default environment, so
+    traces from different profiles cannot be told apart or compared in the UI.
+    """
+
+    @staticmethod
+    def _mod():
+        sys.modules.pop("plugins.observability.langfuse", None)
+        import importlib
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_defaults_to_active_profile_name(self, monkeypatch):
+        import hermes_cli.profiles as profiles
+        monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "research")
+        assert self._mod()._default_environment() == "research"
+
+    def test_default_profile_reports_as_default(self, monkeypatch):
+        import hermes_cli.profiles as profiles
+        monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "default")
+        assert self._mod()._default_environment() == "default"
+
+    def test_unrecognized_home_leaves_environment_unset(self, monkeypatch):
+        # "custom" carries no information; leaving it unset preserves the prior
+        # behaviour rather than bucketing traces under a placeholder.
+        import hermes_cli.profiles as profiles
+        monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "custom")
+        assert self._mod()._default_environment() == ""
+
+    def test_fails_open_when_profile_lookup_raises(self, monkeypatch):
+        def boom():
+            raise RuntimeError("profile subsystem unavailable")
+
+        import hermes_cli.profiles as profiles
+        monkeypatch.setattr(profiles, "get_active_profile_name", boom)
+        # Tracing must never break the agent loop, so this returns "" instead.
+        assert self._mod()._default_environment() == ""
+
+    def test_explicit_env_var_takes_precedence(self, monkeypatch):
+        import hermes_cli.profiles as profiles
+        monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "research")
+        monkeypatch.setenv("HERMES_LANGFUSE_ENV", "production")
+        mod = self._mod()
+        resolved = (
+            mod._env("HERMES_LANGFUSE_ENV")
+            or mod._env("LANGFUSE_ENV")
+            or mod._default_environment()
+        )
+        assert resolved == "production"

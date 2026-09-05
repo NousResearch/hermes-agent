@@ -266,6 +266,10 @@ def _build_chat_parser(subparsers) -> argparse.ArgumentParser:
               help="Troubleshooting mode: disable ALL customizations — user config, AGENTS.md/memory injection, plugins, and MCP servers (implies --ignore-user-config and --ignore-rules). Use to isolate whether a problem comes from your setup or from Hermes itself.")
     add("--source", default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.")
+    add("--machine-result", action="store_true", default=False, help=(
+        "After a non-interactive chat turn, emit one machine-readable hermes.result JSON "
+        "event to stderr with the session ID, run-local token usage, and estimated cost. "
+        "Intended for third-party process adapters."))
     inherited(chat_parser, "--tui", action="store_true", default=SUPPRESS,
               help="Launch the modern TUI instead of the classic REPL")
     inherited(chat_parser, "--cli", action="store_true", default=SUPPRESS,

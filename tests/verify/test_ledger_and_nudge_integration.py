@@ -120,6 +120,23 @@ def test_cli_run_uses_hermes_session_id_env(hermes_home, capsys, monkeypatch):
     assert verification_status(session_id="sess-42", cwd=project)["status"] == "passed"
 
 
+def test_cli_verify_clears_stale_on_editing_session(hermes_home, capsys):
+    """Standalone ``hermes verify`` records under default; the editing session
+    must still see a pass (#103271)."""
+    project = _workspace(hermes_home, manifest_recipe={"name": "Fake", "test": ["echo ok"]})
+    changed = str(project / "src" / "app.ts")
+    edit_session = "20260717_230325_f2d00d"
+    mark_workspace_edited(session_id=edit_session, cwd=project, paths=[changed])
+    assert verification_status(session_id=edit_session, cwd=project)["status"] == "unverified"
+    assert build_verify_on_stop_nudge(session_id=edit_session, changed_paths=[changed]) is not None
+
+    assert run_verify_command(make_args(project)) == 0
+
+    assert verification_status(session_id=edit_session, cwd=project)["status"] == "passed"
+    assert verification_status(session_id="default", cwd=project)["status"] == "passed"
+    assert build_verify_on_stop_nudge(session_id=edit_session, changed_paths=[changed]) is None
+
+
 # ---------------------------------------------------------------------------
 # closed loop: edit -> stop guard nudge -> hermes verify -> guard satisfied
 # ---------------------------------------------------------------------------

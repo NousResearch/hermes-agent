@@ -10,6 +10,7 @@ from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
+    record_verify_run,
     verification_status,
 )
 
@@ -289,6 +290,34 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
 
 
 
+
+
+def test_workspace_verify_clears_stale_on_other_session(tmp_path, monkeypatch):
+    """A hermes verify pass is a property of the workspace, not the session
+    that ran the CLI (#103271)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    changed = str(tmp_path / "changed.py")
+    mark_workspace_edited(session_id="s-edit", cwd=tmp_path, paths=[changed])
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] == "unverified"
+
+    event = record_verify_run(root=tmp_path, session_id="default", ok=True, output="all green")
+    assert event is not None
+    status = verification_status(session_id="s-edit", cwd=tmp_path)
+    assert status["status"] == "passed"
+    assert status["evidence"]["canonical_command"] == "hermes verify"
+
+
+def test_older_workspace_verify_does_not_clear_later_edit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _python_project(tmp_path)
+    record_verify_run(root=tmp_path, session_id="default", ok=True, output="old pass")
+    mark_workspace_edited(
+        session_id="s-edit",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "changed.py")],
+    )
+    assert verification_status(session_id="s-edit", cwd=tmp_path)["status"] == "unverified"
 
 
 def test_recording_expires_old_edit_only_state(tmp_path, monkeypatch):

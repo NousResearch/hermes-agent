@@ -631,7 +631,11 @@ class TestMatrixRenderingPayloads:
 
 
     @pytest.mark.asyncio
-    async def test_thread_payload_uses_m_thread_with_reply_fallback(self):
+    async def test_thread_payload_replies_to_latest_thread_event(self):
+        self.mock_client.api.request = AsyncMock(
+            return_value={"chunk": [{"event_id": "$latest"}]}
+        )
+
         result = await self.adapter.send(
             "!room:example.org",
             "threaded",
@@ -644,9 +648,22 @@ class TestMatrixRenderingPayloads:
             "rel_type": "m.thread",
             "event_id": "$root",
             "is_falling_back": True,
-            "m.in_reply_to": {"event_id": "$root"},
+            "m.in_reply_to": {"event_id": "$latest"},
         }
+        self.mock_client.api.request.assert_awaited_once()
 
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reply_to,lookup_fails,expected", [
+        (None, True, "$root"), ("$explicit", False, "$explicit")
+    ])
+    async def test_thread_fallback_respects_explicit_target_and_lookup_failure(self, reply_to, lookup_fails, expected):
+        self.mock_client.api.request = AsyncMock(side_effect=RuntimeError("offline") if lookup_fails else None)
+        result = await self.adapter.send("!room:example.org", "threaded", reply_to=reply_to, metadata={"thread_id": "$root"})
+        assert result.success is True
+        assert self._sent_contents()[0]["m.relates_to"]["m.in_reply_to"] == {"event_id": expected}
+        if reply_to:
+            self.mock_client.api.request.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_long_response_split_preserves_thread_context(self):
@@ -664,10 +681,13 @@ class TestMatrixRenderingPayloads:
         assert result.success is True
         contents = self._sent_contents()
         assert len(contents) > 1
-        for content in contents:
+        for index, content in enumerate(contents):
             assert content["m.relates_to"]["rel_type"] == "m.thread"
             assert content["m.relates_to"]["event_id"] == "$root"
-            assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+            expected_reply = "$root" if index == 0 else "$evt"
+            assert content["m.relates_to"]["m.in_reply_to"] == {
+                "event_id": expected_reply
+            }
             assert content["body"].count("```") % 2 == 0
 
 
@@ -1457,6 +1477,9 @@ class TestMatrixUploadAndSend:
     async def test_media_preserves_caption_and_thread(self):
         adapter = _make_adapter()
         mock_client = MagicMock()
+        mock_client.api.request = AsyncMock(
+            return_value={"chunk": [{"event_id": "$latest"}]}
+        )
         mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
@@ -1476,7 +1499,7 @@ class TestMatrixUploadAndSend:
         assert sent["body"] == "Chart caption"
         assert sent["m.relates_to"]["rel_type"] == "m.thread"
         assert sent["m.relates_to"]["event_id"] == "$root"
-        assert sent["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+        assert sent["m.relates_to"]["m.in_reply_to"] == {"event_id": "$latest"}
 
 
 class TestMatrixDiagnostics:

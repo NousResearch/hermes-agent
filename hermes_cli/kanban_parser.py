@@ -282,6 +282,11 @@ _SPECS = [
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
     ], help="Mark one or more tasks done"),
+    _cmd("reconcile", [
+        _TASK_ID,
+        _arg("--reason", required=True,
+             help="Required audit reason explaining why no worker completion is needed"),
+    ], help="Administratively reconcile an already-resolved triage task to done"),
     _cmd("edit", [
         _TASK_ID,
         _arg("--result", required=True, help="Backfilled task result text for a done task"),

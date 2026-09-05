@@ -3429,6 +3429,90 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+def reconcile_triage_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: str,
+    operator: str,
+) -> str:
+    """Administratively reconcile a resolved ``triage`` task to ``done``.
+
+    No worker run is ended or synthesized, and task provenance/history fields
+    remain intact. Once the audit event exists, retries do not duplicate it.
+    """
+    reason = reason.strip()
+    operator = operator.strip()
+    if not reason:
+        raise ValueError("reconciliation reason is required")
+    if not operator:
+        raise ValueError("reconciliation operator is required")
+
+    now = int(time.time())
+    with write_txn(conn):
+        task = conn.execute(
+            "SELECT status, current_run_id, claim_lock, claim_expires, worker_pid "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task is None:
+            raise ValueError(f"task {task_id} does not exist")
+        if task["status"] == "done":
+            prior = conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND kind = 'administratively_reconciled' LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            if prior is not None:
+                return "already_reconciled"
+        if task["status"] != "triage":
+            raise ValueError(
+                f"cannot reconcile task {task_id} from {task['status']}; "
+                "only triage tasks are supported"
+            )
+
+        active_run = conn.execute(
+            "SELECT 1 FROM task_runs "
+            "WHERE task_id = ? AND (status = 'running' OR ended_at IS NULL) LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if (
+            task["current_run_id"] is not None
+            or task["claim_lock"] is not None
+            or task["claim_expires"] is not None
+            or task["worker_pid"] is not None
+            or active_run is not None
+        ):
+            raise ValueError(
+                f"cannot reconcile task {task_id} while it has an active worker or run"
+            )
+        if not _parents_satisfied(conn, task_id):
+            raise ValueError(
+                f"cannot reconcile task {task_id}: parent dependencies are not terminal"
+            )
+
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'done', completed_at = ? "
+            "WHERE id = ? AND status = 'triage'",
+            (now, task_id),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(f"task {task_id} changed while reconciliation was in progress")
+        _append_event(
+            conn,
+            task_id,
+            "administratively_reconciled",
+            {
+                "operator": operator,
+                "reason": reason,
+                "from_status": "triage",
+                "to_status": "done",
+            },
+        )
+    recompute_ready(conn)
+    return "reconciled"
+
+
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,

@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_RECONCILE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,27 @@ def _require_orchestrator_tool(tool_name: str) -> None:
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
             "kanban_complete, kanban_block, kanban_heartbeat, or kanban_comment for their "
             "assigned task.")
+
+
+def _operator_identity() -> str:
+    """Return the trusted active profile name for administrative audit events."""
+    try:
+        from gateway.session_context import get_session_env
+
+        session_profile = get_session_env("HERMES_SESSION_PROFILE", "")
+        if session_profile and session_profile.strip():
+            return session_profile.strip()
+    except Exception:
+        pass
+    profile = os.environ.get("HERMES_PROFILE")
+    if profile and profile.strip():
+        return profile.strip()
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "operator"
+    except Exception:
+        return "operator"
 
 
 @contextmanager
@@ -932,6 +953,31 @@ def _handle_unblock(args: dict, **kw) -> str:
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 
+@_kanban_handler("kanban_reconcile")
+def _handle_reconcile(args: dict, **kw) -> str:
+    """Administratively reconcile an already-resolved triage task."""
+    _reject_delegated_child_mutation("kanban_reconcile")
+    _require_orchestrator_tool("kanban_reconcile")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    reason = args.get("reason")
+    _check(reason and str(reason).strip(), "reason is required for the administrative audit event")
+    reason = redact_sensitive_text(str(reason), force=True)
+    with _board(args.get("board")) as (kb, conn):
+        outcome = kb.reconcile_triage_task(
+            conn,
+            str(tid),
+            reason=reason,
+            operator=_operator_identity(),
+        )
+        task = kb.get_task(conn, str(tid))
+        return _ok(
+            task_id=str(tid),
+            status=task.status if task else None,
+            outcome=outcome,
+        )
+
+
 @_kanban_handler("kanban_link")
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact (cycles/self-links → ValueError)."""
@@ -946,8 +992,8 @@ def _handle_link(args: dict, **kw) -> str:
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# Board-routing tools are hidden from task workers.
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_reconcile"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -962,6 +1008,7 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
+    ("kanban_reconcile", KANBAN_RECONCILE_SCHEMA, _handle_reconcile, "✓"),
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:

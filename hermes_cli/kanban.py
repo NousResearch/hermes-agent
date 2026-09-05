@@ -212,7 +212,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
+    "claim", "comment", "attach", "attach-rm", "complete", "reconcile", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "gc",
@@ -875,6 +875,22 @@ def _cmd_complete(args: argparse.Namespace) -> int:
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 
 
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Operator-only terminal transition for resolved triage tasks."""
+    with kbc.connect_closing() as conn:
+        outcome = kb.reconcile_triage_task(
+            conn,
+            args.task_id,
+            reason=args.reason,
+            operator=_profile_author(),
+        )
+    if outcome == "already_reconciled":
+        print(f"Already reconciled {args.task_id}")
+    else:
+        print(f"Reconciled {args.task_id}")
+    return 0
+
+
 def _cmd_edit(args: argparse.Namespace) -> int:
     metadata, rc = _parse_metadata_flag(getattr(args, "metadata", None))
     if rc:
@@ -1225,7 +1241,7 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
-    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "complete": _cmd_complete, "reconcile": _cmd_reconcile, "edit": _cmd_edit, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,

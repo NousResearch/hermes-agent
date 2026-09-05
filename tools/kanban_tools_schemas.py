@@ -496,6 +496,24 @@ KANBAN_UNBLOCK_SCHEMA = _schema(
     ["task_id"],
 )
 
+KANBAN_RECONCILE_SCHEMA = _schema(
+    "kanban_reconcile",
+    (
+        "Administratively reconcile an already-resolved triage task to done "
+        "without dispatching a worker or recording worker completion. Requires "
+        "an audit reason and refuses active runs or open parent dependencies. "
+        "Orchestrator-only — dispatcher-spawned task workers never see this tool."
+    ),
+    {
+        "task_id": _prop("string", "Triage task id to reconcile to done."),
+        "reason": _prop(
+            "string",
+            "Required audit reason explaining why the task is already resolved.",
+        ),
+    },
+    ["task_id", "reason"],
+)
+
 KANBAN_LINK_SCHEMA = _schema(
     "kanban_link",
     (

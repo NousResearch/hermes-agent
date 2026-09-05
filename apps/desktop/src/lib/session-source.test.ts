@@ -33,3 +33,14 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource(undefined)).toBe(false)
   })
 })
+
+describe('voice agent messaging source registration', () => {
+  it('gives voice-originated sessions their own sidebar section', () => {
+    expect(isMessagingSource('voice_agent')).toBe(true)
+    expect(MESSAGING_SESSION_SOURCE_IDS).toContain('voice_agent')
+  })
+
+  it('exposes a human-readable label for search', () => {
+    expect(sessionSourceSearchTerms('voice_agent')).toContain('Voice Agent')
+  })
+})

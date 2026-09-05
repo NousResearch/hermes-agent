@@ -1,0 +1,67 @@
+name: Build custom Hermes Desktop for macOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/voice-agent-desktop-channel]
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    runs-on: macos-14
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: npm
+      - run: npm ci
+      - name: Verify desktop source classification
+        working-directory: apps/desktop
+        run: npx vitest run --project ui src/lib/session-source.test.ts
+      - name: Typecheck desktop
+        working-directory: apps/desktop
+        run: npm run typecheck
+      - name: Build unpacked macOS app
+        working-directory: apps/desktop
+        # Keep the staged native modules on the real filesystem. node-pty's
+        # runtime loader uses relative require() paths that don't reliably
+        # cross Electron's app.asar → app.asar.unpacked boundary.
+        run: npm run dist:mac:zip -- --${{ matrix.arch }} -c.asar=false
+      - name: Verify native PTY payload, ad-hoc sign, and repackage
+        working-directory: apps/desktop
+        shell: bash
+        run: |
+          APP_DIR="$(find release -maxdepth 2 -type d -name Hermes.app -print -quit)"
+          test -n "$APP_DIR"
+          PTY="$APP_DIR/Contents/Resources/app/dist/node_modules/node-pty/prebuilds/darwin-${{ matrix.arch }}/pty.node"
+          test -f "$PTY"
+          file "$PTY"
+          lipo -archs "$PTY" | grep -F "${{ matrix.arch }}"
+          codesign --force --deep --sign - "$APP_DIR"
+          codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+          "$APP_DIR/Contents/MacOS/Hermes" --disable-gpu > /tmp/hermes-smoke.log 2>&1 &
+          APP_PID=$!
+          sleep 15
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            cat /tmp/hermes-smoke.log
+            exit 1
+          fi
+          kill -9 "$APP_PID" || true
+          wait "$APP_PID" || true
+          rm -f release/*.zip
+          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "release/Hermes-Voice-Agent-0.17.0-mac-${{ matrix.arch }}-adhoc.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-Voice-Agent-mac-${{ matrix.arch }}
+          path: apps/desktop/release/*.zip
+          if-no-files-found: error
+          retention-days: 14

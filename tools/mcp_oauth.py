@@ -939,28 +939,36 @@ def _maybe_preregister_client(storage: "HermesTokenStorage", cfg: dict, client_m
 
 def humanize_oauth_registration_error(
     server_name: str, exc: BaseException | str, *, server_url: str | None = None) -> str | None:
-    """Turn a DCR 403/Forbidden into a useful next step; None for anything else so the caller keeps the
-    original text. Figma gates DCR on exact ``client_name`` (auto-set to ``Claude Code``), so this fires
-    when the user overrode it or an older Hermes is running."""
+    """Turn a DCR 403/Forbidden, or a rejected loopback redirect_uri, into a useful next step; None for
+    anything else so the caller keeps the original text. Figma gates DCR on exact ``client_name``
+    (auto-set to ``Claude Code``), so this fires when the user overrode it or an older Hermes is running."""
     msg = str(exc)
     lowered = msg.lower()
     looks_like_registration = ("403" in msg or "forbidden" in lowered) and (
         any(k in lowered for k in ("regist", "dcr", "dynamic client"))
         or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}
         or ("403" in msg and "forbidden" in lowered))
-    if not looks_like_registration:
-        return None
-    if _is_figma_remote_mcp(server_name, server_url):
+    if looks_like_registration:
+        if _is_figma_remote_mcp(server_name, server_url):
+            return (
+                f"'{server_name}' is Figma's remote MCP — DCR is allowlisted by exact client_name "
+                f"(\"{_FIGMA_DCR_CLIENT_NAME}\" and \"Codex\" work; most other names 403). Hermes defaults to "
+                f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you set oauth.client_name yourself, "
+                f"change it to one of those, or clear it and re-run:\n  hermes mcp login {server_name}")
         return (
-            f"'{server_name}' is Figma's remote MCP — DCR is allowlisted by exact client_name "
-            f"(\"{_FIGMA_DCR_CLIENT_NAME}\" and \"Codex\" work; most other names 403). Hermes defaults to "
-            f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you set oauth.client_name yourself, "
-            f"change it to one of those, or clear it and re-run:\n  hermes mcp login {server_name}")
-    return (
-        f"'{server_name}' only allows pre-approved OAuth clients — it rejected client registration (403), so no "
-        "browser flow can start. Options: set oauth.client_name to a name the provider allowlists, add a "
-        "pre-registered client (oauth: {client_id: ..., client_secret: ...}), or use the provider's stdio / "
-        "API-key / local server instead.")
+            f"'{server_name}' only allows pre-approved OAuth clients — it rejected client registration (403), so no "
+            "browser flow can start. Options: set oauth.client_name to a name the provider allowlists, add a "
+            "pre-registered client (oauth: {client_id: ..., client_secret: ...}), or use the provider's stdio / "
+            "API-key / local server instead.")
+    # Some providers (e.g. Gamma) reject loopback redirect_uris outright during DCR — they only
+    # accept a public HTTPS callback pre-allowlisted out of band, so no port/host tweak helps.
+    if "redirect_uri" in lowered and "not allowed" in lowered:
+        return (
+            f"'{server_name}' rejected the loopback redirect_uri during registration (\"{msg}\") — this "
+            "provider requires a public HTTPS callback that it allowlists out of band, not a localhost/"
+            "127.0.0.1 URI. Set oauth.redirect_uri to an allowlisted public HTTPS URL that proxies back to "
+            f"Hermes (oauth.redirect_port pins the local port it targets), then re-run:\n  hermes mcp login {server_name}")
+    return None
 
 
 def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | None = None) -> "OAuthClientProvider | None":

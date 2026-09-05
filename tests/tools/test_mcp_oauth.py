@@ -1123,3 +1123,16 @@ def test_humanize_non_registration_403_passthrough():
         )
         is None
     )
+
+
+def test_humanize_rejected_loopback_redirect_uri_suggests_oauth_redirect_uri():
+    from tools.mcp_oauth import humanize_oauth_registration_error
+
+    msg = humanize_oauth_registration_error(
+        "gamma",
+        RuntimeError("400 Bad Request: redirect_uri not allowed: http://127.0.0.1:27892/callback"),
+        server_url="https://mcp.gamma.app/mcp",
+    )
+    assert msg is not None
+    assert "oauth.redirect_uri" in msg
+    assert "hermes mcp login gamma" in msg

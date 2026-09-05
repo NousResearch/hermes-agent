@@ -32,9 +32,11 @@ import { useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { ChatVoiceControl } from "@/components/ChatVoiceControl";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import { speakAssistantFinal } from "@/lib/assistant-voice-output";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
@@ -67,6 +69,7 @@ import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
 } from "@/lib/pty-keyboard-shortcuts";
+import { submitVoiceTranscriptToPty } from "@/lib/pty-voice-submit";
 import {
   isViewportPinnedToBottom,
   parseResumeControlMessage,
@@ -181,6 +184,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const voiceTurnRef = useRef(false);
+  const voicePlaybackRef = useRef<{ cancel(): void } | null>(null);
+  const pendingVoiceReturnRef = useRef<(() => void) | null>(null);
   const stickToBottomRef = useRef(true);
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
@@ -506,6 +512,39 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     copyResetRef.current = setTimeout(() => setCopyState("idle"), 1500);
     termRef.current?.focus();
   };
+
+  const submitVoiceTranscript = useCallback((transcript: string) => {
+    if (!submitVoiceTranscriptToPty(
+      () => wsRef.current,
+      transcript,
+      (ready) => {
+        pendingVoiceReturnRef.current = ready;
+      },
+      () => setBanner("Chat disconnected before the voice transcript could be submitted."),
+    )) {
+      setBanner("Chat disconnected before the voice transcript could be sent.");
+      return;
+    }
+    voiceTurnRef.current = true;
+    termRef.current?.focus();
+  }, []);
+
+  const cancelVoicePlayback = useCallback(() => {
+    voicePlaybackRef.current?.cancel();
+    voicePlaybackRef.current = null;
+  }, []);
+
+  const speakVoiceResponse = useCallback((text: string) => {
+    if (!voiceTurnRef.current || !("speechSynthesis" in window)) return;
+    voiceTurnRef.current = false;
+    cancelVoicePlayback();
+    const playback = speakAssistantFinal(window.speechSynthesis, text, () => {
+      if (voicePlaybackRef.current === playback) voicePlaybackRef.current = null;
+    });
+    if (playback) voicePlaybackRef.current = playback;
+  }, [cancelVoicePlayback]);
+
+  useEffect(() => cancelVoicePlayback, [cancelVoicePlayback]);
 
   useEffect(() => {
     // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
@@ -1314,17 +1353,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // bottom as each chunk COMMITS (xterm write callback) instead of
       // guessing with a fixed delay, and release the pin the moment the user
       // scrolls up to read the backlog (#59591).
-      const followScroll = shouldFollowPtyOutput(
+      const shouldFollowScroll = shouldFollowPtyOutput(
         effectiveResume,
         stickToBottomRef.current,
-      )
-        ? () => termRef.current?.scrollToBottom()
-        : undefined;
-      term.write(rendered, followScroll);
+      );
+      const submitReturn = pendingVoiceReturnRef.current;
+      term.write(rendered, () => {
+        if (shouldFollowScroll) termRef.current?.scrollToBottom();
+        if (submitReturn && pendingVoiceReturnRef.current === submitReturn) {
+          pendingVoiceReturnRef.current = null;
+          submitReturn();
+        }
+      });
       noteResumePtyChunk(rendered);
     };
 
     ws.onclose = (ev) => {
+      const failPendingVoiceReturn = pendingVoiceReturnRef.current;
+      pendingVoiceReturnRef.current = null;
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
@@ -1349,6 +1395,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const why = ev.reason ? ` reason=${ev.reason}` : "";
       console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
       setLastCloseCode(ev.code);
+      if (failPendingVoiceReturn) {
+        if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
+          scheduleReconnect(ev.code);
+        } else {
+          setPtyState("closed");
+        }
+        failPendingVoiceReturn();
+        return;
+      }
       if (ev.code === 4401) {
         if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
           return;
@@ -1800,6 +1855,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onAssistantFinal={speakVoiceResponse}
               />
             </div>
             <ChatSessionList
@@ -1837,6 +1893,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          <ChatVoiceControl
+            connected={ptyState === "open"}
+            submit={submitVoiceTranscript}
+            onBargeIn={cancelVoicePlayback}
+          />
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
@@ -1972,6 +2033,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
+                onAssistantFinal={speakVoiceResponse}
               />
             </div>
 

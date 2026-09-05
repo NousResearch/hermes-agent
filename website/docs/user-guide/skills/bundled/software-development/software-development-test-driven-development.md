@@ -15,7 +15,7 @@ TDD: enforce RED-GREEN-REFACTOR, tests before code.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\test-driven-development` |
+| Path | `skills/software-development/test-driven-development` |
 | Version | `1.1.0` |
 | Author | Hermes Agent (adapted from obra/superpowers) |
 | License | MIT |

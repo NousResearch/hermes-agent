@@ -116,6 +116,14 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
         found = next((directory / n for n in (".hermes.md", "HERMES.md") if (directory / n).is_file()), None)
         if found or directory == stop_at:
             return found
+
+    # HERMES_HOME fallback — the gateway maps a placeholder terminal.cwd
+    # to Path.home() (above HERMES_HOME), so the walk misses
+    # ~/.hermes/.hermes.md. Same anchor as load_soul_md.
+    for name in (".hermes.md", "HERMES.md"):
+        candidate = get_hermes_home() / name
+        if candidate.is_file():
+            return candidate
     return None
 
 

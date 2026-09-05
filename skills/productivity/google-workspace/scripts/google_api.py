@@ -27,6 +27,9 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -41,6 +44,7 @@ from _hermes_home import get_hermes_home
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
+MATON_GMAIL_BASE_URL = "https://gateway.maton.ai/google-mail/gmail/v1"
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -52,6 +56,19 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
 ]
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """Keep bearer credentials bound to the configured Maton origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _maton_urlopen(request, *, timeout):
+    return urllib.request.build_opener(_RejectRedirects()).open(
+        request, timeout=timeout,
+    )
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -90,6 +107,57 @@ def _gws_env() -> dict[str, str]:
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
     return env
+
+
+def _maton_api_key() -> str | None:
+    return os.getenv("MATON_API_KEY") or None
+
+
+def _run_maton_gmail(
+    path: str,
+    *,
+    method: str = "GET",
+    params: dict | None = None,
+    body: dict | None = None,
+):
+    """Call Gmail through Maton without requiring local Google OAuth."""
+    api_key = _maton_api_key()
+    if not api_key:
+        raise RuntimeError("MATON_API_KEY is not set")
+
+    url = f"{MATON_GMAIL_BASE_URL}/{path.lstrip('/')}"
+    if params:
+        query = urllib.parse.urlencode(params, doseq=True)
+        url = f"{url}?{query}"
+
+    data = None
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+    }
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with _maton_urlopen(request, timeout=30) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        print(f"Maton Gmail request failed ({exc.code}): {detail}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as exc:
+        print(f"Maton Gmail request failed: {exc.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    if not payload:
+        return {}
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        print("ERROR: Unexpected non-JSON output from Maton Gmail gateway", file=sys.stderr)
+        sys.exit(1)
 
 
 def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None = None):
@@ -212,6 +280,37 @@ def build_service(api, version):
 
 
 def gmail_search(args):
+    if _maton_api_key():
+        results = _run_maton_gmail(
+            "users/me/messages",
+            params={"q": args.query, "maxResults": args.max},
+        )
+        messages = results.get("messages", [])
+        output = []
+        for msg_meta in messages:
+            msg = _run_maton_gmail(
+                f"users/me/messages/{urllib.parse.quote(msg_meta['id'], safe='')}",
+                params={
+                    "format": "metadata",
+                    "metadataHeaders": ["From", "To", "Subject", "Date"],
+                },
+            )
+            headers = _headers_dict(msg)
+            output.append(
+                {
+                    "id": msg["id"],
+                    "threadId": msg["threadId"],
+                    "from": headers.get("from", ""),
+                    "to": headers.get("to", ""),
+                    "subject": headers.get("subject", ""),
+                    "date": headers.get("date", ""),
+                    "snippet": msg.get("snippet", ""),
+                    "labels": msg.get("labelIds", []),
+                }
+            )
+        print(json.dumps(output, indent=2, ensure_ascii=False))
+        return
+
     if _gws_binary():
         results = _run_gws(
             ["gmail", "users", "messages", "list"],
@@ -276,6 +375,25 @@ def gmail_search(args):
 
 
 def gmail_get(args):
+    if _maton_api_key():
+        msg = _run_maton_gmail(
+            f"users/me/messages/{urllib.parse.quote(args.message_id, safe='')}",
+            params={"format": "full"},
+        )
+        headers = _headers_dict(msg)
+        print(json.dumps({
+            "id": msg["id"],
+            "threadId": msg["threadId"],
+            "from": headers.get("from", ""),
+            "to": headers.get("to", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
+            "snippet": msg.get("snippet", ""),
+            "body": _extract_message_body(msg),
+            "labels": msg.get("labelIds", []),
+        }, indent=2, ensure_ascii=False))
+        return
+
     if _gws_binary():
         msg = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -316,6 +434,13 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    if _maton_api_key():
+        print(
+            "Sending Gmail through Maton is disabled; customer-facing sends require an approved gated workflow.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if _gws_binary():
         message = MIMEText(args.body, "html" if args.html else "plain")
         message["To"] = args.to
@@ -359,6 +484,13 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    if _maton_api_key():
+        print(
+            "Replying through Maton is disabled; customer-facing sends require an approved gated workflow.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -422,6 +554,19 @@ def gmail_reply(args):
 
 
 def gmail_labels(args):
+    if _maton_api_key():
+        results = _run_maton_gmail("users/me/labels")
+        labels = [
+            {
+                "id": label["id"],
+                "name": label["name"],
+                "type": label.get("type", ""),
+            }
+            for label in results.get("labels", [])
+        ]
+        print(json.dumps(labels, indent=2))
+        return
+
     if _gws_binary():
         results = _run_gws(["gmail", "users", "labels", "list"], params={"userId": "me"})
         labels = [{"id": l["id"], "name": l["name"], "type": l.get("type", "")} for l in results.get("labels", [])]
@@ -442,6 +587,15 @@ def gmail_modify(args):
     if args.remove_labels:
         body["removeLabelIds"] = args.remove_labels.split(",")
 
+    if _maton_api_key():
+        result = _run_maton_gmail(
+            f"users/me/messages/{urllib.parse.quote(args.message_id, safe='')}/modify",
+            method="POST",
+            body=body,
+        )
+        print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
+        return
+
     if _gws_binary():
         result = _run_gws(
             ["gmail", "users", "messages", "modify"],
@@ -452,9 +606,37 @@ def gmail_modify(args):
         return
 
     service = build_service("gmail", "v1")
-    result = service.users().messages().modify(userId="me", id=args.message_id, body=body).execute()
+    result = service.users().messages().modify(
+        userId="me", id=args.message_id, body=body,
+    ).execute()
     print(json.dumps({"id": result["id"], "labels": result.get("labelIds", [])}, indent=2))
 
+
+def gmail_probe(args):
+    """Run one idempotent, read-only Gmail request against the active auth path."""
+    if _maton_api_key():
+        result = _run_maton_gmail("users/me/messages", params={"maxResults": 1})
+        print(json.dumps({
+            "status": "ok",
+            "auth": "maton",
+            "messageCount": len(result.get("messages", [])),
+        }, indent=2))
+        return
+
+    if _gws_binary():
+        result = _run_gws(
+            ["gmail", "users", "messages", "list"],
+            params={"userId": "me", "maxResults": 1},
+        )
+    else:
+        result = build_service("gmail", "v1").users().messages().list(
+            userId="me", maxResults=1,
+        ).execute()
+    print(json.dumps({
+        "status": "ok",
+        "auth": "local_oauth",
+        "messageCount": len(result.get("messages", [])),
+    }, indent=2))
 
 # =========================================================================
 # Calendar
@@ -1092,6 +1274,9 @@ def main():
     p.add_argument("--add-labels", default="", help="Comma-separated label IDs to add")
     p.add_argument("--remove-labels", default="", help="Comma-separated label IDs to remove")
     p.set_defaults(func=gmail_modify)
+
+    p = gmail_sub.add_parser("probe", help="Run a read-only users.messages.list probe")
+    p.set_defaults(func=gmail_probe)
 
     # --- Calendar ---
     cal = sub.add_parser("calendar")

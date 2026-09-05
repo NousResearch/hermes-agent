@@ -242,7 +242,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Standalone CUA host bridge")
     parser.add_argument("--port", type=int, required=True, help="Port to listen on")
     parser.add_argument("--bind", default="127.0.0.1", help="Bind address (default 127.0.0.1)")
-    parser.add_argument("--allowed-hosts", required=True, help="Comma-separated allowed Host headers")
+    parser.add_argument("--allowed-hosts", required=True,
+                        help="Comma-separated allowed Host headers (include the port, e.g. host:8765 — "
+                             "the Host header carries it and comparison is exact)")
     parser.add_argument("--allowed-origins", required=True, help="Comma-separated allowed Origin headers")
     # MCP recommendation for interactive sessions: long model turns must not be
     # reaped mid-call. Matches create_host_bridge_app's default.

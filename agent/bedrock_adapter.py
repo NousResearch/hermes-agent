@@ -467,6 +467,44 @@ def _image_block_from_data_url(url: str) -> Dict:
     return {"image": {"format": media_type.split("/")[-1] if "/" in media_type else "jpeg", "source": {"bytes": raw_bytes}}}
 
 
+def _is_openai_content_part(part) -> bool:
+    """Whether *part* is an OpenAI-style content part rather than plain data.
+
+    ``_convert_content_to_converse`` understands ``text`` and ``image_url`` parts and
+    silently skips anything else, so a list that is ordinary tool output rather than
+    message content (``[{"file": "a.py"}, ...]``, ``[1, 2, 3]``) converts to nothing and
+    the tool's whole result becomes the ``(empty)`` placeholder. Such lists must stay on
+    the ``json.dumps`` path that preserves them."""
+    if isinstance(part, str):
+        return True
+    return isinstance(part, dict) and part.get("type") in {"text", "image_url"}
+
+
+def _tool_result_blocks(content) -> List[Dict]:
+    """Tool-result content → Converse ``toolResult.content`` blocks.
+
+    Multimodal tool results (computer-use screenshots, image tools, vision results) carry
+    image parts, and Converse accepts image blocks here. Flattening them through
+    ``json.dumps`` hides the image from the model AND inlines the raw base64 as text,
+    pushing the request toward the size limit."""
+    # Dict first: vision_analyze's native fast path returns the envelope
+    # {"_multimodal": True, "content": [...], "text_summary": ...} rather than a bare
+    # list, and it is the most common producer of image-bearing tool results. Matching
+    # only on list would leave it on the json.dumps path with the base64 still inline.
+    # anthropic_adapter._collect_multimodal_blocks orders its checks the same way.
+    if isinstance(content, dict) and content.get("_multimodal"):
+        blocks = _convert_content_to_converse(content.get("content") or [])
+        # _convert_content_to_converse never returns an empty list; it substitutes the
+        # non-whitespace placeholder Converse demands. So "nothing converted" has to be
+        # recognised by that value, not by emptiness. Prefer the envelope's own summary.
+        if blocks == [dict(_PLACEHOLDER_BLOCK)] and content.get("text_summary"):
+            return [{"text": _safe_text(str(content["text_summary"]))}]
+        return blocks
+    if isinstance(content, list) and content and all(_is_openai_content_part(p) for p in content):
+        return _convert_content_to_converse(content)
+    return [{"text": _safe_text(content if isinstance(content, str) else json.dumps(content))}]
+
+
 def _convert_content_to_converse(content) -> List[Dict]:
     """OpenAI content → Converse blocks; blank text → placeholder, remote image URLs → text reference."""
     if not isinstance(content, list):
@@ -579,9 +617,8 @@ def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Di
         if role == "system":
             system_blocks.extend(_system_blocks(content))
         elif role == "tool":
-            result_content = content if isinstance(content, str) else json.dumps(content)
             append_turn("user", [{"toolResult": {
-                "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
+                "toolUseId": msg.get("tool_call_id", ""), "content": _tool_result_blocks(content)}}])
         elif role == "assistant":
             append_turn("assistant", _assistant_blocks(msg, content) or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":

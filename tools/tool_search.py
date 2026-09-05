@@ -462,12 +462,88 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
+def _infer_flat_tool_call_target(flat_args: Dict[str, Any]) -> Optional[str]:
+    """Infer the intended direct tool when a model omits 'name' and flattens
+    arguments to the top level (e.g. Qwen2.5 via Ollama sends
+    {"query": "..."} as the tool_call payload instead of
+    {"name": "web_search", "arguments": {"query": "..."}}). Returns a tool
+    name if the flat args uniquely match a registered tool's required
+    parameters, else None. Cheap heuristic — only runs on the error path."""
+    if not isinstance(flat_args, dict) or not flat_args:
+        return None
+    # Ignore bridge-level keys if somehow present
+    candidate_keys = {k for k in flat_args.keys() if k not in ("name", "arguments")}
+    if not candidate_keys:
+        return None
+    try:
+        from tools.registry import registry as _reg
+        best: list[str] = []
+        for tname in _reg.get_all_tool_names():
+            schema = _reg.get_schema(tname)
+            if not isinstance(schema, dict):
+                continue
+            fn = schema.get("function") if schema.get("type") == "function" else schema
+            params = fn.get("parameters") if isinstance(fn, dict) else None
+            if not isinstance(params, dict):
+                continue
+            required = params.get("required")
+            properties = params.get("properties")
+            if not isinstance(properties, dict):
+                continue
+            if isinstance(required, list) and required:
+                # All required keys must be present in the flat payload
+                if not all(isinstance(r, str) and r in flat_args for r in required):
+                    continue
+            else:
+                # No required list — require at least one known property overlap
+                if not candidate_keys.intersection(properties.keys()):
+                    continue
+            # Every supplied key should be a known property (avoid false positives)
+            if not candidate_keys.issubset(properties.keys()):
+                continue
+            best.append(tname)
+        if len(best) == 1:
+            return best[0]
+        # Prefer obvious web_search/web_extract disambiguation when multiple
+        # candidates remain (e.g. both accept 'query' due to loose schemas)
+        if "web_search" in best and candidate_keys == {"query"}:
+            return "web_search"
+        if "web_search" in best and candidate_keys == {"query", "limit"}:
+            return "web_search"
+        return None
+    except Exception:
+        return None
+
+
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
     """Parse a ``tool_call`` invocation -> (underlying_name, args, error_msg); ``(None, {}, msg)``
     on error. Shared by dispatch, display and the trajectory recorder so all three agree."""
     name = str(args.get("name") or "").strip()
     if not name:
-        return None, {}, "tool_call requires a 'name' argument"
+        # Qwen/Ollama and similar weak tool-call models flatten the intended
+        # tool's arguments to the top level and omit the required 'name'
+        # field, yielding {"query": "..."} instead of
+        # {"name": "web_search", "arguments": {"query": "..."}}. Detect that
+        # shape and return an actionable hint (or auto-infer when unambiguous)
+        # so the model does not loop on the generic error 13+ times (#103752).
+        inferred = _infer_flat_tool_call_target(args)
+        if inferred:
+            # Tell the model to call the tool directly — tool_call is only for
+            # deferred (bridge) tools, and most inferred targets (web_search,
+            # etc.) are core direct tools.
+            return None, {}, (
+                f"tool_call requires a 'name' argument — it looks like you meant to call "
+                f"'{inferred}' with arguments {json.dumps(args, ensure_ascii=False)}. "
+                f"Call '{inferred}' directly instead of via tool_call (tool_call is only for "
+                f"deferred tools discovered via tool_search/tool_describe). "
+                f"Example: {{\"name\": \"{inferred}\", \"arguments\": {json.dumps(args, ensure_ascii=False)}}}")
+        hint_keys = ", ".join(sorted(str(k) for k in args.keys())[:5]) if isinstance(args, dict) and args else ""
+        hint = f" Received keys: [{hint_keys}]." if hint_keys else ""
+        return None, {}, (
+            "tool_call requires a 'name' argument and an 'arguments' object. "
+            "Use tool_call as {\"name\": \"<tool>\", \"arguments\": {...}} for deferred tools only; "
+            "for directly-listed tools (e.g. web_search) call the tool by its own name."
+            + hint)
     if name in BRIDGE_TOOL_NAMES:
         return None, {}, f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
     raw_args = args.get("arguments")

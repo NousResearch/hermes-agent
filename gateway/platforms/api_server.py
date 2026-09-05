@@ -360,8 +360,10 @@ def _project_client_message(message: Dict[str, Any]) -> Dict[str, Any]:
     ids), merged handoffs keep only the real prior-tail content; inherited tool calls dropped."""
     from agent.compaction_display import (
         _COMPACTION_INTERNAL_FIELDS, project_compaction_message_for_display)
+    from agent.message_metadata import HIDDEN_DISPLAY_KINDS
+
     projected = project_compaction_message_for_display(message)
-    if projected is None:
+    if projected is None or projected.get("display_kind") in HIDDEN_DISPLAY_KINDS:
         projected = {k: v for k, v in message.items() if k not in _COMPACTION_INTERNAL_FIELDS}
         projected["content"] = ""
         projected["display_kind"] = "hidden"

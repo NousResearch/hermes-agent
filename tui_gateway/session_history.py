@@ -178,6 +178,8 @@ _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
 def _history_to_messages(history: list[dict]) -> list[dict]:
+    from agent.message_metadata import HIDDEN_DISPLAY_KINDS
+
     messages = []
     tool_call_args = {}
     for m in history:
@@ -188,7 +190,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             continue
         role = m.get("role")
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
-        if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
+        if role not in _HISTORY_ROLES or m.get("display_kind") in HIDDEN_DISPLAY_KINDS:
             continue
         content_text = _coerce_message_text(m.get("content"))
         if _is_display_hidden_marker(role, content_text):

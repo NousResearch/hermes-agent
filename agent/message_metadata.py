@@ -10,6 +10,9 @@ from typing import Any, MutableMapping, Optional, TypeVar
 # content. They must not influence context-pressure decisions.
 PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset({"timestamp"})
 
+# Provisional finals remain in model/recovery history until their closeout commits.
+HIDDEN_DISPLAY_KINDS = frozenset({"hidden", "delegation_closeout_provisional"})
+
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])
 
 

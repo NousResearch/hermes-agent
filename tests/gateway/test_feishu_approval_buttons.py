@@ -59,13 +59,14 @@ def _make_card_action_data(
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
     token: str = "tok_abc",
+    user_id: str = "",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
     return SimpleNamespace(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(open_id=open_id, user_id=user_id),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -235,6 +236,31 @@ class TestResolveApproval:
 
         mock_resolve.assert_not_called()
         assert 5 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_user_id_only_allowlist_resolves(self):
+        """Resolver authorizes an operator listed only by u_* user_id."""
+        adapter = _make_adapter()
+        adapter._admins = set()
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._approval_state[6] = {
+            "session_key": "sess-6",
+            "message_id": "msg_006",
+            "chat_id": "oc_12345",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+            await adapter._resolve_approval(
+                6,
+                "once",
+                "Alice",
+                open_id="ou_not_listed",
+                user_id="u_alice",
+                chat_id="oc_12345",
+            )
+
+        mock_resolve.assert_called_once_with("sess-6", "once")
+        assert 6 not in adapter._approval_state
 
 
 # ===========================================================================
@@ -581,6 +607,141 @@ class TestCardActionCallbackResponse:
         mock_submit.assert_not_called()
         assert 25 in adapter._update_prompt_state
 
+    def test_approval_click_authorized_by_user_id_allowlist(self, _patch_callback_card_types):
+        """Operator listed by u_* user_id is authorized even when open_id is not listed."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._approval_state[27] = {
+            "session_key": "sess-27",
+            "message_id": "msg-27",
+            "chat_id": "oc_user_id_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 27},
+            chat_id="oc_user_id_chat",
+            open_id="ou_not_listed",
+            user_id="u_alice",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+
+    def test_update_prompt_click_authorized_by_user_id_allowlist(self, _patch_callback_card_types):
+        """Update prompt honors a u_* only allowlist the same way approvals do."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._update_prompt_state[28] = {
+            "session_key": "sess-up-28",
+            "message_id": "msg_up_028",
+            "chat_id": "oc_user_id_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 28},
+            chat_id="oc_user_id_chat",
+            open_id="ou_not_listed",
+            user_id="u_alice",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+
+    def test_unlisted_user_id_still_rejected_on_approval(self, _patch_callback_card_types):
+        """Carrying a user_id does not bypass the allowlist when neither ID matches."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._group_policy = "open"
+        adapter._default_group_policy = "open"
+        adapter._approval_state[29] = {
+            "session_key": "sess-29",
+            "message_id": "msg-29",
+            "chat_id": "oc_user_id_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 29},
+            chat_id="oc_user_id_chat",
+            open_id="ou_intruder",
+            user_id="u_intruder",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+        assert 29 in adapter._approval_state
+
+    def test_approval_callback_propagates_user_id_to_resolver(self, _patch_callback_card_types):
+        """The callback threads both operator IDs into the async resolver."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._approval_state[30] = {
+            "session_key": "sess-30",
+            "message_id": "msg-30",
+            "chat_id": "oc_user_id_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 30},
+            chat_id="oc_user_id_chat",
+            open_id="ou_not_listed",
+            user_id="u_alice",
+        )
+
+        with patch.object(adapter, "_submit_on_loop", return_value=True), patch.object(
+            adapter, "_resolve_approval", new_callable=MagicMock
+        ) as mock_resolve:
+            adapter._on_card_action_trigger(data)
+
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs["open_id"] == "ou_not_listed"
+        assert kwargs["user_id"] == "u_alice"
+
+    def test_update_prompt_callback_propagates_user_id_to_resolver(self, _patch_callback_card_types):
+        """The update prompt callback threads both operator IDs into the resolver."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._admins = set()
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._update_prompt_state[31] = {
+            "session_key": "sess-up-31",
+            "message_id": "msg_up_031",
+            "chat_id": "oc_user_id_chat",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 31},
+            chat_id="oc_user_id_chat",
+            open_id="ou_not_listed",
+            user_id="u_alice",
+        )
+
+        with patch.object(adapter, "_submit_on_loop", return_value=True), patch.object(
+            adapter, "_resolve_update_prompt", new_callable=MagicMock
+        ) as mock_resolve:
+            adapter._on_card_action_trigger(data)
+
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs["open_id"] == "ou_not_listed"
+        assert kwargs["user_id"] == "u_alice"
+
     def test_approval_card_forwarded_to_different_chat_rejected(self, _patch_callback_card_types):
         """Approval card forwarded out of its DM: chat mismatch rejects the click."""
         adapter = _make_adapter()
@@ -662,5 +823,31 @@ class TestResolveUpdatePrompt:
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
         assert 3 in adapter._update_prompt_state
+
+    @pytest.mark.asyncio
+    async def test_user_id_only_allowlist_writes_response(self, tmp_path, monkeypatch):
+        """Resolver authorizes an update prompt operator listed only by u_* user_id."""
+        adapter = _make_adapter()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._admins = set()
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._update_prompt_state[4] = {
+            "session_key": "sess-up-4",
+            "message_id": "msg_up_006",
+            "chat_id": "oc_user_id_chat",
+        }
+
+        await adapter._resolve_update_prompt(
+            4,
+            "y",
+            "Alice",
+            open_id="ou_not_listed",
+            user_id="u_alice",
+            chat_id="oc_user_id_chat",
+        )
+
+        assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
+        assert 4 not in adapter._update_prompt_state
 
 

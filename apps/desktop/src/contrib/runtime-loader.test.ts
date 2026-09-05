@@ -137,6 +137,57 @@ describe('scanDiskPlugins (#66899)', () => {
     expect(readDir).toHaveBeenCalledTimes(1)
   })
 
+  it('does not scan the unified desktop half when the standalone door already has that folder (#100412)', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
+    readDir.mockImplementation(async dir => {
+      if (dir === '/local/.hermes/desktop-plugins') {
+        return {
+          entries: [
+            {
+              isDirectory: true,
+              name: 'word-count',
+              path: '/local/.hermes/desktop-plugins/word-count'
+            }
+          ]
+        }
+      }
+
+      if (dir === '/local/.hermes/desktop-plugins/word-count') {
+        return {
+          entries: [
+            {
+              isDirectory: false,
+              name: 'plugin.js',
+              path: '/local/.hermes/desktop-plugins/word-count/plugin.js'
+            }
+          ]
+        }
+      }
+
+      if (dir === '/local/.hermes/plugins') {
+        return {
+          entries: [{ isDirectory: true, name: 'word-count', path: '/local/.hermes/plugins/word-count' }]
+        }
+      }
+
+      if (dir === '/local/.hermes/plugins/word-count') {
+        return {
+          entries: [
+            { isDirectory: true, name: 'desktop', path: '/local/.hermes/plugins/word-count/desktop' }
+          ]
+        }
+      }
+
+      return { entries: [] }
+    })
+
+    await discoverRuntimePlugins()
+
+    expect(readDir).not.toHaveBeenCalledWith('/local/.hermes/plugins/word-count')
+    expect(readDir).not.toHaveBeenCalledWith('/local/.hermes/plugins/word-count/desktop')
+  })
+
   it('loads a unified desktop half OPT-IN: inventoried but not activated by default', async () => {
     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
     agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')

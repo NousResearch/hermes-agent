@@ -1497,9 +1497,11 @@ class GatewayInboundMixin:
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
-            reply_snippet = event.reply_to_text[:500]
+            # Adapters resolve the original message (or the user's native partial quote).
+            # A preview here silently loses later list items and code; keep that context intact.
+            reply_text = event.reply_to_text
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_snippet}"]\n\n{message_text}'
+            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
         return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:

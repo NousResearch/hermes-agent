@@ -61,6 +61,32 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 
 
 @pytest.mark.asyncio
+async def test_telegram_long_reply_reaches_prompt_without_losing_later_items():
+    """The native reply already has the full message; preparation must not trim it."""
+    from gateway.platforms.base import MessageType
+    from tests.gateway.test_telegram_reply_quote import _make_adapter, _make_message
+
+    quoted = "\n".join(
+        f"{index}. {company}: " + "Evidence from the supplied list. " * 12
+        for index, company in enumerate(
+            ["GoCar", "Urban Drive", "DubCar", "GRPS", "Halucar"], 1
+        )
+    )
+    event = _make_adapter()._build_message_event(
+        _make_message(text="Review all five companies.", reply_to_text=quoted),
+        MessageType.TEXT,
+    )
+    history = [{"role": "user", "content": "Previous request"}]
+    result = await _make_runner()._prepare_inbound_message_text(
+        event=event, source=event.source, history=history,
+    )
+    assert result is not None
+    assert quoted in result
+    assert result.endswith("Review all five companies.")
+    assert history == [{"role": "user", "content": "Previous request"}]
+
+
+@pytest.mark.asyncio
 async def test_reply_prefix_still_injected_when_text_in_history():
     """Regression test: the pointer must survive even when the quoted text
     already appears in history. Previously a `found_in_history` guard

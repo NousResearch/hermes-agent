@@ -565,6 +565,12 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
+class DeliveryError(RuntimeError):
+    """Raised when approval message delivery fails irrecoverably —
+    the caller must NOT retry and must NOT proceed as if the user
+    received an actionable approval prompt."""
+
+
 def _redact_approval_command(cmd: "str | None") -> str:
     """Redact credentials from a command before it goes into an approval prompt.
 
@@ -608,6 +614,157 @@ _PROVIDER_ERROR_REPLIES = (
     (_GATEWAY_RATE_LIMIT_RE, "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."),
     (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ The model server is not responding — it looks like the configured "
                                    "model endpoint is not running or is unreachable."))
+
+
+def _deliver_approval_message(
+    adapter,
+    chat_id,
+    command: str,
+    description: str,
+    session_key: str,
+    metadata,
+    loop,
+    logger,
+    *,
+    allow_permanent: bool = True,
+    allow_session: bool = True,
+    smart_denied: bool = False,
+) -> None:
+    """Deliver the approval request as a single message carrying the full
+    context (system risk + model-supplied Purpose/Effect/Risk).
+
+    Button-capable platforms receive a button-based prompt whose
+    *description* already carries the combined context — no separate
+    follow-up is sent.  Text-only platforms receive exactly one
+    ``send()`` call with the approval, context, and instructions all
+    in one message.
+
+    Delivery contract: every definitive button-path failure (error
+    result, scheduling failure, exception) falls back to the text
+    prompt — falling back only *asks* the user, it never grants
+    anything, so availability costs nothing here.  ``DeliveryError``
+    is reserved for when the text path itself definitively fails:
+    at that point no prompt reached the user, and the caller
+    (``_await_gateway_decision``) must treat the approval as
+    notify-failed/BLOCKED rather than wait on a reply that can never
+    come.  An *ambiguous* send (result timeout) on either path is
+    treated as possibly-delivered: the prompt registration stays
+    armed and nothing is re-sent (see ``_approval_send_outcome``).
+
+    Raises ``ValueError`` when *description* is empty (fail-closed:
+    callers guarantee a non-empty enhanced description upstream).
+    """
+    if not description or not str(description).strip():
+        raise ValueError(
+            "Approval description is empty — refusing to deliver "
+            "an insufficient approval prompt."
+        )
+
+    cmd = _redact_approval_command(command)
+
+    # description is already redacted upstream (_sanitize_explanation),
+    # but re-redact here as defense-in-depth for the outbound channel.
+    description = _redact_approval_command(description)
+
+    # --- Button path ---
+    if getattr(type(adapter), "send_exec_approval", None) is not None:
+        try:
+            _fut = safe_schedule_threadsafe(
+                adapter.send_exec_approval(
+                    chat_id=chat_id,
+                    command=cmd,
+                    session_key=session_key,
+                    description=description,
+                    metadata=metadata,
+                    allow_permanent=allow_permanent,
+                    allow_session=allow_session,
+                    smart_denied=smart_denied,
+                ),
+                loop,
+                logger=logger,
+                log_message="send_exec_approval scheduling error",
+            )
+            # _fut may be None (loop unavailable) — _approval_send_outcome
+            # classifies that as a definitive failure, and the text path
+            # below turns it into DeliveryError if the loop is truly gone.
+            _outcome = _approval_send_outcome(_fut, timeout=15)
+            if _outcome == "sent":
+                return  # button success — single message, no follow-up
+            if _outcome == "ambiguous":
+                # Timeout ≠ failure: the card may have posted with a late
+                # ack (slow platform API call or transient connector
+                # backpressure). The prompt registration stays alive, so a
+                # tap on the rendered card still resolves; re-sending here
+                # is what produced duplicate cards and an orphaned
+                # "/approve: nothing pending" in live relay testing. Skip
+                # the text fallback.
+                logger.warning(
+                    "Button-based approval send timed out — treating "
+                    "as possibly-delivered (no re-send; the prompt "
+                    "stays armed for a late tap)"
+                )
+                return
+            # Definitive failure (error result / non-timeout exception) —
+            # fall through to the text path below.
+            logger.warning(
+                "Button-based approval failed (send returned error), "
+                "falling back to text"
+            )
+        except Exception as _e:
+            # An exception here means the coroutine was never accepted by
+            # the loop (construction/scheduling raised) — post-scheduling
+            # failures surface through _fut.result() inside
+            # _approval_send_outcome, which classifies instead of raising.
+            # The card therefore definitively did NOT post, so the
+            # single-message text fallback below is duplicate-safe and
+            # keeps the user able to approve (fallback only asks; it
+            # grants nothing).
+            logger.warning(
+                "Button-based approval failed, falling back to text: %s", _e
+            )
+
+    # --- Text fallback: single message with full context ---
+    _p = getattr(adapter, "typed_command_prefix", "/")
+    msg = _format_exec_approval_fallback(
+        cmd, description, _p,
+        allow_permanent=allow_permanent,
+        allow_session=allow_session,
+        smart_denied=smart_denied,
+    )
+    # Mark as approval prompt so WeCom routes through control lane
+    _approval_metadata = dict(metadata or {})
+    _approval_metadata["is_approval_prompt"] = True
+    try:
+        _send_fut = safe_schedule_threadsafe(
+            adapter.send(chat_id, msg, metadata=_interim_metadata(_approval_metadata)),
+            loop,
+            logger=logger,
+            log_message="Approval text-send scheduling error",
+        )
+        if _send_fut is None:
+            raise DeliveryError(
+                "Approval text-send: loop unavailable"
+            )
+        _send_fut.result(timeout=15)
+    except DeliveryError:
+        raise
+    except concurrent.futures.TimeoutError:
+        # Boundary rule (see _approval_send_outcome): a result() timeout is
+        # ambiguous — the message may have posted with a late ack. The
+        # prompt registration stays alive, so a typed /approve still
+        # resolves it; escalating to DeliveryError here would drop the
+        # pending entry underneath a possibly-rendered prompt and BLOCK a
+        # command the user can still legitimately approve. If the message
+        # truly never posted, the decision wait times out on its own and
+        # silence-is-not-consent blocks the command.
+        logger.warning(
+            "Approval text send timed out — treating as possibly-delivered "
+            "(no re-send; the prompt stays armed for a late reply)"
+        )
+    except Exception as _e:
+        raise DeliveryError(
+            f"Failed to send approval request: {_e}"
+        ) from _e
 
 
 def _gateway_provider_error_reply(text: str) -> str:

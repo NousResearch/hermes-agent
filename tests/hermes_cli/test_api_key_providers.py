@@ -83,6 +83,18 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
+    def test_minimax_oauth_env_vars(self):
+        # Regression for #89516: the OAuth provider must NOT carry an
+        # api_key_env_vars entry. It does not consume an API key from the
+        # environment, and the picker (model_switch_providers.py) treats
+        # api_key_env_vars as "authenticated" with no auth_type guard — so
+        # registering MINIMAX_API_KEY here would falsely advertise minimax-oauth
+        # as key-authenticated whenever the direct minimax provider's key is
+        # set. The hint is resolved separately in _credential_env_hint's OAuth
+        # twin mapping instead.
+        pconfig = PROVIDER_REGISTRY["minimax-oauth"]
+        assert pconfig.api_key_env_vars == ()
+
     def test_ai_gateway_env_vars(self):
         pconfig = PROVIDER_REGISTRY["ai-gateway"]
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)

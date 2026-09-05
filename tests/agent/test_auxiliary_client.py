@@ -2326,6 +2326,34 @@ class TestAuxClientNoSdkRetries:
         assert captured.get("max_retries") == 5
 
 
+class TestCredentialEnvHint:
+    """_credential_env_hint must advertise the registry's real env-var name
+    for known providers and fall back to the synthesized name otherwise."""
+
+    def test_registry_provider_uses_real_env_var(self):
+        from agent.auxiliary_client import _credential_env_hint
+        # Regression for #89516: minimax-oauth must hint MINIMAX_API_KEY,
+        # not the nonexistent synthesized MINIMAX-OAUTH_API_KEY.
+        assert _credential_env_hint("minimax-oauth") == "MINIMAX_API_KEY"
+        assert _credential_env_hint("minimax") == "MINIMAX_API_KEY"
+        assert _credential_env_hint("anthropic") == "ANTHROPIC_API_KEY"
+
+    def test_unknown_provider_falls_back_to_synthesized_name(self):
+        from agent.auxiliary_client import _credential_env_hint
+        assert _credential_env_hint("not-a-real-provider") == "NOT-A-REAL-PROVIDER_API_KEY"
+
+    def test_registry_provider_with_underscore_env_var(self):
+        # opencode-zen lives in the registry under OPENCODE_ZEN_API_KEY
+        # (underscore), which must win over the hyphenated synthesis.
+        from agent.auxiliary_client import _credential_env_hint
+        assert _credential_env_hint("opencode-zen") == "OPENCODE_ZEN_API_KEY"
+
+    def test_unknown_provider_never_raises(self):
+        from agent.auxiliary_client import _credential_env_hint
+        # Registry import must never break the hint even if lookups fail.
+        assert _credential_env_hint("") == "_API_KEY"
+
+
 class TestIsTimeoutError:
     """_is_timeout_error distinguishes a full-budget timeout from a fast
     connection drop."""

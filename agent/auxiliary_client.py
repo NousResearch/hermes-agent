@@ -6450,6 +6450,38 @@ _ResolvedAuxRoute = NamedTuple("_ResolvedAuxRoute", [
     ("effective_provider", str)])
 
 
+def _credential_env_hint(provider: str) -> str:
+    """Best-known env-var name for a provider's API key, for error hints.
+
+    Falls back to the synthesized ``PROVIDER_API_KEY`` name for providers not
+    in the registry. The registry entry is authoritative when present so
+    providers advertise their real env-var name. OAuth-typed providers do NOT
+    consume an API key from the environment — and their registry entry
+    intentionally carries no ``api_key_env_vars`` so ``hermes model`` never
+    lists them as key-authenticated just because a sibling's key is set. For
+    those, map to the api-key twin's env var so the hint is actionable
+    (``minimax-oauth`` -> ``MINIMAX_API_KEY``, not the nonexistent
+    ``MINIMAX-OAUTH_API_KEY``, #89516).
+    """
+    # OAuth providers share the env var of their key-based twin. Kept separate
+    # from api_key_env_vars (and out of the registry) on purpose: the picker's
+    # auth-detection in hermes_cli/model_switch_providers.py reads
+    # api_key_env_vars with no auth_type guard, so registering a key var on an
+    # OAuth provider would falsely advertise it as API-key authenticated.
+    _OAUTH_TWIN_HINTS: dict[str, str] = {"minimax-oauth": "MINIMAX_API_KEY"}
+    hint = f"{provider.upper()}_API_KEY"
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        pcfg = PROVIDER_REGISTRY.get(provider)
+        if pcfg and pcfg.api_key_env_vars:
+            hint = pcfg.api_key_env_vars[0]
+        elif pcfg is not None:
+            hint = _OAUTH_TWIN_HINTS.get(provider, hint)
+    except Exception:
+        pass
+    return hint
+
+
 def _resolve_call_client(
     task: Optional[str], *, provider: Optional[str], model: Optional[str], base_url: Optional[str],
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
@@ -6489,7 +6521,7 @@ def _resolve_call_client(
                 if fb_client is None:
                     raise RuntimeError(
                         f"Provider '{_explicit}' is set in config.yaml but no API key was found. "
-                        f"Set the {_explicit.upper()}_API_KEY environment variable, or switch to "
+                        f"Set the {_credential_env_hint(_explicit)} environment variable, or switch to "
                         f"a different provider with `hermes model`.")
                 client, final_model = fb_client, fb_model
                 if async_mode:

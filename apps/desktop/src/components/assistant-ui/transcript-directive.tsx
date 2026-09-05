@@ -1,8 +1,14 @@
 import type { FC, ReactNode } from 'react'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { type Contribution, useContributions } from '@/contrib'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
+import {
+  describeDirectiveDrop,
+  warnDirectiveRenderFailed,
+  warnUnclaimedDirective,
+  warnUnparsedDirective
+} from '@/lib/directive-diagnostics'
 import {
   parseTranscriptDirective,
   TRANSCRIPT_DIRECTIVE_AREA,
@@ -57,12 +63,17 @@ export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> 
     [render, parsed, streaming]
   )
 
+  const onRenderError = useMemo(
+    () => (match && parsed ? (error: Error) => warnDirectiveRenderFailed(parsed.name, match.id, error) : undefined),
+    [match, parsed]
+  )
+
   if (!match || !renderLeaf) {
     return null
   }
 
   return (
-    <ContribBoundary id={match.id} variant="chip">
+    <ContribBoundary id={match.id} onError={onRenderError} variant="chip">
       <ContribRender render={renderLeaf} />
     </ContribBoundary>
   )
@@ -76,4 +87,43 @@ export function useIsClaimedDirective(text: string | null): boolean {
   const parsed = text === null ? null : parseTranscriptDirective(text)
 
   return parsed !== null && claimFor(contributions, parsed.name) !== undefined
+}
+
+/**
+ * Report a directive-looking paragraph that will NOT become a widget.
+ *
+ * This has to live with the caller that keeps the plain `<p>`, not inside the
+ * leaf: when nothing claims the name the leaf never mounts, so a warning in
+ * there could never fire. Splits the two failures apart because they have
+ * different fixes — a malformed directive is the model's or the repair pass's
+ * doing, an unclaimed one means the plugin is missing or disabled.
+ */
+export function useDirectiveDropWarning(text: string | null, claimed: boolean, streaming: boolean): string | null {
+  const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
+
+  const registeredNames = useMemo(
+    () => contributions.map(c => (c.data as TranscriptDirectiveContribution | undefined)?.name ?? '?'),
+    [contributions]
+  )
+
+  useEffect(() => {
+    if (text === null || claimed) {
+      return
+    }
+
+    const parsed = parseTranscriptDirective(text)
+
+    if (!parsed) {
+      warnUnparsedDirective(text, streaming)
+
+      return
+    }
+
+    warnUnclaimedDirective(parsed.name, registeredNames, streaming)
+  }, [text, claimed, registeredNames, streaming])
+
+  return useMemo(
+    () => (text === null || claimed ? null : describeDirectiveDrop(text, registeredNames, streaming)),
+    [text, claimed, registeredNames, streaming]
+  )
 }

@@ -10,12 +10,14 @@ import {
 import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
+import { DirectiveDropBadge } from '@/components/assistant-ui/directive-drop-badge'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { remendPreservingTrailingDirective } from '@/lib/directive-remend-guard'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -41,7 +43,12 @@ import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
-import { paragraphPlainText, TranscriptDirectiveLeaf, useIsClaimedDirective } from './transcript-directive'
+import {
+  paragraphPlainText,
+  TranscriptDirectiveLeaf,
+  useDirectiveDropWarning,
+  useIsClaimedDirective
+} from './transcript-directive'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -95,9 +102,15 @@ function useCodePlugin(): CodePlugin | null {
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
 // identity is stable across renders.
+//
+// A COMPLETE trailing transcript directive is held out of the repair: its
+// attribute values are natural language, so an unpaired `*` / `_` / backtick
+// inside a prompt made the repair append a closer after the directive's `}`
+// — which breaks the whole-paragraph match in parseTranscriptDirective and
+// degrades a claimed directive (the Follow-up panel) to raw text.
 function preprocessWithTailRepair(text: string): string {
   try {
-    return tailBoundedRemend(preprocessMarkdown(text))
+    return remendPreservingTrailingDirective(preprocessMarkdown(text), tailBoundedRemend)
   } catch {
     return text
   }
@@ -519,8 +532,19 @@ function MarkdownParagraph({
   const plain = paragraphPlainText(children)
   const claimed = useIsClaimedDirective(plain)
 
+  // A paragraph that addresses a directive but will not become a widget —
+  // malformed, or claimed by nobody. It renders as its own raw source, which
+  // reads like model junk rather than a dropped panel; say so in the log.
+  const dropReason = useDirectiveDropWarning(plain, claimed, streaming ?? false)
+
   if (claimed && plain !== null) {
     return <TranscriptDirectiveLeaf streaming={streaming} text={plain} />
+  }
+
+  // Dropped directive: show the marker instead of the raw `::name{...}`, which
+  // otherwise reads as model junk rather than a panel this app failed to mount.
+  if (dropReason !== null && plain !== null) {
+    return <DirectiveDropBadge reason={dropReason} source={plain} />
   }
 
   return (

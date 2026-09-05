@@ -10,6 +10,10 @@ interface ContribBoundaryProps {
   children: ReactNode
   /** Contribution key, shown in the fallback + console tag. */
   id: string
+  /** Notified when the contribution's render throws, alongside the fallback.
+   *  Lets a host surface name WHAT died (which directive, which widget) —
+   *  the boundary itself only knows the contribution id. */
+  onError?: (error: Error) => void
   /** `chip` = inline bar item (tiny fallback); `pane` = zone body. */
   variant?: 'chip' | 'pane'
 }
@@ -35,7 +39,7 @@ export function ContribRender({ render }: ContribRenderProps) {
  * as the React boundary and dialog errors) so a crashed contribution reads like
  * every other failure, not a raw stack dump.
  */
-export function ContribBoundary({ children, id, variant = 'pane' }: ContribBoundaryProps) {
+export function ContribBoundary({ children, id, onError, variant = 'pane' }: ContribBoundaryProps) {
   return (
     <ErrorBoundary
       fallback={({ error, reset }) =>
@@ -62,6 +66,7 @@ export function ContribBoundary({ children, id, variant = 'pane' }: ContribBound
         )
       }
       label={`contrib:${id}`}
+      onError={onError}
     >
       {children}
     </ErrorBoundary>

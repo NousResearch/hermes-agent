@@ -46,10 +46,25 @@ export interface ParsedTranscriptDirective {
 
 // The whole paragraph, nothing else on the line: `::name` or `::name{...}`.
 // Length caps bound the attr scan on adversarial input.
-const DIRECTIVE_RE = /^::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?$/
+//
+// TRAILING DEBRIS is tolerated after the closing brace. A directive's
+// attribute values are natural language, so an unpaired `*`, `_`, backtick or
+// `~~` inside a prompt makes an incomplete-markdown repair append a synthetic
+// closer AFTER the `}` (`::followup{p1="wt-* worktrees"}*`). Strict matching
+// turned that one stray character into a silently unrendered panel.
+//
+// Only markdown's inline CLOSER punctuation is forgiven, never letters,
+// digits or `}`: real prose after a directive still disqualifies the
+// paragraph, so this cannot start hijacking mid-sentence text.
+const DIRECTIVE_RE = /^::([a-z][a-z0-9-]{0,63})(?:\{([^{}]{0,1024})\})?([*_`~\s]{0,8})$/
 
 // `key="value"` pairs; single quotes accepted for model sloppiness.
 const ATTR_RE = /([a-z][\w-]{0,63})=(?:"([^"]*)"|'([^']*)')/gi
+
+/** Cheap gate: could this paragraph be addressing a directive at all? */
+export function looksLikeDirective(text: string): boolean {
+  return /^\s*::[a-z]/.test(text)
+}
 
 /**
  * Parse a paragraph as a transcript directive. Returns null unless the ENTIRE
@@ -71,12 +86,77 @@ export function parseTranscriptDirective(text: string): ParsedTranscriptDirectiv
   }
 
   const attrs: Record<string, string> = {}
+  const body = match[2] ?? ''
 
-  if (match[2]) {
-    for (const pair of match[2].matchAll(ATTR_RE)) {
+  if (body) {
+    for (const pair of body.matchAll(ATTR_RE)) {
       attrs[pair[1].toLowerCase()] = pair[2] ?? pair[3] ?? ''
+    }
+
+    // A brace body that yields no attributes is a malformed directive, not an
+    // attribute-less one: `::followup{p1=unquoted}` would otherwise parse
+    // "successfully" into an empty-props panel that renders blank. Reject it
+    // so the caller reports a drop instead of mounting an empty widget.
+    if (Object.keys(attrs).length === 0 && body.trim() !== '') {
+      return null
     }
   }
 
-  return { name: match[1], attrs, source: trimmed }
+  // `source` is the directive proper — trailing repair debris is not part of
+  // what the model addressed, and plugins echo `source` in diagnostics.
+  const debris = match[3] ?? ''
+  const source = debris ? trimmed.slice(0, trimmed.length - debris.length) : trimmed
+
+  return { name: match[1], attrs, source }
 }
+
+/**
+ * Why a directive-looking paragraph did not parse, in one human sentence, or
+ * null when there is nothing to report.
+ *
+ * The failure this exists for is silent by construction: the paragraph renders
+ * as its own raw source, which reads like the model emitted junk rather than
+ * like the app dropped a widget. Callers log this so the NEXT such regression
+ * announces itself instead of needing a bisect.
+ */
+export function describeDirectiveParseFailure(text: string): string | null {
+  const trimmed = text.trim()
+
+  if (!looksLikeDirective(trimmed) || parseTranscriptDirective(trimmed) !== null) {
+    return null
+  }
+
+  if (trimmed.includes('\n')) {
+    return 'directive spans multiple lines (must be one paragraph)'
+  }
+
+  if (trimmed.length > 1200) {
+    return `directive is ${trimmed.length} chars (max 1200)`
+  }
+
+  const open = trimmed.indexOf('{')
+
+  if (open >= 0 && !trimmed.includes('}')) {
+    return 'attribute brace is never closed'
+  }
+
+  // Attribute values cannot contain braces, so the FIRST `}` after the opener
+  // is the real closer — anything past it is debris. `lastIndexOf` would miss
+  // the case where the debris IS a brace (`::name{…}}`).
+  const close = open >= 0 ? trimmed.indexOf('}', open) : -1
+
+  if (close >= 0 && close < trimmed.length - 1) {
+    return `unexpected text after the closing brace: ${JSON.stringify(trimmed.slice(close + 1))}`
+  }
+
+  if (!/^::[a-z][a-z0-9-]{0,63}/.test(trimmed)) {
+    return 'directive name must be lowercase [a-z][a-z0-9-]*'
+  }
+
+  if (open >= 0 && close > open && !/=\s*["']/.test(trimmed.slice(open + 1, close))) {
+    return 'attribute values must be quoted, e.g. key="value"'
+  }
+
+  return 'directive did not match ::name{key="value"}'
+}
+

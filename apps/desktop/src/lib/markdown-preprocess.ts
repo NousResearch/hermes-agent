@@ -49,6 +49,12 @@ const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+// A transcript directive occupying a whole line: `::name` or `::name{...}`,
+// with optional incomplete-markdown repair debris after the brace. Captured so
+// `split` keeps it as its own chunk, shielded from the prose rewrites — its
+// attributes are plugin arguments and must survive byte-exact.
+const DIRECTIVE_LINE_SPLIT_RE = /^([ \t]*::[a-z][a-z0-9-]{0,63}(?:\{[^{}\n]{0,1024}\})?[*_`~ \t]{0,8})$/gm
+const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}(?:\{[^{}\n]{0,1024}\})?[*_`~ \t]{0,8}$/
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -212,19 +218,33 @@ function rewriteProseSegment(segment: string): string {
  * qualifies and `$\sqrt[3]{8}$` loses its index to what looks like a citation
  * marker, long before KaTeX sees it.
  *
+ * A directive line is shielded for the third variant of the same problem: its
+ * attributes are machine arguments, not prose. `::preview{file="notes[1].html"}`
+ * lost `[1]` to the citation stripper and silently previewed the wrong path,
+ * and a `$` or a localhost URL in an attribute would be rewritten just as
+ * wrongly. Directives are addressed by plugins, so their text must arrive
+ * byte-exact.
+ *
  * Split on math spans is odd-index-is-a-delimiter (capturing split), not a
  * `startsWith('$')` test, so a prose segment that merely opens with a stray
  * dollar can't be mistaken for math.
  */
 function normalizeVisibleProse(text: string): string {
   return text
-    .split(INLINE_CODE_SPLIT_RE)
-    .map(part =>
-      part.startsWith('`')
-        ? part
-        : part
-            .split(MATH_SPAN_SPLIT_RE)
-            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+    .split(DIRECTIVE_LINE_SPLIT_RE)
+    .map(chunk =>
+      DIRECTIVE_LINE_ONLY_RE.test(chunk)
+        ? chunk
+        : chunk
+            .split(INLINE_CODE_SPLIT_RE)
+            .map(part =>
+              part.startsWith('`')
+                ? part
+                : part
+                    .split(MATH_SPAN_SPLIT_RE)
+                    .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+                    .join('')
+            )
             .join('')
     )
     .join('')

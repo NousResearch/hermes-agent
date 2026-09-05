@@ -1,4 +1,5 @@
 import type { SessionInfo } from '@/types/hermes'
+import { sessionIdentityKey, sessionLineageIdentityKey, sessionOwnerIdentityKey } from '@/store/session'
 
 /**
  * Index sessions by every id a pin might be stored under.
@@ -10,9 +11,12 @@ import type { SessionInfo } from '@/types/hermes'
  * section, so failing to index it doesn't merely misplace the row: it removes
  * the session from the sidebar entirely.
  *
- * Each session is keyed under both its live id and its lineage root, so a pin
- * stored before an auto-compression still resolves to the live continuation
- * tip. Recents are indexed last and win a direct id collision.
+ * Each session is keyed under exact owner-aware identities plus a legacy bare
+ * alias when that alias is unambiguous. A profile name is not unique across
+ * connected gateways, so a bare collision is removed rather than guessed; a
+ * pin/search hit must never open gateway A when the row came from gateway B.
+ * Recents are indexed last and still win a direct collision when both rows
+ * prove the same owner.
  */
 export function buildSessionByAnyId(
   visibleSessions: SessionInfo[],
@@ -20,12 +24,45 @@ export function buildSessionByAnyId(
   messagingSessions: SessionInfo[]
 ): Map<string, SessionInfo> {
   const map = new Map<string, SessionInfo>()
+  const aliasOwners = new Map<string, string>()
+  const ambiguousAliases = new Set<string>()
+
+  const addAlias = (alias: string, session: SessionInfo) => {
+    if (ambiguousAliases.has(alias)) {
+      return
+    }
+
+    const owner = sessionOwnerIdentityKey(session)
+    const existingOwner = aliasOwners.get(alias)
+
+    if (!existingOwner) {
+      aliasOwners.set(alias, owner)
+      map.set(alias, session)
+
+      return
+    }
+
+    if (existingOwner === owner) {
+      // Preserve the historical slice precedence: recents is visited last.
+      map.set(alias, session)
+
+      return
+    }
+
+    // The same bare id now names more than one exact owner. Delete the alias
+    // entirely so callers cannot accidentally route a click to the first row.
+    ambiguousAliases.add(alias)
+    aliasOwners.delete(alias)
+    map.delete(alias)
+  }
 
   for (const session of [...cronSessions, ...messagingSessions, ...visibleSessions]) {
-    map.set(session.id, session)
+    map.set(sessionIdentityKey(session), session)
+    addAlias(session.id, session)
 
-    if (session._lineage_root_id && !map.has(session._lineage_root_id)) {
-      map.set(session._lineage_root_id, session)
+    if (session._lineage_root_id) {
+      map.set(sessionLineageIdentityKey(session), session)
+      addAlias(session._lineage_root_id, session)
     }
   }
 
@@ -67,14 +104,18 @@ export function resolvePinnedSessions(
   for (const pinId of pinnedSessionIds) {
     const session = sessionByAnyId.get(pinId)
 
-    if (session && !seen.has(session.id)) {
-      seen.add(session.id)
+    const identity = session ? sessionLineageIdentityKey(session) : null
+
+    if (session && identity && !seen.has(identity)) {
+      seen.add(identity)
       out.push(session)
     }
   }
 
   for (const session of allSessions) {
-    if (session.pinned !== true || seen.has(session.id)) {
+    const identity = sessionLineageIdentityKey(session)
+
+    if (session.pinned !== true || seen.has(identity)) {
       continue
     }
 
@@ -87,7 +128,7 @@ export function resolvePinnedSessions(
       continue
     }
 
-    seen.add(session.id)
+    seen.add(identity)
     out.push(session)
   }
 

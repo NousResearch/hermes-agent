@@ -350,6 +350,42 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
   store.set(typeof next === 'function' ? (next as (current: T) => T)(store.get()) : next)
 }
 
+const profileKeyOf = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
+
+type SessionOwnerIdentity = Pick<SessionInfo, 'connection_id' | 'profile'>
+type SessionStoredIdentity = Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'connection_id' | 'id' | 'profile'>
+
+/** The exact owner coordinate used by renderer-side session identity maps.
+ *
+ * A profile name is only unique within one gateway. Keep the legacy, untagged
+ * rows in the profile-only namespace, but never let a connection-tagged row
+ * fall back to that namespace: an unknown connection is not evidence of the
+ * local backend. JSON encoding keeps delimiters in user-controlled names from
+ * creating aliases.
+ */
+export function sessionOwnerIdentityKey(session: SessionOwnerIdentity): string {
+  const connectionId = session.connection_id?.trim() || null
+
+  return JSON.stringify([connectionId, profileKeyOf(session.profile)])
+}
+
+/** Exact live-session identity: (connection, profile, stored id). */
+export function sessionIdentityKey(session: Pick<SessionInfo, 'connection_id' | 'id' | 'profile'>): string {
+  return `${sessionOwnerIdentityKey(session)}::session:${JSON.stringify(session.id)}`
+}
+
+/** Exact conversation identity across compression tip rotation. */
+export function sessionLineageIdentityKey(
+  session: Pick<SessionInfo, '_lineage_root_id' | 'connection_id' | 'id' | 'profile'>
+): string {
+  return `${sessionOwnerIdentityKey(session)}::lineage:${JSON.stringify(session._lineage_root_id ?? session.id)}`
+}
+
+/** True only when both rows name the same exact (connection, profile) owner. */
+export function sessionMatchesOwner(left: SessionOwnerIdentity, right: SessionOwnerIdentity): boolean {
+  return sessionOwnerIdentityKey(left) === sessionOwnerIdentityKey(right)
+}
+
 /** Durable id for pinning. Auto-compression rotates a conversation's session
  *  id (root -> continuation tip), so pins keyed on the live id evaporate. The
  *  lineage root is stable across every compression, so we pin on that. */
@@ -366,6 +402,15 @@ export const sessionMatchesStoredId = (
   session.id === storedSessionId ||
   session._lineage_root_id === storedSessionId ||
   Boolean(session._lineage_ids?.includes(storedSessionId))
+
+/** Match a stored/lineage id only inside the clicked row's exact owner. */
+export function sessionMatchesTarget(
+  session: SessionStoredIdentity,
+  target: SessionStoredIdentity,
+  storedSessionId = target.id
+): boolean {
+  return sessionMatchesOwner(session, target) && sessionMatchesStoredId(session, storedSessionId)
+}
 
 // Alias lookup, memoized per sessions-list reference. `lineageAliases` runs
 // per cached session state per status projection per message delta — an
@@ -518,8 +563,6 @@ export function resolveComposerSessionKey(
  *  either its live `id` or its `_lineage_root_id`. Optimistic deletes/archives
  *  drop the row from `previous` (and unpin it), so a removed session can't be
  *  resurrected here. */
-const profileKeyOf = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
-
 function carriedConnectionId(prev: SessionInfo | undefined, incoming: SessionInfo): string | undefined {
   if (incoming.connection_id?.trim()) {
     return incoming.connection_id
@@ -543,21 +586,13 @@ export function mergeSessionPage(
 ): SessionInfo[] {
   const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
 
-  // Rows are identified by (profile, id), never bare id: two profiles can
-  // hold sessions with the SAME stored id (restored backups, copied
-  // state.dbs, cross-profile imports — #92454). Keyed by bare id, the twins
-  // collapse into one sidebar row whose title/preview carry can stitch one
-  // profile's content onto the other profile's route — the user clicks a row
-  // previewing profile A and the resume dials profile B. Same-profile rows
-  // (including untagged ones, which normalize together) keep the exact
-  // carry behavior below.
-  // (Local normalize: importing @/store/profile here would be circular —
-  // same '' → 'default' rule as normalizeProfileKey.)
-  const profileKeyOf = (session: SessionInfo) => (session.profile ?? '').trim() || 'default'
-  const identity = (session: SessionInfo) => `${profileKeyOf(session)}::${session.id}`
-
-  const lineageIdentity = (session: SessionInfo) =>
-    `${profileKeyOf(session)}::${session._lineage_root_id ?? session.id}`
+  // Rows are identified by (connection, profile, id), never bare id: two
+  // gateways can expose the same profile and stored id. The connection tag is
+  // the only evidence that keeps those rows from cross-stitching titles,
+  // activity, or owner routing. Untagged rows remain in the legacy profile-only
+  // namespace until a source supplies an exact connection.
+  const identity = (session: SessionInfo) => sessionIdentityKey(session)
+  const lineageIdentity = (session: SessionInfo) => sessionLineageIdentityKey(session)
 
   // Carry a known title onto a row that arrives title-less, so a freshly
   // submitted session (e.g. a branch draft) holds its placeholder instead of
@@ -570,7 +605,30 @@ export function mergeSessionPage(
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
 
   const merged = incoming.map(session => {
-    const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
+    let prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
+
+    // The primary/local list can return a row without `connection_id` even
+    // though the optimistic row immediately before it was connection-tagged.
+    // Carry that tag only when one previous row can prove the owner; two
+    // same-profile rows on different gateways are deliberately ambiguous and
+    // must not be stitched together.
+    if (!prev && !session.connection_id?.trim()) {
+      const candidates = previous.filter(candidate => {
+        if (profileKeyOf(candidate.profile) !== profileKeyOf(session.profile)) {
+          return false
+        }
+
+        return (
+          sessionMatchesStoredId(candidate, session.id) ||
+          (session._lineage_root_id != null && sessionMatchesStoredId(candidate, session._lineage_root_id))
+        )
+      })
+
+      if (candidates.length === 1) {
+        prev = candidates[0]
+      }
+    }
+
     // User-send stamps last_active before the DB flushes the user row
     // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
     const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
@@ -652,8 +710,8 @@ function sidebarProfileKey(session: Pick<SessionInfo, 'profile'>): string {
   return (session.profile ?? '').trim() || 'default'
 }
 
-function sessionListIdentity(session: Pick<SessionInfo, 'id' | 'profile'>): string {
-  return `${sidebarProfileKey(session)}::${session.id}`
+function sessionListIdentity(session: Pick<SessionInfo, 'connection_id' | 'id' | 'profile'>): string {
+  return sessionIdentityKey(session)
 }
 
 /**

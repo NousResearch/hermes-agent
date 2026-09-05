@@ -67,4 +67,30 @@ describe('flattenSessionsWithBranches', () => {
       { id: 'background', stem: undefined }
     ])
   })
+
+  it('keeps same-id gateway twins as separate sidebar rows', () => {
+    const gatewayA = session('same', { connection_id: 'gateway-a', title: 'Gateway A' })
+    const gatewayB = session('same', { connection_id: 'gateway-b', title: 'Gateway B' })
+
+    expect(flattenSessionsWithBranches([gatewayA, gatewayB]).map(entry => entry.session)).toEqual([gatewayA, gatewayB])
+  })
+
+  it('does not attach a tagged child to a same-id parent owned by another gateway', () => {
+    const gatewayAParent = session('parent', { connection_id: 'gateway-a', last_active: 20 })
+    const gatewayBChild = session('child', {
+      connection_id: 'gateway-b',
+      last_active: 10,
+      parent_session_id: 'parent'
+    })
+
+    expect(
+      flattenSessionsWithBranches([gatewayAParent, gatewayBChild]).map(entry => ({
+        id: entry.session.id,
+        stem: entry.branchStem
+      }))
+    ).toEqual([
+      { id: 'parent', stem: undefined },
+      { id: 'child', stem: undefined }
+    ])
+  })
 })

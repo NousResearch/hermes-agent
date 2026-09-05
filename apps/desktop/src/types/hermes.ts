@@ -1219,6 +1219,10 @@ export interface SessionSearchResult {
   lineage_root?: string | null
   model: string | null
   role: string | null
+  /** Owning profile when the search backend can identify it. */
+  profile?: string | null
+  /** Registry connection that owns the search result, when known. */
+  connection_id?: string | null
   /** Live compression tip of the matched conversation — resume by this id. */
   session_id: string
   session_started: number | null

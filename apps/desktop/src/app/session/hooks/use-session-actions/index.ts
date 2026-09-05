@@ -129,7 +129,13 @@ import {
   saveTranscriptTail
 } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type {
+  SessionCreateResponse,
+  SessionInfo,
+  SessionMessage,
+  SessionResumeResponse,
+  UsageStats
+} from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -166,6 +172,7 @@ import {
   resolveStoredSession,
   restoreListedSession,
   selectBranchMessages,
+  sessionMatchesTarget,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
@@ -750,8 +757,7 @@ export function useSessionActions({
         // `options?.cwd || resolve…` is wrong for Home: null is falsy and used
         // to fall through into the last project folder while main chat was
         // occupied (openTab path for "New session in Home").
-        const capturedRoute =
-          options?.route !== undefined ? options.route : resolveNewChatOwnerRoute(options?.profile)
+        const capturedRoute = options?.route !== undefined ? options.route : resolveNewChatOwnerRoute(options?.profile)
 
         const workspaceScope = options?.workspaceScope ?? { workspaceMode: 'sessions' }
 
@@ -2392,7 +2398,7 @@ export function useSessionActions({
   )
 
   const removeSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, targetSession?: SessionInfo) => {
       clearNotifications()
 
       // The row may live in the main list, the messaging/cron sidebar slices,
@@ -2400,10 +2406,14 @@ export function useSessionActions({
       // $sessions by design). Resolve from all of them so deleting a
       // messaging/cron row (or from the Archived filter) evicts the row
       // instead of leaving a ghost that resumes into a dead id.
-      const listed = findListedSession(storedSessionId)
+      const listed = findListedSession(storedSessionId, targetSession)
 
-      const removed =
-        listed?.session ?? $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const matchesRemovedSession = (session: SessionInfo) =>
+        targetSession
+          ? sessionMatchesTarget(session, targetSession, storedSessionId)
+          : sessionMatchesStoredId(session, storedSessionId)
+
+      const removed = listed?.session ?? $archivedSessions.get().find(matchesRemovedSession) ?? targetSession
 
       // Messaging/cron rows frequently arrive without an inline profile; fall
       // back to the stored-session ownership lookup so their DELETE routes to
@@ -2428,7 +2438,17 @@ export function useSessionActions({
       // boundaries. React props can still describe the previous render when a
       // delete lands in the same tick, which used to leave the doomed route in
       // place and let the generic 4001 recovery rebind it.
-      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
+      const targetOwnsSelectedId =
+        !targetSession?.connection_id?.trim() ||
+        (() => {
+          const activeConnection = $connection.get()
+
+          return (
+            activeConnection?.connectionId?.trim() === targetSession.connection_id?.trim() &&
+            normalizeProfileKey(activeConnection?.profile) === normalizeProfileKey(targetSession.profile)
+          )
+        })()
+      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId && targetOwnsSelectedId
       const closingRuntimeId = wasSelected ? activeSessionIdRef.current : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
@@ -2446,8 +2466,8 @@ export function useSessionActions({
       const removedPinId = removed ? sessionPinId(removed) : storedSessionId
       const removedIds = [storedSessionId, removed?.id, removed?._lineage_root_id]
 
-      dropListedSession(storedSessionId)
-      $archivedSessions.set(previousArchived.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
+      dropListedSession(storedSessionId, targetSession)
+      $archivedSessions.set(previousArchived.filter(session => !matchesRemovedSession(session)))
       // Evict from the project tree's optimistic layer too (the backend snapshot
       // still lists it until its next refresh), so grouped + flat views drop the
       // row in lockstep. Pin the tombstone against the projects.tree prune while
@@ -2494,7 +2514,7 @@ export function useSessionActions({
         }
       } catch (err) {
         if (listed?.session) {
-          restoreListedSession(listed.session, listed.slice)
+          restoreListedSession(listed.session, listed.slice, targetSession)
         }
 
         // Restore the archived-view row too (no-op when it wasn't archived).
@@ -2507,7 +2527,7 @@ export function useSessionActions({
           setFreshDraftReady(false)
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
-          const stored = findListedSession(storedSessionId)?.session
+          const stored = findListedSession(storedSessionId, targetSession)?.session
 
           if (stored) {
             applyStoredUsage(stored)
@@ -2543,11 +2563,11 @@ export function useSessionActions({
   )
 
   const archiveSession = useCallback(
-    async (storedSessionId: string) => {
+    async (storedSessionId: string, targetSession?: SessionInfo) => {
       clearNotifications()
 
-      const listed = findListedSession(storedSessionId)
-      const archived = listed?.session
+      const listed = findListedSession(storedSessionId, targetSession)
+      const archived = listed?.session ?? targetSession
       const stampedProfile = archived?.profile?.trim()
       const profile = stampedProfile || (await resolveSessionProfile(storedSessionId))
 
@@ -2562,7 +2582,17 @@ export function useSessionActions({
         return
       }
 
-      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
+      const targetOwnsSelectedId =
+        !targetSession?.connection_id?.trim() ||
+        (() => {
+          const activeConnection = $connection.get()
+
+          return (
+            activeConnection?.connectionId?.trim() === targetSession.connection_id?.trim() &&
+            normalizeProfileKey(activeConnection?.profile) === normalizeProfileKey(targetSession.profile)
+          )
+        })()
+      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId && targetOwnsSelectedId
       const previousPinned = $pinnedSessionIds.get()
       // Pins are keyed on the durable lineage-root id; the stored id may be the
       // live tip after compression. Drop both so the pin can't linger.
@@ -2570,7 +2600,7 @@ export function useSessionActions({
       const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
 
       // Soft-hide: drop from every sidebar slice immediately, keep the data.
-      dropListedSession(storedSessionId)
+      dropListedSession(storedSessionId, targetSession)
       tombstoneSessions(archivedIds)
       beginSessionMutation(archivedIds)
       $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
@@ -2580,7 +2610,7 @@ export function useSessionActions({
       }
 
       try {
-        await setSessionArchived(storedSessionId, true, profile)
+        await setSessionArchived(storedSessionId, true, sessionOwnerRouteFromRow(archived) ?? profile)
         // Archived rows never reach the sidebar, so their persisted unread can
         // only rot. Dropped after the RPC so a failed archive keeps it.
         forgetSessionUnread(archivedIds, profile)
@@ -2597,7 +2627,7 @@ export function useSessionActions({
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
-          restoreListedSession(archived, listed?.slice)
+          restoreListedSession(archived, listed?.slice, targetSession)
         }
 
         untombstoneSessions(archivedIds)

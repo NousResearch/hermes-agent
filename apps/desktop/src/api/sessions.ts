@@ -19,7 +19,16 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
     return {}
   }
 
-  const scoped = capabilityScoped(scope)
+  const scoped =
+    capabilityScoped(scope) ??
+    (scope && typeof scope === 'object'
+      ? {
+          ...(scope.profile?.trim() ? { profile: scope.profile.trim() } : {}),
+          ...(scope.connectionId?.trim() ? { connectionId: scope.connectionId.trim() } : {})
+        }
+      : scope
+        ? { profile: scope }
+        : {})
 
   if (typeof scope === 'object' && scope.connectionId?.trim() === 'local') {
     return { ...scoped, connectionId: 'local' }
@@ -322,18 +331,21 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
 // Mutations take the owning `profile` so Electron can route them to the correct
 // remote backend or local profile scope. Omit for the current/default profile.
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+export function setSessionArchived(id: string, archived: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
   // Carry the owning profile IN THE PATCH BODY, mirroring renameSession — the
   // backend reads its target DB from body.profile (_open_session_db_for_profile).
   // Passing it only as request.profile (Electron routing) is not enough on a
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
+  const scope = sessionScoped(profile)
+  const scopedProfile = scope.profile
+
   return hermesApi<{ ok: boolean }>({
-    ...(profile ? { profile } : {}),
+    ...scope,
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived, ...(profile ? { profile } : {}) }
+    body: { archived, ...(scopedProfile ? { profile: scopedProfile } : {}) }
   })
 }
 
@@ -371,9 +383,18 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
 }
 
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
+  const scope = capabilityScoped() ?? {}
+
   return hermesApi<SessionSearchResponse>({
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`
-  })
+  }).then(response => ({
+    ...response,
+    results: response.results.map(result => ({
+      ...result,
+      ...(result.profile?.trim() || !scope.profile ? {} : { profile: scope.profile }),
+      ...(result.connection_id?.trim() || !scope.connectionId ? {} : { connection_id: scope.connectionId })
+    }))
+  }))
 }
 
 // Resolves a single session row by id on one backend (the active profile, or
@@ -588,12 +609,15 @@ export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok:
 export function renameSession(
   id: string,
   title: string,
-  profile?: string | null
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; title: string }> {
+  const scope = sessionScoped(profile)
+  const scopedProfile = scope.profile
+
   return hermesApi<{ ok: boolean; title: string }>({
-    ...(profile ? { profile } : {}),
+    ...scope,
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title, ...(profile ? { profile } : {}) }
+    body: { title, ...(scopedProfile ? { profile: scopedProfile } : {}) }
   })
 }

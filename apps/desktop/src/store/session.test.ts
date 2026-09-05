@@ -50,6 +50,8 @@ import {
   rememberedSessionProfile,
   resolveComposerSessionKey,
   sessionBelongsToProfile,
+  sessionIdentityKey,
+  sessionMatchesOwner,
   sessionMatchesStoredId,
   sessionOwnerRouteFromRow,
   sessionPinId,
@@ -478,6 +480,22 @@ describe('mergeSessionPage', () => {
     const quiet = merged.find(s => s.profile === 'quietbot')
     expect(quiet?.title ?? null).toBeNull()
     expect(quiet?.last_active).toBe(10)
+  })
+
+  it('never carries title or activity across same-profile gateway twins', () => {
+    const previous = [
+      session({ connection_id: 'gateway-a', id: 'same', last_active: 50, profile: 'default', title: 'Gateway A' })
+    ]
+    const incoming = [
+      session({ connection_id: 'gateway-b', id: 'same', last_active: 10, profile: 'default', title: null })
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, [])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({ connection_id: 'gateway-b', id: 'same', last_active: 10, title: null })
+    expect(sessionIdentityKey(merged[0])).toBe(sessionIdentityKey(incoming[0]))
+    expect(sessionMatchesOwner(merged[0], previous[0])).toBe(false)
   })
 
   it('a kept twin in another profile survives the incoming page dedupe (#92454)', () => {

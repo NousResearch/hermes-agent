@@ -122,6 +122,8 @@ import {
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
+  sessionIdentityKey,
+  sessionLineageIdentityKey,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -291,7 +293,9 @@ function searchResultToSession(result: SessionSearchResult): SessionInfo {
     source: result.source ?? null,
     started_at: ts,
     title: null,
-    tool_call_count: 0
+    tool_call_count: 0,
+    ...(result.profile?.trim() ? { profile: result.profile.trim() } : {}),
+    ...(result.connection_id?.trim() ? { connection_id: result.connection_id.trim() } : {})
   }
 }
 
@@ -301,8 +305,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, session?: SessionInfo) => void
+  onArchiveSession: (sessionId: string, session?: SessionInfo) => void
   onBranchSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
   /** Create a brand-new session and open it as a tile. `dir` is the dock edge
@@ -593,26 +597,14 @@ export function ChatSidebar({
   // Comparing one identity against the other is how a pinned session ended up
   // rendered twice — once in Pinned, once in its project group.
   const pinnedIdentitySet = useMemo(() => {
-    const ids = new Set(pinnedSessionIds)
-
-    for (const session of pinnedSessions) {
-      ids.add(session.id)
-
-      if (session._lineage_root_id) {
-        ids.add(session._lineage_root_id)
-      }
-    }
-
-    return ids
-  }, [pinnedSessionIds, pinnedSessions])
+    return new Set(pinnedSessions.map(session => sessionLineageIdentityKey(session)))
+  }, [pinnedSessions])
 
   // A pinned session belongs to the Pinned section and nowhere else, so every
   // other list filters it out. Match on either identity the row carries — a
   // backend snapshot can surface either side of a compression tip rotation.
   const isPinnedSession = useCallback(
-    (session: SessionInfo) =>
-      pinnedIdentitySet.has(session.id) ||
-      (session._lineage_root_id != null && pinnedIdentitySet.has(session._lineage_root_id)),
+    (session: SessionInfo) => pinnedIdentitySet.has(sessionLineageIdentityKey(session)),
     [pinnedIdentitySet]
   )
 
@@ -669,17 +661,25 @@ export function ChatSidebar({
 
     for (const s of sortedSessions) {
       if (sessionMatchesSearch(s, trimmedQuery)) {
-        out.set(s.id, s)
+        out.set(sessionIdentityKey(s), s)
       }
     }
 
     for (const match of serverMatches) {
-      if (out.has(match.session_id)) {
+      const hasExplicitOwner = Boolean(match.profile?.trim() || match.connection_id?.trim())
+      const matchKey = sessionIdentityKey({
+        connection_id: match.connection_id ?? undefined,
+        id: match.session_id,
+        profile: match.profile ?? undefined
+      })
+
+      if (out.has(matchKey)) {
         continue
       }
 
-      const loaded = sessionByAnyId.get(match.session_id)
-      out.set(match.session_id, loaded ?? searchResultToSession(match))
+      const loaded =
+        sessionByAnyId.get(matchKey) ?? (!hasExplicitOwner ? sessionByAnyId.get(match.session_id) : undefined)
+      out.set(matchKey, loaded ?? searchResultToSession(match))
     }
 
     return [...out.values()]

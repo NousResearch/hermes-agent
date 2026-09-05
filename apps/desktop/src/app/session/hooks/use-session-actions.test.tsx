@@ -4203,6 +4203,39 @@ describe('removeSession / archiveSession profile routing (#78836)', () => {
     return handle!
   }
 
+  it('deletes only the clicked same-id gateway twin', async () => {
+    mockDeleteSession.mockResolvedValue({ ok: true })
+    const gatewayA = storedSession({ connection_id: 'gateway-a', id: 'same-id', profile: 'default' })
+    const gatewayB = storedSession({ connection_id: 'gateway-b', id: 'same-id', profile: 'default' })
+    setSessions([gatewayA, gatewayB])
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.removeSession(gatewayB.id, gatewayB)
+    })
+
+    expect(mockDeleteSession).toHaveBeenCalledWith('same-id', { connectionId: 'gateway-b', profile: 'default' })
+    expect($sessions.get()).toEqual([gatewayA])
+  })
+
+  it('archives only the clicked same-id gateway twin', async () => {
+    mockSetSessionArchived.mockResolvedValue({ ok: true })
+    const gatewayA = storedSession({ connection_id: 'gateway-a', id: 'same-id', profile: 'default' })
+    const gatewayB = storedSession({ connection_id: 'gateway-b', id: 'same-id', profile: 'default' })
+    setSessions([gatewayA, gatewayB])
+
+    const handle = await readyActions()
+    await act(async () => {
+      await handle.archiveSession(gatewayB.id, gatewayB)
+    })
+
+    expect(mockSetSessionArchived).toHaveBeenCalledWith('same-id', true, {
+      connectionId: 'gateway-b',
+      profile: 'default'
+    })
+    expect($sessions.get()).toEqual([gatewayA])
+  })
+
   it('DELETEs a stamped messaging session against its owning profile', async () => {
     mockDeleteSession.mockResolvedValue({ ok: true })
     setMessagingSessions([

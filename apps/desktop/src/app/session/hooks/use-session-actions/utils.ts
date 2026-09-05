@@ -16,6 +16,7 @@ import {
   $sessions,
   commitWorkspaceCwdForSelectedSession,
   releaseWorkspaceCwdOwner,
+  sessionMatchesTarget,
   sessionMatchesStoredId,
   setCronSessions,
   setCurrentBranch,
@@ -37,7 +38,7 @@ import type { SessionProfileRoute } from '@/store/session-request-router'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
-export { sessionMatchesStoredId }
+export { sessionMatchesStoredId, sessionMatchesTarget }
 import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
@@ -1329,9 +1330,11 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
 export type ListedSessionSlice = 'cron' | 'messaging' | 'sessions'
 
 export function findListedSession(
-  storedSessionId: string
+  storedSessionId: string,
+  target?: SessionInfo
 ): { session: SessionInfo; slice: ListedSessionSlice } | undefined {
-  const match = (session: SessionInfo) => sessionMatchesStoredId(session, storedSessionId)
+  const match = (session: SessionInfo) =>
+    target ? sessionMatchesTarget(session, target, storedSessionId) : sessionMatchesStoredId(session, storedSessionId)
   const fromMessaging = $messagingSessions.get().find(match)
 
   if (fromMessaging) {
@@ -1353,16 +1356,19 @@ export function findListedSession(
   return undefined
 }
 
-export function dropListedSession(storedSessionId: string): void {
-  const keep = (session: SessionInfo) => !sessionMatchesStoredId(session, storedSessionId)
+export function dropListedSession(storedSessionId: string, target?: SessionInfo): void {
+  const keep = (session: SessionInfo) =>
+    !(target
+      ? sessionMatchesTarget(session, target, storedSessionId)
+      : sessionMatchesStoredId(session, storedSessionId))
 
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
 }
 
-export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
-  const target: ListedSessionSlice =
+export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice, target?: SessionInfo): void {
+  const targetSlice: ListedSessionSlice =
     slice ??
     (isMessagingSource(session.source)
       ? 'messaging'
@@ -1372,16 +1378,18 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 
   const prepend = (prev: SessionInfo[]) => [
     session,
-    ...prev.filter(existing => !sessionMatchesStoredId(existing, session.id))
+    ...prev.filter(existing =>
+      target ? !sessionMatchesTarget(existing, target, session.id) : !sessionMatchesStoredId(existing, session.id)
+    )
   ]
 
-  if (target === 'messaging') {
+  if (targetSlice === 'messaging') {
     setMessagingSessions(prepend)
 
     return
   }
 
-  if (target === 'cron') {
+  if (targetSlice === 'cron') {
     setCronSessions(prepend)
 
     return

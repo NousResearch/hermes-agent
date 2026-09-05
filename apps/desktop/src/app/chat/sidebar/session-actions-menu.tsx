@@ -24,7 +24,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { renameSession } from '@/hermes'
+import { renameSession, type ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES } from '@/lib/profile-color'
@@ -32,6 +32,7 @@ import { exportSession } from '@/lib/session-export'
 import { activeGateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $projectTree, moveSessionToProject, projectIdForCwd, projectRootCwd } from '@/store/projects'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $activeSessionId,
   $connection,
@@ -39,11 +40,13 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   markSessionRead,
+  sessionMatchesOwner,
   sessionMatchesStoredId,
   sessionPinId,
   setSessions
 } from '@/store/session'
 import { $sessionColorOverrides, setSessionColorOverride } from '@/store/session-color'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
@@ -69,9 +72,15 @@ import type { SessionTitleResponse } from '../../types'
 export async function renameSessionPreferringRpc(
   storedSessionId: string,
   title: string,
-  profile?: string
+  scope?: ProfileScope
 ): Promise<{ title?: string }> {
-  const isActiveRow = storedSessionId === $selectedStoredSessionId.get()
+  const owner = scope && typeof scope === 'object' && 'connectionId' in scope ? scope : undefined
+  const activeConnectionId = $connection.get()?.connectionId?.trim() || null
+  const ownerMatchesActive =
+    !owner ||
+    (owner.connectionId?.trim() === activeConnectionId &&
+      normalizeProfileKey(owner.profile) === normalizeProfileKey($activeGatewayProfile.get()))
+  const isActiveRow = storedSessionId === $selectedStoredSessionId.get() && ownerMatchesActive
   const runtimeId = isActiveRow ? $activeSessionId.get() : null
   const gateway = activeGateway()
 
@@ -92,7 +101,7 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, profile)
+  return renameSession(storedSessionId, title, scope)
 }
 
 interface SessionActions {
@@ -102,6 +111,8 @@ interface SessionActions {
   /** Backend-derived read state — drives the Mark as unread/read label. */
   unread?: boolean
   profile?: string
+  /** Exact owner for a row in an all-gateways sidebar. */
+  owner?: SessionOwnerRoute
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
@@ -187,6 +198,7 @@ function useSessionActions({
   pinned = false,
   unread = false,
   profile,
+  owner,
   onPin,
   onToggleUnread,
   onBranch,
@@ -524,6 +536,7 @@ function useSessionActions({
       currentTitle={title}
       onOpenChange={setRenameOpen}
       open={renameOpen}
+      owner={owner}
       profile={profile}
       sessionId={sessionId}
     />
@@ -640,9 +653,17 @@ interface RenameSessionDialogProps {
   sessionId: string
   currentTitle: string
   profile?: string
+  owner?: SessionOwnerRoute
 }
 
-function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, profile }: RenameSessionDialogProps) {
+function RenameSessionDialog({
+  open,
+  onOpenChange,
+  sessionId,
+  currentTitle,
+  profile,
+  owner
+}: RenameSessionDialogProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const [value, setValue] = useState(currentTitle)
@@ -672,9 +693,18 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
-      const result = await renameSessionPreferringRpc(sessionId, next, profile)
+      const result = await renameSessionPreferringRpc(sessionId, next, owner ?? profile)
       const finalTitle = result.title || next || ''
-      setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+      setSessions(prev =>
+        prev.map(s => {
+          const matches = owner
+            ? sessionMatchesStoredId(s, sessionId) &&
+              sessionMatchesOwner(s, { connection_id: owner.connectionId, profile: owner.profile })
+            : s.id === sessionId
+
+          return matches ? { ...s, title: finalTitle || null } : s
+        })
+      )
       notify({ durationMs: 2_000, kind: 'success', message: r.renamed })
       onOpenChange(false)
     } catch (err) {

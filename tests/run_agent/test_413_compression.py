@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
+from hermes_state import SessionDB
 from run_agent import AIAgent
 import run_agent
 
@@ -1208,6 +1209,163 @@ class TestPreflightCompression:
         assert agent.context_compressor.awaiting_real_usage_after_compression is True
         assert agent.context_compressor._ineffective_compression_count == 2
         assert agent.context_compressor._last_compression_savings_pct == 0.0
+
+    @pytest.mark.parametrize(
+        ("failure_kind", "expected_provider_calls"),
+        [("interrupt", 0), ("provider_error", 3)],
+    )
+    def test_pending_native_checkpoint_recovers_after_failed_turn(
+        self, agent, failure_kind, expected_provider_calls
+    ):
+        """A failed turn preserves the latch only until a response arrives.
+
+        Clearing it on interrupt/error would expose the next turn to the same
+        ciphertext-driven false preflight compaction. Keeping it armed does not
+        park the compressor: the next request bypasses local preflight, reaches
+        the provider, and real usage consumes the latch.
+        """
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 130_000
+        agent.context_compressor.note_native_compaction_checkpoint()
+        if failure_kind == "interrupt":
+            agent._interrupt_requested = True
+        else:
+            agent.client.chat.completions.create.side_effect = RuntimeError(
+                "provider died"
+            )
+
+        with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=1_300_000),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            failed = agent.run_conversation("first request")
+
+        if failure_kind == "interrupt":
+            assert failed["interrupted"] is True
+            agent._interrupt_requested = False
+        else:
+            assert failed["failed"] is True
+        assert (
+            agent.client.chat.completions.create.call_count
+            == expected_provider_calls
+        )
+        assert agent.context_compressor.awaiting_real_usage_after_compression is True
+
+        agent.client.chat.completions.create.reset_mock()
+        agent.client.chat.completions.create.side_effect = None
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Recovered",
+            usage={
+                "prompt_tokens": 65_000,
+                "completion_tokens": 100,
+                "total_tokens": 65_100,
+            },
+        )
+
+        with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=1_300_000),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            recovered = agent.run_conversation("retry after failure")
+
+        assert recovered["completed"] is True
+        assert recovered["final_response"] == "Recovered"
+        mock_compress.assert_not_called()
+        assert agent.client.chat.completions.create.call_count == 1
+        assert agent.context_compressor.awaiting_real_usage_after_compression is False
+        assert agent.context_compressor.last_prompt_tokens == 65_000
+
+    def test_restored_native_checkpoint_defers_first_local_compaction(
+        self, agent, tmp_path
+    ):
+        """A checkpoint restored into a fresh agent must reach its issuer once.
+
+        The in-memory native-checkpoint latch is lost across process restart.  Rehydrate
+        it from the durable reasoning sidecar before either idle or threshold preflight
+        can summarize the opaque checkpoint using its ciphertext-sized rough estimate.
+        """
+        db_path = tmp_path / "state.db"
+        session_id = "restored-native-checkpoint"
+        checkpoint = {
+            "type": "compaction",
+            "encrypted_content": "opaque-checkpoint",
+            "_issuer_kind": "codex_backend",
+        }
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id, source="test")
+        db.append_message(session_id, "user", "before restart")
+        db.append_message(
+            session_id,
+            "assistant",
+            "checkpoint captured",
+            codex_reasoning_items=[checkpoint],
+        )
+        db.close()
+
+        reopened = SessionDB(db_path=db_path)
+        history = reopened.get_messages_as_conversation(session_id)
+        reopened.close()
+        assert history[-1]["codex_reasoning_items"] == [checkpoint]
+
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.6-sol"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_hostname = "chatgpt.com"
+        agent._base_url_lower = agent.base_url
+        agent.codex_responses_native_compaction = True
+        agent.runtime_capabilities = {"native_compaction": True}
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 130_000
+        # Exercise the idle pass too: it runs before threshold preflight and must honor
+        # the same one-response checkpoint latch on a long-idle restored session.
+        agent.compression_idle_compact_after_seconds = 1
+        agent._last_activity_ts = 0
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Resumed")],
+                )
+            ],
+            usage=SimpleNamespace(
+                input_tokens=65_000,
+                output_tokens=100,
+                total_tokens=65_100,
+            ),
+            status="completed",
+            incomplete_details=None,
+            model="gpt-5.6-sol",
+        )
+
+        with (
+            patch(
+                "agent.codex_responses_adapter.estimate_native_responses_preflight_tokens",
+                return_value=1_300_000,
+            ),
+            patch.object(agent, "_run_codex_stream", return_value=response) as provider,
+            patch.object(agent, "_compress_context") as local_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            resumed = agent.run_conversation(
+                "after restart", conversation_history=history
+            )
+
+        assert resumed["completed"] is True
+        assert resumed["final_response"] == "Resumed"
+        local_compress.assert_not_called()
+        provider.assert_called_once()
+        assert agent.context_compressor.awaiting_real_usage_after_compression is False
+        assert agent.context_compressor.last_prompt_tokens == 65_000
 
 
 class TestToolResultPreflightCompression:

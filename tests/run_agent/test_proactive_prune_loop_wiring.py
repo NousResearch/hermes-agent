@@ -83,6 +83,7 @@ def _quiet_compressor() -> MagicMock:
     compressor.threshold_tokens = 500_000
     compressor.context_length = 1_000_000
     compressor.last_prompt_tokens = 120_000
+    compressor.awaiting_real_usage_after_compression = False
     compressor.should_compress.return_value = False
     compressor.should_compress_info.return_value = (False, None)
     compressor.should_defer_preflight_to_real_usage.return_value = True

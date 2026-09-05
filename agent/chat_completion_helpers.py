@@ -1720,6 +1720,19 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         value = getattr(assistant_message, attr, None)
         if value:
             msg[attr] = value
+            if attr == "codex_reasoning_items":
+                from agent.codex_responses_adapter import (
+                    has_replayable_native_compaction_checkpoint,
+                )
+
+                note_checkpoint = getattr(
+                    agent.context_compressor, "note_native_compaction_checkpoint", None
+                )
+                if (
+                    callable(note_checkpoint)
+                    and has_replayable_native_compaction_checkpoint(agent, [msg])
+                ):
+                    note_checkpoint()
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]

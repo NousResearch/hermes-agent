@@ -440,7 +440,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 |---|---|---|---|---|
 | [`pre_tool_call`](#pre_tool_call) | Directive/control | Once before execution; first valid `block` or `approve` directive wins, and `modify` returns are shallow-merged into the tool arguments. | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | Raw arguments may contain user content, paths, commands, or secrets. |
 | `post_tool_call` | Observer | After blocked, error, or successful result; return ignored. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | Result/error text may contain arbitrary tool or user content and secrets. |
-| `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
+| `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; the first string or multimodal tool-result envelope replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
@@ -1409,17 +1409,17 @@ Not every backend accepts a prompt. `local` maps it to faster-whisper's `initial
 
 ### `transform_tool_result`
 
-Fires **after** a tool returns and **before** the result is appended to the conversation. Lets a plugin rewrite ANY tool's result string — not just terminal output — before the model sees it.
+Fires **after** a tool returns and **before** the result is appended to the conversation. Lets a plugin rewrite ANY tool's result string — not just terminal output — before the model sees it, or attach an image to it.
 
 **Callback signature:**
 
 ```python
-def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs) -> str | None:
+def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs) -> str | dict | None:
 ```
 
 The full payload also includes `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, and `error_message`. `result` is the final result returned by tool dispatch; it and `args` can contain arbitrary user/tool content and secrets.
 
-**Return value:** The first `str` replaces the result (including an empty string); `None` leaves it unchanged.
+**Return value:** The first `str` replaces the result (including an empty string); `None` leaves it unchanged. A multimodal tool-result envelope also replaces the result: `{"_multimodal": True, "content": [<OpenAI-style parts, e.g. a text part and an image_url part>], "text_summary": "<plain-text fallback>"}`, the shape `browser_vision` and `computer_use` return. That lets a plugin hand the model a screenshot beside a tool's result; providers that cannot take images in a tool result read `text_summary`. Any other dict is ignored.
 
 **Use cases:** Redact organization-specific PII from `web_extract` output, wrap long JSON tool responses in a summary header, inject retrieval-augmented hints into `read_file` results, rewrite `delegate_task` subagent reports into a project-specific schema.
 

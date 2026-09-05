@@ -355,7 +355,7 @@ class GatewayStartupMixin:
                     return
                 target = platform if isinstance(platform, Platform) else Platform(pvalue)
                 await self._redeliver_failed_obligations_for_platform(target, profile=profile)
-                await self._arm_flood_timers_for_waiting_rows()
+                self._arm_flood_timers_for_waiting_rows()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -376,13 +376,19 @@ class GatewayStartupMixin:
                     key[0], key[1], delay)
         return delay
 
-    async def _arm_flood_timers_for_waiting_rows(self) -> int:
+    def _arm_flood_timers_for_waiting_rows(self) -> int:
         """Arm a redelivery timer for every adapter identity that still owns a flood-refused row: rows
         adopted from a dead owner at boot, rows a sweep skipped because their wait had not passed, rows
-        refused again on redelivery. Best-effort; returns how many timers were armed."""
+        refused again on redelivery. Best-effort; returns how many timers were armed.
+
+        The ledger read is synchronous on purpose. A running timer clears its slot right after this
+        call, and a concurrent flood refusal's ``_schedule_flood_redelivery`` is declined while that
+        slot is occupied; reading in a worker thread would let that refusal's row be recorded during
+        the yield, after this snapshot was taken but before the slot is freed, and its timer request
+        would be lost. A single indexed SELECT on a small table does not need to leave the loop."""
         try:
             from gateway.delivery_ledger import pending_flood_retries
-            waiting = await asyncio.to_thread(pending_flood_retries)
+            waiting = pending_flood_retries()
         except Exception:
             logger.debug("could not list waiting flood-refused rows", exc_info=True)
             return 0
@@ -441,7 +447,7 @@ class GatewayStartupMixin:
         # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
         # again just now) gets a timer, so no flood-refused reply waits for the next restart.
         with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
-            await self._arm_flood_timers_for_waiting_rows()
+            self._arm_flood_timers_for_waiting_rows()
         return redelivered
 
     async def _obligation_adapter(self, row: dict):

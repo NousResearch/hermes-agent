@@ -1,4 +1,4 @@
-"""A flood-refused final reply is redelivered once the penalty passes, plainly when that is safe.
+"""A flood-refused final reply is redelivered once the penalty passes.
 
 Adapters fail a flood-controlled final send closed as ``flood_control:<seconds>`` so
 the send coroutine never sleeps a long penalty (#91969). The comment there says the
@@ -6,8 +6,8 @@ delivery ledger owns the wait. It did not: ``sweep_failed_for_runtime`` only rep
 ``send_path_degraded`` rows, so a flood-refused row sat in ``failed`` until the next
 restart's ``sweep_recoverable``, which redelivered it hours late under the "gateway
 restarted during delivery" marker. On 5 Sep 2026 a reply refused at 08:58 arrived at
-12:15 that way, labelled as a possible duplicate although the platform had never
-accepted it.
+12:15 that way, labelled as a possible duplicate although whether the platform had
+accepted any part of it was unknowable.
 
 Now:
 - ``flood_control:*`` rows are runtime-retryable, but only once their own deadline
@@ -484,6 +484,35 @@ async def test_a_shorter_refusal_replaces_a_longer_timer_that_is_still_asleep(fa
     assert contents == [dl.FLOOD_MARKER + "short one", dl.FLOOD_MARKER + "long one"]
     assert fake_sleep == [pytest.approx(12.0), pytest.approx(175.0)], "the 187s sleep never happened"
     assert _row("ob-short")["attempts"] == 1 and _row("ob-long")["attempts"] == 1
+    assert runner._flood_redelivery_tasks == {} and runner._flood_redelivery_slots == {}
+
+
+@pytest.mark.asyncio
+async def test_a_row_refused_while_the_timer_sweeps_is_armed_by_that_same_timer(fake_sleep):
+    """A final refused during the timer's own redelivery send lands in the ledger after the sweep
+    started. The timer's synchronous post-sweep arm reads the ledger once the sends are done and
+    picks it up, so the row is never left without a timer."""
+    _record("ob-first")
+    dl.mark_failed("ob-first", "flood_control:10")
+    adapter = _adapter(success=True)
+    runner = _runner(adapter)
+    fired = {"done": False}
+
+    async def _send(**kwargs):
+        if not fired["done"]:
+            fired["done"] = True
+            _record("ob-second", content="refused mid-sweep")
+            dl.mark_failed("ob-second", "flood_control:10")
+            # A concurrent refusal's schedule request is declined while this timer holds the slot.
+            runner._schedule_flood_redelivery(Platform.TELEGRAM, error="flood_control:10")
+        return SendResult(success=True, message_id="9")
+
+    adapter.send = AsyncMock(side_effect=_send)
+    runner._schedule_flood_redelivery(Platform.TELEGRAM, error="flood_control:10")
+    await _drain_timers(runner)
+
+    assert _row("ob-first")["state"] == "delivered"
+    assert _row("ob-second")["state"] == "delivered", "the mid-sweep refusal was armed by the same timer"
     assert runner._flood_redelivery_tasks == {} and runner._flood_redelivery_slots == {}
 
 

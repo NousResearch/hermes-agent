@@ -2523,6 +2523,26 @@ def cmd_dashboard(args):
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)
 
+    # ── Register declarative shell hooks from cli-config.yaml ──────────
+    # `serve`/`dashboard` are not in _AGENT_COMMANDS, so the CLI-side
+    # register_from_config in _prepare_agent_startup never runs here — the
+    # desktop backend would silently run WITHOUT pre_tool_call hooks
+    # (budget gate, danger, memory routing, skill gate). Mirror the gateway
+    # (gateway/run.py) so allowlisted hooks fire for desktop sessions too.
+    # accept_hooks=False: register_from_config resolves the effective
+    # consent from env + config itself; non-TTY start only registers
+    # allowlisted hooks. Failures are logged, never block startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        _hooks_cfg = load_config()
+        register_from_config(_hooks_cfg, accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "Shell-hook registration failed at dashboard startup",
+            exc_info=True,
+        )
+
     from hermes_cli.web_server import start_server
 
     # Interactive auth setup: if this bind will engage the auth gate but no

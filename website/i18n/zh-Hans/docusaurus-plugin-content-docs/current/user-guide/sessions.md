@@ -612,3 +612,80 @@ hermes sessions prune --older-than 30 --yes
 :::tip
 数据库增长缓慢（典型情况：数百个 session 约 10–15 MB），session 历史为跨历史对话的 `session_search` 召回提供支持，因此自动清理默认关闭。如果你运行繁重的 gateway/cron 工作负载且 `state.db` 明显影响性能（已观察到的故障模式：约 1000 个 session 的 384 MB state.db 导致 FTS5 插入和 `/resume` 列表变慢），则启用它。使用 `hermes sessions prune` 进行一次性清理，无需开启自动清理。
 :::
+### 修复孤立的压缩链 {#repair-orphaned-compression-chains}
+
+旧版 Hermes 将长对话的压缩续写写成了**独立的根会话**（没有 `parent_session_id` 链接，父会话也没有标记压缩结束）。侧边栏随后会显示多个标题相同但实为同一对话的条目。
+
+`hermes sessions repair-chains` 检测看似孤立片段的根会话组，配合 `--apply` 将它们重新链接到每组最老的根会话下：
+
+```bash
+# 仅报告——显示每组及其证据
+hermes sessions repair-chains
+
+# 重新链接（先显示交互式清单并自动创建 state.db 快照）
+hermes sessions repair-chains --apply
+```
+
+证据规则：
+
+- **强信号**——至少一个根会话的首条消息是压缩交接（compaction handoff）；这些组在清单中默认勾选
+- **弱信号**——根会话标题相同但没有交接；默认**不勾选**并给出警告（重复的 kanban 子任务可能合理地共用标题），你可以勾选以强制重新链接
+
+委托（delegate）/分支（branch）/工具（tool）子会话始终排除——它们绝不是压缩续写。每次重新链接都会将父会话标记为压缩结束，使链以正常的压缩谱系渲染，并且整个批次在一个事务中执行，且先创建快照。
+
+### 重新生成缺失的会话标题 {#retitle-missing-session-titles}
+
+在跟踪标题来源之前创建的行（或由截断标题的 bug 创建的行）可能带有裸首条消息截断或空标题。`hermes sessions retitle-missing` 重新生成它们：
+
+```bash
+# 仅报告——列出将要更改的内容
+hermes sessions retitle-missing
+
+# 重新生成（先显示交互式清单并自动创建快照）
+hermes sessions retitle-missing --apply
+
+# 排除空链段（关闭继承）或旧版截断标题
+hermes sessions retitle-missing --apply --no-chain-inherit --no-legacy-truncated
+
+# 限制每次运行重新生成的标题数量（默认 500）
+hermes sessions retitle-missing --apply --limit 100
+```
+
+根会话从配置的标题生成模型获取标题；空链段继承最近的已命名祖先（通过 `#N` 去重）。用户手动命名的行（`title_source = 'user'`）**永不**触碰，旧版/空字符串行以用户级别写入，使修复明确而非自动覆盖。报告模式（不带 `--apply`）**永不调用标题模型**——需要 LLM 生成的候选在汇总中列为 `would_generate`，预览不消耗任何 token。只有 `--apply` 才调用模型，且先展示配置的模型（云端端点时显示费用警告）供确认。
+
+### 合并 fork 压缩链 {#merge-fork-compression-chains}
+
+当对话被拆分为一个头会话加上压缩链接的链段（fork 链）时，`hermes sessions merge-chains` 会将它们合并回一个就地会话——与现代就地压缩存储同一对话的方式一致：
+
+```bash
+# 仅报告
+hermes sessions merge-chains
+
+# 合并（先显示交互式清单并自动创建快照）
+hermes sessions merge-chains --apply
+```
+
+合并会将链段消息移到头会话（id 不变），合并 token/费用计数与 `session_model_usage` 行（不会因级联删除而丢失），重定向任何孤立子会话，继承链尾的终止结束状态，并删除链段行。整个批次是一个事务，之后会验证消息总数。
+
+### 恢复会话数据库 {#restore-the-session-database}
+
+上述每个维护命令在写入前都会创建带时间戳的 `state.db` 快照（同目录下的 `state.db.pre-<标签>-<时间戳>`）。`hermes sessions restore-db` 从其中一个快照恢复：
+
+```bash
+# 恢复最新快照（存在多个时显示交互式选择器）
+hermes sessions restore-db
+
+# 显式恢复特定快照（适合脚本）
+hermes sessions restore-db --snapshot state.db.pre-merge-chains-20260815_010000
+
+# 试运行——仅报告将停止和恢复的内容
+hermes sessions restore-db --dry-run
+```
+
+安全保障：
+
+- 所选快照在写入前**必须通过完整性校验**——损坏的快照绝不能替换实时数据库，此检查不可跳过；恢复后的文件会在覆盖后再次校验
+- 持有 `state.db` 的进程（gateway、dashboard 后端、TUI）会先被停止——在实时数据库上恢复会损坏它。没有 `--force` 时，存在活动持有者会中止恢复
+- 被停止的进程**不会自动重启**——会打印它们的确切重启命令，以便你检查恢复后的数据库，再让新的 gateway 开始写入
+
+三个 `--apply` 命令完成时会打印 `restore-db` 提示，撤销变更只需一条命令。

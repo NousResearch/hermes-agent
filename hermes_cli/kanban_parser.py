@@ -330,6 +330,12 @@ _SPECS = [
         _arg("--dry-run", action="store_true", help="Validate the promotion without mutating state"),
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
+    _cmd("triage-gate", [
+        _TASK_ID,
+        _arg("reason", nargs="+", help="Human-gate reason (recorded in the audit event)"),
+        _arg("--dry-run", action="store_true", help="Validate the expected triage state without mutating it"),
+        _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
+    ], help="Move a triage task to the blocked human-input gate"),
     _cmd("archive", [
         _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
         _arg("--rm", dest="purge_ids", nargs="+",

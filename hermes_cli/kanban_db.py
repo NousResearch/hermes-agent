@@ -1975,10 +1975,11 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
-        "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
+        "WHERE task_id = ? AND kind IN "
+        "('blocked', 'triage_human_gate', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    return bool(row) and row["kind"] == "blocked"
+    return bool(row) and row["kind"] in {"blocked", "triage_human_gate"}
 
 
 def _latest_event(
@@ -3221,6 +3222,70 @@ def promote_task(
             conn, task_id, "promoted_manual", {"actor": actor, "reason": reason, "forced": force},
         )
 
+    return True, None
+
+
+def route_triage_to_human_gate(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    reason: str,
+    expected_status: str = "triage",
+    dry_run: bool = False,
+) -> tuple[bool, Optional[str]]:
+    """Move a triage task to the human ``blocked`` gate.
+
+    This narrow compare-and-set transition preserves the task payload, graph,
+    assignee, and retry history. Its audit event records inverse status and
+    block kind for durable rollback evidence.
+    """
+    reason = str(reason or "").strip()
+    if expected_status != "triage":
+        return False, "expected_status must be 'triage'"
+    if not reason:
+        return False, "reason is required"
+    row = conn.execute(
+        "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, f"task {task_id} not found"
+    if row["status"] != expected_status:
+        return False, (
+            f"task {task_id} is {row['status']!r}; expected {expected_status!r}"
+        )
+    if dry_run:
+        return True, None
+
+    prior_kind = row["block_kind"]
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status = 'blocked', block_kind = ?,
+                   claim_lock = NULL, claim_expires = NULL,
+                   worker_pid = NULL, current_run_id = NULL
+             WHERE id = ? AND status = ?
+            """,
+            ("needs_input", task_id, expected_status),
+        )
+        if cur.rowcount != 1:
+            return False, f"task {task_id} status changed during human-gate repair"
+        _append_event(
+            conn, task_id, "triage_human_gate",
+            {
+                "actor": actor,
+                "reason": reason,
+                "source_status": expected_status,
+                "target_status": "blocked",
+                "target_block_kind": "needs_input",
+                "rollback": {
+                    "status": expected_status,
+                    "block_kind": prior_kind,
+                    "expected_status": "blocked",
+                },
+            },
+        )
     return True, None
 
 

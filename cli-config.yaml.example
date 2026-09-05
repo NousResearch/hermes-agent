@@ -943,8 +943,8 @@ session_reset:
 # The default keeps the 20 newest dumps globally after each successful write.
 # Set to 0 or a negative value to disable pruning when cleanup is managed
 # externally.
-sessions:
-  request_dump_retention: 20
+# sessions:
+#   request_dump_retention: 20
 
 # Maximum number of simultaneously active chat sessions across CLI, TUI,
 # dashboard chat, and messaging gateway. Set to null, 0, or omit to allow

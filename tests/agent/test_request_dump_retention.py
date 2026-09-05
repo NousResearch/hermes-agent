@@ -7,7 +7,6 @@ import types
 from pathlib import Path
 
 import pytest
-import yaml
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -190,15 +189,19 @@ def test_absent_retention_key_resolves_to_bounded_default(hermes_home):
     )
 
 
-def test_request_dump_default_is_one_invariant_across_code_and_config():
+def test_installed_template_inherits_request_dump_default(hermes_home):
     from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.config import load_config_readonly
 
     example = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
-    example_config = yaml.safe_load(example.read_text(encoding="utf-8"))
+    (hermes_home / "config.yaml").write_text(
+        example.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     declared = DEFAULT_CONFIG["sessions"]["request_dump_retention"]
 
     assert agent_runtime_helpers._REQUEST_DUMP_DEFAULT_KEEP == declared
-    assert example_config["sessions"]["request_dump_retention"] == declared
+    assert load_config_readonly()["sessions"]["request_dump_retention"] == declared
+    assert agent_runtime_helpers._request_dump_keep() == declared
 
 
 def _ordered_dumps(directory: Path, count: int):

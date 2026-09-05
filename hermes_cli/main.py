@@ -1779,6 +1779,7 @@ cmd_status = _forward_command("cmd_status", "hermes_cli.status", "show_status", 
 cmd_cron = _forward_command("cmd_cron", "hermes_cli.cron", "cron_command", doc='Cron job management.')
 cmd_webhook = _forward_command("cmd_webhook", "hermes_cli.webhook", "webhook_command", doc='Webhook subscription management.')
 cmd_kanban = _forward_command("cmd_kanban", "hermes_cli.kanban", "kanban_command", forward_return=True, doc='Multi-profile collaboration board.')
+cmd_autodevelop = _forward_command("cmd_autodevelop", "hermes_cli.autodevelop", "autodevelop_command", forward_return=True, doc='BYOK community issue-queue drain.')
 cmd_project = _forward_command("cmd_project", "hermes_cli.projects_cmd", "projects_command", forward_return=True, doc='Manage projects (named, multi-folder workspaces).')
 cmd_hooks = _forward_command("cmd_hooks", "hermes_cli.hooks", "hooks_command", doc='Shell-hook inspection and management.')
 cmd_doctor = _forward_command("cmd_doctor", "hermes_cli.doctor", "run_doctor", doc='Check configuration and dependencies.')
@@ -2596,7 +2597,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "gui", "desktop", "kanban", "autodevelop", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
@@ -3205,6 +3206,9 @@ def _build_cli_parser():
 
     from hermes_cli.kanban import build_parser as _build_kanban_parser
     _build_kanban_parser(subparsers).set_defaults(func=cmd_kanban)
+
+    from hermes_cli.autodevelop import build_parser as _build_autodevelop_parser
+    _build_autodevelop_parser(subparsers).set_defaults(func=cmd_autodevelop)
 
     from hermes_cli.projects_cmd import build_parser as _build_project_parser
     _build_project_parser(subparsers).set_defaults(func=cmd_project)

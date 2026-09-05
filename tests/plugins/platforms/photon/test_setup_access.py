@@ -192,3 +192,57 @@ def test_setup_regenerates_when_existing_secret_invalid(
     out = capsys.readouterr().out
     assert "new secret saved" in out
     assert "restart it so the sidecar" in out
+
+
+@pytest.mark.parametrize("entrypoint", ["command", "gateway"])
+@pytest.mark.parametrize("writable", [True, False], ids=["writable", "write-fails"])
+def test_setup_config_enablement(monkeypatch, capsys, entrypoint, writable):
+    """Both setup entrypoints succeed only after enabled is saved to config."""
+    import yaml
+
+    from hermes_cli import config
+    from hermes_constants import get_hermes_home
+
+    monkeypatch.setattr(cli.photon_auth, "load_photon_token", lambda: "test-token")
+    monkeypatch.setattr(cli.photon_auth, "check_photon_token_valid", lambda token: True)
+    monkeypatch.setattr(cli.photon_auth, "load_dashboard_project_id", lambda: "test-project")
+    monkeypatch.setattr(
+        cli.photon_auth, "load_project_credentials", lambda: ("test-project", "test-secret"),
+    )
+    monkeypatch.setattr(cli.photon_auth, "list_users", lambda *args: [])
+    monkeypatch.setattr(cli.photon_auth, "store_project_credentials", lambda **kwargs: None)
+    monkeypatch.setattr(cli.photon_auth, "get_imessage_line", lambda *args: None)
+    monkeypatch.setattr(cli, "_prompt", lambda *args: "")
+    monkeypatch.setattr(cli, "_install_sidecar", lambda: 0)
+
+    config_path = get_hermes_home() / "config.yaml"
+    config_path.write_text("platforms:\n  photon:\n    enabled: false\n", encoding="utf-8")
+    if not writable:
+        def fail_write(*args, **kwargs):
+            raise PermissionError("test config is read-only")
+
+        monkeypatch.setattr(config, "write_platform_config_field", fail_write)
+
+    if entrypoint == "gateway":
+        if writable:
+            assert cli.gateway_setup() is None
+        else:
+            with pytest.raises(SystemExit) as exc:
+                cli.gateway_setup()
+            assert exc.value.code == 1
+    else:
+        rc = cli._cmd_setup(argparse.Namespace(
+            project_name=None, phone=None, first_name=None, last_name=None,
+            email=None, no_browser=True, skip_sidecar_install=False,
+        ))
+        assert rc == (0 if writable else 1)
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["platforms"]["photon"]["enabled"] is writable
+    output = capsys.readouterr()
+    assert ("✓ Photon setup complete." in output.out) is writable
+    if not writable:
+        assert "test config is read-only" in output.err
+        assert "[photon] setup: could not enable Photon" in output.err
+        assert "\n[photon] setup: Photon stays disabled" in output.err
+        assert "photon platform enabled" not in output.out

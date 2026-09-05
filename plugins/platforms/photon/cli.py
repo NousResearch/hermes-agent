@@ -360,9 +360,9 @@ def _enable_photon_platform() -> int:
         from hermes_cli.config import write_platform_config_field
         write_platform_config_field("photon", "enabled", True, raw=True)
     except Exception as e:
-        print(f"could not enable Photon in config: {e}", file=sys.stderr)
+        print(f"[photon] setup: could not enable Photon in config: {e}", file=sys.stderr)
         print(
-            "      Photon stays disabled until config.yaml is writable; "
+            "[photon] setup: Photon stays disabled until config.yaml is writable; "
             "the gateway will not load the channel.",
             file=sys.stderr,
         )

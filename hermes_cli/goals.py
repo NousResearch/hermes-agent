@@ -909,6 +909,55 @@ def judge_goal(
     return verdict, reason, parse_failed, wait_directive, False
 
 
+# `/goal <text>` kicks the loop by sending the goal as the next user turn. When that text IS what
+# the user just said (a pasted handoff note, a plan the agent already has), re-sending it makes the
+# agent spend a turn deciding it is a replay (11 API calls, 6 min, in one run) and duplicates ~2k
+# tokens of context. The pointer is used only when the goal is substantially the WHOLE last
+# message: a short goal that merely appears inside a longer one ("ship the API" after a message
+# offering API or UI work) selects one option, and two different goals must not kick identically.
+GOAL_ALREADY_SEEN_KICK = "[Goal set] Continue with the goal you were just given; there is no need to re-read it."
+_GOAL_REPASTE_MIN_CHARS = 400
+_GOAL_REPASTE_MIN_SHARE = 0.8
+
+
+def goal_kick_prompt(goal: str, last_user_message: Any) -> str:
+    """The goal text, or ``GOAL_ALREADY_SEEN_KICK`` when ``last_user_message`` is essentially that text."""
+    content = last_user_message
+    if isinstance(content, list):
+        content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    goal_norm, last_norm = " ".join(str(goal or "").split()), " ".join(str(content or "").split())
+    if (
+        len(goal_norm) >= _GOAL_REPASTE_MIN_CHARS
+        and goal_norm in last_norm
+        and len(goal_norm) >= _GOAL_REPASTE_MIN_SHARE * len(last_norm)
+    ):
+        return GOAL_ALREADY_SEEN_KICK
+    return goal
+
+
+def last_user_message_content(history: Any) -> Any:
+    """Content of the newest ``role == "user"`` message in an OpenAI-shaped history, else ``""``."""
+    for msg in reversed(history or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return msg.get("content")
+    return ""
+
+
+def last_user_message_from_db(session_id: Optional[str]) -> Any:
+    """Newest user message of ``session_id`` from the SessionDB (gateway/TUI surfaces have no live
+    history object at slash-command time); ``""`` on any error."""
+    if not session_id:
+        return ""
+    try:
+        db = _get_session_db()
+        if db is None:
+            return ""
+        rows = db.get_messages(str(session_id), limit=20, latest=True)
+        return last_user_message_content(rows)
+    except Exception:
+        return ""
+
+
 def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """Fail-safe snapshot of RUNNING ``process_registry`` sessions for the judge; ``[]`` on any error
     so the loop degrades to its pre-wait-barrier behavior."""

@@ -709,7 +709,9 @@ def _cmd_goal(rid, params, session, name, arg):
         f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
         "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
         "Controls: /goal status · /goal pause · /goal resume · /goal clear")
-    return _ok(rid, {"type": "send", "notice": notice, "message": state.goal})
+    from hermes_cli.goals import goal_kick_prompt, last_user_message_from_db
+    kick = goal_kick_prompt(state.goal, last_user_message_from_db(getattr(mgr, "session_id", None)))
+    return _ok(rid, {"type": "send", "notice": notice, "message": kick})
 
 
 def _cmd_loop(rid, params, session, name, arg):

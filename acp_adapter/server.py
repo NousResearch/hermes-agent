@@ -307,13 +307,29 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     @staticmethod
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
-        """Resolve ``provider:model`` input into the provider and normalized model id."""
+        """Resolve ``provider:model`` input into the provider and normalized model id.
+
+        An explicit ``provider:`` prefix is authoritative: name-based provider
+        detection is skipped entirely for it.  Detection only runs for bare
+        model ids, where there is no caller-stated provider to honour.
+
+        Without that guard, ``anthropic:<model>`` sent while the session is
+        already on ``anthropic`` was indistinguishable from a bare model id,
+        so detection could reroute it to another provider while the agent kept
+        the Anthropic ``base_url`` -- yielding HTTP 404 on every request.
+        """
         target_provider, new_model = current_provider, raw_model.strip()
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input
 
+            # Probe with a sentinel provider so an explicit prefix is
+            # detectable even when it names the session's current provider.
+            _sentinel = "\x00-no-provider-\x00"
+            probe_provider, _ = parse_model_input(new_model, _sentinel)
+            explicit_provider = probe_provider != _sentinel
+
             target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
+            if not explicit_provider and target_provider == current_provider:
                 detected = detect_provider_for_model(new_model, current_provider)
                 if detected:
                     target_provider, new_model = detected

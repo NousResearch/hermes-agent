@@ -288,16 +288,15 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         text = "\n".join(text.splitlines()[max(ref.line_start - 1, 0):ref.line_end or ref.line_start])
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
-    block = f"📄 {ref.raw} ({text_tokens} tokens)\n```{lang}\n{text}\n```"
-    if max_inline_tokens is not None and estimate_tokens_rough(block) > max_inline_tokens:
+    # Check BEFORE building the fenced block: an oversized file is not going to be
+    # inlined, so don't build a second MB-scale string just to discard it.
+    if max_inline_tokens is not None and text_tokens > max_inline_tokens:
         # One oversized file used to poison the aggregate check and refuse the whole
-        # turn (#61987); the file stays readable via the agent's tools instead.
-        return (
-            f"{ref.raw}: {text_tokens} tokens is too large to inline safely; "
-            "the agent received a tool-readable path instead",
-            _oversized_text_reference_block(ref, path, text_tokens),
-        )
-    return None, block
+        # turn (#61987); the file stays readable via the agent's tools instead. The
+        # block alone carries the message (same shape as the binary path) — a warning
+        # would duplicate it in "--- Context Warnings ---".
+        return None, _oversized_text_reference_block(ref, path, text_tokens)
+    return None, f"📄 {ref.raw} ({text_tokens} tokens)\n```{lang}\n{text}\n```"
 
 
 def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
@@ -441,12 +440,7 @@ def _iter_visible_entries(path: Path, cwd: Path, limit: int) -> list[Path]:
     return output
 
 
-def _binary_reference_block(ref: ContextReference, path: Path) -> str:
-    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    try:
-        size = format_bytes(path.stat().st_size)
-    except OSError:
-        size = "unknown size"
+def _agent_visible_path(path: Path) -> str:
     # Under a container backend the host path dangles inside the sandbox: translate staged
     # files to their auto-mounted cache path; fall back to the host path (local backend /
     # translation failure). Run the idempotent TERMINAL_ENV bridge first so in-process
@@ -455,35 +449,42 @@ def _binary_reference_block(ref: ContextReference, path: Path) -> str:
         from tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
         from tools.credential_files import to_agent_visible_cache_path
-        visible = to_agent_visible_cache_path(str(path))
+        return to_agent_visible_cache_path(str(path))
     except Exception:
-        visible = str(path)
-    return (
-        f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{visible}`. Use your tools to work with it "
-        f"(read or convert it, extract its text, or view/render it as needed); "
-        f"do not tell the user the file type is unsupported."
-    )
+        return str(path)
 
 
-def _oversized_text_reference_block(ref: ContextReference, path: Path, text_tokens: int) -> str:
+def _on_disk_reference_block(ref: ContextReference, path: Path, descriptor: str, reason: str, guidance: str) -> str:
+    """Shared 📎 shape: the file was not inlined, but it IS on disk where the agent's
+    tools run — hand the model the path and a nudge instead of a dead-end warning."""
     try:
         size = format_bytes(path.stat().st_size)
     except OSError:
         size = "unknown size"
-    try:
-        from tools.terminal_tool import _ensure_terminal_env_bridged
-        _ensure_terminal_env_bridged()
-        from tools.credential_files import to_agent_visible_cache_path
-        visible = to_agent_visible_cache_path(str(path))
-    except Exception:
-        visible = str(path)
     return (
-        f"📎 {ref.raw} (text file, {size}, approximately {text_tokens} tokens) - "
-        "too large to inline safely. "
-        f"It is available on disk at `{visible}`. "
-        "Use read_file with a narrow line range, search_files, or terminal/code tools "
-        "to inspect only the relevant parts; do not load the entire file into context."
+        f"📎 {ref.raw} ({descriptor}, {size}) — {reason} "
+        f"It is available on disk at `{_agent_visible_path(path)}`. {guidance}"
+    )
+
+
+def _binary_reference_block(ref: ContextReference, path: Path) -> str:
+    mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor=mime,
+        reason="binary file, not inlined as text.",
+        guidance="Use your tools to work with it (read or convert it, extract its text, "
+                 "or view/render it as needed); do not tell the user the file type is unsupported.",
+    )
+
+
+def _oversized_text_reference_block(ref: ContextReference, path: Path, text_tokens: int) -> str:
+    return _on_disk_reference_block(
+        ref, path,
+        descriptor=f"text file, approximately {text_tokens} tokens",
+        reason="too large to inline safely.",
+        guidance="Use read_file with a narrow line range, search_files, or terminal/code tools "
+                 "to inspect only the relevant parts; do not load the entire file into context.",
     )
 
 

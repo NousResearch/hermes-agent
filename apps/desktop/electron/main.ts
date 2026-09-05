@@ -416,7 +416,12 @@ import {
   registrySshScopeForWindowRoute,
   WindowConnectionRouteRegistry
 } from './window-connection-route'
-import { createWindowOpenHandler } from './window-open-policy'
+import {
+  createWindowOpenHandler,
+  guardAuthSessionDownloads,
+  guardAuthSessionPermissions,
+  wireAuthWindowOpenPolicy
+} from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -7312,6 +7317,13 @@ function getOauthSession() {
 
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
+  // Auth partitions exist solely to complete sign-in: no download and no
+  // permission request is ever legitimate from their remote IDP/portal
+  // content. installDownloadHandling / installMediaPermissions wire only
+  // session.defaultSession, so these guards close the partition gap.
+  guardAuthSessionDownloads(oauthSession, 'oauth', rememberLog)
+  guardAuthSessionPermissions(oauthSession, 'oauth', rememberLog)
+
   return oauthSession
 }
 
@@ -7350,6 +7362,10 @@ function getOauthSessionForUrl(url) {
 
   if (!sess) {
     sess = session.fromPartition(partition)
+    // Per-connection OAuth jars get the same download + permission guards as
+    // the legacy shared partition — their windows are sign-in-only too.
+    guardAuthSessionDownloads(sess, `oauth:${partition}`, rememberLog)
+    guardAuthSessionPermissions(sess, `oauth:${partition}`, rememberLog)
     oauthSessionsByPartition.set(partition, sess)
   }
 
@@ -7619,6 +7635,11 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 
       return
     }
+
+    // GHSA-9f4c-93c8-jc8g class fix: the OAuth redirect chain navigates
+    // third-party IDP pages we do not initiate, so a window.open from that
+    // chain must never reach the OS browser. Deny unconditionally.
+    wireAuthWindowOpenPolicy(win, 'oauth', rememberLog)
 
     // Re-check the cookie jar on every successful navigation (the callback
     // redirect is the moment cookies get set) plus a low-frequency poll as a
@@ -8492,6 +8513,11 @@ function renewPortalAccessSilently() {
         return
       }
 
+      // GHSA-9f4c-93c8-jc8g class fix: this hidden window loads the remote
+      // portal, and any window.open reaching it from that content must be
+      // denied rather than opened. Deny unconditionally, log-only.
+      wireAuthWindowOpenPolicy(win, 'portal-renew', rememberLog)
+
       win.webContents.on('did-navigate', () => void checkCookie())
       win.webContents.on('did-redirect-navigation', () => void checkCookie())
       win.webContents.on('did-frame-navigate', () => void checkCookie())
@@ -8596,6 +8622,11 @@ function openPortalLoginWindow() {
 
       return
     }
+
+    // GHSA-9f4c-93c8-jc8g class fix: the portal sign-in page is remote
+    // content we do not initiate; a window.open from it must never reach the
+    // OS browser. Deny unconditionally, log-only.
+    wireAuthWindowOpenPolicy(win, 'portal', rememberLog)
 
     win.webContents.on('did-navigate', () => void checkCookie())
     win.webContents.on('did-redirect-navigation', () => void checkCookie())

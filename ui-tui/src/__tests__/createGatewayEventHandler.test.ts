@@ -2180,4 +2180,152 @@ describe('createGatewayEventHandler', () => {
       expect(appended).toHaveLength(0)
     })
   })
+
+  describe('live context estimate (#18260)', () => {
+    const WINDOW = 150016
+
+    const authoritative = (used: number, calls = 1) => ({
+      calls,
+      context_max: WINDOW,
+      context_percent: Math.round((used / WINDOW) * 100),
+      context_used: used,
+      input: 0,
+      output: 0,
+      total: 0
+    })
+
+    it('advances the gauge while reasoning streams, before any API call completes', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+      expect(getUiState().usage.context_used).toBe(96000)
+
+      // One long thinking phase: the server counters are frozen, only deltas flow.
+      onEvent({ payload: { text: 'x'.repeat(4000) }, type: 'reasoning.delta' } as any)
+
+      const est = estimateTokensRough('x'.repeat(4000))
+      expect(getUiState().usage.context_used).toBe(96000 + est)
+      expect(getUiState().usage.context_percent).toBe(
+        Math.max(0, Math.min(100, Math.round(((96000 + est) / WINDOW) * 100)))
+      )
+    })
+
+    it('does not reset the estimate on a frozen 1 Hz ticker re-emit', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+      onEvent({ payload: { text: 'x'.repeat(4000) }, type: 'reasoning.delta' } as any)
+      const midTurn = getUiState().usage.context_used
+      expect(midTurn).toBeGreaterThan(96000)
+
+      // Ticker frame: context_used frozen, only the call counter moved.
+      onEvent({ payload: { usage: authoritative(96000, 2) }, type: 'session.usage' } as any)
+
+      expect(getUiState().usage.context_used).toBe(midTurn)
+    })
+
+    it('re-anchors on the authoritative message.complete usage', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+      onEvent({ payload: { text: 'x'.repeat(4000) }, type: 'reasoning.delta' } as any)
+      onEvent({ payload: { text: 'y'.repeat(4000) }, type: 'message.delta' } as any)
+
+      // End of turn: the real provider reading supersedes the estimate.
+      onEvent({ payload: { text: 'done', usage: authoritative(98500, 2) }, type: 'message.complete' } as any)
+
+      const usage = getUiState().usage
+      expect(usage.context_used).toBe(98500)
+      expect(usage.context_percent).toBe(Math.round((98500 / WINDOW) * 100))
+    })
+
+    it('ignores thinking.delta status verbs and reasoning.available previews', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+
+      // thinking.delta carries "🤔 Thinking..." verbs, not model output.
+      onEvent({ payload: { text: '🤔 Thinking...' }, type: 'thinking.delta' } as any)
+      // reasoning.available is a 500-char preview of already-streamed content.
+      onEvent({ payload: { text: 'x'.repeat(500) }, type: 'reasoning.available' } as any)
+
+      expect(getUiState().usage.context_used).toBe(96000)
+    })
+
+    it('counts message.interim text only once when it was already streamed', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+
+      onEvent({ payload: { text: 'z'.repeat(800) }, type: 'message.delta' } as any)
+      const afterDelta = getUiState().usage.context_used
+      // Same text re-delivered as interim with already_streamed — no double count.
+      onEvent({ payload: { already_streamed: true, text: 'z'.repeat(800) }, type: 'message.interim' } as any)
+      expect(getUiState().usage.context_used).toBe(afterDelta)
+    })
+
+    it('does not carry the previous session base into a fresh session (session switch)', () => {
+      // Regression: the `used > 0` adoption guard skipped a fresh session's
+      // context_used=0/absent reading, so the OLD session's base survived in
+      // liveCtx and the first streamed delta rendered old_base + streamed
+      // (e.g. ~65% on an empty session) until the first API call completed.
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+      onEvent({ payload: { text: 'x'.repeat(4000) }, type: 'reasoning.delta' } as any)
+      expect(getUiState().usage.context_used).toBeGreaterThan(96000)
+
+      // /new: startNewSession() resets usage to ZERO before the fresh
+      // session's session.info lands — mirror that. The fresh session
+      // reports its window but no occupancy yet (no API call has run).
+      patchUiState({ usage: ZERO })
+      onEvent({
+        payload: { usage: { calls: 0, context_max: WINDOW, input: 0, output: 0, total: 0 } },
+        type: 'session.info'
+      } as any)
+
+      // First streamed output in the fresh session must NOT render the old
+      // 96k base — with no occupancy reading, no gauge overlay is possible.
+      onEvent({ payload: { text: 'x'.repeat(400) }, type: 'reasoning.delta' } as any)
+      expect(getUiState().usage.context_used).toBeUndefined()
+    })
+
+    it('skips the store write while the integer percent is unchanged (render pressure)', () => {
+      // The gauge renders integer percents; a delta that doesn't move the
+      // percent must not force a new usage reference (status-rule re-render
+      // per chunk). The token figure lands on the next percent step.
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+      const baseRef = getUiState().usage
+
+      // ~100 tokens: 96100/150016 is still 64% — no visible change.
+      onEvent({ payload: { text: 'x'.repeat(400) }, type: 'reasoning.delta' } as any)
+      expect(getUiState().usage).toBe(baseRef) // identical reference: no re-render
+
+      // ~4000 more tokens: 100100/150016 = 67% — the step lands, tokens included.
+      onEvent({ payload: { text: 'x'.repeat(16000) }, type: 'reasoning.delta' } as any)
+      expect(getUiState().usage.context_used).toBe(100100)
+      expect(getUiState().usage.context_percent).toBe(67)
+    })
+
+    it('folds completed tool results into the live estimate', () => {
+      // Tool results (file reads, search hits, command output) are the largest
+      // context contributors in agentic loops — the gauge must track them
+      // mid-turn, not jump at the turn-end re-anchor.
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { usage: authoritative(96000) }, type: 'session.info' } as any)
+
+      onEvent({ payload: { context: 'file', name: 'read_file', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+      onEvent({
+        payload: { name: 'read_file', result: 'y'.repeat(16000), tool_id: 'tool-1' },
+        type: 'tool.complete'
+      } as any)
+
+      // 96000 + ~4000 (the result) — the estimate moved mid-turn.
+      expect(getUiState().usage.context_used).toBe(100000)
+      expect(getUiState().usage.context_percent).toBe(67)
+    })
+  })
 })

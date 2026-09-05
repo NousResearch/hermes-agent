@@ -1401,6 +1401,8 @@ export function TextInput({
         if (next !== null) {
           moveCursor(next, k.shift)
 
+          event.stopImmediatePropagation()
+
           return
         }
 

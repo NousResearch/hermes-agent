@@ -6286,15 +6286,18 @@ class TelegramAdapter(BasePlatformAdapter):
         replied = getattr(message, "reply_to_message", None)
         if replied is not None:
             replied_user = getattr(replied, "from_user", None)
-            if replied_user is not None:
-                reply_to_author_id = str(getattr(replied_user, "id", "") or "") or None
+            forward_origin = getattr(replied, "forward_origin", None)
+            origin_user = getattr(forward_origin, "sender_user", None)
+            author_user = origin_user or replied_user
+            if author_user is not None:
+                reply_to_author_id = str(getattr(author_user, "id", "") or "") or None
                 reply_to_author_name = (
-                    getattr(replied_user, "full_name", None)
-                    or getattr(replied_user, "username", None)
+                    getattr(author_user, "full_name", None)
+                    or getattr(author_user, "username", None)
                 )
                 reply_to_is_own = bool(
                     getattr(self, "_bot", None) is not None
-                    and getattr(replied_user, "id", None) == getattr(self._bot, "id", None)
+                    and getattr(author_user, "id", None) == getattr(self._bot, "id", None)
                 )
         from gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
         _chat_id_str = str(chat.id)

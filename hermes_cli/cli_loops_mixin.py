@@ -291,7 +291,10 @@ class CLILoopsMixin:
                 if accepted:
                     _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {_preview(payload)}")
                 else:
-                    _cprint("  Steer rejected (empty payload).")
+                    self._pending_input.put(payload)
+                    _cprint(
+                        f"  No live delivery window; queued as next turn: {_preview(payload)}"
+                    )
         else:
             self._pending_input.put(payload)
             _cprint(f"  No agent running; queued as next turn: {_preview(payload)}")

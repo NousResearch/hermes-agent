@@ -708,20 +708,21 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     subscribers.add(q)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-    await response.prepare(request)
     try:
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
-            except asyncio.TimeoutError:
-                await response.write(b": keepalive\n\n")
-                continue
-            if event is None:  # run finished
-                await response.write(b": stream closed\n\n")
-                break
-            await response.write(_api_server._sse_frame(event))
-    except Exception as exc:
-        logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
+        await response.prepare(request)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                if event is None:  # run finished
+                    await response.write(b": stream closed\n\n")
+                    break
+                await response.write(_api_server._sse_frame(event))
+        except Exception as exc:
+            logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
         subscribers.discard(q)
         if not subscribers:

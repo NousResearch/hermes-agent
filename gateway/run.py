@@ -963,7 +963,9 @@ def _is_fresh_gateway_interruption(
 
 
 def build_resume_recovery_note(
-    reason: Optional[str], message: str = "", *, interactive: bool = True) -> str:
+    reason: Optional[str], message: str = "", *, interactive: bool = True,
+    startup_resume: bool = False,
+) -> str:
     """Build the resume-pending recovery system note for an interrupted turn (empty ``message`` = auto-resume).
 
     Interactive platforms report the restore and ask what next; non-interactive ones finish the work.
@@ -975,7 +977,7 @@ def build_resume_recovery_note(
     reason_phrase = (
         "a gateway restart" if reason == "restart_timeout"
         else "a gateway shutdown" if reason == "shutdown_timeout" else "a gateway interruption")
-    if message:
+    if not startup_resume:
         resume_guidance = (
             "Address the user's NEW message below FIRST and focus on what the user is asking now.")
         tail_guidance = (
@@ -1006,7 +1008,9 @@ def build_resume_recovery_note(
 
 
 def _prepare_resume_pending_message(
-    reason: Optional[str], message: Optional[str], *, interactive: bool = True) -> tuple[str, str]:
+    reason: Optional[str], message: Optional[str], *, interactive: bool = True,
+    startup_resume: bool = False,
+) -> tuple[str, Optional[str]]:
     """Return the recovery message and the user text to persist.
 
     Empty original: persist the note (a "" user row trips the pre-call sanitizer). Real text: persist clean.
@@ -1018,8 +1022,20 @@ def _prepare_resume_pending_message(
     words: the transcript stays scaffold-free (the model still receives the wrapped note), and a non-empty
     row never trips the sanitizer.
     """
-    recovery_message = build_resume_recovery_note(reason, message or "", interactive=interactive)
-    persist_message = message if isinstance(message, str) and message.strip() else recovery_message
+    recovery_message = build_resume_recovery_note(
+        reason, message or "", interactive=interactive, startup_resume=startup_resume,
+    )
+    # A real captionless media event may have no string to persist; only the synthetic
+    # startup wake persists the recovery scaffold itself.
+    persist_message = (
+        recovery_message
+        if startup_resume
+        else (
+            message
+            if isinstance(message, str) and message.strip()
+            else None
+        )
+    )
     return recovery_message, persist_message
 
 

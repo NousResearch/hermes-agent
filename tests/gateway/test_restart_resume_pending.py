@@ -175,7 +175,9 @@ def _simulate_note_injection(
         and getattr(resume_entry, "resume_pending", False)
     ):
         sn_reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
-        message = build_resume_recovery_note(sn_reason, "")
+        message = build_resume_recovery_note(
+            sn_reason, "", startup_resume=True
+        )
     return message
 
 
@@ -305,7 +307,9 @@ class TestResumePendingSystemNote:
         """Non-interactive platforms (webhook, API server): nobody can answer
         'what next?', so the resumed turn must complete the interrupted work
         instead of acknowledging (#57056)."""
-        note = build_resume_recovery_note("restart_timeout", "", interactive=False)
+        note = build_resume_recovery_note(
+            "restart_timeout", "", interactive=False, startup_resume=True
+        )
         assert "CONTINUE the interrupted task" in note
         assert "session was restored" not in note
         assert "ask what they would like to do next" not in note
@@ -318,7 +322,7 @@ class TestResumePendingSystemNote:
     def test_resume_note_is_persisted_instead_of_original_empty_message(self):
         """The auto-resume note must not leave an empty row in state.db."""
         message, persisted = _prepare_resume_pending_message(
-            "restart_timeout", "", interactive=False
+            "restart_timeout", "", interactive=False, startup_resume=True
         )
 
         assert message
@@ -330,7 +334,7 @@ class TestResumePendingSystemNote:
         """A whitespace-only startup event is as blank as an empty one —
         persisting it verbatim would recreate the sanitizer loop (#86580)."""
         message, persisted = _prepare_resume_pending_message(
-            "shutdown_timeout", "   ", interactive=True
+            "shutdown_timeout", "   ", interactive=True, startup_resume=True
         )
 
         assert persisted == message
@@ -349,6 +353,26 @@ class TestResumePendingSystemNote:
         assert message != persisted
         assert "what were we doing?" in message
         assert "[System note:" in message
+
+    def test_captionless_media_is_still_new_user_input(self):
+        """An empty real event must not inherit synthetic startup semantics."""
+        message, persisted = _prepare_resume_pending_message(
+            "restart_timeout", "", interactive=True, startup_resume=False
+        )
+
+        assert "Address the user's NEW message" in message
+        assert "ask what they would like to do next" not in message
+        # Keep native multimodal persistence in control of captionless media.
+        assert persisted is None
+
+    def test_whitespace_real_event_defers_to_native_persistence(self):
+        """Blank-ish real input must not recreate sanitizer-healed rows."""
+        message, persisted = _prepare_resume_pending_message(
+            "restart_timeout", "   ", interactive=True, startup_resume=False
+        )
+
+        assert "Address the user's NEW message" in message
+        assert persisted is None
 
 
     def test_resume_pending_fires_without_tool_tail(self):
@@ -702,6 +726,8 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.source == tg_source
+    assert event.internal is True
+    assert event.startup_resume is True
 
 
 @pytest.mark.asyncio

@@ -1557,6 +1557,8 @@ class MessageEvent:
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
+    # Exact provenance for the synthetic empty event created by gateway startup recovery.
+    startup_resume: bool = False
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

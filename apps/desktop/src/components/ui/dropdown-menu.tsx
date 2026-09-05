@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils'
 // reads identically.
 export const dropdownMenuRow = 'gap-2 rounded-none px-2.5 py-1 text-xs'
 export const dropdownMenuSectionLabel =
-  'px-2.5 pt-1 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-accent)'
+  'px-2.5 pt-1 pb-0.5 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-secondary)'
 
 // Keys that must reach Radix's menu handler (navigation/close). Everything else
 // is a filter keystroke and is stopped so the menu's typeahead doesn't hijack it.

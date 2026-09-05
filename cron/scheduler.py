@@ -1271,6 +1271,67 @@ def _run_no_agent_job(
 
         return _block_and_pause_job(job_id, job_name, NO_AGENT_WITHOUT_SCRIPT_ERROR)
 
+    # Record this run as a session BEFORE executing the script: the run
+    # session's open/ended state is what the desktop run-history endpoint
+    # uses for its "running" indicator (``is_active``), and the session row
+    # is the run record itself. Without it, no_agent runs are invisible
+    # after a manual trigger (#44080). Best-effort — a missing/broken state
+    # store degrades to the old no-record behaviour, never blocks the run.
+    # This block is deliberately self-contained: no_agent short-circuits
+    # BEFORE importing run_agent, so the SessionDB handle is local to it.
+    _session_db = None
+    _run_session_id = None
+    try:
+        from hermes_state import SessionDB
+
+        _session_db = SessionDB()
+        _run_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+        _session_db.create_session(_run_session_id, source="cron")
+        # First user message becomes the run's preview in run history.
+        _session_db.append_message(
+            _run_session_id, "user", f"no_agent script: {script_path}"
+        )
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug(
+            "Job '%s': SQLite session store not available for no_agent run: %s",
+            job_id, e,
+        )
+        _session_db = None
+
+    def _record_run(run_doc: str, success: bool = True) -> None:
+        """Persist the outcome and close out this run's session record."""
+        if not _session_db or not _run_session_id:
+            return
+        try:
+            _session_db.append_message(_run_session_id, "assistant", run_doc)
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug(
+                "Job '%s': failed to record no_agent run output: %s", job_id, e
+            )
+        # Same titling scheme as the agent path so sidebars/history show a
+        # meaningful label; the run-time suffix keeps it unique against the
+        # sessions.title index across runs.
+        try:
+            _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+            _session_db.set_session_title(
+                _run_session_id,
+                f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}",
+            )
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
+        try:
+            _session_db.end_session(
+                _run_session_id, "cron_complete" if success else "cron_failed"
+            )
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to end session: %s", job_id, e)
+        try:
+            _session_db.close()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug(
+                "Job '%s': failed to close SQLite session store: %s", job_id, e
+            )
+
     # Pass workdir as subprocess cwd; never os.chdir() (leaks into concurrent gateway sessions).
     _job_workdir = _resolve_job_workdir(job, job_id)
     try:
@@ -1290,18 +1351,26 @@ def _run_no_agent_job(
             f"{output}\n\n"
             f"Time: {now_iso}"
         )
-        return False, f"{header}**Status:** script failed\n\n{output}\n", alert, output
+        doc = f"{header}**Status:** script failed\n\n{output}\n"
+        _record_run(doc, success=False)
+        return False, doc, alert, output
 
     # wakeAgent=false is a silent signal, same as empty stdout.
     if not _parse_wake_gate(output):
         logger.info("Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id)
-        return True, f"{header}**Status:** silent (wakeAgent=false)\n", SILENT_MARKER, None
+        silent_doc = f"{header}**Status:** silent (wakeAgent=false)\n"
+        _record_run(silent_doc)
+        return True, silent_doc, SILENT_MARKER, None
 
     if not output.strip():
         logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
-        return True, f"{header}**Status:** silent (empty output)\n", SILENT_MARKER, None
+        silent_doc = f"{header}**Status:** silent (empty output)\n"
+        _record_run(silent_doc)
+        return True, silent_doc, SILENT_MARKER, None
 
-    return True, f"{header}\n---\n\n{output}\n", output, None
+    doc = f"{header}\n---\n\n{output}\n"
+    _record_run(doc)
+    return True, doc, output, None
 
 
 def _apply_monitor_gate(

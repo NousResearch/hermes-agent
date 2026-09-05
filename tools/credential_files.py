@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 from hermes_cli.config import cfg_get
-from hermes_constants import get_hermes_dir, get_hermes_home
+from hermes_constants import get_hermes_dir, get_hermes_home, hermes_home_key
 
 from agent.skill_utils import EXCLUDED_SKILL_DIRS
 
@@ -29,8 +29,12 @@ logger = logging.getLogger(__name__)
 # Session-scoped registry; ContextVar prevents cross-session bleed in the gateway.
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
 
-# Cache for config-based file list (loaded once per process; tests reset it).
-_config_files: List[Dict[str, str]] | None = None
+# Cache for config-based file list, keyed by resolved HERMES_HOME. A plain
+# process-global cache would return profile A's credential mounts while profile
+# B is active (config.yaml, and thus terminal.credential_files, is per-profile),
+# so a multiplexed gateway could bind another profile's tokens into a sandbox.
+# Keyed by hermes_home_key so each profile gets its own entry; tests reset it.
+_config_files_by_home: Dict[str, List[Dict[str, str]]] = {}
 # Reused across calls so sanitized skill copies don't accumulate.
 _safe_skills_tempdir: Path | None = None
 
@@ -130,15 +134,19 @@ def register_credential_files(entries: list, container_base: str = "/root/.herme
 
 
 def _load_config_files() -> List[Dict[str, str]]:
-    """Load ``terminal.credential_files`` from config.yaml (cached)."""
-    global _config_files
-    if _config_files is not None:
-        return _config_files
+    """Load ``terminal.credential_files`` from config.yaml (cached per HERMES_HOME)."""
+    # Resolve the active home ONCE and key both the cache and the paths we resolve
+    # under it off that single snapshot, so profile A's cached mounts can never be
+    # handed back while profile B is active.
+    hermes_home = get_hermes_home()
+    home_key = hermes_home_key(hermes_home)
+    cached = _config_files_by_home.get(home_key)
+    if cached is not None:
+        return cached
 
     result: List[Dict[str, str]] = []
     try:
         from hermes_cli.config import read_raw_config
-        hermes_home = get_hermes_home()
         cred_files = cfg_get(read_raw_config(), "terminal", "credential_files")
         for item in cred_files if isinstance(cred_files, list) else []:
             rel = item.strip() if isinstance(item, str) else ""
@@ -159,8 +167,8 @@ def _load_config_files() -> List[Dict[str, str]]:
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
 
-    _config_files = result
-    return _config_files
+    _config_files_by_home[home_key] = result
+    return result
 
 
 def get_credential_file_mounts() -> List[Dict[str, str]]:

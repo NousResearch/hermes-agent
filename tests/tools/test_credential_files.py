@@ -24,10 +24,10 @@ def _clean_state():
     """Reset module state between tests."""
     import tools.credential_files as _cred_mod
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files_by_home = {}
     yield
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files_by_home = {}
 
 
 class TestRegisterCredentialFiles:
@@ -369,6 +369,35 @@ class TestConfigPathTraversal:
         mounts = get_credential_file_mounts()
         assert len(mounts) == 1
         assert "oauth.json" in mounts[0]["container_path"]
+
+    def test_config_cache_does_not_cross_profiles(self, tmp_path, monkeypatch):
+        """The config-file cache must be keyed by HERMES_HOME, not process-global.
+
+        A multiplexed gateway loads profile A's config, then serves profile B. A
+        process-global cache would hand B profile A's credential mount; keying the
+        cache by the active home keeps each profile isolated (#84270).
+        """
+        home_a = tmp_path / "a" / ".hermes"
+        home_a.mkdir(parents=True)
+        (home_a / "a-token.json").write_text("{}")
+        self._write_config(home_a, ["a-token.json"])
+
+        home_b = tmp_path / "b" / ".hermes"
+        home_b.mkdir(parents=True)
+        (home_b / "b-token.json").write_text("{}")
+        self._write_config(home_b, ["b-token.json"])
+
+        # Prime the cache while profile A is active.
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        mounts_a = get_credential_file_mounts()
+        assert [m["host_path"] for m in mounts_a] == [str(home_a / "a-token.json")]
+
+        # Switch to profile B: must load B's config, never return A's cached mount.
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        mounts_b = get_credential_file_mounts()
+        host_paths_b = [m["host_path"] for m in mounts_b]
+        assert host_paths_b == [str(home_b / "b-token.json")]
+        assert str(home_a / "a-token.json") not in host_paths_b
 
 
 # ---------------------------------------------------------------------------

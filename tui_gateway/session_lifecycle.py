@@ -57,6 +57,56 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     return limit_message
 
 
+def _install_delegated_active_session_lease(session: dict, frame: dict) -> None:
+    """Install a disabled sentinel lease for a turn admitted by the serving process.
+
+    Turn-isolation Design 1: a named-profile turn is admitted ONCE, in the
+    serving (dashboard/gateway) process, which claims the real active-session
+    lease. The turn is then dispatched to a compute-host child, whose rebuilt
+    session dict carries no lease. The child re-crosses the ownership chokepoint
+    in ``_run_prompt_submit`` (the #94778 double-writer guard) and would
+    otherwise re-claim -- and be refused, because ``_is_same_writer`` cannot
+    match across a process boundary (it requires an equal pid).
+
+    When the frame says the turn was already admitted, install a DISABLED
+    ``ActiveSessionLease`` so ``_ensure_active_session_slot`` short-circuits on
+    the ``active_session_lease is not None`` fast path -- no second registry
+    claim. The lease is disabled (``enabled=False``), so ``release()`` is a
+    no-op and ``transfer_active_session`` (fired when auto-compression rotates
+    the session id mid-turn) takes its disabled-lease no-op branch instead of
+    the fallback that would claim a real second slot in the child. It must NOT
+    be marked ``released``: a released lease trips ``transfer_active_session``'s
+    ``if lease.released`` early-return, which bypasses the disabled branch and
+    falls through to that real re-claim. A real lease already present (native,
+    non-isolated path) is never overwritten.
+
+    Blocker 2 (#99719): admission is now carried as the qualified
+    ``active_session_admission`` record ``{lease_id, session_id, generation}``.
+    The old bare ``active_session_admitted`` boolean is derived from
+    ``admission is not None`` for back-compat during rollout. The record is
+    stashed on the session (``_delegated_admission``) so the child can quote it
+    back verbatim in its mid-turn re-anchor proposal.
+    """
+    admission = frame.get("active_session_admission")
+    # Back-compat: derive from either the qualified record or the legacy bool.
+    admitted = admission is not None or bool(frame.get("active_session_admitted"))
+    if not admitted:
+        return
+    if session.get("active_session_lease") is not None:
+        return
+    from hermes_cli.active_sessions import ActiveSessionLease
+
+    if isinstance(admission, dict):
+        session["_delegated_admission"] = dict(admission)
+    session["active_session_lease"] = ActiveSessionLease(
+        lease_id=f"delegated:{frame.get('session_key') or ''}",
+        session_id=str(frame.get("session_key") or ""),
+        surface="compute-host",
+        enabled=False,
+        released=False,
+    )
+
+
 def _lease_retry(attempts: int, fn) -> Exception | None:
     """Call ``fn`` up to ``attempts`` times (50ms*n backoff: registry writes contend across processes); last
     exception when every try failed, else None."""
@@ -91,6 +141,87 @@ def _own_live_lease_ids(*, exclude=None) -> set[str]:
     with _sessions_lock:
         return {str(lease.lease_id) for session in _sessions.values()
                 if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+
+
+def _release_active_session_lease(lease) -> bool:
+    """Release a bare lease object (no session dict), liveness-tracked leases get 3 tries; True when released."""
+    if lease is None:
+        return True
+    if (err := _lease_retry(3 if getattr(lease, "track_liveness", False) else 1, lambda: lease.release())) is not None:
+        logger.warning("Failed to release active session slot", exc_info=err)
+        return False
+    return bool(getattr(lease, "released", True) or not getattr(lease, "enabled", True))
+
+
+def _ownership_owed_to_live_child(session: dict | None) -> bool:
+    """True when the real lease must be HELD past close because an isolated
+    compute-host child may still be writing this session.
+
+    Blocker 1 (#99719): the child re-crosses the ownership chokepoint with only
+    a DISABLED sentinel; its write-exclusivity rests ENTIRELY on this serving
+    process holding the one real enabled lease for the whole turn. Releasing it
+    while ``running`` is still true (the child has not reported turn.end) drops
+    the registry entry out from under a live writer and reopens the
+    double-writer window. In that case ownership is DETACHED-and-deferred, not
+    released.
+    """
+    if not session:
+        return False
+    lease = session.get("active_session_lease")
+    if lease is None or not getattr(lease, "enabled", False):
+        return False
+    if not (session.get("running") or session.get("_compute_host_active")):
+        return False
+    try:
+        return bool(_session_uses_compute_host(session))
+    except Exception:
+        return False
+
+
+def _detached_lease_key(sid: str, lease) -> str:
+    return f"{sid}:{getattr(lease, 'lease_id', '')}"
+
+
+def _detach_lease_for_deferred_release(
+    sid: str, lease, *, session: dict | None = None
+) -> str:
+    """Move the still-enabled real lease out of the session dict into the
+    process-global detached table, as ONE critical section under
+    ``_sessions_lock`` that inserts into ``_detached_leases`` BEFORE removing it
+    from the session dict (insert-before-remove).
+
+    Returns the detached-table key. Idempotent for a given (sid, lease).
+    """
+    key = _detached_lease_key(sid, lease)
+    with _sessions_lock:
+        # Insert first: a reaper tick that acquires _sessions_lock between the
+        # two mutations must never find the lease in NEITHER map.
+        _detached_leases[key] = lease
+        if session is not None and session.get("active_session_lease") is lease:
+            session.pop("active_session_lease", None)
+    return key
+
+
+def _release_detached_leases_for_dead_child(sid: str | None = None) -> int:
+    """Release detached leases whose isolated child has exited.
+
+    Called from the per-turn done receipt (``_on_compute_host_turn_done`` for a
+    single sid), the child-death paths (``host_supervisor._wait_for_exit`` ahead
+    of the ``_closing`` guard, and ``shutdown()``), and the crash callback. When
+    ``sid`` is None every detached lease is released (whole-child exit). Each
+    release is an idempotent keyed pop, so overlapping callers are safe.
+    """
+    with _sessions_lock:
+        if sid is None:
+            popped = list(_detached_leases.items())
+            _detached_leases.clear()
+        else:
+            prefix = f"{sid}:"
+            keys = [k for k in _detached_leases if k.startswith(prefix)]
+            popped = [(k, _detached_leases.pop(k)) for k in keys]
+    for _key, lease in popped:
+        _release_active_session_lease(lease)
+    return len(popped)
 
 
 @contextlib.contextmanager
@@ -205,7 +336,21 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         end_reason in _AUTOMATIC_SESSION_END_REASONS and _session_source(session).strip().lower() == "desktop")
     # Automatic Desktop cleanup releases its lease inside the lifecycle guard below; other paths keep force/end semantics.
     if not _desktop_automatic_cleanup:
-        _release_active_session_slot(session)
+        # Blocker 1 (#99719): do NOT release the canonical lease while an
+        # isolated compute-host child may still be writing this session. When
+        # ownership is still owed to a live child, DETACH-and-defer the enabled
+        # lease instead -- the registry entry keeps protecting the id until the
+        # child actually exits (turn.end / crash / child-death), reconciled with
+        # the idle reaper (which skips detached leases) and the child-death
+        # release paths. Otherwise a bounded close would drop the lease out from
+        # under a live writer and reopen the double-writer window.
+        if _ownership_owed_to_live_child(session):
+            lease = session.get("active_session_lease")
+            _detach_lease_for_deferred_release(
+                str(session.get("_sid") or ""), lease, session=session
+            )
+        else:
+            _release_active_session_slot(session)
     if (stop_event := session.get("_notif_stop")) is not None:
         stop_event.set()
     agent = session.get("agent")
@@ -325,6 +470,38 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
+    # An isolated (compute-host) turn runs in a CHILD process, not in this
+    # process's _run_thread, so the settle-grace join below cannot see it. Its
+    # safety while running rests entirely on this serving process holding the
+    # real active-session lease (the child's own ownership chokepoint is a
+    # no-op via the delegated sentinel). _finalize_session releases that lease
+    # unconditionally, so interrupt the child FIRST -- otherwise the lease
+    # drops while the child keeps writing, reopening a narrow #94778 window for
+    # a sibling backend sharing HERMES_HOME. The automatic reapers already gate
+    # on `running`, so this only matters for an explicit close mid-turn.
+    if (
+        end_reason != "tui_shutdown"
+        and (session.get("running") or session.get("_compute_host_active"))
+        and _session_uses_compute_host(session)
+    ):
+        try:
+            _interrupt_session_turn(str(session.get("_sid") or ""), session)
+            # interrupt() is fire-and-forget (it just sends a frame to the
+            # child), so wait -- bounded by the same settle grace the in-process
+            # path uses for _run_thread -- for the child to report the turn done
+            # (_on_compute_host_turn_done clears `running`). This keeps the real
+            # lease held until the child actually stops writing, not merely until
+            # the interrupt was dispatched.
+            deadline = time.monotonic() + _TURN_SETTLE_BEFORE_CLOSE_SECONDS
+            while session.get("running") and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if session.get("running"):
+                logger.warning(
+                    "compute-host turn still running after %.1fs close grace",
+                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
+                )
+        except Exception:
+            logger.debug("failed to interrupt compute-host turn on close", exc_info=True)
     run_thread = session.get("_run_thread")
     if end_reason != "tui_shutdown" and run_thread is not None and run_thread is not threading.current_thread():
         try:

@@ -2963,6 +2963,32 @@ def _publish_rotated_compaction(
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
     from agent.context_compressor import _DB_PERSISTED_MARKER
+    # Blocker 2 (#99719): the continuation id B is now known but
+    # NOT yet durable. Under dashboard.turn_isolation the real
+    # active-session lease is held by the SERVING process on the
+    # old id A; the child's disabled sentinel transfer is a local
+    # no-op that never moves the registry. Before B is written,
+    # fire the optional pre-rotation re-anchor callback (installed
+    # by the compute-host child) so the CANONICAL owner atomically
+    # moves the registry lease A->B and acks. A RuntimeError or a
+    # falsy return means the owner did NOT commit -- ABORT the
+    # rotation (fall into the except below: parent stays live, the
+    # compacted snapshot is discarded) so the child never writes B
+    # unsynchronized. Only present/callable on the isolated child;
+    # the serving and classic in-process paths install nothing.
+    _pre_rotation_reanchor = getattr(
+        agent, "_pre_rotation_reanchor", None
+    )
+    if callable(_pre_rotation_reanchor):
+        if not _pre_rotation_reanchor(
+            old_session_id=old_session_id,
+            new_session_id=new_session_id,
+        ):
+            raise RuntimeError(
+                "active-session re-anchor was not committed by "
+                "the lease owner; aborting mid-turn rotation "
+                "(fail-closed, #99719)"
+            )
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,

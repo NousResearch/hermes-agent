@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -22,6 +23,9 @@ from tui_gateway.host_supervisor import MUTATOR_ROUTE_TABLE, _build_sha
 
 def now_ns() -> int:
     return time.perf_counter_ns()
+
+
+logger = logging.getLogger(__name__)
 
 
 class _HostTransport:
@@ -45,6 +49,13 @@ class _HostTransport:
 # the whole budget would leave the flush racing that kill and persist nothing.
 _FLUSH_RESERVE_SECS = 1.0
 
+# Blocker 2 (#99719): the mid-turn compression re-anchor handshake blocks the
+# child worker on the owner's ack. Bounded so a lost/never-arriving ack cannot
+# wedge the turn: on timeout the child issues exactly ONE status re-query for
+# the SAME (request_id, generation) -- single-shot generation, never a fresh
+# proposal -- and fails the turn closed if that too returns no committed answer.
+_REANCHOR_ACK_TIMEOUT_SECONDS = 10.0
+
 # Fallback control.error text when a routed server method returns an error without a message.
 _CONTROL_FAILURES = {
     "session.save": "session save failed", "session.compress": "session compression failed"}
@@ -55,6 +66,7 @@ class ComputeHost:
     _FRAME_HANDLERS: dict[str, str] = {
         "turn.start": "_handle_turn_start", "interrupt": "_handle_interrupt",
         "respond": "_handle_respond", "reload_mcp": "_handle_reload_mcp",
+        "active_session.reanchor.ack": "_handle_reanchor_ack",
         "control": "_handle_control", "shutdown": "_handle_shutdown"}
 
     def __init__(
@@ -73,6 +85,18 @@ class ComputeHost:
         self._turn_futures: dict[concurrent.futures.Future, str] = {}
         self._turn_futures_lock = threading.Lock()
         self._transport = _HostTransport(self.emit)
+        # Blocker 2 (#99719): per-(request_id, generation) re-anchor ack Events.
+        # The blocked worker thread waits on the Event; the stdin reader thread
+        # sets the recorded result and wakes it -- the same cross-thread shape
+        # that already lets clarify/approval block mid-turn.
+        self._reanchor_waiters: dict[tuple[str, int], threading.Event] = {}
+        self._reanchor_results: dict[tuple[str, int], bool] = {}
+        # #99719 round-2: the owner bumps its generation to N+1 on a committed
+        # transfer and forwards it in the ack. Capture it so a SECOND mid-turn
+        # rotation quotes the REFRESHED generation instead of the stale
+        # install-time snapshot (which would be nacked on generation mismatch).
+        self._reanchor_new_generations: dict[tuple[str, int], int] = {}
+        self._reanchor_lock = threading.Lock()
         self._heartbeat_secs = (
             float(heartbeat_secs) if heartbeat_secs is not None
             else float(os.environ.get("HERMES_COMPUTE_HOST_HEARTBEAT_SECS") or "15"))
@@ -210,6 +234,15 @@ class ComputeHost:
         try:
             from tui_gateway import server
             session = self._ensure_server_session(server, frame)
+            # Blocker 2 (#99719): install the pre-rotation re-anchor callback on
+            # the child agent so a mid-turn auto-compression rotation A->B blocks
+            # (before publish_compression_child) on the serving owner atomically
+            # moving the REAL registry lease A->B. The disabled sentinel's own
+            # transfer is a local no-op that never touches the registry; without
+            # this the real lease would stay on A while the child writes B, so a
+            # second process could acquire B (double-writer). Only the isolated
+            # child installs it; serving/in-process paths install nothing.
+            self._install_pre_rotation_reanchor(server, sid, session)
             text = frame["text"] if "text" in frame else frame.get("prompt", "")
             inflight = frame["text"] if "text" in frame else frame.get("prompt")
             with session["history_lock"]:
@@ -269,6 +302,9 @@ class ComputeHost:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
+        # Re-adopt the serving process's admission on every reused turn
+        # (Design 1) -- the lease sentinel is per-turn frame state.
+        server._install_delegated_active_session_lease(session, frame)
         return session
 
     def _build_server_session(self, server: Any, frame: dict[str, Any], sid: str) -> dict:
@@ -341,6 +377,162 @@ class ComputeHost:
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
         return session
+
+    def _handle_reanchor_ack(self, frame: dict[str, Any]) -> None:
+        """Route a Blocker-2 (#99719) re-anchor ack to the blocked worker.
+
+        Runs on the stdin reader thread. Records the boolean outcome keyed by
+        ``(request_id, generation)`` and wakes the worker waiting on the Event.
+        """
+        request_id = str(frame.get("request_id") or "")
+        try:
+            generation = int(frame.get("generation", 0) or 0)
+        except (TypeError, ValueError):
+            generation = 0
+        key = (request_id, generation)
+        with self._reanchor_lock:
+            self._reanchor_results[key] = bool(frame.get("applied"))
+            new_generation = frame.get("new_generation")
+            if new_generation is not None:
+                try:
+                    self._reanchor_new_generations[key] = int(new_generation)
+                except (TypeError, ValueError):
+                    pass
+            event = self._reanchor_waiters.get(key)
+        if event is not None:
+            event.set()
+
+    def _reanchor_active_session(
+        self,
+        sid: str,
+        old_id: str,
+        new_id: str,
+        admission: dict[str, Any],
+    ) -> bool:
+        """Propose the mid-turn registry re-anchor A->B and BLOCK on the ack.
+
+        Called from the pre-rotation-commit hook (before
+        publish_compression_child). Sends the proposal over the reverse-RPC,
+        blocks the worker thread on a per-(request_id, generation) Event, and
+        returns whether the owner committed the transfer.
+
+        Point-of-no-return handling (#99719 round-2): a committed transfer is
+        durable BEFORE the ack is emitted, so a lost/timed-out ack is NOT
+        treated as a failure. On timeout the child issues exactly ONE status
+        re-query for the SAME (request_id, generation) -- single-shot
+        generation, never a fresh proposal, never re-fetching a bumped N. Its
+        answer is authoritative: applied:true -> proceed to publish B (the
+        upsert is idempotent); applied:false -> abort to A. Only a status
+        re-query that ALSO returns no committed answer fails the turn closed.
+        """
+        request_id = uuid.uuid4().hex
+        try:
+            generation = int(admission.get("generation", 0) or 0)
+        except (TypeError, ValueError):
+            generation = 0
+        lease_id = str(admission.get("lease_id") or "")
+        key = (request_id, generation)
+        event = threading.Event()
+        with self._reanchor_lock:
+            self._reanchor_waiters[key] = event
+        try:
+            self.emit(
+                {
+                    "type": "rpc",
+                    "sid": sid,
+                    "message": {
+                        "method": "event",
+                        "params": {
+                            "type": "active_session.reanchor",
+                            "session_id": sid,
+                            "request_id": request_id,
+                            "old_id": old_id,
+                            "new_id": new_id,
+                            "lease_id": lease_id,
+                            "generation": generation,
+                        },
+                    },
+                }
+            )
+            if event.wait(timeout=_REANCHOR_ACK_TIMEOUT_SECONDS):
+                with self._reanchor_lock:
+                    applied = bool(self._reanchor_results.get(key, False))
+                    if applied:
+                        new_gen = self._reanchor_new_generations.get(key)
+                        if new_gen is not None:
+                            admission["generation"] = new_gen
+                    return applied
+
+            # Ack timed out. ONE bounded status re-query for the SAME key.
+            event.clear()
+            self.emit(
+                {
+                    "type": "rpc",
+                    "sid": sid,
+                    "message": {
+                        "method": "event",
+                        "params": {
+                            "type": "active_session.reanchor.status",
+                            "session_id": sid,
+                            "request_id": request_id,
+                            "lease_id": lease_id,
+                            "generation": generation,
+                        },
+                    },
+                }
+            )
+            if event.wait(timeout=_REANCHOR_ACK_TIMEOUT_SECONDS):
+                with self._reanchor_lock:
+                    applied = bool(self._reanchor_results.get(key, False))
+                    if applied:
+                        new_gen = self._reanchor_new_generations.get(key)
+                        if new_gen is not None:
+                            admission["generation"] = new_gen
+                    return applied
+            # No committed answer at all -> fail the turn closed (do NOT write B).
+            return False
+        finally:
+            with self._reanchor_lock:
+                self._reanchor_waiters.pop(key, None)
+                self._reanchor_results.pop(key, None)
+                self._reanchor_new_generations.pop(key, None)
+
+    def _install_pre_rotation_reanchor(self, server: Any, sid: str, session: dict) -> None:
+        """Wire the pre-rotation re-anchor callback onto the child's agent.
+
+        The callback (invoked by conversation_compression before
+        publish_compression_child) proposes the registry move A->B to the
+        serving owner and BLOCKS on the ack. Installed only when the session
+        carries a delegated admission record (the isolated-child path).
+        """
+        agent = session.get("agent")
+        if agent is None:
+            return
+        admission = session.get("_delegated_admission")
+        if not isinstance(admission, dict):
+            return
+
+        def _callback(old_session_id: str, new_session_id: str) -> bool:
+            return self._reanchor_active_session(
+                sid, old_session_id, new_session_id, admission
+            )
+
+        try:
+            agent._pre_rotation_reanchor = _callback
+        except Exception as exc:
+            # FAIL CLOSED (#99719): the session carries a delegated admission, so
+            # a mid-turn compression MUST re-anchor the real registry lease A->B
+            # before publishing B. If the hook cannot be installed, the turn
+            # would rotate hook-less and reopen the double-writer window the
+            # design closes. Raise so the caller's turn-outer except aborts the
+            # turn (turn.error) rather than proceeding unprotected.
+            logger.warning(
+                "failed to install pre-rotation re-anchor hook for sid=%s; "
+                "failing the turn closed: %s",
+                sid,
+                exc,
+            )
+            raise
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:
         def body(server: Any, sid: str, request_id: Any) -> None:

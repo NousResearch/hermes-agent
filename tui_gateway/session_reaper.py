@@ -185,7 +185,19 @@ def _reclaim_orphaned_leases() -> None:
     """Hand the registry the lease ids we still own so it can drop the rest."""
     try:
         from hermes_cli.active_sessions import release_orphaned_leases
-        if dropped := release_orphaned_leases(_own_live_lease_ids()):
+        with _sessions_lock:
+            live = _own_live_lease_ids()
+            # Blocker 1b (#99719): a lease DETACHED for deferred release is no
+            # longer in _sessions but its child may still be writing, so its
+            # registry entry must stay protected. Union the detached-table
+            # lease_ids under the SAME _sessions_lock hold so the reaper SKIPS
+            # them (never sweeps a detached lease). Held under one lock so the
+            # reaper cannot observe a lease mid-detach in neither map.
+            live |= {
+                getattr(lease, "lease_id", "")
+                for lease in _detached_leases.values()
+            }
+        if dropped := release_orphaned_leases(live):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:
         logger.debug("orphaned lease reclaim failed", exc_info=True)

@@ -79,6 +79,16 @@ with contextlib.suppress(Exception):
 from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401
 
 _sessions: dict[str, dict] = {}
+# Blocker 1 (#99719): canonical active-session leases DETACHED from their
+# session dict at close/idle-reap while an isolated compute-host CHILD may still
+# be writing. The lease stays ENABLED and its registry entry keeps protecting
+# the session id until the child actually exits; release is deferred to the
+# per-turn done receipt / child-death paths. Keyed by "<sid>:<lease_id>". Guarded
+# by the EXISTING _sessions_lock (the same lock the idle reaper holds while it
+# reads _sessions to build `live`) -- no new lock, so the reaper can never observe
+# a lease that is in neither map (detach inserts here BEFORE removing from the
+# session dict, as one critical section).
+_detached_leases: dict[str, Any] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}

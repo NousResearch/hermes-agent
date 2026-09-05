@@ -254,6 +254,26 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
 
 
+def test_profile_auth_add_persists_when_root_has_no_provider_rows(fleet):
+    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
+
+    root_store = json.loads((fleet["root"] / "auth.json").read_text())
+    del root_store["credential_pool"]["anthropic"]
+    (fleet["root"] / "auth.json").write_text(json.dumps(root_store))
+
+    kid = _profile(fleet, "kid")
+    fleet["use"](kid)
+    pool = load_pool("anthropic")
+    pool.add_entry(PooledCredential(
+        provider="anthropic", id="own001", label="mine", auth_type=AUTH_TYPE_OAUTH,
+        priority=0, source="manual:hermes_pkce", access_token="«redacted:sk-…»",
+        refresh_token="rt-mine",
+    ))
+
+    assert [e["id"] for e in fleet["rows"](kid)] == ["own001"]
+    assert fleet["rows"](fleet["root"]) is None
+
+
 def test_classic_mode_persist_is_unchanged(fleet):
     from agent.credential_pool import load_pool
 

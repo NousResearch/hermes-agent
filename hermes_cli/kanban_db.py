@@ -3003,10 +3003,12 @@ def request_review(
     """``running``/``ready`` -> ``review``; never touches block recurrence accounting.
 
     Implementer and reviewer are recorded on the event so requested changes
-    route back to the right profile; ``reviewer`` reassigns the task, and on
-    re-review defaults to the latest ``changes_requested`` provenance. A live
-    claim is only cleared with proof of ownership (``expected_run_id``) or
-    ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+    route back to the right profile. ``reviewer`` reassigns the task; coder-owned
+    first reviews default to the independent ``reviewer`` profile and explicit
+    coder self-review is refused. On re-review the reviewer defaults to the
+    latest ``changes_requested`` provenance. A live claim is only cleared with
+    proof of ownership (``expected_run_id``) or ``force=True``. Returns ``bool``,
+    or ``(ok, reason)`` with ``with_reason``.
     """
 
     def _ret(ok: bool, reason: Optional[str] = None):
@@ -3036,7 +3038,8 @@ def request_review(
                 "(worker ownership) or force=True (explicit operator "
                 "override) instead of clearing the live run's claim",
             )
-        implementer = trow["assignee"]
+        implementer = _canonical_assignee(trow["assignee"])
+        reviewer_was_explicit = reviewer is not None
         if reviewer is None:
             reviewer = _prior_reviewer(conn, task_id)
             if reviewer is False:
@@ -3046,6 +3049,15 @@ def request_review(
                     "malformed); pass reviewer= explicitly",
                 )
         reviewer = _canonical_assignee(reviewer)
+        if implementer == "coder":
+            if reviewer_was_explicit and reviewer == implementer:
+                return _ret(
+                    False,
+                    "coder cannot review its own application work; assign an "
+                    "independent reviewer profile",
+                )
+            if reviewer is None or reviewer == implementer:
+                reviewer = "reviewer"
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
         run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
         params: tuple[Any, ...] = (

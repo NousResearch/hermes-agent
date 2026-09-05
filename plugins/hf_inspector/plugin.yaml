@@ -1,0 +1,12 @@
+name: hf_inspector
+version: 1.0.0
+description: "Inspect Hugging Face model metadata, architectures, parameter counts, context limits, and GGUF quantizations directly from the agent runtime."
+author: "@Aly0xDev"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - hf_inspect_model
+  - hf_list_quants

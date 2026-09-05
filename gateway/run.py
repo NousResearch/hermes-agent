@@ -2045,7 +2045,8 @@ from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
-    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT)
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+    GATEWAY_SERVICE_RESTART_EXIT_CODE as _GATEWAY_SERVICE_RESTART_EXIT_CODE)
 
 
 logger = logging.getLogger(__name__)
@@ -5094,14 +5095,26 @@ def _exit_with_failure_verdict(runner) -> bool:
     return True
 
 
-def _unexpected_signal_requires_restart(runner, signal_initiated_shutdown: bool) -> bool:
-    """True when an unplanned signal should make the supervisor revive the gateway."""
-    if not signal_initiated_shutdown or runner._restart_requested:
+def _resolve_gateway_exit_verdict(runner, signal_initiated_shutdown: bool) -> bool:
+    """Resolve the process verdict after either startup abort or normal shutdown."""
+    if _exit_with_failure_verdict(runner):
         return False
-    logger.info(
-        "Exiting with code 1 (signal-initiated shutdown without restart "
-        "request) so the service manager can revive the gateway."
-    )
+    if runner.exit_code is not None:
+        raise SystemExit(runner.exit_code)
+    if signal_initiated_shutdown and not runner._restart_requested:
+        logger.info(
+            "Exiting with code 1 (signal-initiated shutdown without restart "
+            "request) so the service manager can revive the gateway."
+        )
+        return False
+    # Older restart paths may not set ``runner.exit_code``; retain the service-restart fallback.
+    if runner._restart_via_service:
+        logger.info(
+            "Exiting with code %d (service-restart requested) so the service "
+            "manager relaunches the gateway.",
+            _GATEWAY_SERVICE_RESTART_EXIT_CODE,
+        )
+        raise SystemExit(_GATEWAY_SERVICE_RESTART_EXIT_CODE)
     return True
 
 
@@ -5124,8 +5137,6 @@ async def _start_gateway_shutdown_tail(
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
-    if _exit_with_failure_verdict(runner):
-        return False
 
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron
@@ -5148,20 +5159,7 @@ async def _start_gateway_shutdown_tail(
     with suppress(Exception):
         await _shutdown_mcp_servers_nonblocking()
 
-    if runner.exit_code is not None:
-        raise SystemExit(runner.exit_code)
-
-    # Unplanned SIGTERM exits non-zero so the service manager revives us; planned stops must not.
-    if _unexpected_signal_requires_restart(runner, _signal_initiated_shutdown[0]):
-        return False  # → sys.exit(1) in the caller
-
-    # Older restart paths may reach here without ``runner.exit_code``; keep the non-zero fallback.
-    if runner._restart_via_service:
-        logger.info("Exiting with code 75 (service-restart requested) so the service "
-                    "manager relaunches the gateway.")
-        raise SystemExit(75)
-
-    return True
+    return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
@@ -5302,15 +5300,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         # Startup aborted by restart/shutdown before running mode; preserve that path without starting cron.
         try:
             await runner.wait_for_shutdown()
-            if _exit_with_failure_verdict(runner):
-                return False
             with suppress(Exception):
                 await _shutdown_mcp_servers_nonblocking()
-            if runner.exit_code is not None:
-                raise SystemExit(runner.exit_code)
-            if _unexpected_signal_requires_restart(runner, _signal_initiated_shutdown[0]):
-                return False
-            return True
+            return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
         finally:
             _shutdown_gateway_health_export(runner)
 

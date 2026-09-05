@@ -70,12 +70,12 @@ class TestApprovalCommandWiring:
     """Guard the production wiring on BOTH approval-notify transports:
     1. the chat-platform path (_approval_notify_sync in gateway/run.py), and
     2. the SSE/API path (_approval_notify in
-       gateway/platforms/api_server_runs.py),
-    each of which must route the command through _redact_approval_command and
-    REASSIGN the redacted value before any send/enqueue (so the raw command
-    cannot reach a client). Uses AST (not char-offset string slicing) so a
-    benign refactor doesn't cause a false failure, and so a discarded-result
-    call (`_redact(cmd); send(cmd)`) does NOT pass."""
+       gateway/platforms/api_server_runs.py).
+
+    The legacy chat assertion inspects its AST to require a reassigned redacted
+    value before send. The SSE assertion executes the delivery path so transport
+    refactors cannot invalidate the test while redaction remains effective.
+    """
 
     def _assert_redacts_then_uses(self, module, func_name: str, sink_substr: str):
         """Parse `module`'s full AST, locate the (possibly nested) function

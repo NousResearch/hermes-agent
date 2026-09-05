@@ -33,6 +33,10 @@ export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', 
 // ── Relative time ──────────────────────────────────────────────────────────
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
+// Whole calendar days from `nowMs` to `targetMs` in local time (negative for the
+// past). Compares local midnights via DST-safe Date field math, so the result is
+// the number of date changes between the two instants — NOT the raw span rounded
+// to 24 h buckets.
 // Localized bidirectional "in 5 min" / "2 hr ago" — coarsest sensible unit so a
 // daily job reads "in 14 hr", not "in 840 min".
 export function relativeTime(targetMs: number, nowMs = Date.now()): string {
@@ -52,7 +56,14 @@ export function relativeTime(targetMs: number, nowMs = Date.now()): string {
     return rtf.format(sign * Math.round(abs / HOUR), 'hour')
   }
 
-  return rtf.format(sign * Math.round(abs / DAY), 'day')
+  // At day granularity, numeric:'auto' renders ±1/0 as the calendar words
+  // "tomorrow"/"yesterday"/"today", which a reader interprets as CALENDAR days.
+  // Rounding the raw span by 24 h buckets (Math.round(abs / DAY)) mislabels a
+  // target that is two calendar dates away but only ~30 h out — it crosses two
+  // local midnights yet rounds to 1, so `numeric:'auto'` prints "tomorrow" for a
+  // date that is actually two days from now (#76725). Count whole calendar days
+  // between the local dates instead so the word matches the date shown alongside.
+  return rtf.format(relativeDayCount(nowMs, targetMs), 'day')
 }
 
 // A dated divider bucket below the sidebar's unlabelled "recent" head cluster
@@ -82,6 +93,13 @@ export const startOfLocalDay = (ms: number): number => {
   const d = new Date(ms)
 
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+
+// Whole calendar days between the local dates of two instants (sign: target
+// relative to now). Reuses startOfLocalDay so local-midnight semantics stay
+// centralized in one helper.
+export function relativeDayCount(nowMs: number, targetMs: number): number {
+  return Math.round((startOfLocalDay(targetMs) - startOfLocalDay(nowMs)) / DAY)
 }
 
 // The human day doesn't end at midnight — it ends when you sleep. Sessions

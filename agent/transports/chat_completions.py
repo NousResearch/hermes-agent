@@ -125,6 +125,17 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
 
 
+def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Merge nested provider request bodies without erasing sibling keys."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dict(current, value)
+        else:
+            merged[key] = value
+    return merged
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     if not isinstance(reasoning_config, dict):
@@ -449,7 +460,7 @@ class ChatCompletionsTransport(ProviderTransport):
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
-            session_id=params.get("session_id"),
+            session_id=params.get("session_id"), request_overrides=params.get("request_overrides"),
         )
         api_kwargs.update(top_level_from_profile)
 
@@ -461,10 +472,10 @@ class ChatCompletionsTransport(ProviderTransport):
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:
-                extra_body.update(part)
+                extra_body = _deep_merge_dict(extra_body, part)
         for k, v in (params.get("request_overrides") or {}).items():
             if k == "extra_body" and isinstance(v, dict):
-                extra_body.update(v)
+                extra_body = _deep_merge_dict(extra_body, v)
             else:
                 api_kwargs[k] = v
 

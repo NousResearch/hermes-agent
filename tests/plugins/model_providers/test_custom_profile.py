@@ -170,6 +170,39 @@ class TestCustomReasoningWireShape:
         assert eb.get("think") is not True
 
 
+class TestCustomReasoningWithProviderEnvelope:
+    """Configured provider envelopes own reasoning wire-shape end to end."""
+
+    @pytest.mark.parametrize(
+        "reasoning_config",
+        [
+            {"enabled": True, "effort": "xhigh"},
+            {"enabled": False},
+        ],
+    )
+    def test_chat_template_kwargs_suppress_generic_reasoning(
+        self, custom_profile, reasoning_config
+    ):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="MiniMax-M3",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            provider_profile=custom_profile,
+            reasoning_config=reasoning_config,
+            request_overrides={
+                "extra_body": {"chat_template_kwargs": {"thinking": True}}
+            },
+        )
+
+        assert kwargs["extra_body"] == {
+            "chat_template_kwargs": {"thinking": True}
+        }
+        assert "reasoning_effort" not in kwargs
+        assert "think" not in kwargs["extra_body"]
+
+
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""
 

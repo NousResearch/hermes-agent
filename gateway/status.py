@@ -533,9 +533,27 @@ def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int
 
 
 def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
-    """Force-unlink a stale PID file + sibling lock (lock confirmed inactive, so no pid check)."""
+    """Unlink a stale PID file + sibling lock, never a running gateway's (#102790).
+
+    The lock probe can falsely report inactive while the sibling
+    ``gateway_state.json`` (or the pid/lock records themselves) still names a
+    live gateway PID — unlinking then makes every liveness surface report a
+    healthy gateway as stopped. All paths resolve against *pid_path*'s dir,
+    never the process-level HERMES_HOME.
+    """
     if not cleanup_stale:
         return
+    # ponytail: one extra sibling read_runtime_status on the cleanup path only; skip if this ever shows in profiles.
+    with contextlib.suppress(Exception):
+        sibling_records = (
+            _read_pid_record(pid_path),
+            _read_gateway_lock_record(_get_gateway_lock_path(pid_path)),
+            _read_json_file(pid_path.with_name(_RUNTIME_STATUS_FILE)),
+        )
+        for record in sibling_records:
+            pid = _live_pid_from_record(record)
+            if pid is not None and _record_matches_live_gateway_pid(record, pid):
+                return  # Live gateway owns these files — refuse to unlink.
     _clear_running_pid_cache()
     for path in (pid_path, _get_gateway_lock_path(pid_path)):
         with contextlib.suppress(Exception):

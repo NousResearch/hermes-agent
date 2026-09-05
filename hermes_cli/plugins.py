@@ -840,6 +840,110 @@ class PluginContext:
         ``pattern=`` or you swallow the core button flows."""
         self.register_platform_handler("telegram", factory)
 
+    # -- telegram callback handler registration -----------------------------
+
+    # Built-in Telegram callback_data prefixes claimed by TelegramAdapter.
+    # Plugins must pick a different prefix so dispatch stays unambiguous.
+    _TELEGRAM_RESERVED_CALLBACK_PREFIXES: Tuple[str, ...] = (
+        "ea:",
+        "cl:",
+        "gt:",
+        "mp:",
+        "mpg:",
+        "mpv:",
+        "mm:",
+        "mc:",
+        "mg:",
+        "cp:",
+        "sc:",
+        "update_prompt:",
+    )
+    _TELEGRAM_RESERVED_CALLBACK_TOKENS: Tuple[str, ...] = ("mb", "mx")
+
+    def register_telegram_callback_handler(
+        self,
+        prefix: str,
+        callback: Callable,
+    ) -> PluginRegistration:
+        """Register a Telegram inline-keyboard callback handler from a plugin.
+
+        Hermes' Telegram adapter dispatches unmatched ``callback_query``
+        payloads to the longest registered prefix. Built-in prefixes
+        (exec approval, clarify, model picker, and similar) are checked
+        first and cannot be overridden.
+
+        Callback signature::
+
+            async def handler(query, data: str) -> None:
+                # query is the PTB CallbackQuery; data is query.data
+                ...
+
+        The adapter authorizes the caller, answers the query, then invokes
+        the handler. Plugins may ``edit_message_text``; they do not need
+        to call ``query.answer()``.
+
+        Args:
+            prefix: Non-empty ``callback_data`` prefix to claim
+                (for example ``"task:"``). Longest prefix wins when
+                several handlers match.
+            callback: Async callable receiving ``(query, data)``.
+
+        Raises:
+            ValueError: if ``callback`` is not callable, ``prefix`` is
+                empty, or ``prefix`` collides with a built-in prefix.
+
+        Example::
+
+            async def _on_task_button(query, data: str) -> None:
+                await query.edit_message_text("Done.")
+
+            ctx.register_telegram_callback_handler("task:", _on_task_button)
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"callback handler with a non-callable callback."
+            )
+        if not isinstance(prefix, str) or not prefix.strip():
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"callback handler with an empty or invalid prefix."
+            )
+        normalized = prefix.strip()
+        if self._telegram_callback_prefix_reserved(normalized):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register Telegram "
+                f"callback prefix {normalized!r}, which is reserved by "
+                f"a built-in handler."
+            )
+        entry = (normalized, callback, self.manifest.name)
+        self._manager._telegram_callback_handlers.append(entry)
+        handle = self._track(
+            "telegram_callback_handler",
+            normalized,
+            lambda: self._manager._remove_identity(
+                self._manager._telegram_callback_handlers, entry
+            ),
+        )
+        logger.debug(
+            "Plugin %s registered Telegram callback handler: %s",
+            self.manifest.name,
+            normalized,
+        )
+        return handle
+
+    @classmethod
+    def _telegram_callback_prefix_reserved(cls, prefix: str) -> bool:
+        if any(
+            prefix == reserved or prefix.startswith(reserved)
+            for reserved in cls._TELEGRAM_RESERVED_CALLBACK_PREFIXES
+        ):
+            return True
+        return any(
+            prefix == token or prefix.startswith(f"{token}:")
+            for token in cls._TELEGRAM_RESERVED_CALLBACK_TOKENS
+        )
+
     @_serialized_replacement
     def register_auxiliary_task(
         self, key: str, *, display_name: str, description: str,
@@ -1155,6 +1259,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
+        # Telegram inline-keyboard callback handlers registered by plugins.
+        # Each entry is (prefix, callback, plugin_name). The Telegram adapter
+        # looks this list up at callback_query time (longest-prefix match)
+        # so reconnect / _register_handlers does not need extra wiring.
+        self._telegram_callback_handlers: List[tuple] = []
         # Ledger per plugin (ownership) plus global order (reverse teardown across plugins). Process-
         # global registries are shared across profiles while several managers coexist, so the ledger
         # is keyed per (hermes_home, plugin_id) and every inverse is identity-conditional — one
@@ -1414,6 +1523,18 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def get_slack_action_handlers(self) -> List[tuple]:
         """``(action_id, callback, plugin_name)`` tuples for the Slack adapter to wire at connect."""
         return list(self._slack_action_handlers)
+
+    def get_telegram_callback_handlers(self) -> List[tuple]:
+        """Return plugin-registered Telegram callback_query handlers.
+
+        Each entry is a ``(prefix, callback, plugin_name)`` tuple.
+        Consumed by the Telegram adapter inside ``_handle_callback_query``
+        after built-in prefixes, via longest-prefix match.
+
+        Plugins register handlers via
+        :meth:`PluginContext.register_telegram_callback_handler`.
+        """
+        return list(self._telegram_callback_handlers)
 
     def get_platform_handler_factories(self, platform: str) -> List[tuple]:
         """``(factory, plugin_name)`` tuples for one platform; adapters call ``factory(native,

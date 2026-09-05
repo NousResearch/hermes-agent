@@ -1039,14 +1039,21 @@ class SessionSchemaMixin:
                 self, "_fts_tool_prefix_migration_requires_rebuild", False)
             trigram_triggers_missing = self._fts_triggers_missing(cursor, _FTS_TRIGRAM_TRIGGERS)
             self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", base_sql)
+            # Read AFTER ensure: _ensure_fts_schema may perform orphan-shadow cleanup
+            # (#103840), which leaves freshly recreated FTS objects empty — the
+            # canonical rebuild must run for them just like missing triggers.
+            orphan_cleanup_performed = getattr(self, "_fts_orphan_cleanup_performed", False)
+            self._fts_orphan_cleanup_performed = False
             if self._fts_enabled:
                 # Trigram is optional; without it CJK search falls back to LIKE.
                 trigram_enabled = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
                 self._trigram_available = trigram_enabled
-                if base_triggers_missing or (trigram_enabled and trigram_triggers_missing):
+                if base_triggers_missing or orphan_cleanup_performed or (trigram_enabled and trigram_triggers_missing):
                     self._run_admitted_startup_rebuild(
                         cursor,
-                        lambda: self._rebuild_fts_indexes(cursor, legacy=legacy_fts, include_trigram=trigram_enabled),
+                        lambda: self._rebuild_fts_indexes(
+                            cursor, legacy=legacy_fts, include_trigram=trigram_enabled
+                        ),
                     )
                 if not legacy_fts:
                     # CJK-bigram index: strictly additive, gated on the loadable tokenizer.

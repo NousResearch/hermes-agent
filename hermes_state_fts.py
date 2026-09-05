@@ -283,11 +283,69 @@ class SessionFtsSetupMixin:
         status = self._fts_table_probe(cursor, table_name)
         if status is None:
             return False
+        # #103840: a `.recover`-recovered database re-emits FTS5 shadow tables as
+        # ordinary tables but loses the virtual parent, so the CREATE VIRTUAL TABLE
+        # below fails with "fts5: error creating shadow table <name>: table
+        # '<name>' already exists". Probe BEFORE the DDL: a fresh SessionDB whose
+        # probe says "no such table" still needs this cleanup (the exception path
+        # alone would only cover the connection that happened to collide).
+        dropped = self._drop_orphan_fts_shadow_objects(cursor, table_name)
+        if dropped:
+            logger.warning(
+                "%s: dropped orphan FTS5 shadow objects (virtual parent absent; "
+                "typical after sqlite3 .recover) — recreating and scheduling rebuild",
+                table_name,
+            )
+            # Flag lives on the instance so the schema flow can schedule the
+            # canonical rebuild: the objects recreated by the DDL below are EMPTY
+            # until _rebuild_fts_indexes backfills them from `messages`. Set only
+            # when something was actually dropped — a probe-only false positive
+            # must not force a needless full rebuild.
+            self._fts_orphan_cleanup_performed = True
         try:
             # Run even when the table exists: recreates triggers a no-FTS5 runtime dropped.
             cursor.executescript(ddl)
             return True
         except sqlite3.OperationalError as exc:
+            if self._is_orphan_fts_shadow_error(cursor, table_name, exc):
+                # Exception-path fallback: the proactive sweep above saw no orphans
+                # (e.g. a concurrent opener re-created them in the gap), yet the DDL
+                # still collided. Retry once; if the process does NOT own rebuild
+                # admission, the deferred path below detaches via the fts_stale
+                # breadcrumb (#93200 contract: no live triggers over an unrebuilt
+                # index) instead of leaving empty-rebuilt triggers live.
+                logger.warning(
+                    "%s: orphan FTS5 shadow collision on DDL (post-sweep race); "
+                    "retrying once after cleanup",
+                    table_name,
+                )
+                if self._drop_orphan_fts_shadow_objects(cursor, table_name):
+                    self._fts_orphan_cleanup_performed = True
+                try:
+                    cursor.executescript(ddl)
+                    return True
+                except sqlite3.OperationalError as retry_exc:
+                    logger.exception(
+                        "%s: retry after orphan shadow cleanup still failed", table_name
+                    )
+                    if self._is_orphan_fts_shadow_error(cursor, table_name, retry_exc):
+                        # Still colliding (a concurrent opener keeps re-creating the
+                        # orphans): fall back to the canonical deferred-rebuild
+                        # contract (#93200) — persist the fts_stale breadcrumb, drop
+                        # the just-created triggers, and degrade this open. A later
+                        # open that wins rebuild admission restores FTS. Never leave
+                        # live triggers over an unrebuilt (empty) index.
+                        cursor.execute(
+                            "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (FTS_STALE_KEY,),
+                        )
+                        self._drop_all_fts_triggers(cursor)
+                        self._fts_stale = True
+                        self._fts_enabled = False
+                        self._trigram_available = False
+                        return False
+                    raise
             if not self._is_fts5_unavailable_error(exc):
                 raise
             # A missing tokenizer disables only that table; the base FTS5 table is fine.
@@ -296,6 +354,62 @@ class SessionFtsSetupMixin:
             else:
                 self._warn_fts5_unavailable(exc)
             return False
+
+    @staticmethod
+    def _is_orphan_fts_shadow_error(
+        cursor: sqlite3.Cursor, table_name: str, exc: sqlite3.OperationalError
+    ) -> bool:
+        """True only when `exc` is FTS5's own shadow-table-name-collision AND the
+        virtual parent is absent from sqlite_master. The message check is scoped to
+        FTS5's exact wording ("fts5: error creating shadow table ... already
+        exists") — a bare "already exists" from an unrelated object must not route
+        into FTS cleanup — and both halves must hold: with the parent present the
+        shadows are legitimate and any DDL failure is a different bug."""
+        msg = str(exc).lower()
+        if "fts5: error creating shadow table" not in msg or "already exists" not in msg:
+            return False
+        try:
+            row = cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND lower(name)=lower(?) AND sql LIKE 'CREATE VIRTUAL TABLE%'",
+                (table_name,),
+            ).fetchone()
+        except sqlite3.Error:
+            return False
+        return row is None
+
+    def _drop_orphan_fts_shadow_objects(self, cursor: sqlite3.Cursor, table_name: str) -> bool:
+        """Drop sqlite_master objects that are FTS shadow residue: each object whose
+        name starts with `table_name + '_'` is dropped UNLESS it is owned by a still-
+        living virtual table (e.g. `messages_fts_trigram_data` is owned by the
+        `messages_fts_trigram` parent and must survive when only the base family is
+        orphaned). Ownership = some present virtual table's name is a prefix of the
+        object name. The residue `.recover` leaves behind (shadows, views, triggers
+        of families whose virtual parent is gone) is exactly what gets dropped."""
+        try:
+            virtuals = [
+                r[0]
+                for r in cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND sql LIKE 'CREATE VIRTUAL TABLE%'"
+                ).fetchall()
+            ]
+            rows = cursor.execute(
+                "SELECT type, name FROM sqlite_master "
+                "WHERE substr(lower(name), 1, length(?)) = lower(?) AND name != ?",
+                (table_name, table_name, table_name),
+            ).fetchall()
+        except sqlite3.Error:
+            return False
+        dropped_any = False
+        for obj_type, name in rows:
+            if any(name.startswith(v + "_") for v in virtuals):
+                continue  # owned by a healthy virtual table — do not touch
+            verb = {"view": "VIEW", "trigger": "TRIGGER"}.get(str(obj_type).lower(), "TABLE")
+            cursor.execute(f'DROP {verb} IF EXISTS "{name}"')
+            logger.info("dropped orphan FTS object (%s): %s", obj_type, name)
+            dropped_any = True
+        return dropped_any
 
     @staticmethod
     def _is_fts_write_corruption_error(exc: sqlite3.DatabaseError) -> bool:

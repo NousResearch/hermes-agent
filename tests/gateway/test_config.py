@@ -101,6 +101,7 @@ class TestPlatformConfigRoundtrip:
                     model="openrouter/healer-alpha",
                     provider="openrouter",
                     system_prompt="You are a daily news summarizer.",
+                    reasoning_effort="high",
                 ),
                 "9876543210": ChannelOverride(
                     model="anthropic/claude-opus-4.6",
@@ -112,9 +113,11 @@ class TestPlatformConfigRoundtrip:
         d = pc.to_dict()
         assert "channel_overrides" in d
         assert d["channel_overrides"]["1234567890"]["model"] == "openrouter/healer-alpha"
+        assert d["channel_overrides"]["1234567890"]["reasoning_effort"] == "high"
         assert d["channel_overrides"]["9876543210"]["system_prompt"] == "You are a coding assistant."
         restored = PlatformConfig.from_dict(d)
         assert restored.channel_overrides["1234567890"].model == "openrouter/healer-alpha"
+        assert restored.channel_overrides["1234567890"].reasoning_effort == "high"
         assert restored.channel_overrides["9876543210"].provider == "anthropic"
 
 
@@ -122,6 +125,25 @@ class TestChannelOverride:
     def test_from_dict_empty(self):
         assert ChannelOverride.from_dict({}).model is None
         assert ChannelOverride.from_dict(None).model is None
+
+
+    def test_reasoning_disabled_roundtrip_is_not_treated_as_missing(self):
+        restored = ChannelOverride.from_dict({"reasoning_effort": False})
+        assert restored.reasoning_effort is False
+        assert restored.to_dict()["reasoning_effort"] is False
+
+    def test_reasoning_uses_canonical_parser(self):
+        restored = ChannelOverride.from_dict({"reasoning_effort": " XHIGH "})
+        assert restored.reasoning_effort == "xhigh"
+
+    def test_invalid_reasoning_warns_and_inherits(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            restored = ChannelOverride.from_dict({"reasoning_effort": "turbo"})
+        assert restored.reasoning_effort is None
+        assert (
+            "Unknown reasoning_effort 'turbo'; ignoring channel override "
+            "and inheriting configured reasoning"
+        ) in caplog.text
 
 
 class TestPlatformConfigMalformedSections:

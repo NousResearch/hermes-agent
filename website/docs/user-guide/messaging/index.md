@@ -292,9 +292,9 @@ Configure per-platform overrides in `~/.hermes/gateway.json`:
 }
 ```
 
-## Per-Channel Model & System Prompt Overrides
+## Per-Channel Model, Reasoning & System Prompt Overrides
 
-Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
+Different channels can run different models, reasoning levels, and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with deeper reasoning plus a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/gateway-config.yaml`:
 
 ```yaml
 platforms:
@@ -304,6 +304,7 @@ platforms:
       "123456789012345678":        # channel/thread id
         model: anthropic/claude-sonnet-4.6
         provider: anthropic
+        reasoning_effort: high
         system_prompt: "You are the #dev channel code-review specialist."
       "987654321098765432":
         model: openai/gpt-5-mini
@@ -311,9 +312,11 @@ platforms:
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
-- Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
+- All four keys are optional — set `model`, `provider`, `reasoning_effort`, `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- `reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. YAML `false` also disables reasoning for that channel/topic.
+- Lookup checks the composite `chat_id:thread_id` topic key first when both IDs are available, then the chat/channel id, thread id, and parent channel/forum id. This lets a Telegram forum topic beat its chat-level default while preserving parent inheritance.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
+- Resolution priority for reasoning is: session `/reasoning` override → `channel_overrides` → `agent.reasoning_overrides` for the effective model → global `agent.reasoning_effort` → provider/model default. A scoped session/channel value remains in force across same-turn model switches and provider fallback.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
 ## Security

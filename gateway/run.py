@@ -2803,15 +2803,15 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
 
 def _channel_override_lookup_keys(
     chat_id: str, *, thread_id: Optional[str] = None, parent_id: Optional[str] = None) -> list[str]:
-    """Ordered, de-duplicated ``channel_overrides`` lookup keys (matches ``resolve_channel_prompt``:
-    exact id first, then parent — Discord threads inherit parent overrides)."""
-    return list(dict.fromkeys(str(key) for key in (chat_id, thread_id, parent_id) if key))
+    """Topic composite first, then chat/channel, thread, and parent ids."""
+    composite = f"{chat_id}:{thread_id}" if chat_id and thread_id else None
+    return list(dict.fromkeys(str(key) for key in (composite, chat_id, thread_id, parent_id) if key))
 
 
 def _get_channel_override(
     config: GatewayConfig, platform: Platform, chat_id: str, *, thread_id: Optional[str] = None,
     parent_id: Optional[str] = None) -> Optional[ChannelOverride]:
-    """Per-channel override via chat_id, then thread_id, then parent_id; None if absent."""
+    """Per-channel override via topic composite, chat id, thread id, then parent id."""
     platforms = getattr(config, "platforms", None)
     if not platforms:
         return None
@@ -2823,6 +2823,26 @@ def _get_channel_override(
         ov = overrides.get(key)
         if ov is not None:
             return ov
+    return None
+
+
+def _get_channel_override_field(
+    config: GatewayConfig,
+    platform: Platform,
+    chat_id: str,
+    field_name: str,
+    *,
+    thread_id: Optional[str] = None,
+    parent_id: Optional[str] = None,
+) -> Any:
+    """Resolve one override field; omitted exact entries continue inheritance."""
+    platform_config = (getattr(config, "platforms", None) or {}).get(platform)
+    overrides = getattr(platform_config, "channel_overrides", None) or {}
+    for key in _channel_override_lookup_keys(chat_id, thread_id=thread_id, parent_id=parent_id):
+        override = overrides.get(key)
+        value = getattr(override, field_name, None) if override is not None else None
+        if value is not None:
+            return value
     return None
 
 

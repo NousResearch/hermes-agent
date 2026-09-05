@@ -575,6 +575,28 @@ class TestProviderRequiresStream:
                 "custom", "https://other.example.com/v1"
             ) is False
 
+    def test_ollama_cloud_always_requires_stream(self):
+        # Ollama Cloud reasoning models leave non-streaming requests waiting
+        # until timeout or return an empty payload — force the streamed
+        # auxiliary path regardless of provider label (auto/ollama-cloud).
+        assert _provider_requires_stream(
+            "ollama-cloud", "https://ollama.com/v1"
+        ) is True
+        assert _provider_requires_stream(
+            "auto", "https://ollama.com/v1"
+        ) is True
+        assert _provider_requires_stream(
+            "auto", "https://ollama.com/api/chat"
+        ) is True
+        assert _provider_requires_stream(
+            "auto", "https://not-ollama.example.com/v1"
+        ) is False
+        # Provider-name branch is intentionally URL-agnostic: the label alone
+        # forces the streamed path even for custom/self-hosted base URLs.
+        assert _provider_requires_stream(
+            "ollama-cloud", "https://my-server.local:11434/v1"
+        ) is True
+
 
 
 class TestForceStream:

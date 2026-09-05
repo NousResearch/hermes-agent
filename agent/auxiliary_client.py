@@ -6142,6 +6142,9 @@ def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
         return False
     if base_url_host_matches(_url, "copilot.tencent.com") or _is_managed_local_endpoint(_url):
         return True
+    # Ollama Cloud — non-streaming requests to reasoning models time out
+    if provider == "ollama-cloud" or base_url_host_matches(_url, "ollama.com"):
+        return True
     try:
         from hermes_cli.config import load_config
         markers = (load_config() or {}).get("auxiliary", {}).get("stream_only_base_urls") or []

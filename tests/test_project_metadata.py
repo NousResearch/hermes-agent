@@ -64,7 +64,7 @@ def test_lazy_installable_extras_excluded_from_all():
     # someone adds a new lazy-install backend, they have to update
     # this list AND verify [all] doesn't contain it.
     lazy_covered_extras = {
-        "anthropic", "bedrock",
+        "anthropic", "claude-agent-sdk", "bedrock",
         "exa", "firecrawl", "parallel-web",
         "fal",
         "edge-tts", "tts-premium",

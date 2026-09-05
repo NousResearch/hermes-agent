@@ -182,6 +182,9 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+# Claude via the official Agent SDK (subscription OAuth) — only needed when
+# provider=claude-agent-sdk. The SDK bundles/locates the Claude Code CLI.
+claude-agent-sdk = ["claude-agent-sdk==0.2.144", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1"]  # SDK >=0.2.140 accepts mcp 2.x; pin mcp with the [mcp] extra so every extra combination resolves (#65982)
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
@@ -423,7 +426,8 @@ exclude-newer = "14 days"
 # risk — their newest releases are years old — and unbricks resolvers that
 # cannot see upload dates.
 #
-# setuptools, wheel, pillow, mcp: build/core pin bricks (#78227, #75992, #76020, #96488). uv
+# setuptools, wheel, pillow, mcp, claude-agent-sdk: build/core pin bricks
+# (#78227, #75992, #76020, #96488). uv
 # applies exclude-newer to build-system.requires and core deps too; when a
 # resolver cannot see an upload date (old uv, mirror index, stale HTTP cache)
 # it filters the pinned version and the package cannot even BUILD
@@ -469,6 +473,7 @@ azure-identity = false
 boto3 = false
 brotlicffi = false
 certifi = false
+claude-agent-sdk = false
 concurrent-log-handler = false
 croniter = false
 cryptography = false
@@ -555,7 +560,6 @@ uvicorn = false
 vercel = false
 websockets = false
 youtube-transcript-api = false
-
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the

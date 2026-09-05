@@ -41,13 +41,18 @@ def _retire_turn_marker(session: dict, *keys: str) -> None:
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
     cover a session_key that compression rotated mid-turn.
 
-    The clear is writer-identified (preemptible leases): a holder displaced mid-turn can
-    no longer retire the NEW owner's marker — identity mismatch no-ops instead."""
+    The clear is writer-identified (preemptible leases) with the identity RECORDED at turn
+    start (``_turn_marker_writer``): mid-turn compression can rotate the lease (the
+    re-anchor fallback claims a NEW lease_id), and comparing with retire-time identity
+    would no-op forever on the rotated key's marker. Falls back to the current lease when
+    no turn recorded one (e.g. a marker retired at resume time)."""
     home = _session_home(session)
-    lease = session.get("active_session_lease")
-    writer = (
-        {"lease_id": lease.lease_id, "epoch": int(getattr(lease, "epoch", 1) or 1)}
-        if lease is not None else None)
+    writer = session.pop("_turn_marker_writer", None)
+    if writer is None:
+        lease = session.get("active_session_lease")
+        writer = (
+            {"lease_id": lease.lease_id, "epoch": int(getattr(lease, "epoch", 1) or 1)}
+            if lease is not None else None)
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
             clear_turn_marker(home, key, writer=writer)
@@ -142,8 +147,17 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
         try:
             _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+            # ``is False``: explicit not-admitted; legacy None-returning stubs keep
+            # their old treated-as-admitted behavior.
+            if _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue") is False:
+                # Not admitted (displaced/closing): the marker deliberately STAYS (the next
+                # resume retries — the payload is not consumed), but the scheduled latch
+                # must clear or no later resume may schedule again. No message.start was
+                # emitted: the submit emits its own only after admission.
+                with session["history_lock"]:
+                    session["running"] = False
+                    session["_auto_continue_scheduled"] = False
+                return
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
             _notif_release_turn(session)  # rebound from session_notifications
@@ -349,7 +363,16 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
+            if _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs) is False:
+                # Not admitted (displaced/closing): the envelope must NOT be consumed —
+                # restore it exactly like the generation-bump restore above so a
+                # legitimate follow-up is never silently dropped (False is a refusal,
+                # not a delivery).
+                with session["history_lock"]:
+                    advanced = session.get("queued_prompt")
+                    _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
+                    session["running"] = False
+                return True
         elif (_lease_refusal := _lease_admission_check(sid, session)) is not None:
             # Preemptible leases: the isolated compute-host stream bypasses _run_prompt_submit's
             # admission gate — fence it HERE so the turn publishes busy_kind='user' like every

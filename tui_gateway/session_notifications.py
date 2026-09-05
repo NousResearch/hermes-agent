@@ -155,10 +155,16 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 
 
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
-    """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
+    """_run_prompt_submit for a claimed (running=True) turn; releases on failure. False
+    (not admitted — displaced/closing) is a FAILURE like an exception: the caller's
+    delivery bookkeeping must not treat the notification as sent. No message.start here:
+    the submit emits its own after admission, so a refused dispatch leaves no phantom
+    turn bubble on the surface."""
     try:
-        _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        # ``is False`` (not just falsy): explicit not-admitted; legacy None stubs keep
+        # their old treated-as-admitted behavior.
+        if _run_prompt_submit(rid, sid, session, text, **kwargs) is False:
+            raise RuntimeError("turn not admitted (session displaced or closing)")
     except Exception as exc:
         _notif_log_failure(what, exc)
         _notif_release_turn(session)
@@ -185,8 +191,12 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
                 return
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, payload["message"])
+            if _run_prompt_submit(rid, sid, session, payload["message"]) is not False:
+                return  # admitted (or a legacy stub): the turn owns the claim now
+            # Not admitted (displaced/closing): release the claim and abandon — the tick
+            # must not fall through to complete_tick("") and mark a turn that never ran.
+            _notif_release_turn(session)
+            mgr.abandon_tick()
             return
     except Exception:
         pass
@@ -250,9 +260,10 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
         if wakeup.lstrip().startswith("/"):
             _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
-        else:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+        elif _run_prompt_submit(rid, sid, session, wakeup) is False:
+            # Not admitted (displaced/closing) is a failure like an exception here:
+            # release the claim and abandon the tick instead of letting it count as fired.
+            raise RuntimeError("loop wakeup turn not admitted (session displaced or closing)")
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
         _notif_release_turn(session)

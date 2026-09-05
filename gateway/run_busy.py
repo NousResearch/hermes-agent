@@ -186,6 +186,14 @@ class GatewayBusySessionMixin:
                 session_id=session_key,
                 surface=f"gateway:{platform}",
                 config=getattr(self, "config", None),
+                # mark_busy (preemptible leases): a gateway messaging turn IS a human-initiated
+                # turn, and its lease lives OUTSIDE any tui_gateway session registry — nothing
+                # else heartbeats it or marks it busy. Unmarked, the claim-time heartbeat_at
+                # ages past the stale-steal threshold ~30s into a 175-495s turn and a desktop
+                # steals mid-messaging-turn. busy_kind='user' + the turn-runner's throttled
+                # activity piggyback keep it protected for exactly as long as it is really
+                # streaming (stall rules then apply, same as every other surface).
+                mark_busy=True,
                 metadata={
                     "platform": platform,
                     "chat_id": getattr(source, "chat_id", "") or "",

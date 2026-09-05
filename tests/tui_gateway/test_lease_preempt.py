@@ -1149,3 +1149,267 @@ def test_refusal_message_truthfulness():
     assert "restart once" in msg
     msg = AS.session_already_owned_message("s", lagging)
     assert "lease stale" in msg and "mid-turn" not in msg
+
+
+# ── Review-fix round: confirmed defects from the adversarial review ────────
+
+
+def test_bg_review_token_survives_turn_settle_transition(gateway, monkeypatch):
+    """The REAL user→auto handover (not a pre-planted auto entry): a review spawned
+    mid-turn takes its token, the turn's finally CONVERTS the live 'user' mark to
+    'auto' in one critical section (fresh busy_since, no frozen activity clock), a
+    claim during the review is grace-refused, and the review's completion clears it."""
+    import types as _types
+    from agent.background_review import _lease_auto_busy_begin, _lease_auto_busy_end
+
+    key = "sess-bg-transition"
+    session = _session_dict(key)
+    session["agent"] = _types.SimpleNamespace()  # hook target
+    server._sessions["live"] = session
+    assert server._ensure_active_session_slot("live", session) is None
+    turn_started = time.time()
+
+    # Review spawns mid-turn: token registered, foreground turn keeps the 'user' mark.
+    _lease_auto_busy_begin(session["agent"])
+    entry = _entry_for(None, key)
+    assert entry["busy"] is True and entry["busy_kind"] == "user", (
+        "a live turn is never downgraded to auto")
+
+    # The turn's finally: the mark CONVERTS (the old guard blocked both ends of this
+    # handover, stranding 'user' with a frozen activity clock for the whole review).
+    session["running"] = False
+    server._lease_turn_settled(session)
+    entry = _entry_for(None, key)
+    assert entry["busy_kind"] == "auto" and entry["busy_detail"] == "bg_review"
+    assert entry["busy_since"] >= turn_started, "the auto grace must measure from the settle"
+    assert "activity_at" not in entry, "the frozen user-activity clock must not leak into auto"
+
+    # A claim during the review is grace-refused (never stall-stolen at 61s).
+    monkeypatch.setattr(server, "_LEASE_BUSY_RETRY_WINDOW_S", 0.0)  # no retry burn in-test
+    probe = _session_dict(key)
+    server._sessions["probe"] = probe
+    result = server._ensure_active_session_slot("probe", probe)
+    server._sessions.pop("probe", None)
+    assert getattr(result, "reason", None) == AS.SESSION_BUSY
+    assert "background review" in str(result)
+
+    # Review completes: token cleared, entry idle again.
+    _lease_auto_busy_end(session["agent"])
+    assert _entry_for(None, key).get("busy") is False
+
+
+def test_tick_interrupt_failure_still_closes(gateway, monkeypatch, caplog):
+    """An interrupt that raises during the displaced close must never skip the close
+    (the ws-orphan reaper contract): the lease is gone either way, and a skipped close
+    would re-fire every 1.5s tick forever."""
+    key = "sess-tick-interrupt-fails"
+    session = _session_dict(key, running=True)
+    server._sessions["victim"] = session
+    assert server._ensure_active_session_slot("victim", session) is None
+    server._lease_turn_settled(session)
+
+    thief = _session_dict(key)
+    thief["profile_home"] = None
+    server._sessions["thief"] = thief
+    assert server._ensure_active_session_slot("thief", thief) is None
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("interrupt exploded")
+
+    monkeypatch.setattr(server, "_interrupt_session_turn", _boom)
+    with caplog.at_level(logging.WARNING, logger="tui_gateway.server"):
+        server._lease_maintenance_tick()
+    assert "victim" not in server._sessions, "close must run despite the interrupt failure"
+    assert any("closing anyway" in r.message for r in caplog.records)
+
+
+def test_gateway_turn_busy_mark_and_activity_piggyback(gateway):
+    """A gateway messaging turn claims with busy_kind='user' (its lease lives outside
+    the tui_gateway session registry — nothing else marks or refreshes it): fresh
+    activity refuses a steal, stale-past-stall steals. Plus the wiring canaries."""
+    from hermes_cli.active_sessions import try_acquire_active_session
+
+    key = "sess-gateway-turn"
+    lease, refusal = try_acquire_active_session(
+        session_id=key, surface="gateway:telegram", config={}, mark_busy=True,
+        metadata={"live_session_id": "gateway-holder", "platform": "telegram"})
+    assert refusal is None
+    entry = _entry_for(None, key)
+    assert entry["busy"] is True and entry["busy_kind"] == "user"
+
+    phone = _session_dict(key)
+    server._sessions["phone"] = phone
+    result = server._ensure_active_session_slot("phone", phone)
+    server._sessions.pop("phone", None)
+    assert getattr(result, "reason", None) == AS.SESSION_BUSY, (
+        "a streaming gateway turn must not be stolen while its activity is fresh")
+
+    _mutate_entry(None, key, lambda e: e.update(activity_at=time.time() - (AS.HERMES_LEASE_STALL_ACTIVITY_S + 5)))
+    phone = _session_dict(key)
+    server._sessions["phone2"] = phone
+    assert server._ensure_active_session_slot("phone2", phone) is None
+    assert _entry_for(None, key)["pid"] == os.getpid()
+
+    # Wiring canaries: the claim marks busy, and the turn runner piggybacks activity on
+    # the streaming-delta and tool-progress callbacks (both directions verified above
+    # live; these pin that the wiring cannot silently regress).
+    repo_root = Path(__file__).resolve().parents[2]
+    assert "mark_busy=True" in (repo_root / "gateway" / "run_busy.py").read_text()
+    runner_src = (repo_root / "gateway" / "run_turn_runner.py").read_text()
+    assert "touch_active_session_lease_activity" in runner_src
+    assert "self.touch_active_session_lease_activity()" in runner_src
+
+
+def test_followup_dispatch_false_releases_not_delivers(gateway, monkeypatch):
+    """_run_prompt_submit's False (not admitted — displaced/closing) is a FAILURE, not
+    a silent success: on_error runs (delivery bookkeeping must not mark work done),
+    on_done never does, and no phantom message.start precedes the refusal."""
+    emits: list = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emits.append(event))
+    key = "sess-followup-dispatch"
+    session = _session_dict(key)
+    server._sessions["holder"] = session
+    assert server._ensure_active_session_slot("holder", session) is None
+    server._lease_turn_settled(session)
+
+    thief = _session_dict(key)
+    server._sessions["thief"] = thief
+    assert server._ensure_active_session_slot("thief", thief) is None  # holder displaced
+
+    calls: list[str] = []
+    server._dispatch_followup_turn(
+        "rid", "holder", session, "goal continuation", "goal continuation dispatch",
+        on_done=lambda: calls.append("done"), on_error=lambda: calls.append("error"))
+    assert calls == ["error"], "a refused dispatch must run on_error, never on_done"
+    assert "message.start" not in emits, (
+        "no turn bubble may be emitted before admission; the refusal emits an error frame")
+    assert "error" in emits
+    assert session.get("running") is False
+
+
+def test_submit_early_refusal_unwinds_busy_mark(gateway):
+    """Every prompt.submit refusal between the slot gate's busy mark and the turn start
+    (here: 4004 confirm_truncate without a cut) must UNPUBLISH busy='user' — only a
+    turn thread's finally ever clears it otherwise."""
+    key = "sess-submit-early-refusal"
+    session = _session_dict(key)
+    server._sessions["live"] = session
+    assert server._ensure_active_session_slot("live", session) is None
+    assert _entry_for(None, key)["busy"] is True
+
+    err, _fields = server._lock_in_submit_turn(
+        "rid", "live", session, "hello", {"confirm_truncate": True}, False, None, None)
+    assert err is not None and err["error"]["code"] == 4004
+    entry = _entry_for(None, key)
+    assert entry.get("busy") is False, "a refused submit must unwind the busy mark"
+    assert session.get("running") is False
+
+
+def test_transfer_resurrect_preserves_epoch(tmp_path):
+    """A resurrected entry must carry the lease object's epoch: minting epoch=1 under a
+    lease that holds >1 self-displaces on the very next revalidate."""
+    home = tmp_path / "transfer-epoch"
+    victim, _ = AS.try_acquire_active_session(
+        session_id="sess-te", surface="desktop", config={}, registry_home=home,
+        track_liveness=True, metadata={"live_session_id": "victim"})
+    thief, refusal = AS.try_acquire_active_session(
+        session_id="sess-te", surface="webui", config={}, registry_home=home,
+        track_liveness=True, metadata={"live_session_id": "thief"})
+    assert thief is not None and thief.epoch == 2
+
+    # Simulate the thief's entry vanishing (prune race): the resurrect must re-mint at
+    # the LEASE's epoch, not 1.
+    state = AS._state_path(home)
+    with AS._FileLock(AS._lock_path(home)):
+        entries = [e for e in json.loads(state.read_text())["entries"]
+                   if e.get("lease_id") != thief.lease_id]
+        AS._write_entries(state, entries)
+    assert AS.transfer_active_session(thief, session_id="sess-te-2") is True
+    resurrected = _entry_for(home, "sess-te-2")
+    assert resurrected["epoch"] == thief.epoch
+    refreshed, refusal = AS.revalidate_active_session(thief)
+    assert refreshed is thief and refusal is None, "the resurrected lease must not self-displace"
+
+
+def test_admission_check_fail_closed_on_registry_error(gateway, monkeypatch):
+    """A revalidate that RAISES (flock unavailable, ENOSPC) inside the running=True
+    window surfaces as a fail-closed refusal — never an exception wedging the session."""
+    key = "sess-admission-raise"
+    session = _session_dict(key)
+    server._sessions["live"] = session
+    assert server._ensure_active_session_slot("live", session) is None
+
+    def _raise(*_a, **_k):
+        raise OSError("no file handles left")
+
+    monkeypatch.setattr(AS, "revalidate_active_session", _raise)
+    result = server._lease_admission_check("live", session)
+    assert result is not None
+    assert getattr(result, "reason", None) == AS.SESSION_COORDINATION_UNAVAILABLE
+
+
+def test_skip_persist_covers_displaced_compute_host_turn(gateway, monkeypatch):
+    """A displaced COMPUTE-HOST session (running=True, no local run thread — the
+    interrupt deliberately leaves the flag for a child callback that never comes) must
+    get the same skip-persist protection as a live local thread."""
+    import types as _types
+
+    def _make_session():
+        persist: list[int] = []
+        agent = _types.SimpleNamespace(
+            session_id="sess-ch-persist",
+            _session_messages=[{"role": "user", "content": "x"}],
+            _persist_session=lambda snap: persist.append(1))
+        sess = _session_dict("sess-ch-persist", source="webui")
+        sess["agent"] = agent
+        sess["running"] = True
+        sess["_compute_host_active"] = True
+        sess["_closing"] = True  # _pop_session_by_id already claimed it
+        sess["_persist_probe"] = persist
+        return sess
+
+    import contextlib as _cl
+
+    @_cl.contextmanager
+    def _no_db(_session):
+        yield None
+
+    monkeypatch.setattr(server, "_session_db", _no_db)
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+
+    displaced = _make_session()
+    server._teardown_popped_session(displaced, end_reason="lease_preempted")
+    assert displaced["_persist_probe"] == [], (
+        "a displaced compute-host turn must not persist over the new owner's row")
+
+    control = _make_session()
+    server._teardown_popped_session(control, end_reason="tui_close")
+    assert control["_persist_probe"] == [1], "an ordinary close still persists"
+
+
+def test_compute_host_relay_refreshes_parent_activity(gateway, monkeypatch):
+    """Isolated compute-host turns stream in the child; the PARENT holds the lease and
+    this relay sees every child frame — it must keep the parent's activity clock fresh
+    (verified: the child claims no lease, so nothing else touches the parent entry)."""
+    monkeypatch.setattr(server, "write_json", lambda message: True)
+    key = "sess-ch-relay"
+    session = _session_dict(key)
+    server._sessions["ch-live"] = session
+    assert server._ensure_active_session_slot("ch-live", session) is None
+    _mutate_entry(None, key, lambda e: e.update(activity_at=time.time() - 9999))
+
+    server._relay_compute_host_rpc({
+        "type": "rpc", "params": {"type": "message.delta", "session_id": "ch-live", "text": "chunk"}})
+    assert _entry_for(None, key)["activity_at"] >= time.time() - 2.0, (
+        "a streamed child frame must refresh the parent lease's activity clock")
+
+
+def test_review_fix_source_contracts():
+    """Small wiring contracts from the review round: the retired write-only
+    _lease_busy_mark_pending flag is gone, and the module-default watcher fallback is
+    actually pinned (register's write-back runs before the server def exists)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    methods_src = (repo_root / "tui_gateway" / "methods_prompt.py").read_text()
+    assert "_lease_busy_mark_pending" not in methods_src
+    server_src = (repo_root / "tui_gateway" / "server.py").read_text()
+    assert "_session_reaper._lease_maintenance_tick = _lease_maintenance_tick" in server_src

@@ -113,6 +113,27 @@ def _busy_refusal_worth_retry(refusal) -> bool:
     return False
 
 
+def _note_submit_busy_mark(session: dict) -> None:
+    """Handoff flag (preemptible leases): the slot gate just published busy='user' for
+    THIS submit in its own flock critical section, so prompt.submit's lock-in step can
+    skip a second revalidate (the epoch fence still runs at _admit_prompt_turn, right
+    before the turn thread starts — the strongest position). Popped by the consumer;
+    never survives past one submit."""
+    session["_lease_busy_marked_for_submit"] = True
+
+
+def _unsettle_submit_busy_mark(session: dict) -> None:
+    """Unwind the slot gate's busy='user' mark when a submit refuses BEFORE any turn
+    starts (watch-child fence, malformed truncation, hosted+isolation, persist failure):
+    only a turn thread's finally ever clears it otherwise, so the session would read
+    mid-turn forever — false 'no visible progress' refusals and a 61s stall-steal window
+    for a turn that never existed. Also drops the submit handoff flag: a later submit
+    must never inherit this one's skip-admission-revalidate pass."""
+    session.pop("_lease_busy_marked_for_submit", None)
+    with contextlib.suppress(Exception):
+        _lease_turn_settled(session)
+
+
 def _lease_admission_check(sid: str, session: dict) -> str | None:
     """Epoch-fenced admission mark for a session that already holds its lease: one
     revalidate-under-flock that both proves the lease is still ours and publishes
@@ -120,14 +141,27 @@ def _lease_admission_check(sid: str, session: dict) -> str | None:
     exclusive). None when admitted; on displacement the session is gracefully closed
     (end_reason 'lease_preempted' → session.reclaimed broadcast, DB row preserved via
     _other_runtime_lease_guard) and the taken-over refusal is returned so the
-    submitting surface learns immediately."""
+    submitting surface learns immediately.
+
+    The revalidate itself can raise (registry flock unavailable, ENOSPC, …) — that must
+    surface as a fail-closed REFUSAL, never an exception into a caller sitting between
+    running=True and the turn start (a wedged session nothing ever unwinds)."""
     lease = session.get("active_session_lease")
     if lease is None:
         return None  # unleased (empty-key no-op lease path): nothing to fence
     from hermes_cli.active_sessions import revalidate_active_session, SESSION_DISPLACED
-    refreshed, refusal = revalidate_active_session(lease, mark_busy=True, busy_kind="user")
+    try:
+        refreshed, refusal = revalidate_active_session(lease, mark_busy=True, busy_kind="user")
+    except Exception as exc:
+        # Fail closed (#94595 rule): an errored check has NOT proven the lease ours.
+        logger.warning("Lease admission check failed; refusing the turn (fail closed): %s", exc)
+        from hermes_cli.active_sessions import ActiveSessionRefusal, SESSION_COORDINATION_UNAVAILABLE
+        return ActiveSessionRefusal(
+            "Hermes could not confirm this session's lease. Try again.",
+            SESSION_COORDINATION_UNAVAILABLE)
     if refusal is None:
         _install_lease_busy_hook(sid, session)
+        _note_submit_busy_mark(session)
         return None
     reason = getattr(refusal, "reason", None)
     if reason == SESSION_DISPLACED:
@@ -166,8 +200,15 @@ def _session_lease_busy(sid: str, session: dict, kind: str | None, detail: str) 
         if remaining:
             revalidate_active_session(
                 lease, mark_busy=True, busy_kind="auto", busy_detail=remaining[0])
-        else:
+        elif session.get("running"):
+            # Conditional auto-clear only: a live turn owns the mark (its settle converts
+            # or clears it) — the review-end must never downgrade a foreground turn.
             revalidate_active_session(lease, mark_busy=False, busy_kind="auto")
+        else:
+            # No token left and no live turn: a plain clear, so a stale 'user' mark (a
+            # settle that never ran — process crash between turn end and finally) cannot
+            # outlive the review that spawned it.
+            revalidate_active_session(lease, mark_busy=False)
 
 
 def _install_lease_busy_hook(sid: str, session: dict) -> None:
@@ -186,8 +227,10 @@ def _lease_turn_settled(session: dict) -> None:
     """Turn-thread finally: clear the published busy mark beside running=False, BEFORE
     the finished log and post-turn followups — the registry reads idle in the
     inter-turn gap, so a steal there breaks a followup chain at its next admission
-    instead of stranding the phone. An active auto token (bg-review) re-marks 'auto'
-    rather than clearing: the review's grace window must survive the turn that spawned it."""
+    instead of stranding the phone. An active auto token (bg-review) CONVERTS the mark
+    (busy_kind='user' → 'auto' with a fresh busy_since) in the same critical section:
+    a plain auto-mark could not overwrite the settling turn's own 'user' mark, which
+    would strand it with a frozen activity clock for the review's whole lifetime."""
     from hermes_cli.active_sessions import revalidate_active_session
     lease = session.get("active_session_lease")
     if lease is None:
@@ -196,7 +239,8 @@ def _lease_turn_settled(session: dict) -> None:
     with contextlib.suppress(Exception):
         if tokens:
             refreshed, refusal = revalidate_active_session(
-                lease, mark_busy=True, busy_kind="auto", busy_detail=sorted(tokens)[0])
+                lease, mark_busy=True, busy_kind="auto", busy_detail=sorted(tokens)[0],
+                convert_user_to_auto=True)
         else:
             refreshed, refusal = revalidate_active_session(lease, mark_busy=False)
         if refusal is not None and getattr(refusal, "reason", None) == "SESSION_DISPLACED":
@@ -244,6 +288,7 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     if limit_message is None:
         session["active_session_lease"] = lease
         _install_lease_busy_hook(sid, session)
+        _note_submit_busy_mark(session)
         _clear_stolen_turn_marker(sid, session, lease)
         return None
     refusal_reason = getattr(limit_message, "reason", None)
@@ -260,6 +305,7 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
                 session.get("session_key") or sid)
             session["active_session_lease"] = lease
             _install_lease_busy_hook(sid, session)
+            _note_submit_busy_mark(session)
             _clear_stolen_turn_marker(sid, session, lease)
             return None
         refusal_reason = getattr(limit_message, "reason", None)
@@ -277,6 +323,7 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
                     session.get("session_key") or sid)
                 session["active_session_lease"] = lease
                 _install_lease_busy_hook(sid, session)
+                _note_submit_busy_mark(session)
                 _clear_stolen_turn_marker(sid, session, lease)
                 return None
             refusal_reason = getattr(limit_message, "reason", None)
@@ -615,12 +662,18 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
                     "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
         except Exception:
             logger.debug("failed waiting for session turn thread", exc_info=True)
-    # Preemptible leases: a lease_preempted teardown whose displaced run thread SURVIVED the
-    # settle join skips finalize's persist + memory commit — the new owner owns the row now,
-    # and a lost displaced tail beats a corrupted row (the displaced turn's writes stopped at
-    # the interrupt and must never reach the DB through teardown).
-    skip_persist = end_reason == "lease_preempted" and thread_alive_after_settle
-    if skip_persist:
+    # Preemptible leases: a lease_preempted teardown whose displaced work is STILL LIVE
+    # skips finalize's persist + memory commit — the new owner owns the row now, and a
+    # lost displaced tail beats a corrupted row (the displaced turn's writes stopped at
+    # the interrupt and must never reach the DB through teardown). "Still live" covers
+    # BOTH shapes: a local run thread that survived the settle join, AND a displaced
+    # compute-host turn (running=True with no local thread — the interrupt deliberately
+    # leaves the flag for the child's done-callback, which never comes now).
+    displaced_work_alive = thread_alive_after_settle or bool(
+        end_reason == "lease_preempted"
+        and (session.get("running") or session.get("_compute_host_active")))
+    skip_persist = displaced_work_alive
+    if skip_persist and end_reason == "lease_preempted":
         logger.warning(
             "lease_preempted teardown: run thread alive after settle; skipping persist (new owner owns the row)")
     _teardown_session(session, end_reason=end_reason, skip_persist=skip_persist)

@@ -135,6 +135,11 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True)
     if isinstance(marker_text, str) and marker_text.strip():
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
+            # Stash the RECORDING identity: mid-turn compression can rotate the lease
+            # (re-anchor fallback claims a NEW lease_id), and a retire that compares with
+            # retire-time identity would then no-op forever on the rotated key's marker
+            # (~24h of phantom auto-continue eligibility). The retire reads this back.
+            session["_turn_marker_writer"] = marker_writer
         record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
                           auto_continue=auto_continue, writer=marker_writer)
         with session["history_lock"]:
@@ -363,12 +368,26 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
                             on_done=None, on_error=None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
-    release ``running``."""
+    release ``running``.
+
+    ``_run_prompt_submit``'s False means NOT ADMITTED (displaced/leasing refused, session
+    closing) — that is a failure like an exception, never a silent success: on_done marks
+    work delivered (goal continuations, completion notifications) that never ran. No
+    message.start is emitted here either: the submit emits its own AFTER admission, so a
+    refused dispatch leaves no phantom turn bubble on a displaced surface."""
     try:
-        _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
-        if on_done is not None:
-            on_done()
+        # ``is False`` (not just falsy): the not-admitted contract is an explicit False;
+        # legacy stubs returning None keep their old treated-as-admitted behavior.
+        if _run_prompt_submit(rid, sid, session, prompt) is False:
+            if on_error is not None:
+                on_error()
+            logger.info("follow-up turn not admitted (%s); released", what)
+        else:
+            if on_done is not None:
+                on_done()
+            if on_error is not None:
+                on_error()
+            logger.info("follow-up turn not admitted (%s); released", what)
     except Exception as exc:
         if on_error is not None:
             on_error()

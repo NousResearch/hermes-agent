@@ -384,7 +384,12 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert text.startswith("[System note: Your previous turn was interrupted")
     assert "fix the flaky test" in text
     assert kwargs["display_kind"] == "auto_continue"
-    assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
+    # message.start is the SUBMIT's to emit (after admission) — the kickoff no longer
+    # pre-emits it, so a refused kickoff leaves no phantom turn bubble. With the submit
+    # stubbed here, only the status notice is emitted.
+    assert ("status.update", "sid", {"kind": "process", "text": "Resuming interrupted turn…"}) in [
+        (e, s, p) for e, s, p in emits]
+    assert ("message.start", "sid", None) not in [(e, s, p) for e, s, p in emits]
 
 
 def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):

@@ -102,6 +102,22 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                             and session.get("_compute_host_turn_id") == params["turn_id"]):
                         session["_compute_host_activity_ns"] = params.get("activity_ns")
         return True  # Internal observation, not a client event or replay entry.
+    kind = params.get("type") if isinstance(params, dict) else None
+    activity_session = (
+        _sessions.get(str(params.get("session_id") or params.get("sid") or ""))
+        if isinstance(params, dict) else None
+    )
+    if isinstance(params, dict) and activity_session is not None and kind not in {
+            # Only visible-progress frames count as activity: lifecycle/session-info frames
+            # can arrive during a wedged child and must not mask a real stall.
+            "session.info", "turn.done", "turn.error", "error", "clarify.request",
+            "clarify.expire", "request.cancel", None}:
+        # Preemptible leases: the isolated turn streams in the CHILD (its prompt_turn
+        # piggyback touches the CHILD's lease, which does not exist — the child claims no
+        # lease). THIS parent session holds the lease, and this relay sees every streamed
+        # child frame, so it is the parent's activity clock (throttled + non-blocking).
+        with contextlib.suppress(Exception):
+            _touch_lease_activity(activity_session)
     if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
         # A server request minted by the child: remember it against its session until it is answered/withdrawn.
         session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None

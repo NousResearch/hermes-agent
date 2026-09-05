@@ -1195,10 +1195,6 @@ def _run_review_in_thread(
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
-    # Preemptible leases: mark for the review's LIFETIME (begin here — covering every
-    # spawn path: automatic, /refine, idle-queue deferral, requeue — and cleared in this
-    # function's finally below).
-    _lease_auto_busy_begin(agent)
     _set_thread_approval_callback(_bg_review_auto_deny)
     # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
     # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
@@ -1211,7 +1207,12 @@ def _run_review_in_thread(
             getattr(agent, "provider", "?"),
         )
         _set_thread_approval_callback(None)
-        return
+        return  # (before the busy mark below: a skipped review must not take a token)
+    # Preemptible leases: mark for the review's LIFETIME — AFTER every early return above
+    # (a skipped review that took the token would publish busy='auto' nothing ever
+    # clears), covering every spawn path (automatic, /refine, idle-queue deferral,
+    # requeue), cleared in this function's finally below.
+    _lease_auto_busy_begin(agent)
     st = _ReviewForkState()
     try:
         # Silence stdout/stderr for THIS thread only: a process-global redirect would blank every

@@ -3294,8 +3294,19 @@ def _lease_maintenance_tick() -> None:
         if lease is not None and getattr(lease, "enabled", True) and not getattr(lease, "released", False)]
     displaced_ids = set()
     if live_leases:
-        with contextlib.suppress(Exception):
+        try:
             displaced_ids = heartbeat_leases(live_leases) or set()
+        except Exception:
+            # Never silently suppressed: the 60s alive line below would keep asserting
+            # health while displacement detection is dead. Rate-limited WARNING, then
+            # continue with the honor pass (a dead heartbeat ages into the stale-steal
+            # escape rather than closing live sessions on a transient registry error).
+            now = time.monotonic()
+            if now - _lease_tick_warn.get("heartbeat", 0.0) >= 30.0:
+                _lease_tick_warn["heartbeat"] = now
+                logger.warning("lease maintenance heartbeat pass failed", exc_info=True)
+            else:
+                logger.debug("lease maintenance heartbeat pass failed (rate-limited)", exc_info=True)
     for sid, lease in held:
         if lease is None or str(getattr(lease, "lease_id", "")) not in displaced_ids:
             continue
@@ -3303,11 +3314,22 @@ def _lease_maintenance_tick() -> None:
             sess = _sessions.get(sid)
         if sess is None:
             continue  # already closed by another path
+        # Interrupt and close are SEPARATE failure domains (the ws-orphan reaper
+        # contract): an interrupt that raises must never skip the close — the lease is
+        # gone either way, and a skipped close would re-fire (and re-warn) every tick.
         try:
             if sess.get("running"):
                 # Interrupt FIRST (resolves in-flight approvals as deny), then the graceful
                 # close joins the run thread through the standard settle window.
                 _interrupt_session_turn(sid, sess)
+        except Exception:
+            now = time.monotonic()
+            if now - _lease_tick_warn.get("interrupt", 0.0) >= 30.0:
+                _lease_tick_warn["interrupt"] = now
+                logger.warning("lease_preempted interrupt failed sid=%s (closing anyway)", sid, exc_info=True)
+            else:
+                logger.debug("lease_preempted interrupt failed sid=%s (closing anyway)", sid, exc_info=True)
+        try:
             logger.info(
                 "lease_preempted sid=%s: lease stolen by another surface; closing session", sid)
             _close_session_by_id(sid, end_reason="lease_preempted")
@@ -3316,5 +3338,14 @@ def _lease_maintenance_tick() -> None:
     # LEGACY COMPAT: honor yield-request files from OLD-code requesters (repaired requeue).
     _honor_yield_requests()
 
+
+# Rate-limit state for the tick's own WARNINGs (shared with _run_lease_tick_safely's 30s
+# pattern): a persistent failure must not flood the log, but must never be silent.
+_lease_tick_warn: dict = {}
+
+# Make the module-default fallback in session_reaper true: register() runs BEFORE this
+# def exists on the server module, so its write-back of _lease_maintenance_tick is a
+# no-op on the first (production) registration — pin the name here instead.
+_session_reaper._lease_maintenance_tick = _lease_maintenance_tick
 
 _start_lease_maintenance_watcher(_lease_maintenance_tick)

@@ -513,48 +513,54 @@ def _lock_in_submit_turn(
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``.
 
-    Preemptible leases: the epoch-fenced busy mark runs immediately AFTER the lock is
-    released and BEFORE any API call / transcript append / persist — no user-visible
-    effect may precede the flock-confirmed mark (mutual exclusion of {mark-busy, steal}
-    is the registry flock itself). history_lock is never held across that blocking flock:
-    no code path takes the registry flock and then history_lock, so no cycle exists."""
+    Preemptible leases: when the slot gate above already published busy='user' for THIS
+    submit (its own flock critical section — the ``_lease_busy_marked_for_submit``
+    handoff), the lock-in revalidate is SKIPPED: the epoch fence still runs at
+    _admit_prompt_turn, right before the turn thread starts, so a steal that lands in the
+    running=True→flock-write window bumps the epoch and is fenced there. Every early
+    refusal below unwinds that busy mark — only a turn thread's finally ever clears it
+    otherwise. history_lock is never held across the registry flock: no code path takes
+    the flock and then history_lock, so no cycle exists."""
     fields = {}
+    early_err = None
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
-        if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
-            return _err(
+            early_err = _err(rid, 4009, "subagent still running — wait for it to finish")
+        elif is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
+            early_err = _err(
                 rid, 4004,
-                "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
-            ), fields
-        if has_truncation:
+                "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id")
+        elif has_truncation:
             err, fields = _truncate_history_for_submit(
                 rid, sid, session, params, requested_rebind_ids)
             if err is not None:
-                return err, {}
-        session["running"] = True
-        session["_turn_cancel_requested"] = False
-        session["last_active"] = time.time()
-        # Pending-busy flag: a steal observing this window knows a mark is in flight (the
-        # registry may read idle for a few ms between running=True and the flock write).
-        session["_lease_busy_mark_pending"] = True
-        if hosted_task is not None:
-            session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text)
-    session.pop("_lease_busy_mark_pending", None)
-    if (lease_refusal := _lease_admission_check(sid, session)) is not None:
-        # SESSION_DISPLACED (lease taken between submit and here): unwind the running
-        # claim — the session was gracefully closed by the admission check; the turn
-        # never starts, so nothing user-visible has happened yet.
-        with session["history_lock"]:
-            session["running"] = False
-            _clear_inflight_turn(session)
-        _emit("error", sid, {"message": str(lease_refusal)})
-        return _err(
-            rid, 4090, str(lease_refusal),
-            {"reason": getattr(lease_refusal, "reason", None)}), fields
+                early_err, fields = err, {}
+        else:
+            session["running"] = True
+            session["_turn_cancel_requested"] = False
+            session["last_active"] = time.time()
+            if hosted_task is not None:
+                session["_hosted_room_task"] = dict(hosted_task)
+            _start_inflight_turn(session, text)
+    if early_err is not None:
+        # A submit that refuses before running=True still holds the slot gate's busy
+        # mark — unpublish it or the session reads mid-turn forever (no turn exists).
+        _unsettle_submit_busy_mark(session)
+        return early_err, fields
+    if not session.pop("_lease_busy_marked_for_submit", None):
+        if (lease_refusal := _lease_admission_check(sid, session)) is not None:
+            # SESSION_DISPLACED (lease taken between submit and here): unwind the running
+            # claim — the session was gracefully closed by the admission check; the turn
+            # never starts, so nothing user-visible has happened yet.
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            _emit("error", sid, {"message": str(lease_refusal)})
+            return _err(
+                rid, 4090, str(lease_refusal),
+                {"reason": getattr(lease_refusal, "reason", None)}), fields
     return None, fields
 
 
@@ -614,6 +620,12 @@ def _(rid, params: dict) -> dict:
         text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
+        # Refused after the slot gate published busy + lock-in set running=True: unwind
+        # BOTH or the session wedges mid-turn for a turn that will never start.
+        _unsettle_submit_busy_mark(session)
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
     # if a disconnect/fallback moved the session to stdio.
@@ -669,6 +681,12 @@ def _(rid, params: dict) -> dict:
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
     if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        # Refused after lock-in (running=True + busy published): unwind both — no turn
+        # thread will ever start to clear them.
+        _unsettle_submit_busy_mark(session)
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
         return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):

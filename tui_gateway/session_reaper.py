@@ -605,11 +605,15 @@ def _schedule_startup_orphan_sweep() -> None:
 def register(server) -> None:
     """Publish this module's helpers onto ``server``, rebound to its globals.
 
-    Belt-and-braces (preemptible leases): write the server-rebound honor chain and
-    maintenance tick back into THIS module's namespace, so even a directly-imported
-    module path (``session_reaper._honor_yield_requests``) resolves server globals after
-    registration instead of NameError-ing on _sessions/_close_session_by_id — the seam
-    that silently killed the auto-yield watcher for the feature's entire life."""
+    Belt-and-braces (preemptible leases): write the server-rebound honor chain back into
+    THIS module's namespace, so even a directly-imported module path
+    (``session_reaper._honor_yield_requests``) resolves server globals after registration
+    instead of NameError-ing on _sessions/_close_session_by_id — the seam that silently
+    killed the auto-yield watcher for the feature's entire life. ``_lease_maintenance_tick``
+    is written back the same way, but on the FIRST (production) registration the def does
+    not exist on the server module yet — server.py pins it explicitly right before it
+    starts the watcher, which is what makes the module-default fallback in
+    ``_start_lease_maintenance_watcher`` true."""
     bind_module(globals(), server, skip=("_",))
     for _n in ("_honor_yield_requests", "_yield_session_for_request", "_lease_maintenance_tick"):
         _rebound = getattr(server, _n, None)

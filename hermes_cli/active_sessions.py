@@ -896,6 +896,7 @@ def _entry_still_owned(entry: Optional[dict[str, Any]], lease: ActiveSessionLeas
 def revalidate_active_session(
     lease: ActiveSessionLease, *, mark_busy: bool = False,
     busy_kind: Optional[str] = None, busy_detail: Optional[str] = None,
+    convert_user_to_auto: bool = False,
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Holder-side next-touch displacement check AND busy marker in ONE flock critical
     section (preemptible leases): ``(lease, None)`` when the lease is provably still
@@ -909,7 +910,13 @@ def revalidate_active_session(
       * busy_kind='user' sets busy/user + fresh activity (busy_since preserved when the
         entry already reads user — a followup chain is ONE continuous busy span).
       * busy_kind='auto' NEVER downgrades a live 'user' mark (a foreground turn wins);
-        the caller's session token re-arms 'auto' when the user turn settles.
+        the settle transition below is what hands the mark over.
+      * convert_user_to_auto (with busy_kind='auto'): the user-turn-settle transition —
+        clears any live 'user' mark AND writes the auto token in THIS one critical
+        section. Without it the guard above would block both ends of the handover (the
+        begin cannot downgrade the live turn, and a plain auto-mark cannot either),
+        stranding busy_kind='user' with a frozen activity clock for the review's whole
+        lifetime (stall-stealable at 61s; the 90s auto grace unreachable).
       * mark_busy=False (a user turn settling) clears the mark UNLESS the entry still
         reads busy_kind='auto' (a bg-review token is active); busy_kind='auto' with
         mark_busy=False is the conditional auto-clear (no-op while a user turn holds it).
@@ -940,7 +947,16 @@ def revalidate_active_session(
         assert entry is not None  # _entry_still_owned implies it
         current_kind = entry.get("busy_kind") if entry.get("busy") else None
         if mark_busy:
-            if busy_kind == "user":
+            if convert_user_to_auto and busy_kind == "auto":
+                # The settle transition: whatever mark the finishing turn left ('user'
+                # with a frozen activity clock, or a prior 'auto'), the token now owns
+                # the entry — fresh busy_since so the auto grace measures from NOW.
+                entry["busy"] = True
+                entry["busy_kind"] = "auto"
+                entry["busy_detail"] = str(busy_detail or "auto")
+                entry["busy_since"] = now
+                entry.pop("activity_at", None)  # auto work has no visible-activity clock
+            elif busy_kind == "user":
                 entry["busy"] = True
                 entry["busy_kind"] = "user"
                 if busy_detail:
@@ -959,7 +975,8 @@ def revalidate_active_session(
                 if current_kind != "auto":
                     entry["busy_since"] = now
             # busy_kind='auto' while a user turn holds the mark: deliberate no-op above —
-            # the caller's session token re-arms 'auto' when the user turn settles.
+            # the settle transition (convert_user_to_auto) hands the mark over when the
+            # turn finishes.
         else:
             if busy_kind == "auto":
                 if current_kind == "auto":
@@ -969,14 +986,17 @@ def revalidate_active_session(
                     entry.pop("busy_since", None)
                     entry.pop("activity_at", None)
             else:
-                if current_kind != "auto":
-                    # A user turn settling clears its own mark; an active auto token
-                    # (bg-review) survives until its own completion clears it.
-                    entry["busy"] = False
-                    entry.pop("busy_kind", None)
-                    entry.pop("busy_detail", None)
-                    entry.pop("busy_since", None)
-                    entry.pop("activity_at", None)
+                # Plain clear: NO local work claims the entry anymore (a turn settle with
+                # a live review token takes the convert branch; a review end with a live
+                # turn uses the conditional auto-clear) — so whatever mark is present
+                # comes from bookkeeping that already finished. Clear it unconditionally:
+                # leaving it would strand busy='user'/'auto' forever (the review round's
+                # stuck-mark finding).
+                entry["busy"] = False
+                entry.pop("busy_kind", None)
+                entry.pop("busy_detail", None)
+                entry.pop("busy_since", None)
+                entry.pop("activity_at", None)
         entry["heartbeat_at"] = now
         entry["updated_at"] = now
         _write_entries(state_path, entries)
@@ -1127,6 +1147,11 @@ def transfer_active_session(
             entries.append(_lease_entry(
                 lease_id=lease.lease_id, session_id=new_session_id, surface=lease.surface,
                 metadata=metadata, track_liveness=True,
+                # Preserve the lease object's fencing epoch: a resurrected entry minted at
+                # epoch 1 while the cached lease carries >1 would self-displace on the
+                # very next revalidate (epoch mismatch) — the lease would look stolen
+                # when it was not.
+                epoch=int(getattr(lease, "epoch", 1) or 1),
             ))
         else:
             return False

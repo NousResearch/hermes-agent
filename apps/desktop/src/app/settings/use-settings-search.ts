@@ -136,6 +136,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       label: appearance.uiScaleTitle,
       target: { setting: APPEARANCE_SETTING_IDS.uiScale, view: 'config:appearance' }
     },
+    {
+      context: appearanceContext,
+      description: appearance.chatWidthDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.chatWidth}`,
+      keywords: ['column', 'narrow', 'readable'],
+      label: appearance.chatWidthTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.chatWidth, view: 'config:appearance' }
+    },
     // Linux has no translucency row to land on, and a palette hit that scrolls
     // to nothing is worse than no hit.
     ...(TRANSLUCENCY_SUPPORTED

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -77,5 +77,14 @@ describe('MarkdownImage media routing', () => {
 
     expect(container.querySelector('video')).toBeNull()
     expect(container.querySelector('audio')).toBeNull()
+  })
+
+  it('surfaces an actual image decode error and retains Open image for ordinary images', async () => {
+    render(<MarkdownImage alt="ordinary" src="data:image/png;base64,bm90LWFuLWltYWdl" />)
+
+    fireEvent.error(screen.getByRole('img', { name: 'ordinary' }))
+
+    expect(await screen.findByText(/Couldn't load/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open image' })).toBeTruthy()
   })
 })

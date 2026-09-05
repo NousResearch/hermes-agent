@@ -242,7 +242,7 @@ declare global {
           title: string
         } | null
       } | null>
-      readFileDataUrl: (filePath: string) => Promise<string>
+      readFileDataUrl: (filePath: string, relativeToFile?: string, maxBytes?: number) => Promise<string>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string>
       /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */

@@ -8,6 +8,7 @@ import { test } from 'vitest'
 
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  boundedDataUrlReadMaxBytes,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
@@ -76,6 +77,13 @@ async function rejectsWithCode(promise, code: string) {
   })
 }
 
+test('boundedDataUrlReadMaxBytes honors a smaller dedicated caller ceiling', () => {
+  assert.equal(boundedDataUrlReadMaxBytes(undefined, 16 * 1024 * 1024), 16 * 1024 * 1024)
+  assert.equal(boundedDataUrlReadMaxBytes(0.5, 16 * 1024 * 1024), 1)
+  assert.equal(boundedDataUrlReadMaxBytes(2 * 1024 * 1024, 16 * 1024 * 1024), 2 * 1024 * 1024)
+  assert.equal(boundedDataUrlReadMaxBytes(64 * 1024 * 1024, 16 * 1024 * 1024), 16 * 1024 * 1024)
+})
+
 test('clampDataUrlReadMaxMb defaults and bounds the attach size preference', () => {
   assert.equal(clampDataUrlReadMaxMb(undefined), DATA_URL_READ_DEFAULT_MAX_MB)
   assert.equal(clampDataUrlReadMaxMb(0), 1)
@@ -114,6 +122,135 @@ test('attachment data URL helper reads bytes above the preview default without c
 
     assert.match(dataUrl, /^data:application\/octet-stream;base64,/)
     assert.deepEqual(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'), content)
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('data URL helper confines symlink targets to the source document directory', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-markdown-image-'))
+  const docs = path.join(tempDir, 'docs')
+  const outside = path.join(tempDir, 'outside.svg')
+  const markdown = path.join(docs, 'report.md')
+  const linkedImage = path.join(docs, 'chart.svg')
+
+  try {
+    fs.mkdirSync(docs)
+    fs.writeFileSync(markdown, '# Report')
+    fs.writeFileSync(outside, '<svg/>')
+    fs.symlinkSync(outside, linkedImage)
+
+    await rejectsWithCode(
+      readFileDataUrlForIpc(linkedImage, {
+        maxBytes: 1024,
+        mimeType: 'image/svg+xml',
+        purpose: 'Markdown image preview',
+        relativeToFile: markdown
+      }),
+      'outside-root'
+    )
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('data URL helper rejects a symlink swap between validation and open', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-markdown-image-race-'))
+  const docs = path.join(tempDir, 'docs')
+  const outside = path.join(tempDir, 'outside.svg')
+  const markdown = path.join(docs, 'report.md')
+  const image = path.join(docs, 'chart.svg')
+  let swapped = false
+
+  const swapTarget = () => {
+    if (!swapped) {
+      swapped = true
+      fs.rmSync(image)
+      fs.symlinkSync(outside, image)
+    }
+  }
+
+  const fsWithSwap = {
+    ...fs,
+    promises: {
+      ...fs.promises,
+      open: async (...args: Parameters<typeof fs.promises.open>) => {
+        swapTarget()
+
+        return fs.promises.open(...args)
+      },
+      readFile: async (...args: Parameters<typeof fs.promises.readFile>) => {
+        swapTarget()
+
+        return fs.promises.readFile(...args)
+      }
+    }
+  } as typeof fs
+
+  try {
+    fs.mkdirSync(docs)
+    fs.writeFileSync(markdown, '# Report')
+    fs.writeFileSync(image, '<svg id="inside"/>')
+    fs.writeFileSync(outside, '<svg id="outside"/>')
+
+    await rejectsWithCode(
+      readFileDataUrlForIpc(image, {
+        fs: fsWithSwap,
+        maxBytes: 1024,
+        mimeType: 'image/svg+xml',
+        purpose: 'Markdown image preview',
+        relativeToFile: markdown
+      }),
+      'stale-path'
+    )
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('data URL helper rejects a source-directory swap between validation and open', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-markdown-root-race-'))
+  const docs = path.join(tempDir, 'docs')
+  const originalDocs = path.join(tempDir, 'original-docs')
+  const replacementDocs = path.join(tempDir, 'replacement-docs')
+  const markdown = path.join(docs, 'report.md')
+  const image = path.join(docs, 'chart.svg')
+  let swapped = false
+
+  fs.mkdirSync(docs)
+  fs.mkdirSync(replacementDocs)
+  fs.writeFileSync(markdown, '# Original')
+  fs.writeFileSync(image, '<svg id="inside"/>')
+  fs.writeFileSync(path.join(replacementDocs, 'report.md'), '# Replacement')
+  fs.writeFileSync(path.join(replacementDocs, 'chart.svg'), '<svg id="outside"/>')
+
+  const fsWithSwap = {
+    ...fs,
+    promises: {
+      ...fs.promises,
+      open: async (...args: Parameters<typeof fs.promises.open>) => {
+        if (!swapped) {
+          swapped = true
+          fs.renameSync(docs, originalDocs)
+          fs.renameSync(replacementDocs, docs)
+        }
+
+        return fs.promises.open(...args)
+      }
+    }
+  } as typeof fs
+
+  try {
+    await rejectsWithCode(
+      readFileDataUrlForIpc(image, {
+        fs: fsWithSwap,
+        maxBytes: 1024,
+        mimeType: 'image/svg+xml',
+        purpose: 'Markdown image preview',
+        relativeToFile: markdown
+      }),
+      'stale-root'
+    )
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true })
   }

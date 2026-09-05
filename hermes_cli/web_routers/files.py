@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _managed_file_entry, _managed_response_meta, _path_is_under, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -179,6 +179,75 @@ def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
             return target.read_bytes()
         with target.open("rb") as handle:
             return handle.read(limit)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not readable")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
+
+
+def _fs_read_scoped_bytes(
+    target: Path,
+    max_bytes: int,
+    root: Optional[Path] = None,
+    target_stat: Optional[os.stat_result] = None,
+    source: Optional[Path] = None,
+    source_stat: Optional[os.stat_result] = None,
+) -> bytes:
+    """Open once, then bind policy, size, and bytes to that file identity."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(target, flags)
+    except (FileNotFoundError, NotADirectoryError):
+        raise HTTPException(status_code=404, detail="File not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not readable")
+    except OSError as exc:
+        status_code = 403 if root is not None else 400
+        raise HTTPException(status_code=status_code, detail=str(exc) or "File changed before open")
+
+    try:
+        handle = os.fdopen(fd, "rb")
+    except Exception:
+        os.close(fd)
+        raise
+
+    try:
+        with handle:
+            opened = os.fstat(handle.fileno())
+
+            if source is not None and source_stat is not None:
+                current_source = source.resolve(strict=True)
+                current_source_stat = current_source.stat()
+                if current_source != source or (current_source_stat.st_dev, current_source_stat.st_ino) != (
+                    source_stat.st_dev,
+                    source_stat.st_ino,
+                ):
+                    raise HTTPException(status_code=403, detail="Source directory changed during validation")
+
+            current = target.resolve(strict=True)
+            current_stat = current.stat()
+
+            if (
+                current != target
+                or (target_stat is not None and (opened.st_dev, opened.st_ino) != (target_stat.st_dev, target_stat.st_ino))
+                or (opened.st_dev, opened.st_ino) != (current_stat.st_dev, current_stat.st_ino)
+            ):
+                raise HTTPException(status_code=403, detail="File changed during validation")
+            if not stat.S_ISREG(opened.st_mode):
+                raise HTTPException(status_code=400, detail="Only regular files can be read")
+            if _is_sensitive_path(current):
+                raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+            if root is not None and not _path_is_under(root, current):
+                raise HTTPException(status_code=403, detail="Path leaves source directory")
+            if opened.st_size > max_bytes:
+                raise HTTPException(status_code=413, detail="File too large")
+
+            data = handle.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise HTTPException(status_code=413, detail="File too large")
+            return data
+    except HTTPException:
+        raise
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -689,12 +758,21 @@ async def fs_write_text(payload: FsWriteText):
 
 
 @router.get("/api/fs/read-data-url")
-async def fs_read_data_url(path: str):
+async def fs_read_data_url(
+    path: str, relative_to_file: Optional[str] = None, max_bytes: Optional[int] = None
+):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
-    target, st = _fs_regular_file(_fs_path(path))
-    if st.st_size > _FS_DATA_URL_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File too large")
-    encoded = base64.b64encode(_fs_read_bytes(target)).decode("ascii")
+    target, target_stat = _fs_regular_file(_fs_path(path))
+    root = None
+    source = None
+    source_stat = None
+    if relative_to_file:
+        source, source_stat = _fs_regular_file(_fs_path(relative_to_file))
+        root = source.parent
+    read_limit = min(_FS_DATA_URL_MAX_BYTES, max_bytes) if max_bytes and max_bytes > 0 else _FS_DATA_URL_MAX_BYTES
+    encoded = base64.b64encode(
+        _fs_read_scoped_bytes(target, read_limit, root, target_stat, source, source_stat)
+    ).decode("ascii")
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 

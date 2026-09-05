@@ -24,6 +24,15 @@ function dataUrlReadMaxBytesFromMb(maxMb) {
   return clampDataUrlReadMaxMb(maxMb) * 1024 * 1024
 }
 
+function boundedDataUrlReadMaxBytes(requestedMaxBytes, configuredMaxBytes) {
+  const configured = Math.max(1, Math.floor(Number(configuredMaxBytes) || 1))
+  const requested = Number(requestedMaxBytes)
+
+  return Number.isFinite(requested) && requested > 0
+    ? Math.min(configured, Math.max(1, Math.floor(requested)))
+    : configured
+}
+
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
 const SENSITIVE_EXTENSIONS = new Set(['.kdbx', '.p12', '.pem', '.pfx'])
 
@@ -510,6 +519,42 @@ async function resolveReadableFileForIpc(
   return { realPath, resolvedPath, stat }
 }
 
+async function readBoundedFileHandle(
+  handle: fs.promises.FileHandle,
+  maxBytes: number | null,
+  purpose: string
+): Promise<Buffer> {
+  if (!maxBytes) {
+    return handle.readFile()
+  }
+
+  const chunks: Buffer[] = []
+  let total = 0
+
+  while (true) {
+    const remaining = maxBytes - total + 1
+
+    if (remaining <= 0) {
+      throw ipcPathError('EFBIG', `${purpose} failed: file exceeds the ${maxBytes}-byte limit.`)
+    }
+
+    const buffer = Buffer.alloc(Math.min(64 * 1024, remaining))
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, null)
+
+    if (bytesRead === 0) {
+      return Buffer.concat(chunks, total)
+    }
+
+    total += bytesRead
+
+    if (total > maxBytes) {
+      throw ipcPathError('EFBIG', `${purpose} failed: file exceeds the ${maxBytes}-byte limit.`)
+    }
+
+    chunks.push(buffer.subarray(0, bytesRead))
+  }
+}
+
 async function readFileDataUrlForIpc(
   filePath,
   options: {
@@ -519,17 +564,104 @@ async function readFileDataUrlForIpc(
     blockSensitive?: boolean
     maxBytes?: number
     mimeType: string
+    relativeToFile?: string
   }
 ): Promise<string> {
   const fsImpl = options.fs || fs
-  const { resolvedPath } = await resolveReadableFileForIpc(filePath, options)
-  const data = await fsImpl.promises.readFile(resolvedPath)
+  const purpose = String(options.purpose || 'File preview')
+  const initial = await resolveReadableFileForIpc(filePath, options)
+  let containmentRoot: string | null = null
+  let sourceIdentity: { dev: number; ino: number; realPath: string } | null = null
 
-  return `data:${options.mimeType};base64,${data.toString('base64')}`
+  if (options.relativeToFile) {
+    const source = await resolveReadableFileForIpc(options.relativeToFile, {
+      fs: fsImpl,
+      purpose: 'Markdown source'
+    })
+
+    containmentRoot = path.dirname(source.realPath)
+    sourceIdentity = { dev: source.stat.dev, ino: source.stat.ino, realPath: source.realPath }
+  }
+
+  let handle: fs.promises.FileHandle
+
+  try {
+    const noFollow = Number(fsImpl.constants.O_NOFOLLOW || 0)
+
+    handle = await fsImpl.promises.open(initial.realPath, fsImpl.constants.O_RDONLY | noFollow)
+  } catch (error) {
+    if (containmentRoot) {
+      throw ipcPathError('stale-path', `${purpose} blocked: file changed before it could be opened.`)
+    }
+
+    throw error
+  }
+
+  try {
+    const openedStat = await handle.stat()
+
+    if (sourceIdentity) {
+      const currentSourceRealPath = await realpathForIpc(fsImpl, sourceIdentity.realPath, 'Markdown source')
+      const currentSourceStat = await statForIpc(fsImpl, currentSourceRealPath, 'Markdown source', 'file')
+
+      if (
+        currentSourceRealPath !== sourceIdentity.realPath ||
+        currentSourceStat.dev !== sourceIdentity.dev ||
+        currentSourceStat.ino !== sourceIdentity.ino
+      ) {
+        throw ipcPathError('stale-root', `${purpose} blocked: source directory changed during validation.`)
+      }
+    }
+
+    const currentRealPath = await realpathForIpc(fsImpl, initial.realPath, purpose)
+    const currentStat = await statForIpc(fsImpl, currentRealPath, purpose, 'file')
+
+    if (
+      currentRealPath !== initial.realPath ||
+      openedStat.dev !== initial.stat.dev ||
+      openedStat.ino !== initial.stat.ino ||
+      openedStat.dev !== currentStat.dev ||
+      openedStat.ino !== currentStat.ino
+    ) {
+      throw ipcPathError('stale-path', `${purpose} blocked: file changed during validation.`)
+    }
+
+    if (!openedStat.isFile()) {
+      throw ipcPathError('EINVAL', `${purpose} failed: only regular files can be read.`)
+    }
+
+    if (options.blockSensitive !== false) {
+      rejectSensitiveFilePath(currentRealPath, purpose)
+    }
+
+    if (containmentRoot) {
+      const relative = path.relative(containmentRoot, currentRealPath)
+
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw ipcPathError('outside-root', `${purpose} blocked: path leaves source directory.`)
+      }
+    }
+
+    const maxBytes = Number.isFinite(options.maxBytes) && Number(options.maxBytes) > 0 ? Number(options.maxBytes) : null
+
+    if (maxBytes && openedStat.size > maxBytes) {
+      throw ipcPathError(
+        'EFBIG',
+        `${purpose} failed: file is too large (${openedStat.size} bytes; limit ${maxBytes} bytes).`
+      )
+    }
+
+    const data = await readBoundedFileHandle(handle, maxBytes, purpose)
+
+    return `data:${options.mimeType};base64,${data.toString('base64')}`
+  } finally {
+    await handle.close()
+  }
 }
 
 export {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  boundedDataUrlReadMaxBytes,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,

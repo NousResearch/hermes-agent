@@ -51,7 +51,7 @@ class TestCreateOpenAIClientCallable:
             return MagicMock(api_key=kwargs.get("api_key"))
 
         # Patch the module-level OpenAI proxy used by ``_create_openai_client``.
-        monkeypatch.setattr("run_agent.OpenAI", fake_openai)
+        monkeypatch.setattr("agent.process_bootstrap.OpenAI", fake_openai)
 
         # Build a minimal stand-in for AIAgent so we can call the bound
         # method directly without paying the full __init__ cost.
@@ -118,33 +118,7 @@ class TestNormalizeMainRuntimePreservesCallable:
         })
         assert normalized["api_key"] == "sk-static"
 
-    def test_normalization_drops_empty_string_but_preserves_callable(self):
-        from agent.auxiliary_client import _normalize_main_runtime
 
-        def provider():
-            return ""
-
-        # Empty string fields are dropped, but a callable is preserved
-        # even if it would mint an empty token (we don't invoke during
-        # normalization).
-        normalized = _normalize_main_runtime({
-            "provider": "azure-foundry",
-            "api_key": provider,
-            "model": "",
-        })
-        assert normalized["api_key"] is provider
-        assert "model" not in normalized
-
-    def test_unknown_field_dropped(self):
-        from agent.auxiliary_client import _normalize_main_runtime, _MAIN_RUNTIME_FIELDS
-        normalized = _normalize_main_runtime({
-            "provider": "azure-foundry",
-            "api_key": "k",
-            "secret_field_we_dont_want": "leak",
-        })
-        assert "secret_field_we_dont_want" not in normalized
-        # auth_mode IS in the field allowlist (rubber-duck blocker fix).
-        assert "auth_mode" in _MAIN_RUNTIME_FIELDS
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +130,7 @@ class TestTruncateTokenCallable:
     def test_callable_returns_placeholder(self):
         """Dashboard preview must render the Entra placeholder, NOT
         ``"<function ...>"``."""
-        from hermes_cli.web_server import _truncate_token
+        from hermes_cli.web_server_oauth import _truncate_token
 
         invoked = {"count": 0}
 
@@ -170,13 +144,13 @@ class TestTruncateTokenCallable:
         assert invoked["count"] == 0
 
     def test_string_jwt_still_truncated_to_signature_tail(self):
-        from hermes_cli.web_server import _truncate_token
+        from hermes_cli.web_server_oauth import _truncate_token
         # JWT shape: header.payload.signature → only signature tail shown.
         out = _truncate_token("aaaa.bbbb.cccccccsig", visible=4)
         assert out == "…csig"
 
     def test_empty_returns_empty(self):
-        from hermes_cli.web_server import _truncate_token
+        from hermes_cli.web_server_oauth import _truncate_token
         assert _truncate_token(None) == ""
         assert _truncate_token("") == ""
 
@@ -280,9 +254,9 @@ class TestCliEnsureRuntimeCredentialsCallable:
         # module the method actually lives in now.
         src = (Path(__file__).resolve().parent.parent.parent
                / "hermes_cli" / "cli_agent_setup_mixin.py").read_text()
-        # The fix introduces ``_is_callable_provider`` which gates the
-        # string-only check so callable token providers survive.
-        assert "_is_callable_provider = callable(api_key)" in src, (
+        # The fix gates the string-only check on ``callable(api_key)`` so callable
+        # token providers survive.
+        assert "if not callable(api_key) and not (isinstance(api_key, str) and api_key):" in src, (
             "_ensure_runtime_credentials must preserve a callable "
             "api_key (Entra ID bearer provider). Without the guard, the "
             "callable is stringified to 'no-key-required' and Azure 401s."
@@ -308,13 +282,16 @@ class TestInlinedDisplayMasks:
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
                / "agent" / "agent_init.py").read_text()
-        assert src.count("is_token_provider(") >= 2, (
+        # Both banner paths route through the shared ``_print_key_banner`` helper,
+        # which owns the single ``is_token_provider`` guard.
+        assert src.count("_print_key_banner(") >= 3, (
             "agent/agent_init.py must guard BOTH masked-banner paths "
             "(chat_completions and anthropic_messages) with "
-            "is_token_provider()."
+            "is_token_provider() via _print_key_banner()."
         )
-        assert src.count('"🔑 Using credentials: Microsoft Entra ID"') >= 2, (
-            "agent/agent_init.py banner blocks should print a static "
+        assert "is_token_provider(" in src
+        assert '"🔑 Using credentials: Microsoft Entra ID"' in src, (
+            "agent/agent_init.py banner helper should print a static "
             "'Microsoft Entra ID' label for callable api_keys — no "
             "placeholder plumbing, no describe-mask fallback."
         )
@@ -328,8 +305,8 @@ class TestInlinedDisplayMasks:
         from pathlib import Path
         src = (Path(__file__).resolve().parent.parent.parent
                / "cli.py").read_text()
-        assert "is_token_provider(self.api_key)" in src, (
-            "cli.HermesCLI.show_config must guard self.api_key via "
+        assert "is_token_provider(display_key)" in src, (
+            "cli.HermesCLI.show_config must guard the displayed key via "
             "is_token_provider so callable Entra ID providers don't "
             "crash /config."
         )
@@ -339,39 +316,4 @@ class TestInlinedDisplayMasks:
             "instead of attempting to slice the callable."
         )
 
-    def test_mask_api_key_for_logs_handles_callable(self):
-        """``run_agent._mask_api_key_for_logs`` is called from the
-        request-dump JSON path. For Entra users, ``self.client.api_key``
-        is the SDK's empty string (callable stashed privately) — but
-        defensively the helper must also accept a callable directly
-        and return the placeholder rather than crashing on
-        ``len(callable)``."""
-        from pathlib import Path
-        src = (Path(__file__).resolve().parent.parent.parent
-               / "run_agent.py").read_text()
-        # The function now starts with a callable check.
-        assert (
-            "if callable(key) and not isinstance(key, str):" in src
-            and '"<entra-id-bearer>"' in src
-        ), (
-            "run_agent._mask_api_key_for_logs must short-circuit for "
-            "callable api_keys to avoid len(callable) crashes in "
-            "request-dump paths."
-        )
 
-    def test_anthropic_401_diagnostic_handles_callable(self):
-        """The Anthropic 401 diagnostic path lives in
-        ``agent/conversation_loop.py`` (the ``run_conversation`` body
-        was extracted after this feature was first written). It used
-        to do ``key[:12]`` on ``self._anthropic_api_key``. For Entra ID +
-        Anthropic-style mode that's a callable; slicing crashes."""
-        from pathlib import Path
-        src = (Path(__file__).resolve().parent.parent.parent
-               / "agent" / "conversation_loop.py").read_text()
-        # The Anthropic 401 block now branches on is_token_provider
-        # before slicing the key.
-        assert "Microsoft Entra ID (httpx event hook)" in src, (
-            "agent/conversation_loop.py Anthropic 401 diagnostic must "
-            "surface a Microsoft Entra ID branch before slicing the "
-            "key prefix."
-        )

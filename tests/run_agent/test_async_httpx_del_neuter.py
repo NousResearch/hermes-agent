@@ -68,13 +68,6 @@ class TestNeuterAsyncHttpxDel:
         finally:
             AsyncHttpxClientWrapper.__del__ = original_del
 
-    def test_neuter_graceful_without_sdk(self):
-        """neuter_async_httpx_del doesn't raise if the openai SDK isn't installed."""
-        from agent.auxiliary_client import neuter_async_httpx_del
-
-        with patch.dict("sys.modules", {"openai._base_client": None}):
-            # Should not raise
-            neuter_async_httpx_del()
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +100,109 @@ class TestCleanupStaleAsyncClients:
 
         try:
             cleanup_stale_async_clients()
+            mock_client.close.assert_called_once()
             with _client_cache_lock:
                 assert key not in _client_cache, "Stale entry should be removed"
         finally:
             # Clean up in case test fails
             with _client_cache_lock:
                 _client_cache.pop(key, None)
+
+    def test_awaits_async_close_for_closed_loop(self):
+        from agent.auxiliary_client import (
+            _client_cache,
+            _client_cache_lock,
+            cleanup_stale_async_clients,
+        )
+
+        class AsyncClient:
+            def __init__(self):
+                self._client = MagicMock()
+                self._client.is_closed = False
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+        loop = asyncio.new_event_loop()
+        loop.close()
+        client = AsyncClient()
+        key = ("test_async_close", True, "", "", "", (), False)
+        with _client_cache_lock:
+            _client_cache[key] = (client, "test-model", loop)
+
+        try:
+            cleanup_stale_async_clients()
+            assert client.closed
+        finally:
+            with _client_cache_lock:
+                _client_cache.pop(key, None)
+
+
+    def test_shutdown_closes_outside_cache_lock(self):
+        from agent.auxiliary_client import (
+            _client_cache,
+            _client_cache_lock,
+            shutdown_cached_clients,
+        )
+
+        lock_observations = []
+
+        class Client:
+            _client = None
+
+            def close(self):
+                acquired = _client_cache_lock.acquire(blocking=False)
+                lock_observations.append(acquired)
+                if acquired:
+                    _client_cache_lock.release()
+
+        key = ("test_shutdown_lock", False, "", "", "", (), False)
+        with _client_cache_lock:
+            previous = dict(_client_cache)
+            _client_cache.clear()
+            _client_cache[key] = (Client(), "test-model", None)
+
+        try:
+            shutdown_cached_clients()
+        finally:
+            with _client_cache_lock:
+                _client_cache.clear()
+                _client_cache.update(previous)
+
+        assert lock_observations == [True]
+
+    def test_shutdown_does_not_await_live_foreign_loop_client(self):
+        from agent.auxiliary_client import (
+            _client_cache,
+            _client_cache_lock,
+            shutdown_cached_clients,
+        )
+
+        owner_loop = asyncio.new_event_loop()
+
+        class Client:
+            def __init__(self):
+                self.awaited = False
+
+            async def close(self):
+                self.awaited = True
+
+        client = Client()
+        key = ("test_shutdown_foreign_loop", True, "", "", "", (), False)
+        with _client_cache_lock:
+            previous = dict(_client_cache)
+            _client_cache.clear()
+            _client_cache[key] = (client, "test-model", owner_loop)
+
+        try:
+            shutdown_cached_clients()
+            assert client.awaited is False
+        finally:
+            owner_loop.close()
+            with _client_cache_lock:
+                _client_cache.clear()
+                _client_cache.update(previous)
 
     def test_keeps_live_entries(self):
         """Entries with an open loop should be preserved."""

@@ -32,10 +32,10 @@ If you're paying Portal for an xAI model anyway, Live Search calls bill against 
 
 | Credential | Source | Setup |
 |------------|--------|-------|
-| **SuperGrok / X Premium+ OAuth** (preferred) | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
-| **`XAI_API_KEY`** | Paid xAI API key | Set in `~/.hermes/.env` |
+| **SuperGrok / X Premium+ OAuth** | Browser login at `accounts.x.ai`, refreshed automatically | `hermes auth add xai-oauth` — see [xAI Grok OAuth (SuperGrok / X Premium+)](../../guides/xai-grok-oauth.md) |
+| **`XAI_API_KEY`** (preferred) | Paid xAI API key | Set in `~/.hermes/.env` |
 
-Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, SuperGrok OAuth wins** so x_search runs against your subscription quota instead of paid API spend.
+Both hit the same endpoint with the same payload — the only difference is the bearer token. **When both are configured, the explicit `XAI_API_KEY` wins** — the subscription OAuth bearer authorizes `/v1/responses` but answers x_search in a degraded Grok explanatory mode with no citations, while the API key returns real posts. Note this means x_search runs against metered API billing when a key is set; remove `XAI_API_KEY` to fall back to your subscription quota (with the degraded-answer caveat).
 
 The tool's `check_fn` runs the xAI credential resolver every time the model's tool list is rebuilt. A `True` return means the bearer is fetchable AND non-empty AND (if it had expired) successfully refreshed. Revoked tokens with a failed refresh hide the tool from the schema; the model simply can't see it.
 

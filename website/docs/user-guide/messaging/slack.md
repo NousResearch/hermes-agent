@@ -301,7 +301,7 @@ Then in Slack:
 ### Legacy `/hermes <subcommand>` still works
 
 For backward compatibility with older manifests, you can still type
-`/hermes btw run the tests` — Hermes routes it the same way as `/btw
+`/hermes bg run the tests` — Hermes routes it the same way as `/bg
 run the tests`. Free-form questions also work: `/hermes what's the
 weather?` is treated as a regular message.
 
@@ -410,6 +410,12 @@ platforms:
       # Only the first chunk of the first reply is broadcast.
       reply_broadcast: false
 
+      # Control Slack's automatic link-preview cards without changing or
+      # removing clickable links from message text. Omit either key to keep
+      # Slack's default behavior for that preview type.
+      unfurl_links: false
+      unfurl_media: false
+
       # Render agent messages as Slack Block Kit blocks (default: false).
       # When true, the final agent message is sent with structured blocks —
       # section headers, dividers, true nested lists (via rich_text), and
@@ -422,6 +428,12 @@ platforms:
       # Append Slack-native feedback controls to final Block Kit replies.
       # Requires rich_blocks: true. Default: false.
       feedback_buttons: false
+
+      # Render live tool calls as Slack-native plan/task cards. This explicit
+      # opt-in activates native progress even when text tool_progress is off.
+      # If Slack rejects the native stream, Hermes keeps one editable text
+      # fallback current for the rest of the turn.
+      native_task_cards: false
 
       # Suggested prompts pinned at the top of Agent view's Messages tab.
       # Either a list of {title, message} rows, or a titled object:
@@ -452,11 +464,15 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
+| `platforms.slack.extra.unfurl_links` | Slack default | Set to `false` to suppress automatic previews for linked web pages while preserving clickable links. When either unfurl key is set, media captions are posted as a separate message *before* the file (Slack's upload API cannot carry unfurl controls), and native draft streaming falls back to edit-based delivery. |
+| `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
+| `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. This is an explicit progress opt-in independent of Slack's default `tool_progress: off`; native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
+| `platforms.slack.extra.api_human_users` | `[]` | Slack user IDs whose **Web-API (user-token) posts count as human**. Such posts carry the posting `app_id` and no `client_msg_id`, so by default they are dropped as app traffic; allowlist your own front-end's users here instead of `allow_bots: all`. See [Treating your own app's user-token posts as human](#treating-your-own-apps-user-token-posts-as-human-api_human_users). |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
 The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.
@@ -517,6 +533,54 @@ display:
 | Key | Default | Description |
 |-----|---------|-------------|
 | `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
+
+### Native Streaming (live-typing replies)
+
+Slack's [Agents & AI Apps](https://docs.slack.dev/ai/) feature ships a native
+streaming surface (`chat.startStream` / `chat.appendStream` /
+`chat.stopStream`) that renders the reply as a live-typing message — much
+smoother than the edit-based progressive updates used otherwise. When
+`streaming.enabled` is on (transport `auto` or `draft`), Hermes uses native
+streaming automatically wherever it's available:
+
+- The stream starts on the first frame and appends only deltas (the API is
+  append-only). The streamed message **is** the final message — Hermes seals
+  it via `chat.stopStream` instead of posting a duplicate final reply.
+- If your Slack app doesn't have the AI features enabled (or lacks the
+  `assistant:write` scope), the first failure is cached and Hermes falls back
+  to edit-based streaming with a single log warning naming the fix.
+- Opt-in Block Kit (`rich_blocks: true`) is applied to the sealed message,
+  same as the edit-based finalize path.
+
+No extra configuration is needed beyond enabling streaming:
+
+```yaml
+streaming:
+  enabled: true       # transport auto/draft lights up Slack native streaming
+```
+
+### Native Task Cards (live tool progress)
+
+With `platforms.slack.extra.native_task_cards: true`, live tool calls render
+as Slack-native **plan/task cards** (the same UI Slack's own AI features use)
+instead of text progress bubbles: one card per turn, one row per tool call,
+with per-task running/complete/error states updating in place.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      native_task_cards: true
+```
+
+- This is an explicit progress opt-in — it works even though Slack's default
+  is `tool_progress: off` (text bubbles spam channels; native cards don't).
+- Concurrent calls to the same tool are correlated by real tool-call ID, so
+  parallel `web_search` calls each get their own row with the right status.
+- If the native stream can't start or update, Hermes falls back to a single
+  continuously edited text message so progress stays live for the turn.
+- The card stream is stopped exactly once when the turn finalizes, including
+  on interrupt/disconnect, so no dangling live indicator is left behind.
 
 ### Session Isolation
 
@@ -637,6 +701,38 @@ How `mentions` mode gates:
 `mentions` is the recommended mode for bot-to-bot collaboration: each agent must explicitly summon the other per turn. Avoid `all` unless every peer bot's own reply policy is loop-safe — two bots that answer everything will answer each other forever. Detection covers labeled bot messages (`bot_id`, `subtype: bot_message`), app-originated events, and unlabeled bot *users* (probed via `users.info`), so peer Hermes agents are filtered consistently across workspaces.
 
 For strict multi-bot deployments, pair with `require_mention: true` and `strict_mention: true` — see the smoke-check profile below.
+
+### Treating your own app's user-token posts as human (`api_human_users`)
+
+A message posted through the Web API with a **user token** (`xoxp-`) is
+authored by a real person, but it arrives with the posting `app_id` and no
+`client_msg_id` — the same signature Hermes uses to recognise app posts — so it
+is dropped as bot traffic. This blocks a common pattern: a custom front-end (an
+internal dashboard, a mobile shell, a kiosk) that sends messages to Hermes *as*
+the logged-in user.
+
+`allow_bots: all` would let those posts through, but it opens the door to every
+bot in the channel and weakens the loop protections. Instead, allowlist just
+the people who use your front-end:
+
+```yaml
+platforms:
+  slack:
+    extra:
+      api_human_users: ["U0AAAAAAA", "U0BBBBBBB"]
+```
+
+The equivalent environment variable is `SLACK_API_HUMAN_USERS` (comma-separated).
+
+Scope and safety:
+
+- The allowlist is **users only**. There is deliberately no app-ID variant: a
+  modern bot token (`xoxb-`) posts with the same `user` + `app_id` shape, so
+  trusting an app would also admit its own bot posts and defeat the loop guard.
+- Events carrying `bot_id` or `subtype: bot_message`, or no `user` at all, are
+  always treated as bot posts regardless of the allowlist.
+- The rest of the pipeline is unchanged: mention gating, `allowed_channels`,
+  and `SLACK_ALLOWED_USERS` still apply to the (now human) sender.
 
 ### Reaction Triggers (`reaction_triggers`)
 

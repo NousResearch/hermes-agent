@@ -38,7 +38,11 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 | **Hermes** | Hermes-4-70B、Hermes-4-405B（对话，见[下方说明](#a-note-on-hermes-4)） |
 | **+ 其他所有模型** | 240+ 额外模型——完整的 agentic 前沿生态 |
 
-底层路由通过 OpenRouter 实现，因此模型可用性和故障转移行为与使用 OpenRouter 密钥一致——只是计费走你的 Nous 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
+底层上，Portal 会为每个模型选择最合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商，且某个模型的路由方式可能随时间调整。所有用量都统一计入你的 Nous 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
+
+:::note
+由于路由是按模型进行的，并非总是经过 OpenRouter，OpenRouter 专有的请求扩展（如 `provider` 路由偏好、`session_id` 粘性路由或顶层 `cache_control`）不属于 Portal 的 API 契约，可能会被忽略，具体取决于该模型由哪个后端提供服务。
+:::
 
 ### Nous Tool Gateway
 
@@ -246,7 +250,7 @@ hermes portal
 
 ### 想使用 Portal 未暴露的特定提供商模型
 
-Portal 通过 OpenRouter 代理，因此 OpenRouter 支持的所有模型通常都可用。如果某个模型未出现在 `/model` 中，可直接尝试 OpenRouter 风格的 slug：
+Portal 会为每个模型选择合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商——因此 OpenRouter 支持的大多数模型通常都可用。如果某个模型未出现在 `/model` 中，可直接尝试 OpenRouter 风格的 slug：
 
 ```bash
 /model anthropic/claude-opus-4.6

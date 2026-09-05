@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { extractEmbeddedImages, extractImageRefs, textWithoutImageRefs } from './embedded-images'
+import { extractEmbeddedImages, extractImageRefs } from './embedded-images'
 
 const SAMPLE_PNG_DATA_URL = 'data:image/png;base64,' + 'A'.repeat(120)
 
@@ -40,28 +40,6 @@ describe('extractEmbeddedImages', () => {
     expect(result.cleanedText).toBe('describe this  thanks')
     expect(result.images).toHaveLength(1)
     expect(result.images[0]).toHaveLength(hugeDataUrl.length)
-  })
-})
-
-describe('textWithoutImageRefs', () => {
-  it('leaves plain text untouched', () => {
-    expect(textWithoutImageRefs('just a question')).toBe('just a question')
-  })
-
-  it('strips a single leading @image directive line', () => {
-    expect(textWithoutImageRefs('@image:/tmp/cat.png\nwhat is this?')).toBe('what is this?')
-  })
-
-  it('strips multiple @image directive lines and trims', () => {
-    const input = '@image:/tmp/a.png\n@image:/tmp/b.png\n  describe both  '
-
-    expect(textWithoutImageRefs(input)).toBe('describe both')
-  })
-
-  it('does not treat an inline @image mention as a directive line', () => {
-    // Only full-line leading directives are stripped, matching the gateway's
-    // persist-time rewrite. A bare mention mid-prose is preserved.
-    expect(textWithoutImageRefs('see @image:/tmp/cat.png here')).toBe('see @image:/tmp/cat.png here')
   })
 })
 

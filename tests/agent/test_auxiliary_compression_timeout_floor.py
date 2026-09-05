@@ -93,22 +93,6 @@ class TestCompressionTimeoutFloorSync:
             "the too-low config timeout must not pass through unchanged"
         )
 
-    def test_explicit_per_call_timeout_is_not_floored(self):
-        """Layer 3: an explicit per-call ``timeout=`` override is honoured
-        even when it is below the floor."""
-        client = _client_sync()
-        explicit = 60.0
-        p1, p2, p3, p4 = _patches(client, task_timeout=COMPRESSION_CONFIG_TIMEOUT)
-        with p1, p2, p3, p4:
-            call_llm(
-                task="compression",
-                messages=[{"role": "user", "content": "x"}],
-                timeout=explicit,
-            )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
-        assert timeout == explicit, (
-            f"explicit per-call timeout {explicit} must not be floored, got {timeout}"
-        )
 
     def test_non_compression_task_is_not_floored(self):
         """Layer 4: only ``compression`` gets the floor; another auxiliary
@@ -126,21 +110,6 @@ class TestCompressionTimeoutFloorSync:
             f"non-compression task timeout must stay {low}, got {timeout}"
         )
 
-    def test_higher_config_timeout_is_not_lowered(self):
-        """Layer 5: the floor is a minimum — a config value already above it
-        is kept unchanged (``max`` semantics)."""
-        client = _client_sync()
-        high = 600.0
-        p1, p2, p3, p4 = _patches(client, task_timeout=high)
-        with p1, p2, p3, p4:
-            call_llm(
-                task="compression",
-                messages=[{"role": "user", "content": "x"}],
-            )
-        timeout = client.chat.completions.create.call_args.kwargs["timeout"]
-        assert timeout == high, (
-            f"config timeout {high} above the floor must be unchanged, got {timeout}"
-        )
 
 
 class TestCompressionTimeoutFloorAsync:

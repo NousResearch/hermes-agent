@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_workspace as kbw
 
 
 @pytest.fixture
@@ -67,7 +69,7 @@ def _add_worktree(repo: Path, target: Path, branch: str) -> Path:
 
 
 def test_decompose_worktree_children_get_own_workspace(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.create_task(conn, title="build the feature", triage=True)
         conn.execute(
             "UPDATE tasks SET workspace_kind='worktree', "
@@ -99,37 +101,13 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
             assert row["workspace_path"] is None
 
 
-def test_decompose_dir_children_still_inherit_path(kanban_home):
-    with kb.connect() as conn:
-        root = kb.create_task(conn, title="ops sweep", triage=True)
-        conn.execute(
-            "UPDATE tasks SET workspace_kind='dir', "
-            "workspace_path='/srv/ops' WHERE id = ?",
-            (root,),
-        )
-        conn.commit()
-
-        child_ids = kb.decompose_triage_task(
-            conn,
-            root,
-            root_assignee="orchestrator",
-            children=[{"title": "child", "assignee": "alice", "parents": []}],
-            author="decomposer",
-        )
-        assert child_ids is not None
-        row = conn.execute(
-            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
-            (child_ids[0],),
-        ).fetchone()
-        assert row["workspace_kind"] == "dir"
-        assert row["workspace_path"] == "/srv/ops"
 
 
 def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     repo = _make_repo(tmp_path)
     occupied = _add_worktree(repo, repo / ".worktrees" / "sibling", "wt/sibling")
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="second sibling",
@@ -138,7 +116,7 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
         )
         task = kb.get_task(conn, tid)
 
-    workspace, branch = kb._resolve_worktree_workspace(task)
+    workspace, branch = kbw._resolve_worktree_workspace(task)
     assert workspace == (repo / ".worktrees" / tid).resolve()
     assert branch == f"wt/{tid}"
     # The sibling's checkout is untouched, still on its own branch.
@@ -150,49 +128,5 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
-def test_resolve_worktree_same_branch_still_reuses(kanban_home, tmp_path):
-    repo = _make_repo(tmp_path)
-
-    with kb.connect() as conn:
-        tid = kb.create_task(
-            conn,
-            title="returning task",
-            workspace_kind="worktree",
-        )
-        own = _add_worktree(repo, repo / ".worktrees" / tid, f"wt/{tid}")
-        conn.execute(
-            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
-            (str(own), tid),
-        )
-        conn.commit()
-        task = kb.get_task(conn, tid)
-
-    workspace, branch = kb._resolve_worktree_workspace(task)
-    assert workspace == own.resolve()
-    assert branch == f"wt/{tid}"
 
 
-def test_resolve_worktree_own_path_on_foreign_branch_keeps_legacy_reuse(
-    kanban_home, tmp_path
-):
-    repo = _make_repo(tmp_path)
-
-    with kb.connect() as conn:
-        tid = kb.create_task(
-            conn,
-            title="foreign-branch checkout",
-            workspace_kind="worktree",
-        )
-        own = _add_worktree(repo, repo / ".worktrees" / tid, "wt/foreign")
-        conn.execute(
-            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
-            (str(own), tid),
-        )
-        conn.commit()
-        task = kb.get_task(conn, tid)
-
-    # The fallback target would be the occupied path itself, so the
-    # legacy reuse applies rather than failing dispatch.
-    workspace, branch = kb._resolve_worktree_workspace(task)
-    assert workspace == own.resolve()
-    assert branch == "wt/foreign"

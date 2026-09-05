@@ -1,9 +1,11 @@
 """Tests that the ``hermes model`` picker does not list a configured provider
 twice when its ``provider_key`` is also a canonical provider slug.
 
-The CLI picker (``hermes_cli.main.select_provider_and_model``) appends
-configured rows after the ``CANONICAL_PROVIDERS`` rows, so a provider whose
-``providers:`` key is a canonical slug used to appear in both lists. See #7524.
+The picker rows are built by
+``hermes_cli.main_provider_setup._build_provider_picker_rows``, reached through
+``hermes_cli.main.select_provider_and_model``. Configured rows are appended after
+the canonical ones, so a provider whose ``providers:`` key is a canonical slug
+used to appear in both lists. See #7524.
 """
 
 from unittest.mock import patch

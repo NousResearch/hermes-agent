@@ -29,19 +29,21 @@ describe('reactive pane unhide', () => {
     const model = await import('@/components/pane-shell/tree/model')
     const { registry } = await import('@/contrib/registry')
 
-    // Register `files` like controller.tsx does — placement 'right' is what
-    // makes `treeSideOfPane('files')` return 'right' (and therefore what
-    // makes the buggy `revealTreePane` auto-expand the right column).
-    registry.register({
-      id: 'files',
-      area: 'panes',
-      title: 'files',
-      data: { placement: 'right' },
-      render: () => null
-    })
+    // Register the right-column panes like controller.tsx does — placement
+    // 'right' is what makes `treeSideOfPane(id)` return 'right' (and therefore
+    // what makes the buggy `revealTreePane` auto-expand the right column).
+    for (const id of ['files', 'preview', 'review']) {
+      registry.register({
+        id,
+        area: 'panes',
+        title: id,
+        data: { placement: 'right' },
+        render: () => null
+      })
+    }
 
     // Declare a minimal default tree mirroring the production DEFAULT_TREE's
-    // row shape (sessions | workspace | right-column-with-files).
+    // row shape (sessions | workspace | right-column-with-the-rail).
     tree.declareDefaultTree(
       model.split(
         'row',
@@ -51,7 +53,16 @@ describe('reactive pane unhide', () => {
           model.split(
             'column',
             [
-              model.split('row', [model.group(['files'], { id: 'grp-files' })], [1], 'spl-rail'),
+              model.split(
+                'row',
+                [
+                  model.group(['review'], { id: 'grp-review' }),
+                  model.group(['preview'], { id: 'grp-preview' }),
+                  model.group(['files'], { id: 'grp-files' })
+                ],
+                [1, 1, 1.2],
+                'spl-rail'
+              ),
               model.group(['terminal'], { id: 'grp-terminal' })
             ],
             [1.6, 1],
@@ -125,6 +136,38 @@ describe('reactive pane unhide', () => {
     layout.setFileBrowserOpen(true)
     expect(layout.$fileBrowserOpen.get()).toBe(true)
     expect(tree.$collapsedTreeSides.get().has('right')).toBe(false)
+  })
+
+  // Opening a neighbour used to drag the file tree open with it: review and
+  // preview share ⌘J's column, and `revealTreePane` un-collapsed a column
+  // through its bound store — which for the right side IS the file-browser
+  // toggle. The reveal now un-collapses the column directly.
+  it('revealing a preview opens its column without flipping the file-tree toggle', async () => {
+    const { tree, layout } = await setupWithFiles()
+
+    layout.setFileBrowserOpen(false)
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(true)
+
+    tree.revealTreePane('preview')
+
+    // The column is showing…
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(false)
+    // …but the tree's own toggle never moved, so the tree stays closed.
+    expect(layout.$fileBrowserOpen.get()).toBe(false)
+  })
+
+  it('opening the diff pane leaves the file tree closed', async () => {
+    const { tree, layout } = await setupWithFiles()
+
+    layout.setFileBrowserOpen(false)
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(true)
+
+    // ⌘G — `toggleReview` reveals the review pane, which lives in the same
+    // right column as the file tree.
+    tree.revealTreePane('review')
+
+    expect(tree.$collapsedTreeSides.get().has('right')).toBe(false)
+    expect(layout.$fileBrowserOpen.get()).toBe(false)
   })
 
   it('reactive unhide does not invoke the right side opener directly', async () => {

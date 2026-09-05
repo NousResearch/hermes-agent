@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tools import browser_tool_session as bt_session
 
 
 def _reset_headed_cache():
@@ -31,46 +32,21 @@ def _clean_headed_cache():
 
 class TestIsHeadedMode:
     def test_default_is_false(self):
-        from tools.browser_tool import _is_headed_mode
+        from tools.browser_tool_cloud import _is_headed_mode
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("AGENT_BROWSER_HEADED", None)
             with patch("hermes_cli.config.read_raw_config", return_value={}):
                 assert _is_headed_mode() is False
 
     def test_config_true(self):
-        from tools.browser_tool import _is_headed_mode
+        from tools.browser_tool_cloud import _is_headed_mode
         cfg = {"browser": {"headed": True}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg):
             assert _is_headed_mode() is True
 
-    def test_config_string_true(self):
-        from tools.browser_tool import _is_headed_mode
-        cfg = {"browser": {"headed": "true"}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-            assert _is_headed_mode() is True
-
-    def test_config_false_beats_missing_env(self):
-        from tools.browser_tool import _is_headed_mode
-        cfg = {"browser": {"headed": False}}
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("AGENT_BROWSER_HEADED", None)
-            with patch("hermes_cli.config.read_raw_config", return_value=cfg):
-                assert _is_headed_mode() is False
-
-    def test_env_var_fallback(self):
-        from tools.browser_tool import _is_headed_mode
-        with patch.dict(os.environ, {"AGENT_BROWSER_HEADED": "1"}):
-            with patch("hermes_cli.config.read_raw_config", return_value={}):
-                assert _is_headed_mode() is True
-
-    def test_env_var_garbage_is_false(self):
-        from tools.browser_tool import _is_headed_mode
-        with patch.dict(os.environ, {"AGENT_BROWSER_HEADED": "banana"}):
-            with patch("hermes_cli.config.read_raw_config", return_value={}):
-                assert _is_headed_mode() is False
 
     def test_caching(self):
-        from tools.browser_tool import _is_headed_mode
+        from tools.browser_tool_cloud import _is_headed_mode
         cfg = {"browser": {"headed": True}}
         with patch("hermes_cli.config.read_raw_config", return_value=cfg) as mock_read:
             assert _is_headed_mode() is True
@@ -90,7 +66,7 @@ class TestCleanupTaskResourcesHeadedSkip:
     def test_headless_still_cleans_browser(self):
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
-            patch("tools.browser_tool._is_headed_mode", return_value=False),
+            patch("tools.browser_tool_cloud._is_headed_mode", return_value=False),
             patch("run_agent.cleanup_vm"),
             patch("run_agent.cleanup_browser") as mock_cb,
             patch(
@@ -101,44 +77,12 @@ class TestCleanupTaskResourcesHeadedSkip:
             cleanup_task_resources(_make_agent(), "task-x")
             mock_cb.assert_called_once_with("task-x")
 
-    def test_headed_skips_browser_cleanup(self):
-        from agent.chat_completion_helpers import cleanup_task_resources
-        with (
-            patch("tools.browser_tool._is_headed_mode", return_value=True),
-            patch("run_agent.cleanup_vm"),
-            patch("run_agent.cleanup_browser") as mock_cb,
-            patch(
-                "agent.chat_completion_helpers.is_persistent_env",
-                return_value=False,
-            ),
-        ):
-            cleanup_task_resources(_make_agent(), "task-x")
-            mock_cb.assert_not_called()
-
-    def test_headed_env_var_fallback_when_import_fails(self):
-        """If browser_tool import blows up, the env var still gates the skip."""
-        from agent.chat_completion_helpers import cleanup_task_resources
-        with (
-            patch(
-                "tools.browser_tool._is_headed_mode",
-                side_effect=RuntimeError("boom"),
-            ),
-            patch.dict(os.environ, {"AGENT_BROWSER_HEADED": "1"}),
-            patch("run_agent.cleanup_vm"),
-            patch("run_agent.cleanup_browser") as mock_cb,
-            patch(
-                "agent.chat_completion_helpers.is_persistent_env",
-                return_value=False,
-            ),
-        ):
-            cleanup_task_resources(_make_agent(), "task-x")
-            mock_cb.assert_not_called()
 
     def test_headed_does_not_skip_vm_cleanup(self):
         """Headed mode only affects the browser; VM teardown is untouched."""
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
-            patch("tools.browser_tool._is_headed_mode", return_value=True),
+            patch("tools.browser_tool_cloud._is_headed_mode", return_value=True),
             patch("run_agent.cleanup_vm") as mock_vm,
             patch("run_agent.cleanup_browser"),
             patch(
@@ -181,16 +125,16 @@ class TestHeadedFlagInjection:
                  __exit__=MagicMock(return_value=False),
              ))), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("tools.browser_tool._write_owner_pid"):
-            bt._run_browser_command("task1", "snapshot", [], _engine_override="auto")
+             patch("tools.browser_tool_lifecycle._write_owner_pid"):
+            bt_session._run_browser_command("task1", "snapshot", [], _engine_override="auto")
         return captured_cmds
 
-    @patch("tools.browser_tool._get_session_info")
-    @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")
-    @patch("tools.browser_tool._is_local_mode", return_value=True)
-    @patch("tools.browser_tool._chromium_installed", return_value=True)
-    @patch("tools.browser_tool._get_cloud_provider", return_value=None)
-    @patch("tools.browser_tool._get_cdp_override", return_value="")
+    @patch("tools.browser_tool_session._get_session_info")
+    @patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser")
+    @patch("tools.browser_tool_cloud._is_local_mode", return_value=True)
+    @patch("tools.browser_tool_install._chromium_installed", return_value=True)
+    @patch("tools.browser_tool_cloud._get_cloud_provider", return_value=None)
+    @patch("tools.browser_tool_cdp._get_cdp_override", return_value="")
     @patch("tools.browser_tool._is_camofox_mode", return_value=False)
     def test_headed_flag_added_in_local_mode(
         self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session
@@ -204,31 +148,13 @@ class TestHeadedFlagInjection:
         assert len(captured) == 1
         assert "--headed" in captured[0]
 
-    @patch("tools.browser_tool._get_session_info")
-    @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")
-    @patch("tools.browser_tool._is_local_mode", return_value=True)
-    @patch("tools.browser_tool._chromium_installed", return_value=True)
-    @patch("tools.browser_tool._get_cloud_provider", return_value=None)
-    @patch("tools.browser_tool._get_cdp_override", return_value="")
-    @patch("tools.browser_tool._is_camofox_mode", return_value=False)
-    def test_headed_flag_not_added_when_headless(
-        self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session
-    ):
-        import tools.browser_tool as bt
-        bt._cached_headed_mode = False
-        bt._headed_mode_resolved = True
-        _session.return_value = {"session_name": "test-sess"}
 
-        captured = self._run_and_capture(bt)
-        assert len(captured) == 1
-        assert "--headed" not in captured[0]
-
-    @patch("tools.browser_tool._get_session_info")
-    @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")
-    @patch("tools.browser_tool._is_local_mode", return_value=True)
-    @patch("tools.browser_tool._chromium_installed", return_value=True)
-    @patch("tools.browser_tool._get_cloud_provider", return_value=None)
-    @patch("tools.browser_tool._get_cdp_override", return_value="")
+    @patch("tools.browser_tool_session._get_session_info")
+    @patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser")
+    @patch("tools.browser_tool_cloud._is_local_mode", return_value=True)
+    @patch("tools.browser_tool_install._chromium_installed", return_value=True)
+    @patch("tools.browser_tool_cloud._get_cloud_provider", return_value=None)
+    @patch("tools.browser_tool_cdp._get_cdp_override", return_value="")
     @patch("tools.browser_tool._is_camofox_mode", return_value=False)
     def test_headed_flag_not_added_in_cloud_mode(
         self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session

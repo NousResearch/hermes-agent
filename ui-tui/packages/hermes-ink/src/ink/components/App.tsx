@@ -28,6 +28,7 @@ import {
   setTerminalBackgroundHex,
   setTerminalForegroundHex,
   setXtversionName,
+  skipKittyKeyboardProtocol,
   supportsExtendedKeys
 } from '../terminal.js'
 import {
@@ -123,6 +124,11 @@ type Props = {
   // fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
   // terminal side. Optional so testing.tsx doesn't need to stub it.
   readonly onStdinResume?: () => void
+  // Called for DECSET 1004 terminal focus transitions. The renderer uses
+  // focus-in as a strong signal that the emulator may have coalesced hidden
+  // tab writes or lost physical cursor state, so it can force one clean
+  // repaint instead of trusting incremental damage from before the blur.
+  readonly onTerminalFocusChange?: (isFocused: boolean) => void
   // Receives the declared native-cursor position from useDeclaredCursor
   // so ink.tsx can park the terminal cursor there after each frame.
   // Enables IME composition at the input caret and lets screen readers /
@@ -328,9 +334,14 @@ export default class App extends PureComponent<Props, State> {
         // distinguishable from ctrl+<letter>. We write both the kitty stack
         // push (CSI >1u) and xterm modifyOtherKeys level 2 (CSI >4;2m) —
         // terminals honor whichever they implement (tmux only accepts the
-        // latter).
+        // latter). Ghostty gets only modifyOtherKeys — its kitty
+        // disambiguate mode strips Alt from Backspace (see
+        // skipKittyKeyboardProtocol).
         if (supportsExtendedKeys()) {
-          this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          if (!skipKittyKeyboardProtocol()) {
+            this.props.stdout.write(ENABLE_KITTY_KEYBOARD)
+          }
+
           this.props.stdout.write(ENABLE_MODIFY_OTHER_KEYS)
         }
 
@@ -630,6 +641,7 @@ export default class App extends PureComponent<Props, State> {
     // setTerminalFocused notifies subscribers: TerminalFocusProvider (context)
     // and Clock (interval speed) — no App setState needed.
     setTerminalFocused(isFocused)
+    this.props.onTerminalFocusChange?.(isFocused)
   }
   handleSuspend = (): void => {
     if (!this.isRawModeSupported()) {

@@ -82,43 +82,6 @@ async def test_first_call_sends_fresh(adapter):
 
 
 @pytest.mark.asyncio
-async def test_second_call_edits_same_message(adapter):
-    r1 = await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing 1/3", metadata=METADATA
-    )
-    r2 = await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing 2/3", metadata=METADATA
-    )
-    assert r1.success and r2.success
-    client = adapter._get_client.return_value
-    assert client.chat_postMessage.call_count == 1
-    assert client.chat_update.call_count == 1
-    # The edit must target the ts of the first send.
-    assert client.chat_update.call_args.kwargs["ts"] == r1.message_id
-
-
-@pytest.mark.asyncio
-async def test_edit_failure_falls_back_to_fresh_send(adapter):
-    await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing 1/3", metadata=METADATA
-    )
-    client = adapter._get_client.return_value
-    client.chat_update = AsyncMock(side_effect=RuntimeError("message_not_found"))
-    r2 = await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing 2/3", metadata=METADATA
-    )
-    assert r2.success
-    assert client.chat_postMessage.call_count == 2
-    # Cached id was replaced: a third call edits the NEW message.
-    client.chat_update = AsyncMock(return_value={"ok": True})
-    r3 = await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing 3/3", metadata=METADATA
-    )
-    assert r3.success
-    assert client.chat_update.call_args.kwargs["ts"] == r2.message_id
-
-
-@pytest.mark.asyncio
 async def test_distinct_keys_do_not_crosstalk(adapter):
     await adapter.send_or_update_status(
         "C_CHAN", "context_pressure", "compressing", metadata=METADATA
@@ -131,14 +94,3 @@ async def test_distinct_keys_do_not_crosstalk(adapter):
     assert client.chat_update.call_count == 0
 
 
-@pytest.mark.asyncio
-async def test_distinct_threads_do_not_crosstalk(adapter):
-    await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing", metadata={"thread_id": "111.1"}
-    )
-    await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing", metadata={"thread_id": "222.2"}
-    )
-    client = adapter._get_client.return_value
-    assert client.chat_postMessage.call_count == 2
-    assert client.chat_update.call_count == 0

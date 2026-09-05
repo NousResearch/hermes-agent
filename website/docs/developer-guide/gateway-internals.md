@@ -12,7 +12,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 
 | File | Purpose |
 |------|---------|
-| `gateway/run.py` | `GatewayRunner` — main loop, slash commands, message dispatch (large file; check git for current LOC) |
+| `gateway/run.py` | `GatewayRunner` facade — composes the `gateway/run_*.py` sibling mixins (startup, adapters, inbound, turn, busy, goals, notifications, shutdown, …) and `gateway/slash_commands_*.py` handlers |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
@@ -21,7 +21,9 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/mirror.py` | Cross-session message mirroring for `send_message` |
 | `gateway/status.py` | Token lock management for profile-scoped gateway instances |
 | `gateway/builtin_hooks/` | Extension point for always-registered hooks (none shipped) |
-| `gateway/platforms/` | Platform adapters (one per messaging platform) |
+| `gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
+| `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
+| `gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
 
 ## Architecture Overview
 
@@ -83,7 +85,7 @@ When an agent is actively running, incoming messages pass through two sequential
 
 1. **Level 1 — Base adapter** (`gateway/platforms/base.py`): Checks `_active_sessions`. If the session is active, queues the message in `_pending_messages` and sets an interrupt event. This catches messages *before* they reach the gateway runner.
 
-2. **Level 2 — Gateway runner** (`gateway/run.py`): Checks `_running_agents`. Intercepts specific commands (`/stop`, `/new`, `/queue`, `/status`, `/approve`, `/deny`) and routes them appropriately. Everything else triggers `running_agent.interrupt()`.
+2. **Level 2 — Gateway runner** (`gateway/run_inbound.py`): Checks `_running_agents`. Intercepts specific commands (`/stop`, `/new`, `/queue`, `/status`, `/approve`, `/deny`) and routes them appropriately. Everything else triggers `running_agent.interrupt()`.
 
 Commands that must reach the runner while the agent is blocked (like `/approve`) are dispatched **inline** via `await self._message_handler(event)` — they bypass the background task system to avoid race conditions.
 
@@ -114,20 +116,16 @@ All slash commands in the gateway flow through the same resolution pipeline:
 
 1. `resolve_command()` from `hermes_cli/commands.py` maps input to canonical name (handles aliases, prefix matching)
 2. The canonical name is checked against `GATEWAY_KNOWN_COMMANDS`
-3. Handler in `_handle_message()` dispatches based on canonical name
+3. `_handle_message()` (`gateway/run_inbound.py`) looks the handler up by name — `_handle_<name>_command` on the `gateway/slash_commands_*.py` mixins — via `_command_handler_table` over `_IDLE_COMMANDS` / `_PLAIN_COMMANDS` in `gateway/run_busy.py`; there is no `if canonical == ...` chain
 4. Some commands are gated on config (`gateway_config_gate` on `CommandDef`)
 
 ### Running-Agent Guard
 
 Commands that must NOT execute while the agent is processing are rejected early:
 
-```python
-if _quick_key in self._running_agents:
-    if canonical == "model":
-        return "⏳ Agent is running — wait for it to finish or /stop first."
-```
+While `_quick_key in self._running_agents`, `_dispatch_busy_slash_command()` in `gateway/run_busy.py` routes each recognized command by its `CommandDef.busy_policy` / `busy_handler`: a mid-run variant (`_busy_<key>_command`) if one exists, otherwise the normal handler when `busy_policy` allows it, otherwise a reject message ("⏳ Agent is running — `/model` can't run mid-turn…").
 
-Bypass commands (`/stop`, `/new`, `/approve`, `/deny`, `/queue`, `/status`) have special handling.
+Bypass commands (`/stop`, `/new`, `/approve`, `/deny`, `/queue`, `/status`) have mid-run handlers and are dispatched inline.
 
 ## Config Sources
 
@@ -176,16 +174,20 @@ gateway/platforms/                  # core base + legacy direct adapters
 └── api_server.py        # REST API server adapter
 ```
 
+**Deferred loading:** Bundled `kind: platform` plugins register cheap `register_deferred` loaders in `gateway/platform_registry.py` (via `hermes_cli/plugins.py`) so platform SDKs import only when the gateway starts, delivers, or runs setup/status — not on plain `hermes chat`. Resolution loads one adapter on lookup; full enumeration runs pending loaders only on paths that need every platform.
+
 Experimental connector-backed platforms use the generic relay adapter in `gateway/relay/` instead of a direct platform module. When `GATEWAY_RELAY_URL` or `gateway.relay_url` is configured, the gateway registers the `relay` platform, dials the connector over an outbound WebSocket, and receives `descriptor`, `inbound`, and `interrupt_inbound` frames on that same socket. The connector advertises a `CapabilityDescriptor`; Hermes can send normal outbound replies, token-less `follow_up` operations, and interrupt frames back through the relay. The source-grounded wire contract lives in [`docs/relay-connector-contract.md`](https://github.com/NousResearch/hermes-agent/blob/main/docs/relay-connector-contract.md).
 
 Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management
-- `send_message()` — outbound message delivery
-- `on_message()` — inbound message normalization → `MessageEvent`
+- `send()` — outbound message delivery
+- inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
 
 ### Token Locks
 
 Adapters that connect with unique credentials call `acquire_scoped_lock()` in `connect()` and `release_scoped_lock()` in `disconnect()`. This prevents two profiles from using the same bot token simultaneously.
+
+A lock conflict is emitted as `{scope}_lock` with `retryable=True` so a **mid-run** reconnect can recover once the other holder exits. At **startup**, though, a live foreign holder is a configuration conflict: `gateway/restart.py::is_global_startup_conflict()` recognizes the `*_lock` / `lock_conflict` code families and the startup router parks the platform `fatal` instead of retry-queueing it. With nothing else connected the gateway exits `78` (`EX_CONFIG`, `gateway_state=startup_failed`) so the supervisor stops restarting it; alongside a genuinely transient peer failure the gateway stays alive and only the peer retries.
 
 ## Delivery Path
 

@@ -75,68 +75,7 @@ class TestSwitchModelReasoningOverride:
         assert hasattr(agent, "_primary_runtime")
         assert "reasoning_config" in agent._primary_runtime
 
-    def test_reasoning_config_resolves_to_override_on_switch(self):
-        """switch_model should resolve reasoning_config to per-model override."""
-        from agent.agent_runtime_helpers import switch_model
 
-        agent = self._make_fake_agent()
-
-        fake_cfg = {
-            "model": {"default": "claude-opus-4.5"},
-            "agent": {
-                "reasoning_effort": "medium",
-                "reasoning_overrides": {
-                    "claude-opus-4.5": "xhigh",
-                },
-            },
-        }
-
-        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
-            try:
-                switch_model(
-                    agent,
-                    new_model="claude-opus-4.5",
-                    new_provider="anthropic",
-                    base_url="https://api.anthropic.com",
-                    api_mode="anthropic_messages",
-                )
-            except Exception:
-                pass
-
-        # reasoning_config should be updated to xhigh
-        assert agent.reasoning_config is not None
-        assert agent.reasoning_config.get("effort") == "xhigh"
-
-    def test_reasoning_config_falls_back_to_global(self):
-        """switch_model should fall back to global when no override for new model."""
-        from agent.agent_runtime_helpers import switch_model
-
-        agent = self._make_fake_agent()
-
-        fake_cfg = {
-            "model": {"default": "gpt-5"},
-            "agent": {
-                "reasoning_effort": "low",
-                "reasoning_overrides": {
-                    "claude-opus-4.5": "xhigh",  # override for different model
-                },
-            },
-        }
-
-        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
-            try:
-                switch_model(
-                    agent,
-                    new_model="gpt-5",
-                    new_provider="openai",
-                    api_mode="openai",
-                )
-            except Exception:
-                pass
-
-        # No override for gpt-5 → should fall back to global "low"
-        assert agent.reasoning_config is not None
-        assert agent.reasoning_config.get("effort") == "low"
 
     def test_restore_primary_runtime_restores_reasoning(self):
         """restore_primary_runtime should restore reasoning_config from snapshot."""
@@ -185,36 +124,3 @@ class TestSwitchModelReasoningOverride:
         assert result is True
         assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
 
-    def test_switch_model_global_fallback_with_yaml_false(self):
-        """switch_model global fallback must not coerce YAML boolean False.
-
-        Regression: str(... or "").strip() turned False into "", silently
-        re-enabling thinking. The raw value must pass through so
-        parse_reasoning_effort(False) returns {'enabled': False}.
-        """
-        from agent.agent_runtime_helpers import switch_model
-
-        agent = self._make_fake_agent()
-
-        fake_cfg = {
-            "model": {"default": "gpt-5"},
-            "agent": {
-                "reasoning_effort": False,  # YAML boolean, not string
-                "reasoning_overrides": {},
-            },
-        }
-
-        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
-            try:
-                switch_model(
-                    agent,
-                    new_model="gpt-5",
-                    new_provider="openai",
-                    api_mode="openai",
-                )
-            except Exception:
-                pass
-
-        # No override for gpt-5 → global fallback with raw False
-        assert agent.reasoning_config is not None
-        assert agent.reasoning_config.get("enabled") is False

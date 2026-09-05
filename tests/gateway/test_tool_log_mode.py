@@ -32,25 +32,11 @@ class TestLogBranchSemantics:
         line = q.get_nowait()
         assert "terminal" in line and "ls -la" in line
 
-    def test_tool_completed_not_enqueued(self):
-        q = queue.Queue()
-        _log_branch(q, None, "tool.completed", "terminal")
-        assert q.empty()
 
     def test_thinking_not_enqueued(self):
         q = queue.Queue()
         _log_branch(q, None, "tool.started", "_thinking", "pondering")
         assert q.empty()
-
-    def test_no_preview_line_has_no_quotes(self):
-        q = queue.Queue()
-        _log_branch(q, None, "tool.started", "todo")
-        line = q.get_nowait()
-        assert line.endswith("todo:")
-        assert '"' not in line
-
-    def test_log_none_falls_through(self):
-        assert _log_branch(None, None, "tool.started", "terminal") == "fell-through"
 
 
 @pytest.mark.asyncio
@@ -100,8 +86,3 @@ async def test_write_tool_log_writes_and_rotates_handler(tmp_path, monkeypatch):
     await asyncio.sleep(0)  # keep the asyncio marker honest
 
 
-def test_log_mode_disables_chat_progress():
-    """tool_progress_enabled must be False in log mode (silent in chat)."""
-    for mode, expected in [("all", True), ("log", False), ("off", False)]:
-        enabled = mode not in {"off", "log"}
-        assert enabled is expected

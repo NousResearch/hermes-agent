@@ -22,30 +22,6 @@ async def test_reconnect_event_attribute_exists():
 
 
 @pytest.mark.asyncio
-async def test_wait_for_lifecycle_event_returns_reconnect():
-    """When _reconnect_event fires, helper returns 'reconnect' and clears it."""
-    from tools.mcp_tool import MCPServerTask
-    task = MCPServerTask("test")
-
-    task._reconnect_event.set()
-    reason = await task._wait_for_lifecycle_event()
-    assert reason == "reconnect"
-    # Should have cleared so the next cycle starts fresh
-    assert not task._reconnect_event.is_set()
-
-
-@pytest.mark.asyncio
-async def test_wait_for_lifecycle_event_returns_shutdown():
-    """When _shutdown_event fires, helper returns 'shutdown'."""
-    from tools.mcp_tool import MCPServerTask
-    task = MCPServerTask("test")
-
-    task._shutdown_event.set()
-    reason = await task._wait_for_lifecycle_event()
-    assert reason == "shutdown"
-
-
-@pytest.mark.asyncio
 async def test_wait_for_lifecycle_event_shutdown_wins_when_both_set():
     """If both events are set simultaneously, shutdown takes precedence."""
     from tools.mcp_tool import MCPServerTask

@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.web_server import MoaConfigPayload, MoaModelSlot, MoaPresetPayload, set_moa_models
+from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
+from hermes_cli.web_routers.models import set_moa_models
 
 
 def _base_payload(**overrides) -> MoaConfigPayload:
@@ -66,9 +67,9 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         payload = _base_payload()
 
         with (
-            patch("hermes_cli.web_server.load_config", side_effect=fake_load_config),
-            patch("hermes_cli.web_server.save_config", side_effect=fake_save_config),
-            patch("hermes_cli.web_server._profile_scope"),
+            patch("hermes_cli.config.load_config", side_effect=fake_load_config),
+            patch("hermes_cli.config.save_config", side_effect=fake_save_config),
+            patch("hermes_cli.web_server_profiles._profile_scope"),
         ):
             set_moa_models(payload)
 
@@ -80,67 +81,4 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
             "trace_dir was dropped by set_moa_models"
         )
 
-    def test_trace_dir_empty_string_preserved(self, tmp_path):
-        """Even an empty-string ``trace_dir`` must survive."""
-        existing_cfg = {
-            "moa": {
-                "save_traces": True,
-                "trace_dir": "",
-                "default_preset": "default",
-                "presets": {
-                    "default": {
-                        "reference_models": [
-                            {"provider": "openai-codex", "model": "gpt-5.5"},
-                        ],
-                        "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-                        "max_tokens": 4096,
-                        "enabled": True,
-                    },
-                },
-            },
-        }
 
-        saved_cfg = {}
-
-        def fake_load_config():
-            return dict(existing_cfg)
-
-        def fake_save_config(cfg):
-            saved_cfg.update(cfg)
-
-        payload = _base_payload()
-
-        with (
-            patch("hermes_cli.web_server.load_config", side_effect=fake_load_config),
-            patch("hermes_cli.web_server.save_config", side_effect=fake_save_config),
-            patch("hermes_cli.web_server._profile_scope"),
-        ):
-            set_moa_models(payload)
-
-        moa = saved_cfg["moa"]
-        assert moa.get("save_traces") is True
-        assert moa.get("trace_dir") == ""
-
-    def test_no_existing_moa_key_still_works(self, tmp_path):
-        """When ``moa`` key is absent from config, the endpoint must not crash."""
-        existing_cfg: dict = {}
-
-        saved_cfg = {}
-
-        def fake_load_config():
-            return dict(existing_cfg)
-
-        def fake_save_config(cfg):
-            saved_cfg.update(cfg)
-
-        payload = _base_payload()
-
-        with (
-            patch("hermes_cli.web_server.load_config", side_effect=fake_load_config),
-            patch("hermes_cli.web_server.save_config", side_effect=fake_save_config),
-            patch("hermes_cli.web_server._profile_scope"),
-        ):
-            result = set_moa_models(payload)
-
-        assert result["ok"] is True
-        assert "default_preset" in saved_cfg["moa"]

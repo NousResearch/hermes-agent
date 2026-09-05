@@ -56,6 +56,30 @@ export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boole
   return Object.keys(patch).length > 0
 }
 
+/** Keep the runtime-state object when a heartbeat only restates cached fields.
+ *  `$sessionStates` feeds every mounted session surface, so an equivalent spread
+ *  re-renders them all at the heartbeat cadence. */
+export function applySessionInfoStatePatch(
+  state: ClientSessionState,
+  patch: SessionRuntimeStatePatch
+): ClientSessionState {
+  if (
+    (patch.branch === undefined || patch.branch === state.branch) &&
+    (patch.cwd === undefined || patch.cwd === state.cwd) &&
+    (patch.fast === undefined || patch.fast === state.fast) &&
+    (patch.model === undefined || patch.model === state.model) &&
+    (patch.personality === undefined || patch.personality === state.personality) &&
+    (patch.provider === undefined || patch.provider === state.provider) &&
+    (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
+    (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&
+    (patch.yolo === undefined || patch.yolo === state.yolo)
+  ) {
+    return state
+  }
+
+  return { ...state, ...patch }
+}
+
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
 // token got its own React commit + Streamdown markdown re-parse, scaling
@@ -65,6 +89,27 @@ export function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boole
 // smoothness win on long messages with big trailing paragraphs; see
 // `scripts/profile-typing-lag.md` for the measurement work behind this.
 export const STREAM_DELTA_FLUSH_MS = 33
+
+// Ceiling for the ADAPTIVE flush gap (see scheduleDeltaFlush). Under heavy
+// multi-stream load the gap stretches to 3x the measured flush cost so the
+// main thread stays responsive to input; this cap guarantees streaming text
+// still visibly updates at least ~4x per second no matter the load.
+export const MAX_STREAM_FLUSH_GAP_MS = 250
+
+// How long an optimistically armed turn (busy/awaitingResponse set at submit /
+// restore / edit, before the backend confirms it live) may hold off a
+// session.info running=false heartbeat. Within this window a running=false is
+// treated as a PRE-START report — the submit round trip hasn't finished, so
+// settling on it would drop the spinner and reopen the send guard mid-flight.
+// Past it, the gateway's running=false is authoritative: the turn never went
+// live (rewind refused after the arm, gateway bounce, dropped submit response,
+// missed terminal error event) and holding busy any longer latches the
+// composer shut until app restart (#86795 — every send gets queued behind a
+// turn that does not exist, and the queue drain waits on busy→false forever).
+// Generous vs. the real pre-start gap: the busy-retry deadline is 6s and the
+// backend flips running=true on accept, so heartbeats stop carrying false
+// within a couple seconds of a healthy submit.
+export const PRE_TURN_LIVE_SETTLE_GRACE_MS = 15_000
 
 // Gateway/provider failures sometimes arrive as message.complete text instead
 // of an explicit error event. Treat matches as inline assistant errors so they
@@ -141,7 +186,9 @@ export function delegateTaskPayloads(
   const result = parseMaybeRecord(payload.result)
   const rawTasks = Array.isArray(args.tasks) ? args.tasks : []
   const tasks = rawTasks.length ? rawTasks.map(parseMaybeRecord) : [args]
-  const status = phase === 'complete' ? (payload.error ? 'failed' : 'completed') : 'running'
+  const resultStatus = typeof result.status === 'string' ? result.status.toLowerCase() : ''
+  const failedResult = Boolean(payload.error) || ['timeout', 'error', 'failed', 'failure'].includes(resultStatus)
+  const status = phase === 'complete' ? (failedResult ? 'failed' : 'completed') : 'running'
   const toolId = payload.tool_id || payload.tool_call_id || payload.id || 'delegate_task'
   const progressText = firstString(payload.preview, payload.message, payload.context)
 

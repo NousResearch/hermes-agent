@@ -11,7 +11,7 @@ vi.mock('@/i18n', () => ({
       sidebar: {
         projects: {
           copyPath: 'Copy path',
-          menu: 'Project actions',
+          menu: 'Actions',
           removeWorktree: 'Remove worktree',
           reveal: 'Reveal in file manager',
           startWork: 'New worktree'
@@ -27,11 +27,11 @@ vi.mock('@/store/projects', () => ({
   revealPath: vi.fn()
 }))
 
-// StartWorkButton renders the full WorktreeDialog (branch picker, git combobox,
-// etc.) as soon as it's open — none of that is relevant to the tooltip fix, so
-// stub it to keep this test focused on the trigger button.
-vi.mock('./worktree-dialog', () => ({
-  WorktreeDialog: () => null
+// StartWorkButton no longer renders a dialog. It publishes an intent to the one
+// WorktreeDialog that is mounted in the sidebar. Stub the store action, so this
+// test keeps the button separate from the git probes of the resolver.
+vi.mock('@/store/coding-status', () => ({
+  openWorktreeDialog: vi.fn()
 }))
 
 const tipTrigger = (button: HTMLElement) => button.closest('[data-slot="tooltip-trigger"]')
@@ -63,17 +63,17 @@ describe('WorkspaceShowMoreButton', () => {
 })
 
 describe('WorkspaceMenu', () => {
-  it('wraps the kebab trigger in a Tip', () => {
+  it('does not wrap the kebab trigger in a Tip', () => {
     render(<WorkspaceMenu onRemove={vi.fn()} path="/repo/lane" />)
 
-    const button = screen.getByRole('button', { name: 'Project actions' })
-    expect(tipTrigger(button)).toBeTruthy()
+    const button = screen.getByRole('button', { name: 'Actions' })
+    expect(tipTrigger(button)).toBeNull()
   })
 })
 
 describe('StartWorkButton', () => {
   it('wraps the git-branch trigger in a Tip', () => {
-    render(<StartWorkButton onStarted={vi.fn()} repoPath="/repo" />)
+    render(<StartWorkButton repoPath="/repo" />)
 
     const button = screen.getByRole('button', { name: 'New worktree' })
     expect(tipTrigger(button)).toBeTruthy()

@@ -19,9 +19,10 @@
 # Surface a warning to stderr so anyone still invoking this path
 # sees the migration notice in their logs.
 echo "[hermes] WARNING: docker/entrypoint.sh is a deprecated shim under " \
-    "s6-overlay. The container's real ENTRYPOINT is /init + " \
-    "main-wrapper.sh; this script only runs the stage2 cont-init hook " \
+    "s6-overlay. The container's real ENTRYPOINT is " \
+    "entrypoint-dispatch.sh (which delegates to /init + main-wrapper.sh " \
+    "when PID 1); this script only runs the stage2 cont-init hook " \
     "and does NOT exec the CMD. If you hard-coded docker/entrypoint.sh " \
     "as your ENTRYPOINT, drop the override — docker will use the image's " \
-    "default ENTRYPOINT (/init), which handles bootstrap AND CMD." >&2
+    "default ENTRYPOINT dispatcher, which handles bootstrap AND CMD." >&2
 exec /opt/hermes/docker/stage2-hook.sh "$@"

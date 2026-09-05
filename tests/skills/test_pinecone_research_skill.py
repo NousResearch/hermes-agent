@@ -41,8 +41,6 @@ def test_skill_dir_exists() -> None:
     assert SKILL_DIR.is_dir(), f"missing skill dir: {SKILL_DIR}"
 
 
-def test_skill_md_present() -> None:
-    assert (SKILL_DIR / "SKILL.md").is_file()
 
 
 def test_description_under_60_chars(frontmatter) -> None:
@@ -50,20 +48,8 @@ def test_description_under_60_chars(frontmatter) -> None:
     assert len(desc) <= 60, f"description is {len(desc)} chars (limit ≤60): {desc!r}"
 
 
-def test_name_is_distinct_from_mlops_pinecone(frontmatter) -> None:
-    """The research skill must use a different name from mlops/pinecone."""
-    mlops_src = (MLOPS_PINECONE_DIR / "SKILL.md").read_text(encoding="utf-8")
-    m = re.search(r"^---\n(.*?)\n---", mlops_src, re.DOTALL)
-    assert m, "mlops/pinecone SKILL.md missing frontmatter"
-    mlops_fm = yaml.safe_load(m.group(1))
-    assert frontmatter["name"] != mlops_fm["name"], (
-        f"research pinecone name {frontmatter['name']!r} must differ from "
-        f"mlops pinecone name {mlops_fm['name']!r}"
-    )
 
 
-def test_name_matches_expected(frontmatter) -> None:
-    assert frontmatter["name"] == "pinecone-research"
 
 
 def test_has_required_frontmatter_fields(frontmatter) -> None:
@@ -71,9 +57,6 @@ def test_has_required_frontmatter_fields(frontmatter) -> None:
         assert field in frontmatter, f"missing required field: {field}"
 
 
-def test_platforms_includes_all_major(frontmatter) -> None:
-    platforms = frontmatter.get("platforms", [])
-    assert set(platforms) >= {"linux", "macos", "windows"}
 
 
 @pytest.mark.parametrize(

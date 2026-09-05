@@ -82,144 +82,88 @@ def test_pre_turn_named_custom_provider_identity_selects_vision_override(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_prepare_image_routing_uses_session_vision_model_override(monkeypatch):
-    """Telegram /model overrides must affect native-vs-text image routing.
-
-    Regression: _prepare_inbound_message_text used config.yaml's default model
-    before the per-session model override was installed on auxiliary_client's
-    runtime globals. A Telegram session switched to a vision model still had
-    screenshots pre-analyzed as text when config.default was text-only.
-    """
-    runner = _make_runner()
-    source = _source()
-    event = _image_event()
-    cfg = _auto_config()
-
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: cfg)
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
-    monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "xiaomi")
-    monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "mimo-v2.5-pro")
-    monkeypatch.setattr(
-        runner,
-        "_resolve_session_agent_runtime",
-        lambda **_: ("gpt-5.5", {"provider": "openai-codex"}),
-    )
-
-    def fake_supports(provider, model, config):
-        return provider == "openai-codex" and model == "gpt-5.5"
-
-    monkeypatch.setattr("agent.image_routing._lookup_supports_vision", fake_supports)
-
-    async def fail_enrich(*_args, **_kwargs):
-        pytest.fail("vision-capable session override should use native image routing")
-
-    monkeypatch.setattr(runner, "_enrich_message_with_vision", fail_enrich)
-
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[],
-    )
-
-    session_key = runner._session_key_for_source(source)
-    assert result == "look"
-    assert runner._pending_native_image_paths_by_session[session_key] == [
-        "/tmp/cashback.png"
-    ]
-
-
-@pytest.mark.asyncio
-async def test_prepare_image_routing_falls_back_to_text_for_text_only_session_override(monkeypatch):
-    """A text-only session override should get vision_analyze text fallback.
-
-    Regression mirror case: if config.default is a vision model but the current
-    Telegram session is switched to a text-only provider (for example Mimo),
-    auto routing must not attach pixels natively to the text-only model.
-    """
-    runner = _make_runner()
-    source = _source()
-    event = _image_event()
-    cfg = _auto_config()
-    cfg["model"] = {"provider": "openai-codex", "default": "gpt-5.5"}
-
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: cfg)
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
-    monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "openai-codex")
-    monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "gpt-5.5")
-    monkeypatch.setattr(
-        runner,
-        "_resolve_session_agent_runtime",
-        lambda **_: ("mimo-v2.5-pro", {"provider": "xiaomi"}),
-    )
-
-    def fake_supports(provider, model, config):
-        return provider == "openai-codex" and model == "gpt-5.5"
-
-    monkeypatch.setattr("agent.image_routing._lookup_supports_vision", fake_supports)
-
-    async def fake_enrich(user_text, image_paths):
-        from agent import auxiliary_client as aux
-
-        assert user_text == "look"
-        assert image_paths == ["/tmp/cashback.png"]
-        runtime = aux._normalize_main_runtime(None)
-        assert runtime["provider"] == "xiaomi"
-        assert runtime["model"] == "mimo-v2.5-pro"
-        return "[vision summary]\n\nlook"
-
-    monkeypatch.setattr(runner, "_enrich_message_with_vision", fake_enrich)
-
-    result = await runner._prepare_inbound_message_text(
-        event=event,
-        source=source,
-        history=[],
-    )
-
-    session_key = runner._session_key_for_source(source)
-    assert result == "[vision summary]\n\nlook"
-    assert runner._pending_native_image_paths_by_session.get(session_key) is None
-
-
-@pytest.mark.asyncio
-async def test_prepare_image_routing_runs_off_the_event_loop(monkeypatch):
-    """The image-routing decision does blocking network I/O — a models.dev fetch
-    on cache miss, and the Ollama ``/api/show`` capability probe for local
-    servers — so it must run on a worker thread. Run inline on the gateway
-    event loop it would freeze *every* session for up to the request timeout
-    while a single image is routed.
-    """
+async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypatch):
+    """A slow route-identity check must not block gateway heartbeats."""
+    import asyncio
     import threading
+    from types import SimpleNamespace
 
     runner = _make_runner()
     source = _source()
-    event = _image_event()
-    cfg = _auto_config()
+    event = MessageEvent(
+        text="inspect @AGENTS.md",
+        message_type=MessageType.TEXT,
+        source=source,
+    )
+    started = threading.Event()
+    released_by_event_loop = threading.Event()
+    seen = {}
+    main_thread = threading.current_thread()
 
+    cfg = {
+        "model": {
+            "default": "test-model",
+            "provider": "test-provider",
+            "base_url": "https://example.invalid/v1",
+            "context_length": 128000,
+        }
+    }
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: cfg)
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
-    monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "xiaomi")
-    monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "mimo-v2.5-pro")
     monkeypatch.setattr(
         runner,
         "_resolve_session_agent_runtime",
-        lambda **_: ("gpt-5.5", {"provider": "openai-codex"}),
+        lambda **_kwargs: (
+            "test-model",
+            {
+                "provider": "test-provider",
+                "base_url": "https://example.invalid/v1",
+                "api_key": "",
+            },
+        ),
     )
 
-    main_thread = threading.current_thread()
-    seen: dict = {}
-
-    def recording_supports(provider, model, config):
-        # Stands in for the real, blocking capability lookup and records the
-        # thread it executes on.
+    def blocking_route_identity_check(*_args):
         seen["thread"] = threading.current_thread()
-        return True  # vision-capable → native routing (skips _enrich_message_with_vision)
+        started.set()
+        seen["event_loop_progressed"] = released_by_event_loop.wait(timeout=2)
+        return False
 
-    monkeypatch.setattr("agent.image_routing._lookup_supports_vision", recording_supports)
-
-    await runner._prepare_inbound_message_text(event=event, source=source, history=[])
-
-    assert seen.get("thread") is not None, "capability lookup was never reached"
-    assert seen["thread"] is not main_thread, (
-        "the blocking image-routing decision must be offloaded off the gateway "
-        "event loop, not run inline on it"
+    monkeypatch.setattr(
+        "hermes_cli.route_identity.should_clear_context_pin",
+        blocking_route_identity_check,
     )
+
+    async def fake_context_length(*_args, **_kwargs):
+        return 128000
+
+    async def fake_preprocess(message, **_kwargs):
+        return SimpleNamespace(
+            blocked=False,
+            expanded=False,
+            message=message,
+            warnings=[],
+        )
+
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async", fake_context_length
+    )
+    monkeypatch.setattr(
+        "agent.context_references.preprocess_context_references_async",
+        fake_preprocess,
+    )
+
+    async def heartbeat_ticker():
+        while not started.is_set():
+            await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        released_by_event_loop.set()
+
+    heartbeat = asyncio.create_task(heartbeat_ticker())
+    result = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[]
+    )
+    await heartbeat
+
+    assert result == "inspect @AGENTS.md"
+    assert seen["event_loop_progressed"] is True
+    assert seen["thread"] is not main_thread

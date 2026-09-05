@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { DecodeText } from '@/components/ui/decode-text'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -33,10 +34,6 @@ function forcedPreview(): boolean {
   } catch {
     return false
   }
-}
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
 }
 
 export function GatewayConnectingOverlay() {
@@ -141,9 +138,13 @@ export function GatewayConnectingOverlay() {
   return (
     <div
       className={cn(
-        'fixed inset-0 z-[1200] grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
+        'fixed inset-0 z-(--z-connecting) grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
         overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app while booting — must stay filled under window
+      // glass or the shell shows through. Contract: `[data-glass-opaque]`
+      // in styles.css.
+      data-glass-opaque=""
     >
       <DecodeText
         active={phase === 'live' && (previewing || connecting)}

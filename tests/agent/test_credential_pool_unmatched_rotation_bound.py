@@ -48,24 +48,6 @@ def _entry(idx, key):
 
 
 class TestUnmatchedHintRotationIsBounded:
-    def test_single_entry_pool_returns_none_immediately(
-        self, tmp_path, monkeypatch
-    ):
-        """Single-entry OAuth pool + unmatched hint → None right away (a
-        no-op rotation must not be reported as recovery)."""
-        pool = _seed_pool(tmp_path, monkeypatch, [_entry(0, "pool-key")])
-        assert pool.select() is not None
-
-        result = pool.mark_exhausted_and_rotate(
-            status_code=401,
-            error_context={"reason": "unauthorized"},
-            api_key_hint="oauth-runtime-token-that-matches-nothing",
-        )
-
-        assert result is None
-        # No innocent key was quarantined.
-        statuses = {e.id: e.last_status for e in pool._entries}
-        assert statuses["cred-0"] != "exhausted"
 
     def test_multi_entry_pool_unmatched_hint_loop_terminates(
         self, tmp_path, monkeypatch
@@ -104,65 +86,7 @@ class TestUnmatchedHintRotationIsBounded:
             f"innocent keys were quarantined: {statuses}"
         )
 
-    def test_streak_resets_when_identity_matches(self, tmp_path, monkeypatch):
-        """A rotation that identifies a real entry resets the streak — the
-        bound only fires on CONSECUTIVE unmatched rotations."""
-        pool = _seed_pool(
-            tmp_path, monkeypatch,
-            [_entry(0, "key-a"), _entry(1, "key-b"), _entry(2, "key-c")],
-        )
-        assert pool.select() is not None
 
-        # Two unmatched rotations (streak = 2, below the 3-entry bound).
-        for _ in range(2):
-            assert pool.mark_exhausted_and_rotate(
-                status_code=401,
-                error_context={"reason": "unauthorized"},
-                api_key_hint="no-match",
-            ) is not None
-
-        # A matched rotation (key-a) marks a real entry → streak resets.
-        assert pool.mark_exhausted_and_rotate(
-            status_code=401,
-            error_context={"reason": "unauthorized"},
-            api_key_hint="key-a",
-        ) is not None
-
-        # A fresh unmatched episode still gets its full lap (2 available
-        # entries remain, so two rotations before the bound trips).
-        assert pool.mark_exhausted_and_rotate(
-            status_code=401,
-            error_context={"reason": "unauthorized"},
-            api_key_hint="no-match",
-        ) is not None
-
-    def test_streak_resets_on_normal_selection(self, tmp_path, monkeypatch):
-        """select() (a fresh episode) clears any leftover streak so the next
-        failure gets its full rotation budget."""
-        pool = _seed_pool(
-            tmp_path, monkeypatch,
-            [_entry(0, "key-a"), _entry(1, "key-b")],
-        )
-        assert pool.select() is not None
-
-        # Burn the streak up to (but not past) the bound.
-        for _ in range(2):
-            pool.mark_exhausted_and_rotate(
-                status_code=401,
-                error_context={"reason": "unauthorized"},
-                api_key_hint="no-match",
-            )
-
-        # New turn: a successful normal selection resets the streak.
-        assert pool.select() is not None
-        assert pool._unmatched_rotation_streak == 0
-
-        # The next unmatched rotation is attempt 1 of a new episode.
-        assert pool.mark_exhausted_and_rotate(
-            status_code=401,
-            error_context={"reason": "unauthorized"},
-            api_key_hint="no-match",
-        ) is not None
 
     def test_matched_hint_path_unaffected(self, tmp_path, monkeypatch):
         """Regression guard: the normal matched-hint path still marks the

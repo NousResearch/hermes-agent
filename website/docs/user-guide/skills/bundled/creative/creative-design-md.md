@@ -1,7 +1,7 @@
 ---
-title: "Design Md — Author/validate/export Google's DESIGN"
+title: "Design Md — Author/validate/export Google's DESIGN.md token spec files"
 sidebar_label: "Design Md"
-description: "Author/validate/export Google's DESIGN"
+description: "Author/validate/export Google's DESIGN.md token spec files"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
@@ -15,13 +15,13 @@ Author/validate/export Google's DESIGN.md token spec files.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative/design-md` |
+| Path | `skills/creative\design-md` |
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `design`, `design-system`, `tokens`, `ui`, `accessibility`, `wcag`, `tailwind`, `dtcg`, `google` |
-| Related skills | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) |
+| Related skills | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs), [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design), [`excalidraw`](/docs/user-guide/skills/optional/creative/creative-excalidraw), [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) |
 
 ## Reference: full SKILL.md
 

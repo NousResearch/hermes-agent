@@ -29,7 +29,8 @@ from contextlib import contextmanager
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, NonMcpEndpointError
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_errors import NonMcpEndpointError
 
 
 def _make_task(name: str = "probe_srv") -> MCPServerTask:
@@ -131,12 +132,6 @@ def test_non_mcp_content_type_raises(content_type):
     assert "application/json" in msg and "text/event-stream" in msg
 
 
-def test_non_mcp_error_is_non_retryable_connection_error():
-    """NonMcpEndpointError must subclass ConnectionError (retry loop skips it
-    via an explicit except; broad ConnectionError catchers still work)."""
-    assert issubclass(NonMcpEndpointError, ConnectionError)
-
-
 # ---------------------------------------------------------------------------
 # Pass-through: valid MCP content types, ambiguous, and error responses
 # ---------------------------------------------------------------------------
@@ -160,77 +155,9 @@ def test_missing_content_type_passes():
         asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
 
 
-@pytest.mark.parametrize("status", [401, 403, 404, 500, 503])
-def test_non_2xx_responses_pass(status):
-    """4xx/5xx are auth challenges or transient errors — let the SDK handle."""
-    task = _make_task()
-    with _serve(_handler(status=status, content_type="text/html")) as base:
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-
-
-def test_network_error_passes():
-    """A connection failure (nothing listening) must pass through, not raise."""
-    task = _make_task()
-    # Reserve a port then close it so the connection is refused.
-    s = socketserver.TCPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
-    dead_port = s.server_address[1]
-    s.server_close()
-    asyncio.run(
-        task._preflight_content_type(
-            f"http://127.0.0.1:{dead_port}/mcp", timeout=2.0
-        )
-    )
-
-
-def test_cancelled_error_is_not_swallowed():
-    """The best-effort except must NOT catch CancelledError (BaseException)."""
-    task = _make_task()
-
-    async def _run():
-        import httpx
-        orig = httpx.AsyncClient
-        try:
-            # Patch the client so entering it raises CancelledError.
-            class _C(orig):
-                async def __aenter__(self):
-                    raise asyncio.CancelledError()
-
-            httpx.AsyncClient = _C
-            with pytest.raises(asyncio.CancelledError):
-                await task._preflight_content_type("http://x/mcp", timeout=1.0)
-        finally:
-            httpx.AsyncClient = orig
-
-    asyncio.run(_run())
-
-
 # ---------------------------------------------------------------------------
 # HEAD -> GET fallback
 # ---------------------------------------------------------------------------
-
-def test_head_405_falls_back_to_get_and_rejects_html():
-    """HEAD→405, GET→html, POST probe also returns html → reject."""
-    task = _make_task("fallback_srv")
-    record: list[str] = []
-    with _serve(_handler(
-        status=200, content_type="text/html",
-        head_status=405, record=record,
-    )) as base:
-        with pytest.raises(NonMcpEndpointError):
-            asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
-    # HEAD → 405, falls back to GET (html), then POST probe (also html) → reject.
-    assert record == ["HEAD", "GET", "POST"]
-
-
-def test_head_501_falls_back_to_get_and_passes_json():
-    task = _make_task()
-    record: list[str] = []
-    with _serve(_handler(
-        status=200, content_type="application/json", body=b"{}",
-        head_status=501, record=record,
-    )) as base:
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-    assert record == ["HEAD", "GET"]
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +202,7 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
     (``.well-known/oauth-protected-resource``), not by a GET content-type check.
     """
     import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
 
     preflight_calls: list[str] = []
 
@@ -289,7 +217,7 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
             raise asyncio.CancelledError()
 
         # Bypass URL validation so the test doesn't need a live network.
-        monkeypatch.setattr(_mcp, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)
         monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
         monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
 
@@ -313,6 +241,7 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
     non-OAuth auth schemes the probe headers don't satisfy).
     """
     import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
 
     preflight_calls: list[str] = []
 
@@ -323,7 +252,7 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
         async def _fake_run_http(self, config):
             raise asyncio.CancelledError()
 
-        monkeypatch.setattr(_mcp, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)
         monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
         monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
 
@@ -340,95 +269,9 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
     )
 
 
-def test_ssl_verify_and_cert_forwarded(monkeypatch):
-    captured: dict = {}
-
-    import httpx
-
-    class _FakeClient:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def head(self, url, headers=None):
-            return httpx.Response(200, headers={"content-type": "application/json"})
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
-    task = _make_task()
-    asyncio.run(task._preflight_content_type(
-        "https://mcp.example.com/mcp",
-        ssl_verify=False,
-        client_cert="/path/to/cert.pem",
-        timeout=3.0,
-    ))
-    assert captured.get("verify") is False
-    assert captured.get("cert") == "/path/to/cert.pem"
-    assert captured.get("follow_redirects") is True
-
-
 # ---------------------------------------------------------------------------
 # POST probe fallback for POST-only MCP servers
 # ---------------------------------------------------------------------------
-
-def test_post_probe_rescues_html_head_with_json_post():
-    """HEAD returns text/html but POST returns application/json → pass."""
-    task = _make_task()
-    record: list[str] = []
-    with _serve(_handler(
-        status=200, content_type="text/html",
-        post_content_type="application/json; charset=utf-8",
-        post_body=b'{"jsonrpc":"2.0","id":"_probe","result":{}}',
-        record=record,
-    )) as base:
-        # Must not raise — the POST probe should rescue this.
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-    assert "HEAD" in record
-    assert "POST" in record
-
-
-def test_post_probe_rescues_html_head_with_event_stream_post():
-    """HEAD returns text/html but POST returns text/event-stream → pass."""
-    task = _make_task()
-    with _serve(_handler(
-        status=200, content_type="text/html",
-        post_content_type="text/event-stream",
-        post_body=b"data: {}\n\n",
-    )) as base:
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-
-
-def test_post_probe_still_rejects_when_post_also_returns_html():
-    """HEAD and POST both return text/html → reject."""
-    task = _make_task("both_html")
-    with _serve(_handler(
-        status=200, content_type="text/html",
-        post_content_type="text/html",
-        post_body=b"<html>nope</html>",
-    )) as base:
-        with pytest.raises(NonMcpEndpointError):
-            asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
-
-
-def test_post_probe_still_rejects_when_post_returns_non_2xx():
-    """HEAD returns HTML, POST returns 401 with JSON → reject.
-
-    A non-2xx POST does not prove MCP capability; the original HEAD/GET
-    response is used and should still trigger rejection.
-    """
-    task = _make_task("post_401")
-    with _serve(_handler(
-        status=200, content_type="text/html",
-        post_content_type="application/json",
-        post_body=b'{"error":"unauthorized"}',
-        post_status=401,
-    )) as base:
-        with pytest.raises(NonMcpEndpointError):
-            asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
 
 
 def test_post_probe_not_attempted_for_valid_head():

@@ -25,6 +25,24 @@ approval:
   blocklist_message: "هذا الأمر مدرج في قائمة الحظر غير المشروطة ولا يمكن الموافقة عليه."
 
 gateway:
+  context:
+    header:                "🧠 **Context Window**"
+    model:                 "Model: `{model}`"
+    window:                "Window: {total} tokens"
+    in_use:                "In use: {used} / {total} ({pct}%)"
+    bar:                   "{bar}"
+    headroom:              "Headroom to limit: {headroom} tokens"
+    threshold:             "Auto-compresses at: {threshold} ({threshold_pct}%) — {to_go} to go"
+    over_threshold:        "⚠️ **Over auto-compression threshold ({threshold}, {threshold_pct}%)**"
+    compressions:          "Compressions this session: {count}"
+    last_savings:          "Last compression freed: {savings}% of context"
+    totals_header:         "Session totals (cumulative across {calls} API calls)"
+    totals_line:           "Input {input} · Output {output} · Reasoning {reasoning}"
+    total_billed:          "Total billed: {total}"
+    throughput_note:       "_Throughput, not context size — each call re-sends the window above._"
+    estimated:             "Estimated context: ~{count} tokens across {messages} messages"
+    detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
+    no_data:               "No context data available yet. Send a message to start a session."
   approval_expired: "⚠️ انتهت صلاحية الموافقة (لم يعد الوكيل ينتظر). اطلب من الوكيل المحاولة مرة أخرى."
   draining:         "⏳ جارٍ إنهاء {count} وكيل نشط قبل إعادة التشغيل..."
   goal_cleared:     "✓ تم مسح الهدف."
@@ -58,6 +76,7 @@ gateway:
     more:                  "... و{count} آخر"
     running_processes:     "**العمليات الخلفية الجارية:** {count}"
     async_jobs:            "**مهام البوابة غير المتزامنة:** {count}"
+    background_delegations: "**التفويضات في الخلفية:** {count}"
     none:                  "لا يوجد وكلاء نشطون أو مهام جارية."
     state_starting:        "قيد البدء"
     state_running:         "قيد التشغيل"
@@ -72,8 +91,16 @@ gateway:
     always_plural:         "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه دائمًا) ({count} أوامر). الوكيل يستأنف..."
 
   background:
-    usage:                 "الاستخدام: /background <prompt>\nمثال: /background لخّص أهم قصص HN اليوم\n\nيشغّل الموجِّه في جلسة منفصلة. يمكنك متابعة المحادثة — ستظهر النتيجة هنا عند الانتهاء."
+    usage:                 "الاستخدام: /bg <prompt>\nمثال: /bg لخّص أهم قصص HN اليوم\n\nيشغّل الموجِّه في جلسة منفصلة. يمكنك متابعة المحادثة — ستظهر النتيجة هنا عند الانتهاء."
     started:               "🔄 بدأت مهمة خلفية: \"{preview}\"\nمعرّف المهمة: {task_id}\nيمكنك متابعة المحادثة — ستظهر النتائج عند الانتهاء."
+
+  btw:
+    usage:                 "الاستخدام: /btw <سؤال>\nمثال: /btw في أي ملف كان ذلك الخطأ؟\n\nيجيب عن سؤال جانبي سريع حول هذه المحادثة دون مقاطعتها. لمهمة خلفية مستقلة استخدم /bg <prompt>."
+    no_history:            "لا توجد محادثة بعد — أرسل سؤالك كرسالة عادية بدلاً من ذلك."
+    no_provider:           "❌ تعذّرت الإجابة عن السؤال الجانبي: لم يتم إعداد بيانات اعتماد مزوّد."
+    started:               "💬 سؤال جانبي: \"{preview}\"\nتتم الإجابة من لقطة لهذه المحادثة — يستمر العمل الحالي."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ فشل /btw: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "قاعدة بيانات الجلسات غير متاحة."
@@ -102,6 +129,7 @@ gateway:
     summary_failed:        "⚠️ فشل توليد الملخّص ({error}). أُزيلت {count} رسالة تاريخية واستُبدلت بعنصر نائب؛ لم يعد السياق الأقدم قابلًا للاسترجاع. فكّر في مراجعة إعداد نموذج auxiliary.compression."
     aborted:               "⚠️ أُلغي الضغط ({error}). لم تُسقط أي رسائل — المحادثة كما هي. شغّل /compress للمحاولة مجددًا، أو /reset لجلسة نظيفة، أو راجع إعداد نموذج auxiliary.compression."
     aux_failed:            "ℹ️ فشل نموذج الضغط المُهيّأ `{model}` ({error}). تم التعافي باستخدام نموذجك الرئيسي — السياق سليم — لكن قد ترغب في مراجعة `auxiliary.compression.model` في config.yaml."
+    turnhold_deferred:     "ℹ️ تم تأجيل ضغط السياق — الملخص لا يزال قيد البث. نواصل هذا الدور دون ضغط."
     failed:                "فشل الضغط: {error}"
 
   debug:
@@ -132,6 +160,8 @@ gateway:
     picker_title:          "⚡ **المعالجة ذات الأولوية**\n\nالوضع الحالي: `{mode}`\n\nاختر خيارًا:"
     choice_fast:           "fast — المعالجة ذات الأولوية مُفعّلة"
     choice_normal:         "normal — المعالجة القياسية"
+    choice_auto:           "auto — سريع في الثواني الأولى من كل دور"
+    choice_cold:           "cold — سريع في الدور الأول من الجلسة فقط"
 
   footer:
     status:                "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
@@ -146,7 +176,7 @@ gateway:
     no_goal_set:           "لم يُحدَّد هدف."
     paused:                "⏸ أُوقف الهدف مؤقتًا: {goal}"
     no_resume:             "لا يوجد هدف لاستئنافه."
-    resumed:               "▶ استُؤنف الهدف: {goal}\nأرسل أي رسالة للمتابعة، أو انتظر — سأتخذ الخطوة التالية في الدور القادم."
+    resumed:               "▶ استُؤنف الهدف: {goal}\nسأتابع الآن — سأتخذ الخطوة التالية فورًا."
     invalid:               "هدف غير صالح: {error}"
     set:                   "⊙ حُدِّد الهدف (ميزانية {budget} دور): {goal}\nسأواصل العمل حتى يكتمل الهدف، أو توقفه/تمسحه، أو تنفد الميزانية.\nالتحكم: /goal status · /goal pause · /goal resume · /goal clear"
 
@@ -170,9 +200,15 @@ gateway:
       crashed:             "تعطّل (خرج العامل)؛ سيعيد المُوزّع المحاولة"
       timed_out:           "انتهت المهلة؛ سيعيد المُوزّع المحاولة"
       blocked:             "محجوبة؛ تحتاج إلى انتباه"
+      review_requested:    "أُحيلت للمراجعة؛ اكتمل التنفيذ"
+      changes_requested:   "طلبت المراجعة تغييرات (BLOCK)؛ التنفيذ غير معتمد"
+      block_loop_detected: "أُحيلت إلى الفرز بعد تكرار الحجب؛ تحتاج إلى قرار"
       status_default:      "تغيّرت الحالة"
       status_joiner:       "، "
       message:             "[kanban] المهمة {task_id} {status}.\nالعنوان: {title}\nالمُكلَّف: @{assignee}\nاللوحة: {board}\n\nراجع النتيجة أو قرّر الخطوة التالية."
+      handoff:             "Result: {summary}"
+      review_detail:       "ملاحظات المراجعة: {reason}\nافحص البطاقة الحالية وتشغيل المراجعة الجاري؛ أعد العمل إلى مهمة التنفيذ نفسها. لا تعتبر هذا الحجب موافقة ولا تنشئ مهمة مكررة."
+      guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
     none_configured:       "لا توجد شخصيات مُهيّأة في `{path}/config.yaml`"
@@ -255,6 +291,7 @@ gateway:
     matrix_cross_room_success: "⚠️ استئناف عبر الغرف: استُؤنفت **{title}** داخل غرفة Matrix ‏**{room}**.\nستستخدم الرسائل المستقبلية في هذه الغرفة ذلك النص حتى `/reset` أو `/resume` آخر.{msg_part}"
     blocked_not_owner:     "⚠️ حُجب /resume: '**{name}**' تخصّ مستخدمًا أو محادثة مختلفة. يمكنك فقط استئناف جلسات هذه المحادثة."
     no_named_sessions:     "لم يُعثر على جلسات مُسمّاة.\nاستخدم `/title My Session` لتسمية جلستك الحالية، ثم `/resume My Session` للعودة إليها لاحقًا."
+    all_requires_admin: "_ملاحظة: يتطلب `--all` (سرد عبر الدردشات) مسؤولاً مُهيأً؛ تُعرض جلسات هذه الدردشة فقط._"
     list_header:           "📋 **الجلسات المُسمّاة**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -278,7 +315,15 @@ gateway:
     none_found:            "لم يُعثر على نقاط تحقّق لـ {cwd}"
     invalid_number:        "رقم نقطة تحقّق غير صالح. استخدم 1-{max}."
     restored:              "✅ استُعيد إلى نقطة التحقّق {hash}: {reason}\nحُفظت لقطة ما قبل التراجع تلقائيًا."
+    kept_user_edits:       "↷ احتُفظ بتعديلاتك اليدوية: {files}\nاستخدم ‎/rollback <N> --all لاستعادتها أيضًا."
+    kept_oversize:         "↷ احتُفظ به (أكبر من أن يُحفظ في نقاط التفتيش، لا توجد نسخة مخزنة للرجوع إليها): {files}"
+    failed_deletes:        "⚠️ تعذّرت الإزالة (تُرك الملف في مكانه): {files}"
     restore_failed:        "❌ {error}"
+
+  diff:
+    not_enabled:           "نقاط التحقق غير مفعّلة، لذا لا يوجد خط أساس للجلسة.\nفعّلها في config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nلا يزال /diff العادي يعمل — فهو يستخدم git مباشرة."
+    no_changes:            "لا توجد تغييرات."
+    failed:                "{error}"
 
   set_home:
     save_failed:           "فشل حفظ القناة الرئيسية: {error}"

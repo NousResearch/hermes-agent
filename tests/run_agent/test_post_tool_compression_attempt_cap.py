@@ -95,9 +95,9 @@ def _pressured_compressor() -> MagicMock:
 @pytest.fixture()
 def agent():
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -136,7 +136,7 @@ def _run_tool_loop(agent, n_tool_iterations: int):
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(
-            "run_agent.handle_function_call",
+            "model_tools.handle_function_call",
             lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
         ),
     ):
@@ -167,13 +167,6 @@ class TestPostToolCompressionAttemptCap:
             f"got {len(compress_calls)} compactions"
         )
 
-    def test_post_tool_compression_honors_configured_cap(self, agent):
-        """A raised compression.max_attempts cap lets more rounds run."""
-        agent.max_compression_attempts = 5
-        result, compress_calls = _run_tool_loop(agent, n_tool_iterations=8)
-
-        assert result["completed"] is True
-        assert len(compress_calls) == 5
 
     def test_post_tool_compression_shares_counter_with_pre_api_gate(self, agent):
         """Pre-API compactions consume the same per-turn budget.

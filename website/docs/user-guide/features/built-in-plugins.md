@@ -58,7 +58,6 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
-| `observability/nemo_relay` | hooks | Relay observability events (turns / LLM calls / tools) to an NVIDIA NeMo endpoint |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
@@ -203,6 +202,33 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
 
+### NeMo Relay native integration (migration note)
+
+NeMo Relay is no longer a bundled Hermes plugin. Do not run `hermes plugins enable observability/nemo_relay`; Hermes core now owns the Relay session, turn, LLM, and tool lifecycles.
+
+To opt into Relay middleware or exporters, create a standard Relay `plugins.toml`, then set `HERMES_NEMO_RELAY_PLUGINS_TOML` to that file before starting Hermes. The policy is process-wide for every profile hosted by that Hermes process. See the [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about) for ATOF, ATIF, and OpenTelemetry options.
+
+The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer activate exporters. `hermes doctor` reports these stale settings when no replacement `plugins.toml` is selected.
+
+#### Session-span segmentation (continuous sessions)
+
+Relay exports a span when its scope closes. A continuous gateway session can keep its session span open for days even though each turn span exports normally. Optional segmentation rotates only the session scope at a turn boundary:
+
+```yaml
+gateway:
+  telemetry:
+    session_segments:
+      on_compaction: false  # rotate after context compaction
+      max_turns: 0          # 0 = unlimited; N = turns per segment
+```
+
+| Key | Default | Behavior |
+|---|---:|---|
+| `on_compaction` | `false` | Rotate after compaction completes, at the next turn boundary. |
+| `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
+
+Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
+
 ### google_meet
 
 Lets the agent **join, transcribe, and participate in Google Meet calls** — take notes on a meeting, summarize the back-and-forth after, follow up on specific points, and (optionally) speak replies back into the call via TTS.
@@ -211,16 +237,17 @@ Lets the agent **join, transcribe, and participate in Google Meet calls** — ta
 
 - A headless virtual participant that joins a Meet URL using browser automation
 - Live transcription of the meeting audio via the configured STT provider
-- A `meet_summarize` / `meet_speak` / `meet_followup` toolset the agent invokes to act on what it heard
-- Post-meeting artifacts (transcript, speaker-attributed notes, action items) saved under `~/.hermes/cache/google_meet/<meeting_id>/`
+- A `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` toolset the agent invokes to join calls, poll the live transcript, and act on what it heard
+- Post-meeting artifacts (transcript, status) saved under `~/.hermes/workspace/meetings/<meeting_id>/`
 
 **Setup:**
 
 ```bash
 hermes plugins enable google_meet
-# Prompts you to sign in via the plugin's OAuth flow on first use —
-# needs a Google account with Meet access. Host approval may be required
-# if the meeting enforces "only invited participants can join".
+hermes meet setup   # preflight: playwright, chromium, auth file
+hermes meet auth    # opens a browser to sign into Google and saves session state —
+                    # needs a Google account with Meet access. Host approval may be
+                    # required if the meeting enforces "only invited participants can join".
 ```
 
 Usage from chat:
@@ -231,7 +258,7 @@ The agent kicks off the meeting join, streams the transcription back into its co
 
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
-**Disabling:** `hermes plugins disable google_meet`. Any cached transcripts and recordings stay in `~/.hermes/cache/google_meet/` until you remove them.
+**Disabling:** `hermes plugins disable google_meet`. Any saved transcripts stay in `~/.hermes/workspace/meetings/` until you remove them.
 
 ### hermes-achievements
 

@@ -15,53 +15,44 @@
  * tokens or PII we never want on disk.
  */
 
-interface ConsoleMessageDetails {
-  level: number
+/** Shape of the `Event<WebContentsConsoleMessageEventParams>` Electron
+ *  delivers as the first argument of the `webContents` `console-message`
+ *  event. Electron still appends the legacy positional arguments
+ *  `(level, message, line, sourceId)` after the event object, but any
+ *  listener that declares them triggers Electron's runtime deprecation
+ *  warning, so handlers must read from the event object only. */
+interface RendererConsoleMessage {
+  /** Severity. Chromium's `ConsoleMessageLevel` arrives stringified:
+   *  verbose → `debug`, then `info`, `warning`, `error`. */
+  level: 'debug' | 'info' | 'warning' | 'error'
   message: string
-  sourceUrl: string
   lineNumber: number
+  sourceId: string
 }
 
 interface WebContentsLike {
-  on(event: 'console-message', listener: (...args: unknown[]) => void): unknown
+  on(event: 'console-message', listener: (event: RendererConsoleMessage) => void): unknown
 }
 
 interface WindowLike {
   webContents: WebContentsLike
 }
 
-/** Normalize Electron's two `console-message` signatures into one line, or
- *  null for non-error levels. Canonical (Electron 36+): `(event, details)`;
- *  deprecated positional: `(event, level, message, line, sourceId)`.
- *  `level` is numeric 0..3, where 3 === error. */
-export function formatRendererConsoleLine(
-  label: string,
-  detailsOrLevel: unknown,
-  message?: unknown,
-  line?: unknown,
-  sourceId?: unknown
-): string | null {
-  const details =
-    detailsOrLevel && typeof detailsOrLevel === 'object' ? (detailsOrLevel as ConsoleMessageDetails) : null
-
-  const level = details ? details.level : detailsOrLevel
-
-  if (level !== 3) {
+/** Format a renderer console-message event into one desktop.log line, or
+ *  null for non-error levels. */
+export function formatRendererConsoleLine(label: string, event: RendererConsoleMessage): string | null {
+  if (event.level !== 'error') {
     return null
   }
 
-  const text = details ? details.message : message
-  const src = details ? details.sourceUrl : sourceId
-  const lineNo = details ? details.lineNumber : line
-
-  return `[renderer console:${label}] ${String(text)} (${String(src)}:${String(lineNo)})`
+  return `[renderer console:${label}] ${event.message} (${event.sourceId}:${event.lineNumber})`
 }
 
 /** Attach the error-level console hook to a renderer window. `log` is the
  *  desktop.log sink (rememberLog in main.ts). */
 export function attachRendererConsoleCapture(win: WindowLike, label: string, log: (line: string) => void): void {
-  win.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    const formatted = formatRendererConsoleLine(label, detailsOrLevel, message, line, sourceId)
+  win.webContents.on('console-message', (event) => {
+    const formatted = formatRendererConsoleLine(label, event)
 
     if (formatted !== null) {
       log(formatted)

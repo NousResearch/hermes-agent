@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+from hermes_cli.plugins_manifest import resolve_module_origin
+
 COMPAT_REMOVAL_DATE = _dt.date(2026, 9, 14)
 COMPAT_REMOVAL = COMPAT_REMOVAL_DATE.isoformat()
 ALLOW_KEY = "allow_deprecated_imports"   # under plugins: in config.yaml
@@ -96,6 +98,12 @@ def days_until_removal(today: Optional[_dt.date] = None) -> int:
 # ---------------------------------------------------------------------------------------------- scanner
 
 def _iter_py(root: Path) -> Iterable[Path]:
+    if root.is_file():
+        if root.suffix == ".py":
+            yield root
+        return
+    if not root.is_dir():
+        return
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d not in _SKIP_DIRS and not d.startswith(".")]
         for f in fns:
@@ -149,16 +157,21 @@ def scan_source(src: str, rel: str, manifest: Dict[str, Dict[str, str]]) -> List
 
 
 def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[str, str]]] = None) -> List[Hit]:
+    """Scan one plugin directory or one resolved Python module for compatibility hits."""
     manifest = load_manifest() if manifest is None else manifest
-    if not manifest or not plugin_dir or not Path(plugin_dir).is_dir():
+    if not manifest or not plugin_dir:
+        return []
+    root = Path(plugin_dir)
+    if not root.is_dir() and not (root.is_file() and root.suffix == ".py"):
         return []
     hits: List[Hit] = []
-    for p in _iter_py(Path(plugin_dir)):
+    for p in _iter_py(root):
         try:
             src = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        hits += scan_source(src, str(p.relative_to(plugin_dir)), manifest)
+        rel = p.name if root.is_file() else str(p.relative_to(root))
+        hits += scan_source(src, rel, manifest)
     return hits
 
 
@@ -179,16 +192,19 @@ def _scan_root(manifest) -> Optional[Path]:
         return None
     raw = str(manifest.path)
     if getattr(manifest, "source", "") == "entrypoint":
-        import importlib.util
-        try:
-            spec = importlib.util.find_spec(raw.partition(":")[0])
-        except (ImportError, ValueError):
-            spec = None
-        origin = getattr(spec, "origin", None)
-        if not origin or origin in ("built-in", "frozen"):
+        module_name = raw.partition(":")[0].strip()
+        # Entry-point module paths are dotted Python identifiers. Validate before
+        # handing the name to the filesystem resolver: an absolute path embedded
+        # as one dotted segment would otherwise escape the package search root.
+        if not module_name or not all(part.isidentifier() for part in module_name.split(".")):
+            return None
+        origin = resolve_module_origin(module_name)
+        if not origin:
             return None
         p = Path(origin)
-        return p.parent if p.name == "__init__.py" else None
+        if p.name == "__init__.py":
+            return p.parent if p.is_file() else None
+        return p if p.is_file() and p.suffix == ".py" else None
     p = Path(raw)
     return p if p.is_dir() else None
 

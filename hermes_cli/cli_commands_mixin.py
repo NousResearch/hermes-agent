@@ -1857,7 +1857,12 @@ class CLICommandsMixin:
 
     def _save_write_approval(self, subsystem: str, enabled: bool):
         """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
-        _save(f"{subsystem}.write_approval", bool(enabled))
+        from hermes_cli.commands import save_config_value
+        if subsystem == "skills":
+            # skills.write_approval is now a dict (config v41+); set the nested key.
+            save_config_value("skills.write_approval.enabled", bool(enabled))
+        else:
+            save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
     # ---- prompt-queueing handlers: /learn, /plan, /init -----------------------------------
     def _queue_prompt_turn(self, msg: str, command: str) -> None:

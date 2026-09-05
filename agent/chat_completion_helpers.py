@@ -2119,7 +2119,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 # Go, Mistral, Moonshot/Kimi) reject with 422. The transport's convert_messages() drops them
 # in the main loop; the summary path calls chat.completions.create() directly, so mirror it.
 _SUMMARY_FOREIGN_MESSAGE_KEYS = ("reasoning", "finish_reason", "tool_name", "codex_reasoning_items",
-    "codex_message_items", "timestamp", "platform_message_id")
+    "codex_message_items", "timestamp", "platform_message_id", "message_id")
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
 
 

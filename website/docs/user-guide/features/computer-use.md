@@ -414,6 +414,17 @@ of screenshot context, not ~600K.
     `computer_use` can capture or inject events. Pure Wayland sessions
     need an XWayland bridge for screen capture (cua-driver's Wayland
     inject path handles input independently).
+- **One machine per Hermes process.** `computer_use` drives the
+  desktop where Hermes (and local `cua-driver`) are running. It does
+  not natively control other physical PCs. Workaround today: run
+  Hermes on each machine. Proposed multi-host direction (blocked on
+  Cua paired remote Driver): issue
+  [#71157](https://github.com/NousResearch/hermes-agent/issues/71157),
+  design note
+  [`docs/design/71157-multi-host-computer-use.md`](https://github.com/NousResearch/hermes-agent/blob/main/docs/design/71157-multi-host-computer-use.md),
+  upstream Cua RFC
+  [trycua/cua#2562](https://github.com/trycua/cua/issues/2562) /
+  [PR #2563](https://github.com/trycua/cua/pull/2563).
 
 For cross-platform GUI automation without the desktop overhead (and
 without TCC / Session 0 / X11 setup), the `browser` toolset uses a

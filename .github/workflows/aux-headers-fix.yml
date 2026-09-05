@@ -13,59 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: main
-      - name: Fetch chunks from temp branch
-        run: |
-          git fetch origin temp-aux-chunks
-          git checkout origin/temp-aux-chunks -- chunks/
-      - name: Reassemble and push
-        run: |
-          python3 -c "
-          import os, base64, subprocess
-
-          chunks = []
-          for i in range(20):
-              fname = f'chunks/aux_chunk_{i:02d}'
-              if os.path.exists(fname):
-                  with open(fname) as f:
-                      chunks.append(f.read())
-
-          aux_content = ''.join(chunks)
-          os.makedirs('agent', exist_ok=True)
-          os.makedirs('tests/agent', exist_ok=True)
-          with open('agent/auxiliary_client.py', 'w') as f:
-              f.write(aux_content)
-          with open('tests/agent/test_auxiliary_custom_provider_extra_headers.py', 'wb') as f:
-              with open('chunks/test_file.b64', 'r') as tf:
-                  f.write(base64.b64decode(tf.read()))
-
-          subprocess.run(['git', 'checkout', '-B', 'fix/aux-custom-provider-extra-headers', 'main'], check=True)
-          subprocess.run(['git', 'rm', '-r', 'chunks/'], check=True)
-          subprocess.run(['git', 'add', 'agent/auxiliary_client.py', 'tests/agent/test_auxiliary_custom_provider_extra_headers.py'], check=True)
-          subprocess.run(['git', 'config', 'user.name', 'YangKangSung'], check=True)
-          subprocess.run(['git', 'config', 'user.email', 'YangKangSung@users.noreply.github.com'], check=True)
-          subprocess.run(['git', 'commit', '-m', '''fix(aux): propagate custom_providers[].extra_headers to auxiliary clients
-
-The main agent (run_agent.py) applies per-provider extra_headers from
-custom_providers[] entries via apply_custom_provider_extra_headers_to_client_kwargs,
-but the auxiliary client two custom-provider resolution branches both
-missed that step.
-
-1. resolve_provider_client() named-custom-provider branch:
-   only called _apply_user_default_headers(), never merged
-   custom_entry.get(extra_headers).
-
-2. _try_custom_endpoint() anonymous-custom branch:
-   same omission.
-
-Fix: both branches now merge custom_providers[].extra_headers onto
-the OpenAI client default_headers after _apply_user_default_headers(),
-with provider headers winning over user-level model.default_headers.
-
-Tests: 4 new tests in test_auxiliary_custom_provider_extra_headers.py'''], check=True)
-          subprocess.run(['git', 'push', 'origin', 'fix/aux-custom-provider-extra-headers'], check=True)
-          print('Push successful!')
-          "
-      - name: Cleanup temp branch
-        run: |
-          git push origin --delete temp-aux-chunks || true
+      - name: Fetch chunks
+        run: git fetch origin temp-aux-chunks && git checkout origin/temp-aux-chunks -- chunks/
+      - name: Run reassemble
+        run: python3 chunks/reassemble.py

@@ -244,5 +244,33 @@ class TestEmailAdapterUnscopedUnderMultiplex(unittest.TestCase):
             ss.reset_secret_scope(token)
 
 
+class TestReviewFirstKeysAreConfigOnly(unittest.TestCase):
+    """Review-first behavior settings live in config.yaml only — env vars
+    must have no effect (.env stays credentials-only)."""
+
+    def test_env_vars_cannot_configure_review_first(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            # None of these are read from the environment:
+            "EMAIL_OUTBOUND_POLICY": "review_first",
+            "EMAIL_AUTO_SEND_AUTHENTICATED_SENDERS": "someone@x.com",
+            "EMAIL_DRAFTS_MAILBOX": "EnvDrafts",
+            "EMAIL_SENT_MAILBOX": "EnvSent",
+            "EMAIL_AGENT_INITIATED_SENDS": "send",
+        }):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        self.assertEqual(adapter._outbound_policy, "direct")
+        self.assertEqual(adapter._auto_send_allowlist, frozenset())
+        self.assertEqual(adapter._drafts_mailbox, "Drafts")
+        self.assertEqual(adapter._sent_mailbox, "Sent")
+        self.assertEqual(adapter._agent_initiated_sends, "draft")
+
+
 if __name__ == "__main__":
     unittest.main()

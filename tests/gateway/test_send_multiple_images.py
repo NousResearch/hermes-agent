@@ -395,12 +395,12 @@ class TestEmailMultiImage:
         images = [(f"file://{p}", f"alt {i}") for i, p in enumerate(paths)]
 
         with patch.object(
-            adapter, "_send_email_with_attachments", MagicMock(return_value="<msgid@x>")
+            adapter, "_send_email_with_attachments", MagicMock(return_value=("<msgid@x>", "sent"))
         ) as mock_send:
             _run(adapter.send_multiple_images("user@example.com", images))
 
         mock_send.assert_called_once()
-        to_addr, body, file_paths = mock_send.call_args.args
+        to_addr, body, file_paths = mock_send.call_args.args[:3]
         assert to_addr == "user@example.com"
         assert len(file_paths) == 3
         assert "alt 0" in body

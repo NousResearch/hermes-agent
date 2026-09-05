@@ -262,6 +262,102 @@ _DEFAULT_PIDS_LIMIT = "256"  # applied only when the pids cgroup controller is a
 _DEFAULT_SHM_SIZE = "1g"
 
 
+def _normalize_docker_extra_args(extra_args: list | None) -> list[str]:
+    """Return validated string Docker arguments, preserving operator order."""
+    normalized: list[str] = []
+    for arg in extra_args or []:
+        if not isinstance(arg, str):
+            logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+            continue
+        normalized.append(arg)
+    return normalized
+
+
+def _mount_capable_extra_args(extra_args: list[str]) -> list[str]:
+    """Return args that can add mounts or mask dispatcher-owned targets."""
+    offenders: list[str] = []
+    # ``--tmpfs`` does not expose a host path, but it can replace/mask the
+    # authoritative /workspace bind just as effectively as a second volume.
+    long_flags = ("--volume", "--mount", "--volumes-from", "--tmpfs")
+    for arg in extra_args:
+        if arg in ("-v", *long_flags):
+            offenders.append(arg)
+            continue
+        if any(arg.startswith(f"{flag}=") for flag in long_flags):
+            offenders.append(arg)
+            continue
+        # Docker/pflag accepts compact and clustered short-option spellings,
+        # e.g. ``-v/src:/dst`` and ``-itv/src:/dst``. Only no-value boolean
+        # run flags (d/i/t/P) can safely precede ``v`` in a cluster; do not
+        # misclassify a benign value such as ``-w/var/workspace`` merely because
+        # its path contains the letter v.
+        if arg.startswith("-") and not arg.startswith("--"):
+            short_token = arg[1:]
+            if short_token.startswith("v") or re.match(r"^[ditP]+v", short_token):
+                offenders.append(arg)
+    return offenders
+
+
+def _normalize_runtime_mounts(runtime_mounts: list | None) -> list[dict]:
+    """Validate a typed dispatcher mount plan and reject ambiguous targets."""
+    if not runtime_mounts:
+        return []
+    if not isinstance(runtime_mounts, list):
+        raise ValueError("docker runtime mounts must be a list")
+    normalized: list[dict] = []
+    targets: set[str] = set()
+    for index, raw in enumerate(runtime_mounts):
+        if not isinstance(raw, dict):
+            raise ValueError(f"docker runtime mount {index} must be an object")
+        source = str(raw.get("source") or "").strip()
+        target = str(raw.get("target") or "").strip()
+        if not source or not os.path.isabs(source):
+            raise ValueError(
+                f"docker runtime mount {index} source must be absolute: {source!r}"
+            )
+        if not target or not target.startswith("/"):
+            raise ValueError(
+                f"docker runtime mount {index} target must be absolute: {target!r}"
+            )
+        if "," in source or "," in target:
+            raise ValueError(
+                "docker runtime mount paths containing commas are unsupported"
+            )
+        if target in targets:
+            raise ValueError(f"duplicate docker runtime mount target: {target}")
+        targets.add(target)
+        normalized.append(
+            {
+                "source": source,
+                "target": target,
+                "read_only": bool(raw.get("read_only", False)),
+                "purpose": str(raw.get("purpose") or "runtime"),
+            }
+        )
+    return normalized
+
+
+def _runtime_mount_args(runtime_mounts: list[dict]) -> tuple[list[str], set[str]]:
+    """Render typed mounts with strict Docker ``--mount`` semantics."""
+    args: list[str] = []
+    targets: set[str] = set()
+    for mount in runtime_mounts:
+        target = mount["target"]
+        if target in targets:
+            raise ValueError(f"duplicate docker runtime mount target: {target}")
+        targets.add(target)
+        spec = f"type=bind,src={mount['source']},dst={target}"
+        if mount.get("read_only"):
+            spec += ",readonly"
+        args.extend(["--mount", spec])
+    return args, targets
+
+
+def _endpoint_cli_args(endpoint_selector) -> list[str]:
+    """Global Docker CLI args for one immutable endpoint selector."""
+    return list(getattr(endpoint_selector, "cli_args", ()) or ())
+
+
 def _extra_args_set_shm_size(extra_args: list) -> bool:
     """True when docker_extra_args already set ``--shm-size`` (then our default is skipped)."""
     return any(
@@ -288,12 +384,22 @@ def _build_security_args(run_as_host_user: bool, run_exec: bool = False) -> list
     return args if run_as_host_user else args + list(_PRIVDROP_CAP_ARGS)
 
 
-def _image_uses_init_entrypoint(docker_exe: str, image: str) -> bool:
+def _image_uses_init_entrypoint(
+    docker_exe: str, image: str, endpoint_selector=None
+) -> bool:
     """True if ``image``'s entrypoint is the s6-overlay ``/init`` (own PID 1: incompatible
     with ``--init`` and a noexec /run). Any inspection failure, including an image not yet
     pulled, returns False and keeps the hardened defaults."""
     result = _docker_query(
-        [docker_exe, "image", "inspect", image, "--format", "{{json .Config.Entrypoint}}"], timeout=15,
+        [
+            docker_exe,
+            *_endpoint_cli_args(endpoint_selector),
+            "image",
+            "inspect",
+            image,
+            "--format",
+            "{{json .Config.Entrypoint}}",
+        ], timeout=15,
         fail="Docker: could not inspect entrypoint for %s: %s", fail_args=(image,),
         nonzero="Docker: image inspect for %s returned %d (stderr=%s)",
         exc_types=(subprocess.SubprocessError, OSError))
@@ -328,37 +434,57 @@ _storage_opt_ok: Optional[bool] = None  # cached result across instances
 _cgroup_limits_ok: Optional[bool] = None  # cached result across instances
 
 
-def _cgroup_limits_available(image: str) -> bool:
-    """Probe once per process whether ``--cpus``/``--memory``/``--pids-limit`` work here, via a
-    throwaway ``sleep 0`` container from *image* (no extra pull). Without delegated cgroup
-    controllers (unprivileged LXCs, rootless) these flags fail every start with exit 126;
-    the result is host-wide, so it is cached."""
+def _cgroup_limits_available(image: str, endpoint_selector=None) -> bool:
+    """Probe whether cgroup resource flags work on the selected Docker daemon.
+
+    The ambient/default endpoint keeps the historical process cache. A pinned
+    Kanban endpoint is probed independently so a local result can never be
+    reused for a remote daemon (or vice versa).
+    """
     global _cgroup_limits_ok
-    if _cgroup_limits_ok is not None:
+    if endpoint_selector is None and _cgroup_limits_ok is not None:
         return _cgroup_limits_ok
 
     docker_exe = find_docker()
     if not docker_exe or not image:
-        _cgroup_limits_ok = False
+        if endpoint_selector is None:
+            _cgroup_limits_ok = False
         return False
 
+    available = False
     try:
         result = run_capture(
-            [docker_exe, "run", "--rm", "--cpus", "0.5", "--memory", "64m", "--pids-limit", "32",
-             image, "sleep", "0"],
-            timeout=60)
-        _cgroup_limits_ok = result.returncode == 0
-        if not _cgroup_limits_ok:
+            [
+                docker_exe,
+                *_endpoint_cli_args(endpoint_selector),
+                "run",
+                "--rm",
+                "--cpus",
+                "0.5",
+                "--memory",
+                "64m",
+                "--pids-limit",
+                "32",
+                image,
+                "sleep",
+                "0",
+            ],
+            timeout=60,
+        )
+        available = result.returncode == 0
+        if not available:
             logger.warning(
                 "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
                 "available in this environment. Containers will run without "
                 "CPU, memory or PID limits. To enable, delegate the cpu, "
                 "memory and pids cgroup controllers to this container. Probe stderr: %s",
-                (result.stderr or "").strip()[:500])
-    except Exception as e:
-        _cgroup_limits_ok = False
-        logger.warning("Cgroup limit probe failed; disabling resource limits: %s", e)
-    return _cgroup_limits_ok
+                (result.stderr or "").strip()[:500],
+            )
+    except Exception as exc:
+        logger.warning("Cgroup limit probe failed; disabling resource limits: %s", exc)
+    if endpoint_selector is None:
+        _cgroup_limits_ok = available
+    return available
 
 
 def _docker_unavailable(log_msg: str, *log_args, error: str, hint: str, exc_info: bool = False):
@@ -366,8 +492,8 @@ def _docker_unavailable(log_msg: str, *log_args, error: str, hint: str, exc_info
     return EnvironmentConnectionError(error, retry_hint=hint)
 
 
-def _ensure_docker_available() -> None:
-    """Fail fast with an ``EnvironmentConnectionError`` when the docker CLI/daemon is unusable."""
+def _ensure_docker_available(endpoint_selector=None) -> None:
+    """Fail fast when the selected Docker CLI/daemon endpoint is unusable."""
     docker_exe = find_docker()
     if not docker_exe:
         raise _docker_unavailable(
@@ -377,7 +503,10 @@ def _ensure_docker_available() -> None:
                   "Install Docker and ensure the 'docker' command is available.",
             hint="Install Docker (or fix PATH) and retry, or switch terminal.backend to 'local'.")
     try:
-        result = run_capture([docker_exe, "version"], timeout=5)
+        result = run_capture(
+            [docker_exe, *_endpoint_cli_args(endpoint_selector), "version"],
+            timeout=5,
+        )
     except FileNotFoundError:
         raise _docker_unavailable(
             "Docker backend selected but the resolved docker executable '%s' could not be executed.",
@@ -488,12 +617,18 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
-        shared_container_key: str = ""):
+        shared_container_key: str = "",
+        runtime_mounts: list = None,
+        endpoint_selector=None):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
+        self._runtime_mounts = _normalize_runtime_mounts(runtime_mounts)
+        runtime_scoped = bool(self._runtime_mounts)
         self._persistent = persistent_filesystem
-        self._persist_across_processes = persist_across_processes
+        self._persist_across_processes = (
+            bool(persist_across_processes) and not runtime_scoped
+        )
         # Set by terminal_tool._create_environment for session-scoped containers
         # (docker + container_persistent: false): removed at session close/idle timeout.
         self._session_scoped = False
@@ -505,42 +640,106 @@ class DockerEnvironment(BaseEnvironment):
         self._init_env_values: dict[str, str] = {}
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
+        self._endpoint_selector = endpoint_selector
+        self._pin_args = _endpoint_cli_args(endpoint_selector)
+        # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
+        self._docker_exe = find_docker() or "docker"
+        self._docker_prefix = [self._docker_exe, *self._pin_args]
+
         logger.info("DockerEnvironment volumes: %s", volumes)
         if volumes is not None and not isinstance(volumes, list):
             logger.warning("docker_volumes config is not a list: %r", volumes)
             volumes = []
 
-        _ensure_docker_available()
+        validated_extra = _normalize_docker_extra_args(extra_args)
+        if runtime_scoped:
+            mount_extra = _mount_capable_extra_args(validated_extra)
+            if mount_extra:
+                raise ValueError(
+                    "task-scoped Docker runtime rejects mount-capable "
+                    f"docker_extra_args: {mount_extra!r}"
+                )
+            if volumes:
+                logger.warning(
+                    "Task-scoped runtime ignores profile docker_volumes; "
+                    "dispatcher-owned mounts are authoritative"
+                )
 
-        resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
-        volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        volume_args.extend(_readonly_skill_mount_args())
+        # Resolve egress policy before any Docker probe. An enforced CA host
+        # bind that is outside the dispatcher plan must fail before even the
+        # cgroup throwaway `docker run` can execute.
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
-            self._egress_and_env_args(extra_args))
+            self._egress_and_env_args(
+                validated_extra, runtime_active=runtime_scoped
+            )
+        )
+
+        if endpoint_selector is None:
+            _ensure_docker_available()
+            cgroup_available = _cgroup_limits_available(image)
+        else:
+            _ensure_docker_available(endpoint_selector)
+            cgroup_available = _cgroup_limits_available(
+                image, endpoint_selector
+            )
+
+        resource_args = self._resource_args(
+            image,
+            cpu,
+            memory,
+            disk,
+            network,
+            shm_size,
+            validated_extra,
+            cgroup_available=cgroup_available,
+        )
+        volume_args, writable_args = self._mount_args(
+            volumes,
+            host_cwd,
+            auto_mount_cwd,
+            task_id,
+            self._runtime_mounts,
+        )
+        if not runtime_scoped:
+            volume_args.extend(_readonly_skill_mount_args())
         volume_args.extend(egress_volume_args)
         user_args = _host_user_args(run_as_host_user)
-
-        # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
-        self._docker_exe = find_docker() or "docker"
 
         # s6-overlay images (e.g. hermes-agent:latest) already use /init as PID 1 and exec
         # /run/s6/basedir/bin/init during startup. For those images we must (a) skip Docker's --init (two
         # competing PID-1 inits) and (b) mount /run with exec instead of noexec, or s6 stage0 dies with exit
         # 126 "Permission denied". Detected once here; defaults are kept on any inspection failure. See
         # issue #34628.
-        image_uses_s6_init = _image_uses_init_entrypoint(self._docker_exe, image)
+        if endpoint_selector is None:
+            image_uses_s6_init = _image_uses_init_entrypoint(
+                self._docker_exe, image
+            )
+        else:
+            image_uses_s6_init = _image_uses_init_entrypoint(
+                self._docker_exe, image, endpoint_selector
+            )
         if image_uses_s6_init:
             logger.info(
                 "Docker: image %s uses /init (s6-overlay) as entrypoint — "
                 "skipping --init and mounting /run with exec.",
                 image)
-        security_args = _build_security_args(run_as_host_user and bool(user_args), run_exec=image_uses_s6_init)
+        security_args = _build_security_args(
+            run_as_host_user and bool(user_args), run_exec=image_uses_s6_init
+        )
 
         logger.info("Docker volume_args: %s", volume_args)
-        # docker_extra_args go last so they can override defaults.
+        # Benign docker_extra_args go last; mount-capable forms were rejected
+        # before any Docker command when a task runtime is active.
         all_run_args = (
-            security_args + user_args + writable_args + resource_args
-            + egress_host_args + volume_args + env_args + validated_extra)
+            security_args
+            + user_args
+            + writable_args
+            + resource_args
+            + egress_host_args
+            + volume_args
+            + env_args
+            + validated_extra
+        )
         logger.info("Docker run_args: %s", all_run_args)
 
         # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
@@ -560,7 +759,7 @@ class DockerEnvironment(BaseEnvironment):
         self._image_uses_s6_init = image_uses_s6_init
         self._all_run_args = all_run_args
 
-        reused = persist_across_processes and self._attach_existing_container(
+        reused = self._persist_across_processes and self._attach_existing_container(
             task_label, profile_name, egress_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
@@ -570,38 +769,83 @@ class DockerEnvironment(BaseEnvironment):
         self.init_session()
 
     # --- __init__ helpers ---
-    def _egress_and_env_args(self, extra_args) -> tuple[str, list[str], list[str], list[str], list[str]]:
-        """Egress credential-injection proxy plumbing (CA mount + HTTPS_PROXY/CA-bundle env so
-        outbound traffic routes through the host-side proxy and the sandbox receives proxy tokens
-        instead of real API keys), merged with docker_env into name-only ``-e`` args, plus the
-        validated docker_extra_args. Returns ``(egress_label, volume_args, host_args, env_args,
-        validated_extra)``; sets ``self._run_env_values`` (injected into the docker-client
-        subprocess env at run time and reused verbatim by container-recreation recovery)."""
-        egress_volume_args, egress_env_overrides, egress_host_args = _egress_proxy_args_for_docker()
-        egress_label = _egress_reuse_fingerprint(egress_volume_args, egress_env_overrides, egress_host_args)
-        enforce_egress = _egress_enforce_on_docker() if egress_env_overrides else True
-        critical_egress_names = _critical_egress_env_names(egress_env_overrides)
-        if egress_env_overrides:
-            check_forward_env_collisions(self._forward_env, critical_egress_names, enforce_egress)
-            check_docker_env_collisions(self._env, egress_env_overrides, enforce_egress)
+    def _egress_and_env_args(
+        self,
+        extra_args: list[str],
+        *,
+        runtime_active: bool = False,
+    ) -> tuple[str, list[str], list[str], list[str], list[str]]:
+        """Build egress/env args without bypassing task-runtime bind authority.
 
-        merged_env = merge_egress_env(self._env, egress_env_overrides, enforce_egress)
+        The normal egress proxy may add a host CA bind. Under a dispatcher-owned
+        task runtime that bind is outside the typed mount plan: enforced egress
+        therefore fails closed before any Docker command, while non-enforced
+        egress is disabled for this container rather than widening host access.
+        """
+        egress_volume_args, egress_env_overrides, egress_host_args = (
+            _egress_proxy_args_for_docker()
+        )
+        enforce_egress = (
+            _egress_enforce_on_docker() if egress_env_overrides else True
+        )
+        if runtime_active and egress_volume_args:
+            if enforce_egress:
+                raise RuntimeError(
+                    "task-scoped Kanban runtime cannot add the egress CA host "
+                    "bind outside its dispatcher-owned mount plan"
+                )
+            logger.warning(
+                "Task-scoped runtime suppresses non-enforced egress proxy host "
+                "bind; proxy injection is disabled for this container"
+            )
+            egress_volume_args = []
+            egress_env_overrides = {}
+            egress_host_args = []
+
+        egress_label = _egress_reuse_fingerprint(
+            egress_volume_args, egress_env_overrides, egress_host_args
+        )
+        critical_egress_names = _critical_egress_env_names(
+            egress_env_overrides
+        )
+        if egress_env_overrides:
+            check_forward_env_collisions(
+                self._forward_env, critical_egress_names, enforce_egress
+            )
+            check_docker_env_collisions(
+                self._env, egress_env_overrides, enforce_egress
+            )
+            check_extra_args_collisions(
+                extra_args, critical_egress_names, enforce_egress
+            )
+
+        merged_env = merge_egress_env(
+            self._env, egress_env_overrides, enforce_egress
+        )
         self._run_env_values = dict(merged_env)
+        return (
+            egress_label,
+            egress_volume_args,
+            egress_host_args,
+            _name_only_env_args(merged_env),
+            list(extra_args),
+        )
 
-        validated_extra = []
-        for arg in (extra_args or []):
-            if not isinstance(arg, str):
-                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
-                continue
-            validated_extra.append(arg)
-        if egress_env_overrides:
-            check_extra_args_collisions(validated_extra, critical_egress_names, enforce_egress)
-        return egress_label, egress_volume_args, egress_host_args, _name_only_env_args(merged_env), validated_extra
-
-    def _resource_args(self, image, cpu, memory, disk, network, shm_size, extra_args) -> list[str]:
+    def _resource_args(
+        self,
+        image,
+        cpu,
+        memory,
+        disk,
+        network,
+        shm_size,
+        extra_args,
+        *,
+        cgroup_available: bool,
+    ) -> list[str]:
         """cgroup-gated CPU/memory/pids limits, shm size, disk quota and network mode."""
         args: list[str] = []
-        if _cgroup_limits_available(image):
+        if cgroup_available:
             if cpu > 0:
                 args.extend(["--cpus", str(cpu)])
             if memory > 0:
@@ -623,9 +867,33 @@ class DockerEnvironment(BaseEnvironment):
             args.append("--network=none")
         return args
 
-    def _mount_args(self, volumes, host_cwd, auto_mount_cwd, task_id) -> tuple[list[str], list[str]]:
-        """``(volume_args, writable_args)`` for user volumes, host cwd and /workspace,/root.
-        Persistent mode bind-mounts from TERMINAL_SANDBOX_DIR (default ~/.hermes/sandboxes/)."""
+    def _mount_args(
+        self,
+        volumes,
+        host_cwd,
+        auto_mount_cwd,
+        task_id,
+        runtime_mounts,
+    ) -> tuple[list[str], list[str]]:
+        """Return host-bind and writable-filesystem arguments.
+
+        A task runtime is the complete host-bind authority. It is rendered only
+        with strict ``--mount`` syntax; profile volumes, cwd auto-mounting, and
+        persistent ``/root`` or fallback ``/workspace`` binds are suppressed.
+        """
+        if runtime_mounts:
+            volume_args, targets = _runtime_mount_args(runtime_mounts)
+            if "/workspace" not in targets:
+                raise ValueError(
+                    "task-scoped Docker runtime must mount /workspace"
+                )
+            return volume_args, [
+                "--tmpfs",
+                "/home:rw,exec,size=1g",
+                "--tmpfs",
+                "/root:rw,exec,size=1g",
+            ]
+
         volume_args: list[str] = []
         for vol in (volumes or []):
             if not isinstance(vol, str):
@@ -638,21 +906,30 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
                 continue
             volume_args.extend(["-v", vol])
-        workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
+        workspace_explicitly_mounted = any(
+            ":/workspace" in value for value in volume_args
+        )
 
-        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        host_cwd_abs = (
+            os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
+        )
         bind_host_cwd = (
-            auto_mount_cwd and bool(host_cwd_abs) and os.path.isdir(host_cwd_abs)
-            and not workspace_explicitly_mounted)
+            auto_mount_cwd
+            and bool(host_cwd_abs)
+            and os.path.isdir(host_cwd_abs)
+            and not workspace_explicitly_mounted
+        )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
-            logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+            logger.debug(
+                "Skipping docker cwd mount: host_cwd is not a valid directory: %s",
+                host_cwd,
+            )
         mount_workspace = not bind_host_cwd and not workspace_explicitly_mounted
 
         writable_args: list[str] = []
         if self._persistent:
             from tools.environments.base import get_sandbox_dir
-            # _sandbox_dir_name(): a raw session-key task_id carries colons,
-            # which `-v` reads as extra spec fields (exit 125).
+
             sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
@@ -662,14 +939,24 @@ class DockerEnvironment(BaseEnvironment):
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args += ["-v", f"{self._workspace_dir}:/workspace"]
         else:
-            writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"] if mount_workspace else []
-            writable_args += ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"]
+            if mount_workspace:
+                writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"]
+            writable_args += [
+                "--tmpfs",
+                "/home:rw,exec,size=1g",
+                "--tmpfs",
+                "/root:rw,exec,size=1g",
+            ]
 
         if bind_host_cwd:
-            logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)
+            logger.info(
+                "Mounting configured host cwd to /workspace: %s", host_cwd_abs
+            )
             volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
         elif workspace_explicitly_mounted:
-            logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
+            logger.debug(
+                "Skipping docker cwd mount: /workspace already mounted by user config"
+            )
         return volume_args, writable_args
 
     def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
@@ -691,7 +978,10 @@ class DockerEnvironment(BaseEnvironment):
                     "container — removing it and starting fresh (task=%s, profile=%s).",
                     container_id[:12], actual_mode or "unknown", task_label, profile_name)
                 try:
-                    run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                    run_capture(
+                        [*self._docker_prefix, "rm", "-f", container_id],
+                        timeout=30,
+                    )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
                 return False
@@ -713,7 +1003,11 @@ class DockerEnvironment(BaseEnvironment):
     def _start_container(self, container_id: str) -> Exception | None:
         """``docker start`` a stopped container; returns the failure instead of raising."""
         try:
-            run_capture([self._docker_exe, "start", container_id], timeout=30, check=True)
+            run_capture(
+                [*self._docker_prefix, "start", container_id],
+                timeout=30,
+                check=True,
+            )
             return None
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             return e
@@ -726,7 +1020,7 @@ class DockerEnvironment(BaseEnvironment):
             # tini/catatonit as PID 1 reaps zombie children — but s6-overlay images already provide their
             # own /init PID 1, so adding --init there creates two competing inits and breaks startup
             # (#34628).
-            self._docker_exe, "run", "-d",
+            *self._docker_prefix, "run", "-d",
             *([] if self._image_uses_s6_init else ["--init"]),
             "--name", name,
             *label_args,
@@ -749,7 +1043,7 @@ class DockerEnvironment(BaseEnvironment):
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             logger.warning("docker run failed for %s, cleaning up orphaned container: %s", container_name, e)
             subprocess.run(
-                [self._docker_exe, "rm", "-f", container_name],
+                [*self._docker_prefix, "rm", "-f", container_name],
                 capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
             raise
         container_id = result.stdout.strip()
@@ -829,7 +1123,7 @@ class DockerEnvironment(BaseEnvironment):
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
         assert self._container_id, "Container not started"
-        cmd = [self._docker_exe, "exec"]
+        cmd = [*self._docker_prefix, "exec"]
         if stdin_data is not None:
             cmd.append("-i")
 
@@ -919,34 +1213,55 @@ class DockerEnvironment(BaseEnvironment):
             result = super().execute(command, cwd, **kwargs)
         return result
 
-    @staticmethod
-    def _storage_opt_supported() -> bool:
-        """Whether ``--storage-opt size=`` works (only overlay2 on XFS with pquota; ext4 errors out)."""
+    def _storage_opt_supported(self) -> bool:
+        """Whether ``--storage-opt size=`` works on the selected Docker daemon."""
         global _storage_opt_ok
-        if _storage_opt_ok is not None:
+        if not self._pin_args and _storage_opt_ok is not None:
             return _storage_opt_ok
+
+        supported = False
         try:
-            docker = find_docker() or "docker"
-            result = run_capture([docker, "info", "--format", "{{.Driver}}"], timeout=10)
-            if result.stdout.strip().lower() != "overlay2":
-                _storage_opt_ok = False
-                return False
-            # Probe with a real create — the fastest reliable check.
-            probe = run_capture([docker, "create", "--storage-opt", "size=1m", "hello-world"], timeout=15)
-            _storage_opt_ok = probe.returncode == 0
-            if _storage_opt_ok and probe.stdout.strip():
-                subprocess.run([docker, "rm", probe.stdout.strip()],
-                               capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+            result = run_capture(
+                [*self._docker_prefix, "info", "--format", "{{.Driver}}"],
+                timeout=10,
+            )
+            if result.stdout.strip().lower() == "overlay2":
+                probe = run_capture(
+                    [
+                        *self._docker_prefix,
+                        "create",
+                        "--storage-opt",
+                        "size=1m",
+                        "hello-world",
+                    ],
+                    timeout=15,
+                )
+                supported = probe.returncode == 0
+                if supported and probe.stdout.strip():
+                    subprocess.run(
+                        [*self._docker_prefix, "rm", probe.stdout.strip()],
+                        capture_output=True,
+                        timeout=5,
+                        stdin=subprocess.DEVNULL,
+                    )
         except Exception:
-            _storage_opt_ok = False
-        logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
-        return _storage_opt_ok
+            supported = False
+        if not self._pin_args:
+            _storage_opt_ok = supported
+        logger.debug("Docker --storage-opt support: %s", supported)
+        return supported
 
     def _container_network_mode(self, container_id: str) -> Optional[str]:
         """``HostConfig.NetworkMode`` of a container, or ``None`` when inspection fails (callers
         treat ``None`` as a mismatch under lockdown, so a failed inspect fails closed)."""
         result = _docker_query(
-            [self._docker_exe, "inspect", "--format", "{{.HostConfig.NetworkMode}}", container_id], timeout=10,
+            [
+                *self._docker_prefix,
+                "inspect",
+                "--format",
+                "{{.HostConfig.NetworkMode}}",
+                container_id,
+            ], timeout=10,
             fail="docker inspect NetworkMode failed: %s", nonzero="docker inspect NetworkMode returned %d: %s")
         return (result.stdout.strip() or None) if result is not None else None
 
@@ -968,7 +1283,8 @@ class DockerEnvironment(BaseEnvironment):
             filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])
             fmt = "{{.ID}}\t{{.State}}"
         result = _docker_query(
-            [self._docker_exe, "ps", "-a", *filters, "--format", fmt], timeout=10,
+            [*self._docker_prefix, "ps", "-a", *filters, "--format", fmt],
+            timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",
             nonzero="docker ps probe returned %d: %s — will start a fresh container")
         if result is None:
@@ -1024,16 +1340,21 @@ class DockerEnvironment(BaseEnvironment):
             return
 
         # Capture what the worker needs — the thread can outlive ``self``.
-        docker_exe = self._docker_exe
+        docker_prefix = list(self._docker_prefix)
         log_id = container_id[:12]
 
         def _do_cleanup() -> None:
-            for argv, fail_msg in ((["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
-                                   (["rm", "-f"], "docker rm -f %s failed: %s")):
+            for argv, fail_msg in (
+                (["stop", "-t", "10"], "docker stop %s timed out / failed: %s"),
+                (["rm", "-f"], "docker rm -f %s failed: %s"),
+            ):
                 try:
                     subprocess.run(
-                        [docker_exe, *argv, container_id],
-                        capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+                        [*docker_prefix, *argv, container_id],
+                        capture_output=True,
+                        timeout=30,
+                        stdin=subprocess.DEVNULL,
+                    )
                 except (subprocess.TimeoutExpired, OSError) as e:
                     logger.warning(fail_msg, log_id, e)
 

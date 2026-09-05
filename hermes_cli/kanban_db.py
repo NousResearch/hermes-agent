@@ -2736,6 +2736,56 @@ def _merge_completion_prose_artifacts(
     return updated
 
 
+def _resolve_declared_scratch_artifact(
+    task_id: str,
+    workspace_root: Path,
+    artifact: str,
+) -> Path:
+    """Resolve a completion artifact in its authoritative namespace.
+
+    Docker-backed workers report ``/workspace/...`` paths from inside the
+    container. Translate those paths through the dispatcher-owned runtime
+    envelope before host-side preservation. Missing, malformed, traversing, or
+    mismatched runtime data is a completion error; never reinterpret a
+    container path on the host and then delete the task's only bytes.
+    """
+    is_container_workspace_path = (
+        artifact == "/workspace" or artifact.startswith("/workspace/")
+    )
+    if not is_container_workspace_path:
+        return Path(artifact).expanduser()
+
+    from hermes_cli.kanban_runtime import (
+        KANBAN_TERMINAL_RUNTIME_ENV,
+        KanbanRuntimeError,
+        decode_kanban_terminal_runtime,
+        translate_container_workspace_path,
+    )
+
+    raw_runtime = os.getenv(KANBAN_TERMINAL_RUNTIME_ENV, "").strip()
+    if not raw_runtime:
+        raise ArtifactPreservationError(
+            f"declared container artifact {artifact!r} has no authoritative "
+            "Kanban terminal runtime"
+        )
+    try:
+        runtime = decode_kanban_terminal_runtime(
+            raw_runtime,
+            expected_task_id=task_id,
+            expected_workspace=workspace_root,
+        )
+        return translate_container_workspace_path(
+            runtime,
+            artifact,
+            expected_task_id=task_id,
+            expected_workspace=workspace_root,
+        )
+    except KanbanRuntimeError as exc:
+        raise ArtifactPreservationError(
+            f"could not translate declared container artifact {artifact!r}: {exc}"
+        ) from exc
+
+
 def _persist_scratch_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict,
 ) -> None:
@@ -2772,7 +2822,9 @@ def _persist_scratch_completion_artifacts(
         artifact = str(item).strip() if isinstance(item, str) else ""
         if not artifact:
             continue
-        src = Path(artifact).expanduser()
+        src = _resolve_declared_scratch_artifact(
+            task_id, workspace_root, artifact
+        )
         try:
             resolved_src = src.resolve()
         except OSError:

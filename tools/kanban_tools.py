@@ -58,16 +58,17 @@ def _is_delegated_child_context() -> bool:
 def _is_dispatcher_owned_worker() -> bool:
     """False for delegate_task children AND for cron jobs fired in-process from
     a worker — i.e. whenever HERMES_KANBAN_* is present but not ours."""
-    return _delegation_ctx("is_dispatcher_owned_worker_context", True)
+    return _delegation_ctx("is_dispatcher_owned_worker_context", False)
 
 
 def _visible(*, to_env_worker: bool) -> bool:
-    """check_fn core: never for delegate children; dispatcher-spawned env workers
-    (HERMES_KANBAN_TASK) per flag; else the profile toolset decides."""
+    """check_fn core: never expose ambient worker authority to another context."""
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
-        return to_env_worker
+    if os.environ.get("HERMES_KANBAN_TASK"):
+        # Ambient worker identity must not fall through to the profile toolset
+        # inside cron or an authority-probe failure.
+        return to_env_worker if _is_dispatcher_owned_worker() else False
     return _profile_has_kanban_toolset()
 
 

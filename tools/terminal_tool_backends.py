@@ -37,13 +37,18 @@ _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 51
 _CONTAINER_KEYS = (
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
     ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""),
-    ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
+    ("docker_volumes", []), ("docker_runtime_mounts", []),
+    ("kanban_endpoint_selector", None),
+    ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True),
 )
 _DOCKER_KWARGS = (
-    ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
+    ("volumes", "docker_volumes", []),
+    ("runtime_mounts", "docker_runtime_mounts", []),
+    ("endpoint_selector", "kanban_endpoint_selector", None),
+    ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
     ("forward_env", "docker_forward_env", []), ("env", "docker_env", {}),
     ("run_as_host_user", "docker_run_as_host_user", False), ("network", "docker_network", True),
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
@@ -104,21 +109,39 @@ def _build_local_env(*, cwd, timeout, **_):
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
-    from tools.terminal_tool import (_docker_session_isolation_enabled, _has_isolation_overrides,
-                                     _maybe_reap_docker_orphans)
-    # One-shot reaper for labeled containers orphaned by prior Hermes processes that died before
-    # atexit (SIGKILL / OOM / closed terminal); ``terminal.docker_orphan_reaper: false`` disables it.
-    _maybe_reap_docker_orphans(cc)
-    # A session-keyed container must not outlive its session, so cross-process reuse/persist is
-    # disabled for it (cleanup_vm()/idle reaper stop+rm it). The shared "default" container and
-    # RL/benchmark override sandboxes keep their existing lifecycle.
-    session_scoped = (_docker_session_isolation_enabled() and task_id != "default"
-                      and not _has_isolation_overrides(task_id))
+    from tools.terminal_tool import (
+        _docker_session_isolation_enabled,
+        _has_isolation_overrides,
+        _maybe_reap_docker_orphans,
+    )
+
+    runtime_scoped = bool(cc.get("docker_runtime_mounts"))
+    # A task runtime is already process-scoped and endpoint-pinned. Do not run
+    # the ambient orphan reaper against whatever Docker endpoint the process
+    # would otherwise select.
+    if not runtime_scoped:
+        _maybe_reap_docker_orphans(cc)
+
+    # A session-keyed or Kanban-runtime container must not outlive its owner, so
+    # cross-process reuse is disabled and teardown removes it at process/session
+    # completion. RL/benchmark override sandboxes keep their existing lifecycle.
+    session_scoped = runtime_scoped or (
+        _docker_session_isolation_enabled()
+        and task_id != "default"
+        and not _has_isolation_overrides(task_id)
+    )
     kwargs = {out: cc.get(key, default) for out, key, default in _DOCKER_KWARGS}
     if session_scoped:
         kwargs["persist_across_processes"] = False
-    docker_env_obj = _DockerEnvironment(image=image, cwd=cwd, timeout=timeout, task_id=task_id, host_cwd=host_cwd,
-                                        **_resources(cc), **kwargs)
+    docker_env_obj = _DockerEnvironment(
+        image=image,
+        cwd=cwd,
+        timeout=timeout,
+        task_id=task_id,
+        host_cwd=host_cwd,
+        **_resources(cc),
+        **kwargs,
+    )
     # Marker read by is_persistent_env(): a session-scoped container survives BETWEEN turns (skip
     # per-turn teardown) but is removed at session close / idle timeout. Test doubles may reject attrs.
     if session_scoped:

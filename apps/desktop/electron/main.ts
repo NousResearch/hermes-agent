@@ -104,7 +104,9 @@ import {
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
+  isNativeRefreshAuthRejection,
   localProfileEntry,
+  mintGatewayWsTicket as mintGatewayWsTicketPure,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeRemoteHeaders,
@@ -252,13 +254,13 @@ import {
 } from './managed-ssh-update'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
+import { createNativeAccessTokenCoordinator } from './native-access-token'
 import {
   oauthGuardMayHardFail,
   oauthSessionIsLive,
   oauthTicketFailureAuthMessage,
   resolveGatedDownloadAuth,
   resolveJsonBody,
-  resolveOauthRestAuth,
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
 import {
@@ -272,6 +274,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { requestWithOauthFallback } from './oauth-rest-request'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -7870,49 +7873,29 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
   return fetchJson(url, null, { method: 'POST', body: resolveJsonBody(body), ...opts })
 }
 
-// Return a valid native access token for baseUrl, refreshing via
-// /auth/native/refresh if the stored one is at/near expiry. Returns null when
-// there are no tokens or the refresh is terminally rejected (caller re-logins).
-async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> {
-  const tokens = _loadNativeTokens(baseUrl)
-
-  if (!tokens) {
-    return null
-  }
-
-  if (!tokenNeedsRefresh(tokens, Math.floor(Date.now() / 1000))) {
-    return tokens.accessToken
-  }
-
-  if (!tokens.refreshToken) {
-    // Access token expired and no RT to rotate — force re-login.
-    _clearNativeTokens(baseUrl)
-
-    return null
-  }
-
-  try {
+const nativeAccessTokenCoordinator = createNativeAccessTokenCoordinator({
+  clearTokens: _clearNativeTokens,
+  isRefreshAuthRejection: isNativeRefreshAuthRejection,
+  loadTokens: _loadNativeTokens,
+  normalizeBaseUrl: normalizeRemoteBaseUrl,
+  refreshTokens: async (baseUrl, tokens) => {
     const body = await postJsonNoAuth(
       nativeRefreshUrl(baseUrl),
       { refresh_token: tokens.refreshToken, provider: tokens.provider },
       { timeoutMs: 10_000 }
     )
 
-    const rotated = parseTokenResponse(body)
-    _storeNativeTokens(baseUrl, rotated)
+    return parseTokenResponse(body)
+  },
+  storeTokens: _storeNativeTokens,
+  tokenNeedsRefresh
+})
 
-    return rotated.accessToken
-  } catch (error: any) {
-    // A 401 means the RT is dead (session_expired) — drop tokens so the UI
-    // prompts a fresh native login. A 503/transient keeps them for a retry.
-    if (error && error.statusCode === 401) {
-      _clearNativeTokens(baseUrl)
-
-      return null
-    }
-
-    throw error
-  }
+// Return a valid native access token for baseUrl, refreshing via
+// /auth/native/refresh if the stored one is at/near expiry. Returns null when
+// there are no tokens or the refresh is terminally rejected (caller re-logins).
+async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> {
+  return nativeAccessTokenCoordinator.ensure(baseUrl)
 }
 
 // OAuth-session download that streams the response body straight to a
@@ -8201,42 +8184,17 @@ async function saveGatewayFileViaDataUrl(
 // Transient transport blips (brief host unreachable, 5xx, timeouts) are retried
 // a few times before failing — those 1-3s flaps were promoting into the
 // full-screen "couldn't start" lockout on reconnect.
+//
+// Thin adapter over connection-config.ts's pure mintGatewayWsTicket, wiring
+// in the real (electron-coupled) I/O. Kept as a same-named local function so
+// none of this file's call sites need to change. See that function's doc
+// for why ensureNativeAccessToken is NOT wrapped in .catch(() => null).
+// `headers` are the connection's remote gateway headers (see
+// freshGatewayWsUrl); they ride along on both the bearer and cookie mints.
 async function mintGatewayWsTicket(baseUrl, headers = {}) {
-  return withTransientRetries(async () => {
-    // Native flow: mint the ticket with the bearer token, no cookie involved.
-    const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
-        method: 'POST',
-        timeoutMs: 8_000,
-        bearer: nativeAt,
-        headers
-      })) as any
-
-      const ticket = body?.ticket
-
-      if (!ticket || typeof ticket !== 'string') {
-        throw new Error('Gateway did not return a WS ticket.')
-      }
-
-      return ticket
-    }
-
-    const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
-      method: 'POST',
-      timeoutMs: 8_000,
-      headers
-    })) as any
-
-    const ticket = body?.ticket
-
-    if (!ticket || typeof ticket !== 'string') {
-      throw new Error('Gateway did not return a WS ticket.')
-    }
-
-    return ticket
-  })
+  return withTransientRetries(() =>
+    mintGatewayWsTicketPure(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers)
+  )
 }
 
 // Build a fresh WS URL for the *current* connection. Critical for reconnects:
@@ -10944,13 +10902,11 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   if (conn.authMode === 'oauth') {
     // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
     // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers })
-    }
-
-    return fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
+    return requestWithOauthFallback(conn.baseUrl, {
+      ensureNativeAccessToken,
+      requestWithBearer: nativeAt => fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers }),
+      requestWithCookie: () => fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
+    })
   }
 
   return fetchJson(url, conn.token, { ...opts, headers: conn.headers })
@@ -15893,6 +15849,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
         rememberLog
       })
 
+      nativeAccessTokenCoordinator.invalidateExplicitAuthChange(baseUrl)
       _storeNativeTokens(baseUrl, tokens)
       // Confirmed sign-in — release the reauth latch so the next
       // startHermes() re-dials instead of replaying the stale rejection.
@@ -15926,6 +15883,7 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
 
   // Also drop any native (RFC 8252) bearer tokens for this gateway so a
   // logout clears BOTH auth shapes.
+  nativeAccessTokenCoordinator.invalidateExplicitAuthChange(baseUrl)
   _clearNativeTokens(baseUrl)
 
   // Report against the SAME liveness notion the Settings indicator uses
@@ -16522,26 +16480,25 @@ async function handleHermesApiRequest(request) {
         throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
       }
 
-      // Native bearer first (cookieless). ensureNativeAccessToken transparently
-      // refreshes a near-expiry AT via /auth/native/refresh; a null return means
-      // no native session (resolveOauthRestAuth then selects the cookie path).
-      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
-      const restAuth = resolveOauthRestAuth(nativeAt)
-
-      if (restAuth.kind === 'bearer') {
-        response = await fetchJson(url, null, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs,
-          bearer: restAuth.token
-        })
-      } else {
-        response = await fetchJsonViaOauthSession(url, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs
-        })
-      }
+      // Native bearer first (cookieless). A transient refresh failure still
+      // tries a coexisting cookie session; if that is unauthenticated too, the
+      // original native failure wins over the cookie's auth-shaped rejection.
+      response = await requestWithOauthFallback(connection.baseUrl, {
+        ensureNativeAccessToken,
+        requestWithBearer: nativeAt =>
+          fetchJson(url, null, {
+            method: request?.method,
+            body: request?.body,
+            timeoutMs,
+            bearer: nativeAt
+          }),
+        requestWithCookie: () =>
+          fetchJsonViaOauthSession(url, {
+            method: request?.method,
+            body: request?.body,
+            timeoutMs
+          })
+      })
     } else {
       response = await fetchJson(url, connection.token, {
         method: request?.method,

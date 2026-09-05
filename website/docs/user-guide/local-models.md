@@ -53,7 +53,7 @@ what a hardware upgrade would unlock.
 ## How memory management works
 
 Local models live or die by memory placement, so Hermes manages it
-end-to-end and exposes no knobs:
+end-to-end; the only knob is how long an idle model keeps its memory:
 
 - **Models start at a context window that fully fits your GPU** and grow
   toward their native maximum as your conversation needs more room. You
@@ -67,7 +67,12 @@ end-to-end and exposes no knobs:
 - **Conversation compression only kicks in at the model's maximum
   window** — growth always comes first.
 - Idle models are unloaded after 15 minutes to free GPU memory; they
-  reload automatically on the next message.
+  reload automatically on the next message. **Auto-eject idle models** in
+  the Local Models pane changes that wait — set it lower to get your GPU
+  memory back sooner (minimum 30 seconds), or `0` to keep models resident
+  until you eject them or turn the server off. It applies to the running
+  server immediately and is stored as `local_runtime.unload_after_idle_seconds`
+  in `config.yaml`.
 
 ## The status bar
 
@@ -114,6 +119,8 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
+  unload_after_idle_seconds: 900   # free a model's GPU memory after this
+                     # much idle time (minimum 30); 0 = never unload
 ```
 
 Models and runtime builds live under the Hermes home directory

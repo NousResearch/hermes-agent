@@ -2212,8 +2212,21 @@ EOF
                 fi
                 ;;
             bash)
-                [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
-                [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
+                # Terminal.app starts bash as a login shell, so macOS reads
+                # ~/.bash_profile rather than ~/.bashrc. Prefer that file on
+                # macOS and create it whenever it is absent.
+                # Linux terminals normally start non-login bash and read
+                # ~/.bashrc, so retain that platform's existing preference.
+                if [ "$OS" = "macos" ]; then
+                    # A standalone ~/.bashrc is not enough for Terminal.app's
+                    # login Bash. Always give the login shell its own file.
+                    [ -f "$HOME/.bash_profile" ] || touch "$HOME/.bash_profile"
+                    SHELL_CONFIGS+=("$HOME/.bash_profile")
+                    [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
+                else
+                    [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
+                    [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
+                fi
                 ;;
             fish)
                 # fish uses ~/.config/fish/config.fish and fish_add_path — not export PATH=
@@ -3148,7 +3161,15 @@ print_success() {
         if [ "$LOGIN_SHELL" = "zsh" ]; then
             echo "   source ~/.zshrc"
         elif [ "$LOGIN_SHELL" = "bash" ]; then
-            echo "   source ~/.bashrc"
+            if [ "$OS" = "macos" ] && [ -f "$HOME/.bash_profile" ]; then
+                echo "   source ~/.bash_profile"
+            elif [ -f "$HOME/.bashrc" ]; then
+                echo "   source ~/.bashrc"
+            elif [ -f "$HOME/.bash_profile" ]; then
+                echo "   source ~/.bash_profile"
+            else
+                echo "   Open a new terminal"
+            fi
         elif [ "$LOGIN_SHELL" = "fish" ]; then
             echo "   source ~/.config/fish/config.fish"
         else

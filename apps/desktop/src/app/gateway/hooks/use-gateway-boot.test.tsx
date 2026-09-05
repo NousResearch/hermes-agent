@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $desktopBoot } from '@/store/boot'
+import type * as BootStore from '@/store/boot'
+import { $desktopBoot, completeDesktopBoot } from '@/store/boot'
 import {
   $connectionsRegistry,
   _resetConnectionsForTests,
@@ -52,6 +53,15 @@ vi.mock(import('@/store/notifications'), async importOriginal => ({
   notifyError: vi.fn()
 }))
 
+vi.mock('@/store/boot', async importOriginal => {
+  const actual = await importOriginal<typeof BootStore>()
+
+  return {
+    ...actual,
+    completeDesktopBoot: vi.fn(actual.completeDesktopBoot)
+  }
+})
+
 // End-to-end-ish repro of the "remote VPS → stuck on CONNECTING, no Settings"
 // bug that drives the REAL useGatewayBoot hook + REAL HermesGateway through a
 // fake WebSocket we fully control. No Docker / no real port: from the desktop's
@@ -82,13 +92,14 @@ describe('primaryRuntimeConnectionId', () => {
 })
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
-// touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
+// touches: readyState, add/removeEventListener, close(), and readiness frames.
 class FakeWebSocket {
   static OPEN = 1
   static CLOSED = 3
-  // Flipped by the test: 'open' = next socket connects; 'fail' = next socket
-  // errors (a dead remote). Mirrors a VPS going away after the first connect.
-  static mode: 'open' | 'fail' = 'open'
+  // Flipped by the test: 'open' emits transport open + gateway.ready; 'fail'
+  // errors (a dead remote); 'reject' opens then closes during the handshake.
+  static mode: 'fail' | 'open' | 'reject' = 'open'
+  static rejectCode = 4401
   static instances: FakeWebSocket[] = []
   // Ping behavior: 'pong' answers with a healthy pong frame; 'silent' swallows
   // the request (the half-open-socket simulation — connection looks OPEN but
@@ -102,13 +113,25 @@ class FakeWebSocket {
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
-    const willOpen = FakeWebSocket.mode === 'open'
-    // Resolve on the next microtask/macrotask so connect()'s promise wiring is
-    // in place before open/error fires (matches real async socket handshake).
+    const mode = FakeWebSocket.mode
+    // Resolve on the next task so connect()'s promise wiring is in place before
+    // open/error/close/readiness fires (matches the real async handshake).
     setTimeout(() => {
-      if (willOpen) {
+      if (mode === 'open') {
         this.readyState = FakeWebSocket.OPEN
         this.emit('open', {})
+        this.emit('message', {
+          data: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'event',
+            params: { type: 'gateway.ready' }
+          })
+        })
+      } else if (mode === 'reject') {
+        this.readyState = FakeWebSocket.OPEN
+        this.emit('open', {})
+        this.readyState = FakeWebSocket.CLOSED
+        this.emit('close', { code: FakeWebSocket.rejectCode })
       } else {
         this.readyState = FakeWebSocket.CLOSED
         this.emit('error', {})
@@ -126,13 +149,13 @@ class FakeWebSocket {
 
   close() {
     this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
+    this.emit('close', { code: 1005 })
   }
 
   // Force-drop an open socket, as a sleeping laptop / restarted remote would.
   drop() {
     this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
+    this.emit('close', { code: 1006 })
   }
 
   send(data: string) {
@@ -244,17 +267,19 @@ function fakeDesktop() {
 
 function Harness({
   beforeConnectionSwitch = () => undefined,
+  onConnectionReady = () => undefined,
   refreshHermesConfig = async () => undefined,
   refreshSessions
 }: {
   beforeConnectionSwitch?: () => void
+  onConnectionReady?: (connection: Parameters<Parameters<typeof useGatewayBoot>[0]['onConnectionReady']>[0]) => void
   refreshHermesConfig?: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
   refreshSessions?: (shouldPublish?: () => boolean) => Promise<void>
 } = {}) {
   useGatewayBoot({
     beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
-    onConnectionReady: () => undefined,
+    onConnectionReady,
     onGatewayReady: () => undefined,
     refreshHermesConfig,
     refreshSessions: refreshSessions ?? (async () => undefined)
@@ -284,6 +309,7 @@ beforeEach(() => {
   $sessionTiles.set([])
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
+  FakeWebSocket.rejectCode = 4401
   FakeWebSocket.instances = []
   FakeWebSocket.pingMode = 'pong'
   connectionApplied = null
@@ -304,6 +330,7 @@ beforeEach(() => {
     timestamp: Date.now(),
     visible: true
   })
+  vi.mocked(completeDesktopBoot).mockClear()
 })
 
 afterEach(() => {
@@ -1782,5 +1809,180 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       await vi.advanceTimersByTimeAsync(20_000)
     })
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('a 4401 boot handshake fails with the canonical reauth message and never retries', async () => {
+    const desktop = fakeDesktop()
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'transient remote failure',
+      fakeMode: false,
+      message: 'Desktop boot failed: transient remote failure',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: true,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    FakeWebSocket.mode = 'reject'
+    FakeWebSocket.rejectCode = 4401
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBe(
+      'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+    )
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    await advanceBackoff()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('a 4403 boot handshake fails generically and never retries', async () => {
+    const desktop = fakeDesktop()
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'transient remote failure',
+      fakeMode: false,
+      message: 'Desktop boot failed: transient remote failure',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: true,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    FakeWebSocket.mode = 'reject'
+    FakeWebSocket.rejectCode = 4403
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBe('Could not connect to Hermes gateway')
+    expect($desktopBoot.get().error).not.toMatch(/remote gateway session has expired/i)
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    await advanceBackoff()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('a soft switch prevents a pending older boot from publishing, adopting, or completing', async () => {
+    const desktop = fakeDesktop()
+
+    const staleBootConnection = {
+      authMode: 'token' as const,
+      baseUrl: 'https://stale.example.com',
+      profile: 'stale',
+      token: 'stale',
+      wsUrl: 'wss://stale.example.com/api/ws?token=stale'
+    }
+
+    const switchConnection = {
+      authMode: 'token' as const,
+      baseUrl: 'https://switch.example.com',
+      profile: 'switch',
+      token: 'switch',
+      wsUrl: 'wss://switch.example.com/api/ws?token=switch'
+    }
+
+    const pendingBootConnection = deferred<typeof staleBootConnection>()
+
+    desktop.getConnection = vi
+      .fn()
+      .mockImplementationOnce(() => pendingBootConnection.promise)
+      .mockResolvedValue(switchConnection) as unknown as typeof desktop.getConnection
+    desktop.profile.get = vi.fn(async () => ({ profile: 'switch' }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    const onConnectionReady = vi.fn()
+    const refreshHermesConfig = vi.fn(async () => undefined)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    render(
+      <Harness
+        onConnectionReady={onConnectionReady}
+        refreshHermesConfig={refreshHermesConfig}
+        refreshSessions={refreshSessions}
+      />
+    )
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(connectionApplied).not.toBeNull()
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+    await flushAsync()
+
+    expect($connection.get()).toEqual(switchConnection)
+    expect(onConnectionReady).toHaveBeenCalledTimes(1)
+    expect(desktop.profile.get).toHaveBeenCalledTimes(1)
+    expect(refreshHermesConfig).toHaveBeenCalledTimes(1)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+    expect(completeDesktopBoot).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pendingBootConnection.resolve(staleBootConnection)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect($connection.get()).toEqual(switchConnection)
+    expect(onConnectionReady).toHaveBeenCalledTimes(1)
+    expect(desktop.profile.get).toHaveBeenCalledTimes(1)
+    expect(refreshHermesConfig).toHaveBeenCalledTimes(1)
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+    expect(completeDesktopBoot).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances.some(socket => socket.url === staleBootConnection.wsUrl)).toBe(false)
+  })
+
+  it('a queued retry from an older boot generation cannot restart after a soft switch', async () => {
+    const desktop = fakeDesktop()
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'Could not verify the existing SSH backend.',
+      fakeMode: false,
+      message: 'Desktop boot failed: Could not verify the existing SSH backend.',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: true,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    FakeWebSocket.mode = 'fail'
+    render(<Harness />)
+    await flushAsync()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect($desktopBoot.get().error).toBeNull()
+
+    // Model a timer callback already queued when softSwitch clears its handle.
+    // The generation check in the callback remains the final ownership gate.
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(() => undefined)
+
+    try {
+      FakeWebSocket.mode = 'open'
+      act(() => connectionApplied?.())
+      await flushAsync()
+      await flushAsync()
+
+      expect($gatewayState.get()).toBe('open')
+      expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+
+      await advanceBackoff()
+
+      expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+      expect(FakeWebSocket.instances).toHaveLength(2)
+    } finally {
+      clearTimeoutSpy.mockRestore()
+    }
   })
 })

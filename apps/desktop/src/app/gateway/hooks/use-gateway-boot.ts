@@ -243,6 +243,9 @@ export function useGatewayBoot({
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0
     let bootRetryTimer: ReturnType<typeof setTimeout> | null = null
+    let bootGeneration = 0
+
+    const bootIsStale = (gen: number) => cancelled || gen !== bootGeneration
 
     const clearBootRetryTimer = () => {
       if (bootRetryTimer !== null) {
@@ -572,6 +575,12 @@ export function useGatewayBoot({
       if (cancelled) {
         return
       }
+
+      // Invalidate any in-flight boot() — including a queued retry timer — so
+      // a switch that lands mid-boot can never let a stale attempt finish and
+      // clobber the connection this switch is about to establish. Counterpart
+      // to bootIsStale(gen) in boot() itself.
+      bootGeneration += 1
 
       let switchToken: null | ReturnType<typeof beginGatewaySwitch> = null
 
@@ -979,7 +988,7 @@ export function useGatewayBoot({
       })
     })
 
-    async function boot() {
+    async function boot(gen: number) {
       try {
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
@@ -994,7 +1003,7 @@ export function useGatewayBoot({
           'Timed out connecting to Hermes backend'
         )
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
@@ -1003,6 +1012,11 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.connectingGateway'),
           progress: 95
         })
+
+        if (bootIsStale(gen)) {
+          return
+        }
+
         publish(conn)
         setPrimaryGatewayConnection(conn)
 
@@ -1015,8 +1029,16 @@ export function useGatewayBoot({
         // post-connect pass retries the sync.
         try {
           await ensureDefaultWorkspaceCwd()
+
+          if (bootIsStale(gen)) {
+            return
+          }
         } catch (err) {
           console.warn('Failed to seed default workspace cwd pre-connect', err)
+        }
+
+        if (bootIsStale(gen)) {
+          return
         }
 
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
@@ -1032,9 +1054,13 @@ export function useGatewayBoot({
           'Timed out minting the gateway WebSocket URL'
         )
 
+        if (bootIsStale(gen)) {
+          return
+        }
+
         await gateway.connect(wsUrl)
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
@@ -1043,7 +1069,11 @@ export function useGatewayBoot({
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile()
+        await adoptPrimaryProfile(() => !bootIsStale(gen))
+
+        if (bootIsStale(gen)) {
+          return
+        }
 
         setDesktopBootStep({
           phase: 'renderer.config',
@@ -1051,11 +1081,17 @@ export function useGatewayBoot({
           progress: 97
         })
 
+        if (bootIsStale(gen)) {
+          return
+        }
+
         await Promise.all([
           // The pre-connect seed already applied the configured default; this
           // post-connect pass covers the remote backend default. Non-fatal: a
           // failed sync must not abort boot (the remembered cwd remains).
-          seedDefaultCwd().catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
+          seedDefaultCwd(() => !bootIsStale(gen)).catch(err =>
+            console.warn('Failed to sync default workspace cwd post-connect', err)
+          ),
           callbacksRef.current.refreshHermesConfig(),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient
@@ -1068,7 +1104,7 @@ export function useGatewayBoot({
           })
         ])
 
-        if (cancelled) {
+        if (bootIsStale(gen)) {
           return
         }
 
@@ -1076,34 +1112,57 @@ export function useGatewayBoot({
         bootCompleted = true
         bootRetryAttempt = 0
       } catch (err) {
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err)
+        if (bootIsStale(gen)) {
+          return
+        }
 
-          // Transient remote failure (dropped SSH/HTTP registered connection,
-          // mint timeout): self-heal with bounded, jittered retries instead of
-          // parking on "Desktop boot failed" until the user re-enters the same
-          // connection details (#82679). Main already cleared the failed cached
-          // descriptor, so the next getConnection() rebuilds the connection —
-          // exactly what manual re-entry forced. Exhausted retries, local
-          // failures, and confirmed reauth rejections end in the real recovery
-          // affordance (the boot-failure overlay), never an infinite spinner.
-          if (bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS && (await bootFailureIsRetryable()) && !cancelled) {
+        const message = err instanceof Error ? err.message : String(err)
+        const wsCloseCode = (err as { wsCloseCode?: number }).wsCloseCode
+
+        const explicitRefusal = isGatewayReauthRequired(err) || wsCloseCode === 4400 || wsCloseCode === 4403
+
+        // Transient remote failure (dropped SSH/HTTP registered connection,
+        // mint timeout): self-heal with bounded, jittered retries instead of
+        // parking on "Desktop boot failed" until the user re-enters the same
+        // connection details (#82679). Main already cleared the failed cached
+        // descriptor, so the next getConnection() rebuilds the connection —
+        // exactly what manual re-entry forced. Exhausted retries, local
+        // failures, and confirmed reauth/policy rejections end in the real
+        // recovery affordance (the boot-failure overlay), never an infinite
+        // spinner.
+        if (!explicitRefusal && bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS) {
+          const retryable = await bootFailureIsRetryable()
+
+          if (bootIsStale(gen)) {
+            return
+          }
+
+          if (retryable) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
             bootRetryAttempt += 1
             resumeDesktopBootForRetry(translateNow('boot.steps.retryingRemoteBackend'))
             clearBootRetryTimer()
             bootRetryTimer = setTimeout(() => {
               bootRetryTimer = null
-              void boot()
+
+              if (gen !== bootGeneration || cancelled) {
+                return
+              }
+
+              void boot(gen)
             }, delay)
 
             return
           }
-
-          failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
-          setSessionsLoading(false)
         }
+
+        if (bootIsStale(gen)) {
+          return
+        }
+
+        failDesktopBoot(message)
+        notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+        setSessionsLoading(false)
       }
     }
 
@@ -1142,7 +1201,7 @@ export function useGatewayBoot({
     if (adoptedFromHmr) {
       void adoptBoot()
     } else {
-      void boot()
+      void boot(++bootGeneration)
     }
 
     return () => {

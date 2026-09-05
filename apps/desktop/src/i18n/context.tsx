@@ -4,8 +4,9 @@ import { getHermesConfigRecord, type HermesConfigRecord, saveHermesConfig } from
 
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
+import type { Locale } from './locale'
 import { setRuntimeI18nLocale } from './runtime'
-import type { Locale, Translations } from './types'
+import type { Translations } from './types'
 
 export { LOCALE_META } from './languages'
 

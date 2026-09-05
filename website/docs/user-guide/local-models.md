@@ -114,6 +114,10 @@ local_runtime:
   backend: auto      # auto | cuda | metal | vulkan | hip | cpu
   tag: b10362        # pinned llama.cpp release; Hermes updates it with
                      # each release after re-validation
+  server_extra_args: []  # extra llama-server flags, e.g. ["--main-gpu", "1"]
+                     # on multi-GPU machines. Takes effect on the next
+                     # server start (Stop, then Start in Local Models).
+                     # --host/--port/--api-key/--models-dir are refused.
 ```
 
 Models and runtime builds live under the Hermes home directory

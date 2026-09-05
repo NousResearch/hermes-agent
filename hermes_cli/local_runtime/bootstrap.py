@@ -208,7 +208,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     try:
         from hermes_cli.local_runtime.binaries import (
             default_tag, ensure_runtime_installed, installed_tags, select_backend)
-        from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+        from hermes_cli.local_runtime.supervisor import (
+            LlamaServerSupervisor, normalize_server_extra_args)
 
         backend = section.get("backend", "auto")
         if backend == "auto":
@@ -236,7 +237,9 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),
-                                    port=int(section.get("port", 0)) or None)
+                                    port=int(section.get("port", 0)) or None,
+                                    extra_args=normalize_server_extra_args(
+                                        section.get("server_extra_args")))
         try:
             sup.start()
         except Exception:

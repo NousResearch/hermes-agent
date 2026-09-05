@@ -747,3 +747,151 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def _make_routed_discord_runner(
+    adapter, *, route_profile="yuki", route_enabled=True,
+    served_profiles=("default", "yuki"),
+):
+    from gateway.config import GatewayConfig
+    from gateway.profile_routing import parse_profile_routes
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._running = True
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._profile_adapters = {}
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = None
+    runner._kanban_served_profiles = frozenset(served_profiles)
+    runner._primary_profile_name = "default"
+    runner._active_profile_name = lambda: "default"
+    runner.config = GatewayConfig(
+        multiplex_profiles=True,
+        profile_routes=parse_profile_routes([
+            {
+                "name": "engineering-discord",
+                "platform": "discord",
+                "guild_id": "engineering-guild",
+                "chat_id": "engineering-chat",
+                "profile": route_profile,
+                "enabled": route_enabled,
+            }
+        ]),
+    )
+    return runner
+
+
+def _create_routed_discord_completion(
+    *, board, notifier_profile="yuki", chat_id="engineering-chat",
+):
+    conn = kbc.connect(board=board)
+    try:
+        tid = kb.create_task(
+            conn,
+            title="routed engineering task",
+            assignee="worker",
+            session_id=f"agent:yuki:discord:group:{chat_id}:creator",
+        )
+        kbn.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id=chat_id,
+            chat_type="group",
+            user_id="creator",
+            notifier_profile=notifier_profile,
+            delivery_mode="notify+wake",
+            delivery_metadata={"guild_id": "engineering-guild"},
+        )
+        kb.complete_task(conn, tid, summary="route-aware completion")
+        return tid
+    finally:
+        conn.close()
+
+
+def _unseen_routed_event_count(task_id, chat_id="engineering-chat"):
+    conn = kbc.connect()
+    try:
+        _, events = kbn.unseen_events_for_sub(
+            conn,
+            task_id=task_id,
+            platform="discord",
+            chat_id=chat_id,
+            kinds=["completed"],
+        )
+        return len(events)
+    finally:
+        conn.close()
+
+
+def test_routed_profile_uses_primary_discord_adapter_on_secondary_board_once(
+    tmp_path, monkeypatch,
+):
+    """An exact profile route owns the primary transport for notify and wake."""
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    kb.create_board("engineering", name="Engineering")
+    tid = _create_routed_discord_completion(board="engineering")
+
+    adapter = RecordingAdapter()
+    runner = _make_routed_discord_runner(adapter)
+    # Real multiplex startup leaves an empty registry entry when the routed
+    # profile has no independently connected credential.
+    runner._profile_adapters = {"yuki": {}}
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["chat_id"] == "engineering-chat"
+    assert tid in adapter.sent[0]["text"]
+    assert len(adapter.handled) == 1
+    assert adapter.handled[0].source.profile == "yuki"
+    assert adapter.handled[0].source.guild_id == "engineering-guild"
+
+    runner = _make_routed_discord_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+
+
+def test_routed_profile_primary_adapter_denies_wrong_or_unmatched_route(
+    tmp_path, monkeypatch,
+):
+    """The primary credential is never a general secondary-profile fallback."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "route-denied.db"))
+    kb.init_db()
+    wrong_tid = _create_routed_discord_completion(
+        board=None, notifier_profile="other-profile",
+    )
+    unmatched_tid = _create_routed_discord_completion(
+        board=None, notifier_profile="yuki", chat_id="unrouted-chat",
+    )
+
+    adapter = RecordingAdapter()
+    runner = _make_routed_discord_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+    assert _unseen_routed_event_count(wrong_tid) == 1
+    assert _unseen_routed_event_count(unmatched_tid, "unrouted-chat") == 1
+
+
+def test_true_secondary_adapter_still_owns_its_profile_subscription(
+    tmp_path, monkeypatch,
+):
+    """A connected secondary adapter remains authoritative over the primary."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "secondary.db"))
+    kb.init_db()
+    tid = _create_routed_discord_completion(board=None)
+
+    primary = RecordingAdapter()
+    secondary = RecordingAdapter()
+    runner = _make_routed_discord_runner(primary)
+    runner._profile_adapters = {"yuki": {Platform.DISCORD: secondary}}
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert primary.sent == []
+    assert primary.handled == []
+    assert len(secondary.sent) == 1
+    assert tid in secondary.sent[0]["text"]
+    assert len(secondary.handled) == 1

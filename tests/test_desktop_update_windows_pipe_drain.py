@@ -107,7 +107,9 @@ class TestIdleWatchdogCountsUpdateLogGrowth:
         # The growth check must gate the termination: compare-and-reset
         # appears before the 124 tree-termination inside the drain loop.
         consult = src.index("if ($currentLogStamp -ne $progressLogStamp)")
-        terminate = src.index("TerminateAndWait($job, 124")
+        # There is now also an absolute-deadline termination before the idle
+        # branch (#102283); find the idle-specific termination after the consult.
+        terminate = src.index("TerminateAndWait($job, 124", consult)
         assert consult < terminate, msg
         # And the clock actually resets on growth.
         growth_block = src[consult:terminate]

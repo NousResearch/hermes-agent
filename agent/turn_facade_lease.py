@@ -309,7 +309,10 @@ def admit_durable_turn_lease(
         # row is written, and reloading an absent row would erase that seed. An unknown row still
         # reads the transcript after a wait and adopts it only if it returns rows; that read
         # raising ends the turn.
-        if reload_needed and durable is not False:
+        # Explicit handback also reloads on immediate acquisition: its live source cache
+        # predates destination turns. Ordinary reuse stays cache-stable.
+        handback = getattr(agent, "_reload_history_after_handoff", False)
+        if (reload_needed or handback) and durable is not False:
             if announced:
                 agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
@@ -324,6 +327,13 @@ def admit_durable_turn_lease(
             # Decide on the stored rows alone: an unknown row that reloads nothing keeps the
             # caller's history, which already holds any carried input below.
             if durable or reloaded:
+                # A submit-time user row (tui_gateway _persist_submit_user_row) is already durable
+                # and staged as this turn's own user dict, which the turn appends itself: keep
+                # the staged row out of the reloaded history so the model never sees it twice.
+                staged = getattr(agent, "_pending_cli_user_message", None)
+                staged_row = staged.get("_row_id") if isinstance(staged, dict) else None
+                if staged_row is not None:
+                    reloaded = [m for m in reloaded if not (isinstance(m, dict) and m.get("_row_id") == staged_row)]
                 # A follow-up that aborted an earlier wait carries that turn's never-persisted
                 # input only in memory (see carry_unadmitted_user_message); the reload drops it.
                 from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
@@ -334,6 +344,14 @@ def admit_durable_turn_lease(
                 )
                 admission.conversation_history = reloaded
         lease.build_threads()
+        if handback:
+            # A later turn-prologue failure recovers from this cache, not the
+            # facade's local history. Adopt before consuming the one-shot intent.
+            # Reloaded dicts already carry durable markers and row IDs; keep the
+            # flush cursor and pending user input under their existing policies.
+            with getattr(agent, "_session_persist_lock", None) or nullcontext():
+                agent._session_messages = admission.conversation_history
+                agent._reload_history_after_handoff = False
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.
         lease.release()

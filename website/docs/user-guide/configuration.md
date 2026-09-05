@@ -743,6 +743,10 @@ memory:
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
+## Desktop App Settings
+
+The `desktop:` section configures the native desktop app's launch behavior — Electron/Chromium flags (`desktop.electron_flags`), the Linux windowing backend (`desktop.ozone_platform_hint`), the GPU acceleration policy (`desktop.disable_gpu`), and the Linux keychain backend for token storage (`desktop.password_store`). An explicit environment variable always wins over the config key. See the [desktop launch options](/user-guide/desktop#desktop-launch-options-configyaml) reference for the full key table and Linux GPU troubleshooting.
+
 ## Context File Truncation
 
 Controls how much content Hermes loads from each automatic context file before applying head/tail truncation. This applies to files injected into the system prompt such as `SOUL.md`, `.hermes.md`, `AGENTS.md`, `CLAUDE.md`, and `.cursorrules`. It does **not** affect the `read_file` tool.

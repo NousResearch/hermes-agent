@@ -154,6 +154,8 @@ desktop:
 
 That bridges to `ELECTRON_OZONE_PLATFORM_HINT` at launch (an explicit env var still wins). The trade: X11 cannot restore a window that has ignored the mouse, so the HUD stays a solid window instead of click-through. Some KDE setups also report keyboard breakage with the X11 ozone backend — leave the hint on `auto` unless you need always-on-top.
 
+`ozone_platform_hint` is one of the [`desktop` launch options](#desktop-launch-options-configyaml) — see there for the full key table and Linux GPU troubleshooting.
+
 ### Settings & onboarding
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
@@ -302,6 +304,39 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 | `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
 | `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
+
+## Desktop launch options (config.yaml)
+
+`hermes desktop` parses its own command line first, so Electron/Chromium switches typed after the subcommand are rejected with `unrecognized arguments`. The supported way to pass them is the `desktop:` section of `config.yaml`:
+
+| Key                     | What it does                                                                                                                                                                                                                                                   |
+|-------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `electron_flags`        | Extra Electron/Chromium flags appended to every packaged launch. A list of strings; a single string is also accepted and shell-split.                                                                                                                          |
+| `ozone_platform_hint`   | Linux windowing backend: `auto` (default — Wayland on a Wayland session, X11 otherwise), `x11` (run under XWayland), or `wayland` (native Wayland). Bridged to `ELECTRON_OZONE_PLATFORM_HINT`.                                                                 |
+| `disable_gpu`           | GPU acceleration policy: `auto` (default — the app disables GPU only when a remote display is detected: SSH, X11 forwarding, and Windows RDP), `true` (always software rendering), or `false` (keep GPU on even over a remote display). Bridged to `HERMES_DESKTOP_DISABLE_GPU`. |
+| `password_store`        | Linux-only keychain backend for encrypted token storage: `auto` (default — detect the session keychain) or one of `gnome-libsecret`, `kwallet`, `kwallet5`, `kwallet6`, `basic` (unencrypted). Bridged to `HERMES_DESKTOP_PASSWORD_STORE`. |
+
+An explicit environment variable always wins over the config key, and an unset key falls back to the launcher's own detection — so `HERMES_DESKTOP_DISABLE_GPU=… hermes desktop` keeps working. `electron_flags` are appended only on the packaged launch; the env-bridged keys (`ozone_platform_hint`, `disable_gpu`) still reach a `--source` / dev launch through the environment.
+
+### Slow or stuttering rendering on Linux (GPU troubleshooting)
+
+If streamed text crawls in the desktop app while the same prompt streams at full speed in `hermes --tui`, the model isn't slow — Chromium has probably fallen back to software rasterization for your GPU/driver combination. Launch `hermes desktop` from a terminal and watch its output: Chromium logs GPU blocklist and ozone/Vulkan warnings there, and `hermes logs desktop -f` shows the app-side boot log.
+
+Chromium's GPU blocklist disables hardware acceleration conservatively for some recent hardware (reported on AMD RDNA4 under Wayland). The workaround is a per-user config change, not a global system tweak:
+
+```yaml
+desktop:
+  electron_flags:
+    - --enable-gpu-rasterization
+    - --ignore-gpu-blocklist
+```
+
+Rollback is trivial — the list is purely additive at launch. Empty it (or delete the keys) and relaunch; nothing is persisted elsewhere.
+
+Two cautions:
+
+- `--ignore-gpu-blocklist` exists because some GPU/driver combinations crash Chromium rather than merely render slowly. Treat it as a workaround you have verified on your own machine, not a recommended default — if the app becomes unstable with it, remove it.
+- On native Wayland, Electron may log `'--ozone-platform=wayland' is not compatible with Vulkan` and keep rendering in software even with the blocklist flags set. The scoped escape is `desktop.ozone_platform_hint: x11` (run the app under XWayland) — see the [HUD Linux/Wayland notes](#linux--wayland) for its trade-offs (no click-through HUD on X11; keyboard issues reported on some KDE setups). Prefer this narrow config switch over forcing X11 system-wide or disabling Vulkan globally — neither is warranted by one app's symptoms.
 
 ## How it works
 

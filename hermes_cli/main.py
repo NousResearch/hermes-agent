@@ -330,6 +330,7 @@ from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.verify import build_verify_parser
+from hermes_cli.subcommands.trace import build_trace_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
@@ -2064,6 +2065,83 @@ def cmd_verify(args):
     sys.exit(run_verify_command(args))
 
 
+def cmd_trace(args):
+    from hermes_state import SessionDB
+
+    db = None
+    try:
+        db = SessionDB()
+        sid = db.resolve_session_id(args.session)
+        if not sid:
+            print(f"Error: no session matching {args.session!r}")
+            return
+
+        from agent.trace_builder import build_trace
+
+        trace = build_trace(db, sid, include_subagents=not args.no_subagents)
+        if trace is None or not trace.spans:
+            print(f"No trace data for session {sid}")
+            return
+
+        action = getattr(args, "trace_action", None)
+        if action == "show":
+            _print_trace_tree(trace)
+            return
+
+        from agent.trace_export import dumps
+
+        payload = dumps(trace, getattr(args, "format", "otlp"))
+        output = getattr(args, "output", None)
+        if not output or output == "-":
+            print(payload)
+        else:
+            with open(output, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+            print(
+                f"Wrote {len(trace.spans)} spans ({args.format}) to {output}"
+            )
+    except Exception as e:
+        print(f"Error building trace: {e}")
+    finally:
+        if db is not None:
+            db.close()
+
+
+def _print_trace_tree(trace) -> None:
+    """Render a span tree as an indented summary for the terminal."""
+    from agent.trace_builder import STATUS_ERROR
+
+    by_parent: dict = {}
+    for span in trace.spans:
+        by_parent.setdefault(span.parent_id, []).append(span)
+    for kids in by_parent.values():
+        kids.sort(key=lambda s: s.start)
+
+    glyph = {"AGENT": "◆", "LLM": "✦", "TOOL": "⚙", "CHAIN": "▸"}
+
+    print(
+        f"trace {trace.root_session_id[:12]} · {len(trace.spans)} spans · "
+        f"{trace.duration:.1f}s"
+    )
+
+    def walk(parent_id, depth):
+        for span in by_parent.get(parent_id, []):
+            mark = "✗" if span.status == STATUS_ERROR else glyph.get(span.kind, "·")
+            indent = "  " * depth
+            print(
+                f"{indent}{mark} [{span.kind:<5}] {span.name[:60]:<60} "
+                f"{span.duration:7.2f}s"
+            )
+            walk(span.span_id, depth + 1)
+
+    roots = [s for s in trace.spans if s.parent_id is None]
+    roots.sort(key=lambda s: s.start)
+    for root in roots:
+        mark = "✗" if root.status == STATUS_ERROR else glyph.get(root.kind, "·")
+        print(f"{mark} [{root.kind:<5}] {root.name[:60]:<60} {root.duration:7.2f}s")
+        walk(root.span_id, 1)
+
+
 def cmd_security(args):
     """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
@@ -2310,7 +2388,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     """
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
-        "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
+        "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "trace", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
         "memory", "dump", "debug", "backup", "import", "completion", "logs",
@@ -2603,7 +2681,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "resume",
         "send", "sessions", "setup",
-        "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "skin", "skills", "slack", "status", "sync", "tools", "trace", "uninstall", "update",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -3212,6 +3290,7 @@ def _build_cli_parser():
     build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
     build_verify_parser(subparsers, cmd_verify=cmd_verify)
+    build_trace_parser(subparsers, cmd_trace=cmd_trace)
     build_security_parser(subparsers, cmd_security=cmd_security)
     build_approvals_parser(subparsers, cmd_approvals=cmd_approvals)
     build_dump_parser(subparsers, cmd_dump=cmd_dump)

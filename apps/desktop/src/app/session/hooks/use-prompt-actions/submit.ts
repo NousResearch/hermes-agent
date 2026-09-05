@@ -19,6 +19,7 @@ import {
   terminalContextBlocksFromDraft
 } from '@/store/composer'
 import { $hudMode } from '@/store/hud'
+import { liveTurnReset } from '@/store/live-turn'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
@@ -32,6 +33,7 @@ import {
   touchSessionActivity
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { clearSessionSubagents } from '@/store/subagents'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -752,6 +754,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(liveSessionId)
         const text = buildContextText(syncedAttachments)
+
+        // New user turn = the real trace boundary: reset the live turn + clear
+        // the prior turn's subagents here, so async re-entries / multi-round
+        // message.starts accumulate into one turn instead of clobbering it.
+        liveTurnReset(liveSessionId)
+        clearSessionSubagents(liveSessionId)
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,

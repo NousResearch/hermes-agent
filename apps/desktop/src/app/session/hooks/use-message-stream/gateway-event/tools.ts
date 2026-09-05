@@ -1,5 +1,6 @@
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { liveToolComplete, liveToolStart } from '@/store/live-turn'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
@@ -57,6 +58,14 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     flushQueuedDeltas(sessionId)
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
 
+    if (event.type === 'tool.start') {
+      const toolId = String(payload?.tool_id ?? payload?.tool_call_id ?? payload?.id ?? payload?.name ?? '')
+
+      if (toolId) {
+        liveToolStart(sessionId, toolId, String(payload?.name ?? 'tool'))
+      }
+    }
+
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })
     }
@@ -68,6 +77,12 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     if (sessionId) {
       flushQueuedDeltas(sessionId)
       upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
+
+      const toolId = String(payload?.tool_id ?? payload?.tool_call_id ?? payload?.id ?? payload?.name ?? '')
+
+      if (toolId) {
+        liveToolComplete(sessionId, toolId, payload?.error ? 'error' : 'ok')
+      }
 
       if (isActiveEvent) {
         setPetActivity({ toolRunning: false })

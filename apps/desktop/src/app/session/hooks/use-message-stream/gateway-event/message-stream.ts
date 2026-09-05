@@ -10,6 +10,7 @@ import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock
 import { clearClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { notify } from '@/store/notifications'
+import { liveTurnAppendText, liveTurnEnd, liveTurnStart } from '@/store/live-turn'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
@@ -86,7 +87,12 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     flushQueuedDeltas(sessionId)
+    // NOTE: subagents are cleared on the user's submit (the real turn
+    // boundary), NOT here — message.start also fires per assistant round and
+    // for synthetic re-entries (async-delegation completion / notifications),
+    // which must accumulate into the same turn, not wipe it.
     pruneFinishedSessionSubagents(sessionId)
+    liveTurnStart(sessionId)
     setSessionCompacting(sessionId, false)
     compactedTurnRef.current.delete(sessionId)
     nativeSubagentSessionsRef.current.delete(sessionId)
@@ -152,7 +158,9 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'message.delta') {
     if (sessionId) {
-      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
+      const text = coerceGatewayText(payload?.text)
+      appendAssistantDelta(sessionId, text, occurredAt)
+      liveTurnAppendText(sessionId, text)
     }
 
     return true
@@ -349,6 +357,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         : undefined
 
     completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
+    liveTurnEnd(sessionId)
 
     // Structured billing wall forwarded by the gateway (out of credits /
     // payment required) — cache it + raise a billing-specific toast.

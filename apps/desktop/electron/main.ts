@@ -4665,7 +4665,15 @@ function resolveWebDist() {
   return fallback
 }
 
-function resolveRendererIndex() {
+// Same resolution as resolveRendererIndex, but also hands back the missing
+// asset list already computed for the copy it chose. The primary-window path
+// needs BOTH, and re-deriving the list means walking the whole renderer
+// generation a second time: missingRendererAssets follows index.html's
+// modulepreload refs and then every chunk's inline __vite__mapDeps table, so
+// on a release build it reads ~28 MiB across ~160 files synchronously on the
+// main thread — measured ~49 ms per walk, twice before loadWindowUrl().
+// Callers that only need the path keep using resolveRendererIndex below.
+function resolveRendererIndexWithMissing(): { index: string; missing: string[] } {
   const asarIndex = path.join(APP_ROOT, 'dist', 'index.html')
   const webDistIndex = path.join(resolveWebDist(), 'index.html')
 
@@ -4688,11 +4696,20 @@ function resolveRendererIndex() {
   // first lazy import with "Failed to fetch dynamically imported module" and
   // every restart reloads the same torn copy. Prefer a copy whose modules are
   // all present, so the intact generation heals the boot by itself.
+  // Remember the FIRST candidate's list: if every copy turns out to be torn we
+  // load present[0], and its list is already in hand — recomputing it there
+  // would reintroduce the very second walk this function exists to avoid.
+  let firstMissing: string[] | null = null
+
   for (const candidate of present) {
     const missing = missingRendererAssets(candidate)
 
     if (missing.length === 0) {
-      return candidate
+      return { index: candidate, missing: [] }
+    }
+
+    if (firstMissing === null) {
+      firstMissing = missing
     }
 
     rememberLog(
@@ -4712,7 +4729,9 @@ function resolveRendererIndex() {
         `Repair with: hermes desktop --force-build`
     )
 
-    return present[0]
+    // present[0]'s own list, captured on the first loop iteration — never the
+    // last candidate's, which would describe a bundle we are not loading.
+    return { index: present[0], missing: firstMissing ?? [] }
   }
 
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with
@@ -4724,7 +4743,13 @@ function resolveRendererIndex() {
       `Rebuild with: hermes desktop --force-build`
   )
 
-  return candidates[0]
+  return { index: candidates[0], missing: [] }
+}
+
+// Path-only accessor: unchanged behaviour for the window loaders that do not
+// need the torn-asset list.
+function resolveRendererIndex() {
+  return resolveRendererIndexWithMissing().index
 }
 
 // True when `dir` lives inside the packaged app bundle / install tree.
@@ -14671,8 +14696,11 @@ function createWindow() {
   // copies; here we refuse to load one into the PRIMARY window and put the
   // visible repair page in it instead. The Reload button re-attempts the
   // bundle in case the file lock cleared since boot.
-  const rendererIndex = DEV_SERVER ? null : resolveRendererIndex()
-  const tornAssets = rendererIndex ? missingRendererAssets(rendererIndex) : []
+  // One resolution, not two: resolveRendererIndexWithMissing already computed
+  // this copy's missing list while choosing it.
+  const resolvedRenderer = DEV_SERVER ? null : resolveRendererIndexWithMissing()
+  const rendererIndex = resolvedRenderer?.index ?? null
+  const tornAssets = resolvedRenderer?.missing ?? []
 
   if (!DEV_SERVER && rendererIndex && tornAssets.length > 0) {
     rememberLog(

@@ -1161,9 +1161,11 @@ function parseFrontmatter(content: string): { body: string; meta: [string, strin
 
 function SkillDocument({
   isLoading,
+  localizedDescription,
   parsed
 }: {
   isLoading: boolean
+  localizedDescription?: string
   parsed: { body: string; meta: [string, string][] } | null
 }) {
   const { t } = useI18n()
@@ -1177,7 +1179,9 @@ function SkillDocument({
               <span className="w-24 shrink-0 font-medium text-(--ui-text-tertiary)">
                 {t.skills.metadataLabels[key] ?? prettyName(key)}
               </span>
-              <span className="min-w-0 whitespace-pre-wrap break-words text-(--ui-text-secondary)">{value}</span>
+              <span className="min-w-0 whitespace-pre-wrap break-words text-(--ui-text-secondary)">
+                {key === 'description' && localizedDescription ? localizedDescription : value}
+              </span>
             </div>
           ))}
         </div>
@@ -1211,6 +1215,7 @@ function SkillDetail({
   // Only learned/local skills are the user's to rewrite or archive — bundled
   // and hub skills are managed by their sources.
   const editable = skill.provenance === 'agent'
+  const description = asText(skill.description) || t.skills.noDescription
 
   // The FULL skill — frontmatter metadata + complete SKILL.md body — for any
   // provenance, scoped to the Capabilities profile selector. The row list only
@@ -1229,7 +1234,7 @@ function SkillDetail({
   return (
     <>
       <DetailHeader
-        description={asText(skill.description) || t.skills.noDescription}
+        description={description}
         pills={
           <>
             <PanelPill>{categoryLabel(categoryFor(skill), t.skills.categories)}</PanelPill>
@@ -1252,7 +1257,7 @@ function SkillDetail({
           </Button>
         </div>
       )}
-      <SkillDocument isLoading={contentQuery.isLoading} parsed={parsed} />
+      <SkillDocument isLoading={contentQuery.isLoading} localizedDescription={description} parsed={parsed} />
     </>
   )
 }

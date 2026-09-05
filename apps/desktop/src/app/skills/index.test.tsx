@@ -322,7 +322,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       expect(await screen.findByText(label)).toBeTruthy()
     }
 
-    expect(screen.getByText('審查程式碼並提出可執行的改善建議。')).toBeTruthy()
+    expect((await screen.findAllByText('審查程式碼並提出可執行的改善建議。')).length).toBe(2)
+    expect(screen.queryByText('Review code and suggest fixes.')).toBeNull()
     expect(await screen.findByText(/Raw English instructions/)).toBeTruthy()
   })
 

@@ -9,6 +9,7 @@ checkout — the same trust level as the terminal tool.
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -108,6 +109,69 @@ def _run_phase_command(
     return PhaseResult(phase, command, exit_code, duration, _tail(output), timed_out)
 
 
+_COMPOSE_PROBE_TIMEOUT = 20.0
+# Compose subcommands that create, replace or stop containers.
+_COMPOSE_MUTATING_SUBCOMMANDS = frozenset(
+    {"build", "up", "down", "start", "restart", "stop", "kill", "rm", "recreate"}
+)
+_SHELL_SEPARATORS = frozenset({"&&", "||", "|", ";", "&"})
+
+
+def _is_mutating_compose_command(command: str) -> bool:
+    """True if ``command`` invokes a docker compose subcommand that would create,
+    replace or stop containers (``docker compose up``, ``docker-compose build``, ...)."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    in_compose = False
+    for index, token in enumerate(tokens):
+        if token in _SHELL_SEPARATORS:
+            in_compose = False
+            continue
+        name = token.rsplit("/", 1)[-1]
+        if name == "docker-compose" or (
+            name == "compose" and index and tokens[index - 1].rsplit("/", 1)[-1] == "docker"
+        ):
+            in_compose = True
+            continue
+        if in_compose and name in _COMPOSE_MUTATING_SUBCOMMANDS:
+            return True
+    return False
+
+
+def _compose_project_is_live(root: Path) -> tuple[bool, str]:
+    """Probe the compose project in ``root`` for containers that are already running.
+
+    Returns ``(live, detail)``. Fails closed: a missing ``docker`` binary or a failing
+    probe reports live, so verify never mutates a deployment it could not inspect.
+    """
+    try:
+        proc = subprocess.run(
+            ["docker", "compose", "ps", "-q"], cwd=str(root), timeout=_COMPOSE_PROBE_TIMEOUT,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return True, f"could not probe running containers: {exc}"
+    if proc.returncode != 0:
+        detail = ((proc.stderr or "") + (proc.stdout or "")).strip().replace("\n", " ")
+        return True, f"`docker compose ps -q` failed (exit {proc.returncode}): {_tail(detail, 200)}"
+    ids = [line.strip() for line in (proc.stdout or "").splitlines() if line.strip()]
+    if ids:
+        listed = ", ".join(cid[:12] for cid in ids[:5])
+        return True, f"{len(ids)} container(s) already running: {listed}"
+    return False, ""
+
+
+def _compose_refusal_message(command: str, detail: str) -> str:
+    return (
+        f"Refused to run `{command}`: this project has a live docker compose deployment "
+        f"({detail}). Verify does not build, recreate or stop containers it did not start, "
+        "so the running stack was left untouched and nothing was smoke-tested. Stop the "
+        "stack first, or point verify at a disposable copy of the project."
+    )
+
+
 def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bool, int | None, str | None]:
     deadline = time.monotonic() + timeout
     last_error: str | None = None
@@ -189,20 +253,44 @@ def run_verify(
     on_output: Callable[[str], None] | None = None,
 ) -> VerifyResult:
     """Run the selected command phases sequentially, then (unless ``skip_start`` or a
-    phase failed) boot ``recipe.start``, poll readiness, and tear the process group down."""
+    phase failed) boot ``recipe.start``, poll readiness, and tear the process group down.
+
+    Compose commands that would replace a running stack are refused (as a failed phase)
+    when the project already has live containers — see ``_compose_project_is_live``."""
     root = Path(root)
     selected = tuple(phases) if phases else PHASE_ORDER + ("start",)
     result = VerifyResult(recipe_name=recipe.name)
+    probe_cache: list[tuple[bool, str]] = []
+
+    def refuse_if_live_compose(phase: str, command: str) -> PhaseResult | None:
+        """A failed ``PhaseResult`` if ``command`` would mutate a live compose stack."""
+        if not _is_mutating_compose_command(command):
+            return None
+        if not probe_cache:
+            probe_cache.append(_compose_project_is_live(root))
+        live, detail = probe_cache[0]
+        if not live:
+            return None
+        message = _compose_refusal_message(command, detail)
+        if on_output:
+            on_output(message + "\n")
+        return PhaseResult(phase, command, exit_code=1, duration=0.0, output_tail=message)
 
     for phase in PHASE_ORDER:
         if phase not in selected:
             continue
         for command in getattr(recipe, phase):
-            phase_result = _run_phase_command(phase, command, root, phase_timeout, on_output)
+            phase_result = refuse_if_live_compose(phase, command) or _run_phase_command(
+                phase, command, root, phase_timeout, on_output
+            )
             result.phases.append(phase_result)
             if not phase_result.ok and stop_on_failure:
                 return result
 
     if not skip_start and "start" in selected and recipe.start and all(p.ok for p in result.phases):
-        result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override)
+        refused = refuse_if_live_compose("start", recipe.start)
+        if refused is not None:
+            result.phases.append(refused)
+        else:
+            result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override)
     return result

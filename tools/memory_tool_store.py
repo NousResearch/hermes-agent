@@ -317,6 +317,19 @@ class MemoryStore:
                                            (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
+            if entries and not working:
+                # A batch must never silently empty a previously non-empty
+                # store (#103419): a background consolidation that removes the
+                # last entry would otherwise commit an empty USER.md/MEMORY.md
+                # as a normal successful write. Refuse all-or-nothing so the
+                # model keeps at least one entry; a deliberate wipe is a manual
+                # file edit, not a consolidation side effect.
+                label = "USER.md" if target == "user" else "MEMORY.md"
+                return self._failure_with_entries(target, (
+                    f"Refusing to empty {label}: this batch would remove every entry from a "
+                    f"previously non-empty profile. Nothing was applied (batch is all-or-nothing). "
+                    f"Keep at least one entry — merge overlapping entries into a shorter one instead "
+                    f"of removing the last one (see current_entries below)."))
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
             if new_total > limit:
                 return self._failure_with_entries(target, (

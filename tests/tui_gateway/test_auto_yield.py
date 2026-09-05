@@ -179,3 +179,19 @@ def holder_pid_pid_of_self() -> int:
 def gateway_home():
     import os
     return os.environ["HERMES_HOME"]
+
+
+def test_poller_leaves_fresh_foreign_requests_alone(tmp_path, monkeypatch):
+    """Every backend sweeps every home, so a poller must NOT consume a request addressed to
+    another live pid — only its own, or expired/corrupt ones."""
+    from hermes_cli.active_sessions import _yield_request_dir, poll_yield_requests
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    req_dir = _yield_request_dir()
+    req_dir.mkdir(parents=True, exist_ok=True)
+    (req_dir / "foreign-live.json").write_text(json.dumps({
+        "session_id": "x", "holder_pid": 424242, "holder_process_start_time": None,
+        "requested_at": time.time()}))
+    mine = poll_yield_requests()
+    assert mine == []
+    assert (req_dir / "foreign-live.json").exists(), "foreign request must survive for its owner"

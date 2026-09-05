@@ -167,7 +167,9 @@ def request_cross_surface_yield(
 def poll_yield_requests(
     *, registry_home: str | Path | None = None, max_age_s: float = YIELD_REQUEST_TTL_S,
 ) -> list[dict[str, Any]]:
-    """Fresh, well-formed requests targeting THIS process; expired files are removed."""
+    """Fresh, well-formed requests targeting THIS process. Files addressed to another pid
+    are LEFT in place for their rightful owner (every backend sweeps every home, so the
+    first poller must not consume a foreign request); corrupt and expired files are removed."""
     req_dir = _yield_request_dir(registry_home)
     mine: list[dict[str, Any]] = []
     try:
@@ -180,20 +182,28 @@ def poll_yield_requests(
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             payload = None
+        file_pid: Optional[int] = None
+        if isinstance(payload, dict):
+            try:
+                file_pid = int(payload.get("holder_pid") or 0)
+            except (TypeError, ValueError):
+                file_pid = None
+        expired = (
+            not isinstance(payload, dict)
+            or now - float(payload.get("requested_at") or 0.0) > max_age_s
+        )
+        if not expired and file_pid is not None and file_pid != os.getpid():
+            continue  # not ours, still fresh: leave it for the addressed holder
         try:
             path.unlink(missing_ok=True)
         except Exception:
             pass
         if not isinstance(payload, dict):
             continue
-        if now - float(payload.get("requested_at") or 0.0) > max_age_s:
+        if expired:
             continue
-        try:
-            if int(payload.get("holder_pid") or 0) != os.getpid():
-                continue
-        except (TypeError, ValueError):
-            continue
-        mine.append(payload)
+        if file_pid == os.getpid():
+            mine.append(payload)
     return mine
 
 

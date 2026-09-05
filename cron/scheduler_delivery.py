@@ -1061,7 +1061,7 @@ def _warn_live_lane_failure(job: dict, msg: str, is_relay: bool) -> None:
 
 def _resolve_target_transport(
     job: dict, platform, platform_name: str, target: dict, adapters, config):
-    """Resolve ``(transport, pconfig, runtime_adapter, target_adapters)`` for one target, or
+    """Resolve ``(transport, pconfig, runtime_adapter, target_adapters, config)`` for one target, or
     ``(None, error)`` when it cannot be served (relay-fronted with no live transport, or not
     configured/enabled)."""
     from gateway.delivery import resolve_delivery_transport
@@ -1072,6 +1072,21 @@ def _resolve_target_transport(
         # See #101113.
         shared = adapters.get(platform, target)
         target_adapters = {platform: shared} if shared is not None else {}
+        native_config = config.platforms.get(platform)
+        if shared is not None and (native_config is None or not native_config.enabled):
+            from dataclasses import replace
+            from gateway.config import PlatformConfig
+
+            # The satellite disables its OWN connector, not the owner's already
+            # authorized transport. Enable only this target-local view after the
+            # SharedRouteAdapters gate; never copy the owner's token/config.
+            owner_config = getattr(shared, "config", None)
+            if isinstance(owner_config, PlatformConfig) and owner_config.enabled:
+                target_config = (
+                    replace(native_config, enabled=True)
+                    if native_config is not None else PlatformConfig(enabled=True)
+                )
+                config = replace(config, platforms={**config.platforms, platform: target_config})
     transport = resolve_delivery_transport(platform, config, target_adapters)
     if transport is not None:
         pconfig = transport.config
@@ -1098,7 +1113,7 @@ def _resolve_target_transport(
             pconfig = PlatformConfig(enabled=True)
     elif not pconfig or not pconfig.enabled:
         return None, f"platform '{platform_name}' not configured/enabled"
-    return (transport, pconfig, runtime_adapter, target_adapters), None
+    return (transport, pconfig, runtime_adapter, target_adapters, config), None
 
 
 def _inchannel_surface_supported(runtime_adapter, platform_name: str) -> bool:
@@ -1514,7 +1529,7 @@ def _prepare_target_delivery(
     if resolved is None:
         _note_target_error(job, resolve_err, delivery_errors)
         return None
-    transport, pconfig, runtime_adapter, target_adapters = resolved
+    transport, pconfig, runtime_adapter, target_adapters, config = resolved
 
     # Live send needs a RUNNING loop, not just an adapter. Computed ONCE so the in_channel
     # thread_id clear below stays in lockstep with the seed (standalone cannot seed flat).
@@ -1558,6 +1573,13 @@ def _prepare_target_delivery(
             job, runtime_adapter, chat_id, loop) or None
         if opened_thread_id:
             thread_id = opened_thread_id
+    if isinstance(adapters, _preflight.SharedRouteAdapters) and runtime_adapter is not None:
+        # Continuable delivery may clear/change thread_id. Recheck the final
+        # destination so a topic-scoped route cannot become a chat-wide send.
+        final_target = {"chat_id": chat_id, "thread_id": thread_id}
+        if adapters.get(platform, final_target) is not runtime_adapter:
+            _note_target_error(job, "shared gateway route does not authorize final destination", delivery_errors)
+            return None
     return _TargetDelivery(
         job=job, platform=platform, platform_name=platform_name, chat_id=chat_id,
         thread_id=thread_id, transport=transport, pconfig=pconfig, runtime_adapter=runtime_adapter,
@@ -1697,6 +1719,14 @@ def _deliver_result(
             unverified_targets=unverified_targets,
         )
         if not delivered:
+            if isinstance(adapters, _preflight.SharedRouteAdapters) and t.runtime_adapter is not None:
+                # The shared connector owns the credential. A stopped loop or
+                # failed send must not fall through to standalone token lookup.
+                delivery_errors.extend(target_errors)
+                _note_target_error(
+                    job, f"shared gateway transport unavailable for {t.where}; "
+                    "no standalone credential fallback", delivery_errors)
+                continue
             _deliver_standalone(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
 

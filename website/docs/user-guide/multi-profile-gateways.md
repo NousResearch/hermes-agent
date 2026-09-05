@@ -318,6 +318,16 @@ profile — a routed profile's job targeting an unrouted chat (or a chat routed
 to another profile) is never sent through the shared bot. Guild-only routes do
 not qualify a cron target; add a `chat_id` route for the delivery channel.
 
+The routed profile may leave its own platform connector disabled (for example,
+`platforms.telegram.enabled: false`) or omit its platform block entirely. It
+does not need a second bot or a copy of the primary bot token. The scheduler
+uses a target-local enabled view only after the shared-route adapter authorizes
+the destination; it does not enable the profile's connector or inherit the
+primary profile's settings. Other destinations and ordinary, non-shared
+disabled connectors keep their existing behavior. If the selected shared
+transport fails or its event loop is stopped, delivery reports an error rather
+than attempting standalone credential lookup.
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

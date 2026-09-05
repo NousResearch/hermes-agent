@@ -1632,12 +1632,86 @@ class TestBuildApiKwargs:
 
 
 class TestBuildAssistantMessage:
+    @staticmethod
+    def _enable_native_compaction(agent):
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.6-sol"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_hostname = "chatgpt.com"
+        agent._base_url_lower = agent.base_url
+        agent.codex_responses_native_compaction = True
+        agent.compression_enabled = True
+        agent.runtime_capabilities = {"native_compaction": True}
+
     def test_basic_message(self, agent):
         msg = _mock_assistant_msg(content="Hello!")
         result = agent._build_assistant_message(msg, "stop")
         assert result["role"] == "assistant"
         assert result["content"] == "Hello!"
         assert result["finish_reason"] == "stop"
+
+    def test_native_checkpoint_arms_real_usage_preflight_deferral(self, agent):
+        checkpoint = {
+            "type": "compaction",
+            "encrypted_content": "opaque-checkpoint",
+            "_issuer_kind": "codex_backend",
+        }
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [checkpoint]
+        agent.context_compressor.note_native_compaction_checkpoint = MagicMock()
+        self._enable_native_compaction(agent)
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [checkpoint]
+        agent.context_compressor.note_native_compaction_checkpoint.assert_called_once_with()
+
+    def test_native_checkpoint_remains_compatible_with_plugin_context_engine(self, agent):
+        checkpoint = {
+            "type": "compaction",
+            "encrypted_content": "opaque-checkpoint",
+            "_issuer_kind": "codex_backend",
+        }
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [checkpoint]
+        agent.context_compressor = SimpleNamespace(threshold_tokens=204_000)
+        self._enable_native_compaction(agent)
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [checkpoint]
+
+    @pytest.mark.parametrize("encrypted_content", ["", " "])
+    def test_malformed_checkpoint_does_not_arm_deferral(
+        self, agent, encrypted_content
+    ):
+        note_checkpoint = MagicMock()
+        agent.context_compressor.note_native_compaction_checkpoint = note_checkpoint
+        malformed = {
+            "type": "compaction",
+            "encrypted_content": encrypted_content,
+        }
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [malformed]
+        self._enable_native_compaction(agent)
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [malformed]
+        note_checkpoint.assert_not_called()
+
+    def test_ineligible_route_checkpoint_does_not_arm_deferral(self, agent):
+        note_checkpoint = MagicMock()
+        agent.context_compressor.note_native_compaction_checkpoint = note_checkpoint
+        checkpoint = {"type": "compaction", "encrypted_content": "opaque-checkpoint"}
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [checkpoint]
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [checkpoint]
+        note_checkpoint.assert_not_called()
 
 
 

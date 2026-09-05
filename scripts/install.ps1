@@ -1422,16 +1422,60 @@ function New-GitBashAslrFailureReason {
     ) -join [Environment]::NewLine
 }
 
+function Get-ManagedGitUserPath {
+    param([AllowEmptyString()][string]$UserPath, [string]$GitDir)
+
+    $entries = @("$GitDir\cmd", "$GitDir\bin", "$GitDir\usr\bin")
+    $legacySuffix = $entries -join ""
+    # Keep this an array even for an empty or single-entry User PATH.
+    # Previously += concatenated strings instead of appending PATH entries.
+    $items = @(
+        if ($UserPath) {
+            foreach ($item in ($UserPath -split ";")) {
+                $prefix = $item
+                $repaired = $false
+                # Repair only the exact concatenation emitted by the old
+                # installer, including repeated retries. Do not split arbitrary
+                # drive letters or rewrite unrelated entries.
+                while ($prefix.EndsWith($legacySuffix, [StringComparison]::OrdinalIgnoreCase)) {
+                    $prefix = $prefix.Substring(0, $prefix.Length - $legacySuffix.Length)
+                    $repaired = $true
+                }
+                if (-not $repaired -or $prefix) { $prefix }
+            }
+        }
+    )
+    foreach ($entry in $entries) {
+        if ($items -notcontains $entry) { $items += $entry }
+    }
+    return ($items -join ";")
+}
+
+function Set-ManagedGitPath {
+    param([string]$GitDir)
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $updated = Get-ManagedGitUserPath -UserPath $userPath -GitDir $GitDir
+    if ($updated -cne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $updated, "User")
+    }
+    # Persisted PATH is for later stage processes; this stage needs Git too.
+    if (($env:Path -split ";") -notcontains "$GitDir\cmd") {
+        $env:Path = "$GitDir\cmd;$env:Path"
+    }
+}
+
 function Install-Git {
     <#
     .SYNOPSIS
     Ensure Git (and Git Bash) are installed.  Git for Windows bundles bash.exe
     which Hermes uses to run shell commands.
 
-    Priority order (deliberately simple -- no winget, no registry, no system
+    Discovery order (no winget, registry-based Git discovery, or system
     package manager):
-      1. Existing ``git`` on PATH -- use it as-is (the common fast path).
-      2. Download **PortableGit** from the official git-for-windows GitHub
+      1. Repair PATH visibility for an existing Hermes-managed Git.
+      2. Use ``git`` on the resulting PATH (the common fast path).
+      3. Download **PortableGit** from the official git-for-windows GitHub
          release (self-extracting 7z.exe) and unpack it to
          ``%LOCALAPPDATA%\hermes\git`` -- never touches system Git, never
          requires admin, works even on locked-down machines and machines
@@ -1456,6 +1500,11 @@ function Install-Git {
     #>
     $script:GitInstallFailureReason = $null
     Write-Info "Checking Git..."
+
+    $managedGitDir = Join-Path $HermesHome "git"
+    if (Test-Path -LiteralPath (Join-Path $managedGitDir "cmd\git.exe") -PathType Leaf) {
+        Set-ManagedGitPath -GitDir $managedGitDir
+    }
 
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $version = git --version
@@ -1562,29 +1611,10 @@ function Install-Git {
             throw "Git extraction did not produce git.exe at $gitExe"
         }
 
-        # Add to session PATH so the rest of this install run can use git.
-        $env:Path = "$gitDir\cmd;$env:Path"
-
         # Persist to User PATH so fresh shells see it.  PortableGit needs
         # cmd\ (for git.exe), bin\ (for bash.exe + core tools), and
         # usr\bin\ (for perl, ssh, curl, and other POSIX coreutils).
-        $newPathEntries = @(
-            "$gitDir\cmd",
-            "$gitDir\bin",
-            "$gitDir\usr\bin"
-        )
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
-        $changed = $false
-        foreach ($entry in $newPathEntries) {
-            if ($userPathItems -notcontains $entry) {
-                $userPathItems += $entry
-                $changed = $true
-            }
-        }
-        if ($changed) {
-            [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
-        }
+        Set-ManagedGitPath -GitDir $gitDir
 
         $version = & $gitExe --version
         Write-Success "Git $version installed to $gitDir (portable, user-scoped)"
@@ -2133,6 +2163,23 @@ function Install-SystemPackages {
 
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
+
+    # A missing/unlaunchable Git is not evidence of a broken checkout. Resolve
+    # the managed install again in this fresh stage before any probe or move.
+    $managedGitDir = Join-Path $HermesHome "git"
+    if (Test-Path -LiteralPath (Join-Path $managedGitDir "cmd\git.exe") -PathType Leaf) {
+        Set-ManagedGitPath -GitDir $managedGitDir
+    }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "Git is not available on PATH. Rerun the Git installation stage. The existing checkout has not been moved."
+    }
+    try {
+        $global:LASTEXITCODE = 0
+        $null = & git --version
+        if ($LASTEXITCODE -ne 0) { throw "git --version exited $LASTEXITCODE" }
+    } catch {
+        throw "Git could not run: $_. The existing checkout has not been moved."
+    }
 
     $didUpdate = $false
 

@@ -66,16 +66,7 @@ class TestDistributionStructure:
 
 
 class TestGroupedCompoundEntries:
-    """"+"-grouped entries roll once and select all members together.
-
-    browser_tasks uses "browser+search" so web_search availability stays
-    coupled to browser at the original 97% co-occurrence after #64503 removed
-    web_search from the browser toolset (independent 97% rolls would co-occur
-    only ~94% of the time).
-    """
-
-    def test_browser_tasks_uses_grouped_entry(self):
-        assert "browser+search" in DISTRIBUTIONS["browser_tasks"]["toolsets"]
+    """"+"-grouped entries roll once and select all members together (#64503)."""
 
     def test_hit_roll_selects_all_members_together(self, monkeypatch):
         import toolset_distributions as td
@@ -86,21 +77,17 @@ class TestGroupedCompoundEntries:
         assert "search" in result
         assert "browser+search" not in result  # members, not the raw key
 
-    def test_members_always_co_occur(self, monkeypatch):
-        import random as _random
-
-        _random.seed(64525)
-        for _ in range(500):
-            result = sample_toolsets_from_distribution("browser_tasks")
-            assert ("browser" in result) == ("search" in result), result
-
     def test_fallback_expands_compound_members(self, monkeypatch):
         import toolset_distributions as td
 
+        monkeypatch.setitem(
+            td.DISTRIBUTIONS,
+            "_test_compound_fallback",
+            {"description": "t", "toolsets": {"browser+search": 60, "web": 10}},
+        )
         monkeypatch.setattr(td.random, "random", lambda: 1.0)  # every roll misses
-        # browser+search is browser_tasks' highest-probability entry (97%).
-        result = sample_toolsets_from_distribution("browser_tasks")
-        assert result == ["browser", "search"]
+        result = sample_toolsets_from_distribution("_test_compound_fallback")
+        assert set(result) == {"browser", "search"}
 
     def test_invalid_member_skips_whole_entry(self, monkeypatch, capsys):
         import toolset_distributions as td

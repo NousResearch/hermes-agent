@@ -258,8 +258,16 @@ def _tool_defs_cache_key(
 
     Covers every argument plus everything that changes the result without one:
     registry generation, config.yaml mtime/size (dynamic schemas), kanban
-    context, profile scope. check_fn results are TTL-cached in the registry.
-    """
+    context, profile scope, cron-session state. check_fn results are TTL-cached
+    in the registry, but a check_fn whose answer depends on HERMES_CRON_SESSION
+    (a per-task ContextVar, not a stable os.environ var — see
+    tools/cronjob_tools.py's check_cronjob_requirements) changes the tool list
+    itself across otherwise-identical toolset/config fingerprints. Without this
+    dimension, the FIRST call for a given fingerprint (often a non-cron probe,
+    since a long-lived gateway serves many session types) permanently caches
+    that answer for every later cron-session call with the same fingerprint —
+    cronjob_manage silently vanishing from every cron job for the gateway's
+    entire lifetime — confirmed via a live BigCaptain VPS deployment."""
     profile_scope = check_fn_cache_scope()
     if profile_scope == CHECK_FN_CACHE_BYPASS:
         return None
@@ -269,11 +277,17 @@ def _tool_defs_cache_key(
         cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
+    try:
+        from gateway.session_context import get_session_env
+        from utils import is_truthy_value
+        cron_session = is_truthy_value(get_session_env("HERMES_CRON_SESSION"))
+    except Exception:
+        cron_session = False
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
-        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope, cron_session,
     )
 
 

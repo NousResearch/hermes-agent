@@ -10,6 +10,7 @@ Exercises the full flow through the ACP server layer:
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 import acp
 from acp.schema import (
@@ -27,6 +28,7 @@ from acp.schema import (
 from acp_adapter.server import HermesACPAgent
 from acp_adapter.session import SessionManager
 from acp_adapter.tools import build_tool_start
+from hermes_constants import get_hermes_home
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +57,21 @@ class TestMcpRegistrationE2E:
     @pytest.mark.asyncio
     async def test_session_with_mcp_servers_registers_tools(self, acp_agent, mock_manager):
         """new_session with mcpServers converts them to Hermes config and registers."""
+        configured_servers = {
+            "test-fs": {
+                "command": "/ignored", "args": ["--ignored"],
+                "env": {"DEBUG": "ignored"}, "timeout": 28800,
+                "connect_timeout": 123,
+            },
+            "test-api": {
+                "url": "https://ignored.example/mcp",
+                "headers": {"Authorization": "ignored"}, "timeout": 600,
+            },
+        }
+        (get_hermes_home() / "config.yaml").write_text(
+            yaml.safe_dump({"mcp_servers": configured_servers}),
+            encoding="utf-8",
+        )
         servers = [
             McpServerStdio(
                 name="test-fs",
@@ -95,12 +112,16 @@ class TestMcpRegistrationE2E:
         assert fs_cfg["command"] == "/usr/bin/mcp-fs"
         assert fs_cfg["args"] == ["--root", "/tmp"]
         assert fs_cfg["env"] == {"DEBUG": "1"}
+        assert fs_cfg["timeout"] == 28800
+        assert set(fs_cfg) == {"command", "args", "env", "timeout"}
 
         # Verify HTTP server was converted correctly
         assert "test-api" in registered_configs
         api_cfg = registered_configs["test-api"]
         assert api_cfg["url"] == "https://api.example.com/mcp"
         assert api_cfg["headers"] == {"Authorization": "Bearer tok123"}
+        assert api_cfg["timeout"] == 600
+        assert set(api_cfg) == {"url", "headers", "timeout"}
 
         # Verify agent tool surface was refreshed
         assert state.agent.tools == fake_tools

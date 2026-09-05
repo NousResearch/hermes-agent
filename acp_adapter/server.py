@@ -409,9 +409,16 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if not mcp_servers:
             return
         try:
+            from tools.mcp_tool_config import _load_mcp_config
             from tools.mcp_tool_discovery import register_mcp_servers
 
-            await asyncio.to_thread(register_mcp_servers, {s.name: _mcp_server_config(s) for s in mcp_servers})
+            configured_servers = await asyncio.to_thread(_load_mcp_config)
+            config_map = {s.name: _mcp_server_config(s) for s in mcp_servers}
+            for name, config in config_map.items():
+                configured = configured_servers.get(name)
+                if isinstance(configured, dict) and "timeout" in configured:
+                    config["timeout"] = configured["timeout"]
+            await asyncio.to_thread(register_mcp_servers, config_map)
         except Exception:
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return

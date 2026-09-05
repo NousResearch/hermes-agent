@@ -265,6 +265,8 @@ The voice model never forces a compaction: when the conversation is already larg
 While Hermes Desktop reads aloud or speaks a voice reply, use the pause button beside **Stop playback** to hold your place. The button becomes Resume while paused. Resuming continues the same audio; Stop playback discards it. An intentional pause does not count as stalled audio.
 >>>>>>> 3372843cc5 (feat(desktop): pause and resume voice playback)
 
+In continuous voice mode with barge-in enabled, the microphone remains active while playback is paused. Speaking interrupts and discards the held reply so you can give a new instruction, just as it does during playback.
+
 ### Barge-in
 
 You can interrupt the agent at ANY point in its turn — the microphone stays live from the moment you finish speaking until the reply has fully played (full duplex):

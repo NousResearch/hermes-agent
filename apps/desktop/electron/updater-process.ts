@@ -1,5 +1,5 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
@@ -291,6 +291,46 @@ export function stagedUpdaterSupportsPrewrittenMarker(
   return typeof mtimeMs === 'number' && Number.isFinite(mtimeMs) && mtimeMs >= MARKER_SELF_ADOPT_EPOCH_MS
 }
 
+export interface UpdaterOutputTarget {
+  /** Pass straight to spawn's `stdio`. */
+  stdio: 'ignore' | ['ignore', number, number]
+  /** Close the parent's copy of the inherited fd. Always safe to call. */
+  close: () => void
+}
+
+/**
+ * stdio for a detached updater that appends its stdout+stderr to `logPath`.
+ *
+ * The hand-off spawns the updater detached with `stdio: 'ignore'`, which throws
+ * away the only first-hand account of what went wrong: the desktop quits
+ * moments later, so a failing updater leaves nothing behind but an unchanged
+ * commit. Handing it an appended log file keeps that evidence without keeping
+ * a pipe open to a parent that is about to exit.
+ *
+ * Degrades to 'ignore' if the log cannot be opened — losing the transcript is
+ * strictly better than blocking the update over it.
+ */
+export function openUpdaterOutputTarget(logPath: string): UpdaterOutputTarget {
+  try {
+    mkdirSync(path.dirname(logPath), { recursive: true })
+
+    const fd = openSync(logPath, 'a')
+
+    return {
+      stdio: ['ignore', fd, fd],
+      close: () => {
+        try {
+          closeSync(fd)
+        } catch {
+          // Already closed, or never valid. Nothing to recover.
+        }
+      }
+    }
+  } catch {
+    return { stdio: 'ignore', close: () => {} }
+  }
+}
+
 export interface SpawnUpdaterProcessDeps {
   isWindows?: boolean
   spawnProcess?: (command: string, args: string[], options: SpawnOptions) => UpdaterChild
@@ -334,6 +374,16 @@ export interface UpdaterHandoffOutcome {
 export interface ObserveUpdaterHandoffDeps {
   setTimeoutFn?: (callback: () => void, ms: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
+  /**
+   * Whether a clean exit(0) INSIDE the settle window counts as a successful
+   * hand-off. True only for wrapper shapes that are supposed to exit at once
+   * (cmd.exe `start` launches the real script into its own console and
+   * returns). For a directly spawned updater or hand-off script, exiting 0
+   * before the window elapses means it did nothing at all — the silent no-op
+   * that leaves the install on its old commit with no error anywhere. Defaults
+   * to true so existing wrapper callers keep their behavior.
+   */
+  immediateCleanExitIsSuccess?: boolean
 }
 
 /**
@@ -362,6 +412,7 @@ export function observeUpdaterHandoff(
   deps: ObserveUpdaterHandoffDeps = {}
 ): Promise<UpdaterHandoffOutcome> {
   const setTimeoutFn = deps.setTimeoutFn ?? setTimeout
+  const immediateCleanExitIsSuccess = deps.immediateCleanExitIsSuccess ?? true
 
   const clearTimeoutFn =
     deps.clearTimeoutFn ?? ((timer: unknown) => clearTimeout(timer as ReturnType<typeof setTimeout>))
@@ -422,7 +473,21 @@ export function observeUpdaterHandoff(
 
       // Clean exit 0 inside the window is expected for wrapper shapes
       // (cmd.exe `start` on Windows exits immediately after launching the
-      // real script in its own console).
+      // real script in its own console). For a direct spawn there is no
+      // wrapper to hand off to, so the same exit means the updater returned
+      // without doing any work.
+      if (!immediateCleanExitIsSuccess) {
+        finish({
+          ok: false,
+          reason: 'early-exit',
+          message: `updater exited 0 immediately without starting the update`,
+          code: code ?? 0,
+          signal: null
+        })
+
+        return
+      }
+
       finish({ ok: true, code: code ?? 0, signal: null })
     }
 

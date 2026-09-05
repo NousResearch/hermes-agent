@@ -285,15 +285,20 @@ def _run_pending_fleet_restart() -> bool:
 def _apply_pending_fleet_restart_catchup() -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
-    No-op when nothing is pending; exits 1 on incomplete catch-up so automation
-    does not treat the fleet as healthy.
+    A Windows shim hand-off also arrives here with an already-current checkout,
+    but it is the continuation of this update rather than recovery from a prior
+    one. In both cases, no-op when nothing is pending; exit 1 on incomplete
+    catch-up so automation does not treat the fleet as healthy.
     """
-    from hermes_cli.update_cmd import _run_pending_fleet_restart
+    from hermes_cli.update_cmd import _m, _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
         return
     print()
-    _warn_pending_fleet_restart()
-    print("→ Running the pending fleet restart...")
+    if os.environ.get(_m()._UPDATE_REEXEC_ENV) == "1":
+        print("→ Completing the fleet restart handed off by hermes.exe...")
+    else:
+        _warn_pending_fleet_restart()
+        print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
         return

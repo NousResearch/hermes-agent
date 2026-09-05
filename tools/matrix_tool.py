@@ -1,7 +1,7 @@
 """Matrix-native gateway tools (Discord-parity compact action tools).
 
-Two toolsets:
-- ``matrix`` — safe room-local actions (reaction, history, presence)
+Two service-gated toolsets (not part of the universal core bundle):
+- ``matrix`` — room reactions/history and account-wide presence
 - ``matrix_admin`` — gated redaction / invite / room create
 
 Non-secret gates prefer ``config.yaml`` under ``matrix.tools.*`` with legacy
@@ -10,9 +10,9 @@ env overrides (``MATRIX_TOOLS_*`` / ``MATRIX_ALLOW_PUBLIC_ROOMS``).
 
 from __future__ import annotations
 
-import os
+from agent.secret_scope import get_secret
 from concurrent.futures import TimeoutError as FuturesTimeoutError
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Set, Tuple
 
 from gateway.session_context import get_session_env
 from tools.registry import registry, tool_error, tool_result
@@ -34,48 +34,25 @@ def check_matrix_tool_requirements() -> bool:
     """Available when Matrix credentials exist or a Matrix session is active."""
     if get_session_env("HERMES_SESSION_PLATFORM", "").lower() == "matrix":
         return True
-    token = (os.getenv("MATRIX_ACCESS_TOKEN") or "").strip()
-    homeserver = (os.getenv("MATRIX_HOMESERVER") or "").strip()
+    token = (get_secret("MATRIX_ACCESS_TOKEN") or "").strip()
+    homeserver = (get_secret("MATRIX_HOMESERVER") or "").strip()
     return bool(token and homeserver)
 
 
 def _matrix_tools_cfg() -> Dict[str, Any]:
-    """Return *user-set* matrix.tools keys only (no DEFAULT_CONFIG merge).
+    from plugins.platforms.matrix.tool_policy import tools_config
 
-    load_config() deep-merges defaults, which would make every gate key appear
-    present and kill legacy MATRIX_TOOLS_* env fallback. Use raw config.
-    """
-    try:
-        from hermes_cli.config import read_raw_config
-
-        cfg = read_raw_config() or {}
-        matrix = cfg.get("matrix") if isinstance(cfg, dict) else None
-        if not isinstance(matrix, dict):
-            return {}
-        tools = matrix.get("tools")
-        return tools if isinstance(tools, dict) else {}
-    except Exception:
-        return {}
+    return tools_config()
 
 
 def _parse_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"true", "1", "yes", "on"}:
-            return True
-        if lowered in {"false", "0", "no", "off", ""}:
-            return False
-    return default
+    from plugins.platforms.matrix.tool_policy import parse_bool
+
+    return parse_bool(value, default)
 
 
 def _env_enabled(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
+    raw = get_secret(name)
     if raw is None:
         return default
     return _parse_bool(raw, default)
@@ -142,7 +119,7 @@ def _allowed_rooms() -> Set[str]:
     tools = _matrix_tools_cfg()
     raw = tools.get("allowed_rooms")
     if raw is None:
-        raw = os.getenv("MATRIX_ALLOWED_ROOMS", "")
+        raw = get_secret("MATRIX_ALLOWED_ROOMS", "")
     if isinstance(raw, (list, tuple, set)):
         return {str(r).strip() for r in raw if str(r).strip()}
     return {room.strip() for room in str(raw or "").split(",") if room.strip()}
@@ -201,62 +178,40 @@ def _authorize_room_id(
 
 
 def _run(coro):
-    """Run Matrix adapter coroutines on the gateway loop that owns the client.
+    """Synchronously dispatch from an executor onto the live adapter's owning loop.
 
-    Gateway agent turns execute tool handlers in an executor thread. Using
-    ``model_tools._run_async`` there would schedule work on a disposable
-    worker loop, not ``GatewayRunner._gateway_loop`` where the live Matrix
-    adapter/mautrix client lives. Prefer ``run_coroutine_threadsafe`` onto
-    the gateway loop; fall back to ``_run_async`` only when no live gateway
-    loop exists (unit tests / non-gateway callers).
+    A stopped/missing loop is never a reason to run a live client on a worker
+    loop. Calling from the gateway loop itself must also fail instead of
+    blocking that loop on its own future.
     """
     import asyncio
+    from agent.async_utils import safe_schedule_threadsafe
+    from gateway.run import _gateway_runner_ref
 
+    runner = _gateway_runner_ref()
+    loop = getattr(runner, "_gateway_loop", None)
     try:
-        from gateway.run import _gateway_runner_ref
-
-        runner = _gateway_runner_ref()
-    except Exception:
-        runner = None
-
-    loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
-    if loop is not None:
+        if loop is None or loop.is_closed() or not loop.is_running():
+            raise RuntimeError("Matrix gateway loop unavailable for tool dispatch")
         try:
-            running = not loop.is_closed() and loop.is_running()
-        except Exception:
-            running = False
-        if running:
-            try:
-                from agent.async_utils import safe_schedule_threadsafe
-
-                fut = safe_schedule_threadsafe(
-                    coro,
-                    loop,
-                    log_message="Matrix tool schedule onto gateway loop failed",
-                )
-            except Exception:
-                fut = None
-                try:
-                    fut = asyncio.run_coroutine_threadsafe(coro, loop)
-                except Exception:
-                    if asyncio.iscoroutine(coro):
-                        coro.close()
-                    raise
-            if fut is None:
-                # Schedule failed; do not also run on a foreign loop for live
-                # gateway turns — surface the failure.
-                raise RuntimeError("Matrix gateway loop unavailable for tool dispatch")
-            try:
-                return fut.result(timeout=120)
-            except FuturesTimeoutError:
-                fut.cancel()
-                raise RuntimeError(
-                    "Matrix tool dispatch timed out after 120s; the action may still be in flight"
-                )
-
-    from model_tools import _run_async
-
-    return _run_async(coro)
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is loop:
+            raise RuntimeError("Matrix tool dispatch cannot block the gateway loop")
+        future = safe_schedule_threadsafe(
+            coro, loop, log_message="Matrix tool schedule onto gateway loop failed")
+    except Exception:
+        coro.close()
+        raise
+    if future is None:
+        raise RuntimeError("Matrix gateway loop unavailable for tool dispatch")
+    try:
+        return future.result(timeout=120)
+    except FuturesTimeoutError as exc:
+        future.cancel()
+        raise RuntimeError(
+            "Matrix tool dispatch timed out after 120s; the action may still be in flight") from exc
 
 
 def _ok(success: bool, **extra: Any) -> str:
@@ -315,7 +270,7 @@ def _run_matrix_action(action: str, allowed: Dict[str, str], tool_name: str, **k
                 str(kwargs.get("from_token", "") or ""),
             )
         )
-        return tool_result(success=True, events=events)
+        return tool_result(success=True, **events)
 
     if action == "set_presence":
         state = str(kwargs.get("state", "online") or "online")
@@ -509,7 +464,10 @@ _HANDLER_DEFAULTS = {
 def _make_handler(actions: Dict[str, str], tool_name: str):
     def _handler(args, **kw):
         payload = {k: args.get(k, v) for k, v in _HANDLER_DEFAULTS.items()}
-        return _run_matrix_action(payload.pop("action"), actions, tool_name, **payload)
+        try:
+            return _run_matrix_action(payload.pop("action"), actions, tool_name, **payload)
+        except Exception:
+            return tool_error("Matrix action failed; check the gateway connection and Matrix tool policy.")
 
     return _handler
 

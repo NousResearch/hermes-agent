@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -57,19 +57,15 @@ def test_run_dispatches_coroutine_onto_gateway_loop(gateway_loop_thread):
     assert observed["thread"] == "fake-gateway-loop"
 
 
-def test_run_falls_back_without_gateway_loop():
-    """Unit/CLI path without a live gateway still works via _run_async."""
-    observed = {}
+def test_run_fails_without_gateway_loop():
+    async def probe():
+        pytest.fail("must not execute without an owning gateway loop")
 
-    async def _probe():
-        observed["ran"] = True
-        return 42
-
+    coro = probe()
     with patch("gateway.run._gateway_runner_ref", return_value=None):
-        result = mt._run(_probe())
-
-    assert result == 42
-    assert observed["ran"] is True
+        with pytest.raises(RuntimeError, match="gateway loop"):
+            mt._run(coro)
+    assert coro.cr_frame is None
 
 
 def test_matrix_adapter_uses_default_profile_map():

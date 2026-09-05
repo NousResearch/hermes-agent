@@ -736,24 +736,12 @@ class _CryptoStateStore:
 
 
 def _matrix_allow_public_rooms() -> bool:
-    """True when public room creation is allowed. YAML wins over env."""
-    try:
-        from hermes_cli.config import read_raw_config
+    from plugins.platforms.matrix.tool_policy import gate
 
-        tools = ((read_raw_config() or {}).get("matrix") or {}).get("tools") or {}
-        if isinstance(tools, dict) and "allow_public_rooms" in tools:
-            val = tools.get("allow_public_rooms")
-            if isinstance(val, bool):
-                return val
-            if isinstance(val, str):
-                return val.strip().lower() in ("true", "1", "yes", "on")
-            return bool(val)
-    except Exception:
-        pass
-    raw = os.getenv("MATRIX_ALLOW_PUBLIC_ROOMS")
-    if raw is not None:
-        return str(raw).strip().lower() in ("true", "1", "yes", "on")
-    return False
+    try:
+        return gate("allow_public_rooms", "MATRIX_ALLOW_PUBLIC_ROOMS")
+    except (ValueError, UnscopedSecretError):
+        return False
 
 
 class MatrixAdapter(BasePlatformAdapter):
@@ -2483,6 +2471,25 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             getattr(logger, level)(err_msg, exc)
             return False
+
+    async def fetch_history(self, room_id: str, limit: int = 20, from_token: str = "") -> dict:
+        """Return a bounded page of server events and the next backward cursor.
+
+        Reuse the gateway client. Encrypted events remain encrypted here; this
+        does not start a second sync or attempt historical key recovery.
+        """
+        from mautrix.types import PaginationDirection, SyncToken
+
+        if not self._client:
+            raise RuntimeError("Matrix client is not connected")
+        response = await self._client.get_messages(
+            RoomID(room_id), direction=PaginationDirection.BACKWARD,
+            from_token=SyncToken(from_token) if from_token else None,
+            limit=max(1, min(int(limit), 100)))
+        return {
+            "events": [event.serialize() for event in response.events],
+            "end_token": str(response.end) if response.end is not None else "",
+        }
 
     async def redact_message(self, room_id: str, event_id: str, reason: str = "") -> bool:
         return await self._client_op(

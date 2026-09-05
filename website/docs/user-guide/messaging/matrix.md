@@ -408,17 +408,32 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
+Enable `matrix` and/or `matrix_admin` for Matrix via `hermes tools` (or `hermes tools enable matrix` and `hermes tools enable matrix_admin`). The tools require a live Matrix conversation and use its connected gateway adapter:
 
-- `matrix_send_reaction`
-- `matrix_redact_message`
-- `matrix_create_room`
-- `matrix_invite_user`
-- `matrix_fetch_history`
-- `matrix_set_presence`
+| Tool | Actions |
+|------|---------|
+| `matrix` | `send_reaction`, `fetch_history`, `set_presence` |
+| `matrix_admin` | `redact_message`, `invite_user`, `create_room` |
 
-These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
-If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms.
+History returns server events in reverse chronological order and an `end_token`; pass that token as `from_token` for the next page. The page limit is capped at 100. Encrypted history events remain encrypted; this does not perform historical key recovery. Presence changes the bot account's status, not an individual room.
+
+Set non-secret policy in `config.yaml`:
+
+```yaml
+matrix:
+  tools:
+    allow_cross_room: false
+    allow_cross_room_destructive: false
+    allow_redaction: false
+    allow_invites: false
+    allow_room_create: false
+    allow_public_rooms: false
+    allowed_rooms: []  # optional target-room allowlist
+```
+
+Room actions default to the current room. Explicit cross-room targets (including a missing current-room stamp) require `allow_cross_room`; redaction and invitations also require `allow_cross_room_destructive`. A non-empty `allowed_rooms` list restricts all targeted room actions, including the current room. Room creation has no existing target room and uses its separate creation gate; invitations included in `create_room` still require `allow_invites`. Public rooms additionally require `allow_public_rooms`.
+
+Explicit YAML keys take precedence over legacy `MATRIX_TOOLS_ALLOW_*` gates, `MATRIX_ALLOW_PUBLIC_ROOMS`, and `MATRIX_ALLOWED_ROOMS` (the fallback for the tool allowlist). Under multiplexing, legacy settings come only from the active profile's scope, never another bot's environment. Missing profile adapters, unavailable gateway loops, and invalid tool policy fail closed. A dispatch timeout requests cancellation but does not prove a server-side action was rolled back; verify before retrying a write.
 
 Reaction controls use:
 
@@ -915,12 +930,3 @@ For more information on securing your Hermes Agent deployment, see the [Security
 - **Auto-join**: The bot automatically accepts room invites and joins. It starts responding immediately after joining.
 - **Media support**: Hermes can send and receive images, audio, video, and file attachments. Media is uploaded to your homeserver using the Matrix content repository API.
 - **Native voice messages (MSC3245)**: The Matrix adapter automatically tags outgoing voice messages with the `org.matrix.msc3245.voice` flag. This means TTS responses and voice audio are rendered as **native voice bubbles** in Element and other clients that support MSC3245, rather than as generic audio file attachments. Incoming voice messages with the MSC3245 flag are also correctly identified and routed to speech-to-text transcription. No configuration is needed — this works automatically.
-
-## Matrix tools
-
-When the Matrix gateway is connected, Hermes can expose compact `matrix` / `matrix_admin` tools (Discord-style split).
-
-- Gates live in `config.yaml` under `matrix.tools` (preferred). Legacy `MATRIX_*` env bridges may still be read for compatibility; config wins when both are set.
-- Destructive/admin actions are off by default (`allow_redaction`, `allow_invites`, `allow_room_create`, `allow_public_rooms`).
-- Cross-room targeting is off by default (`allow_cross_room`).
-- Adapter work runs on the gateway event loop; multiplex secondary profiles fail closed if no Matrix adapter is bound.

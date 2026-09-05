@@ -252,7 +252,115 @@ class TestIterBackupFiles:
 # ---------------------------------------------------------------------------
 
 class TestBackup:
+    def test_skips_socket_and_fifo_modes_without_warning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Expected Unix runtime nodes never reach the archive error path."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+        socket_path = hermes_home / "gateway.sock"
+        fifo_path = hermes_home / "runtime.fifo"
+        socket_path.write_bytes(b"socket placeholder")
+        fifo_path.write_bytes(b"fifo placeholder")
 
+        real_lstat = Path.lstat
+        special_modes = {
+            socket_path: stat.S_IFSOCK | 0o600,
+            fifo_path: stat.S_IFIFO | 0o600,
+        }
+
+        def _lstat(path):
+            result = real_lstat(path)
+            mode = special_modes.get(path)
+            if mode is None:
+                return result
+            values = list(result)
+            values[stat.ST_MODE] = mode
+            return os.stat_result(values)
+
+        # The scanner contract depends only on lstat's file-type bits. Keeping
+        # the backing placeholders regular makes this test portable to hosts
+        # and sandboxes that cannot create filesystem sockets or named pipes.
+        monkeypatch.setattr(Path, "lstat", _lstat)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        from hermes_cli.backup import run_backup
+
+        run_backup(Namespace(output=str(out_zip)))
+
+        output = capsys.readouterr().out
+        assert "Backup complete:" in output
+        assert "Warnings" not in output
+        with zipfile.ZipFile(out_zip) as zf:
+            assert set(zf.namelist()) == {"config.yaml"}
+
+    def test_excludes_transient_snapshot_and_output_artifacts(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from hermes_cli.backup import _BACKUP_SQLITE_TEMP_PREFIX, run_backup
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+        (hermes_home / ".skills_prompt_snapshot.json").write_text(
+            "{}", encoding="utf-8"
+        )
+
+        out_zip = hermes_home / "backup.zip"
+        out_zip.write_bytes(b"previous backup")
+        stale_partial = hermes_home / f".{out_zip.name}.999-1.partial"
+        stale_partial.write_bytes(b"abandoned partial")
+        sqlite_staging = hermes_home / f"{_BACKUP_SQLITE_TEMP_PREFIX}orphan.db"
+        with sqlite3.connect(sqlite_staging) as conn:
+            conn.execute("CREATE TABLE sample (value TEXT)")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        run_backup(Namespace(output=str(out_zip)))
+
+        output = capsys.readouterr().out
+        assert "Backup complete:" in output
+        assert "Warnings" not in output
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert names == {"config.yaml"}
+
+    def test_regular_file_archive_error_still_marks_backup_incomplete(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+        unreadable = hermes_home / "durable-state.json"
+        unreadable.write_text("{}", encoding="utf-8")
+        assert unreadable.is_file()
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        real_write = zipfile.ZipFile.write
+
+        def _write(zf, filename, *args, **kwargs):
+            if Path(filename) == unreadable:
+                raise PermissionError("simulated read denial")
+            return real_write(zf, filename, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipFile, "write", _write)
+        out_zip = tmp_path / "backup.zip"
+        from hermes_cli.backup import run_backup
+
+        run_backup(Namespace(output=str(out_zip)))
+
+        output = capsys.readouterr().out
+        assert "Backup incomplete:" in output
+        assert "Warnings (1 files skipped):" in output
+        assert "durable-state.json: simulated read denial" in output
+        with zipfile.ZipFile(out_zip) as zf:
+            assert set(zf.namelist()) == {"config.yaml"}
 
     def test_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """SQLite staging temp files must be created on the output zip's
@@ -271,11 +379,11 @@ class TestBackup:
         args = Namespace(output=str(out_zip))
 
         import hermes_cli.backup as backup_mod
-        staged_dirs = []
+        staged_kwargs = []
         real_ntf = backup_mod.tempfile.NamedTemporaryFile
 
         def _spy(*a, **kw):
-            staged_dirs.append(kw.get("dir"))
+            staged_kwargs.append(kw)
             return real_ntf(*a, **kw)
 
         monkeypatch.setattr(backup_mod.tempfile, "NamedTemporaryFile", _spy)
@@ -283,8 +391,12 @@ class TestBackup:
 
         # At least one .db was staged, and every staging call targeted the
         # output zip's directory rather than the system temp default.
-        assert staged_dirs, "no SQLite snapshot was staged"
-        assert all(d == str(out_dir) for d in staged_dirs), staged_dirs
+        assert staged_kwargs, "no SQLite snapshot was staged"
+        assert all(kw.get("dir") == str(out_dir) for kw in staged_kwargs), staged_kwargs
+        assert all(
+            kw.get("prefix") == backup_mod._BACKUP_SQLITE_TEMP_PREFIX
+            for kw in staged_kwargs
+        ), staged_kwargs
 
     def test_pre_update_db_snapshots_staged_beside_output_zip(self, tmp_path, monkeypatch):
         """The pre-update/pre-migration zip path (_write_full_zip_backup) must
@@ -300,24 +412,25 @@ class TestBackup:
         out_zip.parent.mkdir(parents=True, exist_ok=True)
 
         import hermes_cli.backup as backup_mod
-        staged_dirs = []
+        staged_kwargs = []
         real_ntf = backup_mod.tempfile.NamedTemporaryFile
 
         def _spy(*a, **kw):
-            staged_dirs.append(kw.get("dir"))
+            staged_kwargs.append(kw)
             return real_ntf(*a, **kw)
 
         monkeypatch.setattr(backup_mod.tempfile, "NamedTemporaryFile", _spy)
         result = backup_mod._write_full_zip_backup(out_zip, hermes_home)
 
         assert result is not None
-        assert staged_dirs, "no SQLite snapshot was staged"
-        assert all(d == str(out_zip.parent) for d in staged_dirs), staged_dirs
-
-
-
-
-
+        assert staged_kwargs, "no SQLite snapshot was staged"
+        assert all(
+            kw.get("dir") == str(out_zip.parent) for kw in staged_kwargs
+        ), staged_kwargs
+        assert all(
+            kw.get("prefix") == backup_mod._BACKUP_SQLITE_TEMP_PREFIX
+            for kw in staged_kwargs
+        ), staged_kwargs
 
     def test_skips_symlinked_files(self, tmp_path, monkeypatch):
         """Backup must not dereference symlinks and leak files outside HERMES_HOME."""

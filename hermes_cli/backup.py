@@ -80,12 +80,24 @@ _SQLITE_SIDECAR_SUFFIXES = (".db-wal", ".db-shm", ".db-journal")
 _EXCLUDED_SUFFIXES = (".pyc", ".pyo", *_SQLITE_SIDECAR_SUFFIXES)
 
 # File names to skip (runtime state that's meaningless on another machine)
-_EXCLUDED_NAMES = {".backup.lock", "gateway.pid", "cron.pid"}
+_EXCLUDED_NAMES = {
+    ".backup.lock",
+    ".skills_prompt_snapshot.json",  # versioned skills-index cache; rebuilt from source files
+    "gateway.pid",
+    "cron.pid",
+}
+
+# Full backups stage SQLite snapshots beside the destination archive. A killed process can leave
+# one behind, so reserve a recognizable prefix that later scans can exclude.
+_BACKUP_SQLITE_TEMP_PREFIX = ".hermes-backup-sqlite-"
 
 # The desktop updater's pre-flight drops ``state.db.pre-update-emergency-<ts>.bak`` at the root
 # — a backup artifact like ``backups/``. Prefix-matched because the name carries a timestamp;
 # a plain ``.bak`` suffix rule would drop user files.
-_EXCLUDED_PREFIXES = ("state.db.pre-update-emergency-",)
+_EXCLUDED_PREFIXES = (
+    _BACKUP_SQLITE_TEMP_PREFIX,
+    "state.db.pre-update-emergency-",
+)
 
 # Files ``hermes import`` must never overwrite, matched by basename so root and named profiles are
 # both covered. They hold runtime state namespaced to the SOURCE machine: ``gateway_state.json``
@@ -205,6 +217,18 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     return list(out.values())
 
 
+def _is_non_regular_backup_node(path: Path) -> bool:
+    """Return True for symlinks, sockets, FIFOs, devices, and other special nodes.
+
+    An ``lstat`` failure is not an exclusion: the archive phase retries the candidate so a real
+    read failure remains visible as an incomplete manual backup.
+    """
+    try:
+        return not stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
 def _iter_external_files(base: Path) -> List[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
     if base.is_file() and not base.is_symlink():
@@ -214,9 +238,14 @@ def _iter_external_files(base: Path) -> List[Path]:
     files: List[Path] = []
     for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
-        files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
-                     if not (fp.is_symlink() or fp.name in _EXCLUDED_NAMES
-                             or fp.name.endswith(_EXCLUDED_SUFFIXES)))
+        for fname in filenames:
+            fpath = Path(dirpath) / fname
+            if _is_non_regular_backup_node(fpath):
+                continue
+            if (fpath.name in _EXCLUDED_NAMES or fpath.name.startswith(_EXCLUDED_PREFIXES)
+                    or fpath.name.endswith(_EXCLUDED_SUFFIXES)):
+                continue
+            files.append(fpath)
     return files
 
 
@@ -230,6 +259,37 @@ def _should_exclude(rel_path: Path) -> bool:
         return True
     name = rel_path.name
     return name in _EXCLUDED_NAMES or name.startswith(_EXCLUDED_PREFIXES) or name.endswith(_EXCLUDED_SUFFIXES)
+
+
+def _is_backup_output_artifact(abs_path: Path, out_path: Path) -> bool:
+    """Return True for the destination archive and its atomic partials."""
+    try:
+        candidate = abs_path.resolve()
+        output = out_path.resolve()
+    except (OSError, ValueError):
+        return False
+
+    if candidate == output:
+        return True
+
+    return (
+        candidate.parent == output.parent
+        and candidate.name.startswith(f".{output.name}.")
+        and candidate.name.endswith(".partial")
+    )
+
+
+def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> bool:
+    """Return True when a candidate file should not be written to a backup zip."""
+    if _should_exclude(rel_path):
+        return True
+
+    # zipfile.write() follows symlinks and cannot archive Unix runtime nodes. Decide from lstat
+    # during the scan so expected ephemeral nodes never become archive-phase omissions.
+    if _is_non_regular_backup_node(abs_path):
+        return True
+
+    return _is_backup_output_artifact(abs_path, out_path)
 
 
 def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional[set] = None):
@@ -252,13 +312,8 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         for fname in filenames:
             rel = rel_dir / fname
             fpath = hermes_root / rel
-            # zipfile.write() follows file symlinks, so skip links before any archive write can
-            # copy data from outside HERMES_HOME; never archive the output zip into itself.
-            if _should_exclude(rel) or fpath.is_symlink():
+            if _should_skip_backup_file(fpath, rel, out_path):
                 continue
-            with suppress(OSError, ValueError):
-                if fpath.resolve() == out_path.resolve():
-                    continue
             yield fpath, rel
 
 
@@ -511,7 +566,9 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
     Staged beside the output zip: /tmp may be a small tmpfs that cannot hold large databases.
     """
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False, dir=str(out_path.parent)) as tmp:
+    with tempfile.NamedTemporaryFile(
+            prefix=_BACKUP_SQLITE_TEMP_PREFIX, suffix=".db", delete=False,
+            dir=str(out_path.parent)) as tmp:
         tmp_db = Path(tmp.name)
     try:
         if not _safe_copy_db(abs_path, tmp_db):

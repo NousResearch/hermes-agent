@@ -241,7 +241,10 @@ export async function fetchRegistrySessionRows(
             const params = new URLSearchParams(searchParams)
             params.delete('profile')
 
-            const data = await getJson(descriptor, `/api/sessions?${params}`).catch(() => null)
+            const data = await fetchPagedSessionList(
+              params,
+              pageParams => getJson(descriptor, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
+            ).catch(() => null)
 
             if (data) {
               tag(data, source.connectionId, profileLabel || 'default')
@@ -269,7 +272,10 @@ export async function fetchRegistrySessionRows(
         // Older remote without the aggregator: its own default-profile list.
         const flat = new URLSearchParams(searchParams)
         flat.delete('profile')
-        data = await getJson(shared.descriptor, `/api/sessions?${flat}`).catch(() => null)
+        data = await fetchPagedSessionList(
+          flat,
+          pageParams => getJson(shared.descriptor, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
+        ).catch(() => null)
       }
 
       if (data) {
@@ -327,6 +333,17 @@ export async function fetchRemoteProfileSessions(
   const params = new URLSearchParams(searchParams)
   params.delete('profile') // the remote serves its own database
 
+  return fetchPagedSessionList(params, pageParams =>
+    fetchJsonForProfile(profile, `/api/sessions?${pageParams}`) as Promise<SessionListResponse>
+  )
+}
+
+async function fetchPagedSessionList(
+  searchParams: URLSearchParams,
+  fetchPage: (params: URLSearchParams) => Promise<SessionListResponse>
+): Promise<SessionListResponse> {
+  const params = new URLSearchParams(searchParams)
+
   const requestedLimit = Number(params.get('limit'))
   const requestedOffset = Number(params.get('offset') || '0')
 
@@ -337,7 +354,7 @@ export async function fetchRemoteProfileSessions(
     requestedOffset >= 0
 
   if (!needsPaging) {
-    return (await fetchJsonForProfile(profile, `/api/sessions?${params}`)) as SessionListResponse
+    return fetchPage(params)
   }
 
   const sessions: unknown[] = []
@@ -354,7 +371,7 @@ export async function fetchRemoteProfileSessions(
     pageParams.set('limit', String(pageLimit))
     pageParams.set('offset', String(pageOffset))
 
-    const page = (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+    const page = await fetchPage(pageParams)
     firstPage ??= page
 
     const total = nonNegativeNumber(page.total)

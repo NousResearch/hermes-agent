@@ -302,6 +302,38 @@ test('registry sources: shared remote hosts read the cross-profile aggregate onc
   )
 })
 
+test('registry sources page flat session endpoints at their 100-row ceiling', async () => {
+  const calls: string[] = []
+  const sessions = Array.from({ length: 150 }, (_, index) => ({ id: `session-${index}` }))
+
+  const rows = await fetchRegistrySessionRows(
+    [
+      {
+        connectionId: 'gw-ssh',
+        kind: 'ssh',
+        backends: [{ descriptor: 'ssh-desc', profileLabel: 'default' }]
+      }
+    ],
+    new URLSearchParams({ limit: '150', offset: '0', profile: 'all' }),
+    async (_descriptor, path) => {
+      calls.push(path)
+      const url = new URL(path, 'http://desktop.test')
+      const limit = Number(url.searchParams.get('limit'))
+      const offset = Number(url.searchParams.get('offset'))
+
+      assert.ok(limit <= 100)
+
+      return { sessions: sessions.slice(offset, offset + limit), total: sessions.length, limit, offset }
+    }
+  )
+
+  assert.deepEqual(calls, [
+    '/api/sessions?limit=100&offset=0',
+    '/api/sessions?limit=50&offset=100'
+  ])
+  assert.equal(rows.length, 150)
+})
+
 test('registry-pinned session responses retain their owning connection', () => {
   const sidebar = tagRegistrySessionResponse(
     '/api/profiles/sessions/sidebar?recents_profile=default',

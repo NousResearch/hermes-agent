@@ -97,6 +97,12 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 
+# Project skill discovery still reads TERMINAL_CWD from the process environment
+# and has no context-local cwd override. Serialize the complete profile-scoped
+# resolver operation so concurrent task creation cannot mix profile homes or
+# project workspaces while that resolver runs.
+_PROFILE_SKILL_RESOLUTION_LOCK = threading.RLock()
+
 
 def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     """``VALID_REASONING_EFFORTS`` or ``"none"`` (thinking off), case-insensitive;
@@ -966,6 +972,14 @@ CREATE TABLE IF NOT EXISTS task_events (
     created_at INTEGER NOT NULL
 );
 
+-- Atomic claim for reviewer correction submissions.  The primary key is the
+-- reviewed-task + result digest, so concurrent deliveries share one child.
+CREATE TABLE IF NOT EXISTS reviewer_correction_claims (
+    idempotency_key TEXT PRIMARY KEY,
+    reviewed_task_id TEXT NOT NULL,
+    correction_task_id TEXT NOT NULL
+);
+
 -- Historical attempt record. Each time the dispatcher claims a task, a
 -- new row is created here; claim state, PID, heartbeat, runtime cap,
 -- and structured summary all live on the run, not the task. Multiple
@@ -1088,6 +1102,204 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     from hermes_cli.profiles import normalize_profile_name
 
     return normalize_profile_name(assignee)
+
+
+def _profile_skill_names(
+    profile: str, *, project_workspace: Optional[Path] = None
+) -> set[str]:
+    """Return the skills resolvable from a specific profile's catalog.
+
+    This deliberately scans the profile's own skill roots rather than the
+    process-global active profile.  Kanban rows are shared across profiles,
+    so validating against the caller's catalog would allow a task to refer to
+    a skill unavailable when its assigned worker starts.
+    """
+    from agent.skill_utils import (
+        get_disabled_skill_names,
+        get_project_skills_dirs,
+        get_external_skills_dirs,
+        get_skills_dir,
+        is_excluded_skill_path,
+        iter_project_skill_files,
+        iter_skill_index_files,
+        parse_frontmatter,
+        skill_matches_platform,
+    )
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = get_profile_dir(profile)
+    with _PROFILE_SKILL_RESOLUTION_LOCK:
+        home_token = set_hermes_home_override(profile_home)
+        previous_cwd = os.environ.get("TERMINAL_CWD")
+        try:
+            # Match worker preload resolution: platform comes from the active
+            # Hermes/session context unless explicitly pinned by its caller.
+            disabled = get_disabled_skill_names()
+            project_dirs = set()
+            if project_workspace is not None:
+                os.environ["TERMINAL_CWD"] = str(project_workspace)
+                try:
+                    project_dirs = set(get_project_skills_dirs())
+                finally:
+                    if previous_cwd is None:
+                        os.environ.pop("TERMINAL_CWD", None)
+                    else:
+                        os.environ["TERMINAL_CWD"] = previous_cwd
+            skill_roots = list(project_dirs)
+            skill_roots.extend([get_skills_dir(), *get_external_skills_dirs()])
+            names: set[str] = set()
+            # ``skill_view`` refuses ambiguous bare identifiers, except that a
+            # trusted project-tier match intentionally overrides non-project
+            # matches.  Keep candidates until the complete scan is finished so
+            # validation does not advertise a name the worker cannot resolve.
+            bare_candidates: dict[str, list[tuple[bool, Path]]] = {}
+            qualified_candidates: dict[str, list[tuple[bool, Path]]] = {}
+            path_candidates: dict[str, list[tuple[bool, Path]]] = {}
+            for root in skill_roots:
+                if not root.is_dir():
+                    continue
+                files = (
+                    iter_project_skill_files(root)
+                    if root in project_dirs
+                    else iter_skill_index_files(root, "SKILL.md")
+                )
+                for skill_md in files:
+                    if is_excluded_skill_path(skill_md, root=root):
+                        continue
+                    try:
+                        frontmatter, _ = parse_frontmatter(
+                            skill_md.read_text(encoding="utf-8-sig", errors="replace")
+                        )
+                    except Exception:
+                        continue
+                    if not skill_matches_platform(frontmatter):
+                        continue
+                    name = str(frontmatter.get("name") or skill_md.parent.name).strip()
+                    try:
+                        candidate_path = skill_md.resolve()
+                    except Exception:
+                        candidate_path = skill_md
+
+                    # Runtime lookup accepts both the declared frontmatter
+                    # name and the SKILL.md parent directory name.  Keep the
+                    # disabled check tied to the raw identifier being
+                    # registered, so disabling one alias does not hide the
+                    # other runtime-resolvable alias.
+                    aliases = {name, skill_md.parent.name}
+                    for alias in aliases:
+                        if alias and alias not in disabled:
+                            bare_candidates.setdefault(alias, []).append(
+                                (root in project_dirs, candidate_path)
+                            )
+                    try:
+                        relative_parts = skill_md.relative_to(root).parts
+                    except ValueError:
+                        relative_parts = ()
+                    if name and name not in disabled:
+                        try:
+                            candidate_path = skill_md.resolve()
+                        except Exception:
+                            candidate_path = skill_md
+                        # ``skill_view`` also accepts the qualified local form
+                        # ``category:name`` for the direct
+                        # ``<root>/<category>/<name>/SKILL.md`` layout. Keep
+                        # validation in parity with that runtime lookup while
+                        # retaining the frontmatter/bare name above.
+                        if (
+                            len(relative_parts) == 3
+                            and relative_parts[-1] == "SKILL.md"
+                        ):
+                            category, directory_name, _ = relative_parts
+                            qualified_name = f"{category}:{directory_name}"
+                            if qualified_name not in disabled:
+                                try:
+                                    candidate_path = skill_md.resolve()
+                                except Exception:
+                                    candidate_path = skill_md
+                                qualified_candidates.setdefault(qualified_name, []).append(
+                                    (root in project_dirs, candidate_path)
+                                )
+                    # ``skill_view`` also accepts the canonical relative path
+                    # to a local skill directory (for example
+                    # ``category/sample``). Register every safe relative
+                    # parent path so validation matches that direct lookup,
+                    # including nested categories and external roots.
+                    if (
+                        len(relative_parts) >= 2
+                        and relative_parts[-1] == "SKILL.md"
+                    ):
+                        path_name = "/".join(relative_parts[:-1])
+                        if path_name and path_name not in disabled:
+                            path_candidates.setdefault(path_name, []).append(
+                                (root in project_dirs, candidate_path)
+                            )
+
+            # Plugin skills are registered only after the profile's enabled plugin
+            # set has been discovered.  Use the manager scoped to this profile's
+            # home; consulting the caller's active manager would leak skills across
+            # profiles in a multiplexed process.
+            try:
+                from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+                discover_plugins()
+                for entry in get_plugin_manager().list_plugin_skill_metadata():
+                    qualified_name = str(entry.get("name") or "").strip()
+                    if not qualified_name:
+                        continue
+                    frontmatter = entry.get("frontmatter")
+                    if not isinstance(frontmatter, dict):
+                        frontmatter = {}
+                    if not skill_matches_platform(frontmatter):
+                        continue
+                    if qualified_name in disabled:
+                        continue
+                    namespace, _, bare_name = qualified_name.partition(":")
+                    if bare_name in disabled:
+                        continue
+                    names.add(qualified_name)
+            except Exception:
+                # A broken or unavailable plugin must not hide ordinary profile
+                # and project skills from validation.
+                pass
+            for name, candidates in qualified_candidates.items():
+                # Match skill_view's project-tier precedence and collision
+                # refusal for the categorized local fallback path.
+                unique_candidates = list(dict.fromkeys(candidates))
+                project_candidates = [candidate for candidate in unique_candidates if candidate[0]]
+                winning = project_candidates or unique_candidates
+                if len(winning) == 1:
+                    names.add(name)
+            for name, candidates in path_candidates.items():
+                # Direct local paths use the same project-tier precedence,
+                # collision refusal, and resolved-path deduplication as the
+                # other filesystem aliases above.
+                unique_candidates = list(dict.fromkeys(candidates))
+                project_candidates = [
+                    candidate for candidate in unique_candidates if candidate[0]
+                ]
+                winning = project_candidates or unique_candidates
+                if len(winning) == 1:
+                    names.add(name)
+            for name, candidates in bare_candidates.items():
+                # Deduplicate overlapping roots by the resolved SKILL.md path,
+                # matching runtime candidate collection before collision rules.
+                unique_candidates = list(dict.fromkeys(candidates))
+                project_candidates = [
+                    candidate for candidate in unique_candidates if candidate[0]
+                ]
+                # Project skills have precedence over local/external skills,
+                # but ambiguity within the winning tier remains unavailable.
+                winning = project_candidates or unique_candidates
+                if len(winning) == 1:
+                    names.add(name)
+            return names
+        finally:
+            if previous_cwd is None:
+                os.environ.pop("TERMINAL_CWD", None)
+            else:
+                os.environ["TERMINAL_CWD"] = previous_cwd
+            reset_hermes_home_override(home_token)
 
 
 def _resolve_project_link(
@@ -1214,6 +1426,41 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
             "capabilities (e.g. `web`, `browser`, `terminal`)."
         )
     return cleaned
+def _skill_validation_workspace(
+    workspace_kind: str,
+    workspace_path: Optional[str],
+    *,
+    board: Optional[str],
+    project_repo: Optional[str],
+) -> Optional[Path]:
+    """Return the worker cwd when it is safely derivable before insertion.
+
+    Project-local skills must never be resolved from the creator's cwd.  A
+    concrete absolute ``dir`` path is already the worker workspace.  A
+    project-linked worktree has no materialized task directory until after
+    insertion, so its synthetic path is only a validation anchor used to
+    discover repository-relative skills; it must not be treated as the worker
+    runtime path.  For other workspace shapes, project discovery is deliberately
+    omitted until runtime rather than guessing from this process's cwd.
+    """
+    if workspace_path:
+        candidate = Path(workspace_path).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return None
+    if workspace_kind == "worktree" and project_repo:
+        return Path(project_repo) / ".worktrees" / "__kanban_skill_validation__"
+    if workspace_kind in {"dir", "worktree"}:
+        try:
+            metadata = read_board_metadata(board if board else get_current_board())
+            default_workdir = metadata.get("default_workdir")
+            if default_workdir:
+                candidate = Path(default_workdir).expanduser()
+                if candidate.is_absolute():
+                    return candidate
+        except Exception:
+            pass
+    return None
 
 
 def create_task(
@@ -1270,9 +1517,35 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    if skills_list:
+        profile = assignee
+        if profile is None:
+            from hermes_cli.profiles import get_active_profile_name
 
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
+            profile = get_active_profile_name()
+        available_skills = _profile_skill_names(
+            profile,
+            project_workspace=_skill_validation_workspace(
+                workspace_kind,
+                workspace_path,
+                board=board,
+                project_repo=project_repo,
+            ),
+        )
+        unavailable = [name for name in skills_list if name not in available_skills]
+        if unavailable:
+            raise ValueError(
+                "Skill(s) "
+                + ", ".join(repr(name) for name in unavailable)
+                + f" are unavailable to assigned profile {profile!r}. "
+                "Install or enable the skill in that profile before creating the task."
+            )
+
+    # Idempotency check — return an existing task instead of a duplicate.
+    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
+    # and to avoid holding a write lock during the lookup. Race is
+    # acceptable: two concurrent creators with the same key might both
+    # insert, at which point both rows exist but the next lookup stabilises.
     if idempotency_key:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
@@ -2905,15 +3178,23 @@ def edit_completed_task_result(
 
 
 def block_task(
-    conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    kind: Optional[str] = None, expected_run_id: Optional[int] = None,
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    kind: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+    allow_nested: bool = False,
 ) -> bool:
     """``running``/``ready`` -> ``blocked`` (or ``todo`` / ``triage``, see
     :func:`_route_block`). ``transient`` still counts toward the loop breaker
     so a forever-flaky task escalates. True on any transition."""
     if kind is not None and kind not in VALID_BLOCK_KINDS:
-        raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
-    with write_txn(conn):
+        raise ValueError(
+            f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
+        )
+    recurrences = 0
+    with write_txn(conn, allow_nested=allow_nested):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()

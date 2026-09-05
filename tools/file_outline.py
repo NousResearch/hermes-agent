@@ -11,7 +11,8 @@ from pathlib import Path
 from agent.redact import redact_sensitive_text
 from tools.file_tools_read_tracking import _read_tracker_lock, _task_data
 
-SCAN_BYTES = 64 * 1024
+WINDOW_BYTES = 256 * 1024       # one backend read; also the longest physical line
+CALL_BYTES = 2 * 1024 * 1024    # scanning budget per tool call before a cursor is issued
 PAGE_HEADINGS = 500
 PAGE_CHARS = 90_000
 HEADING_CHARS = 150
@@ -68,17 +69,18 @@ class MarkdownPosition:
         return None
 
 
-def _page(position, data, eof, start, limit):
-    """Keep a checkpoint before each line so an output limit never loses a heading."""
-    entries, rendered = [], 0
+def _page(position, data, eof, start, limit, entries, rendered):
+    """Scan one window into *entries*; a checkpoint before each line means an
+    output limit never loses a heading. Returns (position, rendered, stopped)."""
     consumed = 0
     while consumed < len(data):
         checkpoint = replace(position)
         newline = data.find(b"\n", consumed)
         stop = len(data) if newline < 0 else newline + 1
         line = position.tail + data[consumed:stop]
-        if len(line) > SCAN_BYTES:
-            raise ValueError("Markdown line exceeds 64 KiB; use ordinary offset/limit reads")
+        if len(line) > WINDOW_BYTES:
+            raise ValueError(f"Markdown line exceeds {WINDOW_BYTES // 1024} KiB; "
+                             "use ordinary offset/limit reads")
         position.byte += stop - consumed
         consumed = stop
         if newline < 0 and not eof:
@@ -97,13 +99,12 @@ def _page(position, data, eof, start, limit):
             entry["heading_truncated"] = True
         size = len(json.dumps(entry, ensure_ascii=False)) + 2
         if entries and rendered + size > PAGE_CHARS:
-            position = checkpoint
-            break
+            return checkpoint, rendered, True
         entries.append(entry)
         rendered += size
         if len(entries) >= min(limit, PAGE_HEADINGS):
-            break
-    return position, entries
+            return position, rendered, True
+    return position, rendered, False
 
 
 def outline_page(ops, path, identity, task_id, start, limit, cursor):
@@ -124,17 +125,25 @@ def outline_page(ops, path, identity, task_id, start, limit, cursor):
             position, start = replace(saved[2]), saved[3]
         else:
             position = MarkdownPosition()
-    window = ops.read_outline_window(path, position.byte, SCAN_BYTES, position.signature)
-    if "error" in window:
-        return {"mode": "outline", "error": window["error"]}
-    data = base64.b64decode(window["data"], validate=True)
-    position.signature = tuple(window["signature"])
-    try:
-        position, entries = _page(position, data,
-                                  position.byte + len(data) >= window["size"], start, limit)
-    except ValueError as exc:
-        return {"mode": "outline", "error": str(exc)}
-    complete = position.byte == window["size"] and not position.tail
+    # Several backend windows per call keep typical documents to one round trip
+    # while both the bytes read and the serialized output stay bounded.
+    entries, rendered, scanned = [], 0, 0
+    while True:
+        window = ops.read_outline_window(path, position.byte, WINDOW_BYTES, position.signature)
+        if "error" in window:
+            return {"mode": "outline", "error": window["error"]}
+        data = base64.b64decode(window["data"], validate=True)
+        position.signature = tuple(window["signature"])
+        try:
+            position, rendered, stopped = _page(
+                position, data, position.byte + len(data) >= window["size"],
+                start, limit, entries, rendered)
+        except ValueError as exc:
+            return {"mode": "outline", "error": str(exc)}
+        scanned += len(data)
+        complete = position.byte == window["size"] and not position.tail
+        if complete or stopped or not data or scanned >= CALL_BYTES:
+            break
     result = {"mode": "outline", "outline": entries, "body_read": False,
               "scan_complete": complete, "truncated": not complete,
               "scanned_bytes": position.byte, "file_size": window["size"]}
@@ -147,7 +156,7 @@ def outline_page(ops, path, identity, task_id, start, limit, cursor):
                 del cache[next(iter(cache))]
             cache[token] = (time.monotonic(), identity, position, start)
         result.update(next_cursor=token, _hint=(
-            "Continue with mode='outline', the same path, and cursor=next_cursor, "
-            "even when this page has no headings. Cursors expire after 10 minutes. "
-            "Read selected bodies with ordinary line offset/limit."))
+            "Outline incomplete: continue with mode='outline', the same path, and "
+            "cursor=next_cursor (a page may contain no headings). Cursors expire after "
+            "10 minutes. Read selected bodies with ordinary line offset/limit."))
     return result

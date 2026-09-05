@@ -240,6 +240,27 @@ class TestGatewayConfigRoundtrip:
             for record in caplog.records
         )
 
+    def test_agent_executor_workers_precedence_and_roundtrip(self):
+        # Top-level key wins over the nested form; nested alone is honoured; to_dict roundtrips.
+        assert GatewayConfig.from_dict({}).agent_executor_workers == 10
+        both = {"agent_executor_workers": 24, "gateway": {"agent_executor_workers": 16}}
+        assert GatewayConfig.from_dict(both).agent_executor_workers == 24
+        nested = GatewayConfig.from_dict({"gateway": {"agent_executor_workers": 16}})
+        assert nested.agent_executor_workers == 16
+        assert GatewayConfig.from_dict(nested.to_dict()).agent_executor_workers == 16
+
+    def test_agent_executor_workers_invalid_values_warn_and_keep_default(self, caplog):
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+
+        for raw in ("lots", True, 0, -4, 1.5):
+            config = GatewayConfig.from_dict({"gateway": {"agent_executor_workers": raw}})
+            assert config.agent_executor_workers == 10
+
+        assert any(
+            "Ignoring invalid gateway.agent_executor_workers" in record.message
+            for record in caplog.records
+        )
+
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(

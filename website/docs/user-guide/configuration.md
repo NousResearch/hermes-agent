@@ -2323,6 +2323,21 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/user-guide/sessions) and the [Discord guide](/user-guide/messaging/discord).
 
+## Gateway Executor Pool Size
+
+The messaging gateway runs every synchronous agent turn on a dedicated thread
+pool. Each turn holds one worker for its whole duration (model streaming and
+approval waits included), so the pool size bounds how many turns can run at
+once:
+
+```yaml
+agent_executor_workers: 10  # default; also accepted as gateway.agent_executor_workers
+```
+
+Raise it on high-traffic installs where chats queue behind long automated
+turns. More workers means more simultaneous model API calls and session-store
+writes. Invalid or non-positive values fall back to 10.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

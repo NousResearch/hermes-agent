@@ -41,6 +41,13 @@ The desktop app is organized as a chat-first window with a left sidebar for navi
 The center of the app. You get:
 
 - **Streaming responses** with live tool activity and structured tool-call summaries as the agent works.
+- **Reasoning blocks you can actually read (and theme)** — the "Thinking" bodies of reasoning models are styled by three CSS variables instead of hard-coded utilities, so their size and color travel with your theme or user stylesheet instead of fighting it:
+  - `--conversation-reasoning-font-size`, `--conversation-reasoning-line-height`, `--conversation-reasoning-color` — set them on the `aui_thinking-disclosure` slot or any ancestor. Defaults reproduce the stock 12px tertiary look.
+  - `--conversation-reasoning-open-opacity` — an open disclosure's opacity, its own token (default `0.67`, same as tool rows; set `1` for full-strength reasoning).
+  - The stable hooks are the `data-slot` attributes — `aui_thinking-disclosure`, `aui_thinking-body`, `aui_reasoning-text` — so a user stylesheet can target reasoning reliably:
+    ```css
+    [data-slot='aui_assistant-message-content'] [data-slot='aui_reasoning-text'] { … }
+    ```
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.

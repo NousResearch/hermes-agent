@@ -174,9 +174,14 @@ def run_oneshot(
     JSON usage report even when the run fails. Returns the exit code; the caller owns process
     termination.
     """
-    # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
-    # root logger. File handlers from setup_logging() keep working (level-independent).
-    logging.disable(logging.CRITICAL)
+    # Existing console handlers retain their streams across the redirects below. Silence only
+    # those handlers: a global disable would also block the queue feeding the forensic file logs.
+    # Root-mounted handlers only — a non-root logger's own console handler (e.g. the opt-in
+    # HERMES_PLUGINS_DEBUG stderr handler) is intentionally untouched; it holds the REAL stderr
+    # captured before the redirect, so its output never pollutes the -z stdout contract.
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            handler.setLevel(logging.CRITICAL + 1)
 
     # --provider without --model is ambiguous (the provider may not host the configured model, and
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.

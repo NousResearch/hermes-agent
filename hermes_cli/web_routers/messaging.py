@@ -27,7 +27,7 @@ from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
-    _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
+    _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _managed_platform_record, _managed_platforms, _messaging_platform_catalog, _refuse_if_platform_managed, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
 from hermes_cli.web_routers._common import http_failure
 from hermes_cli.web_models import (
@@ -256,6 +256,9 @@ def _messaging_platform_payload(
             "allowed_users_set": bool(env_value("WHATSAPP_ALLOWED_USERS").strip()),
             "home_channel_set": bool(home_channel),
         }
+    managed = _managed_platforms()
+    if managed:
+        payload["managed"] = managed.record_for(platform_id)
     return payload
 
 
@@ -517,6 +520,7 @@ def _register_whatsapp_session(session_path: Path, record) -> str:
 
 @router.post("/api/messaging/whatsapp/onboarding/start")
 async def start_whatsapp_onboarding(body: WhatsAppOnboardingStart):
+    _refuse_if_platform_managed("whatsapp")
     mode = _normalize_whatsapp_onboarding_mode(body.mode)
     allowed_users = _normalize_whatsapp_allowed_users(body.allowed_users)
 
@@ -560,6 +564,7 @@ async def get_whatsapp_onboarding_status(pairing_id: str):
 
 @router.post("/api/messaging/whatsapp/onboarding/{pairing_id}/apply")
 async def apply_whatsapp_onboarding(pairing_id: str, body: WhatsAppOnboardingApply, profile: Optional[str] = None):
+    _refuse_if_platform_managed("whatsapp")
     with _whatsapp_onboarding_lock:
         record = _whatsapp_record_or_404(pairing_id)
         if record.status != "connected":
@@ -648,6 +653,7 @@ async def _telegram_onboarding_request(method: str, path: str, *, body=None, bea
 
 @router.post("/api/messaging/telegram/onboarding/start")
 async def start_telegram_onboarding(body: TelegramOnboardingStart):
+    _refuse_if_platform_managed("telegram")
     bot_name = (body.bot_name or "Hermes Agent").strip() or "Hermes Agent"
     payload = await _telegram_onboarding_request("POST", "/v1/telegram/pairings", body={"bot_name": bot_name})
 
@@ -710,6 +716,7 @@ async def get_telegram_onboarding_status(pairing_id: str):
 
 @router.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
 async def apply_telegram_onboarding(pairing_id: str, body: TelegramOnboardingApply, profile: Optional[str] = None):
+    _refuse_if_platform_managed("telegram")
     normalized_ids = [_normalize_telegram_user_id(raw_id) for raw_id in body.allowed_user_ids]
     if not all(normalized_ids):
         raise HTTPException(status_code=400, detail="Allowed Telegram user IDs must be numeric.")
@@ -767,11 +774,15 @@ async def get_messaging_platforms(profile: Optional[str] = None):
         # the gateway status readers do NOT (they resolve process-level paths), so the profile directory is
         # passed explicitly for those (#71211).
         with _profile_scope(profile) as scoped_dir:
-            return {
+            result = {
                 "env_path": str(get_env_path()),
                 "gateway_start_command": " ".join(["hermes", *_gateway_subcommand(profile, "start")]),
                 "platforms": _platform_payloads(scoped_dir, _messaging_platform_catalog()),
             }
+            managed = _managed_platforms()
+            if managed:
+                result["managed_by"] = {"label": managed.label, "url": managed.url}
+            return result
 
     return await asyncio.to_thread(_run)
 
@@ -822,6 +833,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
 @router.put("/api/messaging/platforms/{platform_id}")
 async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
+    _refuse_if_platform_managed(platform_id)
 
     target_profile = body.profile or profile
     if body.enabled:
@@ -872,6 +884,12 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 @router.post("/api/messaging/platforms/{platform_id}/test")
 async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _require_platform(platform_id)
+    record = _managed_platform_record(platform_id)
+    if record is not None and record["kind"] == "relay":
+        raise HTTPException(
+            status_code=409,
+            detail=f"{entry['name']} runs through {record['label']}; the native connection test does not apply.",
+        )
 
     def _run():
         with _profile_scope(profile) as scoped_dir:

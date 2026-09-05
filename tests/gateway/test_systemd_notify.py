@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import sys
 
 import pytest
 

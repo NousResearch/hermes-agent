@@ -56,7 +56,8 @@ describe('shouldInsertNewlineOnReturn', () => {
       'WT_SESSION',
       'GHOSTTY_RESOURCES_DIR',
       'GHOSTTY_BIN_DIR',
-      'WSL_DISTRO_NAME'
+      'WSL_DISTRO_NAME',
+      'VTE_VERSION'
     ]) {
       delete process.env[k]
     }

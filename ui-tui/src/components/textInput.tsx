@@ -275,7 +275,22 @@ export function shouldPreserveCtrlJNewline(env: MinimalEnv = process.env): boole
     return true
   }
 
-  return (env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')
+  if ((env.WSL_DISTRO_NAME ?? '').toLowerCase().includes('microsoft')) {
+    return true
+  }
+
+  // Linux local terminals: GNOME Terminal (VTE), xterm, alacritty, foot
+  // previously returned false for TERM=xterm-256color, breaking Ctrl+J
+  if (env.VTE_VERSION) {
+    return true
+  }
+
+  const term = (env.TERM ?? '').toLowerCase()
+  if (term.includes('alacritty') || term.startsWith('foot') || term === 'xterm-kitty' || term === 'xterm-ghostty') {
+    return true
+  }
+
+  return false
 }
 
 type ReturnDecisionKey = {

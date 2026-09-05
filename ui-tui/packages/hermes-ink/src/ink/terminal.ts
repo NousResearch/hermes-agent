@@ -320,10 +320,25 @@ export function parseOscColor(data: string): string | undefined {
 // terminal.
 const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
 
+// Additional terminals known to handle modifyOtherKeys/kitty correctly on Linux
+const EXTENDED_KEYS_SUBSTRINGS = ['xterm', 'alacritty', 'foot', 'ghostty', 'kitty']
+
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */
 export function supportsExtendedKeys(): boolean {
-  return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
+  const term = env.terminal ?? ''
+  if (EXTENDED_KEYS_TERMINALS.includes(term)) {
+    return true
+  }
+  // GNOME Terminal / VTE, xterm, alacritty, foot all support modifyOtherKeys
+  if (EXTENDED_KEYS_SUBSTRINGS.some(s => term.includes(s))) {
+    return true
+  }
+  // VTE-based terminals expose VTE_VERSION even when TERM is xterm-256color
+  if (process.env.VTE_VERSION) {
+    return true
+  }
+  return false
 }
 
 /** True when the Kitty keyboard protocol push (CSI >1u) must be skipped for

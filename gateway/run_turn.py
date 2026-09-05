@@ -1430,6 +1430,11 @@ class GatewayTurnMixin:
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return response
+        # Live reasoning relay already delivered 💭 bubbles mid-turn (stream
+        # consumer reasoning_delivered) — skip the final prepend so the user
+        # doesn't see the same reasoning twice.
+        if agent_result.get("reasoning_delivered"):
+            return response
         from gateway.stream_consumer_fences import escape_code_fences_for_display
         # Collapse long reasoning to keep messages readable
         lines = last_reasoning.strip().splitlines()

@@ -17,7 +17,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
@@ -826,6 +826,22 @@ class TurnRunner:
                     for sink in delta_sinks:
                         sink.on_delta(text)
 
+        # Live reasoning relay: same gate pair as the CLI's reasoning box —
+        # token streaming active (relay rides the consumer queue) AND the
+        # user opted into show_reasoning on this platform.  Buffers thinking-
+        # channel deltas for flush as 💭 bubbles on the cadence above.
+        reasoning_stream_cb: "Callable[[str], None] | None" = None
+        if stream_consumer is not None and want_stream_deltas:
+            from gateway.run import _resolve_gateway_display_bool
+            _want_reasoning_stream = _resolve_gateway_display_bool(
+                ctx.user_config, platform_key, "show_reasoning",
+                default=False, platform=ctx.source.platform,
+            )
+            if _want_reasoning_stream:
+                def reasoning_stream_cb(text: str) -> None:
+                    if ctx._run_still_current() and hasattr(stream_consumer, "on_reasoning"):
+                        stream_consumer.on_reasoning(text)
+
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
@@ -834,7 +850,7 @@ class TurnRunner:
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
                 self._send_status_text(text, ctx._status_thread_metadata, "interim_assistant_callback scheduling error")
 
-        return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages
+        return stream_consumer, stream_delta_cb, interim_assistant_cb, want_interim_messages, reasoning_stream_cb
 
     # ── agent resolution (cache reuse vs fresh build) ───────────────────────────────────────
 
@@ -1084,7 +1100,8 @@ class TurnRunner:
         agent._gateway_turn_request_overrides = turn_overrides
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
-                                   stream_delta_cb, interim_assistant_cb, want_interim_messages):
+                                   stream_delta_cb, interim_assistant_cb, want_interim_messages,
+                                   reasoning_stream_cb=None):
         """Per-message state — callbacks and reasoning config change every turn, so they aren't
         baked into the cached agent."""
         ctx = self._ctx
@@ -1101,6 +1118,12 @@ class TurnRunner:
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
+        # Live reasoning relay (gateway parity with the CLI's reasoning box):
+        # the agent fires reasoning_callback with structured reasoning deltas
+        # (reasoning_content — GLM / DeepSeek / Qwen thinking channels).  Only
+        # wired when token streaming is active (the relay rides the stream
+        # consumer's queue) AND the user opted into show_reasoning.
+        agent.reasoning_callback = reasoning_stream_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
@@ -1450,6 +1473,14 @@ class TurnRunner:
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):
         ctx = self._ctx
+        # Live reasoning relay: surface mid-turn 💭 delivery on the result so
+        # the final prepend can skip re-sending the same reasoning block.
+        if (
+            stream_consumer is not None
+            and isinstance(result, dict)
+            and getattr(stream_consumer, "reasoning_delivered", False)
+        ):
+            result["reasoning_delivered"] = True
         # Canonicalize a model-emitted computer-use screenshot path at the common result boundary so
         # the streaming finalizer and the non-streaming delivery path see the same response.
         if isinstance(result, dict) and isinstance(result.get("final_response"), str):
@@ -1636,12 +1667,12 @@ class TurnRunner:
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
-        stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+        stream_consumer, stream_delta_cb, interim_cb, want_interim, reasoning_stream_cb = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim, reasoning_stream_cb)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)

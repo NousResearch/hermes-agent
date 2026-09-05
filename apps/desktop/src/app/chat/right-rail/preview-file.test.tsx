@@ -1,7 +1,38 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { MarkdownPreview } from './preview-file'
+import { LocalFilePreview, MarkdownPreview } from './preview-file'
+
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+
+function installFileBridge(text: string, truncated = false) {
+  const writeClipboard = vi.fn().mockResolvedValue(undefined)
+
+  desktopWindow.hermesDesktop = {
+    gitRoot: vi.fn().mockResolvedValue(null),
+    readFileText: vi.fn().mockResolvedValue({
+      byteSize: text.length,
+      language: 'markdown',
+      path: '/tmp/notes.md',
+      text,
+      truncated
+    }),
+    writeClipboard
+  } as unknown as Window['hermesDesktop']
+
+  return writeClipboard
+}
+
+const markdownTarget = {
+  kind: 'file' as const,
+  label: 'notes.md',
+  language: 'markdown',
+  path: '/tmp/notes.md',
+  previewKind: 'text' as const,
+  source: '/tmp/notes.md',
+  url: 'file:///tmp/notes.md'
+}
 
 // Behavior tests for the .md file preview renderer: input markdown goes
 // through normalizeFilePreviewMath -> Streamdown (+ KaTeX math plugin) and must
@@ -11,6 +42,13 @@ import { MarkdownPreview } from './preview-file'
 describe('MarkdownPreview', () => {
   afterEach(() => {
     cleanup()
+    vi.restoreAllMocks()
+
+    if (initialHermesDesktop) {
+      desktopWindow.hermesDesktop = initialHermesDesktop
+    } else {
+      delete desktopWindow.hermesDesktop
+    }
   })
 
   it('renders block and inline math through KaTeX', () => {
@@ -49,5 +87,32 @@ describe('MarkdownPreview', () => {
     expect(anchor?.getAttribute('href')).toBe('https://example.com/docs')
     expect(anchor?.getAttribute('target')).toBe('_blank')
     expect(anchor?.getAttribute('rel')).toBe('noopener noreferrer')
+  })
+
+  it('copies the complete raw Markdown from the preview toolbar', async () => {
+    const markdown = '# Heading\n\n**bold** and [link](https://example.com)\n'
+    const writeClipboard = installFileBridge(markdown)
+
+    render(<LocalFilePreview reloadKey={0} target={markdownTarget} />)
+    const copy = await screen.findByRole('button', { name: 'Copy' })
+    const edit = screen.getByRole('button', { name: 'Edit' })
+
+    expect(copy.textContent).toBe('')
+    expect(edit.textContent).toBe('')
+    fireEvent.click(copy)
+
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith(markdown))
+  })
+
+  it.each([
+    { text: '# Partial', truncated: true },
+    { text: '', truncated: false }
+  ])('does not offer a whole-file copy for truncated or empty Markdown', async ({ text, truncated }) => {
+    installFileBridge(text, truncated)
+
+    render(<LocalFilePreview reloadKey={0} target={markdownTarget} />)
+
+    await screen.findByText('SOURCE')
+    expect(screen.queryByRole('button', { name: 'Copy' })).toBeNull()
   })
 })

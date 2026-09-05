@@ -205,6 +205,13 @@ class LoadedPlugin:
     hooks_registered: List[str] = field(default_factory=list)
     middleware_registered: List[str] = field(default_factory=list)
     commands_registered: List[str] = field(default_factory=list)
+    # Hook events register() bound but the manifest's provides_hooks did not declare (G2-2a):
+    # loud load-log warning by default; loaded.enabled=False + error when plugins.strict_hooks.
+    undeclared_hooks: List[str] = field(default_factory=list)
+    # Load-time drift-gate advisory (G4-3): the plugin loaded, but the gate could not
+    # verify it against a consent baseline (unreadable metadata / unhashable tree).
+    # Surfaced on `hermes plugins list` so a fail-open check is never invisible.
+    load_advisory: Optional[str] = None
     enabled: bool = False
     error: Optional[str] = None
     # Bundled platform recorded as a not-yet-imported loader (see _register_deferred_platform).
@@ -1433,6 +1440,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 "source": p.manifest.source, "enabled": p.enabled, "tools": len(p.tools_registered),
                 "hooks": len(p.hooks_registered), "middleware": len(p.middleware_registered),
                 "commands": len(p.commands_registered), "error": p.error,
+                "undeclared_hooks": list(p.undeclared_hooks),
+                "load_advisory": p.load_advisory,
             } for _key, p in sorted(self._plugins.items())
         ]
 

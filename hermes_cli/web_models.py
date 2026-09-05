@@ -498,6 +498,9 @@ class _AgentPluginInstallBody(BaseModel):
     force: bool = False
     enable: bool = True
 
+class _AgentPluginUpdateBody(BaseModel):
+    review_token: Optional[str] = None
+
 class _PluginProvidersPutBody(BaseModel):
     memory_provider: Optional[str] = None
     context_engine: Optional[str] = None

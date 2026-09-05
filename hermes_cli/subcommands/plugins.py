@@ -52,6 +52,15 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin")
     plugins_update.add_argument("name", help="Plugin name to update")
+    plugins_update.add_argument(
+        "--accept-update", action="store_true",
+        help="Accept a content change without the interactive review prompt "
+        "(required in non-interactive sessions; the diff is still printed)")
+    plugins_update.add_argument(
+        "--accept-caution", action="store_true",
+        help="Keep the plugin enabled when the post-update security scan returns "
+        "a caution verdict (required in non-interactive sessions to adopt such an "
+        "update; without it the update is not adopted — fail closed)")
 
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin")

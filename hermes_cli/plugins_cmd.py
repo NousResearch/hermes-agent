@@ -15,6 +15,22 @@ import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
+# The staged plugin-update security transaction (artifact identity / staging /
+# activation / settlement / post-accept policy) lives in plugin_update_txn; this
+# facade binds its API at module level so ``plugins_cmd.<name>`` references and
+# monkeypatch seams keep working (leaf-sibling rule: plugin_update_txn never
+# imports this module at module level).
+from hermes_cli.plugin_update_txn import (
+    PluginConsentDrift,
+    _commit_staged_plugin_update,
+    _consent_record,
+    _decline_staged_update,
+    _plugin_artifact_identity,
+    _plugin_update_root,
+    _review_live_drift,
+    _run_plugin_update_diff_gate,
+    _stage_plugin_update,
+)
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.cli_output import line_input
@@ -446,6 +462,12 @@ def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
         path, json.dumps(metadata, indent=2, sort_keys=True) + "\n", tmp_prefix=f"{path.name}.tmp-")
 
 
+# ── Artifact (content) consent records ──────────────────────────────────────
+# Moved to hermes_cli.plugin_update_txn.py (the single update owner). The
+# consent/identity helpers are imported at module level below; install still
+# records the baseline through _consent_record/_plugin_artifact_identity at
+# tree-swap time, and the update gate compares against it.
+
 def _normalize_exact_revision(ref: str) -> str:
     """Lowercase a full 40-hex commit SHA; anything else is a PluginOperationError."""
     if not isinstance(ref, str) or not _EXACT_COMMIT_RE.fullmatch(ref):
@@ -647,9 +669,23 @@ def _install_plugin_core(
                 f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
                 "--ref <40-character commit SHA> to change its source or revision.")
 
+        # Consent baseline: the artifact identity at the exact revision being
+        # installed (canonical git tree id for git clones; whole-tree sha256 for
+        # subdir/manual trees without a checkout). Recorded atomically with the
+        # tree swap so a baseline always exists; the update gate compares the
+        # candidate's identity against it.
+        installed_kind, installed_artifact = _plugin_artifact_identity(
+            tmp_target, is_git=(tmp_target / ".git").exists(), git_exe=_resolve_git_executable())
         new_metadata = {
             **old_metadata,
-            plugin_name: {"pinned": requested_revision is not None, "revision": installed_revision, "source": source},
+            plugin_name: {
+                "pinned": requested_revision is not None,
+                "revision": installed_revision,
+                "source": source,
+                "consent": _consent_record(
+                    installed_kind, installed_artifact, installed_revision,
+                    scope="reinstall" if target.exists() else "install"),
+            },
         }
         _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", old_metadata, new_metadata)
 
@@ -767,96 +803,136 @@ def cmd_install(
     console.print()
 
 
-def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None) -> str:
-    """Shared ``update`` core: refuse pinned / non-git checkouts, ``git pull``, record the new
-    revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
-    *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text."""
-    metadata = _read_install_metadata()
-    install_record = metadata.get(target.name, {})
-    if install_record.get("pinned") is True:
-        raise PluginOperationError(pinned_msg(install_record))
-    if not (target / ".git").exists():
-        raise PluginOperationError(not_git_msg())
-    if before_pull is not None:
-        before_pull()
-    ok, output = _git_pull_plugin_dir(target)
-    if not ok:
-        raise PluginOperationError(output)
-    # Store the new HEAD in the plugin's install-metadata record (if it has one).
-    git_exe = _resolve_git_executable() if install_record else None
-    if git_exe:
-        install_record["revision"] = _git_head_revision(target, git_exe)
-        metadata[target.name] = install_record
-        _write_install_metadata(metadata)
-    return output
+def cmd_update(name: str, *, accept_update: bool = False, accept_caution: bool = False) -> None:
+    """Update an installed plugin through the staged candidate-tree transaction.
 
-
-def cmd_update(name: str) -> None:
-    """Update an installed plugin by pulling latest from its git remote."""
-    from rich.markup import escape
+    The remote is fetched into a private quarantine tree; the live checkout is
+    never mutated before authorization. Any artifact change (canonical git tree
+    id drift — bytes, mode, path, type) is reviewed and requires an explicit
+    accept (TTY ``y`` / ``--accept-update``); the candidate is then committed
+    under the per-plugin lock with rollback. The security scan runs on the
+    exact staged candidate BEFORE promotion: dangerous → refused (the live
+    tree stays at the consented revision), caution → adopted only with an
+    explicit keep-enabled decision (TTY ``y`` / ``--accept-caution``; non-TTY
+    without the flag fails closed — nothing is adopted). Capability
+    re-consent settles through the same surface-neutral policy the Dashboard
+    uses. Decline / interrupt / non-TTY-without-flag leave the live tree at
+    the last consented revision. If the live tree already drifted from its
+    recorded consent, the drifted state is reviewed instead of silently
+    laundered by a no-op update.
+    """
     console = _console()
     target = _require_installed_plugin(name, _plugins_dir(), console)
+    key = target.name
+
+    console.print(f"[dim]Updating {name}...[/dim]")
     try:
-        output = _pull_plugin_update(
-            target,
-            lambda rec: (
-                f"Plugin '{name}' is pinned to {rec.get('revision')}. To move it, run "
-                f"`hermes plugins install {escape(str(rec.get('source', '<source>')))} --force "
-                "--ref <40-character commit SHA>`."),
-            lambda: f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.",
-            before_pull=lambda: console.print(f"[dim]Updating {name}...[/dim]"))
+        staged = _stage_plugin_update(name, target)
+    except PluginConsentDrift as drift:
+        if drift.dirty:
+            # The operator's own uncommitted edits make the live executable tree
+            # differ from the consented artifact. Never disable or destroy them:
+            # abort, keep the plugin enabled as-is, and say what to do next.
+            console.print(
+                f"[yellow]✗ Update not run:[/yellow] [bold]{name}[/bold] has uncommitted "
+                f"tracked changes, so its live tree is not the consented artifact. "
+                f"[dim]Commit or stash the local changes inside {target}, then re-run "
+                f"`hermes plugins update {name}`. The live plugin was not modified.[/dim]")
+            return
+        _review_live_drift(
+            console, target, key, name, drift,
+            accept_update=accept_update, accept_caution=accept_caution)
+        return
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
-    _rescan_after_update(target, name, console)
-    _post_pull_housekeeping(target, console)
+        return  # unreachable (_fail exits); satisfies the flow analyzer
 
-    # Re-consent when the new version declares capabilities the granted set lacks or the
-    # declared set changed; additions stay ungranted until the user says yes (fail closed).
-    # See #64228.
-    updated_manifest = _read_manifest(target)
-    plugin_id = updated_manifest.get("name") or target.name
-    declared_caps = _declared_capabilities_from_manifest(updated_manifest, plugin_id)
-    if declared_caps:
-        from hermes_cli.plugin_capabilities import declared_set_changed, pending_capabilities
-        if pending_capabilities(plugin_id, declared_caps) or declared_set_changed(plugin_id, declared_caps):
-            _run_capability_consent(console, plugin_id, declared_caps, context="update")
-
-    out = output.strip()
-    if "Already up to date" in out:
+    if staged.get("unchanged"):
         console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] is already up to date.")
-    else:
-        console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-        console.print(f"[dim]{out}[/dim]")
-
-
-def _rescan_after_update(target: Path, name: str, console) -> None:
-    """Re-scan after ``git pull``: the tree is already mutated, so a dangerous verdict disables
-    the plugin rather than leaving it active."""
-    if not _scan_on_install_enabled():
         return
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
-    scan_result = scan_plugin(target, source=name)
-    allowed, reason = should_allow_plugin_install(scan_result)
-    if allowed is True:
+
+    token = staged["review_token"]
+    old_revision = staged.get("old_revision")
+    candidate_artifact = staged["candidate_artifact"]
+    old_artifact_id = staged.get("old_artifact_id") or None
+    new_manifest = staged["new_manifest"]
+
+    accepted, caution_accepted = _run_plugin_update_diff_gate(
+        console,
+        _plugin_update_root() / token,  # review runs against the staged candidate
+        name,
+        old_revision,
+        old_artifact_id,
+        candidate_artifact,
+        staged.get("old_manifest") or {},
+        new_manifest,
+        td_signature=staged.get("td_signature", False),
+        accept_update=accept_update,
+        accept_caution=accept_caution)
+    if not accepted:
+        _decline_staged_update(console, key, name, token, old_revision)
         return
-    console.print()
-    console.print(f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {reason}")
-    console.print(format_scan_report(scan_result))
-    if scan_result.verdict == "dangerous":
-        if name in _get_enabled_set() or name not in _get_disabled_set():
-            _set_plugin_enabled(name, enable=False)
+
+    try:
+        policy = _commit_staged_plugin_update(
+            name, target, token, accept_caution=caution_accepted, console=console)
+    except PluginOperationError as exc:
+        _fail(console, f"[red]Error:[/red] {exc}")
+        return  # unreachable (_fail exits); satisfies the flow analyzer
+
+    if not policy.committed:
+        # Refusal (scan-blocked dangerous, or caution without an explicit keep decision
+        # reaching commit): render the SAME policy outcome the Dashboard returns — a
+        # refused candidate is never promoted and the live tree stays at the last
+        # consented revision.
+        console.print()
+        console.print(f"[red bold]✗ Update refused.[/red bold] {policy.reason}")
+        _render_scan_findings(console, policy)
         console.print(
-            f"[red]Plugin '{name}' has been disabled.[/red] Review the "
-            f"findings, then re-enable with `hermes plugins enable {name}` "
-            f"if you trust them.")
+            f"[dim]Plugin [bold]{name}[/bold] stays on the previously consented "
+            f"revision {old_revision or 'HEAD'} — no changes were adopted.[/dim]")
+        return
+
+    # Caution findings were rendered by the update gate when a caution verdict resolved
+    # (--accept-caution / TTY y), so a committed-caution candidate does not print the
+    # report twice. Safe commits carry no findings; only a resolution path that did NOT
+    # pass through the gate's report (dashboard/race) would render here.
+    if not caution_accepted:
+        _render_scan_findings(console, policy)
+
+    # Re-consent when the candidate declares capabilities the granted set lacks;
+    # additions stay ungranted until the user says yes (fail closed). See #64228.
+    # The owner already settled declared-set bookkeeping; only genuinely pending
+    # capabilities reach this interactive tail (Dashboard leaves them pending).
+    plugin_id = new_manifest.get("name") or target.name
+    declared_caps = _declared_capabilities_from_manifest(new_manifest, plugin_id)
+    if declared_caps and policy.pending_capabilities:
+        _run_capability_consent(console, plugin_id, declared_caps, context="update")
+
+    console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
+    console.print(f"[dim]Now at revision {policy.candidate_revision}.[/dim]")
+    if staged.get("output"):
+        console.print(f"[dim]{staged['output']}[/dim]")
 
 
-def _post_pull_housekeeping(target: Path, console) -> None:
-    """After ``git pull``: drop stale ``__pycache__`` and copy any new ``.example`` files."""
-    # Same stale-bytecode class as the main checkout (#6207/#60242): the pull just changed .py files under
-    # this plugin dir, so drop any __pycache__ compiled from the previous revision.
-    _clear_plugin_bytecode(target)
-    _copy_example_files(target, console)
+def _render_scan_findings(console, policy) -> None:
+    """Render a commit policy's scan findings (caution report / refusal report)."""
+    if not policy.scan_findings or policy.scan_verdict is None:
+        return
+    if policy.scan_blocked:
+        console.print("[yellow]⚠ Security scan findings:[/yellow]")
+    else:
+        console.print(f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {policy.reason}")
+    for finding in policy.scan_findings:
+        loc = finding.get("file") or ""
+        if finding.get("line"):
+            loc = f"{loc}:{finding['line']}"
+        console.print(
+            f"  [bold]{finding.get('severity') or '?'}[/bold] "
+            f"{finding.get('category') or '?'} {loc} — {finding.get('description') or ''}")
+    console.print(
+        "[dim]Review the findings above. Scanning is configured via "
+        "plugins.scan_on_install in config.yaml.[/dim]")
 
 
 def _remove_plugin_core(target: Path) -> None:
@@ -1349,6 +1425,25 @@ def cmd_list(args: Any | None = None) -> None:
     console.print()
     console.print(table)
     console.print()
+    # Load-derived warnings ride on the live manager (this process already ran discovery when a
+    # plugin is loaded here); manifest-only scans have no registration data to compare (G2-2a),
+    # and drift-gate fail-open advisories live only on the loaded record (G4-3).
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        loaded_info = {p["key"]: p for p in get_plugin_manager().list_plugins()}
+    except Exception:
+        loaded_info = {}
+    for name, _version, _description, _source, _dir, key in entries:
+        info = loaded_info.get(key) or loaded_info.get(name) or {}
+        undeclared = info.get("undeclared_hooks")
+        if undeclared:
+            console.print(
+                f"[yellow]⚠ plugin '{name}' registered undeclared hook(s): "
+                f"{', '.join(undeclared)} — declare them in the manifest's "
+                f"provides_hooks (see the load log).[/yellow]")
+        advisory = info.get("load_advisory")
+        if advisory:
+            console.print(f"[yellow]⚠ plugin '{name}': {advisory}[/yellow]")
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
@@ -1797,41 +1892,70 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     return target if target.is_dir() else None
 
 
-def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
-    """``git pull`` inside ``~/.hermes/plugins/<name>``."""
+def dashboard_update_user_plugin(name: str, *, review_token: Optional[str] = None) -> dict[str, Any]:
+    """Stage an update, or accept an exact revision after Dashboard review.
+
+    Rides the SAME staged transaction/accept carrier as ``cmd_update`` (one
+    review-token path for CLI + Dashboard — no second pull-first route). Without
+    a token the remote is fetched into the private quarantine and the live tree
+    stays untouched: the result carries ``review_required`` + ``review_token`` +
+    the review payload for the Dashboard surface. With the token the staged
+    candidate is revalidated and promoted atomically.
+    """
     target = _user_installed_plugin_dir(name)
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {_plugins_dir()}."}
     try:
-        msg = _pull_plugin_update(
-            target,
-            lambda rec: (
-                f"Plugin '{name}' is pinned to {rec.get('revision')}; "
-                f"run `hermes plugins install {rec.get('source', '<source>')} --force "
-                "--ref <40-character commit SHA>` to move it."),
-            lambda: f"Plugin '{name}' is not a git checkout; cannot pull updates.")
-    except PluginOperationError as exc:
+        if review_token:
+            policy = _commit_staged_plugin_update(name, target, review_token)
+            if not policy.committed:
+                # One surface-neutral policy outcome: a dangerous candidate is
+                # refused at commit (scan_blocked) — the live tree stays at the
+                # last consented revision and the plugin is NOT promoted.
+                return {
+                    "ok": False,
+                    "name": name,
+                    "accepted": False,
+                    "error": policy.reason,
+                    "scan_blocked": policy.scan_blocked,
+                    "scan_verdict": policy.scan_verdict,
+                    "scan_findings": policy.scan_findings,
+                    "pending_capabilities": policy.pending_capabilities,
+                }
+            return {
+                "ok": True,
+                "name": name,
+                "accepted": True,
+                "unchanged": False,
+                "review_required": False,
+                "candidate_revision": policy.candidate_revision,
+                "candidate_artifact": policy.candidate_artifact,
+                "outcome": policy.outcome,
+                "scan_verdict": policy.scan_verdict,
+                "scan_findings": policy.scan_findings,
+                "pending_capabilities": policy.pending_capabilities,
+                "capabilities_changed": policy.capabilities_changed,
+            }
+        staged = _stage_plugin_update(name, target)
+        return {
+            "ok": True,
+            "name": name,
+            "output": staged.get("output") or "",
+            "unchanged": bool(staged.get("unchanged")),
+            "review_required": bool(staged.get("review_required")),
+            **{k: staged[k] for k in (
+                "review_token", "candidate_revision", "candidate_artifact",
+                "changed_files", "td_signature",
+            ) if k in staged},
+        }
+    except PluginConsentDrift as exc:
+        return {
+            "ok": False,
+            "error": f"{exc} Run `hermes plugins update {name}` (interactive) to review the "
+            "live tree against its recorded consent.",
+        }
+    except (PluginOperationError, OSError, ValueError, json.JSONDecodeError) as exc:
         return {"ok": False, "error": str(exc)}
-    _post_pull_housekeeping(target, _console())
-    return {"ok": True, "name": name, "output": msg, "unchanged": "Already up to date" in msg}
-
-
-def _clear_plugin_bytecode(target: Path) -> int:
-    """Remove ``__pycache__`` dirs under a just-updated plugin checkout. Plugin dirs sit outside
-    the repo, so the launch-time bytecode sweep never covers them and stale bytecode after a pull
-    can ImportError in the next process. Never raises.
-
-    See #60242, #6207.
-    """
-    removed = 0
-    try:
-        for cache_dir in target.rglob("__pycache__"):
-            if cache_dir.is_dir():
-                shutil.rmtree(cache_dir, ignore_errors=True)
-                removed += 0 if cache_dir.exists() else 1
-    except OSError:
-        pass
-    return removed
 
 
 def _run_plugin_git(git_exe: str, target: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -1839,95 +1963,6 @@ def _run_plugin_git(git_exe: str, target: Path, *args: str, timeout: int = 60) -
     return subprocess.run(
         [git_exe, *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
         cwd=str(target), stdin=subprocess.DEVNULL, env=noninteractive_git_env())
-
-
-def _stash_ref(git_exe: str, target: Path) -> str:
-    """Current ``refs/stash`` commit, or empty string when no stash exists."""
-    probe = _run_plugin_git(git_exe, target, "rev-parse", "--verify", "refs/stash")
-    return probe.stdout.strip() if probe.returncode == 0 else ""
-
-
-def _reapply_stash(git_exe: str, target: Path) -> bool:
-    """``stash apply`` the autostash; drop it on a clean apply. False when it applied with
-    errors or left unmerged paths (the stash entry is kept in that case)."""
-    restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}")
-    unmerged = _run_plugin_git(git_exe, target, "diff", "--name-only", "--diff-filter=U")
-    if restore.returncode != 0 or unmerged.stdout.strip():
-        return False
-    _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}")
-    return True
-
-
-def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
-    """Stash local edits before a pull. Returns ``(stash_created, error)``; a non-empty error means
-    the tree is dirty but nothing was saved, so the pull must not run."""
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain")
-    if status.returncode != 0 or not status.stdout.strip():
-        return False, ""
-    pre_stash = _stash_ref(git_exe, target)
-    push = _run_plugin_git(
-        git_exe, target, "stash", "push", "--include-untracked", "-m", "hermes-plugin-update-autostash")
-    post_stash = _stash_ref(git_exe, target)
-    if not post_stash or post_stash == pre_stash:
-        err = _safe_git_error(push)
-        return False, (
-            "Local changes in the plugin checkout could not be "
-            "stashed; update aborted before touching the checkout."
-            + (f"\n{err}" if err else ""))
-    if push.returncode != 0:
-        # Saved-but-couldn't-clean (undeletable untracked files): the stash entry is complete;
-        # reset tracked mods so the pull isn't blocked by a still-dirty tree.
-        _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
-    return True, ""
-
-
-def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
-    """``git pull --ff-only`` a plugin checkout, autostashing local edits (users patch installed
-    plugins in place, and a plain ff-only pull would then refuse forever).
-
-    Users tweak installed plugins in place (config constants, small patches), and a plain ``pull --ff-only``
-    then aborts with "Your local changes ... would be overwritten by merge" — making the plugin permanently
-    un-updatable until they hand-run git. Same UX class Factory Droid fixed in v0.188 ("Updating a plugin
-    marketplace now succeeds when its checkout has local changes"), and the same autostash approach ``hermes
-    update`` already uses for the main checkout (PR #70161).
-    """
-    git_exe = _resolve_git_executable()
-    if not git_exe:
-        return False, "git is not installed or not in PATH."
-    try:
-        stash_created, err = _autostash_dirty_tree(git_exe, target)
-        if err:
-            return False, err
-        result = _run_plugin_git(git_exe, target, "pull", "--ff-only")
-        if result.returncode != 0:
-            err = _safe_git_error(result) or "git pull failed."
-            if not stash_created:
-                return False, err
-            # Put the user's edits back before reporting the failure.
-            if _reapply_stash(git_exe, target):
-                note = "Local changes were restored."
-            else:
-                note = "Local changes are preserved in git stash (restore with: git stash pop)."
-            return False, f"{err}\n{note}"
-
-        pulled = result.stdout.strip()
-        if not stash_created:
-            return True, pulled
-        if _reapply_stash(git_exe, target):
-            return True, pulled + "\nLocal changes were re-applied on top of the update."
-
-        # Conflicted re-apply: leave the plugin importable on the updated
-        # revision; the user's edits stay safe in the stash entry.
-        _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
-        return True, pulled + (
-            "\n⚠ Local changes in this plugin conflicted with the update and "
-            "were NOT re-applied. They are preserved in git stash — inspect "
-            "with `git stash show -p stash@{0}` and re-apply with "
-            f"`git stash pop` inside {target}.")
-    except FileNotFoundError:
-        return False, "git is not installed or not in PATH."
-    except subprocess.TimeoutExpired:
-        return False, "Git operation timed out after 60 seconds."
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
@@ -2045,7 +2080,10 @@ _PLUGIN_ACTIONS = {
         json_output=getattr(args, "json", False),
         capability=getattr(args, "capability", None),
         refresh=getattr(args, "refresh", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": lambda args: cmd_update(
+        args.name,
+        accept_update=getattr(args, "accept_update", False),
+        accept_caution=getattr(args, "accept_caution", False)),
     "remove": lambda args: cmd_remove(args.name),
     "rm": lambda args: cmd_remove(args.name),
     "uninstall": lambda args: cmd_remove(args.name),

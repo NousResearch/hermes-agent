@@ -1551,6 +1551,16 @@ DEFAULT_CONFIG = {
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.
         "allow_deprecated_imports": False,
+        # Load-time content-drift gate (HookPry G4-3): a manager-installed plugin whose current
+        # artifact identity drifted from its recorded consent.artifact_id is skipped at
+        # discovery/startup until it is re-consented via `hermes plugins update`. This flag
+        # auto-accepts drift instead (DANGEROUS: silently re-enables out-of-band trojanization; kept
+        # off by default). Literal booleans only — a YAML string does NOT open the gate.
+        "auto_accept_drift": False,
+        # Declared-vs-registered hook enforcement (HookPry G2-2a): when true (literal boolean), a
+        # plugin whose register(ctx) binds a hook event NOT listed in its manifest provides_hooks is
+        # refused at load (fail closed). Default false = loud warning + surfacing only.
+        "strict_hooks": False,
     },
     # Shell-script hooks: event name (pre_tool_call, post_tool_call, pre_llm_call, subagent_stop,
     # ...) -> list of {matcher, command, timeout}. First run of a new command prompts for consent;

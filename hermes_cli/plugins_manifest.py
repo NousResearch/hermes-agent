@@ -414,12 +414,22 @@ def parse_manifest_file(
         kind = _manifest_kind(data, key, plugin_dir)
         logger.debug(
             "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s", key, name, kind, source, plugin_dir)
+        # provides_hooks is canonical; the legacy list-form ``hooks:`` (shipped by some
+        # first-party bundled plugins) declares the same hook bindings and is normalized
+        # into the same field so declared-vs-registered enforcement (G2-2a) and the
+        # install scanner see both forms. A config-style MAPPING under hooks: (event ->
+        # descriptor for config.yaml shell hooks) is NOT a declaration list and stays
+        # ignored here (forward compat).
+        provides_hooks = list(data.get("provides_hooks", []) or [])
+        legacy_hooks = data.get("hooks")
+        if isinstance(legacy_hooks, list):
+            provides_hooks += [h for h in legacy_hooks if isinstance(h, str)]
         return PluginManifest(
             name=name, version=str(data.get("version", "")),
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
             provides_tools=data.get("provides_tools", []),
-            provides_hooks=data.get("provides_hooks", []), source=source, path=str(plugin_dir),
+            provides_hooks=provides_hooks, source=source, path=str(plugin_dir),
             kind=kind, key=key,
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],

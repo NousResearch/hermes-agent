@@ -2378,3 +2378,379 @@ class TestDispatchToolWithoutCliRef:
             assert calls[0][1].get("parent_agent") is None
         finally:
             registry.deregister("_test_dispatch_probe")
+
+
+# ── HookPry G4-3 load-time drift gate + G2-2a declared-vs-registered (PR-3 restack) ──
+# The drift gate compares a manager-installed plugin's CURRENT artifact identity
+# (git_tree for git checkouts / whole-tree sha256 for manual trees — the SAME helper
+# the update transaction records in consent.artifact_id) against that baseline. Drift
+# without re-consent skips the load with a loud warning (fail closed) unless
+# plugins.auto_accept_drift (literal true). Hand-copied dirs (no install-metadata
+# record) keep loading unchanged (one-time advisory). G2-2a: hooks register() binds
+# but the manifest did not declare warn loudly; with plugins.strict_hooks: true the
+# plugin is refused at load.
+
+_DRIFT_MANIFEST = (
+    "name: drift-test\n"
+    "manifest_version: 1\n"
+    "version: 1.0.0\n"
+    "description: drift-gate fixture\n"
+    "provides_hooks:\n"
+    "  - pre_tool_call\n"
+)
+
+_DRIFT_BENIGN = (
+    "def register(ctx):\n"
+    "    def _on_pre_tool_call(**kwargs):\n"
+    "        return None  # benign marker\n"
+    "    ctx.register_hook('pre_tool_call', _on_pre_tool_call)\n"
+)
+
+
+def _drift_git(cwd, *args):
+    """Run git in *cwd* with fixture author env; assert success."""
+    import os
+    import subprocess as sp
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    result = sp.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def _drift_install(tmp_path, monkeypatch) -> tuple:
+    """Real git install of the drift fixture into a temp HERMES_HOME; returns
+    (pc, home, target, name, origin). The plugin is enabled in config.yaml."""
+    import hermes_cli.plugins_cmd as pc
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _drift_git(origin, "init", "-q", "-b", "main")
+    (origin / "plugin.yaml").write_text(_DRIFT_MANIFEST, encoding="utf-8")
+    (origin / "__init__.py").write_text(_DRIFT_BENIGN, encoding="utf-8")
+    _drift_git(origin, "add", "-A")
+    _drift_git(origin, "commit", "-qm", "v1")
+    target, _manifest, name = pc._install_plugin_core(f"file://{origin}", force=False)
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [name]}}),
+                                      encoding="utf-8")
+    return pc, home, target, name, origin
+
+
+class TestLoadTimeDriftGate:
+    """G4-3: out-of-band tree writes to a manager-managed plugin block its import."""
+
+    def test_load_time_drift_blocks_import(self, tmp_path, monkeypatch, caplog):
+        import shutil
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, home, target, name, origin = _drift_install(tmp_path, monkeypatch)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins[name].enabled is True
+
+        # Out-of-band write: a tracked file is changed and COMMITTED inside the live
+        # checkout, bypassing install/update. (An uncommitted edit does not move the
+        # committed git-tree identity — same semantics as the update owner's consent
+        # match; the byte-level whole-tree hash covers that for manual trees.)
+        _drift_git(target, "commit", "-qm", "oob drift", "--allow-empty")
+        (target / "__init__.py").write_text(
+            _DRIFT_BENIGN + "# out-of-band edit\n", encoding="utf-8")
+        _drift_git(target, "add", "-A")
+        _drift_git(target, "commit", "-qm", "oob drift 2")
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load(force=True)
+        state = mgr._plugins[name]
+        assert state.enabled is False, "drifted plugin must not load"
+        assert state.module is None, "drifted plugin module must not be imported"
+        assert "content changed since the last consent" in state.error
+        assert "refusing to load" in state.error
+        assert "not loaded" in caplog.text
+
+    def test_load_time_drift_auto_accept_flag_allows_load(self, tmp_path, monkeypatch):
+        import shutil
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, home, target, name, origin = _drift_install(tmp_path, monkeypatch)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins[name].enabled is True
+
+        (target / "__init__.py").write_text(
+            _DRIFT_BENIGN + "# out-of-band edit\n", encoding="utf-8")
+        _drift_git(target, "add", "-A")
+        _drift_git(target, "commit", "-qm", "oob drift")
+        (home / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": [name], "auto_accept_drift": True}}), encoding="utf-8")
+
+        mgr.discover_and_load(force=True)
+        assert mgr._plugins[name].enabled is True
+
+    def test_load_time_drift_flag_string_true_does_not_open_gate(self, tmp_path, monkeypatch):
+        # AI-review finding 4: the gate flags are literal-boolean. YAML "true" (a string)
+        # must NOT open auto_accept_drift — fail closed.
+        import shutil
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, home, target, name, origin = _drift_install(tmp_path, monkeypatch)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins[name].enabled is True
+
+        (target / "__init__.py").write_text(
+            _DRIFT_BENIGN + "# out-of-band edit\n", encoding="utf-8")
+        _drift_git(target, "add", "-A")
+        _drift_git(target, "commit", "-qm", "oob drift")
+        (home / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": [name], "auto_accept_drift": "true"}}), encoding="utf-8")
+
+        mgr.discover_and_load(force=True)
+        state = mgr._plugins[name]
+        assert state.enabled is False, "quoted 'true' must not open the drift gate"
+        assert "refusing to load" in state.error
+
+    def test_no_consent_baseline_hand_copied_plugin_still_loads(self, tmp_path, monkeypatch, caplog):
+        # Scope boundary: a hand-copied dir with NO install-metadata record (and no .git)
+        # is outside the plugin manager's install/update model — it keeps loading, with a
+        # one-time advisory. Never invent skip-load rules for these (olympus hand-copies
+        # omh / telemetry-hooks / verify_claims_hook and they must keep loading).
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins_dir = home / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "hand_copied",
+            manifest_extra={"provides_hooks": ["pre_tool_call"]},
+            register_body="ctx.register_hook('pre_tool_call', lambda **kw: None)",
+            auto_enable=True, home=home,
+        )
+        # No .install-metadata.json: the manager never installed this directory.
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
+        assert mgr._plugins["hand_copied"].enabled is True
+        assert "no content-consent baseline recorded" in caplog.text
+
+    def test_metadata_record_without_consent_baseline_is_advisory_not_block(self, tmp_path, monkeypatch):
+        import shutil
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, home, target, name, origin = _drift_install(tmp_path, monkeypatch)
+        # Legacy record: drop the consent subrecord (pre-content-consent install).
+        record = pc._read_install_metadata()
+        del record[name]["consent"]
+        pc._write_install_metadata(record)
+        (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [name]}}),
+                                          encoding="utf-8")
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins[name].enabled is True
+
+    def test_unreadable_metadata_advisory_surfaced_on_record(self, tmp_path, monkeypatch):
+        # AI-review finding 2: when the drift gate fails open (cannot read install
+        # metadata), the advisory must be visible on the plugin record — never an
+        # invisible fail-open in `hermes plugins list`.
+        import shutil
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, home, target, name, origin = _drift_install(tmp_path, monkeypatch)
+
+        # Corrupt the metadata file so _read_install_metadata raises.
+        (home / "plugins" / ".install-metadata.json").write_text("{not json", encoding="utf-8")
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        p = mgr._plugins[name]
+        assert p.enabled is True, "unreadable metadata is fail-open (loud), not a block"
+        assert p.load_advisory is not None
+        assert "could not read install metadata" in p.load_advisory
+        row = next(r for r in mgr.list_plugins() if r["key"] == name)
+        assert row["load_advisory"] == p.load_advisory
+
+    def test_manual_sha256_baseline_noise_excluded_no_false_drift(self, tmp_path, monkeypatch):
+        # AI-review finding 3: whole-tree (manual/non-git) hashing excludes venv/build/
+        # cache dirs, so a hand-installed tree with a build venv does not false-positive
+        # on every load; a REAL content edit still blocks.
+        from hermes_cli.plugin_treehash import tree_sha256
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins_dir = home / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "manual_drift",
+            register_body="pass",
+            auto_enable=True, home=home,
+        )
+        target = plugins_dir / "manual_drift"
+        # No .git: the tree is a manual baseline, consented under identity sha256.
+        import hermes_cli.plugins_cmd as pc
+        baseline = tree_sha256(target)
+        metadata = pc._read_install_metadata()
+        metadata["manual_drift"] = {
+            "revision": "manual",
+            "consent": {
+                "identity": "sha256",
+                "artifact_id": baseline,
+                "revision": "manual",
+                "granted_at": "2026-01-01T00:00:00+00:00",
+                "scope": "install",
+            },
+        }
+        pc._write_install_metadata(metadata)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins["manual_drift"].enabled is True
+
+        # Noise that a build/venv would leave behind: excluded from the whole-tree hash
+        # (venv/node_modules/__pycache__ mirror plugin_guard.EXCLUDED_DIRS; a changing
+        # build/ dir is NOT excluded — real build output drift counts as content change).
+        (target / ".venv").mkdir()
+        (target / ".venv" / "lib").mkdir()
+        (target / ".venv" / "lib" / "site.py").write_text("import os\n", encoding="utf-8")
+        (target / "node_modules").mkdir()
+        (target / "node_modules" / "pkg").mkdir()
+        (target / "node_modules" / "pkg" / "index.js").write_text("// dep\n", encoding="utf-8")
+        (target / "__pycache__").mkdir(exist_ok=True)  # import may have created it
+        (target / "__pycache__" / "x.cpython-311.pyc").write_bytes(b"\x00" * 16)
+        mgr.discover_and_load(force=True)
+        assert mgr._plugins["manual_drift"].enabled is True, (
+            "venv/build/cache noise must not drift a manual sha256 baseline")
+
+        # A real content edit drifts the baseline → load refused.
+        (target / "__init__.py").write_text(
+            (target / "__init__.py").read_text(encoding="utf-8") + "# oob\n", encoding="utf-8")
+        mgr.discover_and_load(force=True)
+        p = mgr._plugins["manual_drift"]
+        assert p.enabled is False
+        assert "refusing to load" in p.error
+
+
+class TestDeclaredVsRegisteredHooks:
+    """G2-2a: hooks register() binds but the manifest never declared → warn loudly and
+    surface on the plugin list; plugins.strict_hooks: true refuses the load."""
+
+    @staticmethod
+    def _undeclared_body() -> str:
+        return (
+            "def _on_pre_tool_call(**kwargs):\n"
+            "        return None\n"
+            "    ctx.register_hook('pre_tool_call', _on_pre_tool_call)\n"
+        )
+
+    def _make_and_discover(self, tmp_path, monkeypatch, *, strict: bool):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins_dir = home / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "undeclared_hook",
+            register_body=self._undeclared_body(),
+            manifest_extra={},  # no provides_hooks at all
+            auto_enable=True, home=home,
+        )
+        if strict:
+            cfg_path = home / "config.yaml"
+            cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            cfg.setdefault("plugins", {})["strict_hooks"] = True
+            cfg_path.write_text(yaml.safe_dump(cfg))
+        mgr = PluginManager()
+        return mgr
+
+    def test_undeclared_hook_registration_warned(self, tmp_path, monkeypatch, caplog):
+        mgr = self._make_and_discover(tmp_path, monkeypatch, strict=False)
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
+
+        p = mgr._plugins["undeclared_hook"]
+        assert p.enabled is True  # default: warn, keep loading
+        assert p.undeclared_hooks == ["pre_tool_call"]
+        assert "registered hook(s) not declared in its manifest provides_hooks" in caplog.text
+        row = next(r for r in mgr.list_plugins() if r["key"] == "undeclared_hook")
+        assert row["undeclared_hooks"] == ["pre_tool_call"]
+        # The callback is live (hook fires).
+        assert any(
+            getattr(cb, "__module__", "") == p.module.__name__
+            for cb in mgr._hooks.get("pre_tool_call", []))
+
+    def test_undeclared_hook_registration_strict_refuses_load(self, tmp_path, monkeypatch, caplog):
+        mgr = self._make_and_discover(tmp_path, monkeypatch, strict=True)
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
+
+        p = mgr._plugins["undeclared_hook"]
+        assert p.enabled is False
+        assert "not declared in provides_hooks" in p.error
+        assert "refused" in caplog.text
+        # The refusal disposed the plugin's registrations: no callback from its module is
+        # reachable from later event dispatch.
+        assert not any(
+            getattr(cb, "__module__", "") == p.module.__name__
+            for cb in mgr._hooks.get("pre_tool_call", []))
+
+    def test_strict_hooks_string_true_does_not_refuse(self, tmp_path, monkeypatch, caplog):
+        # AI-review finding 4: quoted "true" must NOT enable strict_hooks (literal
+        # booleans only); the plugin stays in the default warn mode.
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        plugins_dir = home / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "undeclared_hook",
+            register_body=self._undeclared_body(),
+            manifest_extra={},
+            auto_enable=True, home=home,
+        )
+        cfg_path = home / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        cfg.setdefault("plugins", {})["strict_hooks"] = "true"
+        cfg_path.write_text(yaml.safe_dump(cfg))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
+        p = mgr._plugins["undeclared_hook"]
+        assert p.enabled is True  # warn mode, NOT strict refusal
+        assert p.undeclared_hooks == ["pre_tool_call"]
+
+    def test_undeclared_hook_surfaced_in_plugins_list(self, tmp_path, monkeypatch, capsys):
+        # `hermes plugins list` surfaces load-derived undeclared-hook warnings from the
+        # live manager (which discovery populated in this process).
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins", "undeclared_hook",
+            register_body=self._undeclared_body(),
+            auto_enable=True, home=home,
+        )
+        from hermes_cli.plugins import get_plugin_manager
+        from hermes_cli.plugins_cmd import cmd_list
+        get_plugin_manager().discover_and_load()
+        cmd_list(None)
+        out = capsys.readouterr().out
+        assert "registered undeclared hook(s)" in out
+        assert "pre_tool_call" in out
+
+    def test_declared_hook_registration_loads_clean(self, tmp_path, monkeypatch, caplog):
+        # Control: a plugin that declares exactly what it registers loads with no warning.
+        home = tmp_path / "home"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        _make_plugin_dir(
+            home / "plugins", "declared_hook",
+            register_body=self._undeclared_body(),
+            manifest_extra={"provides_hooks": ["pre_tool_call"]},
+            auto_enable=True, home=home,
+        )
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
+        p = mgr._plugins["declared_hook"]
+        assert p.enabled is True
+        assert p.undeclared_hooks == []
+        assert "registered hook(s) not declared" not in caplog.text

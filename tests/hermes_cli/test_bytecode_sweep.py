@@ -61,7 +61,7 @@ def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_clear_plugin_bytecode_removes_nested_caches(tmp_path):
-    from hermes_cli import plugins_cmd
+    from hermes_cli.plugin_update_txn import _clear_plugin_bytecode
 
     plugin = tmp_path / "myplugin"
     top = plugin / "__pycache__"
@@ -71,7 +71,7 @@ def test_clear_plugin_bytecode_removes_nested_caches(tmp_path):
     (top / "a.pyc").write_bytes(b"stale")
     (nested / "b.pyc").write_bytes(b"stale")
 
-    removed = plugins_cmd._clear_plugin_bytecode(plugin)
+    removed = _clear_plugin_bytecode(plugin)
 
     assert removed == 2
     assert not top.exists()

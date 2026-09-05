@@ -227,7 +227,7 @@ provides_hooks:
   - post_tool_call
 ```
 
-This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers.
+This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." The `provides_tools` and `provides_hooks` fields are lists of what the plugin registers. (The legacy list-form `hooks:` key — used by some first-party bundled plugins — is normalized into `provides_hooks` and declares the same hook bindings.) At load, hooks a plugin registers but never declares are surfaced as a warning (`plugins.strict_hooks: true` — a literal boolean — refuses such plugins); hook-bound files are also scanned with the full security pattern set — declare your hooks so the scanner and loader attribute them correctly.
 
 Optional fields you could add:
 ```yaml

@@ -994,10 +994,14 @@ export const api = {
       { method: "POST" },
     ),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (name: string, body?: AgentPluginUpdateRequest) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      },
     ),
 
   removeAgentPlugin: (name: string) =>
@@ -2656,11 +2660,21 @@ export interface AgentPluginInstallResponse {
   error?: string;
 }
 
+export interface AgentPluginUpdateRequest {
+  review_token?: string;
+}
+
 export interface AgentPluginUpdateResponse {
   ok: boolean;
   name?: string;
   output?: string;
   unchanged?: boolean;
+  review_required?: boolean;
+  review_token?: string;
+  candidate_revision?: string;
+  candidate_artifact?: string;
+  changed_files?: string[];
+  accepted?: boolean;
   error?: string;
 }
 

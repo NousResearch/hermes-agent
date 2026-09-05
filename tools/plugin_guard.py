@@ -6,19 +6,29 @@ and spawn subprocesses, so: full pattern set on docs/config files (where prompt-
 lives); the "reads own secret"/"HTTP call with key" family exempt on *code* files;
 plugin-sized structural limits; VCS/venv noise skipped. ``safe`` installs, ``caution``
 needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
+
+Hook-bound code is scanned with the FULL pattern set (HookPry remediation G4-1): a hook
+callback or shell script runs *outside* the LLM decision path with full host privileges,
+so the env-exfil / config-mod exemption that provider *tool* code enjoys does not apply
+to it. A file is hook-bound when it is a shell script (``.sh``/``.bash``), lives under a
+``hooks/`` directory, or registers a hook event the manifest declares in
+``provides_hooks``/``hooks:`` (declared names are resolved to files via a static AST scan
+of ``register_hook`` calls — never by importing plugin code). Attribution is
+manifest-driven on purpose: path heuristics alone would false-positive provider plugins
+whose code merely sits near hook code.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, List, Optional, Tuple
+from typing import FrozenSet, Iterator, List, Optional, Set, Tuple
 
 from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v2"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -29,7 +39,7 @@ EXCLUDED_DIRS = {
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}
 
 # Pattern ids exempt on code files (every legitimate provider plugin trips them); still
-# applied in full to docs/config files.
+# applied in full to docs/config files AND to hook-bound code (see _hook_bound_relpaths).
 CODE_EXEMPT_PATTERN_IDS = {
     "python_environ_get_secret", "python_getenv_secret", "python_os_environ", "node_process_env",
     "ruby_env_secret", "env_exfil_httpx", "env_exfil_requests", "env_exfil_fetch",
@@ -38,6 +48,13 @@ CODE_EXEMPT_PATTERN_IDS = {
     "context_exfil", "send_to_url", "fake_policy",
     # Plugins legitimately write config.yaml in post_setup and base64 credentials (Basic auth).
     "agent_config_mod", "agent_config_contract", "encoded_exfil"}
+
+# Hook code is NOT exempt: a lifecycle hook runs outside the LLM decision path with full host
+# privilege, so the families above (env exfil, config mod, encoded exfil, instruction shapes)
+# are findings when they appear in a file that binds to a hook event.
+_HOOK_SUBDIR_NAME = "hooks"
+_HOOK_SCRIPT_SUFFIXES = {".sh", ".bash"}
+_HOOK_REGISTER_METHOD = "register_hook"
 
 # Severity remaps: a bundled binary is warn-tier (repos occasionally vendor one); a mere
 # ``~/.hermes/.env`` mention is how READMEs say where keys go (READING it still trips
@@ -66,16 +83,91 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
     return Finding(pattern_id, severity, category, file, 0, match, description)
 
 
-def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
-    """Apply plugin-specific exemptions and severity remaps to raw findings."""
+def _filter_findings(findings: List[Finding], rel_path: str, hook_bound: bool = False) -> List[Finding]:
+    """Apply plugin-specific exemptions and severity remaps to raw findings.
+
+    Code files keep the env-read/HTTP exemption only when they are NOT hook-bound
+    (see :func:`_hook_bound_relpaths`); hook code gets the full pattern set.
+    """
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
     out: List[Finding] = []
     for f in findings:
-        if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
+        if is_code and not hook_bound and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
         f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
         out.append(f)
     return out
+
+
+# ── Hook attribution (HookPry G4-1) ──────────────────────────────────────────
+# The manifest declares which hook events a plugin binds (``provides_hooks``, or the
+# legacy ``hooks:`` list form); files whose static ``register_hook`` calls bind one of
+# those declared events are hook code. Shell scripts and anything under a ``hooks/``
+# directory are hook code regardless of the manifest (shell hooks are configured in
+# config.yaml, outside this tree). Attribution stays deterministic and import-free:
+# declared names are resolved to files through a shared AST grammar
+# (``hermes_cli.plugin_treehash.registered_hook_event_names``), never by path
+# heuristics or by importing plugin code.
+
+
+def _manifest_file(plugin_dir: Path) -> Optional[Path]:
+    """The plugin manifest at *plugin_dir*'s root, or None (portable ``plugin.json`` trees
+    declare no hooks and fall back to the hooks/-subdir and shell-script rules)."""
+    for name in ("plugin.yaml", "plugin.yml"):
+        candidate = plugin_dir / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _declared_hook_names(plugin_dir: Path) -> Set[str]:
+    """Hook event names the manifest declares (``provides_hooks`` list items; a ``hooks:``
+    mapping contributes its keys). Unreadable/missing manifest → empty set (never raises)."""
+    manifest = _manifest_file(plugin_dir)
+    if manifest is None:
+        return set()
+    try:
+        import yaml  # PyYAML is a hard dependency of the plugin loader; absent → no attribution
+        data = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    declared: Set[str] = set()
+    for key in ("provides_hooks", "hooks"):
+        value = data.get(key)
+        if isinstance(value, list):
+            declared.update(v for v in value if isinstance(v, str))
+        elif isinstance(value, dict):
+            declared.update(k for k in value if isinstance(k, str))
+    return declared
+
+
+def _hook_bound_relpaths(plugin_dir: Path) -> FrozenSet[str]:
+    """Relative paths scanned with the FULL pattern set: declared-hook registration files,
+    everything under a ``hooks/`` directory, and ``.sh``/``.bash`` scripts."""
+    from hermes_cli.plugin_treehash import registered_hook_event_names  # leaf helper (no cycle)
+    bound: Set[str] = set()
+    declared = _declared_hook_names(plugin_dir)
+    if declared:
+        # Resolve declared hook names to files through the AST registration inventory, never
+        # by path heuristics alone (provider tool code may sit next to hook code).
+        for path, rel in _walk(plugin_dir):
+            if rel.endswith(".py") and path.is_file() and not path.is_symlink():
+                try:
+                    registered = registered_hook_event_names(path.read_text(encoding="utf-8"))
+                except OSError:
+                    continue
+                if registered & declared:
+                    bound.add(rel)
+    for _path, rel in _walk(plugin_dir):
+        parts = rel.split("/")
+        if _HOOK_SUBDIR_NAME in parts:
+            bound.add(rel)
+            continue
+        if Path(rel).suffix.lower() in _HOOK_SCRIPT_SUFFIXES:
+            bound.add(rel)
+    return frozenset(bound)
 
 
 def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
@@ -122,13 +214,19 @@ def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
 
 
 def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
-    """Scan a plugin directory (typically the temp clone); every external plugin is ``community`` trust."""
+    """Scan a plugin directory (typically the temp clone); every external plugin is ``community`` trust.
+
+    Hook-bound files (manifest-declared hook registrations, ``hooks/`` subdir, ``.sh``/``.bash``)
+    are scanned with the full pattern set — see the module docstring.
+    """
     all_findings: List[Finding] = []
+    hook_bound = _hook_bound_relpaths(plugin_dir) if plugin_dir.is_dir() else frozenset()
     if plugin_dir.is_dir():
         all_findings.extend(_check_plugin_structure(plugin_dir))
         for f, rel in sorted(_walk(plugin_dir)):
             if f.is_file() and not f.is_symlink():
-                all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel))
+                all_findings.extend(
+                    _filter_findings(scan_file(f, rel_path=rel), rel, hook_bound=rel in hook_bound))
     verdict = _determine_verdict(all_findings)
     if all_findings:
         categories = sorted({f.category for f in all_findings})

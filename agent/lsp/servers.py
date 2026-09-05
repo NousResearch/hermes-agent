@@ -75,6 +75,7 @@ class ServerDef:
     # Server handles ``workspace/didChangeWorkspaceFolders``: one process serves every project root
     # (git worktrees included) as extra workspaceFolders instead of one process per root.
     multi_root: bool = False
+    language_id: str = ""
 
     def matches(self, file_path: str) -> bool:
         return _file_ext_or_basename(file_path) in self.extensions
@@ -337,9 +338,9 @@ SERVERS: List[ServerDef] = [
 ]
 
 
-def find_server_for_file(file_path: str) -> Optional[ServerDef]:
+def find_server_for_file(file_path: str, servers: Optional[Sequence[ServerDef]] = None) -> Optional[ServerDef]:
     """Return the registry entry that handles ``file_path``, or None."""
-    return next((srv for srv in SERVERS if srv.matches(file_path)), None)
+    return next((srv for srv in (SERVERS if servers is None else servers) if srv.matches(file_path)), None)
 
 
 def language_id_for(path: str) -> str:

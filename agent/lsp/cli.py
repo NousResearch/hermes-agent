@@ -5,7 +5,11 @@ Handlers live here (not in ``hermes_cli/main.py``) so the LSP module ships self-
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+
+from agent.lsp.config import configured_servers
+from agent.lsp.servers import ServerDef
 
 _STATUS_MARKERS = {"installed": "✓", "missing": "·", "manual-only": "?"}
 
@@ -56,20 +60,37 @@ def run_lsp_command(args: argparse.Namespace) -> int:
         return 130
 
 
-def _status_for(server_id: str) -> str:
+def _configured_custom(server_id: str, servers: list[ServerDef] | None = None) -> ServerDef | None:
+    from agent.lsp.servers import SERVERS
+    if any(s.server_id == server_id for s in SERVERS):
+        return None
+    return next((s for s in (configured_servers() if servers is None else servers)
+                 if s.server_id == server_id), None)
+
+
+def _custom_binary(server: ServerDef) -> str | None:
+    from agent.lsp.servers import ServerContext
+    root = os.getcwd()
+    spec = server.build_spawn(root, ServerContext(root, install_strategy="manual"))
+    return spec.command[0] if spec is not None else None
+
+
+def _status_for(server_id: str, servers: list[ServerDef] | None = None) -> str:
     from agent.lsp.install import detect_status
+    if server := _configured_custom(server_id, servers):
+        return "installed" if _custom_binary(server) else "manual-only"
     return detect_status(_recipe_pkg_for(server_id))
 
 
 def _cmd_status(emit_json: bool) -> int:
     from agent.lsp import get_service
-    from agent.lsp.servers import SERVERS
+    servers = configured_servers()
     svc = get_service()
     info = svc.get_status() if svc is not None else {"enabled": False}
     if emit_json:
         import json
         registry = [{"server_id": s.server_id, "extensions": list(s.extensions), "description": s.description,
-                     "binary_status": _status_for(s.server_id)} for s in SERVERS]
+                     "binary_status": _status_for(s.server_id, servers)} for s in servers]
         sys.stdout.write(json.dumps({"service": info, "registry": registry}, indent=2) + "\n")
         return 0
 
@@ -91,8 +112,8 @@ def _cmd_status(emit_json: bool) -> int:
     if backend_warnings := _backend_warnings():
         out += ["", "Backend warnings", "================"] + [f"  ! {line}" for line in backend_warnings]
     out += ["", "Registered Servers", "=================="]
-    for s in SERVERS:
-        status = _status_for(s.server_id)
+    for s in servers:
+        status = _status_for(s.server_id, servers)
         ext_summary = ", ".join(list(s.extensions)[:5])
         if len(s.extensions) > 5:
             ext_summary += f", … (+{len(s.extensions) - 5})"
@@ -104,9 +125,9 @@ def _cmd_status(emit_json: bool) -> int:
 
 
 def _cmd_list(installed_only: bool) -> int:
-    from agent.lsp.servers import SERVERS
-    for s in SERVERS:
-        status = _status_for(s.server_id)
+    servers = configured_servers()
+    for s in servers:
+        status = _status_for(s.server_id, servers)
         if not (installed_only and status != "installed"):
             sys.stdout.write(f"{s.server_id:24s} [{status:11s}] {','.join(s.extensions)}\n")
     return 0
@@ -118,6 +139,9 @@ def _cmd_install(server_id: str) -> int:
     if _status_for(server_id) == "installed":
         sys.stdout.write(f"{server_id} already installed\n")
         return 0
+    if _configured_custom(server_id) is not None:
+        sys.stderr.write(f"{server_id}: install the configured command manually; custom servers have no auto-install recipe.\n")
+        return 1
     sys.stdout.write(f"installing {server_id} (pkg={pkg}) ...\n")
     sys.stdout.flush()
     bin_path = try_install(pkg, "auto")
@@ -159,7 +183,9 @@ def _cmd_restart() -> int:
 
 def _cmd_which(server_id: str) -> int:
     from agent.lsp.install import INSTALL_RECIPES, _existing_binary
-    resolved = _existing_binary((INSTALL_RECIPES.get(server_id) or {}).get("bin", server_id))
+    server = _configured_custom(server_id)
+    resolved = (_custom_binary(server) if server is not None else
+                _existing_binary((INSTALL_RECIPES.get(server_id) or {}).get("bin", server_id)))
     if resolved:
         sys.stdout.write(resolved + "\n")
         return 0

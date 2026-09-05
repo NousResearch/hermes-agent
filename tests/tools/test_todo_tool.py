@@ -210,3 +210,166 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
+
+
+class TestMergeEdgeCases:
+    """Cover merge-mode branches not exercised by the basic tests."""
+
+    def test_merge_skips_item_without_id(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Keep", "status": "pending"}])
+        store.write(
+            [{"id": "", "content": "No id", "status": "pending"}],
+            merge=True,
+        )
+        items = store.read()
+        assert len(items) == 1
+        assert items[0]["id"] == "1"
+
+    def test_merge_updates_status_only(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Original", "status": "pending"}])
+        store.write([{"id": "1", "status": "completed"}], merge=True)
+        item = store.read()[0]
+        assert item["status"] == "completed"
+        assert item["content"] == "Original"
+
+    def test_merge_ignores_invalid_status(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Orig", "status": "pending"}])
+        store.write([{"id": "1", "status": "bogus"}], merge=True)
+        item = store.read()[0]
+        assert item["status"] == "pending"
+
+    def test_merge_preserves_order(self):
+        store = TodoStore()
+        store.write([
+            {"id": "a", "content": "A", "status": "pending"},
+            {"id": "b", "content": "B", "status": "pending"},
+            {"id": "c", "content": "C", "status": "pending"},
+        ])
+        store.write([{"id": "b", "status": "completed"}], merge=True)
+        ids = [i["id"] for i in store.read()]
+        assert ids == ["a", "b", "c"]
+
+
+class TestFormatForInjectionEdgeCases:
+    """Cover injection paths not exercised by the basic tests."""
+
+    def test_all_completed_returns_none(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "Done", "status": "completed"},
+            {"id": "2", "content": "Also done", "status": "cancelled"},
+        ])
+        assert store.format_for_injection() is None
+
+    def test_cancelled_marker_not_injected(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Cancelled", "status": "cancelled"}])
+        assert store.format_for_injection() is None
+
+    def test_in_progress_marker_in_output(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Working", "status": "in_progress"}])
+        text = store.format_for_injection()
+        assert text is not None
+        assert "[>]" in text
+        assert "Working" in text
+
+
+class TestValidate:
+    """Cover _validate normalisation paths."""
+
+    def test_empty_id_becomes_placeholder(self):
+        store = TodoStore()
+        store.write([{"id": "", "content": "Task", "status": "pending"}])
+        assert store.read()[0]["id"] == "?"
+
+    def test_missing_id_becomes_placeholder(self):
+        store = TodoStore()
+        store.write([{"content": "Task", "status": "pending"}])
+        assert store.read()[0]["id"] == "?"
+
+    def test_empty_content_becomes_placeholder(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "", "status": "pending"}])
+        assert store.read()[0]["content"] == "(no description)"
+
+    def test_missing_content_becomes_placeholder(self):
+        store = TodoStore()
+        store.write([{"id": "1", "status": "pending"}])
+        assert store.read()[0]["content"] == "(no description)"
+
+    def test_invalid_status_defaults_to_pending(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task", "status": "bogus"}])
+        assert store.read()[0]["status"] == "pending"
+
+    def test_missing_status_defaults_to_pending(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Task"}])
+        assert store.read()[0]["status"] == "pending"
+
+    def test_content_is_stripped(self):
+        store = TodoStore()
+        store.write([{"id": " 1 ", "content": "  spaced  ", "status": " pending "}])
+        item = store.read()[0]
+        assert item["id"] == "1"
+        assert item["content"] == "spaced"
+        assert item["status"] == "pending"
+
+
+class TestDedupeById:
+    """Cover _dedupe_by_id edge cases."""
+
+    def test_empty_id_dedupe_uses_placeholder(self):
+        store = TodoStore()
+        store.write([
+            {"id": "", "content": "First", "status": "pending"},
+            {"id": "", "content": "Second", "status": "pending"},
+        ])
+        items = store.read()
+        assert len(items) == 1
+        assert items[0]["content"] == "Second"
+
+    def test_missing_id_dedupe_uses_placeholder(self):
+        store = TodoStore()
+        store.write([
+            {"content": "First", "status": "pending"},
+            {"content": "Second", "status": "pending"},
+        ])
+        items = store.read()
+        assert len(items) == 1
+        assert items[0]["content"] == "Second"
+
+
+class TestTodoToolFunctionEdgeCases:
+    """Cover todo_tool function paths not exercised by basic tests."""
+
+    def test_cancelled_count_in_summary(self):
+        store = TodoStore()
+        store.write([
+            {"id": "1", "content": "A", "status": "cancelled"},
+            {"id": "2", "content": "B", "status": "completed"},
+        ])
+        result = json.loads(todo_tool(store=store))
+        assert result["summary"]["cancelled"] == 1
+        assert result["summary"]["completed"] == 1
+
+    def test_merge_via_tool_function(self):
+        store = TodoStore()
+        store.write([{"id": "1", "content": "Orig", "status": "pending"}])
+        result = json.loads(todo_tool(
+            todos=[{"id": "1", "status": "completed"}],
+            merge=True,
+            store=store,
+        ))
+        assert result["summary"]["completed"] == 1
+        assert result["todos"][0]["content"] == "Orig"
+
+
+class TestCheckTodoRequirements:
+    def test_always_returns_true(self):
+        from tools.todo_tool import check_todo_requirements
+        assert check_todo_requirements() is True

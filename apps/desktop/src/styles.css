@@ -1792,16 +1792,17 @@ body.guest-pointer-lock :is(webview, iframe) {
   color: var(--ui-text-tertiary) !important;
 }
 
-/* ── Composer fill — ONE var painted by the surface AND anything docked to it
-   (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+/* ── Composer fill — ONE var painted by the surface and everything docked to
+   it (status stack, queue, floating pills). The state ladder sets the var;
+   consumers just paint `background: var(--composer-fill)`, so every state
+   matches by construction. The floating panels (slash·@ drawer, `?` help,
+   attach menu) paint --composer-panel-fill instead — defined on :root, not
+   the composer, so a portaled panel resolves the same value as a docked one
+   (see composerPanelCard in composer-dock.ts). */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
+  --composer-panel-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
 }
 
 [data-slot='composer-root'] {
@@ -1810,6 +1811,29 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+}
+
+/* Under whole-window glass the composer is CHROME, not field. The translucent
+   rungs above are tuned for a bar floating over the app's own (opaque)
+   transcript; when the window itself is glass their transparency reaches the
+   desktop wallpaper instead, and the type-in line — the one place the user is
+   always reading — ends up on moving imagery. Pin the opaque card at every
+   intensity and in every state, the same value the HUD resolves to (and the
+   HUD already forces its completion drawer opaque for the same reason: two
+   half-lit surfaces stacked on a third are unreadable however the numbers are
+   tuned). The docked stack paints --composer-fill and the floating panels
+   paint --composer-panel-fill, so the whole group goes solid together.
+   Sidebar scope is exempt: its content column is repainted full opaque by the
+   <body> gradient (see the Finder-shape rule), so the bar sits over the
+   transcript exactly as the ladder assumes. The surface's backdrop-blur is
+   unaffected and harmless — an opaque fill leaves nothing to blur (see
+   composer-dock.ts). */
+:root[data-hermes-glass]:not([data-hermes-glass-scope='sidebar']) {
+  --composer-panel-fill: var(--dt-card);
+}
+
+:root[data-hermes-glass]:not([data-hermes-glass-scope='sidebar']) [data-slot='composer-root'] {
+  --composer-fill: var(--dt-card);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading

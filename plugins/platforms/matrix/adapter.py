@@ -3001,6 +3001,7 @@ def interactive_setup() -> None:
 
 _YAML_LOWER_KEYS = (
     ("require_mention", "MATRIX_REQUIRE_MENTION"), ("process_notices", "MATRIX_PROCESS_NOTICES"),
+    ("process_edits", "MATRIX_PROCESS_EDITS"),
     ("session_scope", "MATRIX_SESSION_SCOPE"), ("auto_thread", "MATRIX_AUTO_THREAD"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS"))
 _YAML_LIST_KEYS = (

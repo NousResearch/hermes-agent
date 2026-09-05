@@ -116,6 +116,7 @@ import {
   profileRemoteOverride,
   profileSshOverride,
   type RegistryBackendRequestScope,
+  remoteCredentialScopeMatches,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,
@@ -156,6 +157,15 @@ import {
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import {
+  assertConnectionModeAllowed,
+  createRemoteConnectionGate,
+  formatBackendErrorForLog,
+  isConnectionKindAllowedForRemoteOnly,
+  sanitizeRemoteSetupError,
+  sanitizeRemoteSetupFailure,
+  shouldResumeRemoteConnectionGate
+} from './desktop-build-mode'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute } from './desktop-remote-route'
@@ -466,6 +476,20 @@ if (USER_DATA_OVERRIDE) {
 
 const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
+// This is baked into standalone client bundles by bundle-electron-main.mjs.
+// It is intentionally a build capability, not a user-facing environment
+// switch: normal Desktop builds retain the complete local bootstrap/update
+// behavior and cannot accidentally enter this mode.
+const REMOTE_ONLY = process.env.HERMES_DESKTOP_REMOTE_ONLY === '1'
+
+// Electron derives userData from the package name on some platforms and from
+// productName on others. Pin the remote flavor to its own profile explicitly
+// so installing both Desktop variants cannot share tokens, registries, or
+// startup state. Test/dev harnesses may still override this path explicitly.
+if (REMOTE_ONLY && !USER_DATA_OVERRIDE) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'Hermes Remote'))
+}
+
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
 const IS_WSL = isWslEnvironment()
@@ -741,13 +765,13 @@ function loadInstallStamp() {
   return null
 }
 
-const INSTALL_STAMP = loadInstallStamp()
+const INSTALL_STAMP = REMOTE_ONLY ? null : loadInstallStamp()
 
 if (INSTALL_STAMP) {
   console.log(
     `[hermes] install stamp: ${INSTALL_STAMP.commit.slice(0, 12)}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}${INSTALL_STAMP.dirty ? ' [DIRTY]' : ''} from ${INSTALL_STAMP.source || 'unknown'}`
   )
-} else if (IS_PACKAGED) {
+} else if (IS_PACKAGED && !REMOTE_ONLY) {
   // Dev builds without a stamp are normal; packaged builds without one
   // mean the bootstrap won't know what to clone. Surface clearly.
   console.error(
@@ -771,6 +795,13 @@ if (INSTALL_STAMP) {
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
 function resolveHermesHome() {
+  // A standalone client keeps only its own settings/diagnostics under the
+  // Electron profile. Do not inspect ~/.hermes or %LOCALAPPDATA% looking for
+  // a checkout that this build is forbidden to use.
+  if (REMOTE_ONLY) {
+    return path.join(app.getPath('userData'), 'hermes-home')
+  }
+
   if (process.env.HERMES_HOME) {
     return normalizeHermesHomeRoot(process.env.HERMES_HOME)
   }
@@ -862,10 +893,14 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
-// desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
-// errors.log, gateway.log produced by hermes_logging.setup_logging — one log
-// directory per user, regardless of which UI surface produced the line.
-const DESKTOP_LOG_PATH = path.join(HERMES_HOME, 'logs', 'desktop.log')
+
+// The standalone client has no local Hermes home. Keep its own diagnostics in
+// Electron's isolated user-data directory rather than creating/probing the
+// local install tree merely to write a desktop log.
+const DESKTOP_LOG_PATH = REMOTE_ONLY
+  ? path.join(app.getPath('userData'), 'logs', 'desktop.log')
+  : path.join(HERMES_HOME, 'logs', 'desktop.log')
+
 const DESKTOP_LOG_FLUSH_MS = 120
 const DESKTOP_LOG_BUFFER_MAX_CHARS = 64 * 1024
 // Bound desktop.log on disk. It is an append-only forensic log, so a boot loop
@@ -904,7 +939,11 @@ const BOOT_FAKE_STEP_MS = (() => {
   return Math.max(120, raw)
 })()
 
-const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+// The remote flavor has its own user-visible identity even when launched from
+// a shell that inherited the normal Desktop's app-name override. This keeps
+// About, menus, HUD titles, and native notifications aligned with the remote
+// installer metadata; normal/dev builds retain the existing override seam.
+const APP_NAME = REMOTE_ONLY ? 'Hermes Remote' : process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
 const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
@@ -1312,12 +1351,13 @@ app.setName(APP_NAME)
 // Windows toast notifications silently no-op unless an AppUserModelID is set:
 // `new Notification().show()` returns without error and nothing appears. The
 // AUMID must match the installed Start Menu shortcut's AUMID, which
-// electron-builder derives from the build `appId` (com.nousresearch.hermes) —
-// keep this string in sync with package.json `build.appId`. macOS/Linux don't
-// need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
-// never firing on Windows.)
+// electron-builder derives from the build `appId`. Keep the remote flavor's
+// identifier separate so co-installed normal/remote apps do not share a shell
+// identity or notification registrations. macOS/Linux don't need this, so
+// gate it on Windows. (Fixes: desktop approval/turn notifications never
+// firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(REMOTE_ONLY ? 'com.nousresearch.hermes.remote' : 'com.nousresearch.hermes')
 }
 
 // Seed the native About panel with the live Hermes version. This is refreshed
@@ -1396,6 +1436,13 @@ function registerMediaProtocol() {
 
 let mainWindow = null
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
+// Remote-only builds suspend primary startup until the renderer has supplied a
+// valid remote/cloud route. This gate is deliberately separate from the
+// first-run local bootstrap gate: the latter exposes an installer choice and
+// must never be reachable from a standalone client.
+const remoteConnectionGate = createRemoteConnectionGate()
+let remoteSetupRequired = false
+let remoteSetupError = null
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
@@ -1984,6 +2031,37 @@ let bootstrapState = {
 }
 
 let firstRunSetupGate = null
+
+function desktopCapabilities() {
+  return {
+    remoteOnly: REMOTE_ONLY,
+    remoteSetupRequired: REMOTE_ONLY && remoteSetupRequired,
+    remoteSetupError: REMOTE_ONLY ? remoteSetupError : null
+  }
+}
+
+function broadcastDesktopCapabilities() {
+  const payload = desktopCapabilities()
+
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send('hermes:desktop-capabilities', payload)
+    }
+  }
+}
+
+function setRemoteSetupRequired(required: boolean, error: unknown = null) {
+  const nextRequired = Boolean(required)
+  const nextError = nextRequired && error ? sanitizeRemoteSetupError(error) : null
+
+  if (remoteSetupRequired === nextRequired && remoteSetupError === nextError) {
+    return
+  }
+
+  remoteSetupRequired = nextRequired
+  remoteSetupError = nextError
+  broadcastDesktopCapabilities()
+}
 
 function broadcastBootstrapEvent(ev) {
   if (ev.type === 'manifest') {
@@ -3066,6 +3144,16 @@ async function resolveHealedBranch(updateRoot, branch) {
 }
 
 async function checkUpdates() {
+  if (REMOTE_ONLY) {
+    return {
+      supported: false,
+      reason: 'standalone-remote-client',
+      message: 'Standalone remote clients are updated as desktop application releases.',
+      branch: DEFAULT_UPDATE_BRANCH,
+      fetchedAt: Date.now()
+    }
+  }
+
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -3874,6 +3962,14 @@ async function releaseBackendLock(updateRoot, tag) {
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
+  if (REMOTE_ONLY) {
+    return {
+      ok: false,
+      error: 'standalone-remote-client',
+      message: 'Standalone remote clients are updated as desktop application releases.'
+    }
+  }
+
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }
@@ -9514,13 +9610,28 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
   // Policy-aware: never touches safeStorage while encryption is opted out.
   const secureTokenStorage = probeSecureTokenStorage()
 
+  const connections = REMOTE_ONLY
+    ? registry.connections.filter(connection => isConnectionKindAllowedForRemoteOnly(connection.kind, true))
+    : registry.connections
+
   return {
     version: registry.version,
-    primary: registry.primary,
+    // A legacy registry may still name the hidden managed-local entry as its
+    // primary. Keep that stale value out of the renderer so a remote-only
+    // client never presents a local source as selectable/current.
+    primary: REMOTE_ONLY
+      ? connections.some(connection => connection.id === registry.primary)
+        ? registry.primary
+        : ''
+      : registry.primary,
     launchMode: registry.launchMode,
-    lastUsed: registry.lastUsed,
+    lastUsed: REMOTE_ONLY
+      ? connections.some(connection => connection.id === registry.lastUsed)
+        ? registry.lastUsed
+        : ''
+      : registry.lastUsed,
     secureTokenStorage,
-    connections: registry.connections.map(sanitizeRegistryConnection),
+    connections: connections.map(sanitizeRegistryConnection),
     // Surface quarantined-entry NOTICES only (reason + best-effort label) —
     // the raw entries can carry token envelopes and stay in the file (#94246).
     quarantined: (registry.quarantined || []).map(q => ({
@@ -9544,14 +9655,27 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
  * (normalizeConnectionInput drops tokens on non-token entries).
  */
 async function saveRegistryConnection(input: any = {}) {
+  if (!isConnectionKindAllowedForRemoteOnly(input.kind, REMOTE_ONLY)) {
+    throw new Error('This Hermes Desktop build only supports remote and cloud connections.')
+  }
+
   const registry = readDesktopConnectionsRegistry()
   const existing = input.id ? registry.connections.find(c => c.id === input.id) : null
+  const mergedInput = mergeConnectionInput(input, existing)
+
+  const canReuseRemoteCredentials = Boolean(
+    existing &&
+    (existing.kind === 'remote' || existing.kind === 'cloud') &&
+    (mergedInput.kind === 'remote' || mergedInput.kind === 'cloud') &&
+    remoteCredentialScopeMatches(existing.url, mergedInput.url, existing.authMode, mergedInput.authMode)
+  )
+
   const incomingToken = typeof input.token === 'string' ? input.token.trim() : ''
 
   const token = resolvePersistedRemoteToken({
     incomingToken,
     persistToken: true,
-    existingToken: existing?.token,
+    existingToken: canReuseRemoteCredentials ? existing?.token : undefined,
     allowPlainText: input.allowPlainTextToken,
     encryptSecret: encryptDesktopSecret
   })
@@ -9562,12 +9686,14 @@ async function saveRegistryConnection(input: any = {}) {
   // `headers` field inherits the stored set via mergeConnectionInput.
   const headers =
     input.headers && typeof input.headers === 'object'
-      ? encryptIncomingRemoteHeaders(input.headers, existing?.headers, {
+      ? encryptIncomingRemoteHeaders(input.headers, canReuseRemoteCredentials ? existing?.headers : undefined, {
           allowPlainText: input.allowPlainTextToken
         })
-      : input.headers
+      : canReuseRemoteCredentials
+        ? existing?.headers
+        : undefined
 
-  const merged = mergeConnectionInput({ ...input, token, headers }, existing)
+  const merged = { ...mergedInput, token, headers }
   const entry = normalizeConnectionInput(merged, registry)
 
   // Token-auth remotes must actually have a token to be dialable. OAuth and
@@ -9830,6 +9956,17 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
+
+  // A saved token/header set belongs to one normalized gateway + auth scope.
+  // Do not silently send it to a newly entered URL or across token↔OAuth edits;
+  // the user must provide credentials for the new scope.
+  const canReuseRemoteCredentials = remoteCredentialScopeMatches(
+    existingBlock.url,
+    remoteUrl,
+    existingBlock.authMode,
+    authMode
+  )
+
   // Cloud org: only meaningful for 'cloud' mode. Explicit input wins; otherwise
   // inherit the saved org. A plain 'remote' connection never carries an org
   // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
@@ -9837,7 +9974,11 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
   const remoteHeaders =
-    input.remoteHeaders && typeof input.remoteHeaders === 'object' ? input.remoteHeaders : existingBlock.headers
+    input.remoteHeaders && typeof input.remoteHeaders === 'object'
+      ? input.remoteHeaders
+      : canReuseRemoteCredentials
+        ? existingBlock.headers
+        : undefined
 
   // Persist decision lives in hardening.resolvePersistedRemoteToken so the
   // IPC-propagation seam (allowPlainTextToken → encryptDesktopSecret opt-in) is
@@ -9847,7 +9988,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const nextToken = resolvePersistedRemoteToken({
     incomingToken,
     persistToken,
-    existingToken: existingBlock.token,
+    existingToken: canReuseRemoteCredentials ? existingBlock.token : undefined,
     allowPlainText: input.allowPlainTextToken,
     encryptSecret: encryptDesktopSecret
   })
@@ -10770,6 +10911,10 @@ async function resolveRemoteBackend(profile, options: { poolKey?: string; primar
     : null
 
   if (managedPrimary) {
+    if (REMOTE_ONLY) {
+      throw new Error('SSH connections are unavailable in the standalone remote client.')
+    }
+
     // A managed update is restoring the primary: dial the exact connection
     // snapshot the transaction captured, not whatever routing says now.
     const source = managedPrimary.source
@@ -10827,6 +10972,14 @@ async function resolveRemoteBackend(profile, options: { poolKey?: string; primar
 
   if (!route) {
     return null
+  }
+
+  // Resolve the route before any transport work, but reject stale SSH
+  // entries at this boundary in a standalone client.  Otherwise a legacy
+  // registry-primary/profile SSH route could reach bootstrapSshConnection()
+  // before the later registry guard gets a chance to run.
+  if (REMOTE_ONLY) {
+    assertConnectionModeAllowed(route.kind, true)
   }
 
   let connection
@@ -11024,6 +11177,8 @@ async function probeRemoteAuthMode(rawUrl) {
 }
 
 async function testDesktopConnectionConfig(input: any = {}) {
+  assertConnectionModeAllowed(input.mode, REMOTE_ONLY)
+
   if (input.mode === 'ssh') {
     const sshConfig = normalizeSshConfig({
       mode: 'ssh',
@@ -11425,9 +11580,7 @@ async function ensureBackend(profile) {
     // Land the failure in desktop.log: without this a spawn that dies before
     // its child exists (guard rejection, runtime resolution) leaves no trace
     // beyond renderer-side rejections users never see in a bundle.
-    rememberLog(
-      `Hermes backend for profile "${key}" failed to start: ${error instanceof Error ? error.message : String(error)}`
-    )
+    rememberLog(`Hermes backend for profile "${key}" failed to start: ${formatBackendErrorForLog(error, REMOTE_ONLY)}`)
 
     await teardownFailedLocalBackend(key, entry)
     throw error
@@ -11455,6 +11608,10 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
 
   if (!source) {
     throw new Error(`No connection with id "${id}".`)
+  }
+
+  if (!isConnectionKindAllowedForRemoteOnly(source.kind, REMOTE_ONLY)) {
+    throw new Error(`Connection "${source.label}" is not available in the standalone remote client.`)
   }
 
   if (source.kind === 'ssh') {
@@ -11594,7 +11751,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       // Same trace rule as the v1 pool path: a forced-local child whose spawn
       // rejects before the child exists must still land in desktop.log.
       rememberLog(
-        `Hermes backend for profile "${profileKey}" (forced-local) failed to start: ${error instanceof Error ? error.message : String(error)}`
+        `Hermes backend for profile "${profileKey}" (forced-local) failed to start: ${formatBackendErrorForLog(error, REMOTE_ONLY)}`
       )
 
       await teardownFailedLocalBackend(localRoute.poolKey, localEntry)
@@ -11631,7 +11788,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
           }
 
           rememberLog(
-            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
+            `Pooled remote backend "${key}" failed its dispatch probe (${formatBackendErrorForLog(error, REMOTE_ONLY)}); reconnecting on demand.`
           )
           await stopPoolBackend(key)
 
@@ -12401,7 +12558,16 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
 async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
   const poolKey = opts.poolKey || profile
 
-  await reapOrphanedBackendsOnce()
+  if (REMOTE_ONLY && opts.forceLocal) {
+    throw new Error(`Profile "${profile}" requires a remote Hermes connection in this desktop build.`)
+  }
+
+  // A standalone client must not inspect or terminate local Hermes processes.
+  // The normal build keeps the orphan sweep exactly where it was.
+  if (!REMOTE_ONLY) {
+    await reapOrphanedBackendsOnce()
+  }
+
   profileDeletionGate.assertCanStart(profile)
 
   // A profile may point at its OWN remote backend (connection.json
@@ -12412,6 +12578,10 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // tolerate.
   const remote = opts.forceLocal ? null : await resolveRemoteBackend(profile, { poolKey })
   profileDeletionGate.assertCanStart(profile)
+
+  if (REMOTE_ONLY && !remote) {
+    throw new Error(`Profile "${profile}" has no remote Hermes connection configured.`)
+  }
 
   if (remote) {
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
@@ -12747,7 +12917,12 @@ async function startHermes() {
     throw new Error('Hermes Desktop is already running in another window.')
   }
 
-  await reapOrphanedBackendsOnce()
+  // Standalone remote clients do not own a local Hermes process. In
+  // particular, do not scan or SIGTERM a local backend belonging to another
+  // installation before the remote setup screen can render.
+  if (!REMOTE_ONLY) {
+    await reapOrphanedBackendsOnce()
+  }
 
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
@@ -12756,18 +12931,18 @@ async function startHermes() {
   // restarting a 5-10 minute install loop while the user is still reading
   // the failure overlay.
   if (bootstrapFailure) {
-    throw bootstrapFailure
+    throw REMOTE_ONLY ? sanitizeRemoteSetupFailure(bootstrapFailure) : bootstrapFailure
   }
 
   if (backendStartFailure) {
-    throw backendStartFailure
+    throw REMOTE_ONLY ? sanitizeRemoteSetupFailure(backendStartFailure) : backendStartFailure
   }
 
   // A confirmed remote reauth rejection is terminal until the user signs in.
   // Short-circuiting here keeps the boot-failure overlay latched and its
   // "Sign in" button clickable, instead of re-driving boot on every retry.
   if (remoteReauthFailure) {
-    throw remoteReauthFailure
+    throw REMOTE_ONLY ? sanitizeRemoteSetupFailure(remoteReauthFailure) : remoteReauthFailure
   }
 
   // E2E: simulate a boot failure without breaking the real backend. The boot
@@ -12793,7 +12968,9 @@ async function startHermes() {
   // update) resolve primaryProfileKey() to 'default' inside the IIFE, then
   // the remote branch returns and never runs the migration. Runs once;
   // no-op when the preference file already exists.
-  migrateActiveProfileIfMissing()
+  if (!REMOTE_ONLY) {
+    migrateActiveProfileIfMissing()
+  }
 
   const connectionAttempt = backendConnectionState.startAttempt()
   const primaryProfile = primaryProfileKey()
@@ -12805,7 +12982,7 @@ async function startHermes() {
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
   // must NOT latch (it's transient — see shouldLatchBackendStartFailure), while
   // a local failure latches to break install-restart loops.
-  let attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
+  let attemptedRemote = REMOTE_ONLY || managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
   const connectionPromise = (async () => {
     const connectRemote = async remote => {
@@ -12833,6 +13010,8 @@ async function startHermes() {
         error: null
       })
 
+      setRemoteSetupRequired(false)
+
       return createPrimaryRemoteConnection(remote, hermesLog.slice(-80), getWindowState())
     }
 
@@ -12847,26 +13026,33 @@ async function startHermes() {
     // availability checks, stdio MCP servers) can find Homebrew-, nvm-, and
     // ~/.local/bin-installed CLIs. Single-flight with the whenReady warmup;
     // failure-hardened — a broken shell profile never blocks boot.
-    const loginShellPath = await ensureLoginShellPath()
+    if (!REMOTE_ONLY) {
+      const loginShellPath = await ensureLoginShellPath()
 
-    if (loginShellPath.applied) {
-      rememberLog('[env] merged login-shell PATH into process.env for backend spawn')
-    } else if (loginShellPath.reason && !['win32', 'unchanged'].includes(loginShellPath.reason)) {
-      rememberLog(`[env] login-shell PATH resolution unavailable (${loginShellPath.reason}); keeping inherited PATH`)
+      if (loginShellPath.applied) {
+        rememberLog('[env] merged login-shell PATH into process.env for backend spawn')
+      } else if (loginShellPath.reason && !['win32', 'unchanged'].includes(loginShellPath.reason)) {
+        rememberLog(`[env] login-shell PATH resolution unavailable (${loginShellPath.reason}); keeping inherited PATH`)
+      }
     }
 
-    const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
+    // Remote-only startup never reaches the local prepare/spawn branch, so it
+    // does not even construct a local command or session token.
+    const token = REMOTE_ONLY ? '' : crypto.randomBytes(32).toString('base64url')
+    const backendArgs = REMOTE_ONLY ? [] : ['serve', '--host', '127.0.0.1', '--port', '0']
+
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
     // unaffected.
-    const activeProfile = readActiveDesktopProfile()
+    if (!REMOTE_ONLY) {
+      const activeProfile = readActiveDesktopProfile()
 
-    if (activeProfile) {
-      backendArgs.unshift('--profile', activeProfile)
+      if (activeProfile) {
+        backendArgs.unshift('--profile', activeProfile)
+      }
     }
 
     const setup = await runPrimaryBackendStartup({
@@ -12880,14 +13066,52 @@ async function startHermes() {
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
         // both for an already-saved remote and after first-run remote Apply.
-        attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
+        attemptedRemote = REMOTE_ONLY || managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
 
         return resolveRemoteBackend(primaryProfile, { primary: true })
+          .then(remote => {
+            if (remote) {
+              setRemoteSetupRequired(false)
+            }
+
+            return remote
+          })
+          .catch(error => {
+            if (!REMOTE_ONLY) {
+              throw error
+            }
+
+            // Invalid URLs, missing tokens, and expired OAuth state are all
+            // recoverable through the same remote settings form. Treat them
+            // as a setup stop rather than falling through to local bootstrap.
+            setRemoteSetupRequired(true, error)
+            rememberLog(`[boot] remote-only setup required: ${formatBackendErrorForLog(error, true)}`)
+
+            return null
+          })
       },
       waitForDecision: waitForFirstRunSetupChoice,
       // Mutual exclusion with an in-app update (#50238). Remote connections
       // return before this waiter; local starts park until the updater exits.
-      waitForLocalStart: waitForUpdateToFinish
+      waitForLocalStart: waitForUpdateToFinish,
+      waitForRemoteSetup: async () => {
+        // Preserve the safe category recorded by the failed initial resolve;
+        // the setup gate should not erase it merely because it is waiting for
+        // the user to edit the connection.
+        setRemoteSetupRequired(true, remoteSetupError)
+        updateBootProgress(
+          {
+            error: null,
+            message: 'Waiting for a remote Hermes connection',
+            phase: 'backend.remote.setup',
+            progress: 18,
+            running: true
+          },
+          { allowDecrease: true }
+        )
+        await remoteConnectionGate.wait()
+      },
+      remoteOnly: REMOTE_ONLY
     })
 
     if (setup.kind === 'remote') {
@@ -13132,6 +13356,11 @@ async function startHermes() {
     }
 
     const message = error instanceof Error ? error.message : String(error)
+    // Remote-only errors can originate in transport/client libraries and may
+    // echo request URLs or authorization details. Keep the full error only in
+    // memory for classification; expose and log only a safe category.
+    const safeRemoteFailure = REMOTE_ONLY && attemptedRemote ? sanitizeRemoteSetupFailure(error) : null
+    const rendererMessage = safeRemoteFailure?.message || message
     const hostKeyChanged = isHostKeyChangedBootFailure(error)
 
     // Carry structured Cloud-down metadata through the boot-progress / IPC
@@ -13152,7 +13381,7 @@ async function startHermes() {
     // on "session expired" until a full restart, defeating reconnect, the
     // "Sign out & sign in" reload, and the wake-recovery revalidate path.
     if (shouldLatchBackendStartFailure({ attemptedRemote })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
+      backendStartFailure = safeRemoteFailure || (error instanceof Error ? error : new Error(message))
     }
 
     // A host-key CHANGE is the terminal exception among remote failures: SSH
@@ -13162,20 +13391,20 @@ async function startHermes() {
     // failure — reset/repair/apply-config clear the latch after the user fixes
     // known_hosts.
     if (shouldLatchHostKeyChangedFailure({ attemptedRemote, isReauth: false, isHostKeyChanged: hostKeyChanged })) {
-      backendStartFailure = error instanceof Error ? error : new Error(message)
+      backendStartFailure = safeRemoteFailure || (error instanceof Error ? error : new Error(message))
     }
 
     // A confirmed reauth rejection latches separately: it can't self-heal, and
     // leaving it unlatched hides the overlay's "Sign in" button on every retry.
     if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) })) {
-      remoteReauthFailure = error instanceof Error ? error : new Error(message)
+      remoteReauthFailure = safeRemoteFailure || (error instanceof Error ? error : new Error(message))
     }
 
     updateBootProgress(
       {
-        error: message,
+        error: rendererMessage,
         isCloudBackendDown: isCloudBackendDown || undefined,
-        message: `Desktop boot failed: ${message}`,
+        message: `Desktop boot failed: ${rendererMessage}`,
         phase: 'backend.error',
         // Renderer contract for the self-heal loop (#82679): a transient
         // REMOTE failure (dropped SSH/HTTP registered connection, mint
@@ -13193,7 +13422,7 @@ async function startHermes() {
       },
       { allowDecrease: true }
     )
-    throw error
+    throw safeRemoteFailure || error
   })
 
   backendConnectionState.setPromise(connectionAttempt, connectionPromise)
@@ -14687,7 +14916,7 @@ function createWindow() {
   // shared (backendConnectionState), so the renderer's getConnection() joins
   // this in-flight boot instead of duplicating it; early boot-progress events
   // the renderer misses are recovered by its getBootProgress() pull on mount.
-  startHermes().catch(error => rememberLog(error.stack || error.message))
+  startHermes().catch(error => rememberLog(formatBackendErrorForLog(error, REMOTE_ONLY, true)))
 
   mainWindow.webContents.once('did-finish-load', () => {
     // Zoom restore is handled by wireCommonWindowHandlers (shared with session
@@ -14915,6 +15144,10 @@ ipcMain.handle('hermes:window:openBrowser', async (_event, tabId) => {
 // never ensureRuntime(), which would kick off a first-run install from a menu
 // click; an unresolved runtime is reported instead.
 ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) => {
+  if (REMOTE_ONLY) {
+    return { ok: false, error: 'Opening a local Hermes terminal is unavailable in the standalone remote client.' }
+  }
+
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
   }
@@ -15043,6 +15276,10 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:repair', async () => {
+  if (REMOTE_ONLY) {
+    throw new Error('Local Hermes installation repair is unavailable in the standalone remote client.')
+  }
+
   // Forceful repair: force the next startHermes() through the full installer
   // (refreshing a broken/partial venv) and clear any latched failure + live
   // connection. The renderer reloads afterwards to re-drive the boot flow.
@@ -15095,6 +15332,10 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
+  if (REMOTE_ONLY) {
+    throw new Error('Local Hermes installation is unavailable in the standalone remote client.')
+  }
+
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
   continueFirstRunLocalBootstrap()
 
@@ -15118,6 +15359,7 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
+ipcMain.handle('hermes:desktop-capabilities', async () => desktopCapabilities())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
@@ -15137,7 +15379,9 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
   // Roster enumeration deliberately does not dial connect-on-demand SSH
   // sources. Publish one credential-free seed route so a plugin can be the
   // first caller that opens the tunnel.
-  const sshSeeds = undialedSshRouteSeeds(agents, registry.connections)
+  // Standalone clients never expose connect-on-demand SSH seeds: unlike a
+  // normal build, there is no local/SSH runtime path for those routes.
+  const sshSeeds = REMOTE_ONLY ? [] : undialedSshRouteSeeds(agents, registry.connections)
 
   if (sshSeeds.length > 0) {
     agents = [
@@ -15159,7 +15403,7 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
   // A local enumeration can fail while remote/cloud sources succeed. Preserve
   // cached v1 profile names as explicitly-local rows so those valid routes do
   // not disappear and duplicate names remain source-qualified.
-  const localSource = registry.connections.find(source => source.kind === 'local')
+  const localSource = REMOTE_ONLY ? undefined : registry.connections.find(source => source.kind === 'local')
 
   const localEnumeration = localSource
     ? enumerations.find(({ connection }) => connection.id === localSource.id)
@@ -15187,10 +15431,24 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
     ]
   }
 
-  return buildRegistryProfileRoutes({ agents, sources: registry.connections })
+  const routeSources = REMOTE_ONLY
+    ? registry.connections.filter(connection => isConnectionKindAllowedForRemoteOnly(connection.kind, true))
+    : registry.connections
+
+  return buildRegistryProfileRoutes({ agents, sources: routeSources })
 })
-ipcMain.handle('hermes:ssh-config:hosts', async () => ({ hosts: collectSshConfigHosts() }))
+ipcMain.handle('hermes:ssh-config:hosts', async () => {
+  if (REMOTE_ONLY) {
+    throw new Error('SSH connections are unavailable in the standalone remote client.')
+  }
+
+  return { hosts: collectSshConfigHosts() }
+})
 ipcMain.handle('hermes:ssh-config:resolve', async (_event, host) => {
+  if (REMOTE_ONLY) {
+    throw new Error('SSH connections are unavailable in the standalone remote client.')
+  }
+
   const value = String(host || '').trim()
 
   if (!value) {
@@ -15254,7 +15512,14 @@ ipcMain.handle('hermes:connections:save', async (_event, payload) => {
 ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   const key = String(id || '')
   managedConnectionUpdateGate.assertCanMutate(key)
-  const registry = removeConnection(readDesktopConnectionsRegistry(), key)
+  const current = readDesktopConnectionsRegistry()
+  const selected = current.connections.find(connection => connection.id === key)
+
+  if (REMOTE_ONLY && selected && (selected.kind === 'local' || selected.kind === 'ssh')) {
+    throw new Error('This Hermes Desktop build only supports remote and cloud connections.')
+  }
+
+  const registry = removeConnection(current, key)
   writeDesktopConnectionsRegistry(registry)
   // Tear down anything the removed connection still had running: pooled
   // backends under its composite keys and any ssh tunnel scopes it owned.
@@ -15268,7 +15533,14 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
 })
 ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
   assertCanMutateManagedPrimaryRouting()
-  const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
+  const key = String(id || '')
+  const selected = readDesktopConnectionsRegistry().connections.find(connection => connection.id === key)
+
+  if (REMOTE_ONLY && selected && (selected.kind === 'local' || selected.kind === 'ssh')) {
+    throw new Error('This Hermes Desktop build only supports remote and cloud connections.')
+  }
+
+  const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), key)
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
@@ -15281,7 +15553,14 @@ ipcMain.handle('hermes:connections:set-launch-mode', async (_event, mode) => {
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
 ipcMain.handle('hermes:connections:set-last-used', async (_event, id) => {
-  const registry = setLastUsedConnection(readDesktopConnectionsRegistry(), String(id || ''))
+  const key = String(id || '')
+  const selected = readDesktopConnectionsRegistry().connections.find(connection => connection.id === key)
+
+  if (REMOTE_ONLY && selected && (selected.kind === 'local' || selected.kind === 'ssh')) {
+    throw new Error('This Hermes Desktop build only supports remote and cloud connections.')
+  }
+
+  const registry = setLastUsedConnection(readDesktopConnectionsRegistry(), key)
   writeDesktopConnectionsRegistry(registry)
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
@@ -15292,6 +15571,10 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 
   if (!entry) {
     throw new Error(`No connection with id "${String(id || '')}".`)
+  }
+
+  if (REMOTE_ONLY && (entry.kind === 'local' || entry.kind === 'ssh')) {
+    throw new Error('This Hermes Desktop build only supports remote and cloud connections.')
   }
 
   // The ssh probe path in testDesktopConnectionConfig never consults v1
@@ -15516,6 +15799,14 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
       }
 
       try {
+        // A standalone client does not have a local runtime and deliberately
+        // does not support SSH-managed installs. Skip these registry entries
+        // before any route resolution so roster polling cannot create a local
+        // child or open an SSH probe as a side effect.
+        if (!isConnectionKindAllowedForRemoteOnly(connection.kind, REMOTE_ONLY)) {
+          return { connection, profiles: null, error: 'unavailable in standalone remote client' }
+        }
+
         // SSH roster listing must never spawn a dashboard. A stale
         // sshConnections key used to fall into ensureRegistryBackend and
         // respawn Spark/Mini every Bot Mode poll (~5s), then the mux died
@@ -15716,7 +16007,13 @@ async function requestManagedSshUpdate(rawId) {
   return operation
 }
 
-ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
+ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => {
+  if (REMOTE_ONLY) {
+    throw new Error('Local/SSH runtime updates are unavailable in the standalone remote client.')
+  }
+
+  return requestManagedSshUpdate(rawId)
+})
 
 // Fan out `hermes update` to every eligible registered connection at once.
 // Cloud entries are excluded (platform-managed); each dispatch reports
@@ -15740,6 +16037,11 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
       .filter(connection => !excludeIds.has(connection.id))
       .map(async connection => {
         const base = { connectionId: connection.id, label: connection.label, kind: connection.kind }
+
+        if (!isConnectionKindAllowedForRemoteOnly(connection.kind, REMOTE_ONLY)) {
+          return { ...base, ok: false, skipped: true, reason: 'standalone-remote-client' }
+        }
+
         const eligibility = updateEligibility(connection)
 
         if (!eligibility.eligible) {
@@ -15965,6 +16267,7 @@ ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   return cloudAgentSilentSignIn(dashboardUrl)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
+  assertConnectionModeAllowed(payload?.mode, REMOTE_ONLY)
   assertCanMutateManagedPrimaryRouting()
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
@@ -15972,6 +16275,7 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
+  assertConnectionModeAllowed(payload?.mode, REMOTE_ONLY)
   assertCanMutateManagedPrimaryRouting()
   const previousConfig = readDesktopConnectionConfig()
   const previousRegistry = readDesktopConnectionsRegistry()
@@ -15980,6 +16284,13 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const key = connectionScopeKey(payload?.profile)
   const scope = key || ''
   const nextRegistry = key ? previousRegistry : reconcileAppliedGlobalConnection(previousRegistry, config)
+
+  // During first launch in a remote-only bundle there is no backend to
+  // teardown/rehome. The persisted config is the complete hand-off to the
+  // waiting startup path; resuming the dedicated gate avoids touching local
+  // bootstrap/rehome machinery and lets startHermes re-resolve the exact data
+  // that was just written.
+  const resumeRemoteOnlySetup = shouldResumeRemoteConnectionGate(REMOTE_ONLY, key, remoteConnectionGate.hasWaiter())
 
   await applyConnectionConfigAtomically({
     previousConfig,
@@ -15992,8 +16303,15 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     preflight: !key && modeIsRemoteLike(config.mode) ? () => testDesktopConnectionConfig(payload) : undefined,
     writeConfig: writeDesktopConnectionConfig,
     writeRegistry: writeDesktopConnectionsRegistry,
-    apply: () =>
-      applyConnectionChange({
+    apply: () => {
+      if (resumeRemoteOnlySetup) {
+        setRemoteSetupRequired(false)
+        remoteConnectionGate.resume()
+
+        return Promise.resolve()
+      }
+
+      return applyConnectionChange({
         cancelAndWait: value => sshBootstrapCoordinator.cancelAndWait(value),
         isPrimary: !key || key === primaryProfileKey(),
         rehomePrimary: () =>
@@ -16014,6 +16332,7 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
         teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
         teardownSsh: value => teardownSshConnection(value || null)
       })
+    }
   })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
@@ -17444,6 +17763,10 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
+  if (REMOTE_ONLY) {
+    throw new Error('Update branch selection is unavailable in the standalone remote client.')
+  }
+
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
   writeDesktopUpdateConfig({ branch })
 
@@ -17456,6 +17779,10 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
 // which historically drifted (stuck at 0.0.2). Falls back to app.getVersion()
 // when the source tree can't be read (e.g. a packaged build without the repo).
 function resolveHermesVersion() {
+  if (REMOTE_ONLY) {
+    return app.getVersion()
+  }
+
   try {
     const root = resolveUpdateRoot()
     const initPath = path.join(root, 'hermes_cli', '__init__.py')
@@ -17485,6 +17812,10 @@ function resolveHermesVersion() {
 // Fail-quiet: dev runs (no stamp), non-git builds, and shallow-clone gaps all
 // report in-sync rather than risk a false "your install is torn" warning.
 async function detectRendererSkew() {
+  if (REMOTE_ONLY) {
+    return { outOfSync: false, desktopCommitsBehind: 0 }
+  }
+
   return detectBundleSkew(INSTALL_STAMP, runGit, resolveUpdateRoot())
 }
 
@@ -17513,7 +17844,10 @@ ipcMain.handle('hermes:version', async () => {
     electronVersion: process.versions.electron,
     nodeVersion: process.versions.node,
     platform: process.platform,
-    hermesRoot: resolveUpdateRoot(),
+    // A remote-only bundle has no source checkout or managed Hermes home to
+    // expose to the renderer. Keep the field for bridge compatibility, but do
+    // not resolve the local update root in this mode.
+    hermesRoot: REMOTE_ONLY ? '' : resolveUpdateRoot(),
     bundleOutOfSync: skew.outOfSync,
     bundleCommitsBehind: skew.desktopCommitsBehind,
     // True when the bundle on disk is not the one this process loaded — a
@@ -17521,7 +17855,7 @@ ipcMain.handle('hermes:version', async () => {
     // Packaged only: a dev `--build-only` rewrites build/install-stamp.json
     // under a running `npm start`, which is a rebuild the developer asked for,
     // not a torn install to offer a restart for.
-    bundleSwapPending: IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, loadInstallStamp())
+    bundleSwapPending: !REMOTE_ONLY && IS_PACKAGED && detectBundleSwap(INSTALL_STAMP, loadInstallStamp())
   }
 })
 
@@ -17555,6 +17889,20 @@ function uninstallVenvPython() {
 }
 
 async function getUninstallSummary() {
+  if (REMOTE_ONLY) {
+    return {
+      hermes_home: '',
+      agent_installed: false,
+      gui_installed: false,
+      source_built_artifacts: [],
+      packaged_app_paths: [],
+      userdata_dir: app.getPath('userData'),
+      userdata_exists: true,
+      platform: process.platform,
+      probe: 'standalone-remote-client'
+    }
+  }
+
   const py = uninstallVenvPython()
   const agentRoot = ACTIVE_HERMES_ROOT
 
@@ -17745,6 +18093,14 @@ async function runDesktopUninstall(mode) {
 
 ipcMain.handle('hermes:uninstall:summary', async () => getUninstallSummary())
 ipcMain.handle('hermes:uninstall:run', async (_event, payload) => {
+  if (REMOTE_ONLY) {
+    return {
+      ok: false,
+      error: 'standalone-remote-client',
+      message: 'Uninstalling the local Hermes runtime is unavailable in the standalone remote client.'
+    }
+  }
+
   const mode = payload && typeof payload === 'object' ? payload.mode : payload
 
   return runDesktopUninstall(String(mode || ''))
@@ -17852,6 +18208,10 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 })
 
 function registerDeepLinkProtocol() {
+  if (REMOTE_ONLY) {
+    return
+  }
+
   try {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can
@@ -17912,7 +18272,9 @@ app.on('open-url', (event, url) => {
 app.whenReady().then(() => {
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
-  void ensureLoginShellPath()
+  if (!REMOTE_ONLY) {
+    void ensureLoginShellPath()
+  }
 
   const systemCa = installWindowsSystemCaTrust(tls)
 
@@ -17963,7 +18325,7 @@ app.whenReady().then(() => {
   const primaryProfile = primaryProfileKey()
 
   setActiveGatewayProfile(primaryProfile)
-  setWslBridgeProfileState(primaryProfile, !primaryBackendIsRemote())
+  setWslBridgeProfileState(primaryProfile, !REMOTE_ONLY && !primaryBackendIsRemote())
   // Quick Entry's global chord — registered on ready so a cold launch restores
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
@@ -17983,7 +18345,10 @@ app.whenReady().then(() => {
   // serves were drained. The owner-only recovery journal survives that crash;
   // its worker waits for the install marker to clear, then reopens every scope
   // captured by the original transaction before removing the journal entry.
-  void resumeManagedSshRecoveries()
+  if (!REMOTE_ONLY) {
+    void resumeManagedSshRecoveries()
+  }
+
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.

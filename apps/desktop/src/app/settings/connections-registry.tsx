@@ -234,7 +234,7 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
  * instances / SSH hosts). Storage-level management — the active/primary
  * switchover UX is the connection-mode controls above this section.
  */
-export function ConnectionsRegistrySection() {
+export function ConnectionsRegistrySection({ remoteOnly = false }: { remoteOnly?: boolean } = {}) {
   const { t } = useI18n()
   const s = t.settings.connections
   const activeConnectionId = useStore($activeConnectionId)
@@ -265,7 +265,14 @@ export function ConnectionsRegistrySection() {
 
   const bridge = window.hermesDesktop?.connections
 
-  const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+  const visibleRegistryConnections = useMemo(
+    () =>
+      (registry?.connections ?? []).filter(
+        connection => !remoteOnly || connection.kind === 'remote' || connection.kind === 'cloud'
+      ),
+    [registry?.connections, remoteOnly]
+  )
+  const hasLocal = Boolean(visibleRegistryConnections.some(c => c.kind === 'local'))
 
   const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
     setRegistry(next)
@@ -381,6 +388,10 @@ export function ConnectionsRegistrySection() {
   }, [load])
 
   const openEditor = (next: EditorState | null) => {
+    if (remoteOnly && next && next.kind !== 'remote' && next.kind !== 'cloud') {
+      return
+    }
+
     setDupeError(null)
     setEditor(next)
   }
@@ -600,8 +611,8 @@ export function ConnectionsRegistrySection() {
   }
 
   const sortedConnections = useMemo(
-    () => sortConnectionsForDisplay(registry?.connections ?? []),
-    [registry?.connections]
+    () => sortConnectionsForDisplay(visibleRegistryConnections),
+    [visibleRegistryConnections]
   )
 
   const showSearch = sortedConnections.length >= CONNECTION_SEARCH_THRESHOLD
@@ -671,7 +682,7 @@ export function ConnectionsRegistrySection() {
         <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
           <Loader2 className="size-4 animate-spin" />
         </div>
-      ) : !registry || registry.connections.length === 0 ? (
+      ) : !registry || sortedConnections.length === 0 ? (
         <EmptyState title={s.empty} />
       ) : displayedConnections.length === 0 ? (
         <EmptyState title={s.noSearchResults} />
@@ -759,7 +770,12 @@ export function ConnectionsRegistrySection() {
             {/* Kind is fixed once created (buttons disable on edit). On create
                 every kind is offered; Local is disabled while the managed
                 local entry exists (the registry holds at most one). */}
-            {(editor.id ? ([editor.kind] as const) : (['local', 'cloud', 'remote', 'ssh'] as const)).map(kind => (
+            {(editor.id
+              ? ([editor.kind] as const)
+              : remoteOnly
+                ? (['cloud', 'remote'] as const)
+                : (['local', 'cloud', 'remote', 'ssh'] as const)
+            ).map(kind => (
               <Button
                 disabled={Boolean(editor.id) || (kind === 'local' && hasLocal)}
                 key={kind}

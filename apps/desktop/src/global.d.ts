@@ -162,6 +162,10 @@ declare global {
         onShown: (callback: () => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      /** Build capabilities which affect local-runtime availability. */
+      remoteOnlyBuild?: boolean
+      getDesktopCapabilities?: () => Promise<DesktopCapabilities>
+      onDesktopCapabilities?: (callback: (payload: DesktopCapabilities) => void) => () => void
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -840,6 +844,12 @@ export interface DesktopConnectionConfig {
   sshKeyPath: string
   sshRemoteHermesPath: string
   sshRemoteProfile: string
+}
+
+export interface DesktopCapabilities {
+  remoteOnly: boolean
+  remoteSetupRequired: boolean
+  remoteSetupError?: null | string
 }
 
 export interface DesktopConnectionConfigInput {

@@ -15,6 +15,10 @@ const launchFlags = ipcRenderer.sendSync('hermes:launch-flags')
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
+  // Static build capability: bundle-electron-main.mjs defines this for the
+  // standalone client, so the renderer can make the local-runtime boundary
+  // synchronously even if a capability IPC request is temporarily unavailable.
+  remoteOnlyBuild: process.env.HERMES_DESKTOP_REMOTE_ONLY === '1',
   // Launch-flag fact: the app was started with --local, so the renderer may
   // show the local-models surfaces. Static for the window's lifetime.
   localModelsEnabled: launchFlags?.localModels === true,
@@ -177,6 +181,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
+  getDesktopCapabilities: () => ipcRenderer.invoke('hermes:desktop-capabilities'),
+  onDesktopCapabilities: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:desktop-capabilities', listener)
+
+    return () => ipcRenderer.removeListener('hermes:desktop-capabilities', listener)
+  },
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
   applyConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:apply', payload),

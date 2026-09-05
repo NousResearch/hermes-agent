@@ -54,6 +54,11 @@ export function AboutSettings() {
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
   const [justChecked, setJustChecked] = useState(false)
+  // This is an immutable build property exposed synchronously by preload. It
+  // must not be inferred from the dynamic backend capability handshake: the
+  // latter describes the connected gateway, not whether this app can install
+  // a local runtime.
+  const remoteOnly = window.hermesDesktop?.remoteOnlyBuild === true
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -228,7 +233,7 @@ export function AboutSettings() {
           title={a.automaticUpdates}
         />
 
-        <UninstallSection />
+        {remoteOnly === false ? <UninstallSection /> : null}
       </div>
     </SettingsContent>
   )

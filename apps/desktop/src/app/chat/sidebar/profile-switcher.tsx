@@ -4,7 +4,6 @@ import {
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
-  KeyboardSensor,
   type Modifier,
   PointerSensor,
   useSensor,
@@ -56,6 +55,7 @@ import {
   reorderCommitHaptic,
   reorderStepHaptic
 } from '@/lib/reorder'
+import { ReorderKeyboardSensor } from '@/lib/reorder-keyboard-sensor'
 import { cn } from '@/lib/utils'
 import {
   $activeConnectionId,
@@ -278,7 +278,7 @@ export function ProfileRail() {
   // distance constraint: a small drag reorders, a tap still selects the profile.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(ReorderKeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
 
   // Tick a haptic each time the drag crosses into a new cell, and a satisfying

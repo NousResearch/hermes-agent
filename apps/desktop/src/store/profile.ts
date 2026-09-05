@@ -412,10 +412,27 @@ const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
 
+// Speculative spawns that have been launched but whose socket has not yet
+// opened. openSecondaryCount() only sees backends whose socket is already
+// open (isOpen), so it is blind to spawns still in flight. A hover sweep
+// across the rail fires prewarms faster (PREWARM_DWELL_MS ~120ms) than the
+// sockets open, so each prewarm saw a stale low count, passed the cap guard,
+// and spawned anyway — overshooting maxBackends and triggering the exact
+// LRU eviction cascade the guard exists to prevent. Counting in-flight
+// reservations against the cap closes that race window.
+const inflightPrewarmKeys = new Set<string>()
+
 export function prewarmProfileBackend(name: string): void {
   const key = normalizeProfileKey(name)
 
   if (key === normalizeProfileKey($activeGatewayProfile.get())) {
+    return
+  }
+
+  // Already have a spawn in flight for this profile: joining it is a no-op
+  // (ensureBackend is idempotent), and re-counting it would double-charge
+  // the cap.
+  if (inflightPrewarmKeys.has(key)) {
     return
   }
 
@@ -430,14 +447,19 @@ export function prewarmProfileBackend(name: string): void {
   // backend. A hover sweep across the rail therefore evicted backends for
   // profiles the user was about to click — prewarming caused the exact churn
   // it exists to prevent. Skip speculative spawns once every pool slot is
-  // occupied by an open socket; the real click still spawns on demand, it
-  // just doesn't get a head start.
-  if (openSecondaryCount() + 1 > $poolLimits.get().maxBackends) {
+  // occupied by an open socket OR reserved by an in-flight prewarm; the real
+  // click still spawns on demand, it just doesn't get a head start.
+  if (openSecondaryCount() + inflightPrewarmKeys.size + 1 > $poolLimits.get().maxBackends) {
     return
   }
 
   prewarmedAt.set(key, now)
-  openGatewayForProfile(key).catch(() => undefined)
+  inflightPrewarmKeys.add(key)
+  openGatewayForProfile(key)
+    .catch(() => undefined)
+    .finally(() => {
+      inflightPrewarmKeys.delete(key)
+    })
 }
 
 let gatewaySwitch: Promise<void> | null = null

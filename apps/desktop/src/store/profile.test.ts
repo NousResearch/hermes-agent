@@ -223,6 +223,79 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
 
     expect(openGatewayForProfile).not.toHaveBeenCalledWith('warm-lowered-cap')
   })
+
+  it('counts in-flight spawns against the cap so a hover sweep cannot overshoot (#91545 race)', async () => {
+    // The race: openSecondaryCount() only sees backends whose socket is
+    // already OPEN. During a fast hover sweep the sockets have not opened yet,
+    // so a naive guard reads a stale low count for every prewarm and spawns
+    // past maxBackends — the exact eviction cascade the guard should prevent.
+    // Hold every spawn in flight (socket never opens) and confirm the guard
+    // still stops at the cap. Default cap 3, no open secondaries yet.
+    $poolLimits.set({ idleMs: 600_000, maxBackends: 3 })
+    openSecondaryCount.mockReturnValue(0)
+    // Capture each spawn's resolver so we can drain them at the end and leave
+    // the module-level in-flight set clean for later tests.
+    const resolvers: Array<() => void> = []
+    openGatewayForProfile.mockImplementation(
+      () =>
+        new Promise<undefined>(resolve => {
+          resolvers.push(() => resolve(undefined)) // held until drain
+        })
+    )
+
+    // Sweep across five distinct profiles faster than any socket can open.
+    prewarmProfileBackend('sweep-a')
+    prewarmProfileBackend('sweep-b')
+    prewarmProfileBackend('sweep-c')
+    prewarmProfileBackend('sweep-d')
+    prewarmProfileBackend('sweep-e')
+
+    // Only maxBackends (3) spawns may be launched; the rest are refused while
+    // their predecessors are still in flight.
+    expect(openGatewayForProfile).toHaveBeenCalledTimes(3)
+    const swept = openGatewayForProfile.mock.calls.map(([name]) => name)
+    expect(swept).toEqual(['sweep-a', 'sweep-b', 'sweep-c'])
+    expect(resolvers).toHaveLength(3)
+
+    // Drain the held spawns so the in-flight reservations release and no
+    // promise dangles into the next test.
+    resolvers.forEach(release => release())
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
+
+  it('frees the in-flight reservation once a spawn settles, letting later prewarms proceed', async () => {
+    $poolLimits.set({ idleMs: 600_000, maxBackends: 3 })
+    openSecondaryCount.mockReturnValue(0)
+    // Two profiles fill 2 of 3 slots and stay open; a third spawn is held in
+    // flight so all three slots are reserved.
+    let resolveHeld: (() => void) | undefined
+    openGatewayForProfile
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(
+        () =>
+          new Promise<undefined>(resolve => {
+            resolveHeld = () => resolve(undefined)
+          })
+      )
+      .mockResolvedValue(undefined)
+
+    prewarmProfileBackend('fill-1')
+    prewarmProfileBackend('fill-2')
+    prewarmProfileBackend('fill-3-held')
+    // Flush all microtasks so the two resolved spawns run their
+    // .catch().finally() chain and release their in-flight reservation.
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // fill-1 and fill-2 have released; fill-3 is still in flight (1 slot used),
+    // so a fourth prewarm has room and proceeds.
+    prewarmProfileBackend('fill-4')
+    expect(openGatewayForProfile).toHaveBeenCalledWith('fill-4')
+
+    // Drain the held spawn so no promise dangles.
+    resolveHeld?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+  })
 })
 
 describe('refreshProfiles shared rail list (#49289)', () => {

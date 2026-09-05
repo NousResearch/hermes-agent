@@ -257,6 +257,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
         "Bot Chat",
         "--create-if-missing",
         "-Q",
+        "--oneshot",
     ]
     # message body rides the temp file, never the command line
     assert "PAYLOAD_SENTINEL_7A91" not in command

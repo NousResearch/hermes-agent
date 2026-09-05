@@ -242,6 +242,32 @@ def test_registered_route_tracks_required_scopes():
     assert token_auth.token_route_required_scopes("/api/plugins/kanban/board") == ()
 
 
+def test_register_token_route_is_monotonic_and_never_clears_existing_scopes():
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:write",))
+    assert token_auth.token_route_required_scopes("/api/plugins/kanban/events") == (
+        "kanban:read",
+        "kanban:write",
+    )
+
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=())
+    assert token_auth.token_route_required_scopes("/api/plugins/kanban/events") == (
+        "kanban:read",
+        "kanban:write",
+    )
+
+
+def test_ws_bearer_without_authorization_is_explicitly_not_handled():
+    provider = _CountingTokenProvider(secret="good-secret", scopes=("kanban:read",))
+    register_provider(provider)
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
+
+    reason = token_auth._ws_auth_reason(_FakeWS(headers={}))
+
+    assert reason == (token_auth.NOT_HANDLED, "bearer")
+    assert provider.calls == 0
+
+
 class _CountingTokenProvider(_TokenProvider):
     def __init__(self, *, secret: str = "good-secret", scopes=("kanban:read",)):
         super().__init__(secret=secret, scopes=scopes)

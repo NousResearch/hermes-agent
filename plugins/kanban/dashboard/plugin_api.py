@@ -44,17 +44,6 @@ router = APIRouter()
 _BOARD_Q = Query(None, description="Kanban board slug (omit for current)")
 
 
-# Register the service-visible read routes with the shared bearer-token seam.
-try:
-    from hermes_cli.dashboard_auth.token_auth import register_token_route
-
-    register_token_route("/api/plugins/kanban/board", required_scopes=("kanban:read",))
-    register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
-except Exception as exc:  # noqa: BLE001 — auth seam absence must not break plugin import
-    log = logging.getLogger(__name__)
-    log.warning("kanban dashboard token-route registration failed: %s", exc)
-
-
 # --- Connection / board helpers ---------------------------------------------
 
 def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
@@ -66,8 +55,21 @@ def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
     try:
         from hermes_cli.dashboard_auth import token_auth
     except Exception:
-        return True
-    return token_auth._ws_auth_reason(ws)[0] is None
+        return False
+    reason, _credential = token_auth._ws_auth_reason(ws)
+    if reason == token_auth.NOT_HANDLED:
+        try:
+            legacy_ws = importlib.import_module("hermes_cli.web_server_chat")
+        except Exception:
+            return False
+        legacy_ok = getattr(legacy_ws, "_ws_auth_ok", None)
+        if not callable(legacy_ok):
+            return False
+        try:
+            return bool(legacy_ok(ws))
+        except Exception:
+            return False
+    return reason is None
 
 
 def _normalize_slug_or_400(slug: str) -> Optional[str]:

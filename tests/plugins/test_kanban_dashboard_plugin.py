@@ -7,6 +7,7 @@ REST surface without spinning up the whole dashboard.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -14,9 +15,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
@@ -37,8 +41,8 @@ from hermes_cli.dashboard_auth import token_auth
 # ---------------------------------------------------------------------------
 
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_module():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return the module."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -50,7 +54,12 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
+
+
+def _load_plugin_router():
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    return _load_plugin_module().router
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +139,33 @@ def test_board_empty(client):
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+
+
+def test_board_stays_on_browser_cookie_path_when_no_kanban_read_provider_is_configured():
+    _load_plugin_module()
+
+    assert token_auth.is_token_route("/api/plugins/kanban/board") is False
+    assert token_auth.is_token_route("/api/plugins/kanban/events") is False
+
+    async def _call_next(request):
+        return JSONResponse({"ok": True}, status_code=200)
+
+    request = cast(
+        Any,
+        type(
+            "Req",
+            (),
+            {
+                "url": type("URL", (), {"path": "/api/plugins/kanban/board"})(),
+                "headers": {},
+                "client": type("Client", (), {"host": "1.2.3.4"})(),
+                "state": type("State", (), {})(),
+            },
+        )(),
+    )
+    response = asyncio.run(token_auth.token_auth_middleware(request, _call_next))
+
+    assert response.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +622,23 @@ def test_dispatch_dry_run(client):
 # ---------------------------------------------------------------------------
 
 
+class _FakeURL:
+    def __init__(self, path):
+        self.path = path
+
+
+class _FakeClient:
+    host = "1.2.3.4"
+
+
+class _FakeWS:
+    def __init__(self, path="/api/plugins/kanban/events", headers=None):
+        self.url = _FakeURL(path)
+        self.headers = headers or {}
+        self.client = _FakeClient()
+        self.query_params = {}
+
+
 def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     """Loopback mode: a missing or wrong ?token= must be rejected with
     policy-violation; the correct token is accepted. The kanban WS now
@@ -645,6 +698,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
 def test_ws_events_accepts_bearer_on_exact_registered_route(client):
     provider = _BearerProvider(secret="bearer-good", scopes=("kanban:read",))
     register_provider(provider)
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
 
     with client.websocket_connect(
         "/api/plugins/kanban/events",
@@ -657,6 +711,7 @@ def test_ws_events_accepts_bearer_on_exact_registered_route(client):
 def test_ws_events_rejects_bearer_scope_mismatch(client):
     provider = _BearerProvider(secret="bearer-good", scopes=("drain",))
     register_provider(provider)
+    token_auth.register_token_route("/api/plugins/kanban/events", required_scopes=("kanban:read",))
 
     from starlette.websockets import WebSocketDisconnect
     with pytest.raises(WebSocketDisconnect) as exc:
@@ -667,6 +722,53 @@ def test_ws_events_rejects_bearer_scope_mismatch(client):
             pass
     assert exc.value.code == 1008
     assert provider.calls == 1
+
+
+def test_ws_upgrade_without_bearer_uses_canonical_browser_gate(monkeypatch):
+    mod = _load_plugin_module()
+    seen = []
+
+    def fake_ws_auth_ok(ws):
+        seen.append(ws.url.path)
+        return True
+
+    monkeypatch.setattr(
+        mod.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(_ws_auth_ok=fake_ws_auth_ok),
+    )
+
+    assert mod._ws_upgrade_authorized(_FakeWS(headers={})) is True
+    assert seen == ["/api/plugins/kanban/events"]
+
+
+def test_ws_upgrade_fails_closed_when_canonical_browser_gate_cannot_load(monkeypatch):
+    mod = _load_plugin_module()
+
+    def _boom(name):
+        raise ImportError(name)
+
+    monkeypatch.setattr(mod.importlib, "import_module", _boom)
+
+    assert mod._ws_upgrade_authorized(_FakeWS(headers={})) is False
+
+
+def test_ws_upgrade_malformed_bearer_does_not_fallback_to_canonical_browser_gate(monkeypatch):
+    mod = _load_plugin_module()
+    seen = []
+
+    def fake_ws_auth_ok(ws):
+        seen.append(ws.url.path)
+        return True
+
+    monkeypatch.setattr(
+        mod.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(_ws_auth_ok=fake_ws_auth_ok),
+    )
+
+    assert mod._ws_upgrade_authorized(_FakeWS(headers={"authorization": "Bearer"})) is False
+    assert seen == []
 
 
 # ---------------------------------------------------------------------------

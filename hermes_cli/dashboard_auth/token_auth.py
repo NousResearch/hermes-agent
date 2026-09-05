@@ -30,6 +30,7 @@ from hermes_cli.dashboard_auth.request_utils import (
 _log = logging.getLogger(__name__)
 _token_routes: dict[str, tuple[str, ...]] = {}
 _lock = threading.Lock()
+NOT_HANDLED = "not_handled"
 
 
 def _normalise_scopes(required_scopes: tuple[str, ...] | tuple[()] | tuple[str, ...]) -> tuple[str, ...]:
@@ -62,10 +63,14 @@ def register_token_route(path: str, *, required_scopes: tuple[str, ...] = ()) ->
 
     ``required_scopes`` is backwards-compatible metadata: unscoped routes keep working, while a
     route that lists scopes requires the presented principal to satisfy all of them.
+    Re-registering the same path is monotonic: scopes are unioned so later empty
+    registrations cannot downgrade an earlier protected route.
     """
     scopes = _normalise_scopes(required_scopes)
     with _lock:
-        _token_routes[path] = scopes
+        existing = _token_routes.get(path, ())
+        merged = tuple(dict.fromkeys((*existing, *scopes)))
+        _token_routes[path] = merged
 
 
 def is_token_route(path: str) -> bool:
@@ -186,29 +191,15 @@ async def token_auth_middleware(
 def _ws_auth_reason(ws) -> tuple[Optional[str], str]:
     """Validate WebSocket bearer auth for registered token routes.
 
-    Returns ``(None, "bearer")`` when a registered route accepts the bearer; otherwise a reason
-    token plus the safe credential kind ``bearer``. If the route has no bearer header, the legacy
-    browser/query auth path remains the caller's responsibility.
+    Returns ``(None, "bearer")`` when a registered route accepts the bearer;
+    returns ``(NOT_HANDLED, "bearer")`` when the request has no Authorization
+    header so the caller can delegate to the canonical browser/query gate;
+    otherwise returns a failure reason token plus ``bearer``.
     """
     path = ws.url.path
     auth_header = ws.headers.get("authorization", "") or ""
     if not auth_header:
-        try:
-            from importlib import import_module
-
-            legacy_ws = import_module("hermes_cli.web_server_chat")
-        except Exception:
-            return None, "bearer"
-
-        legacy_reason = getattr(legacy_ws, "_ws_auth_reason", None)
-        if callable(legacy_reason):
-            return legacy_reason(ws)
-
-        legacy_ok = getattr(legacy_ws, "_ws_auth_ok", None)
-        if callable(legacy_ok):
-            return (None, "bearer") if legacy_ok(ws) else ("token_unrecognised", "bearer")
-
-        return None, "bearer"
+        return NOT_HANDLED, "bearer"
 
     ip = ws.client.host if getattr(ws, "client", None) else ""
     if not is_token_route(path):

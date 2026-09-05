@@ -35,9 +35,10 @@ import type {
 export const ROSTER_KEY = [ID, 'roster']
 // Bounded retries. `retry: true` keeps React Query in isLoading until the
 // first success, so a stalled profiles.list (live state.db write lock, SSH
-// flap) leaves the Bots sidebar on a spinner with no error card. The 5s
-// refetchInterval and the gateway-open effect already recover drops.
+// flap) leaves the Bots sidebar on a spinner with no error card. Explicit
+// refresh, focus and the gateway-open effect recover drops without polling.
 const ROSTER_QUERY_RETRY = 2
+export const ROSTER_REFETCH_INTERVAL = false
 
 export const BOT_META_V1_KEY = 'bot-meta'
 const BOT_META_V2_KEY = 'bot-meta-v2'
@@ -702,7 +703,7 @@ export function useRoster() {
         fetchedAt: issuedAt
       }
     },
-    refetchInterval: 5000,
+    refetchInterval: ROSTER_REFETCH_INTERVAL,
     staleTime: 5000,
     retry: ROSTER_QUERY_RETRY,
     retryDelay: attempt => Math.min(15000, 1000 * 2 ** attempt)

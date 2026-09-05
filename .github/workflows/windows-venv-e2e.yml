@@ -13,9 +13,7 @@ name: Windows venv-holder live E2E
 # keep dormant after the venv-holder work lands.
 
 on:
-  push:
-    branches:
-      - "wine2e/**"
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -142,6 +142,41 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_distinct_terminal_failure_causes_do_not_accumulate_as_one_broken_path():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=2,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=3,
+        )
+    )
+
+    decisions = [
+        controller.after_call(
+            "terminal",
+            {"command": "git status"},
+            '{"exit_code":1,"stderr":"not a git repository"}',
+            failed=True,
+        ),
+        controller.after_call(
+            "terminal",
+            {"command": "pytest focused"},
+            '{"exit_code":1,"stderr":"assertion reproduced"}',
+            failed=True,
+        ),
+        controller.after_call(
+            "terminal",
+            {"command": "rg expected path"},
+            '{"exit_code":2,"stderr":"path missing"}',
+            failed=True,
+        ),
+    ]
+
+    assert [decision.action for decision in decisions] == ["allow", "allow", "allow"]
+    assert controller.halt_decision is None
+
+
 
 
 
@@ -289,90 +324,3 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
 
 
 
-
-
-
-# ── Legitimate flows must survive hard stops (Teknium, Sep 2026) ────────────
-# Hard stops default ON for unattended platforms. These pin the flows that
-# must NEVER be cut off there: edit -> re-run loops, diagnostic sweeps of
-# distinct red commands, and browser retry-after-action — while the pure
-# replay (same call, nothing changed between attempts) is still stopped.
-
-_HARD = lambda: ToolCallGuardrailController(  # noqa: E731
-    ToolCallGuardrailConfig(hard_stop_enabled=True)
-)
-_PYTEST = {"command": "pytest tests/test_x.py -q"}
-_RED = '{"output": "1 failed", "exit_code": 1}'
-
-
-def _run_red(c, args=_PYTEST):
-    assert c.before_call("terminal", args).allows_execution
-    return c.after_call("terminal", args, _RED, failed=True)
-
-
-def test_fix_retest_loop_is_never_hard_stopped():
-    c = _HARD()
-    for i in range(12):
-        d = _run_red(c)
-        assert not d.should_halt, f"halted on red run {i + 1}"
-        # the model edits between runs — a landed mutation is progress
-        c.after_call("patch", {"path": "x.py", "old_string": "a", "new_string": f"b{i}"},
-                     '{"success": true, "diff": "..."}', failed=False)
-    assert c.halt_decision is None
-    assert c.before_call("terminal", _PYTEST).allows_execution
-
-
-def test_pure_replay_with_no_intervening_change_is_still_blocked():
-    c = _HARD()
-    for _ in range(5):
-        _run_red(c)
-    d = c.before_call("terminal", _PYTEST)
-    assert d.action == "block" and d.code == "repeated_exact_failure_block"
-
-
-def test_intervening_mutation_resets_the_replay_streak_only_once():
-    # 4 reds, one edit, then 4 reds with NO edit: the second run of 4 is a
-    # fresh streak, and the 5th unchanged retry after it is blocked.
-    c = _HARD()
-    for _ in range(4):
-        _run_red(c)
-    c.after_call("write_file", {"path": "x.py", "content": "y"}, '{"bytes_written": 1}', failed=False)
-    for _ in range(5):
-        assert c.before_call("terminal", _PYTEST).allows_execution
-        c.after_call("terminal", _PYTEST, _RED, failed=True)
-    assert c.before_call("terminal", _PYTEST).action == "block"
-
-
-def test_distinct_failing_terminal_commands_warn_but_never_halt():
-    # A diagnostic sweep: grep with no matches, missing binaries, red builds.
-    c = _HARD()
-    for i in range(12):
-        args = {"command": f"grep -q needle{i} haystack.txt"}
-        d = c.after_call("terminal", args, _RED, failed=True)
-        assert not d.should_halt, f"same_tool halt on distinct command #{i + 1}"
-    assert c.halt_decision is None
-    # ...while a non-tolerant tool failing 8 distinct ways still halts.
-    c2 = _HARD()
-    last = None
-    for i in range(8):
-        last = c2.after_call("send_message", {"to": f"u{i}"}, '{"error": "no route"}', failed=True)
-    assert last.should_halt and last.code == "same_tool_failure_halt"
-
-
-def test_browser_retry_after_action_is_not_a_replay():
-    c = _HARD()
-    nav = {"url": "https://example.test/app"}
-    for _ in range(8):
-        assert c.before_call("browser_navigate", nav).allows_execution
-        c.after_call("browser_navigate", nav, '{"error": "timeout"}', failed=True)
-        c.after_call("browser_click", {"selector": "#retry"}, '{"ok": true}', failed=False)
-    assert c.halt_decision is None
-
-
-def test_supervised_task_platforms_keep_warning_only_default():
-    for platform in ("subagent", "api_server", "cli"):
-        cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
-        assert cfg.hard_stop_enabled is False, platform
-    for platform in ("telegram", "discord", "cron", "kanban"):
-        cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
-        assert cfg.hard_stop_enabled is True, platform

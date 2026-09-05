@@ -40,10 +40,13 @@ runtime:
 # =============================================================================
 # Model Configuration
 # =============================================================================
+# The GPT-5.4 family was removed from active routing ahead of retirement. Do not
+# silently follow mutable model aliases: evaluate any replacement mini or newly
+# released model with representative per-profile benchmarks before adoption.
 model:
   # Default model to use (can be overridden with --model flag)
   # Both "default" and "model" work as the key name here.
-  default: "anthropic/claude-opus-4.6"
+  default: "openai-codex/gpt-5.5"
   
   # Inference provider selection:
   #   "auto"         - Auto-detect from credentials (default)
@@ -253,7 +256,7 @@ model:
 #         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
 #   openai-codex:
 #     models:
-#       gpt-5.4:
+#       gpt-5.6-luna:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
@@ -317,9 +320,31 @@ model:
 # =============================================================================
 # Git Worktree Isolation
 # =============================================================================
-# When enabled, each CLI session creates an isolated git worktree so multiple
-# agents can work on the same repo concurrently without file collisions.
-# Equivalent to always passing --worktree / -w on the command line.
+# Durable per-conversation isolation shared by interactive CLI, Desktop/TUI,
+# and messaging gateways. New root conversations branch from the exact local
+# HEAD of source_worktree; resume/continue reuses the persisted binding, and
+# /new gets a new binding. Worktrees are retained when the process exits and
+# can be removed only by the guarded explicit-cleanup flow after Hermes proves
+# they are inactive, clean, pushed, and integrated.
+#
+# conversation_worktree:
+#   enabled: false
+#   source_worktree: "/absolute/path/to/stable-checkout"
+#   worktree_root: "/absolute/path/to/conversation-worktrees"
+#   branch_prefix: "hermes/session"
+#   bootstrap: false
+#   bootstrap_command: []       # argv list; required and non-empty when bootstrap is true
+#   bootstrap_timeout: 300      # finite positive seconds
+#   create_timeout: 60          # finite positive seconds
+#   retain_until_explicit_cleanup: true  # required when enabled
+#
+# Invalid or unavailable managed policy fails closed: Hermes does not silently
+# continue in source_worktree. Kanban, cron, subagent, and explicit/manual
+# worktrees keep their existing task-owned lifecycle and are not rebound.
+#
+# Legacy CLI-only isolation remains available independently. When enabled,
+# each CLI invocation creates the historical temporary worktree; this is
+# equivalent to always passing --worktree / -w on the command line.
 #
 # worktree: true    # Always create a worktree when in a git repo
 # worktree: false   # Default — only create when -w flag is passed
@@ -369,6 +394,7 @@ terminal:
   #   profile - force HERMES_HOME/home for strict per-profile CLI config isolation
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
+  docker_isolate_host_data: false  # Suppress automatic credential, skill, cache, and egress-proxy mounts.
   lifetime_seconds: 300
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
@@ -825,6 +851,16 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     reasoning_effort: "low"
+#
+#   # Guarded compression fast lane. The output cap is honored only when both
+#   # provider and model are explicit and reasoning_effort is exactly "none".
+#   # If the effective route drifts, Hermes drops the cap and reasoning
+#   # override instead of applying them to an uncertified model.
+#   compression:
+#     provider: "main"
+#     model: "qwen3:8b"
+#     reasoning_effort: "none"
+#     max_output_tokens: 1400  # positive integer; 0 = historic uncapped behavior
 #
 #   # Gemini 3.1 TTS hidden audio-tag insertion
 #   tts_audio_tags:
@@ -1643,14 +1679,17 @@ stt:
 # Intermediate tool results stay out of the LLM's context window.
 code_execution:
   timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
-  max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
-  # Local execution uses a persistent session kernel: variables, imports, and
-  # loaded data survive across execute_code calls in one conversation, so
-  # multi-step data work stops re-loading its inputs every call. Pass
-  # reset=true on a call to discard state; a timed-out/interrupted cell kills
-  # the kernel (next call starts fresh). Remote terminal backends currently
-  # run per-call (remote kernel host is tracked follow-up work). Security
-  # scrubbing, tool whitelist, and output redaction are identical either way.
+  max_tool_calls: 50   # Max RPC tool calls per execution (default: 50; <= 0 = unlimited)
+  # kernel_mode: per-call | session (default: per-call for remote backends, session for local)
+  #   per-call — fresh child process per execute_code call; no state carries over.
+  #   session  — one persistent kernel per (task, mode, interpreter, cwd, tool-set):
+  #              variables, imports, and loaded data survive across calls, so
+  #              multi-step data work stops re-loading its inputs. A timed-out/
+  #              interrupted cell kills the kernel; pass reset=true to discard
+  #              state deliberately. Remote terminal backends currently run per-call.
+  #              Security scrubbing, tool whitelist, and output redaction are
+  #              identical in both modes.
+  # kernel_mode: per-call
   # kernel_idle_timeout: 1800   # Reap kernels idle longer than this (seconds)
   # max_session_kernels: 4      # Process-wide LRU cap on live kernels
 

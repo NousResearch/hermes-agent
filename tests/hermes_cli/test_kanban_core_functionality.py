@@ -262,6 +262,50 @@ def test_read_worker_log_tail(kanban_home):
 # Max-runtime enforcement (item 1 from the Multica audit)
 # ---------------------------------------------------------------------------
 
+
+def test_worker_tree_signal_uses_owned_process_group(monkeypatch):
+    """Reclaim/timeout must reach terminal children, not only the agent leader."""
+    calls = []
+    monkeypatch.setattr(kb.os, "name", "posix")
+    monkeypatch.setattr(kb.os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 111)
+    monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
+
+    kb._worker_tree_signal(222, 15)
+
+    assert calls == [("group", 222, 15)]
+
+
+def test_worker_tree_signal_signals_orphaned_group_when_leader_dead(monkeypatch):
+    """A leader that already exited leaves its group members alive; the
+    known pgid (== original pid) must still be signalled."""
+    calls = []
+    monkeypatch.setattr(kb.os, "name", "posix")
+    def _getpgid(pid):
+        raise ProcessLookupError()
+    monkeypatch.setattr(kb.os, "getpgid", _getpgid)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 111)
+    monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
+
+    kb._worker_tree_signal(222, 15)
+
+    assert calls == [("group", 222, 15)]
+
+
+def test_worker_tree_signal_never_targets_own_process_group(monkeypatch):
+    calls = []
+    monkeypatch.setattr(kb.os, "name", "posix")
+    monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 111)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 111)
+    monkeypatch.setattr(kb.os, "killpg", lambda pgid, sig: calls.append(("group", pgid, sig)))
+    monkeypatch.setattr(kb.os, "kill", lambda pid, sig: calls.append(("pid", pid, sig)))
+
+    kb._worker_tree_signal(222, 15)
+
+    assert calls == [("pid", 222, 15)]
+
 def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
     SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
@@ -312,6 +356,49 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             to_event = next(e for e in events if e.kind == "timed_out")
             assert to_event.payload["limit_seconds"] == 1
             assert to_event.payload["elapsed_seconds"] >= 30
+        finally:
+            conn.close()
+    finally:
+        _kb._pid_alive = original_alive
+
+
+def test_max_runtime_uses_dispatch_default_when_task_has_no_override(kanban_home):
+    """A running task without an explicit cap still receives the dispatch cap."""
+    killed = []
+
+    def _signal_fn(pid, sig):
+        killed.append((pid, sig))
+
+    import hermes_cli.kanban_db as _kb
+    original_alive = _kb._pid_alive
+    _kb._pid_alive = lambda pid: False
+
+    try:
+        conn = kb.connect()
+        try:
+            tid = kb.create_task(conn, title="uncapped job", assignee="worker")
+            kb.claim_task(conn, tid)
+            kb._set_worker_pid(conn, tid, os.getpid())
+            old_started = int(time.time()) - 30
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET started_at = ? WHERE id = ?",
+                    (old_started, tid),
+                )
+                conn.execute(
+                    "UPDATE task_runs SET started_at = ? "
+                    "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+                    (old_started, tid),
+                )
+
+            timed_out = kb.enforce_max_runtime(
+                conn, default_max_runtime_seconds=1, signal_fn=_signal_fn
+            )
+
+            assert tid in timed_out
+            assert killed and killed[0][0] == os.getpid()
+            event = next(e for e in kb.list_events(conn, tid) if e.kind == "timed_out")
+            assert event.payload["limit_seconds"] == 1
         finally:
             conn.close()
     finally:
@@ -1376,6 +1463,50 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
         conn.close()
 
 
+def test_protocol_violation_gets_one_finalize_retry_despite_retry_limit_one(kanban_home):
+    """A one-retry task must still receive the terminal-call recovery turn.
+
+    ``max_retries=1`` is used by bounded scout cards to prevent expensive
+    repeated work.  A clean exit without ``kanban_complete``/``kanban_block``
+    is different: the worker may already have performed its bounded scan but
+    missed only the required terminal receipt.  Blocking it on that first
+    exit suppresses the corrective context that lets the next run finalize.
+    """
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="bounded scout",
+            assignee="worker",
+            max_retries=1,
+        )
+
+        _drive_protocol_violation(conn, tid, 991004)
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.last_failure_error is not None
+        assert "kanban_complete" in task.last_failure_error
+    finally:
+        conn.close()
+
+
+def test_worker_context_requires_terminal_kanban_receipt(kanban_home):
+    """Detached workers receive a profile-independent terminal-call contract."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="bounded no-op", assignee="worker")
+
+        context = kb.build_worker_context(conn, tid)
+
+        assert "Do not search for alternate worktrees" in context
+        assert "## Completion contract" in context
+        assert "kanban_complete" in context
+        assert "never exit with only conversational text" in context
+    finally:
+        conn.close()
+
+
 
 
 
@@ -1414,5 +1545,3 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-

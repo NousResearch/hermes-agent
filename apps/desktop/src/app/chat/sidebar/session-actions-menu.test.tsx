@@ -4,7 +4,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
-afterEach(cleanup)
+const { request, activeGateway } = vi.hoisted(() => ({
+  request: vi.fn(),
+  activeGateway: vi.fn()
+}))
+
+activeGateway.mockReturnValue({ request })
+
+afterEach(() => {
+  cleanup()
+  request.mockReset()
+  activeGateway.mockReset()
+  activeGateway.mockReturnValue({ request })
+})
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -48,6 +60,25 @@ vi.mock('@/i18n', () => ({
           branchFrom: 'Branch from here',
           copyId: 'Copy ID',
           copyIdFailed: 'Failed to copy ID',
+          cleanupWorktree: 'Clean up worktree',
+          cleanupTitle: 'Remove conversation worktree?',
+          cleanupBlockedTitle: 'Worktree cannot be removed',
+          cleanupAllowedDesc: (branch: string, path: string) => `Remove ${branch} at ${path}`,
+          cleanupInspectFailed: 'Could not inspect worktree',
+          cleanupRemoving: 'Removing worktree…',
+          cleanupRemoved: 'Worktree removed',
+          cleanupRemove: 'Remove worktree',
+          cleanupReasons: {
+            active: 'A session is still active.',
+            dirty: 'The worktree has uncommitted changes.',
+            'in-progress': 'Git has an operation in progress.',
+            'mismatched identity': 'The worktree identity does not match its binding.',
+            'missing remote evidence': 'No remote evidence is available.',
+            remove_failed: 'Git could not remove the worktree.',
+            unintegrated: 'The worktree commits are not integrated.',
+            unknown: 'Cleanup safety could not be determined.',
+            unpushed: 'The worktree commits are not pushed.'
+          },
           deleteDesc: (title: string) => `Delete ${title}?`,
           deleteTitle: 'Delete session?',
           deleting: 'Deleting…',
@@ -73,7 +104,7 @@ vi.mock('@/i18n', () => ({
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: [] }))
 vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))
-vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
+vi.mock('@/store/gateway', () => ({ activeGateway: () => activeGateway() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
@@ -286,5 +317,97 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('inspects first and displays every blocking cleanup reason without removing', async () => {
+    request.mockResolvedValueOnce({
+      allowed: false,
+      reasons: ['dirty', 'unintegrated', 'unpushed'],
+      removed: false,
+      root_session_id: 's1',
+      path: '/repo/worktrees/s1',
+      branch: 'hermes/session/s1',
+      state: 'ready'
+    })
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Clean up worktree' }))
+
+    expect(await screen.findByRole('dialog', { name: 'Worktree cannot be removed' })).toBeTruthy()
+    expect(screen.getByText('The worktree has uncommitted changes.')).toBeTruthy()
+    expect(screen.getByText('The worktree commits are not integrated.')).toBeTruthy()
+    expect(screen.getByText('The worktree commits are not pushed.')).toBeTruthy()
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledWith('session.worktree_cleanup', {
+      action: 'inspect',
+      profile: undefined,
+      session_id: 's1'
+    })
+  })
+
+  it('sends remove only after an allowed inspection and explicit confirmation', async () => {
+    request
+      .mockResolvedValueOnce({
+        allowed: true,
+        reasons: [],
+        removed: false,
+        root_session_id: 's1',
+        path: '/repo/worktrees/s1',
+        branch: 'hermes/session/s1',
+        state: 'ready'
+      })
+      .mockResolvedValueOnce({ allowed: true, reasons: [], removed: true })
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Clean up worktree' }))
+
+    expect(await screen.findByRole('dialog', { name: 'Remove conversation worktree?' })).toBeTruthy()
+    expect(request).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Remove worktree' }))
+
+    expect(await screen.findByText('Worktree removed')).toBeTruthy()
+    expect(request).toHaveBeenNthCalledWith(2, 'session.worktree_cleanup', {
+      action: 'remove',
+      profile: undefined,
+      session_id: 's1'
+    })
+  })
+
+  it('shows the stable remove failure reason returned by the cleanup RPC', async () => {
+    request
+      .mockResolvedValueOnce({
+        allowed: true,
+        reasons: [],
+        removed: false,
+        root_session_id: 's1',
+        path: '/repo/worktrees/s1',
+        branch: 'hermes/session/s1',
+        state: 'ready'
+      })
+      .mockResolvedValueOnce({
+        allowed: false,
+        reasons: ['remove_failed'],
+        removed: false,
+        failure_phase: 'remove',
+        failure_message: 'permission denied'
+      })
+    renderMenu()
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Clean up worktree' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove worktree' }))
+
+    expect(await screen.findByText('Git could not remove the worktree.')).toBeTruthy()
   })
 })

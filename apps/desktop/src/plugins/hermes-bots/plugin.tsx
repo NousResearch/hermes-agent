@@ -354,10 +354,11 @@ export default {
       })
     }
 
-    // Reconciliation sweep: hide every Bot Mode session we know about, on
-    // load and again on each reconnect (a swap can land on a gateway whose
-    // rows were created before the always-hidden policy). Deferred a tick so
-    // the meta/room storage hydrates above have landed; idempotent after that.
+    // Cheap reconciliation: re-hide only group-session ids already recorded
+    // in room state on load/reconnect. Profile-wide legacy title cleanup is
+    // demand-driven when that exact bot is opened; an idle Desktop must never
+    // enumerate every profile database. Deferred a tick so room storage above
+    // has landed; idempotent after that.
     // (Feature-guarded: bare vm test harnesses have no setTimeout global.)
     startHideSweepScheduler(ctx)
     ctx.register({

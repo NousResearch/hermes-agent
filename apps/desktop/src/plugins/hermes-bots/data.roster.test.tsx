@@ -25,7 +25,7 @@ import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $lastRoster, useRoster } from './data'
+import { $lastRoster, ROSTER_REFETCH_INTERVAL, useRoster } from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -111,6 +111,12 @@ beforeEach(() => {
 
 afterEach(() => {
   $lastRoster.set([])
+})
+
+describe('roster refresh policy', () => {
+  it('does not poll while the Desktop is idle', () => {
+    expect(ROSTER_REFETCH_INTERVAL).toBe(false)
+  })
 })
 
 describe('no union roster', () => {

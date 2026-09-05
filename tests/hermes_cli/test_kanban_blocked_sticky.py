@@ -77,6 +77,22 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initially_blocked_operator_task_is_sticky(kanban_home: Path) -> None:
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="operator intent required",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        events = kb.list_events(conn, task_id=tid)
+        assert any(event.kind == "blocked" for event in events)
+
+
 
 
 # ---------------------------------------------------------------------------

@@ -869,14 +869,67 @@ Leaving the list empty, or omitting the key, is a no-op.
 
 ## Git Worktree Isolation
 
-Enable isolated git worktrees for running multiple agents in parallel on the same repo:
+### Durable conversation worktrees
+
+Use the canonical top-level policy when every root conversation should receive
+its own durable checkout:
+
+```yaml
+conversation_worktree:
+  enabled: true
+  source_worktree: /absolute/path/to/stable-checkout
+  worktree_root: /absolute/path/to/conversation-worktrees
+  branch_prefix: hermes/session
+  bootstrap: false
+  bootstrap_command: []
+  bootstrap_timeout: 300
+  create_timeout: 60
+  retain_until_explicit_cleanup: true
+```
+
+`source_worktree` and `worktree_root` must be absolute paths. New worktrees are
+branched from the exact local `HEAD` of `source_worktree`; this managed policy
+does not fetch or select a remote tip. `branch_prefix` must be a safe Git ref
+prefix. If `bootstrap` is true, `bootstrap_command` must be a non-empty argv
+list. Invalid policy, creation failure, bootstrap failure, or inability to
+enter the ready worktree fails closed: Hermes does not continue in the stable
+source checkout.
+
+The root binding is created before agent and tool construction, so the process
+cwd, terminal cwd, file tools, and agent context agree:
+
+- A fresh interactive CLI, Desktop/TUI chat, or gateway-backed messaging chat
+  gets one manager-owned worktree.
+- Continue/resume reuses that root conversation's persisted binding, including
+  after process restart.
+- `/new` creates and enters a new root worktree before ending the old session.
+- Kanban tasks, cron jobs, delegated subagents, and explicit/manual worktrees
+  retain their existing task-owned workspace behavior; they are not rebound to
+  a conversation worktree.
+
+Managed worktrees are intentionally retained when a CLI, Desktop, TUI, or
+gateway process exits. `retain_until_explicit_cleanup` must remain `true` while
+the policy is enabled. An explicit cleanup request rechecks the exact binding
+and refuses removal while it is active, dirty, in a Git operation, unpushed, or
+not integrated. General `hermes worktree prune` also preserves manager-owned
+conversation worktrees. This prevents normal shutdown or generic garbage
+collection from deleting unfinished work.
+
+Config version 39 automatically moves the legacy
+`desktop.conversation_worktree` block to this top-level location. If both are
+present, the explicit top-level block wins and is preserved unchanged.
+
+### Legacy CLI worktrees
+
+The older CLI-only controls remain separate for explicit/manual worktrees and
+for installations where `conversation_worktree.enabled` is false:
 
 ```yaml
 worktree: true    # Always create a worktree (same as hermes -w)
 # worktree: false # Default — only when -w flag is passed
 ```
 
-When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery.
+When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery. These lifecycle rules apply only to the legacy/manual mode, not to manager-owned conversation worktrees.
 
 By default the new worktree branches from the **freshly-fetched remote tip** (the current branch's upstream, otherwise the remote's default branch) so it starts current with the project rather than from the local clone's possibly-stale `HEAD`. This keeps a PR's diff scoped to the actual change instead of inheriting whatever the local clone was behind by. Set `worktree_sync: false` to branch from local `HEAD` instead — useful offline, or when you deliberately want the clone's exact current state as the base. If the remote can't be reached, it falls back to local `HEAD` automatically.
 
@@ -931,7 +984,18 @@ auxiliary:
     model: ""                                       # Empty = use main chat model. Override with e.g. "google/gemini-3-flash-preview" for cheaper/faster compression.
     provider: "auto"                                # Provider: "auto", "openrouter", "nous", "codex", "main", etc.
     base_url: null                                  # Custom OpenAI-compatible endpoint (overrides provider)
+    reasoning_effort: ""                            # Set exactly "none" to certify a non-reasoning fast route
+    max_output_tokens: 0                            # Positive integer cap for a certified route; 0 keeps historic uncapped behavior
 ```
+
+`auxiliary.compression.max_output_tokens` is a guarded fast-lane control, not
+a general compression cap. Hermes applies it only when `provider` and `model`
+are both explicit, `reasoning_effort` is exactly `none`, and the effective
+provider/model still matches that configured route. If routing drifts or any
+field is missing or invalid (including booleans), Hermes leaves the request
+uncapped and does not force the non-reasoning override. This containment keeps
+an inherited or fallback model from receiving controls it was not certified to
+support.
 
 :::info Legacy config migration
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.
@@ -1820,6 +1884,24 @@ The injected block covers:
 
 The gate is independent of `tool_use_enforcement` — either can be on without the other. The guidance is chosen once at session start keyed on the model name, so the system prompt stays byte-stable (and prompt-cache-friendly) for the life of the conversation. Gemini/Gemma are excluded from the auto list because they receive the more specific Google operational guidance; Claude is excluded because it doesn't exhibit these failure modes — opt any model in with `true` or a substring list.
 
+## Guarded Prompt Mode
+
+For smaller local coding models, guarded prompt mode replaces redundant long-form coaching with a compact contract that retains the current-worktree rule, tool grounding, permission checks, verification before completion, skill loading, and deferred tool discovery. Universal task-completion guidance, configured tool-use enforcement, and the environment-gated Kanban worker lifecycle protocol remain active because they prevent load-bearing execution failures. It does **not** change tool-side permission enforcement or hide any skill.
+
+It is disabled by default and requires `coding_context: focus`, a detected coding workspace, and an exact provider/model route pair. This makes the mode reversible and prevents it from silently affecting another model.
+
+```yaml
+agent:
+  coding_context: focus
+  guarded_prompt_mode:
+    enabled: true
+    routes:
+      - provider: ollama-launch
+        model: hermes-qwen3-fast
+```
+
+Every route is matched as a pair: `ollama-launch + gpt-5.4`, for example, does not activate merely because each value appears elsewhere in the list. In guarded sessions all skill names remain visible, but their descriptions are loaded on demand with `skill_view`.
+
 ## Tool-Loop Guardrails
 
 Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects. Interactive CLI, TUI, Desktop, and ACP sessions remain warning-only because a person can intervene; unattended gateway and cron sessions enable hard stops by default.
@@ -2419,7 +2501,7 @@ Configure the `execute_code` tool:
 code_execution:
   mode: project                # project (default) | strict
   timeout: 300                 # Max execution time in seconds
-  max_tool_calls: 50           # Max tool calls within code execution
+  max_tool_calls: 50           # Max tool calls within code execution (0 = unlimited)
 ```
 
 **`mode`** controls the working directory and Python interpreter for scripts:

@@ -20,6 +20,7 @@ import { closeGroupChatMainTab } from './group-panes'
 import { displayName } from './labels'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { botCanonicalSessionId } from './row-helpers'
+import { reconcileBotProfileSessions } from './session-sweep'
 import { bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
@@ -240,11 +241,15 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
 
   const fronted = focusExistingBotTab(bot)
 
-  if (fronted) {
-    // The canonical chat is on screen: no source activation, no registry
-    // round-trip. Both identities are recorded so the reclaim listener and
-    // the roster-activity refresh treat it exactly like a registry open.
-    $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
+    if (focused) {
+      // Legacy visibility repair is profile-scoped and demand-driven: opening
+      // this bot may inspect this bot, but an idle Desktop never scans peers.
+      void reconcileBotProfileSessions(bot)
+      // Open tabs win: no source activation, no registry consult, no open. The
+      // claim carries only the fronted tab so the focus edge it fires keeps it
+      // (releaseStaleOpenBotChat) and no registry id is recorded, because none
+      // was resolved.
+      $openBotChat.set({ key, openedRegistryId: '', openedSessionId: focused })
 
     // Fronting is presentation-only: the pane keeps whatever transcript it
     // last painted, which can predate rows the bot wrote while the user was
@@ -274,6 +279,10 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   if (generation !== getBotOpenGeneration()) {
     return false
   }
+
+  // The source is now reachable. Reconcile this one selected profile in the
+  // background; do not delay navigation on best-effort legacy cleanup.
+  void reconcileBotProfileSessions(bot)
 
   try {
     const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())

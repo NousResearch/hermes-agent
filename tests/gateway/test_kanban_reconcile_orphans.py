@@ -117,6 +117,7 @@ class TestReconcileOrphanedRunning:
             "SELECT status FROM tasks WHERE id=?", (tid,)
         ).fetchone()["status"] == "running"
 
+    @pytest.mark.live_system_guard_bypass
     def test_live_worker_pid_defers_reconcile(self, conn):
         """If the orphan row still records a live PID on this host, don't
         requeue beside a possibly-alive worker — defer to the next tick."""

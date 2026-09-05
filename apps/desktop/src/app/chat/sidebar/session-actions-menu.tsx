@@ -22,7 +22,14 @@ import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -122,6 +129,19 @@ interface SessionActions {
   onHideTabBar?: () => void
 }
 
+interface ConversationWorktreeCleanupStatus {
+  allowed: boolean
+  reasons: string[]
+  removed: boolean
+  root_session_id: string
+  path: string
+  branch: string
+  base_commit?: string
+  state?: string
+  failure_phase?: string
+  failure_message?: string
+}
+
 // The color picker inside the session menu's Appearance submenu. Its own
 // component so only an OPEN submenu subscribes to the stores (not every row's
 // menu). Reads/writes the override keyed by the DURABLE id so a color survives
@@ -209,6 +229,7 @@ function useSessionActions({
   // the project menu's appearance-popover guard.
   const suppressCloseFocusRef = useRef(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [cleanupStatus, setCleanupStatus] = useState<ConversationWorktreeCleanupStatus | null>(null)
   const tiles = useStore($sessionTiles)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const isRemote = useStore($connection)?.mode === 'remote'
@@ -430,6 +451,31 @@ function useSessionActions({
   // DANGER — put it away / destroy it (delete stays last, destructive-red).
   const dangerItems: ActionItemSpec[] = [
     spec({
+      disabled: !sessionId,
+      icon: 'repo',
+      label: r.cleanupWorktree,
+      onSelect: () => {
+        triggerHaptic('warning')
+
+        const gateway = activeGateway()
+
+        if (!gateway) {
+          notifyError(new Error(r.cleanupInspectFailed), r.cleanupInspectFailed)
+
+          return
+        }
+
+        void gateway
+          .request<ConversationWorktreeCleanupStatus>('session.worktree_cleanup', {
+            action: 'inspect',
+            profile,
+            session_id: sessionId
+          })
+          .then(status => setCleanupStatus(status))
+          .catch(err => notifyError(err, r.cleanupInspectFailed))
+      }
+    }),
+    spec({
       disabled: !onArchive,
       icon: 'archive',
       label: r.archive,
@@ -549,7 +595,63 @@ function useSessionActions({
     />
   )
 
-  return { deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
+  const cleanupDialog = cleanupStatus ? (
+    cleanupStatus.allowed ? (
+      <ConfirmDialog
+        busyLabel={r.cleanupRemoving}
+        confirmLabel={r.cleanupRemove}
+        description={r.cleanupAllowedDesc(cleanupStatus.branch, cleanupStatus.path)}
+        destructive
+        doneLabel={r.cleanupRemoved}
+        onClose={() => setCleanupStatus(null)}
+        onConfirm={async () => {
+          const gateway = activeGateway()
+
+          if (!gateway) {
+            throw new Error(r.cleanupInspectFailed)
+          }
+
+          const result = await gateway.request<ConversationWorktreeCleanupStatus>('session.worktree_cleanup', {
+            action: 'remove',
+            profile,
+            session_id: sessionId
+          })
+
+          if (!result.removed) {
+            const labels = r.cleanupReasons as Record<string, string>
+
+            throw new Error(result.reasons.map(reason => labels[reason] ?? labels.unknown).join(' '))
+          }
+        }}
+        open
+        title={r.cleanupTitle}
+      />
+    ) : (
+      <Dialog onOpenChange={open => !open && setCleanupStatus(null)} open>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{r.cleanupBlockedTitle}</DialogTitle>
+            <DialogDescription asChild>
+              <ul className="list-disc space-y-1 pl-5">
+                {cleanupStatus.reasons.map(reason => {
+                  const labels = r.cleanupReasons as Record<string, string>
+
+                  return <li key={reason}>{labels[reason] ?? `${labels.unknown} (${reason})`}</li>
+                })}
+              </ul>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setCleanupStatus(null)} type="button">
+              {t.common.close}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    )
+  ) : null
+
+  return { cleanupDialog, deleteDialog, onCloseAutoFocus, renameDialog, renderItems }
 }
 
 interface DeleteSessionDialogProps {
@@ -590,7 +692,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { cleanupDialog, deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -606,6 +708,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
       </ActionsMenu>
       {renameDialog}
       {deleteDialog}
+      {cleanupDialog}
     </>
   )
 }
@@ -616,7 +719,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
+  const { cleanupDialog, deleteDialog, onCloseAutoFocus, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -630,6 +733,7 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
       </ActionsContextMenu>
       {renameDialog}
       {deleteDialog}
+      {cleanupDialog}
     </>
   )
 }

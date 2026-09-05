@@ -234,6 +234,9 @@ def test_worker_guidance_distinguishes_same_card_and_downstream_review() -> None
     assert "inspect those cards" in KANBAN_GUIDANCE
     assert "pre-created review, QA, or release child" in KANBAN_GUIDANCE
     assert "call `kanban_complete`" in KANBAN_GUIDANCE
+    assert "Never run a recursive" in KANBAN_GUIDANCE
+    assert "`rg --files`" in KANBAN_GUIDANCE
+    assert "must include a non-empty factual `summary`" in KANBAN_GUIDANCE
     assert "Never sticky-block that parent for `review-required`" in KANBAN_GUIDANCE
     assert "`kanban_request_changes`" in KANBAN_GUIDANCE
     assert "metadata=..." in KANBAN_GUIDANCE

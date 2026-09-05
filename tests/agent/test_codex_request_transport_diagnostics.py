@@ -21,7 +21,7 @@ def test_transport_failure_without_attached_request_reports_unknown_size():
     assert exception_chain == "RemoteProtocolError"
 
 
-def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
+def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog, tmp_path):
     request_content = b'{"input":"payload"}'
     request = httpx.Request(
         "POST",
@@ -43,11 +43,13 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
     agent = SimpleNamespace(
         _interrupt_requested=False,
         _current_api_request_id="request-id",
+        _current_turn_id="turn-id",
+        _llm_egress_state_dir=tmp_path,
         _fallback_index=0,
         is_subagent=False,
         model="gpt-5.6-sol",
         provider="openai-codex",
-        session_id="",
+        session_id="session-id",
     )
 
     with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):

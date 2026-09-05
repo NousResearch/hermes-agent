@@ -116,6 +116,44 @@ def test_touch_activity_persist_errors_are_swallowed(monkeypatch):
     assert agent._last_activity_desc == "tool completed: terminal (1.0s)"
 
 
+def test_touch_activity_hard_interrupts_worker_after_lease_loss(monkeypatch):
+    import tools.kanban_tools as kanban_tools
+
+    agent = _agent_with_db()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_deadbeef")
+    monkeypatch.setattr(run_agent.time, "time", lambda: 1.0)
+    monkeypatch.setattr(run_agent.time, "monotonic", lambda: 1.0)
+    interrupted = []
+
+    def heartbeat(*, on_lease_lost):
+        on_lease_lost("t_deadbeef")
+        return True
+
+    monkeypatch.setattr(
+        kanban_tools,
+        "heartbeat_current_worker_from_env",
+        heartbeat,
+    )
+    monkeypatch.setattr(
+        run_agent,
+        "request_hard_interrupt",
+        lambda target, message, *, tool_reason: interrupted.append(
+            (target, message, tool_reason)
+        )
+        or True,
+    )
+
+    agent._touch_activity("receiving stream response")
+
+    assert interrupted == [
+        (
+            agent,
+            "Kanban lease lost for t_deadbeef; stopping superseded worker.",
+            "kanban lease lost",
+        )
+    ]
+
+
 def test_heartbeat_write_failure_never_propagates_direct(monkeypatch):
     """_persist_session_activity_if_due itself must swallow DB failures.
 

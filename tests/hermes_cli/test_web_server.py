@@ -5012,6 +5012,26 @@ class TestDesktopCronTicker:
         with self._client():
             assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
 
+    def test_ticker_does_not_run_in_desktop_pool_backend(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import threading
+        import hermes_cli.web_server as web_server
+
+        called = threading.Event()
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DESKTOP_POOL", "1")
+        monkeypatch.setattr(
+            web_server,
+            "_start_desktop_cron_ticker",
+            lambda *_args, **_kwargs: called.set(),
+        )
+
+        with self._client():
+            assert not called.wait(0.25), (
+                "pooled profile backends must not become duplicate cron authorities"
+            )
+
 
 class TestServeIndexMissingIndex:
     """_serve_index must not raise per-request when index.html vanishes

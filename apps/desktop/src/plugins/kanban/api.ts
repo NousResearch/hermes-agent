@@ -60,21 +60,74 @@ const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
 
-/** One live `task_events` frame → precise cache invalidation: the board, plus
- *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
- *  fallback — the socket just makes the board feel instant. */
-function onEventsFrame(slug: string, data: unknown): void {
+/** Worker heartbeats only advance liveness. Reloading the full board for them
+ *  is both unnecessary and expensive: GET /board computes diagnostics from
+ *  every active task's event/run history. */
+export function eventsNeedBoardRefresh(events: CompletionEvent[]): boolean {
+  return events.some(event => event.kind !== 'heartbeat' && event.kind !== 'respawn_guarded')
+}
+
+export function applyHeartbeatEvents(board: KanbanBoard, events: CompletionEvent[]): KanbanBoard {
+  const heartbeats = new Map<string, number>()
+  let latestEventId = board.latest_event_id
+  let now = board.now
+
+  for (const event of events) {
+    if (event.kind !== 'heartbeat' || !event.task_id || typeof event.created_at !== 'number') {
+      continue
+    }
+
+    heartbeats.set(event.task_id, Math.max(heartbeats.get(event.task_id) ?? 0, event.created_at))
+
+    if (typeof event.id === 'number') {
+      latestEventId = Math.max(latestEventId, event.id)
+    }
+
+    now = Math.max(now, event.created_at)
+  }
+
+  if (heartbeats.size === 0) {
+    return board
+  }
+
+  return {
+    ...board,
+    columns: board.columns.map(column => ({
+      ...column,
+      tasks: column.tasks.map(task => {
+        const heartbeat = heartbeats.get(task.id)
+
+        return heartbeat === undefined ? task : { ...task, last_heartbeat_at: heartbeat }
+      })
+    })),
+    latest_event_id: latestEventId,
+    now
+  }
+}
+
+/** One live `task_events` frame → cache-local heartbeat updates plus one
+ *  coalesced refresh for events that can actually change board state. */
+function onEventsFrame(slug: string, data: unknown, scheduleBoardRefresh: () => void): void {
   const events = (data as { events?: CompletionEvent[] })?.events
 
   if (!events?.length) {
     return
   }
 
-  void queryClient.invalidateQueries({ queryKey: ['kanban', 'board'] })
-  // Any event can change a board's card count — keep the switcher badge honest.
-  void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+  queryClient.setQueriesData<KanbanBoard>({ queryKey: ['kanban', 'board', slug] }, cached =>
+    cached ? applyHeartbeatEvents(cached, events) : cached
+  )
 
-  for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
+  if (eventsNeedBoardRefresh(events)) {
+    scheduleBoardRefresh()
+  }
+
+  const changedTaskIds = events
+    .filter(event => event.kind !== 'heartbeat' && event.kind !== 'respawn_guarded')
+    .map(event => event.task_id)
+    .filter(Boolean)
+
+  for (const taskId of new Set(changedTaskIds)) {
     void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
   }
 
@@ -118,10 +171,25 @@ export function bindApi(
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
   let close: (() => void) | null = null
+  let boardRefreshTimer: null | ReturnType<typeof setTimeout> = null
+
+  const scheduleBoardRefresh = () => {
+    if (boardRefreshTimer !== null) {
+      return
+    }
+
+    boardRefreshTimer = setTimeout(() => {
+      boardRefreshTimer = null
+      void queryClient.invalidateQueries({ queryKey: ['kanban', 'board', $boardSlug.get()] })
+      void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+    }, 500)
+  }
 
   const open = (slug: string) => {
     close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
+    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data =>
+      onEventsFrame(slug, data, scheduleBoardRefresh)
+    )
   }
 
   open($boardSlug.get())
@@ -130,6 +198,12 @@ export function bindApi(
   return () => {
     unsubs.forEach(unsub => unsub())
     close?.()
+
+    if (boardRefreshTimer !== null) {
+      clearTimeout(boardRefreshTimer)
+      boardRefreshTimer = null
+    }
+
     rest = null
     os = null
   }

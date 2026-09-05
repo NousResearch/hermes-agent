@@ -29,5 +29,18 @@ def test_root_covers_delegate_child_sessions(db):
     assert db.get_conversation_root("child") == "parent"
 
 
+def test_branch_and_its_compression_tip_use_the_branch_as_their_root(db):
+    """Returning the oldest lineage node would resume into the parent worktree."""
+    db.create_session("parent", source="cli")
+    db.create_session(
+        "branch",
+        source="cli",
+        parent_session_id="parent",
+        model_config={"_branched_from": "parent"},
+    )
+    db.create_session("branch-tip", source="cli", parent_session_id="branch")
+
+    assert db.get_conversation_root("branch") == "branch"
+    assert db.get_conversation_root("branch-tip") == "branch"
 
 

@@ -151,6 +151,76 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed.block_recurrences == 0
 
 
+def test_review_approval_privately_recognizes_original_implementer(conn):
+    task_id = kb.create_task(conn, title="Implement safe export", assignee="builder")
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert kb.request_review(
+        conn,
+        task_id,
+        reviewer="reviewer",
+        summary="Implementation and focused tests are ready.",
+        expected_run_id=implementation.current_run_id,
+    )
+    review = kb.claim_review_task(conn, task_id, claimer="reviewer:1")
+    assert review is not None
+    assert kb.complete_task(
+        conn,
+        task_id,
+        summary="Approved after independent verification.",
+        expected_run_id=review.current_run_id,
+    )
+
+    recognition = _event(kb.list_events(conn, task_id), "private_recognition")
+    assert recognition.payload == {
+        "basis": "independent_review_approved",
+        "message": (
+            "Strong work: your work passed independent review. "
+            "Carry forward the same evidence-first, tightly scoped approach."
+        ),
+        "recipient_profile": "builder",
+    }
+
+def test_unreviewed_completion_does_not_earn_private_recognition(conn):
+    task_id = kb.create_task(conn, title="Self-completed task", assignee="builder")
+    assert kb.complete_task(conn, task_id, summary="Done with self-reported tests.")
+
+    assert not any(
+        event.kind == "private_recognition" for event in kb.list_events(conn, task_id)
+    )
+
+
+def test_next_task_context_shows_only_its_assignees_private_recognition(conn):
+    reviewed_task = kb.create_task(conn, title="Reviewed work", assignee="reviewer")
+    with kb.write_txn(conn):
+        kb._append_event(
+            conn,
+            reviewed_task,
+            "private_recognition",
+            {
+                "basis": "independent_review_approved",
+                "message": "Strong work: your work passed independent review.",
+                "recipient_profile": "builder",
+            },
+        )
+
+    next_builder_task = kb.create_task(
+        conn,
+        title="Implement another safe export",
+        assignee="builder",
+    )
+    builder_context = kb.build_worker_context(conn, next_builder_task)
+    assert "## Private recognition" in builder_context
+    assert "Strong work: your work passed independent review." in builder_context
+    assert "encouragement only" in builder_context
+
+    reviewer_task = kb.create_task(
+        conn, title="Review another export", assignee="reviewer"
+    )
+    reviewer_context = kb.build_worker_context(conn, reviewer_task)
+    assert "## Private recognition" not in reviewer_context
+
+
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])
 def test_rereview_requires_explicit_reviewer_when_provenance_is_invalid(
     conn,
@@ -312,8 +382,13 @@ def test_request_changes_fails_closed_on_malformed_review_provenance(
     assert task.current_run_id == review.current_run_id
 
 
-def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:
+def test_reclaim_fails_safe_on_non_object_claim_provenance(
+    conn,
+    monkeypatch,
+) -> None:
     task_id, _review = _claimed_review(conn, "Non-object claimed payload")
+    kb._set_worker_pid(conn, task_id, 999_999)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     with kb.write_txn(conn):
         conn.execute(
             "UPDATE task_events SET payload = '[]' "
@@ -333,6 +408,7 @@ def test_reclaim_fails_safe_on_non_object_claim_provenance(conn) -> None:
 )
 def test_interrupted_review_runs_retry_in_review_phase(
     conn,
+    monkeypatch,
     reclaim_kind: str,
 ) -> None:
     task_id, review = _claimed_review(
@@ -359,6 +435,8 @@ def test_interrupted_review_runs_retry_in_review_phase(
             )
         assert kb.release_stale_claims(conn) == 1
     elif reclaim_kind == "manual_reclaim":
+        kb._set_worker_pid(conn, task_id, 999_999)
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
         assert kb.reclaim_task(conn, task_id, reason="operator retry")
     else:
         old = int(time.time()) - 1_000

@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1159,6 +1160,53 @@ class TestRespawnStormBreaker:
                 max_starts=5, window_s=120.0
             )
             assert result is None
+
+    def test_concurrent_starts_preserve_every_record(self, tmp_path, monkeypatch):
+        """The ledger update is one transaction, not three individually safe file operations."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        ledger = tmp_path / "gateway-starts.log"
+        ledger.write_text("1.0\n", encoding="utf-8")
+        first_read = threading.Event()
+        release_first = threading.Event()
+        read_lock = threading.Lock()
+        original_read_text = Path.read_text
+        gated = False
+
+        def pause_first_ledger_reader(path, *args, **kwargs):
+            nonlocal gated
+            body = original_read_text(path, *args, **kwargs)
+            if path == ledger:
+                with read_lock:
+                    is_first = not gated
+                    gated = True
+                if is_first:
+                    first_read.set()
+                    assert release_first.wait(2), "second start never entered the race window"
+            return body
+
+        monkeypatch.setattr(Path, "read_text", pause_first_ledger_reader)
+        results = []
+        first = threading.Thread(
+            target=lambda: results.append(status.record_start_and_check_storm(100, 10**12))
+        )
+        second = threading.Thread(
+            target=lambda: results.append(status.record_start_and_check_storm(100, 10**12))
+        )
+
+        first.start()
+        assert first_read.wait(2), "first start never read the ledger"
+        second.start()
+        # Without a transaction lock the second call reads the same snapshot
+        # and commits it while the first is paused, dropping one of the starts.
+        second.join(0.1)
+        release_first.set()
+        first.join(2)
+        second.join(2)
+
+        assert not first.is_alive() and not second.is_alive()
+        assert results == [None, None]
+        records = [line for line in ledger.read_text(encoding="utf-8").splitlines() if line]
+        assert len(records) == 3, records
 
 
 class TestLaunchdPlistRespawnGovernance:

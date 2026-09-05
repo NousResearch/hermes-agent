@@ -31,9 +31,9 @@ const real = (p: string): string | null => {
 const fsAllow = [
   ...new Set(
     [
-      path.resolve(__dirname, '../..'),
-      real(path.resolve(__dirname, 'node_modules')),
-      real(path.resolve(__dirname, '../../node_modules'))
+      path.resolve(import.meta.dirname, '../..'),
+      real(path.resolve(import.meta.dirname, 'node_modules')),
+      real(path.resolve(import.meta.dirname, '../../node_modules'))
     ].filter((p): p is string => p !== null)
   )
 ]
@@ -48,7 +48,7 @@ const fsAllow = [
 // warns. Resolving from this workspace instead of a hardcoded root path yields
 // the versions declared here — npm nests a copy under the workspace exactly
 // when the hoisted one differs, so the pair can only ever match.
-const requireFromApp = createRequire(path.join(__dirname, 'vite.config.ts'))
+const requireFromApp = createRequire(path.join(import.meta.dirname, 'vite.config.ts'))
 const reactDir = path.dirname(requireFromApp.resolve('react/package.json'))
 const reactDomDir = path.dirname(requireFromApp.resolve('react-dom/package.json'))
 
@@ -60,16 +60,16 @@ const reactDomDir = path.dirname(requireFromApp.resolve('react-dom/package.json'
 // the perf harness opts a production build back in with VITE_PERF_PROBE=1.
 const debugEntry = (command: string, env: Record<string, string>) =>
   command === 'serve' || env.VITE_PERF_PROBE === '1'
-    ? path.resolve(__dirname, './src/debug/dev-only.ts')
-    : path.resolve(__dirname, './src/debug/dev-only.noop.ts')
+    ? path.resolve(import.meta.dirname, './src/debug/dev-only.ts')
+    : path.resolve(import.meta.dirname, './src/debug/dev-only.noop.ts')
 
 // The emoji picker (frimousse) fetches `<emojibaseUrl>/<locale>/data.json` at
 // runtime. Its default is a CDN; Electron must work offline, so serve the
 // bundled emojibase-data package at a stable local path instead — middleware
 // in dev, emitted assets in the build. Only the files a locale actually needs.
 const emojibaseDir =
-  real(path.resolve(__dirname, 'node_modules/emojibase-data')) ??
-  real(path.resolve(__dirname, '../../node_modules/emojibase-data'))
+  real(path.resolve(import.meta.dirname, 'node_modules/emojibase-data')) ??
+  real(path.resolve(import.meta.dirname, '../../node_modules/emojibase-data'))
 
 const EMOJIBASE_PATH = /^[a-z-]+\/(data|messages|shortcodes\/emojibase)\.json$/
 
@@ -199,10 +199,10 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@/debug/dev-only': debugEntry(command, process.env as Record<string, string>),
-      '@': path.resolve(__dirname, './src'),
-      '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
-      '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
-      '@hermes/shared': path.resolve(__dirname, '../shared/src'),
+      '@': path.resolve(import.meta.dirname, './src'),
+      '@hermes/plugin-sdk': path.resolve(import.meta.dirname, './src/sdk/index.ts'),
+      '@hermes/shared/billing': path.resolve(import.meta.dirname, '../shared/src/billing-types.ts'),
+      '@hermes/shared': path.resolve(import.meta.dirname, '../shared/src'),
       // The tour tool's preview surface injects driver.js's prebuilt IIFE into
       // the pane's guest page as raw source; the package's exports map doesn't
       // expose that dist file (nor ./package.json), so resolve the main entry

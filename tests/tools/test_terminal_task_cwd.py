@@ -321,3 +321,53 @@ def test_safe_getcwd_falls_back_to_home_when_no_terminal_cwd(monkeypatch):
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.setattr(terminal_tool.os.path, "expanduser", lambda p: "/home/me")
     assert terminal_tool._safe_getcwd() == "/home/me"
+
+
+def test_terminal_safe_root_rejects_command_cwd_outside_root(tmp_path, monkeypatch):
+    safe_root = tmp_path / "sandbox"
+    outside = tmp_path / "outside"
+    safe_root.mkdir()
+    outside.mkdir()
+    task_id = "safe-root-reject"
+    monkeypatch.setenv("HERMES_TERMINAL_SAFE_ROOT", str(safe_root))
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": str(outside)}})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(str(safe_root)))
+
+    result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
+
+    assert "error" in result
+    assert "HERMES_TERMINAL_SAFE_ROOT" in result["error"]
+
+
+def test_terminal_safe_root_allows_command_cwd_inside_root(tmp_path, monkeypatch):
+    safe_root = tmp_path / "sandbox"
+    inside = safe_root / "project"
+    safe_root.mkdir()
+    inside.mkdir()
+    calls = []
+
+    class FakeEnv:
+        env = {}
+
+        def execute(self, command, **kwargs):
+            calls.append(kwargs)
+            return {"output": "ok", "returncode": 0}
+
+    task_id = "safe-root-allow"
+    monkeypatch.setenv("HERMES_TERMINAL_SAFE_ROOT", str(safe_root))
+    monkeypatch.setattr(terminal_tool, "_active_environments", {task_id: FakeEnv()})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {task_id: {"cwd": str(inside)}})
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(str(safe_root)))
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type, **kwargs: {"approved": True},
+    )
+
+    result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
+
+    assert result["exit_code"] == 0
+    assert calls and calls[0]["cwd"] == str(inside)

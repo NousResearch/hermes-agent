@@ -511,8 +511,11 @@ class _RowidRangeSalvage:
         if not self._keep([value]):
             result["excluded_rows"] += 1
             return True
-        with _immediate_transaction(self.destination):
-            self.destination.execute(self.insert_sql, value)
+        try:
+            with _immediate_transaction(self.destination):
+                self.destination.execute(self.insert_sql, value)
+        except sqlite3.IntegrityError:
+            return False
         result["copied_rows"] += 1
         result["exact_lookup_recovered"] += 1
         return True

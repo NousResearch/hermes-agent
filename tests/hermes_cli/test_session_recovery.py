@@ -834,3 +834,44 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
         lf_conn.close()
         dest.close()
     assert rows == [("ob-1", "pending", None), ("ob-2", "failed", "boom")]
+
+
+def test_salvage_skips_damaged_phantom_rows_violating_constraints(tmp_path: Path) -> None:
+    """Issue #102240: allow-partial recovery skips damaged rows violating destination constraints."""
+    source = tmp_path / "corrupt_source.db"
+    output = tmp_path / "recovered.db"
+
+    db = SessionDB(db_path=source)
+    db.create_session("session-valid-1", "cli")
+    db.append_message("session-valid-1", "user", "first")
+    db.close()
+
+    conn = sqlite3.connect(str(source))
+    conn.execute("PRAGMA writable_schema = ON")
+    schema_sql = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone()[0]
+    conn.execute("UPDATE sqlite_master SET sql = ? WHERE type='table' AND name='sessions'", (schema_sql.replace("NOT NULL", ""),))
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(source))
+    conn.execute(
+        "INSERT INTO sessions (id, source, started_at, git_metadata_generation, compression_fallback_streak, compression_ineffective_count, rewind_count, archived, pinned, hidden) VALUES (?, ?, ?, 0, 0, 0, 0, 0, 0, 0)",
+        ("corrupt-phantom", "cli", None),
+    )
+    conn.commit()
+    conn.close()
+
+    db = SessionDB(db_path=source)
+    db.create_session("session-valid-2", "cli")
+    db.append_message("session-valid-2", "user", "second")
+    db.close()
+
+    report = recover_session_database(source, output, work_dir=tmp_path, allow_partial=True)
+    assert report["verification"]["table_counts"]["sessions"] == 2
+    dest = sqlite3.connect(str(output))
+    try:
+        recovered = [r[0] for r in dest.execute("SELECT id FROM sessions ORDER BY id").fetchall()]
+    finally:
+        dest.close()
+    assert recovered == ["session-valid-1", "session-valid-2"]
+

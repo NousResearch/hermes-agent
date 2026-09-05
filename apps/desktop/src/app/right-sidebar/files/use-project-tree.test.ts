@@ -284,6 +284,28 @@ describe('useProjectTree', () => {
     expect(result.current.data.map(n => n.name)).toEqual(['README.md'])
   })
 
+  it('targeted creation refreshes a native Windows root path', async () => {
+    const cwd = 'C:\\repo'
+    readDir.mockResolvedValueOnce(ok([{ name: 'README.md', path: `${cwd}\\README.md`, isDirectory: false }]))
+    readDir.mockResolvedValueOnce(
+      ok([
+        { name: 'docs', path: `${cwd}\\docs`, isDirectory: true },
+        { name: 'README.md', path: `${cwd}\\README.md`, isDirectory: false }
+      ])
+    )
+
+    const { result } = renderHook(() => useProjectTree(cwd))
+
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['README.md']))
+
+    act(() => {
+      notifyWorkspaceChanged(`${cwd}\\docs`)
+    })
+
+    await waitFor(() => expect(result.current.data.map(node => node.name)).toEqual(['docs', 'README.md']))
+    expect(readDir).toHaveBeenLastCalledWith(cwd)
+  })
+
   it('discards a stale live refresh after the active registered connection changes', async () => {
     let resolveRefreshFromA: ((result: HermesReadDirResult) => void) | undefined
     readDir.mockResolvedValueOnce(ok([{ name: 'from-a', path: '/shared/from-a', isDirectory: false }]))

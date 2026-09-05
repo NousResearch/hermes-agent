@@ -378,6 +378,8 @@ declare global {
       // so one agent-plugin package can ship a desktop UI half. Optional:
       // older Electron shells predate it — the scanner then skips this root.
       agentPluginsRoot?: () => Promise<string>
+      // Create one directory inside an existing parent directory.
+      createDirectory?: (parentPath: string, newName: string) => Promise<{ path: string }>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).

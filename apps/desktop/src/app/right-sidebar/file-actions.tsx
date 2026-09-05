@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
-import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useRef, useState } from 'react'
+import { type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   ContextMenu,
@@ -9,6 +10,8 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger
 } from '@/components/ui/context-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { IS_MAC } from '@/lib/keybinds/combo'
@@ -22,9 +25,12 @@ import {
   downloadRemoteFile,
   executeFileDelete,
   executeFileRename,
+  executeNewFolder,
   type FileActionTarget,
   requestFileDelete,
+  requestNewFolder,
   revealFile,
+  shouldOfferNewFolder,
   shouldOfferRemoteFileDownload,
   toRelativePath
 } from '@/store/file-actions'
@@ -62,16 +68,25 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
   // backend (copy-path still works everywhere). Download uses the existing
   // gateway save bridge so a remote file can land on this machine.
   const localFs = !isDesktopFsRemoteMode()
+  const newFolder = shouldOfferNewFolder(isDirectory)
   const remoteDownload = shouldOfferRemoteFileDownload(isDirectory)
   const target: FileActionTarget = { isDirectory, name, path }
   const revealLabel = pickRevealLabel(m.revealFinder, m.revealExplorer, m.revealFileManager)
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger asChild onContextMenu={event => event.stopPropagation()}>
+        {children}
+      </ContextMenuTrigger>
       {/* Don't restore focus to the row on close: "Rename" mounts an autofocused
           inline input, and the default focus-return would blur it immediately. */}
       <ContextMenuContent onCloseAutoFocus={event => event.preventDefault()}>
+        {newFolder && (
+          <>
+            <ContextMenuItem onSelect={() => requestNewFolder(path)}>{m.newFolder}</ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         {localFs && (
           <>
             <ContextMenuItem onSelect={() => void revealFile(path)}>{revealLabel}</ContextMenuItem>
@@ -104,27 +119,134 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
   )
 }
 
+interface WorkspaceContextMenuProps {
+  children: ReactNode
+  path: string
+}
+
+/** Right-click menu for the workspace background. */
+export function WorkspaceContextMenu({ children, path }: WorkspaceContextMenuProps) {
+  const { t } = useI18n()
+
+  if (isDesktopFsRemoteMode()) {
+    return children
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent onCloseAutoFocus={event => event.preventDefault()}>
+        <ContextMenuItem onSelect={() => requestNewFolder(path)}>{t.fileMenu.newFolder}</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
 /** Mounted once near the app root: the delete confirm dialog for shared file
  *  actions. Rename is inline (see {@link InlineRenameInput}). */
 export function FileActionDialogs() {
   const { t } = useI18n()
   const dialog = useStore($fileActionDialog)
   const deleting = dialog?.kind === 'delete'
+  const creatingFolder = dialog?.kind === 'new-folder'
 
   return (
-    <ConfirmDialog
-      confirmLabel={t.fileMenu.delete}
-      description={t.fileMenu.deleteBody}
-      destructive
-      onClose={closeFileActionDialog}
-      onConfirm={() => {
-        if (deleting) {
-          return executeFileDelete(dialog.path)
-        }
-      }}
-      open={deleting}
-      title={deleting ? t.fileMenu.deleteTitle(dialog.name) : ''}
-    />
+    <>
+      <ConfirmDialog
+        confirmLabel={t.fileMenu.delete}
+        description={t.fileMenu.deleteBody}
+        destructive
+        onClose={closeFileActionDialog}
+        onConfirm={() => {
+          if (deleting) {
+            return executeFileDelete(dialog.path)
+          }
+        }}
+        open={deleting}
+        title={deleting ? t.fileMenu.deleteTitle(dialog.name) : ''}
+      />
+      <NewFolderDialog
+        onClose={closeFileActionDialog}
+        open={creatingFolder}
+        parentPath={creatingFolder ? dialog.parentPath : ''}
+      />
+    </>
+  )
+}
+
+interface NewFolderDialogProps {
+  onClose: () => void
+  open: boolean
+  parentPath: string
+}
+
+function NewFolderDialog({ onClose, open, parentPath }: NewFolderDialogProps) {
+  const { t } = useI18n()
+  const [name, setName] = useState('')
+  const [error, setError] = useState<null | string>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setName('')
+      setError(null)
+      setSaving(false)
+    }
+  }, [open, parentPath])
+
+  return (
+    <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t.fileMenu.newFolderTitle}</DialogTitle>
+        </DialogHeader>
+        <form
+          className="grid gap-3"
+          onSubmit={event => {
+            event.preventDefault()
+            const nextName = name.trim()
+
+            if (!nextName || saving) {
+              return
+            }
+
+            setSaving(true)
+            setError(null)
+            void executeNewFolder(parentPath, nextName)
+              .then(onClose)
+              .catch(reason => {
+                setSaving(false)
+                setError(reason instanceof Error ? reason.message : t.errors.genericFailure)
+              })
+          }}
+        >
+          <Input
+            aria-label={t.fileMenu.newFolderLabel}
+            autoCapitalize="off"
+            autoComplete="off"
+            autoCorrect="off"
+            autoFocus
+            disabled={saving}
+            onChange={event => setName(event.target.value)}
+            spellCheck={false}
+            value={name}
+          />
+          {error && (
+            <div aria-live="polite" className="text-xs text-destructive" role="alert">
+              {error}
+            </div>
+          )}
+          <DialogFooter>
+            <Button disabled={saving} onClick={onClose} type="button" variant="outline">
+              {t.common.cancel}
+            </Button>
+            <Button disabled={saving || !name.trim()} type="submit">
+              {t.fileMenu.createFolder}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 

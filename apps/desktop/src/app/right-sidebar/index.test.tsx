@@ -69,4 +69,15 @@ describe('RightSidebarPane', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
   })
+
+  it('offers New Folder when the workspace is empty', async () => {
+    readDir.mockResolvedValue({ entries: [] })
+    setCurrentCwd('/repo')
+
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    fireEvent.contextMenu(await screen.findByText('This folder is empty.'))
+
+    expect(await screen.findByText('New Folder…')).toBeTruthy()
+  })
 })

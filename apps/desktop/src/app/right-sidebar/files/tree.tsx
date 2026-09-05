@@ -12,7 +12,7 @@ import { type RepoChangeKind, repoChangeKindForPath } from '@/store/coding-statu
 import { $renamingPath, beginInlineRename } from '@/store/file-actions'
 import { $revealInTreeRequest } from '@/store/layout'
 
-import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut } from '../file-actions'
+import { FileEntryContextMenu, InlineRenameInput, isRenameShortcut, WorkspaceContextMenu } from '../file-actions'
 
 import { getFileTreeDndManager } from './dnd-manager'
 import type { TreeNode } from './use-project-tree'
@@ -178,47 +178,49 @@ export function ProjectTree({
   }, [])
 
   return (
-    <div
-      className="min-h-0 flex-1 overflow-hidden"
-      data-project-tree=""
-      onKeyDownCapture={handleRenameShortcut}
-      ref={containerRef}
-    >
-      {size.height > 0 && size.width > 0 ? (
-        <Tree<TreeNode>
-          childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
-          data={data}
-          disableDrag
-          disableDrop
-          disableEdit
-          dndManager={getFileTreeDndManager()}
-          height={size.height}
-          indent={INDENT}
-          initialOpenState={openState}
-          key={`${cwd}:${collapseNonce}`}
-          onActivate={handleActivate}
-          onToggle={handleToggle}
-          openByDefault={false}
-          padding={0}
-          ref={treeRef}
-          renderRow={ProjectTreeRowContainer}
-          rowHeight={ROW_HEIGHT}
-          width={size.width}
-        >
-          {props => (
-            <ProjectTreeRow
-              {...props}
-              onAttachFile={onActivateFile}
-              onAttachFolder={onActivateFolder}
-              onPreviewFile={onPreviewFile}
-              relativeTo={cwd}
-            />
-          )}
-        </Tree>
-      ) : (
-        <TreeSizingState />
-      )}
-    </div>
+    <WorkspaceContextMenu path={cwd}>
+      <div
+        className="min-h-0 flex-1 overflow-hidden"
+        data-project-tree=""
+        onKeyDownCapture={handleRenameShortcut}
+        ref={containerRef}
+      >
+        {size.height > 0 && size.width > 0 ? (
+          <Tree<TreeNode>
+            childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
+            data={data}
+            disableDrag
+            disableDrop
+            disableEdit
+            dndManager={getFileTreeDndManager()}
+            height={size.height}
+            indent={INDENT}
+            initialOpenState={openState}
+            key={`${cwd}:${collapseNonce}`}
+            onActivate={handleActivate}
+            onToggle={handleToggle}
+            openByDefault={false}
+            padding={0}
+            ref={treeRef}
+            renderRow={ProjectTreeRowContainer}
+            rowHeight={ROW_HEIGHT}
+            width={size.width}
+          >
+            {props => (
+              <ProjectTreeRow
+                {...props}
+                onAttachFile={onActivateFile}
+                onAttachFolder={onActivateFolder}
+                onPreviewFile={onPreviewFile}
+                relativeTo={cwd}
+              />
+            )}
+          </Tree>
+        ) : (
+          <TreeSizingState />
+        )}
+      </div>
+    </WorkspaceContextMenu>
   )
 }
 

@@ -1,6 +1,6 @@
 // IPC surface for local filesystem operations the renderer's project/file
 // surfaces use: directory reads, reveal/open in the OS file manager, plugin
-// roots + git installs, rename/write/trash. Extracted from main.ts; path
+// roots + git installs, create/rename/write/trash. Extracted from main.ts; path
 // hardening, HERMES_HOME resolution, and the git binary stay injected.
 import fs from 'node:fs'
 import path from 'node:path'
@@ -8,6 +8,7 @@ import path from 'node:path'
 import { ipcMain, shell } from 'electron'
 
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
+import { createDirectoryForIpc } from './fs-create-directory'
 import { readDirForIpc } from './fs-read-dir'
 import { gitRootForIpc } from './git-root'
 
@@ -132,6 +133,14 @@ export function registerFsIpc({
 
     return installDesktopPluginFromGit(resolveGitBinary(), identifier, desktopPluginsRoot, Boolean(payload?.force))
   })
+
+  ipcMain.handle('hermes:fs:createDirectory', async (_event, parentPath, newName) =>
+    createDirectoryForIpc(parentPath, newName, {
+      directoryExists,
+      expandUserPath,
+      resolveRequestedPathForIpc
+    })
+  )
 
   // Rename a file/folder in place. The renderer passes the existing path + a new
   // base name; the destination is resolved in the SAME parent dir so a rename can

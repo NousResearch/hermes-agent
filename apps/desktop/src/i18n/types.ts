@@ -103,6 +103,10 @@ export interface Translations {
     download: string
     downloadSaved: string
     downloadFailed: string
+    newFolder: string
+    newFolderTitle: string
+    newFolderLabel: string
+    createFolder: string
     rename: string
     delete: string
     renameTitle: string

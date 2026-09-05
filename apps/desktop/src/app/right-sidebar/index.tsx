@@ -17,6 +17,7 @@ import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner } from '@/sto
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { WorkspaceContextMenu } from './file-actions'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -267,7 +268,13 @@ function FileTreeBody({
   }
 
   if (data.length === 0) {
-    return <EmptyState body={r.emptyBody} title={r.emptyTitle} />
+    return (
+      <WorkspaceContextMenu path={cwd}>
+        <div className="contents">
+          <EmptyState body={r.emptyBody} title={r.emptyTitle} />
+        </div>
+      </WorkspaceContextMenu>
+    )
   }
 
   return (

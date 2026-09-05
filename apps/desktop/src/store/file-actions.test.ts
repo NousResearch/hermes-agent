@@ -6,10 +6,63 @@ vi.mock('@/lib/media', () => ({
   downloadGatewayMediaFile: vi.fn()
 }))
 
+vi.mock('@/lib/desktop-fs', () => ({
+  copyTextToClipboard: vi.fn(),
+  createDesktopDirectory: vi.fn(),
+  isDesktopFsRemoteMode: vi.fn(() => false),
+  renameDesktopPath: vi.fn(),
+  revealDesktopPath: vi.fn(),
+  trashDesktopPath: vi.fn()
+}))
+
+vi.mock('@/store/workspace-events', () => ({
+  notifyWorkspaceChanged: vi.fn(),
+  notifyWorkspaceDirectoryChanged: vi.fn()
+}))
+
 const media = await import('@/lib/media')
 const downloadGatewayMediaFile = vi.mocked(media.downloadGatewayMediaFile)
+const desktopFs = await import('@/lib/desktop-fs')
+const createDesktopDirectory = vi.mocked(desktopFs.createDesktopDirectory)
+const workspaceEvents = await import('@/store/workspace-events')
 
-const { downloadRemoteFile, shouldOfferRemoteFileDownload } = await import('./file-actions')
+const notifyWorkspaceDirectoryChanged = vi.mocked(
+  (workspaceEvents as unknown as { notifyWorkspaceDirectoryChanged: (path: string) => void })
+    .notifyWorkspaceDirectoryChanged
+)
+
+const { downloadRemoteFile, executeNewFolder, shouldOfferNewFolder, shouldOfferRemoteFileDownload } =
+  await import('./file-actions')
+
+describe('shouldOfferNewFolder', () => {
+  it('is only for local directories', () => {
+    expect(shouldOfferNewFolder(true, false)).toBe(true)
+    expect(shouldOfferNewFolder(false, false)).toBe(false)
+    expect(shouldOfferNewFolder(true, true)).toBe(false)
+  })
+})
+
+describe('executeNewFolder', () => {
+  beforeEach(() => {
+    createDesktopDirectory.mockReset()
+    notifyWorkspaceDirectoryChanged.mockReset()
+  })
+
+  it('creates a folder through the native bridge', async () => {
+    createDesktopDirectory.mockResolvedValue('/repo/docs')
+
+    await expect(executeNewFolder('/repo', 'docs')).resolves.toBe('/repo/docs')
+    expect(createDesktopDirectory).toHaveBeenCalledWith('/repo', 'docs')
+  })
+
+  it('refreshes the displayed WSL parent instead of the bridged Windows result path', async () => {
+    createDesktopDirectory.mockResolvedValue('\\\\wsl.localhost\\Ubuntu\\home\\alex\\repo\\docs')
+
+    await executeNewFolder('/home/alex/repo', 'docs')
+
+    expect(notifyWorkspaceDirectoryChanged).toHaveBeenCalledWith('/home/alex/repo')
+  })
+})
 
 describe('shouldOfferRemoteFileDownload', () => {
   it('is only for files on a remote backend', () => {

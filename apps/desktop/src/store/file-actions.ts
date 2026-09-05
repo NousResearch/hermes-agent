@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { translateNow } from '@/i18n'
 import {
   copyTextToClipboard,
+  createDesktopDirectory,
   isDesktopFsRemoteMode,
   renameDesktopPath,
   revealDesktopPath,
@@ -10,7 +11,7 @@ import {
 } from '@/lib/desktop-fs'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { notify, notifyError } from '@/store/notifications'
-import { notifyWorkspaceChanged } from '@/store/workspace-events'
+import { notifyWorkspaceChanged, notifyWorkspaceDirectoryChanged } from '@/store/workspace-events'
 
 // Shared file-row actions for BOTH trees (the file browser + the review/git
 // tree): reveal, copy path, download (remote), rename, delete. Rename/delete
@@ -29,7 +30,7 @@ export interface FileActionTarget {
 
 // Delete routes through a single confirm dialog (rendered once). Rename is
 // INLINE (VS Code style — an input in the row), driven by `$renamingPath`.
-export type FileActionDialog = { kind: 'delete' } & FileActionTarget
+export type FileActionDialog = ({ kind: 'delete' } & FileActionTarget) | { kind: 'new-folder'; parentPath: string }
 
 export const $fileActionDialog = atom<FileActionDialog | null>(null)
 
@@ -39,6 +40,10 @@ export function requestFileDelete(target: FileActionTarget): void {
 
 export function closeFileActionDialog(): void {
   $fileActionDialog.set(null)
+}
+
+export function requestNewFolder(parentPath: string): void {
+  $fileActionDialog.set({ kind: 'new-folder', parentPath })
 }
 
 // Absolute path of the row currently being renamed inline, or null. A row whose
@@ -80,6 +85,10 @@ export function shouldOfferRemoteFileDownload(isDirectory: boolean, remote = isD
   return remote && !isDirectory
 }
 
+export function shouldOfferNewFolder(isDirectory: boolean, remote = isDesktopFsRemoteMode()): boolean {
+  return isDirectory && !remote
+}
+
 export async function downloadRemoteFile(path: string): Promise<void> {
   try {
     const result = await downloadGatewayMediaFile(path)
@@ -110,6 +119,13 @@ export function toRelativePath(path: string, relativeTo: string): string {
 export async function executeFileRename(path: string, newName: string): Promise<void> {
   await renameDesktopPath(path, newName)
   notifyWorkspaceChanged()
+}
+
+export async function executeNewFolder(parentPath: string, newName: string): Promise<string> {
+  const path = await createDesktopDirectory(parentPath, newName)
+  notifyWorkspaceDirectoryChanged(parentPath)
+
+  return path
 }
 
 export async function executeFileDelete(path: string): Promise<void> {

@@ -1,4 +1,5 @@
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { mediaDisplayLabel, mediaKind, mediaMarkdownHref } from '@/lib/media'
+import { capitalize } from '@/lib/text'
 
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -10,9 +11,19 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+// MEDIA path matching:
+//    `](MEDIA:...)` (match up to the closing paren, spaces included),
+//    otherwise keep the space-free matcher (avoid swallowing trailing text).
+const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\n]+)[`"']?[\t ]*(\n|$)/g
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^)\n]+(?=\))|[^)\s\n]+)[`"']?/g
+
+// Markdown link/image wrapping a MEDIA path — `[label](MEDIA:path)` /
+// `![alt](MEDIA:path)`. Must be replaced WHOLE (before MEDIA_TAG_RE) so the
+// media path becomes a single `[Media: name](#media:%2F…)` link and never
+// nests inside a link/image destination. Quoted paths
+// (`MEDIA:"/path with (parens).png"`) are honored for paths containing parens.
+const MD_LINK_MEDIA_RE = /!?\[([^\]]*)\]\(\s*MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^)\n]+?)\s*\)/g
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
@@ -21,17 +32,66 @@ function unquoteMediaPath(value: string): string {
   return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
 }
 
-function mediaLink(value: string): string {
+// A bare (unquoted) MEDIA path may legitimately contain spaces (macOS iCloud
+// "Mobile Documents"), so MEDIA_LINE_RE captures the whole line. But that must
+// not swallow trailing prose on the same line ("MEDIA:/tmp/a.png is attached"
+// would treat the whole remainder as part of the path). This splits the
+// captured line into the path + any trailing prose: when the line does not
+// end path-like (extension or path separator), cut back to the last segment
+// that does and keep the rest as text.
+function boundedMediaPath(value: string): { path: string; tail: string } {
+  const trimmed = value.trim()
+  const quote = trimmed[0]
+
+  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+    return { path: trimmed, tail: '' }
+  }
+
+  if (!trimmed.includes(' ')) {
+    return { path: trimmed, tail: '' }
+  }
+
+  // Ends path-like → the whole line is the path.
+  if (/(?:\.[A-Za-z0-9]{1,8}|[\\/])[^\\/\s]*$/.test(trimmed)) {
+    return { path: trimmed, tail: '' }
+  }
+
+  const tokens = trimmed.split(/\s+/)
+
+  for (let i = tokens.length - 1; i >= 1; i--) {
+    if (/[\\/]/.test(tokens[i]) || /\.[A-Za-z0-9]{1,8}$/.test(tokens[i])) {
+      return { path: tokens.slice(0, i + 1).join(' '), tail: ' ' + tokens.slice(i + 1).join(' ') }
+    }
+  }
+
+  // Nothing path-like beyond the first token — keep only that.
+  return { path: tokens[0], tail: ' ' + tokens.slice(1).join(' ') }
+}
+
+function mediaLink(value: string, label?: string): string {
   const path = unquoteMediaPath(value)
+
+  // Prefer the markdown label/alt text when present — `![回测进度板块](MEDIA:…)`
+  // keeps the meaningful alt text instead of the basename (accessibility).
+  if (label && label.trim()) {
+    const escaped = label.trim().replace(/[[\]\\]/g, '\\$&')
+
+    return `[${capitalize(mediaKind(path))}: ${escaped}](${mediaMarkdownHref(path)})`
+  }
 
   return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
 }
 
 export function renderMediaTags(text: string): string {
   return text
+    .replace(MD_LINK_MEDIA_RE, (_match, label: string, value: string) => mediaLink(value, label))
     .replace(
       MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
+      (_match, lead: string, value: string, trailer: string) => {
+        const { path, tail } = boundedMediaPath(value)
+
+        return `${lead}${mediaLink(path)}${tail}${trailer}`
+      }
     )
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
     .replace(/[ \t]+\n/g, '\n')

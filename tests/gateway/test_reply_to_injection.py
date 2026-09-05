@@ -99,3 +99,54 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result.endswith("What's the best time to go?")
 
 
+@pytest.mark.asyncio
+async def test_own_message_reply_prefix_marks_assistant_message():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="this one",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="Use the direct train.",
+        reply_to_is_own_message=True,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(
+        '[Reply metadata: the user is replying to an assistant/bot-authored message; '
+        'the quoted text is not user-authored: "Use the direct train."]'
+    )
+    assert result.endswith("this one")
+
+
+@pytest.mark.asyncio
+async def test_reply_to_own_tool_status_marks_quote_not_user_authored():
+    runner = _make_runner()
+    source = _source()
+    tool_status = "Checked: server is healthy. Next step: restart gateway."
+    event = MessageEvent(
+        text="do not restart yet; show the diff first",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=tool_status,
+        reply_to_is_own_message=True,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert "not user-authored" in result
+    assert "[Replying to:" not in result
+    assert result.endswith("do not restart yet; show the diff first")
+
+

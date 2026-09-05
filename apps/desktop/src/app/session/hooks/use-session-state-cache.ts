@@ -11,10 +11,9 @@ import {
   $activeSessionId,
   $messages,
   setActiveSessionStoredIdRotation,
+  setComposerSelection,
   setCurrentFastMode,
-  setCurrentModel,
   setCurrentPersonality,
-  setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setTurnStartedAt,
@@ -41,8 +40,11 @@ interface SessionStateCacheOptions {
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
-  setCurrentModel(state.model ?? '')
-  setCurrentProvider(state.provider ?? '')
+  setComposerSelection(current => ({
+    ...current,
+    model: state.model ?? '',
+    provider: state.provider ?? ''
+  }))
   setCurrentReasoningEffort(state.reasoningEffort ?? '')
   setCurrentServiceTier(state.serviceTier ?? '')
   setCurrentFastMode(state.fast ?? false)

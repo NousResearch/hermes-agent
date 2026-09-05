@@ -1,5 +1,5 @@
 import type { ConnectionState } from '@hermes/shared'
-import { atom, computed } from 'nanostores'
+import { atom, batch, computed } from 'nanostores'
 
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
@@ -20,15 +20,21 @@ import { clearUnreadOnOpen } from './session-unread-remote'
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
+export interface ComposerSelection {
+  model: string
+  provider: string
+  source: ComposerModelSource
+}
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
 // The composer's model/effort/fast is sticky UI state, NOT the profile default
 // (that lives in Settings → Model). Persisting it in localStorage makes a pick
 // follow across Cmd+N and app restarts instead of snapping back to the default.
-// Model/provider/source are scoped to the remote (connection, profile) owner so
-// a provider authenticated on one profile cannot contaminate another profile's
-// session.create. Local/single-backend users retain the historical bare keys.
+// Model/provider/source are persisted as one record scoped to the exact
+// (connection, profile) owner so a provider authenticated on one profile cannot
+// contaminate another profile's session.create.
+const COMPOSER_SELECTION_KEY = 'hermes.desktop.composer.selection.v1'
 const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_MODEL_SOURCE_KEY = 'hermes.desktop.composer.model-source'
@@ -39,7 +45,7 @@ const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
 // gateway activation coordinate before profile-change effects can reseed the
 // composer. null means the exact owner is temporarily unknown: values may still
 // paint, but must not be written through the previous backend's storage key.
-let composerSelectionScope: string | null = ''
+let composerSelectionScope: string | null = '.profile.default'
 
 function composerScopeForConnection(connection: HermesConnection | null): string | null {
   if (!connection) {
@@ -47,10 +53,10 @@ function composerScopeForConnection(connection: HermesConnection | null): string
   }
 
   // Electron may infer the sole `local` registry id onto the ordinary primary
-  // descriptor. That remains the legacy single-backend path: only an explicit
-  // registry-scoped route earns a new namespace.
+  // descriptor. Only an explicit registry-scoped route earns the registry
+  // namespace, but ordinary local profiles still need distinct storage.
   if (connection.mode !== 'remote' && !connection.registryScoped) {
-    return ''
+    return `.profile.${encodeURIComponent(connection.profile || 'default')}`
   }
 
   if (connection.connectionId) {
@@ -60,14 +66,94 @@ function composerScopeForConnection(connection: HermesConnection | null): string
   return connectionScopeSuffix(connection)
 }
 
-function composerSelectionKey(base: string): string | null {
-  return composerSelectionScope === null ? null : `${base}${composerSelectionScope}`
+function composerSelectionKey(base: string, scope = composerSelectionScope): string | null {
+  return scope === null ? null : `${base}${scope}`
 }
 
-function storedComposerString(base: string): string | null {
-  const key = composerSelectionKey(base)
+const EMPTY_COMPOSER_SELECTION: ComposerSelection = { model: '', provider: '', source: '' }
 
-  return key === null ? null : storedString(key)
+function validComposerSelection(value: unknown): value is ComposerSelection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false
+  }
+
+  const selection = value as Partial<ComposerSelection>
+
+  return (
+    typeof selection.model === 'string' &&
+    typeof selection.provider === 'string' &&
+    (selection.source === '' || selection.source === 'default' || selection.source === 'manual')
+  )
+}
+
+function readComposerSelection(scope = composerSelectionScope): ComposerSelection {
+  const key = composerSelectionKey(COMPOSER_SELECTION_KEY, scope)
+
+  if (key === null) {
+    return { ...EMPTY_COMPOSER_SELECTION }
+  }
+
+  const stored = readJson<ComposerSelection>(key)
+
+  if (validComposerSelection(stored)) {
+    return stored
+  }
+
+  // Old remote/registry records already name their owner and are safe to
+  // migrate. Bare legacy keys do not identify a local profile, so they are
+  // deliberately ignored rather than guessed into whichever profile opens
+  // first.
+  if (scope && !scope.startsWith('.profile.')) {
+    const model = storedString(`${COMPOSER_MODEL_KEY}${scope}`) ?? ''
+    const provider = storedString(`${COMPOSER_PROVIDER_KEY}${scope}`) ?? ''
+    const rawSource = storedString(`${COMPOSER_MODEL_SOURCE_KEY}${scope}`)
+
+    const source: ComposerModelSource =
+      rawSource === 'default' || rawSource === 'manual' ? rawSource : ''
+
+    if (model || provider || source) {
+      const migrated = { model, provider, source }
+      writeJson(key, migrated)
+
+      return migrated
+    }
+  }
+
+  return { ...EMPTY_COMPOSER_SELECTION }
+}
+
+function composerSelectionScopeForOwner(route: SessionOwnerRoute | null, profile: string): string | null {
+  if (route) {
+    const connection = $connection.get()
+
+    // The ordinary on-device primary exposes `connectionId: local` for its
+    // default route, but it is still profile-scoped storage rather than a
+    // registry-owned connection. Keep that route on the same key the visible
+    // composer wrote before Enter.
+    if (
+      connection?.connectionId === route.connectionId &&
+      connection.mode !== 'remote' &&
+      !connection.registryScoped
+    ) {
+      return `.profile.${encodeURIComponent(route.profile || 'default')}`
+    }
+
+    return `.registry.${encodeURIComponent(route.connectionId)}.${encodeURIComponent(route.profile || 'default')}`
+  }
+
+  const connection = $connection.get()
+
+  if (!connection) {
+    return `.profile.${encodeURIComponent(profile.trim() || 'default')}`
+  }
+
+  return composerScopeForConnection({ ...connection, profile: profile.trim() || 'default' })
+}
+
+/** Snapshot the complete composer selection owned by a target route without
+ * changing the selection painted by the current foreground profile. */
+export function getComposerSelectionForOwner(route: SessionOwnerRoute | null, profile: string): ComposerSelection {
+  return readComposerSelection(composerSelectionScopeForOwner(route, profile))
 }
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
@@ -1086,8 +1172,9 @@ export function getSessionOwnerHint(
 // clears it and resets the retry counter. Null whenever the active route has a
 // healthy, in-flight, or still-auto-retrying resume.
 export const $resumeExhaustedSessionId = atom<string | null>(null)
-export const $currentModel = atom(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
-export const $currentProvider = atom(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
+const initialComposerSelection = readComposerSelection()
+export const $currentModel = atom(initialComposerSelection.model)
+export const $currentProvider = atom(initialComposerSelection.provider)
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
@@ -1149,9 +1236,13 @@ function rescopeComposerSelection(nextScope: string | null): void {
   }
 
   composerSelectionScope = nextScope
-  $currentModel.set(storedComposerString(COMPOSER_MODEL_KEY) ?? '')
-  $currentProvider.set(storedComposerString(COMPOSER_PROVIDER_KEY) ?? '')
-  $currentModelSource.set(getCurrentModelSource())
+  const selection = readComposerSelection()
+
+  batch(() => {
+    $currentModel.set(selection.model)
+    $currentProvider.set(selection.provider)
+    $currentModelSource.set(selection.source)
+  })
 }
 
 /** Publish an exact registry route before active-profile effects can persist a
@@ -1309,44 +1400,49 @@ export const setResumeExhaustedSessionId = (next: Updater<string | null>) => upd
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
 
-export const setCurrentModel = (next: Updater<string>) => {
-  updateAtom($currentModel, next)
-  const key = composerSelectionKey(COMPOSER_MODEL_KEY)
-
-  if (key !== null) {
-    persistString(key, $currentModel.get() || null)
-  }
-}
-
-export const setCurrentProvider = (next: Updater<string>) => {
-  updateAtom($currentProvider, next)
-  const key = composerSelectionKey(COMPOSER_PROVIDER_KEY)
-
-  if (key !== null) {
-    persistString(key, $currentProvider.get() || null)
-  }
-}
-
-export const getCurrentModelSource = (): ComposerModelSource => {
-  const source = storedComposerString(COMPOSER_MODEL_SOURCE_KEY)
-
-  return source === 'default' || source === 'manual' ? source : ''
-}
+export const getCurrentModelSource = (): ComposerModelSource => readComposerSelection().source
 
 // Reactive mirror of the persisted source so UI (the composer pill's
 // override badge) can subscribe. The getter above stays storage-backed —
 // it's read cross-window, where this atom wouldn't see writes.
-export const $currentModelSource = atom<ComposerModelSource>(getCurrentModelSource())
+export const $currentModelSource = atom<ComposerModelSource>(initialComposerSelection.source)
 
-export const setCurrentModelSource = (source: ComposerModelSource) => {
-  const key = composerSelectionKey(COMPOSER_MODEL_SOURCE_KEY)
-
-  if (key !== null) {
-    persistString(key, source || null)
+export const setComposerSelection = (next: Updater<ComposerSelection>) => {
+  const current = {
+    model: $currentModel.get(),
+    provider: $currentProvider.get(),
+    source: $currentModelSource.get()
   }
 
-  $currentModelSource.set(source)
+  const selection = typeof next === 'function' ? next(current) : next
+
+  batch(() => {
+    $currentModel.set(selection.model)
+    $currentProvider.set(selection.provider)
+    $currentModelSource.set(selection.source)
+  })
+
+  const key = composerSelectionKey(COMPOSER_SELECTION_KEY)
+
+  if (key !== null) {
+    writeJson(key, selection)
+  }
 }
+
+export const setCurrentModel = (next: Updater<string>) =>
+  setComposerSelection(current => ({
+    ...current,
+    model: typeof next === 'function' ? next(current.model) : next
+  }))
+
+export const setCurrentProvider = (next: Updater<string>) =>
+  setComposerSelection(current => ({
+    ...current,
+    provider: typeof next === 'function' ? next(current.provider) : next
+  }))
+
+export const setCurrentModelSource = (source: ComposerModelSource) =>
+  setComposerSelection(current => ({ ...current, source }))
 
 // Monotonic intent token for async default refreshes. A profile/config request
 // may start before the user opens the picker and finish after their click; the
@@ -1358,7 +1454,10 @@ export const getComposerSelectionGeneration = (): number => composerSelectionGen
 
 export const markComposerSelectionManual = (): void => {
   composerSelectionGeneration += 1
-  setCurrentModelSource('manual')
+
+  if ($currentModelSource.get() !== 'manual') {
+    setCurrentModelSource('manual')
+  }
 }
 
 export const setCurrentReasoningEffort = (next: Updater<string>) => {

@@ -16,9 +16,8 @@ import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
-  setCurrentModel,
-  setCurrentModelSource,
-  setCurrentProvider
+  setComposerSelection,
+  setCurrentModelSource
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -91,11 +90,10 @@ export function useModelControls({
     (provider: string, model: string) => {
       const liveSessionId = $activeSessionId.get()
 
-      setCurrentModelSource('default')
-
       if (!liveSessionId) {
-        setCurrentProvider(provider)
-        setCurrentModel(model)
+        setComposerSelection({ model, provider, source: 'default' })
+      } else {
+        setCurrentModelSource('default')
       }
 
       // A null session id is the profile-global model-options key. Never patch
@@ -162,16 +160,12 @@ export function useModelControls({
           return
         }
 
-        if (typeof result.model === 'string') {
-          setCurrentModel(result.model)
-        }
-
-        if (typeof result.provider === 'string') {
-          setCurrentProvider(result.provider)
-        }
-
         if (typeof result.model === 'string' || typeof result.provider === 'string') {
-          setCurrentModelSource('default')
+          setComposerSelection(current => ({
+            model: typeof result.model === 'string' ? result.model : current.model,
+            provider: typeof result.provider === 'string' ? result.provider : current.provider,
+            source: 'default'
+          }))
         }
       } catch {
         // The delayed session.info event still updates this once the agent is ready.
@@ -214,8 +208,7 @@ export function useModelControls({
 
       const paintSelection = () => {
         if (touchesPrimary) {
-          setCurrentModel(selection.model)
-          setCurrentProvider(selection.provider)
+          setComposerSelection({ model: selection.model, provider: selection.provider, source: 'manual' })
           markComposerSelectionManual()
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error.
@@ -233,9 +226,7 @@ export function useModelControls({
 
       const rollbackSelection = () => {
         if (touchesPrimary) {
-          setCurrentModel(prevModel)
-          setCurrentProvider(prevProvider)
-          setCurrentModelSource(prevSource)
+          setComposerSelection({ model: prevModel, provider: prevProvider, source: prevSource })
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,

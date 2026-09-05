@@ -2199,11 +2199,32 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
         raise
 
 
-def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:
+def _validate_model_provider_pair(model: str, provider: str | None, cfg: dict) -> None:
+    if not model or not provider:
+        return
+    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.models import model_provider_compatibility_error
+
+    error = model_provider_compatibility_error(
+        model,
+        provider,
+        user_providers=cfg.get("providers") if isinstance(cfg, dict) else None,
+        custom_providers=(
+            get_compatible_custom_providers(cfg)
+            if isinstance(cfg, dict)
+            else None
+        ),
+    )
+    if error:
+        raise ValueError(error)
+
+
+def _resolve_agent_model_runtime(model_override, provider_override, cfg: dict | None = None) -> tuple[str, dict]:
     """(model, runtime) for a new agent; a per-session override (/model switch or a resumed row's persisted
     runtime) wins over global config/env. Older rows stored the resolved provider "custom" (no named entry
     matches) — recover the identity from the persisted base_url or the rebuild fails "No LLM provider
     configured". Persisted base_url/api_key/api_mode are honored only for the original runtime, never a fallback."""
+    cfg = cfg if isinstance(cfg, dict) else _load_cfg()
     if isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
         requested_provider = model_override.get("provider") or provider_override or None
@@ -2216,6 +2237,8 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             if override_base_url:
                 # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
                 resolve_kwargs["explicit_base_url"] = override_base_url
+        if not override_base_url:
+            _validate_model_provider_pair(model, requested_provider, cfg)
         resolve_kwargs.update(requested=requested_provider, target_model=model or None)
         overrides = {k: model_override.get(k) for k in ("base_url", "api_key", "api_mode")}
     else:
@@ -2224,6 +2247,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             model = model_override
         if provider_override:
             requested_provider = provider_override
+        _validate_model_provider_pair(model, requested_provider, cfg)
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
@@ -2274,7 +2298,7 @@ def _make_agent(
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
     system_prompt = _startup_system_prompt(cfg, session_id or key)
-    model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    model, runtime = _resolve_agent_model_runtime(model_override, provider_override, cfg)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))

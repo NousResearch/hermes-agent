@@ -57,14 +57,12 @@ import {
   $connection,
   $currentCwd,
   $currentFastMode,
-  $currentModel,
-  $currentProvider,
   $currentReasoningEffort,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
-  getCurrentModelSource,
+  getComposerSelectionForOwner,
   getSessionOwnerHint,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
@@ -298,16 +296,16 @@ async function desktopSessionCreateParams(
   // the live agent (applySavedMainModel) and only flips the source to 'default'.
   // Shipping that stale value as an override pins every new chat to the old
   // model. Omit model/provider unless the source is 'manual'.
-  const isManualSelection = getCurrentModelSource() === 'manual'
+  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+  const composerSelection = getComposerSelectionForOwner(capturedRoute, profile)
+  const isManualSelection = composerSelection.source === 'manual'
 
   const selection = {
     effort: $currentReasoningEffort.get().trim(),
     fast: $currentFastMode.get(),
-    model: isManualSelection ? $currentModel.get().trim() : '',
-    provider: isManualSelection ? $currentProvider.get().trim() : ''
+    model: isManualSelection ? composerSelection.model.trim() : '',
+    provider: isManualSelection ? composerSelection.provider.trim() : ''
   }
-
-  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)

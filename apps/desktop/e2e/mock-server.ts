@@ -43,6 +43,7 @@ backgroundReleasePath?: string
 export interface MockServer {
   port: number
   url: string
+  receivedModels: string[]
   receivedPrompts: string[]
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
@@ -396,6 +397,7 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
  */
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
+    const receivedModels: string[] = []
     const receivedPrompts: string[] = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
@@ -465,6 +467,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
+          receivedModels.push(String(model))
           const holdThisCompletion = Boolean(
             options.holdFirstCompletionContaining &&
             heldCompletionCount === 0 &&
@@ -665,6 +668,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
       resolve({
         port,
         url,
+        receivedModels,
         receivedPrompts,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,

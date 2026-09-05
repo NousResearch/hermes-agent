@@ -113,6 +113,30 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   // measurements from the previous mode before off-screen rows re-enter.
   useEffect(() => virtualizer.measure(), [density, virtualizer])
 
+  // When the active session changes from outside the list (the ^/v steppers,
+  // keyboard session switching), bring its row on screen. Local clicks land on
+  // an already-visible row, so this only ever moves the viewport for remote
+  // changes — never fights the user's scroll. The previous-id comparison is a
+  // render-time ref mirror (the codebase's sanctioned pattern); writing it
+  // inside the effect is banned by the ref-mirror lint rule.
+  const lastActiveIdRef = useRef<null | string>(null)
+  const activeIdChanged = activeSessionId !== lastActiveIdRef.current
+  lastActiveIdRef.current = activeSessionId
+
+  useEffect(() => {
+    if (!activeIdChanged || !activeSessionId) {
+      return
+    }
+
+    const index = listRows.findIndex(
+      row => row.kind === 'session' && row.entry.session.id === activeSessionId
+    )
+
+    if (index >= 0) {
+      virtualizer.scrollToIndex(index, { align: 'auto' })
+    }
+  }, [activeIdChanged, activeSessionId, listRows, virtualizer])
+
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
 

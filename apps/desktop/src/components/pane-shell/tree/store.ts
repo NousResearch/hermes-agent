@@ -49,6 +49,41 @@ import { rootChildSide } from './renderer/track-model'
 // assignment (chat could land in a corner cell). Retire them wholesale.
 const STORAGE_KEY = 'hermes.desktop.layoutTree.v2'
 
+/**
+ * Pane-id namespaces that are EPHEMERAL: their panes are mirrored from live
+ * tile lists (preview tabs, routed pages) that don't survive a restart, and a
+ * session may legitimately never reopen them. Persisting them 1:1 made the
+ * whole split layout re-arrange itself on every launch — tiles gone between
+ * sessions left stale groups behind and the user's hand-built arrangement was
+ * lost (#92818). The LIVE tree keeps them; only the stored copy drops them.
+ */
+const EPHEMERAL_PANE_PREFIXES = ['preview-tile:', 'route-tile:', 'session-tile:'] as const
+
+const isEphemeralPaneId = (paneId: string): boolean =>
+  EPHEMERAL_PANE_PREFIXES.some(prefix => paneId.startsWith(prefix))
+
+/** A copy of `tree` without ephemeral tile panes (pure). */
+export function stripEphemeralPanes(tree: LayoutNode): LayoutNode {
+  const walk = (node: LayoutNode): LayoutNode => {
+    if (node.type === 'group') {
+      const ephemeral = node.panes.filter(isEphemeralPaneId)
+
+      if (ephemeral.length === 0) {
+        return node
+      }
+
+      const panes = node.panes.filter(paneId => !isEphemeralPaneId(paneId))
+
+      return { ...node, panes, active: panes.includes(node.active) ? node.active : panes[0] ?? '' }
+    }
+
+    return { ...node, children: node.children.map(walk) }
+  }
+
+  // normalize prunes groups left empty once their tiles are dropped.
+  return normalize(walk(tree)) ?? tree
+}
+
 writeKey('hermes.desktop.layoutTree.v1', null)
 
 let defaultTree: LayoutNode | null = null
@@ -70,7 +105,7 @@ function persist(tree: LayoutNode | null) {
     return
   }
 
-  writeJson(STORAGE_KEY, tree)
+  writeJson(STORAGE_KEY, tree ? stripEphemeralPanes(tree) : tree)
 }
 
 /** The live tree (null until a default is declared). A secondary window ignores

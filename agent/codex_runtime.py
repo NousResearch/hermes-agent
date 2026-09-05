@@ -843,10 +843,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         """Wrap a callback so a retired request's late frames never reach the agent."""
         return lambda value: fn(value) if _request_is_current() else None
 
-    def _on_text_delta(text: str) -> None:
-        agent._codex_streamed_text_parts.append(text)
-        agent._fire_stream_delta(text)
-
     def _on_event(event: Any) -> None:  # TTFB watchdog and activity touch — once per SSE event.
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
@@ -915,6 +911,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise InterruptedError("Agent interrupted before Codex stream retry")
         intercepted_events: list = []
         writer_token["value"] = event_stream = None
+        attempt_text_parts: list[str] = []
+
+        def _on_text_delta(text: str) -> None:
+            if not _request_is_current():
+                return
+            # Once a visible delta reaches a consumer, replaying this physical
+            # request would duplicate the prefix on the next attempt.
+            attempt_text_parts.append(text)
+            agent._codex_streamed_text_parts.append(text)
+            agent._fire_stream_delta(text)
+
         try:
             try:
                 event_stream = relay_llm.stream(
@@ -936,6 +943,44 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_event=_fenced(_on_event), interrupt_check=_interrupt_or_superseded,
                 )
             except transport_errors as exc:
+                # Socket closure may retire the request without another SSE event.
+                if not _request_is_current():
+                    raise TimeoutError(
+                        "Codex Responses stream request retired before terminal response"
+                    ) from exc
+                if attempt_text_parts:
+                    # A transport failure after visible output is no longer
+                    # replayable: a fresh request starts from the beginning
+                    # and duplicates the already-delivered prefix. Return an
+                    # explicit incomplete response so the conversation loop
+                    # can preserve it without retrying this request.
+                    partial_text = "".join(attempt_text_parts)
+                    logger.warning(
+                        "Codex Responses stream transport failed after partial "
+                        "delivery; not retrying (streamed_chars=%d). %s error=%s",
+                        len(partial_text),
+                        agent._client_log_context(),
+                        exc,
+                    )
+                    return SimpleNamespace(
+                        output=[SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="incomplete",
+                            content=[SimpleNamespace(
+                                type="output_text",
+                                text=partial_text,
+                            )],
+                        )],
+                        output_text=partial_text,
+                        usage=None,
+                        status="incomplete",
+                        id=None,
+                        model=api_kwargs.get("model"),
+                        incomplete_details=SimpleNamespace(reason="stream_error"),
+                        error=None,
+                        _stream_no_retry=True,
+                    )
                 if attempt >= max_stream_retries:
                     _log_failure(exc)
                     raise

@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
+from agent.message_metadata import append_message
 from agent.provider_projection import splice_provider_projection
 from agent.trajectory import has_incomplete_scratchpad
 from agent.turn_truncation import continue_codex_incomplete, normalize_response_for_agent, partial_result
@@ -115,7 +116,7 @@ def _relay_thinking(agent: Any, content: str) -> None:
 def normalize_model_response(
     agent: Any, *, response: Any, messages: Any, api_messages: Any, conversation_history: Any,
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
-    effective_task_id: Any, turn_id: Any,
+    effective_task_id: Any, turn_id: Any, truncated_response_parts: Any,
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
@@ -149,6 +150,41 @@ def normalize_model_response(
             agent._vprint(f"{agent.log_prefix}🤖 Assistant: {content[:100]}{'...' if len(content) > 100 else ''}")
     if content and agent.tool_progress_callback:
         _relay_thinking(agent, content)
+
+    if (
+        agent.api_mode == "codex_responses"
+        and getattr(response, "_stream_no_retry", False)
+    ):
+        # A Codex stream that has already delivered visible output is not
+        # replayable: a new request would begin at the start and duplicate the
+        # prefix the user already saw. Preserve it as a terminal partial turn,
+        # before scratchpad retries or ordinary incomplete-response continuation.
+        partial_content = getattr(assistant_message, "content", None) or ""
+        partial_reasoning = getattr(assistant_message, "reasoning", None) or ""
+        if partial_content or partial_reasoning:
+            append_message(
+                messages,
+                agent._build_assistant_message(assistant_message, "incomplete"),
+            )
+        from agent.conversation_loop import _join_truncated_parts
+        partial_final = agent._strip_think_blocks(
+            _join_truncated_parts([
+                *truncated_response_parts,
+                partial_content,
+            ])
+        ).strip()
+        if not partial_final:
+            partial_final = "The provider stream ended before completion; no tool was executed."
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        _partial = partial_result(
+            messages,
+            api_call_count,
+            partial_final,
+            "network_stream_interrupted_after_partial_response",
+        )
+        _partial["failed"] = False
+        return _verdict("return", _partial)
 
     # Incomplete <REASONING_SCRATCHPAD> (opened, never closed): the model ran out of
     # output tokens mid-reasoning — retry up to 2 times, then save as partial.

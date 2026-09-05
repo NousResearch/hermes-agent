@@ -73,6 +73,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "messaging", "slack", "matrix", "dingtalk", "feishu",
         "honcho", "hindsight",
         "supermemory", "mem0",
+        "ldap",  # ldap3 — dashboard-auth LDAP provider, lazy-installed (auth.ldap)
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
     }
     all_extra_specs = optional_dependencies["all"]

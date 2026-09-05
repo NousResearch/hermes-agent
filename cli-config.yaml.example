@@ -2080,6 +2080,62 @@ updates:
 #       # in ~/.hermes/.env over putting it here in config.yaml.
 #       #   client_secret: ""
 
+# -----------------------------------------------------------------------------
+# LDAP / Active Directory dashboard auth (password login via LDAP bind).
+# Use this INSTEAD of the OAuth blocks above to gate the dashboard with an
+# existing directory. Passwords are verified with an LDAP bind — never stored
+# by Hermes. The ldap3 dependency is lazy-installed at first configured
+# startup. Each setting can be overridden by an environment variable
+# (env wins when set non-empty):
+#
+#   dashboard.ldap_auth.server_url        <-  HERMES_DASHBOARD_LDAP_SERVER_URL
+#   dashboard.ldap_auth.user_dn_template  <-  HERMES_DASHBOARD_LDAP_USER_DN_TEMPLATE
+#   dashboard.ldap_auth.bind_dn           <-  HERMES_DASHBOARD_LDAP_BIND_DN
+#   dashboard.ldap_auth.bind_password     <-  HERMES_DASHBOARD_LDAP_BIND_PASSWORD
+#   dashboard.ldap_auth.user_search_base  <-  HERMES_DASHBOARD_LDAP_USER_SEARCH_BASE
+#   dashboard.ldap_auth.user_search_filter<-  HERMES_DASHBOARD_LDAP_USER_SEARCH_FILTER
+#   dashboard.ldap_auth.require_group     <-  HERMES_DASHBOARD_LDAP_REQUIRE_GROUP
+#   dashboard.ldap_auth.start_tls         <-  HERMES_DASHBOARD_LDAP_START_TLS
+#   dashboard.ldap_auth.allow_insecure    <-  HERMES_DASHBOARD_LDAP_ALLOW_INSECURE
+#   dashboard.ldap_auth.ca_certs_file     <-  HERMES_DASHBOARD_LDAP_CA_CERTS_FILE
+#   dashboard.ldap_auth.secret            <-  HERMES_DASHBOARD_LDAP_SECRET
+#   dashboard.ldap_auth.session_ttl_seconds <- HERMES_DASHBOARD_LDAP_TTL_SECONDS
+#
+# Two bind modes, mutually exclusive — configure exactly one:
+#   direct bind:      user_dn_template (no service account needed)
+#   search-then-bind: user_search_base [+ bind_dn/bind_password], required
+#                     for AD sAMAccountName logins and for email/display-name
+#                     in the session; also enables the refresh-time check
+#                     that cuts off deleted/moved accounts.
+#
+# TLS: ldaps:// or start_tls is required; plain ldap:// needs an explicit
+# allow_insecure: true (passwords would cross the wire in cleartext).
+#
+# dashboard:
+#   ldap_auth:
+#     server_url: "ldaps://ldap.example.com"                    # required
+#     # EITHER (direct bind):
+#     user_dn_template: "uid={username},ou=people,dc=example,dc=com"
+#     # OR (search-then-bind):
+#     #   bind_dn: "cn=hermes,ou=svc,dc=example,dc=com"   # "" = anonymous search
+#     #   bind_password: ""    # a CREDENTIAL: prefer HERMES_DASHBOARD_LDAP_BIND_PASSWORD in ~/.hermes/.env
+#     #   user_search_base: "ou=people,dc=example,dc=com"
+#     #   user_search_filter: "(uid={username})"          # AD: "(sAMAccountName={username})"
+#     # Optional:
+#     #   require_group: "cn=hermes-users,ou=groups,dc=example,dc=com"
+#     #   start_tls: false
+#     #   allow_insecure: false
+#     #   ca_certs_file: "/etc/ssl/private-ca.pem"
+#     #   email_attribute: "mail"
+#     #   display_name_attribute: "cn"
+#     #   display_name: "LDAP"            # login-form label
+#     #   secret: ""                      # 32+ random bytes (base64) — token-signing key;
+#     #                                   # unset = sessions don't survive restarts
+#     #   session_ttl_seconds: 43200      # 12h access tokens
+#     #   refresh_ttl_seconds: 2592000    # 30d refresh tokens
+#     #   timeout_seconds: 5
+#     #   verify_user_on_refresh: true    # search mode only
+
 # =============================================================================
 # External secret sources
 # =============================================================================

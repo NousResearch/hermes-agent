@@ -28,20 +28,15 @@ from datetime import datetime, timezone
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-# Ensure HERMES_HOME is set (needed by tools/skills_hub.py imports)
+# Ensure HERMES_HOME is set (needed by tools/skills_hub*.py imports)
 os.environ.setdefault("HERMES_HOME", os.path.join(os.path.expanduser("~"), ".hermes"))
 
-from tools.skills_hub import (
-    GitHubAuth,
-    GitHubSource,
-    SkillsShSource,
-    OptionalSkillSource,
-    WellKnownSkillSource,
-    ClawHubSource,
-    LobeHubSource,
-    BrowseShSource,
-    SkillMeta,
-)
+from tools.skills_hub_clawhub import ClawHubSource
+from tools.skills_hub_github import GitHubAuth, GitHubSource
+from tools.skills_hub_models import SkillMeta
+from tools.skills_hub_official import OptionalSkillSource
+from tools.skills_hub_skillssh import SkillsShSource
+from tools.skills_hub_sources import BrowseShSource, LobeHubSource, WellKnownSkillSource
 import httpx
 
 OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
@@ -294,6 +289,43 @@ def main():
 
     # Batch resolve GitHub paths for skills.sh entries
     all_skills = batch_resolve_paths(all_skills, auth)
+
+    # Enrich ClawHub skills with owner handles. The listing API does not
+    # include owner info, so we fetch each skill's detail page concurrently.
+    # This is needed to build valid "View source" URLs on the Skills Hub page:
+    # https://clawhub.ai/{owner}/skills/{slug}. Without the owner segment the
+    # URL leads to a 404.
+    clawhub_skills = [s for s in all_skills if s["source"] == "clawhub"]
+    if clawhub_skills:
+        # Convert dicts back to SkillMeta for enrichment, then update in place.
+        clawhub_metas = []
+        for s in clawhub_skills:
+            meta = SkillMeta(
+                name=s["name"],
+                description=s["description"],
+                source=s["source"],
+                identifier=s["identifier"],
+                trust_level=s["trust_level"],
+                repo=s.get("repo") or None,
+                path=s.get("path") or None,
+                tags=s.get("tags") or [],
+                extra=dict(s.get("extra") or {}),
+            )
+            clawhub_metas.append(meta)
+
+        print(f"  Enriching {len(clawhub_metas)} ClawHub skills with owner handles...",
+              flush=True)
+        enrich_start = time.time()
+        enriched = sources["clawhub"].enrich_owners(clawhub_metas, max_workers=30)
+        # Write enriched owner back into the index dicts.
+        meta_by_id = {m.identifier: m for m in clawhub_metas}
+        for s in clawhub_skills:
+            meta = meta_by_id.get(s["identifier"])
+            if meta and meta.extra.get("owner"):
+                s.setdefault("extra", {})["owner"] = meta.extra["owner"]
+        enrich_elapsed = time.time() - enrich_start
+        print(f"  Enriched {enriched}/{len(clawhub_metas)} ClawHub owners "
+              f"({enrich_elapsed:.1f}s)", flush=True)
 
     # Collect which sources hit a GitHub API rate limit during the crawl.
     # github / well-known both read api.github.com, so a rate-limited token

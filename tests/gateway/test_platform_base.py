@@ -10,6 +10,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    SendResult,
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
@@ -781,6 +782,141 @@ class TestMediaDeliveryDefaultMode:
         assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
 
 
+class TestDockerContainerMediaPathTranslation:
+    """MEDIA:/workspace (and configured mounts) must resolve to host paths."""
+
+    def test_configured_workspace_mount_translates(self, tmp_path, monkeypatch):
+        import json
+
+        host_ws = tmp_path / "host-ws"
+        host_ws.mkdir()
+        media = host_ws / "shot.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_ws}:/workspace"]),
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/shot.png"
+        ) == str(media.resolve())
+
+    def test_configured_output_mount_translates(self, tmp_path, monkeypatch):
+        import json
+
+        host_out = tmp_path / "documents"
+        host_out.mkdir()
+        media = host_out / "report.pdf"
+        media.write_bytes(b"%PDF-1.4")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([f"{host_out}:/output"]),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/output/report.pdf"
+        ) == str(media.resolve())
+
+    def test_longest_prefix_wins(self, tmp_path, monkeypatch):
+        import json
+
+        host_a = tmp_path / "a"
+        host_b = tmp_path / "b"
+        host_a.mkdir()
+        host_b.mkdir()
+        nested = host_b / "file.png"
+        nested.write_bytes(b"png")
+        monkeypatch.setenv(
+            "TERMINAL_DOCKER_VOLUMES",
+            json.dumps([
+                f"{host_a}:/data",
+                f"{host_b}:/data/nested",
+            ]),
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/data/nested/file.png"
+        ) == str(nested.resolve())
+
+    def test_default_persistent_workspace_fallback(self, tmp_path, monkeypatch):
+        sandbox = tmp_path / "sandboxes"
+        ws = sandbox / "docker" / "default" / "workspace"
+        ws.mkdir(parents=True)
+        media = ws / "out.png"
+        media.write_bytes(b"png")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/out.png"
+        ) == str(media.resolve())
+
+    def test_unmapped_container_path_fails(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        assert BasePlatformAdapter.validate_media_delivery_path("/workspace/nope.png") is None
+
+    def test_persistent_home_root_write_translates(self, tmp_path, monkeypatch):
+        """An agent writing /root/out.png in a persistent container produced a
+        real host file under <sandbox>/docker/default/home — deliver it."""
+        sandbox = tmp_path / "sandboxes"
+        home = sandbox / "docker" / "default" / "home"
+        home.mkdir(parents=True)
+        media = home / "out.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/root/out.png"
+        ) == str(media.resolve())
+
+    def test_cache_dir_container_path_translates_to_host_cache(self, tmp_path, monkeypatch):
+        """MEDIA:/root/.hermes/cache/images/... (the agent_visible_image path
+        under docker) must translate to the HOST cache file, not the sandbox
+        home copy."""
+        hermes_home = tmp_path / ".hermes"
+        cache = hermes_home / "cache" / "images"
+        cache.mkdir(parents=True)
+        media = cache / "generated.png"
+        media.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/root/.hermes/cache/images/generated.png"
+        ) == str(media.resolve())
+
+    def test_container_credential_path_never_translates_through_home(self, tmp_path, monkeypatch):
+        """/root/.hermes/* outside a cache mount (the sandbox's credential
+        surface: .env, auth.json) must NOT resolve through the persistent
+        home mount — those host-side copies sit outside the credential
+        denylist prefixes and would otherwise deliver."""
+        sandbox = tmp_path / "sandboxes"
+        home = sandbox / "docker" / "default" / "home"
+        secret = home / ".hermes"
+        secret.mkdir(parents=True)
+        (secret / "auth.json").write_text('{"token": "SECRET"}')
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox))
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/root/.hermes/auth.json"
+        ) is None
+
+
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------
@@ -805,6 +941,72 @@ class TestShouldSendMediaAsAudio:
 # ---------------------------------------------------------------------------
 # truncate_message
 # ---------------------------------------------------------------------------
+
+
+class TestIsSenderAuthorized:
+    """``_is_sender_authorized`` is a tri-state: True / False / unknown.
+
+    Callers gate credentialed side effects on an explicit ``is True``, so a
+    truthy non-boolean must resolve to unknown rather than being coerced
+    into an authorization by ``bool()``.
+    """
+
+    def _adapter(self):
+        class StubAdapter(BasePlatformAdapter):
+            async def connect(self, *, is_reconnect: bool = False):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                pass
+
+            async def get_chat_info(self, *a):
+                return {}
+
+        from gateway.config import Platform, PlatformConfig
+
+        return StubAdapter(config=PlatformConfig(enabled=True, token="test"),
+                           platform=Platform.TELEGRAM)
+
+    def test_no_check_registered_is_unknown(self):
+        assert self._adapter()._is_sender_authorized("user") is None
+
+    def test_empty_user_id_is_unknown(self):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: True)
+        assert adapter._is_sender_authorized("") is None
+
+    def test_true_and_false_propagate(self):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: True)
+        assert adapter._is_sender_authorized("user") is True
+        adapter.set_authorization_check(lambda *_a: False)
+        assert adapter._is_sender_authorized("user") is False
+
+    @pytest.mark.parametrize("result", ["allowed", 1, object(), [1]])
+    def test_truthy_non_boolean_is_unknown(self, result):
+        adapter = self._adapter()
+        adapter.set_authorization_check(lambda *_a: result)
+        assert adapter._is_sender_authorized("user") is None
+
+    def test_raising_check_is_unknown(self):
+        def boom(*_a):
+            raise RuntimeError("auth backend down")
+
+        adapter = self._adapter()
+        adapter.set_authorization_check(boom)
+        assert adapter._is_sender_authorized("user") is None
+
+    def test_check_receives_chat_context(self):
+        seen = []
+        adapter = self._adapter()
+        adapter.set_authorization_check(
+            lambda user_id, chat_type, chat_id: seen.append((user_id, chat_type, chat_id)) or True
+        )
+        adapter._is_sender_authorized("user", "group", "chan")
+        assert seen == [("user", "group", "chan")]
 
 
 class TestTruncateMessage:
@@ -1117,3 +1319,237 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
+
+
+class TestDockerProfileSandboxMediaTranslation:
+    """MEDIA from persistent Docker sandboxes must resolve to the host
+    directory the profile's container actually bind-mounts (#93950).
+
+    Contract: persistent Docker is PROFILE-scoped — the default profile (and
+    CLI) uses the literal ``default`` sandbox, other profiles use
+    ``sanitize_task_id_for_path("profile:<name>")``. Legacy per-session
+    sandboxes (``session:<key>``) created during the a270c4ade bug window
+    remain resolvable as a fallback so their files still deliver.
+    """
+
+    SESSION_KEY = "agent:main:telegram:dm:123456"
+
+    @staticmethod
+    def _sandbox_dir(task_id: str = "default"):
+        from tools.environments.base import get_sandbox_dir
+        from tools.environments.path_utils import sanitize_task_id_for_path
+
+        name = task_id if task_id == "default" else sanitize_task_id_for_path(task_id)
+        return get_sandbox_dir() / "docker" / name
+
+    def _enable_docker(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+
+    def test_default_profile_workspace_media_translates(self, monkeypatch):
+        """A MEDIA tag pointing at the container's /workspace resolves to the
+        default profile's shared host sandbox — with or without a session
+        key, since every session of the profile shares one container."""
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir() / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "chart.png"
+        produced.write_bytes(b"png")
+
+        with_key = BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/chart.png", session_key=self.SESSION_KEY
+        )
+        without_key = BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/chart.png"
+        )
+
+        assert with_key == without_key == str(produced.resolve())
+
+    def test_legacy_session_sandbox_still_resolves(self, monkeypatch):
+        """Self-heal for the a270c4ade bug window: files produced in a legacy
+        per-session sandbox still deliver via the fallback candidate."""
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir(f"session:{self.SESSION_KEY}") / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "out.png"
+        produced.write_bytes(b"png")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/out.png", session_key=self.SESSION_KEY
+        ) == str(produced.resolve())
+
+    def test_profile_and_legacy_sandboxes_both_searched(self, monkeypatch):
+        """When the profile sandbox exists but the file was produced in a
+        legacy per-session container, translation still finds it — the dir
+        existing must not mask the fallback (#93950 follow-up)."""
+        self._enable_docker(monkeypatch)
+        (self._sandbox_dir() / "workspace").mkdir(parents=True, exist_ok=True)
+        legacy_ws = self._sandbox_dir(f"session:{self.SESSION_KEY}") / "workspace"
+        legacy_ws.mkdir(parents=True, exist_ok=True)
+        produced = legacy_ws / "old.png"
+        produced.write_bytes(b"png")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/workspace/old.png", session_key=self.SESSION_KEY
+        ) == str(produced.resolve())
+
+    def test_home_mount_translates_stray_root_writes(self, monkeypatch):
+        """/root/<file> lands in the profile sandbox's home mount."""
+        self._enable_docker(monkeypatch)
+        home = self._sandbox_dir() / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        produced = home / "note.txt"
+        produced.write_text("hi")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(
+            "/root/note.txt", session_key=self.SESSION_KEY
+        ) == str(produced.resolve())
+
+    def test_home_credential_surface_still_refused(self, monkeypatch):
+        """The /root/.hermes exclusion survives profile scoping: translating
+        the home mount must never expose the container's secret surface —
+        in the profile layout AND the legacy session layout."""
+        self._enable_docker(monkeypatch)
+        for task in ("default", f"session:{self.SESSION_KEY}"):
+            secrets = self._sandbox_dir(task) / "home" / ".hermes"
+            secrets.mkdir(parents=True, exist_ok=True)
+            (secrets / "auth.json").write_text("{}")
+
+        assert (
+            BasePlatformAdapter.validate_media_delivery_path(
+                "/root/.hermes/auth.json", session_key=self.SESSION_KEY
+            )
+            is None
+        )
+
+    def test_filter_passes_session_key_through(self, monkeypatch):
+        """The adapter filter used by _process_message_background forwards the
+        key, so legacy-sandbox MEDIA tags survive filtering in one hop."""
+        self._enable_docker(monkeypatch)
+        workspace = self._sandbox_dir(f"session:{self.SESSION_KEY}") / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        produced = workspace / "clip.mp4"
+        produced.write_bytes(b"mp4")
+
+        kept = BasePlatformAdapter.filter_media_delivery_paths(
+            [("/workspace/clip.mp4", False)], session_key=self.SESSION_KEY
+        )
+
+        assert kept == [(str(produced.resolve()), False)]
+
+    def test_unresolved_docker_media_names_the_cause(self, monkeypatch, caplog):
+        """A container path that resolves in no candidate sandbox must log
+        WHY it was dropped (sandbox mismatch), not just the generic unsafe-
+        path line — the silent-drop mode reported in #93950."""
+        import logging
+
+        self._enable_docker(monkeypatch)
+        with caplog.at_level(logging.WARNING, logger="gateway.platforms.base"):
+            resolved = BasePlatformAdapter.validate_media_delivery_path(
+                "/workspace/ghost.png", session_key=self.SESSION_KEY
+            )
+
+        assert resolved is None
+        assert any(
+            "did not resolve" in r.message and f"session_key={self.SESSION_KEY}" in r.message
+            for r in caplog.records
+        )
+
+
+class _LockGovernanceProbeAdapter(BasePlatformAdapter):
+    """Minimal concrete adapter for platform-lock takeover governance tests."""
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        pass
+
+    async def send(self, *args, **kwargs) -> SendResult:
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id: str) -> dict:
+        return {"name": "probe", "type": "dm"}
+
+
+class TestPlatformLockTakeoverGovernance:
+    """A supervised (non-``--replace``) gateway must never evict a live holder.
+
+    Regression for #79048: launchd services with ``KeepAlive=true`` used to be
+    generated with ``--replace``, re-arming takeover authority on every
+    respawn. Two profiles sharing one platform token (e.g. the same Discord
+    bot) would then terminate each other in an endless mutual-eviction loop.
+    The runtime guard is the adapter's ``_platform_lock_takeover_allowed``
+    bit — only an explicit ``gateway run --replace`` startup arms it. Without
+    that authority a live cross-home holder must be left alone and reported
+    as a retryable failure, never terminated.
+    """
+
+    def _make_adapter(self, *, takeover_allowed: bool):
+        from gateway.config import Platform, PlatformConfig
+
+        adapter = _LockGovernanceProbeAdapter(
+            config=PlatformConfig(), platform=Platform.DISCORD
+        )
+        adapter._platform_lock_takeover_allowed = takeover_allowed
+        return adapter
+
+    def test_no_takeover_without_replace_authority(self, tmp_path, monkeypatch):
+        from gateway import status
+
+        existing = {
+            "pid": 4242,
+            "start_time": 123,
+            "home": str(tmp_path / "other-profile-home"),
+        }
+        monkeypatch.setattr(
+            status,
+            "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, existing),
+        )
+        takeover_calls = []
+        monkeypatch.setattr(
+            status,
+            "take_over_scoped_lock_holder",
+            lambda existing: takeover_calls.append(existing) or 4242,
+        )
+        monkeypatch.setattr(status, "write_runtime_status", lambda **kw: None)
+
+        adapter = self._make_adapter(takeover_allowed=False)
+        # Ordinary (supervised) start: the live cross-home holder must be
+        # left untouched — the gateway fails retryably instead of killing it.
+        assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
+        assert takeover_calls == []
+        assert adapter.fatal_error_retryable is True
+        assert adapter._fatal_error_code == "discord-token_lock"
+
+    def test_takeover_authority_consumed_once(self, tmp_path, monkeypatch):
+        from gateway import status
+
+        existing = {
+            "pid": 4242,
+            "start_time": 123,
+            "home": str(tmp_path / "other-profile-home"),
+        }
+        monkeypatch.setattr(
+            status,
+            "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, existing),
+        )
+        takeover_calls = []
+        monkeypatch.setattr(
+            status,
+            "take_over_scoped_lock_holder",
+            lambda existing: takeover_calls.append(existing) or 4242,
+        )
+        monkeypatch.setattr(status, "write_runtime_status", lambda **kw: None)
+
+        adapter = self._make_adapter(takeover_allowed=True)
+        # An explicit --replace start may attempt exactly one takeover...
+        assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
+        assert len(takeover_calls) == 1
+        # ...but the authority is consumed, so a reconnect can never evict a
+        # healthy holder (this is what stops the supervised respawn loop).
+        assert adapter._acquire_platform_lock("discord-token", "tok", "Discord") is False
+        assert len(takeover_calls) == 1
+        assert adapter._platform_lock_takeover_attempted is True

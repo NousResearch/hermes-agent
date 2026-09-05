@@ -1,7 +1,7 @@
 # Session Lifecycle
 
 > **Audience:** Gateway developers and maintainers
-> **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
+> **Source files:** `gateway/session.py` (~1200 lines + `session_*.py` siblings), `gateway/run.py` (~5500 lines facade + `run_*.py` phases), `gateway/config.py`
 > **Last updated:** 2026-06-16
 
 ## Overview
@@ -14,9 +14,10 @@ The session system lives primarily in two modules:
 
 - `gateway/session.py` — Data model (`SessionSource`, `SessionEntry`, `SessionContext`),
   key generation (`build_session_key`), and the main store (`SessionStore`).
-- `gateway/run.py` — Gateway runner (`GatewayRunner`) that wires sessions into the message
-  processing pipeline: session expiry watching, agent caching, restart recovery, and message
-  queuing.
+- `gateway/run.py` — Gateway runner (`GatewayRunner`) facade that wires sessions into the message
+  processing pipeline; the phases live in `run_*.py` siblings: session expiry watching
+  (`run_watchers.py`), agent caching (`run_agent_cache.py`), restart recovery
+  (`session_recovery.py`), and message queuing (`run_busy.py`).
 
 ---
 
@@ -557,10 +558,14 @@ The `_session_expiry_watcher` task runs in the gateway event loop every 300 seco
      session with its full history (#61220, #61993, #63539).
 
 2. **Sweep idle cached agents** — Calls `_sweep_idle_cached_agents()` to evict agents that
-   have been idle beyond `_AGENT_CACHE_IDLE_TTL_SECS` (3600s / 1h), regardless of session
+   have been idle beyond the idle TTL (3600s / 1h by default), regardless of session
    reset policy. This prevents unbounded memory growth in gateways with long-lived sessions.
 
-3. **Prune stale entries** — Calls `session_store.prune_old_entries()` hourly based on
+3. **Sweep under memory pressure** — Calls `_sweep_agent_cache_under_pressure()` to shed
+   least-recently-used transcripts once the process's anonymous RSS is over budget. See
+   §11.
+
+4. **Prune stale entries** — Calls `session_store.prune_old_entries()` hourly based on
    `config.session_store_max_age_days`. Prevents `sessions.json` from growing unbounded.
 
 ### Failure Handling
@@ -578,10 +583,43 @@ preserve prompt caching across turns.
 
 ### Cache Properties
 
-- **Max size:** 128 entries (`_AGENT_CACHE_MAX_SIZE`).
+- **Max size:** 128 entries (`agent.agent_cache.max_size`, default `_AGENT_CACHE_MAX_SIZE`).
 - **Eviction policy:** Least-recently-used (LRU via `OrderedDict`).
-- **Idle TTL:** 3600s (1h) — enforced by `_session_expiry_watcher`.
+- **Idle TTL:** 3600s (1h) — `agent.agent_cache.idle_ttl_secs`, enforced by
+  `_session_expiry_watcher`.
+- **Memory budget:** `agent.agent_cache.memory_high_mb` (default `auto`) — see below.
 - **Lock:** `_agent_cache_lock` (threading) for thread safety.
+
+### Memory-Pressure Eviction
+
+A cached agent pins `_session_messages`, the full live transcript including tool
+outputs — tens of MB on a session with 100+ tool calls. The entry cap and the idle
+TTL are both blind to that: a gateway serving many chats keeps every warm transcript
+resident (agents that took a turn within the TTL are never idle-swept, and the idle
+sweep additionally defers finalizable sessions until they expire), so RSS climbs until
+the cgroup throttles and SIGTERM can no longer flush inside systemd's stop timeout
+(#80764).
+
+`_sweep_agent_cache_under_pressure()` is the valve. Each watcher tick it compares the
+process's anonymous RSS against `memory_high_mb`; over budget, it evicts LRU agents
+through the same soft path the cap enforcer uses (`_commit_then_release_soft`), then
+runs `malloc_trim` so the freed arenas actually return to the OS. Evicted sessions
+rebuild their transcript from the persisted session on the next turn.
+
+Three classes of session are never shed:
+
+- agents currently mid-turn (their clients and sandboxes are in use);
+- the `protect_recent` most-recently-used sessions (their prompt cache is worth the
+  most);
+- any session whose live transcript has not finished reaching disk —
+  `transcript_persistence_caught_up()` compares `_last_flushed_db_idx` against
+  `len(_session_messages)`, the same divergence the FTS write-corruption guard reacts
+  to when it preserves live history over a lagging transcript.
+
+`memory_high_mb: auto` derives the budget from the cgroup limit the gateway runs under
+(`memory.high`, then `memory.max`, then cgroup v1), falling back to total RAM when
+uncapped. Set a number to pin it, or `0`/`off` to disable the pass entirely. Helpers
+live in `gateway/agent_cache_pressure.py`.
 
 ### Cache Lifecycle
 
@@ -623,6 +661,19 @@ When a session expires:
 | `session_store_max_age_days` | `int` | `0` | Prune sessions older than N days (0=disabled) |
 | `agent.gateway_auto_continue_freshness` | `int` | `3600` | Seconds for resume freshness window |
 | `agent.gateway_timeout` | `int` | `1800` | Agent turn timeout (30 min default) |
+| `agent.agent_cache.max_size` | `int` | `128` | LRU entry cap on cached AIAgents |
+| `agent.agent_cache.idle_ttl_secs` | `int` | `3600` | Evict agents idle this long |
+| `agent.agent_cache.memory_high_mb` | `int`/`str` | `auto` | Anon-RSS budget above which LRU transcripts are shed |
+| `agent.agent_cache.max_evictions_per_pass` | `int` | `16` | Cap on sessions shed per pressure pass |
+| `agent.agent_cache.protect_recent` | `int` | `8` | MRU sessions the pressure pass never touches |
+
+## State database and FTS recovery
+
+The canonical transcript lives in the `sessions` and `messages` tables. FTS5
+tables and their sync triggers are derived indexes that can be detached and
+rebuilt without deleting canonical messages. See
+[`docs/state-db-recovery.md`](state-db-recovery.md) for the bounded live failure
+mode and the explicit repair procedure.
 
 ### Reset Policy (per-platform/type, in config.yaml)
 

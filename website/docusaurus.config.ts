@@ -38,40 +38,6 @@ const config: Config = {
 
   themes: [
     '@docusaurus/theme-mermaid',
-    [
-      require.resolve('@easyops-cn/docusaurus-search-local'),
-      /** @type {import("@easyops-cn/docusaurus-search-local").PluginOptions} */
-      ({
-        hashed: true,
-        language: ['en', 'zh'],
-        indexBlog: false,
-        docsRouteBasePath: '/',
-        // Disabled: appends ?_highlight=... to URLs (before the #anchor),
-        // which makes copy/pasted doc links ugly. Ctrl+F on the page is fine.
-        highlightSearchTermsOnTargetPage: false,
-        // Exclude the auto-generated per-skill catalog pages from search.
-        // There are hundreds of them and they dominate results for generic
-        // terms, drowning out the real user-guide / reference docs.
-        // The two human-written catalog indexes (reference/skills-catalog,
-        // reference/optional-skills-catalog) remain indexed.
-        //
-        // Note: ignoreFiles matches `route` (baseUrl stripped, no leading
-        // slash). With baseUrl '/docs/', `/docs/user-guide/skills/bundled/x`
-        // becomes 'user-guide/skills/bundled/x'.
-        ignoreFiles: [
-          /^user-guide\/skills\/bundled\//,
-          /^user-guide\/skills\/optional\//,
-        ],
-        // Exact-or-prefix matching only (default is edit distance 1).
-        // With fuzzy distance 1, "keet" matched "meetings"/"keep" (one
-        // edit away after stemming), and multi-word typo queries against
-        // our ~14 MB index could stall the single-threaded search worker
-        // for 25s+, backing up every subsequent keystroke's search until
-        // the bar appeared dead. Distance 0 keeps "word or its extension"
-        // semantics (keet -> keet*) and removes the pathological scans.
-        fuzzyMatchingDistance: 0,
-      }),
-    ],
   ],
 
   plugins: [
@@ -91,6 +57,16 @@ const config: Config = {
             // Developer Guide > Extending (docs restructure, July 2026)
             from: '/guides/build-a-hermes-plugin',
             to: '/developer-guide/plugins',
+          },
+          {
+            // Users guess these short paths from abbreviated links and hit
+            // raw 404s (consumer-onboarding audit finding #1, Aug 2026).
+            from: '/quickstart',
+            to: '/getting-started/quickstart',
+          },
+          {
+            from: '/installation',
+            to: '/getting-started/installation',
           },
         ],
       },
@@ -116,6 +92,20 @@ const config: Config = {
 
   themeConfig: {
     image: 'img/hermes-agent-banner.png',
+    // Algolia DocSearch (replaces @easyops-cn/docusaurus-search-local).
+    // The local plugin shipped a ~16 MB client-side lunr index that every
+    // visitor downloaded and hydrated before their first result; DocSearch
+    // answers from Algolia's servers with no client index at all. These are
+    // public search-only credentials — safe to commit (the admin key is not
+    // in the repo). Index is populated by the Algolia Crawler configured at
+    // crawler.algolia.com; contextualSearch scopes results to the active
+    // locale via the docusaurus_tag/lang facets the crawler records carry.
+    algolia: {
+      appId: '2JLBVEYZN5',
+      apiKey: '8fda2a49223ce185ac30c2dbf6898a07',
+      indexName: 'hermes docs',
+      contextualSearch: true,
+    },
     colorMode: {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,

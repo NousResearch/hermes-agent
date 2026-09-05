@@ -104,13 +104,15 @@ export function createPluginI18n(pluginId: string, track: (dispose: () => void) 
  *  late bundle registration. Pass your plugin id (your default export's `id`). */
 export function usePluginI18n(pluginId: string): PluginTranslate {
   const { locale } = useI18n()
+  const version = useStore($version)
 
-  // Subscribe so a bundle registered after mount repaints; `translatePlugin`
-  // reads the live registry, so the memoized closure needs only id + locale.
-  useStore($version)
-
+  // `version` is the registry's change token and must key the translator's
+  // identity: memoized consumers (React.memo, React Compiler output) cache
+  // render slices on `t` itself, so a stable `t` over a mutated registry
+  // serves stale strings after a late bundle registration.
   return useCallback(
     (key: string, ...args: unknown[]) => translatePlugin(pluginId, locale, key, args),
-    [pluginId, locale]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pluginId, locale, version]
   )
 }

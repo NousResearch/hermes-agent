@@ -121,6 +121,60 @@ def test_missing_file_becomes_warning(sample_repo: Path):
     assert "not found" in result.message.lower()
 
 
+def test_binary_reference_block_maps_host_attachment_to_container_path(tmp_path: Path, monkeypatch):
+    """Docker backend: a staged binary attachment's host path is rendered as the
+    bind-mounted in-container path so the agent's tools can read it.
+
+    Regression test for #76577 — the container has its own filesystem, so the
+    gateway host path would dangle inside the sandbox.
+    """
+    from agent.context_references import preprocess_context_references
+
+    hermes_home = tmp_path / ".hermes"
+    attachments = hermes_home / "attachments"
+    attachments.mkdir(parents=True)
+    payload = attachments / "archive.zip"
+    payload.write_bytes(b"PK\x03\x04binary-zip-bytes")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    result = preprocess_context_references(
+        f"Read the attachment @file:{payload}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    # Default container base for the docker backend is /root/.hermes.
+    assert "/root/.hermes/attachments/archive.zip" in result.message
+    assert "binary file, not inlined" in result.message
+
+
+def test_binary_reference_block_keeps_host_path_on_local_backend(tmp_path: Path, monkeypatch):
+    """Local backend: no translation — the agent's tools run on the host."""
+    from agent.context_references import preprocess_context_references
+
+    hermes_home = tmp_path / ".hermes"
+    attachments = hermes_home / "attachments"
+    attachments.mkdir(parents=True)
+    payload = attachments / "archive.zip"
+    payload.write_bytes(b"PK\x03\x04binary-zip-bytes")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+
+    result = preprocess_context_references(
+        f"Read the attachment @file:{payload}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert str(payload) in result.message
+    assert "/root/.hermes/attachments/" not in result.message
+
+
 
 
 

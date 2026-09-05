@@ -7,12 +7,12 @@ import type {
   BillingCardInfo,
   BillingMutationResponse,
   BillingStateResponse,
-  ImageAttachResponse,
   SessionCloseResponse,
   SubscriptionPreviewResponse,
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
+import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
@@ -322,6 +322,10 @@ export interface UiState {
   busy: boolean
   busyInputMode: BusyInputMode
   compact: boolean
+  // Context compaction in progress (idle/preflight/auto). Distinct from
+  // `compact`, which is the /compact layout-density flag.
+  compacting: boolean
+  destructiveSlashConfirm: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean
   // Focus view (/focus) — display-only reduced-output mode. Drives the
@@ -342,8 +346,15 @@ export interface UiState {
   sid: null | string
   status: string
   statusBar: StatusBarMode
+  // display.status_bar.fields — visibility filter for status-rule segments,
+  // shared with the classic CLI bar. null = user has not customized (show
+  // the default set).
+  statusBarFields: null | ReadonlySet<string>
   streaming: boolean
   theme: Theme
+  // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
+  // rows, the same config key the classic CLI honors (#41531).
+  timestamps: boolean
   usage: Usage
 }
 
@@ -364,29 +375,36 @@ export interface ComposerPasteResult {
 export type MaybePromise<T> = Promise<T> | T
 
 export interface ComposerActions {
+  /** Pull an image off the system clipboard in as a token. */
+  attachClipboardImage: () => void
+  /** Attach an image by path in as a token. */
+  attachImagePath: (path: string) => void
   clearIn: () => void
   dequeue: () => string | undefined
-  enqueue: (text: string) => void
+  enqueue: (text: string, display?: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
+  prependQueue: (item: QueueItem) => void
   pushHistory: (text: string) => void
   removeQueue: (index: number) => void
-  replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
+  setComposerTokens: StateSetter<ComposerToken[]>
   setHistoryIdx: StateSetter<null | number>
   setInput: StateSetter<string>
   setInputBuf: StateSetter<string[]>
-  setPasteSnips: StateSetter<PasteSnippet[]>
   setQueueEdit: (index: null | number) => void
-  syncQueue: () => void
+  takeQueue: (index: number, editedDisplay?: string) => QueueItem | undefined
+  /** Reconcile attached payloads against tokens still present in the text. */
+  syncTokens: (value: string) => void
 }
 
 export interface ComposerRefs {
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
-  queueRef: MutableRefObject<string[]>
+  queueRef: MutableRefObject<QueueItem[]>
   submitRef: MutableRefObject<(value: string) => void>
+  tokensRef: MutableRefObject<ComposerToken[]>
 }
 
 export interface ComposerState {
@@ -396,16 +414,15 @@ export interface ComposerState {
   historyIdx: null | number
   input: string
   inputBuf: string[]
-  pasteSnips: PasteSnippet[]
   queueEditIdx: null | number
   queuedDisplay: string[]
+  tokens: ComposerToken[]
 }
 
 export interface UseComposerStateOptions {
   gw: GatewayClient
-  onClipboardPaste: (quiet?: boolean) => Promise<void> | void
-  onImageAttached?: (info: ImageAttachResponse) => void
   submitRef: MutableRefObject<(value: string) => void>
+  sys: (text: string) => void
 }
 
 export interface UseComposerStateResult {
@@ -473,10 +490,15 @@ export interface GatewayEventHandlerContext {
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {
+    /** Submit text literally as a prompt — no slash/!/interpolation dispatch.
+     *  Used for `-q` startup queries, which are arbitrary launcher-provided
+     *  text (parity with one-shot's literal prompt handling). */
+    submitLiteralRef: MutableRefObject<(value: string) => void>
     submitRef: MutableRefObject<(value: string) => void>
   }
   system: {
     bellOnComplete: boolean
+    bellOnPrompt?: boolean
     stdout?: NodeJS.WriteStream
     sys: (text: string) => void
   }
@@ -495,11 +517,12 @@ export interface GatewayEventHandlerContext {
 
 export interface SlashHandlerContext {
   composer: {
-    enqueue: (text: string) => void
+    attachClipboardImage: () => void
+    attachImagePath: (path: string) => void
+    enqueue: (text: string, display?: string) => void
     hasSelection: boolean
     openEditor: () => Promise<void>
-    paste: (quiet?: boolean) => void
-    queueRef: MutableRefObject<string[]>
+    queueRef: MutableRefObject<QueueItem[]>
     selection: SelectionApi
     setInput: StateSetter<string>
   }
@@ -541,6 +564,7 @@ export interface SlashHandlerContext {
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
   answerClarify: (answer: string) => void
+  answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
@@ -578,6 +602,7 @@ export interface AppLayoutStatusProps {
   goodVibesTick: number
   lastTurnEndedAt: null | number
   sessionStartedAt: null | number
+  sessionTitle: string
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
@@ -607,6 +632,7 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
+  onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void
@@ -618,8 +644,14 @@ export interface AppOverlaysProps {
   pagerPageSize: number
 }
 
-export interface PasteSnippet {
-  label: string
-  path?: string
-  text: string
-}
+/**
+ * A `[[ … ]]` token sitting in the composer text, plus the payload it stands
+ * for. `paste` tokens expand back into their text at submit; `image` tokens
+ * are a receipt for a file the gateway already holds, and expand to nothing.
+ *
+ * `index` is the user-facing number in `[[ Image 2 ]]`; `path` is the gateway
+ * path, used to detach the image when its token is deleted.
+ */
+export type ComposerToken =
+  | { index: number; kind: 'image'; label: string; path: string; text?: undefined }
+  | { index?: undefined; kind: 'paste'; label: string; path?: string; text: string }

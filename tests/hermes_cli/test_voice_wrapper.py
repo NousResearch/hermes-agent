@@ -10,6 +10,8 @@ stack.
 """
 
 
+import json
+
 import pytest
 
 
@@ -70,6 +72,13 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
     # normalizer must mirror that platform-gated rejection so shared
     # configs like ``option+c`` don't bind Alt+C in the CLI while the
     # TUI falls back to Ctrl+B.
+
+    def test_pt_key_to_sequence(self):
+        from hermes_cli.voice import pt_key_to_sequence
+
+        assert pt_key_to_sequence("c-b") == ("c-b",)
+        assert pt_key_to_sequence("a-v") == ("escape", "v")
+        assert pt_key_to_sequence("a-space") == ("escape", "space")
 
 
 class TestVoiceRecordKeyFromConfig:
@@ -186,18 +195,22 @@ class TestSpeakTextGuards:
         assert voice.speak_text("Hello world") is None
         assert played == [returned_path]
 
-    def test_speak_text_prefers_requested_mp3_over_returned_ogg(self, monkeypatch):
+    def test_speak_text_plays_returned_file_paths(self, monkeypatch):
         import hermes_cli.voice as voice
         from tools import tts_tool
 
         played = []
-        requested_paths = []
 
         def fake_tts(**kwargs):
             requested_path = kwargs["output_path"]
-            requested_paths.append(requested_path)
             ogg_path = requested_path.rsplit(".", 1)[0] + ".ogg"
-            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+            # The tool may return a different path than the requested MP3;
+            # the result's file_paths is authoritative for playback.
+            return json.dumps({
+                "success": True,
+                "file_path": ogg_path,
+                "file_paths": [ogg_path],
+            })
 
         monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
         monkeypatch.setattr(voice.os, "makedirs", lambda *_args, **_kwargs: None)
@@ -207,7 +220,9 @@ class TestSpeakTextGuards:
         monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
 
         assert voice.speak_text("Hello world") is None
-        assert played == requested_paths
+        # Should play the path from the result, not the requested MP3 path
+        assert len(played) == 1
+        assert played[0].endswith(".ogg")
 
 
 class TestContinuousAPI:
@@ -269,9 +284,7 @@ class TestContinuousLoopSimulation:
         monkeypatch.setattr(voice, "_continuous_active", False)
         monkeypatch.setattr(voice, "_continuous_recorder", None)
         monkeypatch.setattr(voice, "_continuous_no_speech_count", 0)
-        monkeypatch.setattr(voice, "_continuous_on_transcript", None)
-        monkeypatch.setattr(voice, "_continuous_on_status", None)
-        monkeypatch.setattr(voice, "_continuous_on_silent_limit", None)
+        monkeypatch.setattr(voice, "_continuous_callbacks", voice._NO_CALLBACKS)
         monkeypatch.setattr(voice, "_continuous_auto_restart", True, raising=False)
         monkeypatch.setattr(voice, "_voice_busy_probe", None, raising=False)
         monkeypatch.setattr(voice, "_play_beep", lambda *_, **__: None)
@@ -454,7 +467,7 @@ class TestSpeakTextStreamingDispatch:
     def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
         import hermes_cli.voice as voice
         import tools.tts_streaming as ts
-        from tools import tts_tool
+        from tools import tts_tool, tts_tool_speaker
 
         streamed = []
 
@@ -469,7 +482,7 @@ class TestSpeakTextStreamingDispatch:
         monkeypatch.setattr(
             ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()
         )
-        monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", fake_stream)
+        monkeypatch.setattr(tts_tool_speaker, "stream_tts_to_speaker", fake_stream)
 
         synced = []
         monkeypatch.setattr(

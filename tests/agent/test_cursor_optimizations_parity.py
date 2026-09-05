@@ -140,12 +140,20 @@ def test_parity_token_memo():
 def test_parity_persist_bounded_scan():
     print("=== parity: _flush_messages_to_session_db bounded scan ===")
     import run_agent as ra
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from agent.session_persistence import _is_ephemeral_scaffolding
 
     class FakeDB:
         def __init__(self):
             self.rows = []
         def append_message(self, **kw):
             self.rows.append({k: copy.deepcopy(v) for k, v in kw.items()})
+        def append_messages_batch(self, session_id, messages, **kw):
+            for m in messages:
+                row = {k: copy.deepcopy(v) for k, v in m.items()}
+                row["session_id"] = session_id
+                self.rows.append(row)
+            return list(range(1, len(messages) + 1))
 
     def make_agent(bounded):
         a = ra.AIAgent.__new__(ra.AIAgent)
@@ -181,10 +189,10 @@ def test_parity_persist_bounded_scan():
                 for lst in (la, lb):
                     head = [dict(m) for m in lst[:3]]
                     for m in head:
-                        m.pop(ra._DB_PERSISTED_MARKER, None)
+                        m.pop(_DB_PERSISTED_MARKER, None)
                     tail = [dict(m) for m in lst[-4:]]
                     for m in tail:
-                        m.pop(ra._DB_PERSISTED_MARKER, None)
+                        m.pop(_DB_PERSISTED_MARKER, None)
                     lst[:] = head + [{"role": "user", "content": "SUMMARY"}] + tail
         A._db_flush_scan_prefix = None
         A._flush_messages_to_session_db_unlocked(la, None)
@@ -226,15 +234,15 @@ def bench():
         flushed = copy.deepcopy(msgs)
         for m in flushed:
             if isinstance(m, dict):
-                m[ra._DB_PERSISTED_MARKER] = True
+                m[_DB_PERSISTED_MARKER] = True
 
         def old_scan():
             for _idx, m in enumerate(flushed):
                 if not isinstance(m, dict):
                     continue
-                if ra._is_ephemeral_scaffolding(m):
+                if _is_ephemeral_scaffolding(m):
                     continue
-                if m.get(ra._DB_PERSISTED_MARKER):
+                if m.get(_DB_PERSISTED_MARKER):
                     continue
 
         prefix = flushed[:]
@@ -248,9 +256,9 @@ def bench():
                 m = flushed[_idx]
                 if not isinstance(m, dict):
                     continue
-                if ra._is_ephemeral_scaffolding(m):
+                if _is_ephemeral_scaffolding(m):
                     continue
-                if m.get(ra._DB_PERSISTED_MARKER):
+                if m.get(_DB_PERSISTED_MARKER):
                     continue
 
         pold = timeit(old_scan)

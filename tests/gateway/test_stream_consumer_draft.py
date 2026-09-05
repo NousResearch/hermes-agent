@@ -136,6 +136,66 @@ class TestDraftStreamingHappyPath:
             else final_call.args[1] if len(final_call.args) > 1 else None
         )
         assert sent_content == "Hello world!"
+        final_metadata = final_call.kwargs.get("metadata") or {}
+        assert final_metadata.get("notify") is True
+        assert "expect_edits" not in final_metadata
+
+    @pytest.mark.asyncio
+    async def test_stream_is_message_preserves_cumulative_text_across_tool_boundaries(self):
+        """Slack native streams accept cumulative frames. A tool boundary must
+        not clear the consumer accumulator, otherwise every next segment is a
+        non-prefix snapshot and the connector appends the whole answer again."""
+        adapter = _make_draft_capable_adapter()
+        adapter.draft_stream_is_message = True
+        cfg = StreamConsumerConfig(
+            transport="auto", chat_type="dm",
+            edit_interval=0.01, buffer_threshold=1, cursor="",
+        )
+        consumer = GatewayStreamConsumer(adapter, "C1", cfg)
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("first segment")
+        await asyncio.sleep(0.05)
+        consumer.on_segment_break()
+        await asyncio.sleep(0.05)
+        consumer.on_delta(" second segment")
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        contents = [call["content"] for call in adapter.draft_calls]
+        assert contents[-1] == "first segment second segment"
+
+    @pytest.mark.asyncio
+    async def test_edit_preview_still_marks_expect_edits(self):
+        adapter = _make_draft_capable_adapter(supports_draft=False)
+        cfg = StreamConsumerConfig(transport="edit", chat_type="dm", cursor="")
+        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+
+        delivered = await consumer._send_or_edit("Preview", finalize=False)
+
+        assert delivered is True
+        send_mock = adapter.__dict__["send"]
+        metadata = send_mock.call_args.kwargs.get("metadata") or {}
+        assert metadata.get("expect_edits") is True
+        assert "notify" not in metadata
+
+    @pytest.mark.asyncio
+    async def test_final_split_chunk_does_not_mark_expect_edits(self):
+        adapter = _make_draft_capable_adapter(supports_draft=False)
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            StreamConsumerConfig(transport="edit", chat_type="dm", cursor=""),
+        )
+
+        message_id = await consumer._send_new_chunk("Sealed head", None, final=True)
+
+        assert message_id == "msg_real"
+        send_mock = adapter.__dict__["send"]
+        metadata = send_mock.call_args.kwargs.get("metadata") or {}
+        assert metadata.get("notify") is True
+        assert "expect_edits" not in metadata
 
 
 class TestDraftFallbackOnFailure:

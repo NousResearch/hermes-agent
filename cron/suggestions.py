@@ -1,28 +1,11 @@
 """Suggested cron jobs — proposed automations the user accepts with one tap.
 
-A *suggestion* is a ready-to-run cron job spec that Hermes surfaces to the
-user, who accepts it (creates the real cron job) or dismisses it (latched so
-it is never re-offered). This is the single surface every automation proposal
-flows through, regardless of where it came from:
-
-  * ``catalog``  — a curated starter automation (daily briefing, important-mail
-                   monitor, weekly digest, ...).
-  * ``blueprint``   — the user installed a skill that carries a ``blueprint:`` block
-                   (see ``tools/blueprints.py``); installing it registers a
-                   suggestion instead of auto-scheduling.
-  * ``usage``    — the background self-improvement review noticed a recurring
-                   ask that a scheduled job would serve.
-  * ``integration`` — the user connected an account (Gmail, GitHub, ...) and
-                   the obvious automations for that surface are offered.
-
-Accepting a suggestion just calls the existing ``cron.jobs.create_job`` with
-the stored ``job_spec`` — there is NO second job engine. Suggestions never
-auto-create jobs; acceptance is always explicit (consent-first). Dismissed
-suggestions latch by a stable ``dedup_key`` so the same proposal is not
-re-offered after the user says no.
-
-Storage mirrors ``cron/jobs.py``: ``~/.hermes/cron/suggestions.json``, atomic
-writes, an in-process lock, and 0600 perms.
+A suggestion is a ready-to-run cron job spec the user accepts (creates the real job) or dismisses
+(latched by ``dedup_key`` so it is never re-offered). Every proposal flows through here regardless
+of source: ``catalog`` (curated starters), ``blueprint`` (skill ``blueprint:`` blocks, see
+``tools/blueprints.py``), ``usage`` (self-improvement review), ``integration`` (connected account).
+Accepting calls ``cron.jobs.create_job`` with the stored ``job_spec`` — no second job engine;
+nothing auto-creates (consent-first). Storage mirrors ``cron/jobs.py`` (atomic replace, 0600).
 """
 
 from __future__ import annotations
@@ -42,24 +25,27 @@ from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
-# Per-profile by design (issue #4707): suggestions live alongside the active
-# profile's cron store. Anchor on get_hermes_home() (profile home), not the
-# shared default root. See cron/jobs.py for the full rationale.
-CRON_DIR = get_hermes_home().resolve() / "cron"
-SUGGESTIONS_FILE = CRON_DIR / "suggestions.json"
+# Per-profile by design (anchored on get_hermes_home(), see cron/jobs.py). Optional test override;
+# production resolves the path at CALL time so multiplexed profile ticks (set_hermes_home_override)
+# cannot leak one profile's suggestions into the import-time home.
+# Per-profile by design (issue #4707): suggestions live alongside the active profile's cron store. Anchor on
+# get_hermes_home() (profile home), not the shared default root. Same pattern as cron/executions.py.
+SUGGESTIONS_FILE: Optional[Path] = None
 
-# In-process lock protecting load->modify->save cycles (the background review
-# fork and the main agent can both write).
+# Protects load->modify->save cycles (the background review fork and the main agent can both write).
 _suggestions_lock = threading.Lock()
 
-# Cap pending suggestions so the list never becomes a nag wall. When full,
-# new suggestions are dropped (the user should clear the backlog first).
+# Cap pending suggestions so the list never becomes a nag wall; when full, new ones are dropped.
 MAX_PENDING = 5
 
 VALID_SOURCES = frozenset({"catalog", "blueprint", "usage", "integration"})
 _STATUS_PENDING = "pending"
 _STATUS_ACCEPTED = "accepted"
 _STATUS_DISMISSED = "dismissed"
+
+
+def _current_suggestions_file() -> Path:
+    return SUGGESTIONS_FILE or (get_hermes_home().resolve() / "cron" / "suggestions.json")
 
 
 def _secure_file(path: Path) -> None:
@@ -70,14 +56,17 @@ def _secure_file(path: Path) -> None:
 
 
 def _ensure_dir() -> None:
-    CRON_DIR.mkdir(parents=True, exist_ok=True)
+    from cron.jobs import _ensure_cron_dir
+
+    _ensure_cron_dir(_current_suggestions_file().parent)
 
 
 def _load_raw() -> Dict[str, Any]:
-    if not SUGGESTIONS_FILE.exists():
+    suggestions_file = _current_suggestions_file()
+    if not suggestions_file.exists():
         return {"suggestions": []}
     try:
-        with open(SUGGESTIONS_FILE, "r", encoding="utf-8") as f:
+        with open(suggestions_file, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.warning("suggestions.json unreadable (%s); starting empty", e)
@@ -92,18 +81,16 @@ def _load_raw() -> Dict[str, Any]:
 
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
-    fd, tmp_path = tempfile.mkstemp(dir=str(SUGGESTIONS_FILE.parent), suffix=".tmp", prefix=".sugg_")
+    suggestions_file = _current_suggestions_file()
+    fd, tmp_path = tempfile.mkstemp(dir=str(suggestions_file.parent), suffix=".tmp", prefix=".sugg_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(
-                {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()},
-                f,
-                indent=2,
-            )
+            payload = {"suggestions": suggestions, "updated_at": _hermes_now().isoformat()}
+            json.dump(payload, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        atomic_replace(tmp_path, SUGGESTIONS_FILE)
-        _secure_file(SUGGESTIONS_FILE)
+        atomic_replace(tmp_path, suggestions_file)
+        _secure_file(suggestions_file)
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -117,29 +104,22 @@ def load_suggestions() -> List[Dict[str, Any]]:
     return _load_raw().get("suggestions", [])
 
 
+def _pending(suggestions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [s for s in suggestions if s.get("status") == _STATUS_PENDING]
+
+
 def list_pending() -> List[Dict[str, Any]]:
     """Return pending suggestions in creation order (oldest first)."""
-    return [s for s in load_suggestions() if s.get("status") == _STATUS_PENDING]
+    return _pending(load_suggestions())
 
 
 def add_suggestion(
-    *,
-    title: str,
-    description: str,
-    source: str,
-    job_spec: Dict[str, Any],
-    dedup_key: str,
+    *, title: str, description: str, source: str, job_spec: Dict[str, Any], dedup_key: str,
 ) -> Optional[Dict[str, Any]]:
-    """Register a pending suggestion. Returns the record, or None if skipped.
-
-    Skipped when: the source is unknown, the same ``dedup_key`` was already
-    dismissed or accepted (never re-offer), an identical pending suggestion
-    exists, or the pending list is full (``MAX_PENDING``).
-
-    ``job_spec`` is a dict of kwargs for ``cron.jobs.create_job`` — accepting
-    the suggestion passes it straight through, so there is no second schema to
-    keep in sync.
-    """
+    """Register a pending suggestion. Returns the record, or None when skipped: the same
+    ``dedup_key`` was already decided on or is still pending (never re-offer, never duplicate), or
+    the pending list is full (``MAX_PENDING``). ``job_spec`` is passed straight to
+    ``cron.jobs.create_job`` on accept."""
     if source not in VALID_SOURCES:
         raise ValueError(f"unknown suggestion source: {source!r}")
     if not title.strip() or not dedup_key.strip():
@@ -147,18 +127,13 @@ def add_suggestion(
 
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
-
-        # Never re-offer something the user already saw and decided on, and
-        # never duplicate a still-pending proposal.
-        for existing in suggestions:
-            if existing.get("dedup_key") == dedup_key:
-                if existing.get("status") in (_STATUS_DISMISSED, _STATUS_ACCEPTED):
-                    return None
-                if existing.get("status") == _STATUS_PENDING:
-                    return None
-
-        pending_count = sum(1 for s in suggestions if s.get("status") == _STATUS_PENDING)
-        if pending_count >= MAX_PENDING:
+        if any(
+            existing.get("dedup_key") == dedup_key
+            and existing.get("status") in (_STATUS_DISMISSED, _STATUS_ACCEPTED, _STATUS_PENDING)
+            for existing in suggestions
+        ):
+            return None
+        if len(_pending(suggestions)) >= MAX_PENDING:
             logger.info("Suggestion backlog full (%d); dropping %r", MAX_PENDING, title)
             return None
 
@@ -178,19 +153,16 @@ def add_suggestion(
 
 
 def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
-    """Resolve a suggestion by id, 1-based pending index, or title (exact)."""
+    """Resolve a suggestion by id, 1-based pending index, or exact (case-insensitive) title."""
     suggestions = load_suggestions()
-    # By id.
     for s in suggestions:
         if s.get("id") == ref:
             return s
-    # By 1-based pending index.
     if ref.isdigit():
-        pending = [s for s in suggestions if s.get("status") == _STATUS_PENDING]
+        pending = _pending(suggestions)
         idx = int(ref) - 1
         if 0 <= idx < len(pending):
             return pending[idx]
-    # By exact title (case-insensitive).
     for s in suggestions:
         if s.get("title", "").lower() == ref.lower():
             return s
@@ -200,57 +172,50 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
 def _set_status(suggestion_id: str, status: str) -> bool:
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
-        changed = False
         for s in suggestions:
             if s.get("id") == suggestion_id:
                 s["status"] = status
                 s["resolved_at"] = _hermes_now().isoformat()
-                changed = True
-                break
-        if changed:
-            _save_raw(suggestions)
-        return changed
+                _save_raw(suggestions)
+                return True
+        return False
 
 
 def dismiss_suggestion(ref: str) -> bool:
     """Dismiss a suggestion (latched — never re-offered for its dedup_key)."""
     s = get_suggestion(ref)
-    if not s:
-        return False
-    return _set_status(s["id"], _STATUS_DISMISSED)
+    return bool(s) and _set_status(s["id"], _STATUS_DISMISSED)
 
 
 def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-    """Accept a suggestion: create the real cron job from its ``job_spec``.
-
-    Returns the created cron job dict, or None if the suggestion isn't found /
-    not pending. The job_spec is passed straight to ``cron.jobs.create_job``;
-    an ``origin`` (platform/chat) is merged so "origin" delivery routes back to
-    the chat where the user accepted.
-    """
+    """Accept a suggestion: create the real cron job from its ``job_spec``. Returns the job dict, or
+    None if not found / not pending. ``origin`` (platform/chat) is merged so "origin" delivery
+    routes back to the chat where the user accepted."""
     s = get_suggestion(ref)
     if not s or s.get("status") != _STATUS_PENDING:
         return None
 
-    from cron.jobs import create_job
+    from cron.scheduler import (
+        CronSchedulerRegistrationError, create_job_with_scheduler_registration,
+    )
 
     spec = dict(s.get("job_spec") or {})
     if origin is not None and "origin" not in spec:
         spec["origin"] = origin
 
-    job = create_job(**spec)
+    try:
+        job = create_job_with_scheduler_registration(**spec)
+    except CronSchedulerRegistrationError:
+        # The job is already durable: resolve the suggestion so a retry cannot create a second copy.
+        _set_status(s["id"], _STATUS_ACCEPTED)
+        raise
     _set_status(s["id"], _STATUS_ACCEPTED)
     return job
 
 
 def clear_resolved() -> int:
-    """Drop accepted/dismissed records from disk. Returns the count removed.
-
-    Pending suggestions and the dedup memory of dismissed ones are the only
-    things that matter long-term, but dismissed records must be RETAINED for
-    their dedup_key (so they aren't re-offered). This only prunes ACCEPTED
-    records, which have served their purpose once the job exists.
-    """
+    """Drop ACCEPTED records from disk (they served their purpose once the job exists); dismissed
+    records are RETAINED for their dedup_key. Returns the count removed."""
     with _suggestions_lock:
         suggestions = _load_raw().get("suggestions", [])
         kept = [s for s in suggestions if s.get("status") != _STATUS_ACCEPTED]

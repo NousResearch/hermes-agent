@@ -1,6 +1,8 @@
 """Tests for hermes_cli.doctor."""
 
+import importlib.util
 import os
+import subprocess
 import sys
 import types
 import io
@@ -11,33 +13,57 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_cli.doctor as doctor
+import hermes_constants
+from hermes_cli import config as config_mod
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor import _has_provider_env_config
+from hermes_cli.doctor_config import _has_provider_env_config
+import shutil
+from hermes_cli import doctor_tools
+from hermes_cli import doctor_state
+from hermes_cli import doctor_platform
+from hermes_cli import doctor_config
+from tools import browser_tool_install as bt_install
 
 
 class TestDoctorPlatformHints:
     def test_termux_package_hint(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
         monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
-        assert doctor._is_termux() is True
-        assert doctor._python_install_cmd() == "python -m pip install"
-        assert doctor._system_package_install_cmd("ripgrep") == "pkg install ripgrep"
+        assert hermes_constants.is_termux() is True
+        assert doctor_platform._python_install_cmd() == "python -m pip install"
+        assert doctor_platform._system_package_install_cmd("ripgrep") == "pkg install ripgrep"
 
 
     def test_sqlite_upgrade_hint_recreates_docker_containers(self, monkeypatch):
-        monkeypatch.setattr(doctor, "detect_install_method", lambda _root: "docker")
+        monkeypatch.setattr(config_mod, "detect_install_method", lambda _root: "docker")
 
-        hint = doctor._sqlite_upgrade_hint()
+        hint = doctor_platform._sqlite_upgrade_hint()
 
         assert "docker pull nousresearch/hermes-agent:latest" in hint
         assert "recreate all Hermes containers" in hint
         assert "hermes update" not in hint
 
     def test_sqlite_upgrade_hint_keeps_git_runtime_repair(self):
-        hint = doctor._sqlite_upgrade_hint("git")
+        hint = doctor_platform._sqlite_upgrade_hint("git")
 
         assert "run `hermes update`" in hint
+
+    def test_sqlite_upgrade_hint_uses_pkg_for_apt_managed_install(self):
+        hint = doctor_platform._sqlite_upgrade_hint("apt")
+
+        assert "run `pkg upgrade hermes-agent`" in hint
+        assert "hermes update" not in hint
+
+    def test_sqlite_upgrade_hint_preserves_nix_guidance_as_prose(self):
+        from hermes_cli.config import recommended_update_command_for_method
+
+        guidance = recommended_update_command_for_method("nix")
+        hint = doctor_platform._sqlite_upgrade_hint("nix")
+
+        assert guidance in hint
+        assert f"run `{guidance}`" not in hint
+        assert "hermes update" not in hint
 
 
 class TestProviderEnvDetection:
@@ -57,11 +83,57 @@ class TestDoctorToolAvailabilitySummary:
             {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
             {"name": "web", "missing_vars": ["EXA_API_KEY"]},
         ]
-        monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
 
-        filtered = doctor._missing_api_key_toolsets_for_summary(unavailable)
+        filtered = doctor_tools._missing_api_key_toolsets_for_summary(unavailable)
 
         assert [item["name"] for item in filtered] == ["web"]
+
+    def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
+        """#78412: selected firecrawl with is_available=False must warn."""
+        class _Unavailable:
+            name = "firecrawl"
+
+            def is_available(self):
+                return False
+
+        unavailable = _Unavailable()
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: unavailable,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: unavailable,
+        )
+
+        rows = doctor_tools._doctor_web_capability_rows()
+        assert rows
+        assert all(status == "warn" for status, _, _ in rows)
+        assert any("firecrawl selected; provider not configured" in detail for _, _, detail in rows)
+
+    def test_web_capability_rows_ok_when_provider_ready(self, monkeypatch):
+        class _Ready:
+            name = "ddgs"
+
+            def is_available(self):
+                return True
+
+        ready = _Ready()
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_search_provider",
+            lambda: ready,
+        )
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_active_extract_provider",
+            lambda: ready,
+        )
+
+        rows = doctor_tools._doctor_web_capability_rows()
+        assert rows == [
+            ("ok", "web search", "(ddgs)"),
+            ("ok", "web extract", "(ddgs)"),
+        ]
 
 
 class TestDoctorEnvFileEncoding:
@@ -142,10 +214,10 @@ class TestDoctorToolAvailabilityOverrides:
 
 
     def test_marks_kanban_available_only_when_missing_worker_env_gate(self, monkeypatch):
-        monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: False)
+        monkeypatch.setattr(doctor_state, "_honcho_is_configured_for_doctor", lambda: False)
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
 
-        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+        available, unavailable = doctor_tools._apply_doctor_tool_availability_overrides(
             [],
             [{"name": "kanban", "env_vars": [], "tools": ["kanban_show"]}],
         )
@@ -157,7 +229,7 @@ class TestDoctorToolAvailabilityOverrides:
         monkeypatch.setenv("HERMES_KANBAN_TASK", "probe")
         kanban_entry = {"name": "kanban", "env_vars": [], "tools": ["kanban_show"]}
 
-        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+        available, unavailable = doctor_tools._apply_doctor_tool_availability_overrides(
             [],
             [kanban_entry],
         )
@@ -177,7 +249,7 @@ class TestHonchoDoctorConfigDetection:
             lambda: fake_config,
         )
 
-        assert doctor._honcho_is_configured_for_doctor()
+        assert doctor_state._honcho_is_configured_for_doctor()
 
 
 
@@ -193,7 +265,7 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     monkeypatch.setenv("VERCEL_TOKEN", "super-secret-value")
     monkeypatch.delenv("VERCEL_PROJECT_ID", raising=False)
     monkeypatch.setenv("VERCEL_TEAM_ID", "team")
-    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "vercel" else None)
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
@@ -224,18 +296,34 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
 class TestDoctorMemoryProviderSection:
     """The ◆ Memory Provider section should respect memory.provider config."""
 
-    def _make_hermes_home(self, tmp_path, provider=""):
+    def _make_hermes_home(self, tmp_path, provider="", memory_config=None):
         """Create a minimal HERMES_HOME with config.yaml."""
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         import yaml
-        config = {"memory": {"provider": provider}} if provider else {"memory": {}}
+        config = dict(memory_config or {})
+        if provider:
+            config["provider"] = provider
+        config = {"memory": config}
         (home / "config.yaml").write_text(yaml.dump(config))
         return home
 
-    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
+    def _run_doctor_and_capture(
+        self,
+        monkeypatch,
+        tmp_path,
+        provider="",
+        *,
+        memory_config=None,
+        stale_builtin_files=False,
+    ):
         """Run doctor and capture stdout."""
-        home = self._make_hermes_home(tmp_path, provider)
+        home = self._make_hermes_home(tmp_path, provider, memory_config)
+        if stale_builtin_files:
+            memories = home / "memories"
+            memories.mkdir()
+            (memories / "MEMORY.md").write_text("stale memory", encoding="utf-8")
+            (memories / "USER.md").write_text("stale user", encoding="utf-8")
         monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
         monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
@@ -272,44 +360,94 @@ class TestDoctorMemoryProviderSection:
         assert "Mem0" not in out
 
 
+    def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
+        # Make mem0 import fail
+        monkeypatch.setitem(sys.modules, "plugins.memory.mem0", None)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+        assert "Memory Provider" in out
+        assert "Built-in memory active" not in out
+
+    @pytest.mark.parametrize("memory_enabled", [False, True])
+    def test_stale_builtin_files_reported_only_when_store_enabled(
+        self, monkeypatch, tmp_path, memory_enabled
+    ):
+        # #100668: disabled built-in stores must not surface stale files as active.
+        out = self._run_doctor_and_capture(
+            monkeypatch,
+            tmp_path,
+            provider="mnemosyne",
+            memory_config={
+                "memory_enabled": memory_enabled,
+                "user_profile_enabled": False,
+            },
+            stale_builtin_files=True,
+        )
+
+        assert ("MEMORY.md exists" in out) is memory_enabled
+        assert "USER.md exists" not in out
+        assert ("Built-in memory files disabled by config" in out) is not memory_enabled
 
 
-def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
-    """Set up run_doctor with node present, agent-browser only in the
-    Hermes-managed node bin (~/.hermes/node/bin), not on PATH or in
-    PROJECT_ROOT/node_modules. Returns the captured stdout."""
-    home = tmp_path / ".hermes"
-    (home / "node" / "bin").mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    managed_ab = home / "node" / "bin" / "agent-browser"
-    managed_ab.write_text("#!/bin/sh\n", encoding="utf-8")
-    managed_ab.chmod(0o755)
-    project = tmp_path / "project"
-    project.mkdir(exist_ok=True)  # no node_modules/agent-browser here
+def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
 
-    monkeypatch.delenv("TERMUX_VERSION", raising=False)
-    monkeypatch.delenv("PREFIX", raising=False)
-    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
-    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
-    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    real_which = shutil.which
 
-    # node on PATH, agent-browser is NOT on PATH (only in the managed bin).
-    # The managed-dir rung resolves via shutil.which(..., path=<dir>) so
-    # Windows picks the .cmd shim — mirror that shape here.
-    def _fake_which(cmd, path=None):
-        if path is not None:
-            if cmd == "agent-browser" and str(managed_ab.parent) == str(path):
-                return str(managed_ab)
+    def fake_which(cmd):
+        if cmd in {"docker", "node", "npm"}:
             return None
-        return "/usr/bin/node" if cmd in {"node", "npm"} else None
+        return real_which(cmd)
 
-    monkeypatch.setattr(doctor_mod.shutil, "which", _fake_which)
-    # agent_browser_runnable is imported into doctor's namespace
-    monkeypatch.setattr(
-        doctor_mod,
-        "agent_browser_runnable",
-        lambda path: runnable and str(path) == str(managed_ab),
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    assert "Docker backend is not available inside Termux" in out
+    assert "Node.js not found (browser tools are optional in the tested Termux path)" in out
+    assert "Install Node.js on Termux with: pkg install nodejs" in out
+    assert "Termux browser setup:" in out
+    assert "1) pkg install nodejs" in out
+    assert "2) npm install -g agent-browser" in out
+    assert "3) agent-browser install" in out
+    assert "Termux compatibility fallbacks:" in out
+    assert "use .[termux-all] for broad compatibility" in out
+    assert "Matrix E2EE extra is excluded on Termux" in out
+    assert "Local faster-whisper extra is excluded on Termux" in out
+    assert "STT fallback: use Groq Whisper (set GROQ_API_KEY) or OpenAI Whisper (set VOICE_TOOLS_OPENAI_KEY)." in out
+    assert "docker not found (optional)" not in out
+
+
+def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+
+    import yaml
+
+    (home / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "model": {
+                    "provider": "volcengine-plan",
+                    "default": "doubao-seed-2.0-code",
+                },
+                "providers": {
+                    "volcengine-plan": {
+                        "name": "volcengine-plan",
+                        "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+                        "default_model": "doubao-seed-2.0-code",
+                        "models": {"doubao-seed-2.0-code": {}},
+                    }
+                },
+            }
+        )
     )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
@@ -319,7 +457,7 @@ def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -328,8 +466,57 @@ def _run_doctor_with_managed_agent_browser(monkeypatch, tmp_path, runnable):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))
-    return buf.getvalue()
 
+    out = buf.getvalue()
+    assert "model.provider 'volcengine-plan' is not a recognised provider" not in out
+
+
+def test_run_doctor_accepts_stable_key_when_provider_name_differs(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: custom:local-127.0.0.1:11434\n"
+        "  default: qwen3.5:9b\n"
+        "providers:\n"
+        "  local-127.0.0.1:11434:\n"
+        "    name: Local Ollama\n"
+        "    base_url: http://127.0.0.1:11434/v1\n"
+        "    default_model: qwen3.5:9b\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert (
+        "model.provider 'custom:local-127.0.0.1:11434' is not a recognised provider"
+        not in out
+    )
+    assert "model.provider 'custom:local-127.0.0.1:11434' is unknown" not in out
 
 
 def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
@@ -356,7 +543,7 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -396,10 +583,10 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
     try:
         from hermes_cli import auth as _auth_mod
 
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
-        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
     except Exception:
         pass
 
@@ -419,6 +606,8 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         ("opencode-zen", "anthropic/claude-sonnet-4.6"),
         ("kilocode", "anthropic/claude-sonnet-4.6"),
         ("kimi-coding", "kimi-k2"),
+        ("nvidia", "qwen/qwen3.5-122b-a10b"),
+        ("moa", "anthropic/claude-sonnet-4.6"),
     ],
 )
 def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
@@ -446,7 +635,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -459,11 +648,59 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     out = buf.getvalue()
     assert f"model.provider '{provider}' is not a recognised provider" not in out
     assert f"model.provider '{provider}' is unknown" not in out
-    if provider in {"ai-gateway", "opencode-zen", "kilocode"}:
+    if provider in {"ai-gateway", "opencode-zen", "kilocode", "nvidia"}:
         assert (
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
         )
+
+
+def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: custom:hpc-ai\n"
+        "  default: deepseek/deepseek-v4-flash\n"
+        "custom_providers:\n"
+        "  - name: hpc-ai\n"
+        "    base_url: https://hpc-ai.example/v1\n"
+        "    api_key: test-key\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert "model.provider 'custom:hpc-ai' is not a recognised provider" not in out
+    assert "model.provider 'custom:hpc-ai' is unknown" not in out
+    assert (
+        "model.default 'deepseek/deepseek-v4-flash' uses a vendor/model slug but provider is "
+        "'custom:hpc-ai'"
+        not in out
+    )
+    assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
 
 
 
@@ -492,7 +729,7 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_auth_status", lambda provider: {"logged_in": True})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
@@ -519,7 +756,7 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: "/data/data/com.termux/files/usr/bin/node" if cmd in {"node", "npm"} else None)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/data/data/com.termux/files/usr/bin/node" if cmd in {"node", "npm"} else None)
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: (["terminal"], [{"name": "browser", "env_vars": [], "tools": ["browser_navigate"]}]),
@@ -532,7 +769,7 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
 
     try:
         from hermes_cli import auth as _auth_mod
-        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
     except Exception:
@@ -549,6 +786,107 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "system dependency not met" in out
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
     assert "npm install -g agent-browser && agent-browser install" in out
+
+
+def _doctor_env_for_agent_browser(monkeypatch, tmp_path):
+    """Shared non-Termux fixture setup for the agent-browser npx-resolution
+    branch in run_doctor (hermes_cli/doctor.py ~1557-1605)."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd: "/usr/bin/node" if cmd in {"node", "npm"} else None,
+    )
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+
+def test_run_doctor_reports_agent_browser_resolves_via_npx(monkeypatch, tmp_path):
+    """When agent-browser has no local/global install, _find_agent_browser
+    falls through to 'npx agent-browser' — doctor must report that as OK
+    (#43564: agent-browser is no longer a root package.json dependency, so
+    this is the expected common case now, not a warning)."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    warm_calls = []
+    monkeypatch.setattr(
+        "tools.browser_tool_install.warm_agent_browser_npx_cache", lambda *a, **kw: warm_calls.append(1) or True
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "agent-browser" in out
+    assert "resolves via npx on first use" in out
+    assert "agent-browser not installed" not in out
+    # --fix was not requested: the warm-up must not fire on a plain check.
+    assert not warm_calls
+
+
+def test_run_doctor_fix_warms_npx_cache_when_agent_browser_resolves_via_npx(
+    monkeypatch, tmp_path
+):
+    """`hermes doctor --fix` must actually call warm_agent_browser_npx_cache()
+    when agent-browser resolves via npx, and report success."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    warm_calls = []
+    monkeypatch.setattr(
+        "tools.browser_tool_install.warm_agent_browser_npx_cache", lambda *a, **kw: warm_calls.append(1) or True
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=True))
+    out = buf.getvalue()
+
+    assert warm_calls, "warm_agent_browser_npx_cache() must be called under --fix"
+    assert "Warmed npx cache for agent-browser" in out
+    assert "Could not warm npx cache" not in out
+
+
+def test_run_doctor_fix_reports_when_npx_warmup_fails(monkeypatch, tmp_path):
+    """If warm_agent_browser_npx_cache() fails (offline, npx missing from
+    PATH at call time, etc.), doctor must say so instead of silently
+    claiming success — and must not count it as a fix."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    monkeypatch.setattr("tools.browser_tool_install.warm_agent_browser_npx_cache", lambda *a, **kw: False)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=True))
+    out = buf.getvalue()
+
+    assert "Could not warm npx cache (offline or npx unavailable)" in out
+    assert "Warmed npx cache for agent-browser" not in out
 
 
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
@@ -1039,9 +1377,9 @@ class TestDoctorCodexCliHintPlacement:
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {"logged_in": False})
 
-        real_which = doctor_mod.shutil.which
+        real_which = shutil.which
         monkeypatch.setattr(
-            doctor_mod.shutil,
+            shutil,
             "which",
             lambda cmd: ("/usr/local/bin/codex" if codex_cli_present else None) if cmd == "codex" else real_which(cmd),
         )
@@ -1159,22 +1497,22 @@ class TestDoctorDeprecatedConfigAndEnv:
 
 
     def test_collect_deprecated_env_vars_ignores_empty(self):
-        assert doctor_mod.collect_deprecated_env_vars({"TERMINAL_CWD": "  "}) == []
-        assert doctor_mod.collect_deprecated_env_vars({}) == []
-        assert doctor_mod.collect_deprecated_env_vars(None) == []
+        assert doctor_config.collect_deprecated_env_vars({"TERMINAL_CWD": "  "}) == []
+        assert doctor_config.collect_deprecated_env_vars({}) == []
+        assert doctor_config.collect_deprecated_env_vars(None) == []
 
     def test_hermes_tool_progress_warning_says_unsupported_since_floor(self):
         """HERMES_TOOL_PROGRESS lost its last consumer (the retired v3→4
         migration) when the v12 support floor landed — doctor must say the
         variable is ignored rather than merely 'deprecated but read'."""
         findings = dict(
-            doctor_mod.collect_deprecated_env_vars({"HERMES_TOOL_PROGRESS": "true"})
+            doctor_config.collect_deprecated_env_vars({"HERMES_TOOL_PROGRESS": "true"})
         )
         assert "ignored/unsupported since config floor v12" in findings["HERMES_TOOL_PROGRESS"]
         # The MODE variant is still read by the gateway fallback → keeps the
         # plain deprecation wording.
         mode = dict(
-            doctor_mod.collect_deprecated_env_vars({"HERMES_TOOL_PROGRESS_MODE": "all"})
+            doctor_config.collect_deprecated_env_vars({"HERMES_TOOL_PROGRESS_MODE": "all"})
         )
         assert mode["HERMES_TOOL_PROGRESS_MODE"] == "display.tool_progress in config.yaml"
 
@@ -1215,7 +1553,7 @@ class TestDoctorDeprecatedConfigAndEnv:
 
     def test_report_does_not_count_as_blocking_issue(self, monkeypatch, tmp_path, capsys):
         """report_deprecated_config_and_env is warn-only — no issues list mutation."""
-        findings = doctor_mod.report_deprecated_config_and_env(
+        findings = doctor_config.report_deprecated_config_and_env(
             {"delegation": {"max_async_children": 2}},
             {"HERMES_TOOL_PROGRESS_MODE": "verbose"},
         )
@@ -1224,3 +1562,183 @@ class TestDoctorDeprecatedConfigAndEnv:
         assert "Deprecated: delegation.max_async_children" in out
         assert "Deprecated: HERMES_TOOL_PROGRESS_MODE" in out
         assert "⚠" in out or "Deprecated" in out
+
+
+class TestMacOSTCCGrants:
+    """macOS TCC grant persistence check (issue #86385)."""
+
+    def test_silent_on_non_macos(self, monkeypatch, capsys, tmp_path):
+        """Non-macOS: the check must produce no output even with a bundle present."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "linux")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        doctor_platform.check_macos_tcc_grants()
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_no_desktop_bundle(self, monkeypatch, capsys):
+        """No locally-built desktop bundle: nothing to check, no output."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(doctor_platform, "_desktop_app_bundle", lambda: None)
+        doctor_platform.check_macos_tcc_grants()
+        assert capsys.readouterr().out == ""
+
+    def test_warns_on_cdhash_pinned_dr(self, monkeypatch, capsys, tmp_path):
+        """Pre-#73681 builds have a cdhash-pinned DR → warn that grants reset."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_platform,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes" and cdhash H"97e692f3890f781fa0ad5ad6cb9d769cfaf42628"',
+        )
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC grants will reset after every update" in out
+        assert "cdhash-pinned" in out
+        assert "hermes update" in out
+
+    def test_ok_and_repair_info_on_identifier_dr(self, monkeypatch, capsys, tmp_path):
+        """Post-#73681 identifier-only DR → stable + stale-grant repair info."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_platform,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes"',
+        )
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "identifier-pinned" in out
+        # Identifier-pinned is stable but not the strongest anchor — the check
+        # should point at the cert-anchored upgrade path.
+        assert "--setup-tcc-identity" in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
+        assert "toggle" in out
+        assert "relaunch" in out
+
+    def test_ok_on_certificate_anchored_dr(self, monkeypatch, capsys, tmp_path):
+        """A cert-anchored DR (hermes desktop --setup-tcc-identity, or a
+        notarized release) classifies as stable in its own class — no upgrade
+        hint, still prints the stale-grant repair info."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(
+            doctor_platform,
+            "_macos_desktop_dr",
+            lambda app: 'designated => identifier "com.nousresearch.hermes" and certificate root = H"aabbcc"',
+        )
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "TCC signing identity is stable" in out
+        assert "certificate-anchored" in out
+        assert "--setup-tcc-identity" not in out
+        assert "tccutil reset ScreenCapture com.nousresearch.hermes" in out
+
+    def test_warns_when_dr_unreadable(self, monkeypatch, capsys, tmp_path):
+        """codesign failure → warn, never crash."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_platform, "_macos_desktop_dr", lambda app: None)
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+
+    def test_warns_when_dr_empty_string(self, monkeypatch, capsys, tmp_path):
+        """Empty DR output must not false-positive as a stable identity."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(doctor_platform, "_macos_desktop_dr", lambda app: "")
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+    def test_warns_when_codesign_times_out(self, monkeypatch, capsys, tmp_path):
+        """A hanging codesign must degrade to the unreadable-DR warning, never crash."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+
+        def _timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd=["codesign"], timeout=15)
+
+        monkeypatch.setattr(subprocess, "run", _timeout)
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+    def test_warns_when_codesign_missing(self, monkeypatch, capsys, tmp_path):
+        """No codesign binary → same graceful unreadable-DR warning."""
+        monkeypatch.setattr(doctor_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            doctor_platform,
+            "_desktop_app_bundle",
+            lambda: tmp_path / "Hermes.app",
+        )
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+        doctor_platform.check_macos_tcc_grants()
+        out = capsys.readouterr().out
+        assert "could not read code-signing requirement" in out
+        assert "stable" not in out
+
+
+def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr(
+        "tools.browser_tool_lightpanda_fallback.lightpanda_engine_status",
+        lambda: (False, "cloud provider Browserbase is selected"),
+    )
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "browser.engine=lightpanda is shadowed" in out
+    assert "Browserbase" in out
+
+
+def test_run_doctor_reports_lightpanda_ok(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: "/opt/lightpanda")
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda" in out
+    assert "shadowed" not in out
+
+
+def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: True)
+    monkeypatch.setattr("tools.browser_tool_lightpanda_fallback.lightpanda_engine_status", lambda: (True, "Browser Use mode"))
+    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
+    assert "Lightpanda selected but binary not found" in out

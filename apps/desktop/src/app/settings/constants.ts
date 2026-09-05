@@ -1,6 +1,7 @@
 import {
   Box,
   Brain,
+  Globe,
   type IconComponent,
   Lock,
   MessageCircle,
@@ -13,6 +14,10 @@ import {
 } from '@/lib/icons'
 import { REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
+
+// Single source of truth for built-in personality names lives in
+// lib/personalities (mirrors hermes_cli/personality.py BUILTIN_PERSONALITIES).
+export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 import { defineFieldCopy } from './field-copy'
 import type { DesktopConfigSection } from './types'
@@ -223,23 +228,6 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
   }
 ]
 
-export const BUILTIN_PERSONALITIES = [
-  'helpful',
-  'concise',
-  'technical',
-  'creative',
-  'teacher',
-  'kawaii',
-  'catgirl',
-  'pirate',
-  'shakespeare',
-  'surfer',
-  'noir',
-  'uwu',
-  'philosopher',
-  'hype'
-]
-
 // Schema-side select overrides for desktop-relevant enum fields whose
 // backend schema only declares a string type.
 export const ENUM_OPTIONS: Record<string, string[]> = {
@@ -439,7 +427,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   },
   browser: {
     allowPrivateUrls: 'Browser Private URLs',
-    autoLocalForPrivateUrls: 'Local Browser For Private URLs'
+    autoLocalForPrivateUrls: 'Local Browser For Private URLs',
+    useRealProfile: 'Use My Real Browser Profile'
   },
   checkpoints: {
     enabled: 'File Checkpoints',
@@ -567,6 +556,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     repoScanExcludePaths: 'Folders and their descendants to skip during repository discovery.'
   },
   timezone: 'IANA timezone identifier. Blank uses the system timezone.',
+  browser: {
+    useRealProfile:
+      "Local browsing uses your real logins. Hermes copies your default browser's profile (cookies, logins, preferences) into a managed snapshot and drives it with its packaged Chromium — your live profile is never opened directly, and the copy is refreshed from it on each run. Also lets the agent open a local real-profile session on request even when a cloud browser backend is configured. Only Chromium browsers (Chrome, Edge, Brave, Brave Origin, Chromium) are supported; a non-Chromium default fails with a clear message. Off by default."
+  },
   agent: {
     imageInputMode: 'Controls how image attachments are sent to the model.',
     maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
@@ -680,10 +673,14 @@ export const SECTIONS: DesktopConfigSection[] = [
       'command_allowlist',
       'security.redact_secrets',
       'security.allow_private_urls',
-      'browser.allow_private_urls',
-      'browser.auto_local_for_private_urls',
       'checkpoints.enabled'
     ]
+  },
+  {
+    id: 'browser',
+    label: 'Browser',
+    icon: Globe,
+    keys: ['browser.use_real_profile', 'browser.allow_private_urls', 'browser.auto_local_for_private_urls']
   },
   {
     id: 'memory',
@@ -747,7 +744,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
       'voice.record_key',
-      'voice.max_recording_seconds'
+      'voice.max_recording_seconds',
+      'voice.client_direct'
     ]
   },
   {

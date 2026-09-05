@@ -36,8 +36,8 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
+from acp_adapter.model_catalog import ACP_MAX_MODELS_PER_PROVIDER
 from acp_adapter.server import (
-    ACP_MAX_MODELS_PER_PROVIDER,
     HermesACPAgent,
     HERMES_VERSION,
 )
@@ -409,6 +409,43 @@ class TestPrompt:
         assert isinstance(resp, PromptResponse)
         assert resp.stop_reason == "refusal"
 
+    @pytest.mark.asyncio
+    async def test_prompt_binds_session_id_into_subprocess_env(self, agent, mock_manager):
+        """The ACP prompt path must bridge the session id into child subprocesses.
+
+        Regression: ``set_session_vars`` was called with ``session_key`` only,
+        leaving the ``HERMES_SESSION_ID`` ContextVar bound to the explicit ""
+        default. Once the session-context machinery is engaged, that empty value
+        is authoritative — so ``_make_run_env`` handed child subprocesses an
+        empty ``HERMES_SESSION_ID`` instead of the session's own id.
+        """
+        from tools.environments.local import _make_run_env
+
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+
+        captured: dict[str, str | None] = {}
+
+        def _run(*args, **kwargs):
+            # Runs inside the session context copy set up by prompt().
+            captured["child"] = _make_run_env({}).get("HERMES_SESSION_ID")
+            return {"final_response": "ok", "messages": []}
+
+        state.agent.run_conversation = _run
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hi")],
+            session_id=resp.session_id,
+        )
+
+        assert captured.get("child") == resp.session_id
+
 
 
 
@@ -604,7 +641,7 @@ class TestRegisterSessionMcpServers:
             registered_config.update(config_map)
             return ["mcp_test_server_tool1"]
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
+        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=capture_register), \
              patch("model_tools.get_tool_definitions", return_value=[]):
             await agent._register_session_mcp_servers(state, [server])
 
@@ -645,7 +682,7 @@ class TestRegisterSessionMcpServers:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
+        with patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp_srv_search"]), \
              patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
@@ -686,6 +723,6 @@ class TestRegisterSessionMcpServers:
             env=[],
         )
 
-        with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
+        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])

@@ -53,6 +53,7 @@ class TestExplicitAllowlist:
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
+        "API_SERVER_KEY",
     ])
     def test_explicit_key_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "test-value-123")
@@ -67,7 +68,7 @@ class TestExplicitAllowlist:
 # ---------------------------------------------------------------------------
 
 class TestCatchAllPatterns:
-    """Any key ending in _API_KEY or _TOKEN should route to .env."""
+    """Any key ending in _API_KEY, _TOKEN, or _SECRET should route to .env."""
 
     @pytest.mark.parametrize("key", [
         "DAYTONA_API_KEY",
@@ -75,6 +76,7 @@ class TestCatchAllPatterns:
         "SOME_FUTURE_SERVICE_API_KEY",
         "MY_CUSTOM_TOKEN",
         "WHATSAPP_BOT_TOKEN",
+        "CLIENT_SECRET",
     ])
     def test_api_key_suffix_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "secret-456")
@@ -103,6 +105,20 @@ class TestConfigYamlRouting:
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
 
+    def test_cron_script_timeout_is_recognized(self, _isolated_hermes_home, capsys):
+        """The script timeout read by cron must be accepted by config set."""
+        set_config_value("cron.script_timeout_seconds", "600")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "script_timeout_seconds: 600" in _read_config(_isolated_hermes_home)
+
+    def test_memory_nudge_interval_is_recognized(self, _isolated_hermes_home, capsys):
+        """The documented background-memory review interval is runtime config."""
+        set_config_value("memory.nudge_interval", "0")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)
@@ -112,6 +128,20 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_terminal_docker_shared_key_preserves_string_values(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("terminal.docker_shared_container_key", "off")
+
+        import yaml
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["docker_shared_container_key"] == "off"
+        assert "TERMINAL_DOCKER_SHARED_CONTAINER_KEY=off" in _read_env(
+            _isolated_hermes_home
+        )
+        assert "not a recognized config key" not in capsys.readouterr().out
 
     def test_terminal_vercel_runtime_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.vercel_runtime", "python3.13")
@@ -294,6 +324,29 @@ def _write_cron_jobs(tmp_path, jobs):
 class TestCronModelDriftConfigWarning:
     """Warn operators before unpinned snapshot-bearing cron jobs fail closed."""
 
+    def test_warning_names_the_user_owned_cli_pin_path(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "model-drift-job",
+                    "enabled": True,
+                    "model": None,
+                    "model_snapshot": "old-model",
+                }
+            ],
+        )
+
+        set_config_value("model.default", "new-model")
+
+        warning = capsys.readouterr().out
+        assert "hermes cron edit <job_id> --provider <provider> --model <model>" in warning
+        assert "cronjob action=update" not in warning
+
 
 
 
@@ -437,6 +490,8 @@ class TestSecretRedactionInDisplay:
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
 
+
+# ---------------------------------------------------------------------------
 # #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
 
@@ -564,3 +619,286 @@ class TestDisplaySkinTouch:
 
         set_config_value("display.skin", "neon")
         assert (skins / "neon.yaml").read_text() == body
+
+
+# ---------------------------------------------------------------------------
+# Mapping guard — regression tests for #74995
+# ---------------------------------------------------------------------------
+
+class TestMappingGuard:
+    """``hermes config set <section> <scalar>`` must not silently destroy an
+    existing mapping.  Bare ``model`` is a documented shorthand — redirect to
+    ``model.default``.  All other mapping sections are refused without --force.
+    """
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(data))
+
+    def test_bare_model_shorthand_preserves_siblings(self, _isolated_hermes_home):
+        """hermes config set model <id> → model.default, siblings survive."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+                "context_length": 128_000,
+                "base_url": "https://api.example.com/v1",
+            }
+        })
+        set_config_value("model", "claude-sonnet-4-20250514")
+        config_text = _read_config(_isolated_hermes_home)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(config_text)
+        assert parsed["model"]["default"] == "claude-sonnet-4-20250514"
+        assert parsed["model"]["provider"] == "openai-api"
+        assert parsed["model"]["context_length"] == 128_000
+        assert parsed["model"]["base_url"] == "https://api.example.com/v1"
+
+    def test_bare_model_shorthand_creates_default_when_none(self, _isolated_hermes_home):
+        """Bare model shorthand still works when config is empty (legacy behaviour)."""
+        set_config_value("model", "gpt-5.6-sol")
+        assert "gpt-5.6-sol" in _read_config(_isolated_hermes_home)
+
+    def test_non_model_mapping_is_refused(self, _isolated_hermes_home):
+        """hermes config set terminal bash → refuse, terminal has sub-keys."""
+        self._write_config(_isolated_hermes_home, {
+            "terminal": {
+                "backend": "docker",
+                "docker_image": "python:3.12",
+                "shell": "bash",
+            }
+        })
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("terminal", "zsh")
+        assert exc.value.code == 1
+
+    def test_non_model_mapping_force_overwrites(self, _isolated_hermes_home):
+        """hermes config set --force terminal bash → proceed, section wiped."""
+        self._write_config(_isolated_hermes_home, {
+            "terminal": {
+                "backend": "docker",
+                "shell": "bash",
+            }
+        })
+        set_config_value("terminal", "zsh", force=True)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["terminal"] == "zsh"
+
+    def test_model_default_dotted_path_is_not_guarded(self, _isolated_hermes_home):
+        """model.default is already a dotted path — guard must not fire."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+            }
+        })
+        set_config_value("model.default", "claude-opus-4")
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["model"]["default"] == "claude-opus-4"
+        assert parsed["model"]["provider"] == "openai-api"
+
+    def test_model_force_overwrites_entire_section(self, _isolated_hermes_home):
+        """hermes config set --force model <id> → overwrite entire section."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+                "context_length": 128_000,
+            }
+        })
+        set_config_value("model", "claude-opus-4", force=True)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["model"] == "claude-opus-4"
+
+
+class TestScalarModelSubKeyPreservation:
+    """#75426: setting model.provider when model is a scalar must not lose the model id."""
+
+    def test_scalar_model_id_preserved_after_provider_write(self, _isolated_hermes_home):
+        """Seed model: gpt-4o, then set model.provider → model.default must survive."""
+        import yaml
+
+        set_config_value("model", "gpt-4o")
+        set_config_value("model.provider", "openai")
+
+        raw = _read_config(_isolated_hermes_home)
+        parsed = yaml.safe_load(raw)
+        model = parsed["model"]
+        assert model["default"] == "gpt-4o", f"model.default lost: {model}"
+        assert model["provider"] == "openai"
+
+    def test_scalar_model_id_preserved_after_api_key_write(self, _isolated_hermes_home):
+        """model.api_key must also preserve the existing scalar model id."""
+        import yaml
+
+        set_config_value("model", "claude-sonnet")
+        # model.api_key is a sub-key (has a dot), so it stays in config.yaml
+        set_config_value("model.api_key", "sk-test")
+
+        raw = _read_config(_isolated_hermes_home)
+        parsed = yaml.safe_load(raw)
+        assert parsed["model"]["default"] == "claude-sonnet"
+        assert parsed["model"]["api_key"] == "sk-test"
+
+class TestMalformedYAMLConfigPreservation:
+    """#75431: config.yaml with YAML syntax errors must not be overwritten."""
+
+    BROKEN_CONFIG = "model: gpt-4o\nterminal:\n  backend: docker\n  broken: [this is invalid YAML"
+
+    def _write_broken_config(self, home):
+        (home / "config.yaml").write_text(self.BROKEN_CONFIG)
+
+    def test_set_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
+        """set_config_value must raise, not overwrite the broken config."""
+        self._write_broken_config(_isolated_hermes_home)
+
+        with pytest.raises(RuntimeError, match="not valid YAML"):
+            set_config_value("agent.max_turns", "50")
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "Failed to parse" in combined or "not valid YAML" in combined
+        # Original config must remain intact
+        raw = _read_config(_isolated_hermes_home)
+        assert raw == self.BROKEN_CONFIG, f"Config was overwritten:\n{raw}"
+
+    def test_unset_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
+        """unset_config_value must raise, not overwrite the broken config."""
+        from hermes_cli.config import unset_config_value
+
+        self._write_broken_config(_isolated_hermes_home)
+
+        with pytest.raises(RuntimeError, match="not valid YAML"):
+            unset_config_value("model")
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "Failed to parse" in combined or "not valid YAML" in combined
+        raw = _read_config(_isolated_hermes_home)
+        assert raw == self.BROKEN_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# Literal dots in key paths — regression tests for #84064
+# ---------------------------------------------------------------------------
+
+class TestLiteralDotKeyEscaping:
+    """``hermes config set/unset/get`` must not split a key segment on a
+    literal dot.  Provider names routinely embed version numbers
+    (``qwen3.5-397b-wafer``), and before the backslash-escape (#84064)
+    ``providers.qwen3.5-397b-wafer.api_key`` silently created a bogus nested
+    ``qwen3`` -> ``5-397b-wafer`` structure while reporting success.
+    """
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False))
+
+    def test_split_key_path_escaped_dot(self):
+        from hermes_cli.config import _split_key_path
+
+        assert _split_key_path("providers.qwen3\\.5-397b.api_key") == [
+            "providers", "qwen3.5-397b", "api_key",
+        ]
+        assert _split_key_path("qwen3\\.5") == ["qwen3.5"]
+        assert _split_key_path("a\\.b\\.c") == ["a.b.c"]
+        # Unescaped keys keep plain dot-splitting semantics.
+        assert _split_key_path("terminal.backend") == ["terminal", "backend"]
+        assert _split_key_path("model") == ["model"]
+        # Backslash before a non-dot char is preserved verbatim.
+        assert _split_key_path("win\\path.key") == ["win\\path", "key"]
+
+    def test_set_preserves_literal_dot_in_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
+                "openrouter": {"api_key": "or-keep"},
+            }
+        })
+
+        set_config_value(
+            "providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
+            '{"Wafer-ZDR": "required"}',
+        )
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        providers = saved["providers"]
+        # No bogus ``qwen3`` nesting was created; the existing entry was updated.
+        assert "qwen3" not in providers
+        target = providers["qwen3.5-397b-wafer-non-zdr"]
+        assert target["api"] == "https://pass.wafer.ai/v1"
+        # Current main coerces structured-looking values to real mappings
+        # (_looks_structured_value), so the JSON string lands as a dict.
+        assert target["extra_headers"] == {"Wafer-ZDR": "required"}
+        # Sibling provider untouched.
+        assert providers["openrouter"] == {"api_key": "or-keep"}
+        # Escaped key is schema-known (providers.* is an open dict) — no warning.
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_unset_removes_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
+                "openrouter": {"api_key": "or-keep"},
+            }
+        })
+
+        args = argparse.Namespace(
+            config_command="unset",
+            key="providers.qwen3\\.5-397b-wafer-non-zdr",
+        )
+        config_command(args)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert "qwen3.5-397b-wafer-non-zdr" not in saved["providers"]
+        assert saved["providers"]["openrouter"] == {"api_key": "or-keep"}
+        assert "Unset providers.qwen3\\.5-397b-wafer-non-zdr" in capsys.readouterr().out
+
+    def test_unset_nested_field_under_literal_dot_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {
+                    "api": "https://pass.wafer.ai/v1",
+                    "extra_headers": '{"K": "V"}',
+                },
+            }
+        })
+
+        args = argparse.Namespace(
+            config_command="unset",
+            key="providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
+        )
+        config_command(args)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        target = saved["providers"]["qwen3.5-397b-wafer-non-zdr"]
+        assert "extra_headers" not in target
+        assert target["api"] == "https://pass.wafer.ai/v1"
+
+    def test_get_reads_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {"qwen3.5-397b": {"api": "https://pass.wafer.ai/v1"}},
+        })
+
+        args = argparse.Namespace(
+            config_command="get",
+            key="providers.qwen3\\.5-397b.api",
+            json=False,
+        )
+        config_command(args)
+
+        assert capsys.readouterr().out.strip() == "https://pass.wafer.ai/v1"
+
+    def test_unescaped_dotted_path_unchanged(self, _isolated_hermes_home):
+        """Nesting semantics for plain dotted keys are untouched."""
+        set_config_value("terminal.backend", "docker")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["backend"] == "docker"

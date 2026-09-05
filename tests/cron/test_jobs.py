@@ -20,9 +20,11 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    claim_job_for_fire,
     heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
+    _hermes_now,
 )
 
 
@@ -39,9 +41,28 @@ class TestParseDuration:
         assert parse_duration("120minutes") == 120
 
 
+    def test_bare_units_default_to_one(self):
+        assert parse_duration("hour") == 60
+        assert parse_duration("hr") == 60
+        assert parse_duration("h") == 60
+        assert parse_duration("minute") == 1
+        assert parse_duration("m") == 1
+        assert parse_duration("day") == 1440
+        assert parse_duration("d") == 1440
+
+    def test_every_bare_unit_schedule(self):
+        result = parse_schedule("every hour")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 60
+        result = parse_schedule("every day")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 1440
+
     def test_invalid_raises(self):
         with pytest.raises(ValueError):
             parse_duration("abc")
+        with pytest.raises(ValueError):
+            parse_duration("hourx")
         with pytest.raises(ValueError):
             parse_duration("30x")
         with pytest.raises(ValueError):
@@ -55,11 +76,24 @@ class TestParseDuration:
 # =========================================================================
 
 class TestParseSchedule:
-    def test_duration_becomes_once(self):
+    def test_bare_duration_becomes_recurring_interval(self):
+        """Contract: bare '30m' means EVERY 30 minutes (tool schema says so).
+
+        Regression for the cron contract bug (2026-08-04): parse_schedule
+        returned kind='once' for bare durations, so an agent passing '30m'
+        for 'every 30 minutes' silently got a one-shot job that ran once and
+        died. The documented tool contract (tools/cronjob_tools.py) says
+        '30m' (every 30 minutes) — the code now honors it.
+        """
         result = parse_schedule("30m")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 30
+        assert "run_at" not in result
+
+    def test_in_duration_becomes_once(self):
+        """Explicit one-shot by duration: 'in 30m' fires once in 30 minutes."""
+        result = parse_schedule("in 30m")
         assert result["kind"] == "once"
-        assert "run_at" in result
-        # run_at should be a valid ISO timestamp string ~30 minutes from now
         run_at_str = result["run_at"]
         assert isinstance(run_at_str, str)
         run_at = datetime.fromisoformat(run_at_str)
@@ -73,11 +107,132 @@ class TestParseSchedule:
         assert result["minutes"] == 120
 
 
+    # ---- Natural-language weekday/daily phrases → cron (issue: documented
+    # "every monday 9am" format was rejected because the "every" branch only
+    # accepted durations). ----
+
+    def test_every_weekday_time_becomes_cron(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("every monday 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1"
+        # Display preserves the user's natural phrasing.
+        assert result["display"] == "every monday 9am"
+
+    def test_every_sunday_maps_to_zero(self):
+        pytest.importorskip("croniter")
+        # Cron weekday numbering puts Sunday at 0.
+        assert parse_schedule("every sunday 9am")["expr"] == "0 9 * * 0"
+
+    def test_every_weekday_abbreviations(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every mon 9am")["expr"] == "0 9 * * 1"
+        assert parse_schedule("every fri 5pm")["expr"] == "0 17 * * 5"
+
+    def test_every_day_keyword_is_daily(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every day at 9am")["expr"] == "0 9 * * *"
+        assert parse_schedule("every day 7am")["expr"] == "0 7 * * *"
+
+    def test_every_weekday_keyword_is_business_days(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every weekday at 9am")["expr"] == "0 9 * * 1-5"
+
+    def test_every_weekend_keyword(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every weekend at 10am")["expr"] == "0 10 * * 0,6"
+
+    def test_no_every_prefix_natural_forms(self):
+        # The Desktop dialog advertises these WITHOUT the "every" prefix
+        # (#51975 repro): they must parse identically.
+        pytest.importorskip("croniter")
+        assert parse_schedule("weekdays at 9am")["expr"] == "0 9 * * 1-5"
+        assert parse_schedule("monday at 9:30")["expr"] == "30 9 * * 1"
+        assert parse_schedule("daily at 7am")["expr"] == "0 7 * * *"
+
+    def test_weekday_list_forms(self):
+        # Comma/"and"-separated day lists from the #51975 repro.
+        pytest.importorskip("croniter")
+        assert parse_schedule("Monday, Wednesday at 9am")["expr"] == "0 9 * * 1,3"
+        assert parse_schedule("monday and friday at 5pm")["expr"] == "0 17 * * 1,5"
+        assert parse_schedule("every tue, thu 8am")["expr"] == "0 8 * * 2,4"
+
+    def test_natural_form_negatives_still_reject(self):
+        pytest.importorskip("croniter")
+        with pytest.raises(ValueError):
+            parse_schedule("monday banana at 9am")
+        with pytest.raises(ValueError):
+            parse_schedule("funday at 9am")
+
+    def test_every_time_formats(self):
+        pytest.importorskip("croniter")
+        # 24-hour, explicit minutes, noon/midnight, bare hour.
+        assert parse_schedule("every monday 14:30")["expr"] == "30 14 * * 1"
+        assert parse_schedule("every monday 9:05am")["expr"] == "5 9 * * 1"
+        assert parse_schedule("every monday noon")["expr"] == "0 12 * * 1"
+        assert parse_schedule("every monday midnight")["expr"] == "0 0 * * 1"
+        assert parse_schedule("every monday at 7")["expr"] == "0 7 * * 1"
+
+    def test_every_12_hour_boundaries(self):
+        pytest.importorskip("croniter")
+        # 12am is midnight (00:00), 12pm is noon (12:00).
+        assert parse_schedule("every monday 12am")["expr"] == "0 0 * * 1"
+        assert parse_schedule("every monday 12pm")["expr"] == "0 12 * * 1"
+
+    def test_every_weekday_time_is_case_insensitive(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("Every Monday 9AM")["expr"] == "0 9 * * 1"
+
+    def test_every_weekday_schedule_computes_next_run(self):
+        pytest.importorskip("croniter")
+        # End-to-end: the produced cron schedule is usable by compute_next_run.
+        schedule = parse_schedule("every monday 9am")
+        next_run = compute_next_run(schedule)
+        assert next_run is not None
+        dt = datetime.fromisoformat(next_run)
+        assert dt.weekday() == 0  # Python: Monday == 0
+        assert (dt.hour, dt.minute) == (9, 0)
+
+    def test_every_duration_still_interval(self):
+        # The interval path must keep working unchanged.
+        assert parse_schedule("every 30m")["kind"] == "interval"
+        assert parse_schedule("every 1d")["minutes"] == 1440
+
+    def test_every_weekday_without_time_raises(self):
+        # A weekday with no time is ambiguous — reject rather than guess.
+        with pytest.raises(ValueError):
+            parse_schedule("every monday")
+
+    def test_every_invalid_time_raises(self):
+        with pytest.raises(ValueError):
+            parse_schedule("every monday 25am")
+        with pytest.raises(ValueError):
+            parse_schedule("every monday 9pm pizza")
+
     def test_cron_expression(self):
         pytest.importorskip("croniter")
         result = parse_schedule("0 9 * * *")
         assert result["kind"] == "cron"
         assert result["expr"] == "0 9 * * *"
+
+    def test_cron_named_weekdays_and_months(self):
+        # Named months/weekdays (and ranges/lists) are valid cron and must
+        # route to croniter, not be rejected as "Invalid schedule".
+        pytest.importorskip("croniter")
+        for expr in (
+            "0 9 * * MON",
+            "*/15 9-17 * * MON-FRI",
+            "0 9 1 JAN *",
+            "0 9 * * MON,WED,FRI",
+        ):
+            result = parse_schedule(expr)
+            assert result["kind"] == "cron", expr
+            assert result["expr"] == expr
+
+    def test_invalid_named_cron_still_rejected(self):
+        pytest.importorskip("croniter")
+        with pytest.raises(ValueError):
+            parse_schedule("0 9 * * FUNDAY")
 
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")
@@ -188,12 +343,36 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestJobCRUD:
+    def test_cjk_and_emoji_round_trip_readable_in_jobs_json(self, tmp_cron_dir):
+        """CJK/emoji job text must round-trip AND stay human-readable on disk.
+
+        With json.dump's default ensure_ascii=True, every non-ASCII char in
+        jobs.json is written as \\uXXXX escapes, which users reported as
+        unreadable garbage when inspecting their job store (#52302, #29754).
+        ensure_ascii=False + the existing encoding="utf-8" writer keeps the
+        text literal; the utf-8-sig reader must parse it back identically.
+        """
+        name = "日次レポート 🎉 café"
+        job = create_job(prompt=f"Summarize {name}", schedule="30m", name=name)
+
+        # Round-trip through save/load is lossless.
+        fetched = get_job(job["id"])
+        assert fetched["name"] == name
+        assert name in fetched["prompt"]
+
+        # On-disk representation is literal UTF-8, not \uXXXX escapes.
+        from cron.jobs import JOBS_FILE
+        raw = JOBS_FILE.read_text(encoding="utf-8")
+        assert "日次レポート" in raw
+        assert "🎉" in raw
+        assert "\\u65e5" not in raw
+
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
         assert job["id"]
         assert job["prompt"] == "Check server status"
         assert job["enabled"] is True
-        assert job["schedule"]["kind"] == "once"
+        assert job["schedule"]["kind"] == "interval"
 
         fetched = get_job(job["id"])
         assert fetched is not None
@@ -213,8 +392,51 @@ class TestJobCRUD:
 
 
     def test_auto_repeat_for_once(self, tmp_cron_dir):
-        job = create_job(prompt="One-shot", schedule="1h")
+        job = create_job(prompt="One-shot", schedule="in 1h")
         assert job["repeat"]["times"] == 1
+
+    def test_repeat_string_forms_coerced(self, tmp_cron_dir):
+        """Agents pass 'forever'/'once' as repeat — must coerce, not TypeError.
+
+        Regression for #66824/#64520/#7142: repeat='forever' died with
+        "'<=' not supported between instances of 'str' and 'int'". The tool
+        schema documents repeat as an integer but user-facing forms are
+        strings; coerce at create_job so every entry point inherits it.
+        """
+        forever = create_job(prompt="Str forever", schedule="every 1h", repeat="forever")
+        assert forever["repeat"]["times"] is None  # None = infinite
+        once = create_job(prompt="Str once", schedule="every 1h", repeat="once")
+        assert once["repeat"]["times"] == 1
+        three = create_job(prompt="Str 3", schedule="every 1h", repeat="3")
+        assert three["repeat"]["times"] == 3
+        with pytest.raises(ValueError, match="Invalid repeat"):
+            create_job(prompt="Bad", schedule="every 1h", repeat="banana")
+
+    def test_update_repeat_string_forms_coerced(self, tmp_cron_dir):
+        """The UPDATE path must coerce repeat the same way create does.
+
+        Before this fix, update_job({"repeat": "forever"}) stored the raw
+        string, and the next mark_job_run died with
+        "'str' object has no attribute 'get'". Same class as the create-path
+        TypeError (#66824/#64520/#7142/#71987/#95706) — the bare-value and
+        dict shapes both route through normalize_repeat_value now.
+        """
+        from cron.jobs import mark_job_run, update_job
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=2)
+        mark_job_run(job["id"], success=True)  # completed=1
+
+        updated = update_job(job["id"], {"repeat": "forever"})
+        assert updated["repeat"]["times"] is None
+        assert updated["repeat"]["completed"] == 1  # counter preserved
+        mark_job_run(job["id"], success=True)  # must not raise
+
+        updated = update_job(job["id"], {"repeat": {"times": "3"}})
+        assert updated["repeat"]["times"] == 3
+        assert updated["repeat"]["completed"] == 2
+
+        with pytest.raises(ValueError, match="Invalid repeat"):
+            update_job(job["id"], {"repeat": "banana"})
 
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
@@ -260,7 +482,85 @@ class TestPauseResumeJob:
         assert paused["enabled"] is False
         assert paused["state"] == "paused"
         assert paused["paused_reason"] == "user paused"
+        assert paused.get("paused_at")
 
+    def test_pause_is_authoritative_due_jobs_do_not_fire(self, tmp_cron_dir):
+        """Behavioural invariant: after pause, a past-due job must not be due.
+
+        Checks that last_run_at cannot advance via the scheduler path — not
+        merely that pause() returned success. Regression for the 07-30 outage
+        where state=paused coexisted with enabled=true and jobs kept firing.
+        """
+        job = create_job(prompt="Must not fire while paused", schedule="every 1h")
+        past = (_hermes_now() - timedelta(hours=2)).isoformat()
+        # Force the job overdue, then pause.
+        updated = update_job(job["id"], {"next_run_at": past})
+        assert updated["enabled"] is True
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+
+        paused = pause_job(job["id"], reason="outage freeze")
+        assert paused["enabled"] is False
+        assert paused["state"] == "paused"
+        assert paused.get("paused_at")
+        # Scheduler-honoured flag and pause markers must never contradict.
+        assert not (paused.get("enabled") and paused.get("paused_at"))
+
+        due_ids = {j["id"] for j in get_due_jobs()}
+        assert job["id"] not in due_ids
+
+        before = get_job(job["id"])
+        assert before["last_run_at"] is None or before["last_run_at"] == job.get("last_run_at")
+        # claim path also closed
+        assert claim_job_for_fire(job["id"]) is False
+        after = get_job(job["id"])
+        assert after["last_run_at"] == before.get("last_run_at")
+        assert after["enabled"] is False
+
+    def test_contradictory_half_pause_self_disables_and_does_not_fire(self, tmp_cron_dir):
+        """enabled=true + paused_at must not fire; scan heals enabled=false."""
+        now = _hermes_now()
+        job = {
+            "id": "half-paused-1",
+            "name": "half-paused",
+            "prompt": "should never run",
+            "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
+            "schedule_display": "every 5m",
+            "repeat": {"times": None, "completed": 0},
+            # The contradiction from the 07-30 outage:
+            "enabled": True,
+            "state": "paused",
+            "paused_at": (now - timedelta(hours=20)).isoformat(),
+            "paused_reason": "operator thought this was frozen",
+            "next_run_at": (now - timedelta(hours=1)).isoformat(),
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(days=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+
+        # Display must NOT say paused while enabled (honest list).
+        from cron.jobs import effective_job_state, list_jobs
+
+        assert effective_job_state(job) == "scheduled"
+        listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
+        # Honest list: enabled=true half-pause must not render as paused.
+        assert listed["half-paused-1"]["enabled"] is True
+        assert listed["half-paused-1"]["state"] != "paused"
+
+        assert claim_job_for_fire("half-paused-1") is False
+        due = get_due_jobs()
+        assert "half-paused-1" not in {j["id"] for j in due}
+
+        healed = get_job("half-paused-1")
+        assert healed is not None
+        assert healed["enabled"] is False
+        assert healed["state"] == "paused"
+        assert healed.get("paused_at")
+        # Still not due after heal
+        assert "half-paused-1" not in {j["id"] for j in get_due_jobs()}
 
     def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
         """Resuming a paused one-shot whose time is now in the past must raise
@@ -323,11 +623,48 @@ class TestMarkJobRun:
         assert updated["repeat"]["completed"] == 1
         assert updated["last_status"] == "ok"
 
-    def test_repeat_limit_removes_job(self, tmp_cron_dir):
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+    def test_repeat_limit_retains_completed_record(self, tmp_cron_dir):
+        """A finished one-shot must stay inspectable, not vanish from the store."""
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
         mark_job_run(job["id"], success=True)
-        # Job should be removed after hitting repeat limit
-        assert get_job(job["id"]) is None
+        updated = get_job(job["id"])
+        assert updated is not None, "completed one-shot was deleted from jobs.json"
+        assert updated["state"] == "completed"
+        assert updated["enabled"] is False
+        assert updated["next_run_at"] is None
+        assert updated["last_status"] == "ok"
+
+    def test_repeat_limit_retains_delivery_error(self, tmp_cron_dir):
+        """A one-shot whose delivery failed must keep the error on its record."""
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
+        mark_job_run(
+            job["id"], success=True,
+            delivery_error="platform 'telegram' not configured",
+        )
+        updated = get_job(job["id"])
+        assert updated is not None
+        assert updated["state"] == "completed"
+        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        # A terminal completion that never reached the user is not a success.
+        assert updated["last_status"] == "delivery_failed"
+
+    def test_completed_oneshot_visible_in_list(self, tmp_cron_dir):
+        """list_jobs(include_disabled=True) surfaces the completed record."""
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
+        mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
+        listed = {j["id"]: j for j in list_jobs(include_disabled=True)}
+        assert job["id"] in listed
+        assert listed[job["id"]]["state"] == "completed"
+        assert listed[job["id"]]["last_delivery_error"] == "send failed: 502"
+        assert listed[job["id"]]["last_status"] == "delivery_failed"
+        # Default (enabled-only) listing hides it, matching paused/disabled jobs.
+        assert job["id"] not in {j["id"] for j in list_jobs()}
+
+    def test_completed_oneshot_not_due(self, tmp_cron_dir):
+        """A retained completed one-shot must never be dispatched again."""
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
+        mark_job_run(job["id"], success=True)
+        assert job["id"] not in {j["id"] for j in get_due_jobs()}
 
 
     def test_error_status(self, tmp_cron_dir):
@@ -338,13 +675,81 @@ class TestMarkJobRun:
         assert updated["last_error"] == "timeout"
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
-        """Agent succeeds but delivery fails — both tracked independently."""
+        """Agent succeeds but delivery fails — surfaced, not hidden behind ok.
+
+        Regression guard for #83993: recording ``last_status="ok"`` made a run
+        the user never received look like a quiet success everywhere that keys
+        off "ok". The agent error stays independent of the delivery error, and
+        the delivery failure is not an agent failure (no streak).
+        """
         job = create_job(prompt="Report", schedule="every 1h")
-        mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
+        mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
         updated = get_job(job["id"])
-        assert updated["last_status"] == "ok"
+        assert updated["last_status"] == "delivery_failed"
         assert updated["last_error"] is None
-        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        assert updated["last_delivery_error"] == "send failed: 502"
+        assert updated["failure_streak"] == 0
+
+    def test_success_without_delivery_error_stays_ok(self, tmp_cron_dir):
+        """A fully successful run is still plain "ok"."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["last_status"] == "ok"
+        # An empty delivery error is no error at all.
+        mark_job_run(job["id"], success=True, delivery_error="")
+        assert get_job(job["id"])["last_status"] == "ok"
+
+    def test_agent_failure_still_error_with_delivery_error(self, tmp_cron_dir):
+        """An agent failure outranks delivery: still "error", still a streak."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=False, error="timeout",
+            delivery_error="send failed: 502",
+        )
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "timeout"
+        assert updated["failure_streak"] == 1
+
+    def test_explicit_status_override_wins_over_delivery_failed(self, tmp_cron_dir):
+        """An explicit terminal status (T1-26 blocked_config) still wins."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(
+            job["id"], success=True,
+            delivery_error="send failed: 502",
+            status="blocked_config",
+        )
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "blocked_config"
+        assert updated["last_delivery_error"] == "send failed: 502"
+
+    def test_failure_streak_increments_and_resets(self, tmp_cron_dir):
+        """failure_streak counts consecutive agent failures; success resets."""
+        job = create_job(prompt="Flaky", schedule="every 1h")
+        assert get_job(job["id"])["failure_streak"] == 0
+        mark_job_run(job["id"], success=False, error="timeout")
+        mark_job_run(job["id"], success=False, error="timeout")
+        assert get_job(job["id"])["failure_streak"] == 2
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["failure_streak"] == 0
+
+    def test_failure_streak_ignores_delivery_errors(self, tmp_cron_dir):
+        """A successful run with a delivery error must not count as a failure."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="timeout")
+        mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
+        assert get_job(job["id"])["failure_streak"] == 0
+
+    def test_failure_streak_backcompat_missing_field(self, tmp_cron_dir):
+        """Jobs persisted before the field existed increment from 0."""
+        job = create_job(prompt="Old", schedule="every 1h")
+        # Simulate a pre-field record on disk.
+        jobs = load_jobs()
+        for j in jobs:
+            j.pop("failure_streak", None)
+        save_jobs(jobs)
+        mark_job_run(job["id"], success=False, error="boom")
+        assert get_job(job["id"])["failure_streak"] == 1
 
 
     def test_recurring_cron_not_disabled_when_croniter_missing(self, tmp_cron_dir, monkeypatch):
@@ -402,7 +807,7 @@ class TestAdvanceNextRun:
 
     def test_skips_oneshot_job(self, tmp_cron_dir):
         """One-shot jobs should NOT be advanced — they need to retry on restart."""
-        job = create_job(prompt="Run once", schedule="30m")
+        job = create_job(prompt="Run once", schedule="in 30m")
         original_next = get_job(job["id"])["next_run_at"]
 
         result = advance_next_run(job["id"])
@@ -639,9 +1044,14 @@ class TestGetDueJobs:
         assert get_job("slowrun") is not None
 
         # Run completes → outcome lands on a record that still exists
-        # (times=1 reached, so mark_job_run retires the job normally).
+        # (times=1 reached, so mark_job_run retires the job as a terminal
+        # completed record instead of deleting it).
         mark_job_run("slowrun", True)
-        assert get_job("slowrun") is None
+        retired = get_job("slowrun")
+        assert retired is not None
+        assert retired["state"] == "completed"
+        assert retired["enabled"] is False
+        assert retired["last_status"] == "ok"
 
 
     def test_heartbeat_run_claim_rejects_replaced_owner(self, tmp_cron_dir):
@@ -855,7 +1265,7 @@ class TestCronOutputRetention:
         d.mkdir(parents=True, exist_ok=True)
         names = [f"2026-06-25_10-00-{i:02d}.md" for i in range(count)]
         for n in names:
-            (d / n).write_text("x")
+            (d / n).write_text("x", encoding="utf-8")
         return names
 
     def test_prune_keeps_newest_n(self, tmp_path):
@@ -900,12 +1310,17 @@ class TestClaimDispatch:
 
     def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
         # Full lifecycle: claim bumps completed to times, then mark_job_run must
-        # NOT increment again — it recognizes the pre-claim and removes the job.
+        # NOT increment again — it recognizes the pre-claim and retires the job
+        # as a terminal completed record (retained for inspection, not re-fired).
         save_jobs([self._oneshot(times=1, completed=0)])
         assert claim_dispatch("os1") is True
         assert load_jobs()[0]["repeat"]["completed"] == 1
         mark_job_run("os1", success=True)
-        assert load_jobs() == []  # completed once, removed — not fired twice
+        retired = load_jobs()
+        assert len(retired) == 1  # completed once, retired — not fired twice
+        assert retired[0]["repeat"]["completed"] == 1  # no double count
+        assert retired[0]["state"] == "completed"
+        assert retired[0]["enabled"] is False
 
 
     def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
@@ -951,6 +1366,29 @@ class TestLateEnvRepointScopesStore:
         with jobs.use_cron_store(tmp_path / "override-home"):
             store = jobs._current_cron_store()
             assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"
+
+    def test_heartbeat_does_not_recreate_deleted_named_profile(self, tmp_path):
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+
+        with jobs.use_cron_store(deleted_home):
+            jobs.record_ticker_heartbeat()
+
+        assert not deleted_home.exists()
+
+    def test_heartbeat_initializes_existing_named_profile(self, tmp_path):
+        import cron.jobs as jobs
+
+        profile_home = tmp_path / "profiles" / "active"
+        profile_home.mkdir(parents=True)
+
+        with jobs.use_cron_store(profile_home):
+            jobs.record_ticker_heartbeat()
+
+        assert (profile_home / "cron" / "ticker_heartbeat").is_file()
 
 
     def test_public_io_after_late_env_repoint_leaves_old_file_untouched(
@@ -1013,6 +1451,50 @@ class TestLateEnvRepointScopesStore:
 # UTF-8 BOM on jobs.json (Windows Notepad / PowerShell 5.1)
 # =========================================================================
 
+class TestJobsJsonShapes:
+    def test_load_jobs_normalizes_id_keyed_jobs_mapping(self, tmp_cron_dir):
+        import json
+        from cron.jobs import JOBS_FILE
+
+        job_a = {
+            "id": "cron1234abcd",
+            "name": "daily briefing",
+            "enabled": True,
+            "prompt": "Summarize overnight incidents",
+            "schedule": {"kind": "interval", "minutes": 1440, "display": "every 24h"},
+        }
+        job_b = {
+            "id": "cron5678efgh",
+            "name": "disabled cleanup",
+            "enabled": False,
+            "prompt": "Clean stale scratch files",
+            "schedule": {"kind": "once", "run_at": "2030-01-15T14:00:00+00:00"},
+        }
+        payload = {
+            "jobs": {
+                job_a["id"]: job_a,
+                job_b["id"]: job_b,
+            },
+            "updated_at": "2026-08-23T00:00:00+00:00",
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert isinstance(loaded, list)
+        assert {job["id"] for job in loaded} == {job_a["id"], job_b["id"]}
+
+        listed = {job["id"]: job for job in list_jobs(include_disabled=True)}
+        assert set(listed) == {job_a["id"], job_b["id"]}
+        for expected in (job_a, job_b):
+            actual = listed[expected["id"]]
+            assert actual["id"] == expected["id"]
+            assert actual["name"] == expected["name"]
+            assert actual["prompt"] == expected["prompt"]
+            assert actual["schedule"] == expected["schedule"]
+            assert actual["enabled"] is expected["enabled"]
+
+
 class TestJobsJsonUtf8Bom:
     """jobs.json readers must accept a leading UTF-8 BOM.
 
@@ -1069,3 +1551,389 @@ class TestJobsJsonUtf8Bom:
         assert [j["id"] for j in loaded] == ["plainjob01"]
 
 
+
+
+# =========================================================================
+# ID-keyed jobs map on jobs.json (external tools / hand edits) — #92935
+# =========================================================================
+
+class TestJobsJsonIdKeyedMap:
+    """load_jobs() must flatten an ID-keyed ``jobs`` map to the list contract.
+
+    A store written as ``{"jobs": {"<job_id>": {...}, ...}}`` (external tool
+    or hand edit — Hermes' own save_jobs() only ever writes a list) made
+    load_jobs() return a dict. Every consumer iterates it as a list, so
+    ``list_jobs()`` → ``_normalize_job_record`` → ``dict(<id-string>)`` raised
+    ``ValueError: dictionary update sequence element #0 has length 1; 2 is
+    required`` and took down ``hermes cron list``, the ``cronjob(action=
+    "list")`` tool, and the Dashboard cron view. The values already carry
+    their own ``id`` matching the map key, so flattening is lossless.
+    """
+
+    _ID_KEYED = {
+        "jobs": {
+            "cron1234abcd": {
+                "id": "cron1234abcd",
+                "name": "Example job",
+                "enabled": True,
+                "prompt": "do a thing",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            },
+            "cron5678efgh": {
+                "id": "cron5678efgh",
+                "name": "Second job",
+                "enabled": True,
+                "prompt": "do another",
+                "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
+            },
+        },
+        "updated_at": "2026-08-23T10:10:12+08:00",
+    }
+
+    def test_load_jobs_flattens_id_keyed_map(self, tmp_cron_dir):
+        """The pre-fix repro: load_jobs() returns a list, not the raw dict."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        loaded = load_jobs()
+        assert isinstance(loaded, list)
+        assert {j["id"] for j in loaded} == {"cron1234abcd", "cron5678efgh"}
+        assert all(isinstance(j, dict) for j in loaded)
+
+    def test_list_jobs_survives_id_keyed_map(self, tmp_cron_dir):
+        """The reported traceback path (hermes cron list / cronjob list tool)."""
+        import json
+        from cron.jobs import JOBS_FILE, list_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        # Pre-fix this raised ValueError from _normalize_job_record(dict(<str>)).
+        jobs = list_jobs(include_disabled=True)
+        assert {j["id"] for j in jobs} == {"cron1234abcd", "cron5678efgh"}
+
+    def test_id_keyed_map_repaired_to_list_on_disk(self, tmp_cron_dir):
+        """Loading rewrites the store into the canonical {"jobs": [...]} form."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(self._ID_KEYED), encoding="utf-8")
+
+        load_jobs()
+
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert {j["id"] for j in on_disk["jobs"]} == {"cron1234abcd", "cron5678efgh"}
+
+        # A second load reads the repaired list unchanged (idempotent).
+        reloaded = load_jobs()
+        assert {j["id"] for j in reloaded} == {"cron1234abcd", "cron5678efgh"}
+
+    def test_empty_id_keyed_map_returns_empty_list(self, tmp_cron_dir):
+        """An empty ``jobs`` map must not crash and yields no jobs."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps({"jobs": {}}), encoding="utf-8")
+
+        assert load_jobs() == []
+
+    def test_map_value_without_inline_id_adopts_key(self, tmp_cron_dir):
+        """A value lacking an inline "id" gets the map key as its id."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        payload = {
+            "jobs": {
+                "cronkeyonly1": {
+                    "name": "keyed only",
+                    "enabled": True,
+                    "prompt": "no inline id here",
+                    "schedule": {"kind": "interval", "minutes": 15, "display": "every 15m"},
+                },
+                "cron-ignored-key": {
+                    "id": "croninline99",
+                    "name": "inline id wins",
+                    "enabled": True,
+                    "prompt": "inline id present",
+                    "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
+                },
+            }
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = {j["id"]: j for j in load_jobs()}
+        # Key adopted when the value has no inline id.
+        assert "cronkeyonly1" in loaded
+        assert loaded["cronkeyonly1"]["name"] == "keyed only"
+        # Inline id wins over a differing map key.
+        assert "croninline99" in loaded
+        assert "cron-ignored-key" not in loaded
+
+        # Self-heal persisted the id-merged records.
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert {j["id"] for j in on_disk["jobs"]} == {"cronkeyonly1", "croninline99"}
+
+    def test_non_dict_map_values_skipped_with_warning(self, tmp_cron_dir, caplog):
+        """Junk (non-dict) values in the map are skipped, never crash."""
+        import json
+        import logging
+        from cron.jobs import JOBS_FILE, list_jobs, load_jobs
+
+        payload = {
+            "jobs": {
+                "goodjob1": {
+                    "name": "survivor",
+                    "enabled": True,
+                    "prompt": "keep me",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                },
+                "junk-string": "i am not a job",
+                "junk-number": 42,
+                "junk-null": None,
+            }
+        }
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["goodjob1"]
+        assert any("non-dict" in rec.getMessage() for rec in caplog.records)
+
+        # The reported traceback path also survives the junk.
+        jobs = list_jobs(include_disabled=True)
+        assert {j["id"] for j in jobs} == {"goodjob1"}
+
+        # Self-heal wrote only the valid record, canonical list shape.
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert isinstance(on_disk["jobs"], list)
+        assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
+
+    def test_all_junk_map_values_yield_empty_list(self, tmp_cron_dir):
+        """A map of only junk values flattens to [] without crashing."""
+        import json
+        from cron.jobs import JOBS_FILE, load_jobs
+
+        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_FILE.write_text(
+            json.dumps({"jobs": {"a": "junk", "b": 1}}), encoding="utf-8"
+        )
+
+        assert load_jobs() == []
+
+
+
+
+class TestAdvanceNextRuns:
+    """Tests for advance_next_runs() — the batched due-set advance.
+
+    The scheduler's pre-dispatch loop advanced each due job individually:
+    N due jobs = N full load_jobs() + N full save_jobs() of the jobs file
+    (~110 ms at N=50, measured). The batch form does one load + at most
+    one save (~2 ms). Imported inside test bodies so the pre-fix tree
+    fails with a real test failure (ImportError), not a collection error.
+    """
+
+    def _make_due(self, tmp_cron_dir, n_recurring=3, n_oneshot=1):
+        rec = [create_job(prompt=f"rec {i}", schedule="every 1h")
+               for i in range(n_recurring)]
+        one = [create_job(prompt=f"one {i}", schedule="in 30m")
+               for i in range(n_oneshot)]
+        jobs = load_jobs()
+        old = (datetime.now() - timedelta(minutes=5)).isoformat()
+        for j in jobs:
+            j["next_run_at"] = old
+        save_jobs(jobs)
+        return [j["id"] for j in rec], [j["id"] for j in one]
+
+    def test_batch_advances_recurring_skips_oneshots(self, tmp_cron_dir):
+        from cron.jobs import advance_next_runs
+        rec_ids, one_ids = self._make_due(tmp_cron_dir)
+        advanced = advance_next_runs(rec_ids + one_ids)
+        assert advanced == len(rec_ids)
+        from cron.jobs import _ensure_aware, _hermes_now
+        for jid in rec_ids:
+            nxt = _ensure_aware(datetime.fromisoformat(get_job(jid)["next_run_at"]))
+            assert nxt > _hermes_now()
+        for jid in one_ids:
+            # one-shots keep their (past) next_run_at for restart retry
+            assert datetime.fromisoformat(get_job(jid)["next_run_at"]) < datetime.now()
+
+    def test_batch_single_load_and_save(self, tmp_cron_dir, monkeypatch):
+        """I/O pin: the whole due set costs one load + one save, not N+N.
+        Fails pre-fix (function absent) and would fail on any regression
+        back to per-job I/O."""
+        from cron.jobs import advance_next_runs
+        rec_ids, _ = self._make_due(tmp_cron_dir, n_recurring=10, n_oneshot=0)
+        import cron.jobs as cj
+        counts = {"load": 0, "save": 0}
+        real_load, real_save = cj.load_jobs, cj.save_jobs
+        monkeypatch.setattr(cj, "load_jobs", lambda *a, **k: (
+            counts.__setitem__("load", counts["load"] + 1), real_load(*a, **k))[1])
+        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
+            counts.__setitem__("save", counts["save"] + 1), real_save(*a, **k))[1])
+        advance_next_runs(rec_ids)
+        assert counts == {"load": 1, "save": 1}
+
+    def test_batch_no_save_when_nothing_advances(self, tmp_cron_dir, monkeypatch):
+        from cron.jobs import advance_next_runs
+        rec_ids, one_ids = self._make_due(tmp_cron_dir, n_recurring=0, n_oneshot=2)
+        import cron.jobs as cj
+        saves = [0]
+        real_save = cj.save_jobs
+        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
+            saves.__setitem__(0, saves[0] + 1), real_save(*a, **k))[1])
+        assert advance_next_runs(one_ids + ["missing-id"]) == 0
+        assert saves[0] == 0
+
+    def test_wrapper_semantics_unchanged(self, tmp_cron_dir):
+        """advance_next_run keeps its per-job contract over the batch."""
+        rec_ids, one_ids = self._make_due(tmp_cron_dir)
+        assert advance_next_run(rec_ids[0]) is True
+        assert advance_next_run(one_ids[0]) is False
+        assert advance_next_run("missing-id") is False
+
+
+# =========================================================================
+# Completed one-shot retention sweep
+# =========================================================================
+
+class TestCompletedOneshotRetentionSweep:
+    """Completed one-shots are retained for inspection, then pruned by age."""
+
+    def _completed_oneshot(self, age_days: float):
+        """Create a one-shot, complete it, and backdate its last_run_at."""
+        job = create_job(prompt="Once", schedule="in 30m", repeat=1)
+        mark_job_run(job["id"], success=True, delivery_error="boom")
+        stamp = (
+            datetime.now(timezone.utc) - timedelta(days=age_days)
+        ).isoformat()
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["last_run_at"] = stamp
+        save_jobs(jobs)
+        return job["id"]
+
+    def test_sweep_prunes_old_completed_oneshot(self, tmp_cron_dir):
+        old_id = self._completed_oneshot(age_days=30)
+        get_due_jobs()  # sweep runs as part of the due scan
+        assert get_job(old_id) is None
+
+    def test_sweep_keeps_recent_completed_oneshot(self, tmp_cron_dir):
+        recent_id = self._completed_oneshot(age_days=1)
+        get_due_jobs()
+        kept = get_job(recent_id)
+        assert kept is not None
+        assert kept["state"] == "completed"
+        assert kept["last_delivery_error"] == "boom"
+
+    def test_sweep_ignores_recurring_jobs(self, tmp_cron_dir):
+        """Old recurring jobs are never candidates, whatever their history."""
+        job = create_job(prompt="Recurring", schedule="every 1h")
+        stamp = (
+            datetime.now(timezone.utc) - timedelta(days=365)
+        ).isoformat()
+        jobs = load_jobs()
+        for j in jobs:
+            if j["id"] == job["id"]:
+                j["last_run_at"] = stamp
+        save_jobs(jobs)
+        get_due_jobs()
+        assert get_job(job["id"]) is not None
+
+    def test_sweep_disabled_by_nonpositive_retention(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr(
+            "cron.jobs._completed_oneshot_retention_days", lambda: 0.0
+        )
+        old_id = self._completed_oneshot(age_days=30)
+        get_due_jobs()
+        assert get_job(old_id) is not None
+
+    def test_recurring_jobs_unaffected_by_retention_change(self, tmp_cron_dir):
+        """A recurring job still cycles normally alongside retained one-shots."""
+        recurring = create_job(prompt="Recurring", schedule="every 1h")
+        self._completed_oneshot(age_days=1)
+        mark_job_run(recurring["id"], success=True)
+        updated = get_job(recurring["id"])
+        assert updated["enabled"] is True
+        assert updated["state"] == "scheduled"
+        assert updated["next_run_at"] is not None
+
+
+class TestEnsureCronDirWidened:
+    """Tests for the widened _ensure_cron_dir covering all cron mkdir sites."""
+
+    def test_ensure_cron_dir_named_profile_subdir_fails_closed(self, tmp_path):
+        """A subdir under a deleted named profile's cron/ must not recreate it."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        # cron_dir doesn't exist because the profile was deleted
+        output_dir = deleted_home / "cron" / "output" / "job_123"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(output_dir)
+        assert not deleted_home.exists()
+
+    def test_ensure_cron_dir_default_home_creates_subdir(self, tmp_path):
+        """A subdir under a default home's cron/ should be created normally."""
+        import cron.jobs as jobs
+
+        default_home = tmp_path / "default_home"
+        default_home.mkdir()
+        output_dir = default_home / "cron" / "output" / "job_123"
+
+        jobs._ensure_cron_dir(output_dir)
+        assert output_dir.is_dir()
+
+    def test_ensure_cron_dir_named_profile_cron_dir_fails_closed(self, tmp_path):
+        """The cron dir of a deleted named profile must not be recreated."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        cron_dir = deleted_home / "cron"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(cron_dir)
+        assert not deleted_home.exists()
+
+    def test_ensure_cron_dir_existing_named_profile_cron_dir_works(self, tmp_path):
+        """An existing named profile's cron dir should be created normally."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        active_home = profiles_dir / "active"
+        active_home.mkdir(parents=True)
+        cron_dir = active_home / "cron"
+
+        jobs._ensure_cron_dir(cron_dir)
+        assert cron_dir.is_dir()
+
+    def test_ensure_cron_dir_scripts_dir_under_named_profile_fails_closed(self, tmp_path):
+        """A scripts dir under a deleted named profile must not be recreated."""
+        import cron.jobs as jobs
+
+        profiles_dir = tmp_path / "profiles"
+        profiles_dir.mkdir()
+        deleted_home = profiles_dir / "deleted"
+        scripts_dir = deleted_home / "scripts"
+
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            jobs._ensure_cron_dir(scripts_dir)
+        assert not deleted_home.exists()

@@ -85,6 +85,23 @@ SIMPLEX_GROUP_ALLOWED=*              # any group the bot is in
 Address groups by prefixing the chat ID with `group:`, e.g.
 `simplex:group:12` as a cron `deliver=` target or in a `hermes send` call.
 
+## Sending with `hermes send`
+
+SimpleX works as a standalone send target — the daemon must be running,
+but a live gateway is not required for plain text:
+
+```bash
+hermes send --to simplex:alice "hello"          # DM by contact display name
+hermes send --to simplex:group:12 "hello"       # group by numeric ID
+hermes send --to simplex "hello"                # SIMPLEX_HOME_CHANNEL
+```
+
+While the gateway is running, the adapter enumerates your contacts and
+allowed groups into the channel directory (refreshed every 5 minutes), so
+`hermes send --list` shows them by name. Before the first gateway run the
+platform still appears in `--list` with a "no channels discovered yet"
+hint — direct targets like the ones above work regardless.
+
 ## Attachments
 
 The adapter supports native SimpleX attachments in both directions:

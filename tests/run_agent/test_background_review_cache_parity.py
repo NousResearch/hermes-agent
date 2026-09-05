@@ -33,6 +33,9 @@ def _make_agent_stub(agent_cls):
         "PARENT-SYSTEM-PROMPT-BYTES — must be inherited verbatim "
         "for prefix-cache parity"
     )
+    agent.ephemeral_system_prompt = (
+        "WebUI session context:\n- Pinned per-request gateway context"
+    )
     import datetime as _dt
     agent.session_start = _dt.datetime(2026, 1, 1, 12, 0, 0)
     agent._MEMORY_REVIEW_PROMPT = "review memory"
@@ -44,6 +47,16 @@ def _make_agent_stub(agent_cls):
     # Non-None so the test catches reasoning_config NOT being inherited —
     # which would put the fork into a different Anthropic cache namespace.
     agent.reasoning_config = {"enabled": True, "effort": "medium"}
+    # Non-empty so tests catch prefill/provider-routing NOT being inherited —
+    # prefills sit right after the system message in the request body, and
+    # OpenRouter provider pins decide WHICH upstream's cache gets hit.
+    agent.prefill_messages = [{"role": "user", "content": "prefill turn"}]
+    agent.providers_allowed = ["anthropic"]
+    agent.providers_ignored = None
+    agent.providers_order = None
+    agent.provider_sort = "throughput"
+    agent.provider_require_parameters = False
+    agent.provider_data_collection = None
     return agent
 
 
@@ -88,6 +101,7 @@ def _make_recorder_class(captured=None, record_on_run=()):
             self.suppress_status_output = None
             self.session_start = None
             self.session_id = None
+            self.ephemeral_system_prompt = kwargs.get("ephemeral_system_prompt")
 
         def run_conversation(self, *args, **kwargs):
             if captured is not None:
@@ -150,6 +164,76 @@ def test_review_fork_inherits_parent_cached_system_prompt():
         f"Got {captured['written_prompt']!r}, expected {parent_prompt!r}. "
         "This breaks Anthropic/OpenRouter prefix-cache parity (#25322)."
     )
+
+
+def test_review_fork_inherits_parent_ephemeral_system_prompt():
+    """The fork must send the parent's complete effective system prompt.
+
+    Gateway session context is appended through ``ephemeral_system_prompt`` at
+    API-call time, outside ``_cached_system_prompt``.  Copying only the cached
+    base therefore makes every background review diverge at the gateway block
+    and miss the parent's warm prefix cache.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+    _Recorder = _make_recorder_class(
+        captured,
+        record_on_run=("_cached_system_prompt", "ephemeral_system_prompt"),
+    )
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    # Pairwise asserts: stronger than comparing a locally re-joined
+    # "effective" prompt (which would re-implement the production join and
+    # silently keep passing if the separator ever changed — and would compare
+    # equal for cached="A\n\nB"/ephemeral="" vs cached="A"/ephemeral="B").
+    assert captured["_cached_system_prompt"] == agent._cached_system_prompt
+    assert captured["ephemeral_system_prompt"] == agent.ephemeral_system_prompt
+
+
+def test_review_fork_inherits_prefill_and_provider_routing():
+    """Non-routed fork must inherit prefill messages and OpenRouter pins.
+
+    Prefill messages are inserted right after the system message at
+    API-call time, so omitting them diverges the fork's request body from
+    the parent's warm prefix at message index 1. OpenRouter provider pins
+    (providers_allowed/order/sort/...) decide which UPSTREAM provider serves
+    the request — prompt caches live per upstream, so an unpinned fork can
+    be routed to a different upstream and miss even a byte-identical prefix.
+    """
+    import run_agent
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    captured = {}
+    _Recorder = _make_recorder_class(captured)
+
+    with patch.object(run_agent, "AIAgent", _Recorder), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=False,
+        )
+
+    init_kwargs = captured.get("init_kwargs", {})
+    assert init_kwargs.get("prefill_messages") == agent.prefill_messages
+    # Must be a DEEP copy: the fork's unicode-error recovery
+    # (_sanitize_messages_surrogates) mutates prefill dicts in place, so
+    # aliased dicts would let the fork rewrite the parent's prefill bytes
+    # — silently breaking the parent's own warm prefix.
+    assert (
+        init_kwargs["prefill_messages"][0] is not agent.prefill_messages[0]
+    ), "fork prefill aliases the parent's dicts (needs deepcopy)"
+    assert init_kwargs.get("providers_allowed") == agent.providers_allowed
+    assert init_kwargs.get("provider_sort") == agent.provider_sort
 
 
 def test_review_fork_pins_session_start_and_session_id():
@@ -243,3 +327,16 @@ def test_routed_review_fork_does_not_inherit_reasoning_config():
         "be invalid for the routed model/provider — it must be omitted so "
         "the fork uses provider defaults."
     )
+    # The whole cache-parity kwarg family shares the same ``not _routed``
+    # gate — a future refactor hoisting any of them out of the gate must
+    # fail here, not silently ship parent-only context to a foreign model.
+    for _gated in (
+        "ephemeral_system_prompt",
+        "prefill_messages",
+        "providers_allowed",
+        "provider_sort",
+    ):
+        assert _gated not in init_kwargs, (
+            f"Routed review fork was passed parent-only kwarg {_gated!r}; "
+            "cache-parity inheritance must stay behind the not-routed gate."
+        )

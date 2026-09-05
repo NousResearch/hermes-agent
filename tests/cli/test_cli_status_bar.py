@@ -1,4 +1,5 @@
 import time
+from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -54,6 +55,43 @@ def _attach_agent(
 
 
 class TestCLIStatusBar:
+    def test_session_title_is_right_aligned_after_it_is_queued(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_title = "weekly-digest"
+
+        text = cli_obj._build_status_bar_text(width=80)
+
+        assert text.endswith(" weekly-digest ")
+        assert cli_obj._status_bar_display_width(text) == 80
+
+    def test_snapshot_refreshes_persisted_session_title(self):
+        cli_obj = _make_cli()
+        cli_obj.session_id = "session-1"
+        cli_obj._session_db = SimpleNamespace(  # type: ignore[assignment]
+            get_session_title=lambda sid: "user-profiles" if sid == "session-1" else None
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["session_title"] == "user-profiles"
+
+    def test_status_bar_config_helper_treats_persisted_off_as_hidden(self):
+        for value in (False, "off", "false", "hidden", "no", "0"):
+            assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is False
+
+        for value in (True, "top", "bottom", "on", None):
+            assert cli_mod._status_bar_visible_from_display_config({"tui_statusbar": value}) is True
+
+    def test_status_bar_initial_visibility_honors_tui_statusbar_config(self, monkeypatch):
+        config = deepcopy(cli_mod.CLI_CONFIG)
+        config.setdefault("display", {})["tui_statusbar"] = False
+        config["display"].pop("statusbar", None)
+        monkeypatch.setattr(cli_mod, "CLI_CONFIG", config)
+
+        cli_obj = HermesCLI(model="test-model", toolsets=[], provider="auto")
+
+        assert cli_obj._status_bar_visible is False
+
     def test_context_style_thresholds(self):
         cli_obj = _make_cli()
 
@@ -262,6 +300,19 @@ class TestStatusBarWidthSource:
                 f"({total_text!r})"
             )
 
+    def test_fragments_put_session_title_at_far_right(self):
+        cli_obj = self._make_wide_cli()
+        cli_obj._pending_title = "weekly-digest"
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=100)
+
+        with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            frags = cli_obj._get_status_bar_fragments()
+
+        text = "".join(value for _, value in frags)
+        assert text.endswith(" weekly-digest ")
+        assert cli_obj._status_bar_display_width(text) == 100
+
     def test_fragments_use_pt_width_over_shutil(self):
         """When prompt_toolkit reports a width, shutil.get_terminal_size must not be used."""
         from unittest.mock import MagicMock, patch
@@ -319,3 +370,348 @@ class TestIdleSinceLastTurn:
         assert snapshot["idle_since"].startswith("✓ ")
 
 
+
+
+class TestStatusBarFieldConfig:
+    """Tests for display.status_bar.fields config customization (#41909)."""
+
+    def _cli_with_fields(self, fields, width=120):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": fields}}}):
+            text = cli_obj._build_status_bar_text(width=width)
+        return text
+
+    def test_default_fields_show_all(self):
+        """With no config, all default fields appear."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "claude-sonnet-4-20250514" in text
+        assert "12.4K/200K" in text
+        assert "🗜️" in text
+        assert "15m" in text
+
+    def test_only_model_and_duration(self):
+        text = self._cli_with_fields(["model", "duration"])
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" in text
+        assert "12.4K/200K" not in text
+        assert "🗜️" not in text
+        assert "%" not in text
+
+    def test_only_model(self):
+        text = self._cli_with_fields(["model"])
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" not in text
+        assert "12.4K/200K" not in text
+
+    def test_context_pct_only(self):
+        text = self._cli_with_fields(["context_pct"])
+        assert "%" in text
+        assert "claude-sonnet-4-20250514" not in text
+
+    def test_compressions_only(self):
+        text = self._cli_with_fields(["compressions"])
+        assert "🗜️ 7" in text
+        assert "claude-sonnet-4-20250514" not in text
+
+    def test_total_tokens_when_explicitly_requested(self):
+        text = self._cli_with_fields(["model", "total_tokens"])
+        assert "Σ12.4K" in text
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_total_tokens_hidden_by_default(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        with patch.object(cli_mod, "CLI_CONFIG", {}):
+            text = cli_obj._build_status_bar_text(width=120)
+        assert "Σ" not in text
+
+    def test_narrow_terminal_drops_context_detail(self):
+        """Narrow terminal (<76) ignores context_detail even if configured."""
+        text = self._cli_with_fields(["model", "context_detail", "duration"], width=60)
+        assert "claude-sonnet-4-20250514" in text
+        assert "15m" in text
+        assert "12.4K/200K" not in text
+
+    def test_field_config_never_empties_the_bar(self):
+        """A fields list matching nothing still anchors on the model name."""
+        text = self._cli_with_fields(["nonexistent_field"])
+        assert "claude-sonnet-4-20250514" in text
+
+    def test_fragments_respect_field_config(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            compressions=7,
+        )
+        cli_obj._status_bar_visible = True
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}), \
+                patch.object(cli_obj, "_get_tui_terminal_width", return_value=120):
+            frags = cli_obj._get_status_bar_fragments()
+        frag_texts = [text for _, text in frags]
+        assert any("claude-sonnet-4-20250514" in t for t in frag_texts)
+        assert any("15m" in t for t in frag_texts)
+        assert not any("🗜️" in t for t in frag_texts)
+        assert not any("12.4K" in t for t in frag_texts)
+
+    def test_field_order_is_fixed(self):
+        """Config controls visibility, not ordering — model stays first."""
+        text = self._cli_with_fields(["duration", "model", "compressions"])
+        model_pos = text.find("claude-sonnet-4-20250514")
+        comp_pos = text.find("🗜️")
+        dur_pos = text.find("15m")
+        assert 0 <= model_pos < comp_pos < dur_pos
+
+    def test_empty_fields_list_uses_defaults(self):
+        text = self._cli_with_fields([])
+        assert "claude-sonnet-4-20250514" in text
+        assert "12.4K/200K" in text
+        assert "🗜️" in text
+
+    def test_field_set_is_cached_per_instance(self):
+        cli_obj = _make_cli()
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model"]}}}):
+            first = cli_obj._get_status_bar_field_set()
+        # Cache holds even if config object changes afterwards (per-session semantics).
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["duration"]}}}):
+            second = cli_obj._get_status_bar_field_set()
+        assert first == second == frozenset({"model"})
+
+
+class TestCacheHitRate:
+    def test_cache_hit_rate_shown_in_wide_terminal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=7600,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎ 76.0%" in text
+
+    def test_cache_hit_rate_shown_in_narrow_terminal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=5000,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=60)
+
+        assert "◎ 50%" in text
+
+    def test_cache_hit_rate_hidden_when_zero(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎" not in text
+
+    def test_cache_hit_rate_hidden_when_no_data(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎" not in text
+
+    def test_cache_hit_rate_one_decimal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=7620,
+            cache_write_tokens=0,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "◎ 76.2%" in text
+
+    def test_cache_hit_rate_with_anthropic_style_cache(self):
+        """Anthropic has both cache_read and cache_write"""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=5,
+            context_tokens=12_000,
+            context_length=200_000,
+            cache_read_tokens=5000,
+            cache_write_tokens=2000,
+        )
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        # cache_read / prompt_tokens = 5000 / 10000 = 50%
+        assert "◎ 50.0%" in text
+
+
+class TestRollingLatencyVelocity:
+    def _with_history(self, cli_obj, latencies, outputs):
+        from collections import deque
+        cli_obj.agent._api_latency_history = deque(latencies, maxlen=10)
+        cli_obj.agent._api_output_history = deque(outputs, maxlen=10)
+        return cli_obj
+
+    def test_latency_and_tps_shown_in_wide_terminal(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        self._with_history(cli_obj, [2.0, 4.0], [120, 180])
+
+        text = cli_obj._build_status_bar_text(width=140)
+
+        assert "\u25f7 3.0s" in text           # mean latency (2+4)/2
+        assert "\u2191 50 t/s" in text          # true throughput 300/6.0
+
+    def test_latency_hidden_without_history(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        text = cli_obj._build_status_bar_text(width=140)
+        assert "\u25f7" not in text
+        assert "t/s" not in text
+
+    def test_latency_and_tps_respect_field_filter(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        self._with_history(cli_obj, [2.0], [100])
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
+            text = cli_obj._build_status_bar_text(width=140)
+        assert "\u25f7" not in text
+        assert "t/s" not in text
+
+    def test_negative_latency_guard(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+        )
+        self._with_history(cli_obj, [-0.8], [100])
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["avg_latency"] is None
+        assert snapshot["avg_velocity"] is None
+
+
+class TestCacheHitBaselineReset:
+    def test_baseline_resets_on_model_switch(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+            cache_read_tokens=9_000,
+        )
+        first = cli_obj._get_status_bar_snapshot()
+        assert first["cache_hit_pct"] == 90.0
+
+        # Switch model. The bar repaints every frame, so the switch is
+        # observed (and the baseline reset) before new tokens accrue.
+        cli_obj.model = "openai/gpt-5"
+        cli_obj.agent.model = "openai/gpt-5"
+        reset_snap = cli_obj._get_status_bar_snapshot()
+        assert reset_snap["cache_hit_pct"] is None  # new regime, no data yet
+
+        cli_obj.agent.session_prompt_tokens = 12_000
+        cli_obj.agent.session_cache_read_tokens = 9_500
+        second = cli_obj._get_status_bar_snapshot()
+        # Delta since switch: 500/2000 = 25%, not the lifetime 79%.
+        assert second["cache_hit_pct"] == 25.0
+
+    def test_baseline_resets_on_compression(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000, completion_tokens=2_000, total_tokens=12_000,
+            api_calls=5, context_tokens=12_000, context_length=200_000,
+            cache_read_tokens=8_000,
+        )
+        cli_obj._get_status_bar_snapshot()
+
+        cli_obj.agent.context_compressor.compression_count = 1
+        cli_obj._get_status_bar_snapshot()  # repaint observes the compression
+
+        cli_obj.agent.session_prompt_tokens = 14_000
+        cli_obj.agent.session_cache_read_tokens = 8_400
+        snap = cli_obj._get_status_bar_snapshot()
+        assert snap["cache_hit_pct"] == 10.0  # 400/4000 post-compression
+
+    def test_title_field_filter_hides_session_badge(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_title = "weekly-digest"
+        with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
+            text = cli_obj._build_status_bar_text(width=80)
+        assert "weekly-digest" not in text

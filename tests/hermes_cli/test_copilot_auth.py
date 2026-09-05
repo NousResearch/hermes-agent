@@ -40,6 +40,92 @@ class TestResolveToken:
             with pytest.raises(ValueError, match="classic PAT"):
                 resolve_copilot_token()
 
+    def test_invalid_env_var_skips_gh_cli_fallback(self, monkeypatch):
+        """When an env var is set but holds an unsupported classic PAT,
+        resolve_copilot_token must NOT fall back to ``gh auth token``.
+
+        The user explicitly exported a token; silently substituting one
+        from the gh CLI credential store is surprising and the subprocess
+        call adds up to 5s of latency on Windows cold starts (#60800).
+        Only fall back to the CLI when NO Copilot env var is set at all.
+        """
+        from hermes_cli.copilot_auth import resolve_copilot_token
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_classic_pat_nope")
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token") as mock_cli:
+            token, source = resolve_copilot_token()
+        assert token == ""
+        assert source == ""
+        mock_cli.assert_not_called()
+
+    def test_all_env_vars_invalid_skips_gh_cli_fallback(self, monkeypatch):
+        """All three env vars set to classic PATs → no gh CLI call."""
+        from hermes_cli.copilot_auth import resolve_copilot_token
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghp_one")
+        monkeypatch.setenv("GH_TOKEN", "ghp_two")
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_three")
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token") as mock_cli:
+            token, source = resolve_copilot_token()
+        assert token == ""
+        assert source == ""
+        mock_cli.assert_not_called()
+
+
+class TestGhCliTokenCache:
+    """The gh-CLI probe result is cached — a miss must not re-spawn gh.
+
+    Regression: /api/model/options ran `gh auth token` four times per build;
+    with no gh credential store each probe blocked its full 5s timeout, so the
+    Desktop Models/Providers settings pages took 20s per open and exceeded the
+    renderer's 15s IPC budget (Aug 2026 desktop audit).
+    """
+
+    def _reset(self):
+        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+        _invalidate_gh_cli_token_cache()
+
+    def test_miss_is_cached_and_probe_runs_once(self):
+        from hermes_cli import copilot_auth
+        self._reset()
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            assert copilot_auth._try_gh_cli_token() is None
+            assert copilot_auth._try_gh_cli_token() is None
+            assert copilot_auth._try_gh_cli_token() is None
+        assert probe.call_count == 1
+        self._reset()
+
+    def test_hit_is_cached(self):
+        from hermes_cli import copilot_auth
+        self._reset()
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value="gho_cached") as probe:
+            assert copilot_auth._try_gh_cli_token() == "gho_cached"
+            assert copilot_auth._try_gh_cli_token() == "gho_cached"
+        assert probe.call_count == 1
+        self._reset()
+
+    def test_ttl_expiry_reprobes(self, monkeypatch):
+        from hermes_cli import copilot_auth
+        self._reset()
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(copilot_auth.time, "monotonic", lambda: clock["now"])
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            copilot_auth._try_gh_cli_token()
+            clock["now"] += copilot_auth._GH_CLI_TOKEN_CACHE_TTL_SECONDS + 1
+            copilot_auth._try_gh_cli_token()
+        assert probe.call_count == 2
+        self._reset()
+
+    def test_invalidate_forces_reprobe(self):
+        from hermes_cli import copilot_auth
+        self._reset()
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            copilot_auth._try_gh_cli_token()
+            copilot_auth._invalidate_gh_cli_token_cache()
+            copilot_auth._try_gh_cli_token()
+        assert probe.call_count == 2
+        self._reset()
+
 
 class TestRequestHeaders:
     """Copilot API header generation."""

@@ -14,6 +14,9 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
             captured["resolved_from"] = session_id
             return "20260315_092437_c9a6ff"
 
+        def get_session(self, session_id):
+            return {"id": session_id, "pinned": 0}
+
         def delete_session(self, session_id, **kwargs):
             captured["deleted"] = session_id
             return True
@@ -39,7 +42,7 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
     assert "Deleted session '20260315_092437_c9a6ff'." in output
 
 
-def _run_prune(monkeypatch, capsys, argv_tail, candidates=None):
+def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
     """Run `hermes sessions prune <argv_tail>` against a FakeDB, capturing
     the filter kwargs passed to list_prune_candidates. Auto-confirms."""
     import hermes_cli.main as main_mod
@@ -73,6 +76,13 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None):
         def list_prune_candidates(self, **kwargs):
             seen.update(kwargs)
             return rows
+
+        def count_open_prune_matches(self, **kwargs):
+            assert kwargs == seen
+            return skipped_open
+
+        def count_prune_matches(self, **kwargs):
+            return len(rows)
 
         def prune_sessions(self, **kwargs):
             return len(rows)
@@ -108,3 +118,18 @@ def test_sessions_prune_preview_shows_oldest_newest(monkeypatch, capsys):
     assert "2 session(s) match" in out
     assert f"oldest activity {format_epoch(1_600_000_050.0)}" in out
     assert f"newest activity {format_epoch(1_700_000_050.0)}" in out
+
+
+def test_sessions_prune_surfaces_matching_open_sessions(monkeypatch, capsys):
+    _filters, out = _run_prune(
+        monkeypatch,
+        capsys,
+        ["--source", "cron"],
+        candidates=[],
+        skipped_open=2,
+    )
+
+    assert "2 open sessions also match these filters" in out
+    assert "prune only deletes ended sessions" in out
+    assert "hermes sessions delete <id>" in out
+    assert "No sessions match" in out

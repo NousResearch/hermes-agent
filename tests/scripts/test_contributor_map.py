@@ -100,7 +100,12 @@ def test_cli_entrypoint_end_to_end(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     for name in ("add_contributor.py",):
-        (scripts / name).write_text((SCRIPTS_DIR / name).read_text())
+        # Explicit encoding: add_contributor.py contains UTF-8 multi-byte
+        # characters (an em dash), so the locale-default read_text() raises
+        # UnicodeDecodeError on non-UTF-8 Windows locales (e.g. cp950).
+        (scripts / name).write_text(
+            (SCRIPTS_DIR / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
     # Minimal stub release.py so the legacy lookup import works
     (scripts / "release.py").write_text("LEGACY_AUTHOR_MAP = {}\n")
     proc = subprocess.run(
@@ -109,5 +114,68 @@ def test_cli_entrypoint_end_to_end(tmp_path):
         cwd=tmp_path, capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text()
+    out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")
     assert out.splitlines()[0] == "cliperson"
+
+
+# ── case-insensitive filename collisions ──────────────────────────────
+#
+# The mapping key IS the filename, so two emails differing only in case are the
+# same file on Windows and on default macOS. When both exist, git writes one and
+# then reports the other as modified in a FRESH clone, permanently: the repo can
+# never be checked out clean on those platforms.
+#
+# The historical agent@Agents-Mac-mini.local / agent@agents-Mac-mini.local pair
+# was removed from the tree (fcdae2cf0b), so there is no allowlist: any pair
+# is a regression. scripts/check-case-collisions.py enforces the same
+# invariant repo-wide in CI; this test keeps it visible next to the writer.
+EMAILS_DIR = REPO_ROOT / "contributors" / "emails"
+
+
+def test_no_case_insensitive_mapping_collisions():
+    groups: dict[str, set[str]] = {}
+    for entry in EMAILS_DIR.iterdir():
+        if entry.is_file():
+            groups.setdefault(entry.name.casefold(), set()).add(entry.name)
+
+    collisions = {frozenset(names) for names in groups.values() if len(names) > 1}
+
+    assert not collisions, (
+        "contributor mappings differing only in case cannot coexist on "
+        "case-insensitive filesystems (Windows, default macOS) — a fresh clone "
+        f"there is permanently dirty: {sorted(sorted(c) for c in collisions)}"
+    )
+
+
+def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
+    d = tmp_path / "emails"
+    d.mkdir()
+    (d / "agent@Example-Host.local").write_text("someone\n")
+
+    import add_contributor as mod
+
+    monkeypatch.setattr(mod, "EMAILS_DIR", d)
+
+    assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
+    assert not (d / "agent@example-host.local").exists()
+
+
+def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):
+    # Same login, different spelling: still refused — the problem is the
+    # filename pair, not the login. The exact spelling is what's "present".
+    emails_dir.mkdir(parents=True)
+    (emails_dir / "Foo@Example.com").write_text("foouser\n")
+
+    assert add_contributor("foo@example.com", "foouser") == 1
+    assert "Foo@Example.com" in capsys.readouterr().err
+    assert sorted(p.name for p in emails_dir.iterdir()) == ["Foo@Example.com"]
+    # Exact-case re-add is the ordinary idempotent path.
+    assert add_contributor("Foo@Example.com", "foouser") == 0
+
+
+def test_case_collision_uses_casefold(emails_dir):
+    # casefold, not lower: matches how macOS/Windows fold non-ASCII (ß ~ ss).
+    emails_dir.mkdir(parents=True)
+    (emails_dir / "strasse@example.com").write_text("someone\n")
+    assert add_contributor("STRASSE@example.com", "someone") == 1
+    assert add_contributor("straße@example.com", "someone") == 1

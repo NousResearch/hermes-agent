@@ -17,13 +17,7 @@ type InkNode = {
 
 export type TextName = '#text'
 export type ElementNames =
-  | 'ink-root'
-  | 'ink-box'
-  | 'ink-text'
-  | 'ink-virtual-text'
-  | 'ink-link'
-  | 'ink-progress'
-  | 'ink-raw-ansi'
+  'ink-root' | 'ink-box' | 'ink-text' | 'ink-virtual-text' | 'ink-link' | 'ink-progress' | 'ink-raw-ansi'
 
 export type NodeNames = ElementNames | TextName
 
@@ -59,6 +53,11 @@ export type DOMElement = {
   // intermediate frames instead of one big jump. Direction reversal
   // naturally cancels (pure accumulator, no target tracking).
   pendingScrollDelta?: number
+  // One-render record of additive scrollTop changes made to preserve the
+  // visual anchor after content above the viewport changes height. The
+  // renderer subtracts this when evaluating positional bottom-follow and
+  // defers pending input for that paint, then clears the record.
+  scrollTopCompensation?: number
   // Render-time clamp bounds for virtual scroll. useVirtualScroll writes
   // the currently-mounted children's coverage span; render-node-to-output
   // clamps scrollTop to stay within it. Prevents blank screen when

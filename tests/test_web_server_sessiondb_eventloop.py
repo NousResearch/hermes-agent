@@ -4,6 +4,11 @@ import threading
 from pathlib import Path
 
 from hermes_cli import web_server
+import hermes_cli.web_models as _web_models
+import hermes_cli.web_routers.sessions as _rt_sessions
+import hermes_cli.web_server_sessions as _web_server_sessions
+from hermes_cli import web_server_sessions
+from hermes_cli.web_routers import analytics as web_analytics
 from hermes_cli.web_routers import sessions as web_sessions
 
 
@@ -30,12 +35,13 @@ def _call_name(call: ast.Call) -> str | None:
 
 
 def test_sessiondb_handlers_open_connections_inside_executor_helpers():
-    # The session route handlers were extracted to web_routers/sessions.py
-    # (wave 2); the analytics handlers and the executor helpers still live in
-    # web_server.py — scan both modules' top-level bodies.
+    # The session and analytics route handlers were extracted to
+    # web_routers/{sessions,analytics}.py; the executor helpers live in
+    # web_server_sessions.py (and any left in web_server.py) — scan all
+    # four modules' top-level bodies.
     handlers: dict[str, ast.AsyncFunctionDef] = {}
     top_level_helpers: dict[str, ast.FunctionDef] = {}
-    for mod in (web_server, web_sessions):
+    for mod in (web_server, web_server_sessions, web_sessions, web_analytics):
         tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, ast.AsyncFunctionDef) and node.name in TARGET_HANDLERS:
@@ -74,9 +80,24 @@ def test_sessiondb_handlers_open_connections_inside_executor_helpers():
         assert db_open_owners, f"{name} does not offload SessionDB open + work"
 
 
+def test_sessiondb_opens_declare_access_mode():
+    for mod in (web_server_sessions, web_sessions):
+        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and _call_name(node) == "_open_session_db_for_profile"
+        ]
+        assert calls
+        for call in calls:
+            assert any(keyword.arg == "read_only" for keyword in call.keywords)
+
+
 def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
     loop_thread = threading.get_ident()
     db_threads: list[int] = []
+    db_modes: list[bool] = []
 
     class _DB:
         def delete_sessions(self, ids):
@@ -87,14 +108,20 @@ def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
         def close(self):
             db_threads.append(threading.get_ident())
 
-    monkeypatch.setattr(web_server, "_open_session_db_for_profile", lambda profile=None: _DB())
+    def _open_db(profile=None, *, read_only):
+        assert profile is None
+        db_modes.append(read_only)
+        return _DB()
+
+    monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
 
     result = asyncio.run(
-        web_server.bulk_delete_sessions_endpoint(
-            web_server.BulkDeleteSessions(ids=["one", "two"])
+        _rt_sessions.bulk_delete_sessions_endpoint(
+            _web_models.BulkDeleteSessions(ids=["one", "two"])
         )
     )
 
     assert result == {"ok": True, "deleted": 2}
+    assert db_modes == [False]
     assert db_threads
     assert all(thread_id != loop_thread for thread_id in db_threads)

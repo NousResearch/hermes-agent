@@ -34,7 +34,6 @@ The `web_search` and `web_extract` tools support eight backend providers, config
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | — |
 | **Brave** (free tier) | `BRAVE_SEARCH_API_KEY` | ✔ | — | — |
 | **DuckDuckGo** (ddgs) | _(none)_ | ✔ | — | — |
-| **Tavily** | `TAVILY_API_KEY` | ✔ | ✔ | ✔ |
 | **Exa** | `EXA_API_KEY` | ✔ | ✔ | — |
 | **Parallel** | `PARALLEL_API_KEY` | ✔ | ✔ | — |
 | **xAI** | `XAI_API_KEY` | ✔ | — | — |
@@ -43,7 +42,7 @@ Quick setup example:
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
+  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | tavily | perplexity | keenable | exa | parallel | xai
 ```
 
 If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
@@ -52,8 +51,8 @@ If `web.backend` is not set, the backend is auto-detected from whichever API key
 
 Hermes includes full browser automation with multiple backend options for navigating websites, filling forms, and extracting information:
 
-- **Browserbase** — Managed cloud browsers with anti-bot tooling, CAPTCHA solving, and residential proxies
-- **Browser Use** — Alternative cloud browser provider
+- **Browser Use Cloud** — Managed Chromium with stealth, residential proxies, CAPTCHA solving, and reusable browser profiles
+- **Browserbase** — Alternative cloud browser provider with managed browsers, anti-bot tooling, CAPTCHA solving, and residential proxies
 - **Local Chromium-family CDP** — Connect to your running Chrome, Brave, Chromium, or Edge browser using `/browser connect`
 - **Local Chromium** — Headless local browser via the `agent-browser` CLI
 
@@ -94,6 +93,20 @@ Hermes runs as a gateway bot on 27+ messaging platforms, all configured through 
 - **[Telegram](/user-guide/messaging/telegram)**, **[Discord](/user-guide/messaging/discord)**, **[Slack](/user-guide/messaging/slack)**, **[WhatsApp](/user-guide/messaging/whatsapp)**, **[Signal](/user-guide/messaging/signal)**, **[Matrix](/user-guide/messaging/matrix)**, **[Mattermost](/user-guide/messaging/mattermost)**, **[Email](/user-guide/messaging/email)**, **[SMS](/user-guide/messaging/sms)**, **[DingTalk](/user-guide/messaging/dingtalk)**, **[Feishu/Lark](/user-guide/messaging/feishu)**, **[WeCom](/user-guide/messaging/wecom)**, **[WeCom Callback](/user-guide/messaging/wecom-callback)**, **[Weixin](/user-guide/messaging/weixin)**, **[BlueBubbles](/user-guide/messaging/bluebubbles)**, **[Buzz](/user-guide/messaging/buzz)**, **[QQ Bot](/user-guide/messaging/qqbot)**, **[Yuanbao](/user-guide/messaging/yuanbao)**, **[Home Assistant](/user-guide/messaging/homeassistant)**, **[Microsoft Teams](/user-guide/messaging/teams)**, **[Microsoft Teams Meetings](/user-guide/messaging/teams-meetings)**, **[Microsoft Graph Webhook](/user-guide/messaging/msgraph-webhook)**, **[Google Chat](/user-guide/messaging/google_chat)**, **[LINE](/user-guide/messaging/line)**, **[ntfy](/user-guide/messaging/ntfy)**, **[SimpleX](/user-guide/messaging/simplex)**, **[Open WebUI](/user-guide/messaging/open-webui)**, **[Webhooks](/user-guide/messaging/webhooks)**
 
 See the [Messaging Gateway overview](/user-guide/messaging) for the platform comparison table and setup guide.
+
+### Quick connect links
+
+The big platforms have a canonical "create your bot/app" URL, and some accept parameters that pre-open the right form. Skip the console-hunting and go straight there:
+
+| Platform | Direct link | What it opens |
+|----------|-------------|---------------|
+| **Telegram** | [t.me/BotFather](https://t.me/BotFather) | Chat with BotFather — send `/newbot` to mint a bot token |
+| **Discord** | [discord.com/developers/applications?new_application=true](https://discord.com/developers/applications?new_application=true) | Developer Portal with the **New Application** dialog pre-opened |
+| **Slack** | [api.slack.com/apps?new_app=1](https://api.slack.com/apps?new_app=1) | The **Create New App** dialog — pick *From an app manifest* and paste the manifest `hermes slack manifest --agent-view` generates |
+| **LINE** | [developers.line.biz/console](https://developers.line.biz/console/) | LINE Developers Console for creating a Messaging API channel |
+| **Feishu/Lark** | [open.feishu.cn/app](https://open.feishu.cn/app) | Feishu open-platform console for creating a custom app |
+
+Each platform's setup page walks through what to do once you're there.
 
 ## Collaboration Workspaces
 

@@ -30,6 +30,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.approval as approval_module
+from tools import approval_context
 from cli import HermesCLI
 
 
@@ -40,6 +41,11 @@ SESSION_KEY = "test-cli-yolo-session"
 def _clear_approval_state(monkeypatch):
     """Clear the YOLO bypass + env var around every test so cases are independent."""
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    # The value is intentionally frozen at tools.approval import time. Local
+    # Hermes-driven test runs may inherit HERMES_YOLO_MODE=1 from the parent
+    # agent process, so make the default test state hermetic; the one test that
+    # covers startup-frozen YOLO explicitly patches it back to True.
+    monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
     approval_module.clear_session(SESSION_KEY)
     approval_module.clear_session("default")
     yield
@@ -133,6 +139,27 @@ class TestIsSessionYoloActiveHelper:
         with patch.object(approval_module, "_YOLO_MODE_FROZEN", True):
             assert HermesCLI._is_session_yolo_active(stand_in) is True
 
+    def test_toggle_under_frozen_yolo_reports_locked_and_stays_on(self):
+        """With process-level YOLO frozen ON, /yolo must NOT claim approvals
+        are back. Pre-fix, the second toggle printed "YOLO mode OFF —
+        dangerous commands will require approval" while the frozen flag kept
+        auto-approving everything — a false safety claim."""
+        stand_in = _make_stand_in()
+
+        printed = []
+        with patch.object(approval_module, "_YOLO_MODE_FROZEN", True):
+            with patch("cli._cprint", side_effect=lambda msg: printed.append(msg)):
+                HermesCLI._toggle_yolo(stand_in)
+                HermesCLI._toggle_yolo(stand_in)
+
+            # Still effectively ON, and no session-level state was flipped.
+            assert HermesCLI._is_session_yolo_active(stand_in) is True
+            assert not approval_module.is_session_yolo_enabled(SESSION_KEY)
+
+        joined = "\n".join(printed)
+        assert "locked ON" in joined
+        assert "will require approval" not in joined
+
 
 class TestToggleYoloEndToEnd:
     """End-to-end: a dangerous command must auto-approve through the same
@@ -141,7 +168,7 @@ class TestToggleYoloEndToEnd:
     def test_toggle_yolo_bypasses_dangerous_command_check(self):
         stand_in = _make_stand_in()
 
-        token = approval_module.set_current_session_key(SESSION_KEY)
+        token = approval_context.set_current_session_key(SESSION_KEY)
         try:
             with patch("cli._cprint"):
                 HermesCLI._toggle_yolo(stand_in)  # YOLO ON
@@ -153,7 +180,7 @@ class TestToggleYoloEndToEnd:
                 f"YOLO toggle should auto-approve dangerous commands, got: {result}"
             )
         finally:
-            approval_module.reset_current_session_key(token)
+            approval_context.reset_current_session_key(token)
 
 
 

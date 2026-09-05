@@ -1,6 +1,7 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
+import { isMacPlatform } from '@/lib/platform'
 import type { DesktopTerminalPalette } from '@/themes/types'
 
 // VS Code's default integrated-terminal palette (terminalColorRegistry.ts) — a
@@ -78,8 +79,8 @@ export function terminalTheme(mode: 'light' | 'dark', palette?: DesktopTerminalP
   return overlay as ITheme
 }
 
-// Resolve --ui-editor-surface-background (a color-mix on the skin seed) to a
-// concrete rgb for the WebGL renderer + contrast clamp. Custom props don't
+// Resolve --ui-terminal-surface-background (a color-mix on the skin seed) to a
+// concrete color for the WebGL renderer + contrast clamp. Custom props don't
 // resolve via getComputedStyle, so probe a real background-color. Read AFTER
 // applyTheme repaints (mount / rAF post-change) or it lags a frame behind.
 export function resolveSurfaceColor(fallback: string): string {
@@ -89,7 +90,7 @@ export function resolveSurfaceColor(fallback: string): string {
 
   const probe = document.createElement('span')
   probe.style.cssText =
-    'position:absolute;visibility:hidden;pointer-events:none;background-color:var(--ui-editor-surface-background)'
+    'position:absolute;visibility:hidden;pointer-events:none;background-color:var(--ui-terminal-surface-background)'
   document.body.appendChild(probe)
   const resolved = getComputedStyle(probe).backgroundColor
   probe.remove()
@@ -97,13 +98,7 @@ export function resolveSurfaceColor(fallback: string): string {
   return resolved && resolved !== 'rgba(0, 0, 0, 0)' ? resolved : fallback
 }
 
-export const isMacPlatform = () => navigator.platform.toLowerCase().includes('mac')
-
-export function isAddSelectionShortcut(event: KeyboardEvent) {
-  const mod = isMacPlatform() ? event.metaKey : event.ctrlKey
-
-  return mod && !event.shiftKey && event.key.toLowerCase() === 'l'
-}
+export { isMacPlatform }
 
 export function terminalSelectionLabel(term: Terminal, shellName: string, text: string) {
   const pos = term.getSelectionPosition()

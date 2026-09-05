@@ -32,7 +32,7 @@ class TestRunReferenceSlotMaxTokens:
 
         with patch("agent.moa_loop._slot_runtime", return_value={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}), \
              patch("agent.moa_loop.call_llm", side_effect=fake_call_llm), \
-             patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt: msgs):
+             patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt, **kwargs: msgs):
             _run_reference(slot, [{"role": "user", "content": "hi"}], max_tokens=2000)
 
         assert captured_kwargs.get("max_tokens") == 600
@@ -54,7 +54,7 @@ class TestRunReferenceSlotMaxTokens:
 
         with patch("agent.moa_loop._slot_runtime", return_value={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}), \
              patch("agent.moa_loop.call_llm", side_effect=fake_call_llm), \
-             patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt: msgs):
+             patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt, **kwargs: msgs):
             _run_reference(slot, [{"role": "user", "content": "hi"}], max_tokens=2000)
 
         assert captured_kwargs.get("max_tokens") == 2000
@@ -76,7 +76,7 @@ class TestRunReferenceSlotMaxTokens:
 
         with patch("agent.moa_loop._slot_runtime", return_value={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}), \
              patch("agent.moa_loop.call_llm", side_effect=fake_call_llm), \
-             patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt: msgs):
+             patch("agent.moa_loop._maybe_apply_moa_cache_control", side_effect=lambda msgs, rt, **kwargs: msgs):
             _run_reference(slot, [{"role": "user", "content": "hi"}], max_tokens=None)
 
         assert captured_kwargs.get("max_tokens") is None

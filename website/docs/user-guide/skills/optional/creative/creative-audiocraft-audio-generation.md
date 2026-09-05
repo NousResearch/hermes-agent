@@ -15,7 +15,7 @@ AudioCraft: MusicGen text-to-music, AudioGen text-to-sound.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/audiocraft-audio-generation` |
-| Path | `optional-skills/creative/audiocraft-audio-generation` |
+| Path | `optional-skills/creative\audiocraft-audio-generation` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |
@@ -32,7 +32,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # AudioCraft: Audio Generation
 
-Comprehensive guide to using Meta's AudioCraft for text-to-music and text-to-audio generation with MusicGen, AudioGen, and EnCodec.
+Guide to using Meta's AudioCraft for text-to-music and text-to-audio generation with MusicGen, AudioGen, and EnCodec.
 
 ## When to use AudioCraft
 
@@ -576,8 +576,8 @@ for desc in descriptions:
 
 ## References
 
-- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
-- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative/audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
+- **[Advanced Usage](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\audiocraft-audio-generation/references/advanced-usage.md)** - Training, fine-tuning, deployment
+- **[Troubleshooting](https://github.com/NousResearch/hermes-agent/blob/main/optional-skills/creative\audiocraft-audio-generation/references/troubleshooting.md)** - Common issues and solutions
 
 ## Resources
 

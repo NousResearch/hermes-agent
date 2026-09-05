@@ -153,6 +153,25 @@ class TestExitCodes:
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
 
+    def test_discovery_runs_once_per_audit(self, tmp_path: Path, monkeypatch, capsys):
+        """cmd_security_audit must not scan the venv/plugins/MCP config twice.
+
+        Regression for the double-scan noted in #75485: the component count
+        and the audit each ran full discovery independently.
+        """
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        calls = {"venv": 0}
+
+        def counting_discover_venv():
+            calls["venv"] += 1
+            return [sa.Component(name="pkg", version="1.0", ecosystem="PyPI", source="venv")]
+
+        monkeypatch.setattr(sa, "_discover_venv", counting_discover_venv)
+        monkeypatch.setattr(sa, "_osv_query_batch", lambda comps: {})
+        sa.cmd_security_audit(self._build_args(skip_venv=False))
+        capsys.readouterr()
+        assert calls["venv"] == 1
+
 
 
 

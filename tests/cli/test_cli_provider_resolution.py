@@ -8,6 +8,8 @@ import pytest
 
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
+import hermes_cli.main_provider_setup as hermes_cli_main_provider_setup
+from hermes_cli import model_setup_flows
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +125,93 @@ def _import_cli():
     return importlib.import_module("cli")
 
 
+def test_provider_flag_uses_named_custom_default_model(monkeypatch):
+    """`--provider <custom>` without `-m` uses that entry's default_model (#86978)."""
+    cli = _import_cli()
+    monkeypatch.setitem(
+        cli.CLI_CONFIG,
+        "model",
+        {"default": "tencent/hy3:free", "provider": "nous"},
+    )
+    config = {
+        "model": {"default": "tencent/hy3:free", "provider": "nous"},
+        "providers": {
+            "gmk-lan": {
+                "name": "GMK Local",
+                "base_url": "http://gmk.lan:9931/v1",
+                "api_key": "not-needed",
+                "default_model": "/models/gemma.gguf",
+            }
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+    shell = cli.HermesCLI(provider="gmk-lan", compact=True, max_turns=1)
+
+    assert shell.model == "/models/gemma.gguf"
+    assert shell.requested_provider == "gmk-lan"
+
+
+def test_explicit_model_wins_over_provider_default_model(monkeypatch):
+    """`-m` still wins when `--provider` also names a custom default_model."""
+    cli = _import_cli()
+    monkeypatch.setitem(
+        cli.CLI_CONFIG,
+        "model",
+        {"default": "tencent/hy3:free", "provider": "nous"},
+    )
+    config = {
+        "model": {"default": "tencent/hy3:free", "provider": "nous"},
+        "providers": {
+            "gmk-lan": {
+                "name": "GMK Local",
+                "base_url": "http://gmk.lan:9931/v1",
+                "api_key": "not-needed",
+                "default_model": "/models/gemma.gguf",
+            }
+        },
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+    shell = cli.HermesCLI(
+        provider="gmk-lan",
+        model="explicit-id",
+        compact=True,
+        max_turns=1,
+    )
+
+    assert shell.model == "explicit-id"
+
+
+def test_provider_flag_logs_when_custom_default_model_cannot_resolve(monkeypatch, caplog):
+    """A named --provider that fails to resolve must not fail silently."""
+    cli = _import_cli()
+    monkeypatch.setitem(
+        cli.CLI_CONFIG,
+        "model",
+        {"default": "tencent/hy3:free", "provider": "nous"},
+    )
+
+    def _boom(_name):
+        raise RuntimeError("catalog unavailable")
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._get_named_custom_provider",
+        _boom,
+    )
+
+    with caplog.at_level("WARNING"):
+        shell = cli.HermesCLI(provider="gmk-lan", compact=True, max_turns=1)
+
+    assert shell.model == "tencent/hy3:free"
+    assert any(
+        "gmk-lan" in rec.getMessage() and "catalog unavailable" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+
 def test_hermes_cli_init_does_not_eagerly_resolve_runtime_provider(monkeypatch):
     cli = _import_cli()
     calls = {"count": 0}
@@ -162,7 +251,7 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
 
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setattr("run_agent.AIAgent", _DummyAgent)
 
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
 
@@ -242,7 +331,7 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
         "hermes_cli.models.get_curated_nous_model_ids",
         lambda: [selected_model],
     )
-    monkeypatch.setattr("hermes_cli.models.get_pricing_for_provider", lambda provider: {})
+    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda provider: {})
     monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda **kwargs: False)
     monkeypatch.setattr(
         "hermes_cli.models.union_with_portal_paid_recommendations",
@@ -360,7 +449,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: saved_env.__setitem__(key, value))
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_env.__setitem__("MODEL", model))
     monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.main_provider_setup._save_custom_provider", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "hermes_cli.models.probe_api_models",
         lambda api_key, base_url: {
@@ -422,7 +511,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
         lambda key, value: saved_env.__setitem__(key, value),
     )
     monkeypatch.setattr(
-        "hermes_cli.main._save_custom_provider",
+        "hermes_cli.main_provider_setup._save_custom_provider",
         lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None, key_env="": captured_provider.update(
             {
                 "base_url": base_url,
@@ -473,6 +562,7 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
     monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda requested, **kwargs: "nous")
     monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider_id: None)
     monkeypatch.setattr(hermes_main, "_prompt_provider_choice", lambda choices, **kwargs: 0)
+    monkeypatch.setattr(hermes_cli_main_provider_setup, "_prompt_provider_choice", lambda choices, **kwargs: 0)
 
     captured = {}
 
@@ -518,7 +608,7 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_auto_provider_name_localhost():
-    from hermes_cli.main import _auto_provider_name
+    from hermes_cli.main_provider_setup import _auto_provider_name
     assert _auto_provider_name("http://localhost:11434/v1") == "Local (localhost:11434)"
     assert _auto_provider_name("http://127.0.0.1:1234/v1") == "Local (127.0.0.1:1234)"
 
@@ -530,7 +620,7 @@ def test_auto_provider_name_localhost():
 def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     """When a display name is passed, it should appear in the saved entry."""
     import yaml
-    from hermes_cli.main import _save_custom_provider
+    from hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.dump({}))
@@ -552,7 +642,7 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
 def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypatch, tmp_path):
     """With key_env set the entry must not carry the secret (#69449)."""
     import yaml
-    from hermes_cli.main import _save_custom_provider
+    from hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.dump({}))

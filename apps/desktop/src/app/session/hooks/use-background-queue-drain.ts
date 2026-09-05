@@ -13,6 +13,7 @@ import {
   shouldAutoDrain
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
+import { $sessions, idsShareLineage } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
@@ -154,14 +155,23 @@ export function useBackgroundQueueDrain({
       return
     }
 
-    const working = new Set(workingSessionIds)
+    // Queue keys prefer the lineage root (resolveComposerSessionKey) while
+    // $workingSessionIds / selection may hold the compression tip. Strict
+    // equality then mis-classifies a busy or selected chat as idle/offscreen.
+    const sessions = $sessions.get()
+    const working = [...workingSessionIds]
 
     for (const [sessionKey, entries] of Object.entries(queuedPromptsBySession)) {
+      const isSelected =
+        Boolean(selectedStoredSessionId) && idsShareLineage(sessionKey, selectedStoredSessionId!, sessions)
+
+      const isBusy = working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
+
       if (
-        sessionKey === selectedStoredSessionId ||
+        isSelected ||
         drainingSessionIdsRef.current.has(sessionKey) ||
         !shouldAutoDrain({
-          isBusy: working.has(sessionKey),
+          isBusy,
           parked: Boolean(parkedQueueSessions[sessionKey]),
           queueLength: entries.length
         })

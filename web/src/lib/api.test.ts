@@ -1,10 +1,39 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import { api, fetchJSON, setManagementProfile } from "./api";
+
+const reloadMocks = vi.hoisted(() => ({
+  attemptDashboardTokenReloadOnce: vi.fn(() => false),
+  clearDashboardTokenReloadAttempt: vi.fn(),
+}));
+
+vi.mock("./dashboard-auth-reload", () => ({
+  attemptDashboardTokenReloadOnce: reloadMocks.attemptDashboardTokenReloadOnce,
+  clearDashboardTokenReloadAttempt: reloadMocks.clearDashboardTokenReloadAttempt,
+}));
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
+beforeEach(() => {
+  reloadMocks.attemptDashboardTokenReloadOnce.mockReset();
+  reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(false);
+  reloadMocks.clearDashboardTokenReloadAttempt.mockReset();
+
+  Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
+    configurable: true,
+    value: "stale-token",
+    writable: true,
+  });
+  Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
+    configurable: true,
+    value: false,
+    writable: true,
+  });
+});
+
 afterEach(() => {
+  setManagementProfile("");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -18,6 +47,47 @@ function jsonFetchMock(body: unknown = { ok: true }) {
       }),
   );
 }
+
+describe("fetchJSON", () => {
+  it("tries the one-shot reload path for loopback 401s", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        clone: () => ({
+          json: async () => ({}),
+        }),
+        ok: false,
+        status: 401,
+        statusText: "Unauthorized",
+        text: async () => "Unauthorized",
+      })),
+    );
+    reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(true);
+
+    const pending = fetchJSON("/api/status");
+    await expect(Promise.race([pending, Promise.resolve("pending")])).resolves.toBe(
+      "pending",
+    );
+
+    expect(reloadMocks.attemptDashboardTokenReloadOnce).toHaveBeenCalledTimes(1);
+    expect(reloadMocks.clearDashboardTokenReloadAttempt).not.toHaveBeenCalled();
+  });
+
+  it("clears the reload latch after a successful response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        json: async () => ({ ok: true }),
+        ok: true,
+        status: 200,
+      })),
+    );
+
+    await expect(fetchJSON("/api/status")).resolves.toEqual({ ok: true });
+
+    expect(reloadMocks.clearDashboardTokenReloadAttempt).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
@@ -102,5 +172,31 @@ describe("api OAuth helpers", () => {
       expect(init.credentials).toBe("include");
       expect((init.headers as Headers).has(SESSION_HEADER)).toBe(false);
     }
+  });
+
+  it("keeps every OAuth operation on the selected management profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({
+      flow: "device_code",
+      session_id: "oauth-session",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setManagementProfile("worker");
+
+    await api.getOAuthProviders();
+    await api.disconnectOAuthProvider("anthropic");
+    await api.startOAuthLogin("openai-codex");
+    await api.submitOAuthCode("anthropic", "oauth-session", "code-123");
+    await api.pollOAuthSession("anthropic", "oauth-session");
+    await api.cancelOAuthSession("oauth-session");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/providers/oauth?profile=worker",
+      "/api/providers/oauth/anthropic?profile=worker",
+      "/api/providers/oauth/openai-codex/start?profile=worker",
+      "/api/providers/oauth/anthropic/submit?profile=worker",
+      "/api/providers/oauth/anthropic/poll/oauth-session?profile=worker",
+      "/api/providers/oauth/sessions/oauth-session?profile=worker",
+    ]);
   });
 });

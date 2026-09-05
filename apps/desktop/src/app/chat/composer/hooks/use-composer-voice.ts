@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
+import { markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
+import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
@@ -61,7 +64,7 @@ export function useComposerVoice({
   // A tile's composer speaks ITS transcript, not the primary chat's.
   const { $messages } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
-  const lastSpokenIdRef = useRef<string | null>(null)
+  const ownsWakeIndicatorRef = useRef(false)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
 
   const { dictate, voiceActivityState, voiceStatus } = useVoiceRecorder({
@@ -75,8 +78,9 @@ export function useComposerVoice({
   const pendingResponse = () => {
     const messages = $messages.get()
     const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+    const spoken = resolveSpokenReply(sessionId, messages)
 
-    if (!last || last.id === lastSpokenIdRef.current) {
+    if (!last || last.id === spoken?.id) {
       return null
     }
 
@@ -98,14 +102,18 @@ export function useComposerVoice({
    * in order — narration interims AND the final answer, not just whichever
    * bubble happens to be last. See `collectUnspokenTurnSpeech`.
    */
-  const pendingTurnResponse = () => collectUnspokenTurnSpeech($messages.get(), lastSpokenIdRef.current)
+  const pendingTurnResponse = () => {
+    const messages = $messages.get()
+
+    return collectUnspokenTurnSpeech(messages, resolveSpokenReply(sessionId, messages)?.id ?? null)
+  }
 
   const consumePendingResponse = () => {
     const messages = $messages.get()
     const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
 
     if (last) {
-      lastSpokenIdRef.current = last.id
+      markAssistantIdSpoken(sessionId, messages, last.id)
     }
   }
 
@@ -149,6 +157,26 @@ export function useComposerVoice({
     // to finish releasing the capture device (see wakePauseBarrierRef).
     beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
   })
+
+  // eslint-disable-next-line no-restricted-syntax -- ownership token used only by unmount cleanup
+  useEffect(() => {
+    if (target !== 'main') {
+      return
+    }
+
+    if (syncWakeIndicatorWithVoice(voiceConversationActive, conversation.status)) {
+      ownsWakeIndicatorRef.current = voiceConversationActive
+    }
+  }, [conversation.status, target, voiceConversationActive])
+
+  useEffect(
+    () => () => {
+      if (ownsWakeIndicatorRef.current) {
+        clearWakeIndicator()
+      }
+    },
+    []
+  )
 
   // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
   // with STT unconfigured lets the conversation surface its own "configure
@@ -237,6 +265,26 @@ export function useComposerVoice({
   }, [t, voiceConversationActive])
 
   useEffect(() => resumeWakeIfPaused, [resumeWakeIfPaused])
+
+  // Speech-output toggles are TTS warm-up / release signals. Entering a voice
+  // conversation acquires this window's lease (pre-loads the engine so the
+  // first spoken reply doesn't start with dead air); ending it releases the
+  // lease, and the backend unloads resident local models once no surface holds
+  // one. Fire-and-forget — the toggle never waits on or fails from this.
+  useEffect(() => {
+    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive)
+  }, [voiceConversationActive])
+
+  useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
+
+  // "Read replies aloud" is the same signal, held for as long as the toggle is
+  // on (it mirrors voice.auto_tts, so this also warms at startup when the
+  // preference is already set).
+  const autoSpeakReplies = useStore($autoSpeakReplies)
+
+  useEffect(() => {
+    void syncTtsLease(READ_ALOUD_LEASE, autoSpeakReplies)
+  }, [autoSpeakReplies])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

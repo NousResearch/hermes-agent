@@ -14,6 +14,33 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+_BOTO_PREFIXES = ("botocore", "boto3")
+
+
+@pytest.fixture(autouse=True)
+def _boto_sys_modules_hygiene():
+    """Snapshot/restore boto* sys.modules around every test.
+
+    Tests here plant fake botocore/boto3 modules; a fake that leaks (or a
+    real submodule first-imported inside a stub window) poisons later
+    imports of the real ``botocore.exceptions`` with
+    ``No module named 'botocore.vendored'`` (PR #92617 CI flake). This
+    fixture makes stub windows airtight regardless of test ordering.
+    """
+    import sys as _sys
+
+    saved = {
+        name: mod
+        for name, mod in _sys.modules.items()
+        if name.split(".", 1)[0] in _BOTO_PREFIXES
+    }
+    yield
+    for name in [n for n in _sys.modules if n.split(".", 1)[0] in _BOTO_PREFIXES]:
+        _sys.modules.pop(name, None)
+    _sys.modules.update(saved)
+
+
+
 class TestProviderRegistry:
     """Verify Bedrock is registered in PROVIDER_REGISTRY."""
 
@@ -151,6 +178,45 @@ class TestRuntimeProvider:
         assert result["provider"] == "bedrock"
         assert result["api_mode"] == "bedrock_converse"
 
+    def test_bedrock_openai_models_route_to_mantle_responses(self, monkeypatch):
+        """Bedrock's OpenAI models (GPT-5.5 / GPT-5.6 family) are not Converse
+        models — they only answer on the Mantle /openai/v1 Responses surface.
+        Every allowlisted ID must route there, with the aws-sdk IAM sentinel."""
+        from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        assert "openai.gpt-5.5" in BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+        for suffix in ("sol", "terra", "luna"):
+            assert f"openai.gpt-5.6-{suffix}" in BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+
+        for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+            with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+                 patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                     "provider": "bedrock",
+                     "default": model_id,
+                 }):
+                result = resolve_runtime_provider(requested="bedrock")
+
+            assert result["api_mode"] == "codex_responses", model_id
+            assert result["model"] == model_id
+            assert result["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+            assert result["api_key"] == "aws-sdk"
+            assert result["bedrock_openai"] is True, model_id
+
+    def test_bedrock_openai_context_length_is_272k(self):
+        """AWS model cards list a 272K context window for the Mantle OpenAI
+        models; make sure we do not fall back to the 128K default."""
+        from agent.bedrock_adapter import (
+            BEDROCK_OPENAI_RESPONSES_MODEL_IDS,
+            get_bedrock_context_length,
+        )
+        for model_id in BEDROCK_OPENAI_RESPONSES_MODEL_IDS:
+            assert get_bedrock_context_length(model_id) == 272_000
+
 
 # ---------------------------------------------------------------------------
 # providers.py integration
@@ -224,7 +290,7 @@ class TestPackaging:
 #   us.anthropic.claude-sonnet-4-5-20250929-v1:0
 #   apac.anthropic.claude-haiku-4-5
 #
-# ``agent.anthropic_adapter.normalize_model_name`` converts dots to hyphens
+# ``agent.anthropic_message_convert.normalize_model_name`` converts dots to hyphens
 # unless the caller opts in via ``preserve_dots=True``.  Before this fix,
 # ``AIAgent._anthropic_preserve_dots`` returned False for the ``bedrock``
 # provider, so Claude-on-Bedrock requests went out with
@@ -273,7 +339,7 @@ class TestBedrockModelNameNormalization:
 
     def test_global_anthropic_inference_profile_preserved(self):
         """The reporter's exact model ID."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=True
         ) == "global.anthropic.claude-opus-4-7"
@@ -285,7 +351,7 @@ class TestBedrockModelNameNormalization:
         always returned unmangled -- ``preserve_dots`` is irrelevant for
         these IDs because the dots are namespace separators, not version
         separators.  Regression for #12295."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "global.anthropic.claude-opus-4-7", preserve_dots=False
         ) == "global.anthropic.claude-opus-4-7"
@@ -337,7 +403,7 @@ class TestBedrockModelIdDetection:
     regardless of ``preserve_dots``.  Regression for #12295."""
 
     def test_bare_bedrock_id_detected(self):
-        from agent.anthropic_adapter import _is_bedrock_model_id
+        from agent.anthropic_message_convert import _is_bedrock_model_id
         assert _is_bedrock_model_id("anthropic.claude-opus-4-7") is True
 
 
@@ -349,7 +415,7 @@ class TestBedrockModelIdDetection:
         """The primary bug from #12295: ``anthropic.claude-opus-4-7``
         sent to bedrock-mantle via auxiliary clients that don't pass
         ``preserve_dots=True``."""
-        from agent.anthropic_adapter import normalize_model_name
+        from agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name(
             "anthropic.claude-opus-4-7", preserve_dots=False
         ) == "anthropic.claude-opus-4-7"
@@ -437,3 +503,91 @@ class TestAuxiliaryClientBedrockResolution:
         # got-final-object downgrade path handles the rest.
         assert resp is sentinel
         assert mock_converse.call_count == 1
+
+    def test_bedrock_shim_uncapped_when_caller_omits_max_tokens(self, monkeypatch):
+        """No caller max_tokens → the shim passes None through and the wire
+        request carries no inferenceConfig.maxTokens, so Bedrock uses the
+        model's maximum allowed output (#10809 on the Bedrock wire).
+
+        Guards against the shim's old hardcoded ``else 4096`` fallback, which
+        kept aux vision descriptions capped after the vision call sites
+        dropped their own caps."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        from agent.auxiliary_client import BedrockAuxiliaryClient
+
+        client = BedrockAuxiliaryClient("us-east-1", "openai.gpt-oss-20b-1:0")
+        boto3_client = MagicMock()
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client",
+                   return_value=boto3_client), \
+             patch("agent.bedrock_adapter.normalize_converse_response"):
+            # Aux vision-style call: no max_tokens key at all.
+            client.chat.completions.create(
+                model="openai.gpt-oss-20b-1:0",
+                messages=[{"role": "user", "content": "describe"}],
+                temperature=0.1,
+            )
+            wire_kwargs = boto3_client.converse.call_args.kwargs
+            assert "maxTokens" not in wire_kwargs.get("inferenceConfig", {})
+
+            # An explicit caller cap still lands on the wire unchanged.
+            client.chat.completions.create(
+                model="openai.gpt-oss-20b-1:0",
+                messages=[{"role": "user", "content": "describe"}],
+                max_tokens=1234,
+            )
+            wire_kwargs = boto3_client.converse.call_args.kwargs
+            assert wire_kwargs["inferenceConfig"]["maxTokens"] == 1234
+
+    def test_bedrock_mantle_config_region_beats_env_region(self, monkeypatch):
+        """bedrock.region in config.yaml must win over AWS_REGION for auxiliary
+        Mantle calls — the same priority the main runtime resolver uses (#65076
+        review: aux resolution previously derived its region env-first and
+        could leave the primary runtime's configured region)."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "test-bearer")
+
+        captured = {}
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.api_key = kwargs.get("api_key")
+                self.base_url = kwargs.get("base_url")
+
+            def close(self):
+                pass
+
+        with patch("hermes_cli.config.load_config_readonly",
+                   return_value={"bedrock": {"region": "us-west-2"}}), \
+             patch("agent.auxiliary_client.OpenAI", _FakeOpenAI):
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("bedrock", "openai.gpt-5.6-sol")
+
+        assert client is not None
+        assert model == "openai.gpt-5.6-sol"
+        assert "us-west-2" in captured.get("base_url", ""), (
+            "Mantle auxiliary base_url ignored config.yaml bedrock.region"
+        )
+
+    def test_bedrock_openai_aux_uses_responses_client(self, monkeypatch):
+        """Auxiliary tasks on Bedrock GPT models use the Mantle Responses
+        path (SigV4 http client + aws-sdk sentinel), not the Anthropic shim."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        with patch("agent.auxiliary_client.OpenAI", return_value=MagicMock()) as mock_openai, \
+             patch("agent.bedrock_adapter.build_bedrock_openai_http_client", return_value=MagicMock()):
+            from agent.auxiliary_client import resolve_provider_client, CodexAuxiliaryClient
+            client, model = resolve_provider_client("bedrock", "openai.gpt-5.5")
+
+        assert model == "openai.gpt-5.5"
+        assert isinstance(client, CodexAuxiliaryClient)
+        kwargs = mock_openai.call_args.kwargs
+        assert kwargs["api_key"] == "aws-sdk"
+        assert kwargs["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+        assert "http_client" in kwargs

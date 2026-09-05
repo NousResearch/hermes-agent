@@ -2,7 +2,7 @@
 import json
 import pytest
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from hermes_state import SessionDB
@@ -193,6 +193,7 @@ class TestBuildSessionContextPrompt:
         from unittest.mock import patch
         from gateway.session import _slack_tools_loaded
         import tools.mcp_tool as _mcp_tool_mod
+        from tools import mcp_tool_registration as _mcp_registration
 
         # No native slack toolset / token configured.
         with patch.dict(_os.environ, {}, clear=False):
@@ -202,14 +203,14 @@ class TestBuildSessionContextPrompt:
             # registered a real tool, via the actual tracking function used
             # by the live registration path (tools/mcp_tool.py:_track_mcp_tool_server),
             # not a mock of the capability check.
-            _mcp_tool_mod._track_mcp_tool_server("mcp-company-slack_post_message", "company-slack")
+            _mcp_registration._track_mcp_tool_server("mcp-company-slack_post_message", "company-slack")
             try:
                 assert _slack_tools_loaded() is True, (
                     "A connected MCP server with 'slack' in its name and "
                     "registered tools must be detected as Slack capability"
                 )
             finally:
-                _mcp_tool_mod._forget_mcp_tool_server("mcp-company-slack_post_message")
+                _mcp_registration._forget_mcp_tool_server("mcp-company-slack_post_message")
 
 
     def test_shared_slack_prompt_warns_against_guessed_self_mentions(self):
@@ -491,8 +492,59 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_switch_session_rebinds_full_compression_lineage(self, tmp_path):
+        from hermes_state import SessionDB
 
-class TestSessionStoreLookupBySessionId:
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        destination = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="destination-chat",
+            chat_type="dm",
+            user_id="destination-user",
+        )
+        current_entry = store.get_or_create_session(destination)
+        destination_key = current_entry.session_key
+        original_key = "agent:main:telegram:dm:original-chat"
+
+        db.create_session(
+            "compressed_root", "telegram", session_key=original_key,
+            user_id="original-user", chat_id="original-chat",
+        )
+        db.end_session("compressed_root", "compression")
+        db.create_session(
+            "compressed_tip", "telegram", session_key=original_key,
+            user_id="original-user", chat_id="original-chat",
+            parent_session_id="compressed_root",
+        )
+        db.end_session("compressed_tip", "session_reset")
+
+        switched = store.switch_session(destination_key, "compressed_tip")
+
+        assert switched is not None
+        assert db.get_session("compressed_root")["session_key"] == destination_key
+        assert db.get_session("compressed_tip")["session_key"] == destination_key
+        assert [
+            row["id"] for row in db.list_sessions_rich(
+                source="telegram", session_key=destination_key, limit=10
+            )
+            if row["id"] == "compressed_tip"
+        ] == ["compressed_tip"]
+        assert not any(
+            row["id"] == "compressed_tip"
+            for row in db.list_sessions_rich(
+                source="telegram", session_key=original_key, limit=10
+            )
+        )
+        db.close()
+
+
+class TestSessionStoreLookup:
     @pytest.fixture()
     def store(self, tmp_path):
         config = GatewayConfig()
@@ -514,6 +566,19 @@ class TestSessionStoreLookupBySessionId:
         assert store.lookup_by_session_id(entry.session_id) is entry
         assert store.lookup_by_session_id("missing") is None
         assert store.lookup_by_session_id("") is None
+
+    def test_returns_exact_existing_route(self, store):
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="42",
+            chat_type="dm",
+            user_id="42",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.lookup_by_session_key(entry.session_key) is entry
+        assert store.lookup_by_session_key("agent:main:telegram:dm:missing") is None
+        assert store.lookup_by_session_key("") is None
 
 
 class TestSlackWorkspaceSessionIsolation:
@@ -688,6 +753,90 @@ class TestWhatsAppSessionKeyConsistency:
         )
         assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:17585"
         assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(alice) == build_session_key(bob)
+
+
+    def test_discord_prospective_thread_initiates_and_continues_one_session(self):
+        """Discord auto-thread continuity: a channel-initiating message (no
+        thread_id, but a connector-supplied prospective_thread_id) and the later
+        follow-ups that arrive IN that thread (real thread_id == the prospective
+        id) must resolve to ONE session — "initiate in channel, continue in
+        thread". This is the fix for every-thread-after-the-first never getting
+        an auto-title/rename (staging 2026-08-02)."""
+        # The channel-initiating message: no thread yet, connector says it will
+        # be threaded into thread id "msg-100" (== the message id).
+        initiating = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-100",
+        )
+        # A follow-up that actually arrives inside that thread.
+        follow_up = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="msg-100",
+            user_id="cthulhu",
+        )
+        key_init = build_session_key(initiating)
+        key_follow = build_session_key(follow_up)
+        assert key_init.endswith(":msg-100")
+        assert key_init == key_follow
+
+    def test_discord_distinct_prospective_threads_are_distinct_sessions(self):
+        """Two different channel messages each initiate their OWN thread/session,
+        so each gets its own auto-title/rename (the reported bug: only the first
+        thread per channel was ever named)."""
+        first = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-100",
+        )
+        second = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="cthulhu",
+            prospective_thread_id="msg-200",
+        )
+        assert build_session_key(first) != build_session_key(second)
+        assert build_session_key(first).endswith(":msg-100")
+        assert build_session_key(second).endswith(":msg-200")
+
+    def test_real_thread_id_wins_over_prospective(self):
+        """A real thread_id always takes precedence over prospective_thread_id
+        (they normally match; if both are somehow set, the real one wins)."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="thread",
+            thread_id="real-thread",
+            prospective_thread_id="ignored",
+            user_id="cthulhu",
+        )
+        assert build_session_key(source).endswith(":real-thread")
+
+    def test_prospective_thread_shares_across_participants(self):
+        """A prospective-thread session is shared across participants, same as a
+        real thread (thread sessions are not per-user by default)."""
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="alice",
+            prospective_thread_id="msg-100",
+        )
+        bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="bob",
+            prospective_thread_id="msg-100",
+        )
         assert build_session_key(alice) == build_session_key(bob)
 
 
@@ -1028,15 +1177,39 @@ class TestHasAnySessions:
         return s
 
     def test_uses_database_count_when_available(self, store_with_mock_db):
-        """has_any_sessions should use database session_count, not len(_entries)."""
+        """has_any_sessions should use database session_count_ge, not len(_entries)."""
         store = store_with_mock_db
         # Simulate single-platform user with only 1 entry in memory
         store._entries = {"telegram:12345": MagicMock()}
         # But database has 3 sessions (current + 2 previous resets)
-        store._db.session_count.return_value = 3
+        store._db.session_count_ge.return_value = True
 
         assert store.has_any_sessions() is True
-        store._db.session_count.assert_called_once()
+        store._db.session_count_ge.assert_called_once_with(2)
+
+    def test_first_session_ever_returns_false(self, store_with_mock_db):
+        """First session ever should return False (only current session in DB)."""
+        store = store_with_mock_db
+        store._entries = {"telegram:12345": MagicMock()}
+        # Database has exactly 1 session (the current one just created)
+        store._db.session_count_ge.return_value = False
+
+        assert store.has_any_sessions() is False
+
+    def test_fallback_without_database(self, tmp_path):
+        """Should fall back to len(_entries) when DB is not available."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._entries = {"key1": MagicMock(), "key2": MagicMock()}
+
+        # > 1 entries means has sessions
+        assert store.has_any_sessions() is True
+
+        store._entries = {"key1": MagicMock()}
+        assert store.has_any_sessions() is False
 
 
 class TestLastPromptTokens:
@@ -1118,6 +1291,34 @@ class TestSessionMetadata:
             )
             == "123.456"
         )
+
+    def test_metadata_write_does_not_touch_activity_clock(self, tmp_path):
+        """set_session_metadata is bookkeeping — it must not bump updated_at.
+
+        updated_at drives idle/daily reset policy and the restart-resume
+        freshness gate (#85709); a background metadata write on an idle
+        session must not make it look recently active.
+        """
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U123",
+            thread_id="123.000",
+        )
+
+        entry = store.get_or_create_session(source)
+        idle = datetime.now() - timedelta(days=21)
+        with store._lock:
+            entry.updated_at = idle
+
+        assert store.set_session_metadata(entry.session_key, "k", "v")
+        assert entry.updated_at == idle
+        # And the restart freshness gate must still see it as idle.
+        assert store.suspend_recently_active(max_age_seconds=120) == 0
 
 
 class TestRewriteTranscriptPreservesReasoning:
@@ -1201,15 +1402,88 @@ class TestGatewaySessionDbRecovery:
         ]
         db.close()
 
+    def test_transcript_reroute_follows_multi_hop_compression_chain(self, tmp_path):
+        """A stale writer behind >=2 compression hops (root -> mid -> tip) must
+        reroute to the live tip via the transitive ``get_compression_tip`` walk
+        — the depth-1 live-child lookup found nothing here (#82001)."""
+        import threading
+        from types import SimpleNamespace
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("root", source="telegram")
+        db.end_session("root", "compression")
+        db.create_session("mid", source="telegram", parent_session_id="root")
+        db.end_session("mid", "compression")
+        db.create_session("tip", source="telegram", parent_session_id="mid")
+        db.replace_messages("tip", [{"role": "user", "content": "summary"}])
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._lock = threading.RLock()
+        store._entries = {"route": SimpleNamespace(session_id="root")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript(
+            "root", {"role": "assistant", "content": "routed to tip"}
+        )
+
+        assert store._entries["route"].session_id == "tip"
+        assert "root" not in store._dirty_transcripts
+        assert [m["content"] for m in db.get_messages_as_conversation("root")] == []
+        assert [m["content"] for m in db.get_messages_as_conversation("tip")] == [
+            "summary",
+            "routed to tip",
+        ]
+        db.close()
+
+    def test_transcript_reroute_fails_closed_on_stale_closed_tip(self, tmp_path):
+        """A chain ending in a closed sibling (``ws_orphan_reap``) has no live
+        tip — the reroute must fail closed, never adopt a closed session."""
+        import threading
+        from types import SimpleNamespace
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("root", source="telegram")
+        db.end_session("root", "compression")
+        db.create_session("stale", source="telegram", parent_session_id="root")
+        db.end_session("stale", "ws_orphan_reap")
+
+        store = object.__new__(SessionStore)
+        store._db = db
+        store._lock = threading.RLock()
+        store._entries = {"route": SimpleNamespace(session_id="root")}
+        store._loaded = True
+        store._save = lambda: None
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript(
+            "root", {"role": "assistant", "content": "must not land"}
+        )
+
+        assert store._entries["route"].session_id == "root"
+        assert [m["content"] for m in db.get_messages_as_conversation("stale")] == []
+        db.close()
+
     def test_transcript_reroute_migrates_remaining_backlog_to_child(self):
         import threading
         from types import SimpleNamespace
-        from hermes_state import CompressionSessionClosedError
+        from hermes_state_errors import CompressionSessionClosedError
 
         class FakeDb:
-            def find_live_compression_child(self, session_id):
+            def get_compression_tip(self, session_id):
                 assert session_id == "parent"
-                return {"id": "child"}
+                return "child"
+
+            def get_session(self, session_id):
+                return {"id": session_id, "ended_at": None}
 
         store = object.__new__(SessionStore)
         store._db = FakeDb()
@@ -1268,14 +1542,28 @@ class TestGatewaySessionDbRecovery:
         assert "child" not in store._dirty_transcripts
 
 
-    def test_fts_corruption_error_does_not_match_false_positives(self):
-        """_is_fts_corruption_error must not match unrelated error strings
+    def test_fts_corruption_error_requires_fts_provenance(self):
+        """_is_fts_corruption_error must not treat a generic malformed-image
+        error as FTS-scoped (#97940): bare SQLITE_CORRUPT can mean canonical
+        B-tree damage. It must also not match unrelated error strings
         containing 'fts' as a substring (e.g. 'shifts', 'gifts')."""
-        assert SessionStore._is_fts_corruption_error(
+        import sqlite3
+
+        # Generic structural corruption: no FTS provenance -> fail closed.
+        assert not SessionStore._is_fts_corruption_error(
             RuntimeError("database disk image is malformed")
         )
+        assert not SessionStore._is_fts_corruption_error(
+            sqlite3.DatabaseError("database disk image is malformed")
+        )
+        # FTS-scoped errors remain eligible for the one-shot rebuild.
         assert SessionStore._is_fts_corruption_error(
             RuntimeError("no such table: messages_fts")
+        )
+        assert SessionStore._is_fts_corruption_error(
+            sqlite3.DatabaseError(
+                'fts5: corrupt structure record for table "messages_fts"'
+            )
         )
         assert not SessionStore._is_fts_corruption_error(
             RuntimeError("shifts were applied")

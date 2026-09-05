@@ -176,6 +176,32 @@ FOOTGUNS: list[Footgun] = [
         ),
     ),
     Footgun(
+        name="os.fdopen() without encoding= on text mode",
+        # ruff PLW1514 covers builtins.open/Path.read_text/write_text/
+        # Path.open but NOT os.fdopen — a bare text-mode fdopen still
+        # decodes/encodes with the locale default (cp1252 on Windows).
+        # This is the exact hole the July 2026 encoding sweep kept
+        # re-fixing by hand (PRs #56033/#56940/#65565), so gate it here.
+        pattern=re.compile(
+            r"""(?:os\s*\.\s*)?\bfdopen\s*\(\s*[^,)]+\s*(?:,\s*['"](?P<mode>[^'"]*)['"])?"""
+        ),
+        message=(
+            "os.fdopen() without an explicit encoding= uses the platform "
+            "default (cp1252/mbcs on Windows) in text mode — the same "
+            "mojibake class as bare open(). ruff PLW1514 does not cover "
+            "fdopen, so this checker is the only gate."
+        ),
+        fix=(
+            "os.fdopen(fd, 'w', encoding='utf-8')  # or mode 'wb' for binary"
+        ),
+        post_filter=lambda m, line: (
+            "b" not in (m.group("mode") or "")
+            and "encoding=" not in line
+            and "encoding =" not in line
+            and "**" not in line
+        ),
+    ),
+    Footgun(
         name="os.kill(pid, 0)",
         pattern=re.compile(r"\bos\.kill\s*\(\s*[^,]+,\s*0\s*\)"),
         message=(
@@ -395,10 +421,14 @@ FOOTGUNS: list[Footgun] = [
             "encoding=" not in line
             and "encoding =" not in line
             and not _looks_like_string_literal(line, m)
-            # Skip calls that continue onto the next line — the closing
-            # paren isn't on this line, so encoding= may follow. AST-level
-            # enforcement for those lives in the gateway guard test.
-            and line.rstrip().endswith(")")
+            # Skip calls that continue onto the next line — if the call's
+            # own closing paren isn't on this line, encoding= may follow
+            # on a later line. Balance parens from the call opener instead
+            # of requiring the line to END with ``)`` so chained forms like
+            # ``read_text()[:4000]`` / ``read_text().splitlines()`` are
+            # still caught. AST-level enforcement for multi-line calls
+            # lives in the gateway guard test.
+            and _call_closes_on_line(line, m.end())
         ),
     ),
 ]
@@ -519,6 +549,22 @@ def _is_likely_subprocess_call(line: str) -> bool:
     false negative for a line-based scanner.
     """
     return any(token in line for token in _SUBPROCESS_METHODS)
+
+
+def _call_closes_on_line(line: str, open_paren_end: int) -> bool:
+    """True when the call whose ``(`` sits at ``open_paren_end - 1`` closes
+    on this same line (paren-balance walk). Multi-line calls return False —
+    the missing ``encoding=`` may sit on a continuation line, so the caller
+    should skip them rather than false-positive."""
+    depth = 1
+    for ch in line[open_paren_end:]:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return True
+    return False
 
 
 def _looks_like_string_literal(line: str, match: "re.Match") -> bool:

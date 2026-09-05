@@ -3,7 +3,10 @@
 import builtins
 import importlib
 import logging
+import os
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -16,7 +19,6 @@ from agent.prompt_builder import (
     _find_git_root,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
-    build_nous_subscription_prompt,
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     _dynamic_context_file_max_chars,
@@ -34,7 +36,23 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
-from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+
+
+@pytest.fixture(autouse=True)
+def _drain_truncation_warnings():
+    """Leave no truncation warnings in the shared thread context.
+
+    Truncation warnings ride a ContextVar; under plain ``pytest`` (no
+    per-file subprocess isolation) anything this file records leaks into
+    later files' contexts and breaks their assertions/ordering.
+
+    Drain on both sides: before, so warnings leaked by earlier files can't
+    pollute this file's assertions, and after, so this file leaves the
+    ContextVar clean for later files.
+    """
+    drain_truncation_warnings()
+    yield
+    drain_truncation_warnings()
 
 
 # =========================================================================
@@ -43,12 +61,25 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
-    def test_memory_guidance_discourages_task_logs(self):
-        assert "durable facts" in MEMORY_GUIDANCE
-        assert "Do NOT save task progress" in MEMORY_GUIDANCE
-        assert "session_search" in MEMORY_GUIDANCE
-        assert "like a diary" not in MEMORY_GUIDANCE
-        assert ">80%" not in MEMORY_GUIDANCE
+    def test_memory_guidance_keeps_form_rule_and_routing(self):
+        """Dieted (#95681): WHAT belongs in memory is the memory tool
+        schema's job (taught on every call). This block keeps only the
+        declarative-form rule and the staleness/skills routing."""
+        from agent.prompt_builder import MEMORY_GUIDANCE
+
+        assert "declarative facts" in MEMORY_GUIDANCE
+        assert "imperative phrasing" in MEMORY_GUIDANCE
+        assert "stale within a week" in MEMORY_GUIDANCE
+        # Skills are the default home for task-learned knowledge (incl. the
+        # user's preferences/corrections for that work); memory is the narrow
+        # every-session exception. The routing rule must LEAD, not trail.
+        assert MEMORY_GUIDANCE.index("Skills come first") < MEMORY_GUIDANCE.index("Memory is the narrow exception")
+        assert "preferences and corrections" in MEMORY_GUIDANCE
+        assert "Save proactively" not in MEMORY_GUIDANCE
+        assert "workflows belong" in MEMORY_GUIDANCE
+        # The category/SKIP curricula must NOT be re-taught here.
+        assert "PR numbers" not in MEMORY_GUIDANCE
+        assert "tool quirks" not in MEMORY_GUIDANCE
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
@@ -364,69 +395,6 @@ class TestBuildSkillsSystemPrompt:
         assert "cached-skill" not in second
 
 
-
-
-
-class TestBuildNousSubscriptionPrompt:
-    def test_includes_active_subscription_features(self, monkeypatch):
-        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr(
-            "hermes_cli.nous_subscription.get_nous_subscription_features",
-            lambda config=None: NousSubscriptionFeatures(
-                subscribed=True,
-                nous_auth_present=True,
-                provider_is_nous=True,
-                features={
-                    "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
-                    "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
-                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
-                    "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
-                    "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
-                    "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
-                    "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
-                },
-            ),
-        )
-
-        prompt = build_nous_subscription_prompt({"web_search", "browser_navigate"})
-
-        assert "Browser Use" in prompt
-        assert "Modal execution is optional" in prompt
-        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys" in prompt
-
-    def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
-        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr(
-            "hermes_cli.nous_subscription.get_nous_subscription_features",
-            lambda config=None: NousSubscriptionFeatures(
-                subscribed=False,
-                nous_auth_present=False,
-                provider_is_nous=False,
-                features={
-                    "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
-                    "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
-                    "video_gen": NousFeatureState("video_gen", "Video generation", False, False, False, False, False, False, ""),
-                    "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
-                    "stt": NousFeatureState("stt", "Speech-to-text", True, False, False, False, False, True, ""),
-                    "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
-                    "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
-                },
-            ),
-        )
-
-        prompt = build_nous_subscription_prompt({"image_generate"})
-
-        assert "suggest Nous subscription as one option" in prompt
-        assert "Do not mention subscription unless" in prompt
-
-    def test_feature_flag_off_returns_empty_prompt(self, monkeypatch):
-        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: False)
-
-        prompt = build_nous_subscription_prompt({"web_search"})
-
-        assert prompt == ""
-
-
 # =========================================================================
 # Context files prompt builder
 # =========================================================================
@@ -448,6 +416,94 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Ruff for linting" in result
         assert "Project Context" in result
+
+    # --- AGENTS.md directory chain (port of grok-cli instructions.ts) ---
+
+    def test_agents_md_chain_merges_root_to_cwd(self, tmp_path):
+        # git-root AGENTS.md + intermediate + cwd are all merged, root first
+        # and cwd last so deeper guidance takes precedence.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Root: use Ruff.")
+        pkg = tmp_path / "packages"
+        pkg.mkdir()
+        (pkg / "AGENTS.md").write_text("Packages: pnpm workspace.")
+        app = pkg / "webapp"
+        app.mkdir()
+        (app / "AGENTS.md").write_text("Webapp: React 19 only.")
+        result = build_context_files_prompt(cwd=str(app), skip_soul=True)
+        assert "Root: use Ruff." in result
+        assert "Packages: pnpm workspace." in result
+        assert "Webapp: React 19 only." in result
+        # order: root before intermediate before cwd
+        assert result.index("Root: use Ruff.") < result.index("Packages: pnpm")
+        assert result.index("Packages: pnpm") < result.index("Webapp: React 19")
+        # provenance headers point at each source file relative to cwd
+        assert f"## {os.path.join('..', '..', 'AGENTS.md')}" in result
+        assert f"## {os.path.join('..', 'AGENTS.md')}" in result
+        assert "## AGENTS.md" in result
+
+    def test_agents_md_chain_skips_gaps(self, tmp_path):
+        # Intermediate dirs without AGENTS.md contribute nothing.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Root rules.")
+        deep = tmp_path / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        result = build_context_files_prompt(cwd=str(deep), skip_soul=True)
+        assert "Root rules." in result
+        assert result.count("## ") == 1
+
+    def test_agents_md_chain_dedupes_identical_content(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Same rules everywhere.")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Same rules everywhere.")
+        result = build_context_files_prompt(cwd=str(sub), skip_soul=True)
+        assert result.count("Same rules everywhere.") == 1
+
+    def test_agents_md_single_file_output_unchanged(self, tmp_path):
+        # Zero-regression guarantee: with one AGENTS.md at cwd (git repo or
+        # not), the section is byte-identical to historical single-file form.
+        from agent.prompt_builder import _load_agents_md
+
+        (tmp_path / ".git").mkdir()
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Only file.")
+        assert _load_agents_md(sub) == "## AGENTS.md\n\nOnly file."
+
+    def test_agents_md_no_git_root_stays_cwd_only(self, tmp_path):
+        # Without a git root, parents are never consulted (no picking up an
+        # AGENTS.md planted in /tmp or $HOME).
+        (tmp_path / "AGENTS.md").write_text("Planted in parent.")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        from agent.prompt_builder import _load_agents_md
+
+        assert _load_agents_md(sub) == ""
+
+    # --- AGENTS.override.md personal override (port of pi#7681) ---
+
+    def test_agents_override_md_wins_over_agents_md(self, tmp_path):
+        (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
+        (tmp_path / "AGENTS.override.md").write_text("Use Black instead.")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "Use Black instead" in result
+        assert "Ruff for linting" not in result
+        assert "AGENTS.override.md" in result
+
+    def test_agents_override_md_loads_alone(self, tmp_path):
+        (tmp_path / "AGENTS.override.md").write_text("Override-only context.")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "Override-only context" in result
+        assert "Project Context" in result
+
+    def test_hermes_md_still_wins_over_agents_override(self, tmp_path):
+        (tmp_path / ".hermes.md").write_text("Hermes-first context.")
+        (tmp_path / "AGENTS.override.md").write_text("Override context.")
+        result = build_context_files_prompt(cwd=str(tmp_path))
+        assert "Hermes-first context" in result
+        assert "Override context" not in result
 
     def test_skips_agents_md_in_install_tree_on_fallback(self, monkeypatch, tmp_path):
         # A backend that FALLS BACK into the install tree (cwd=None → getcwd,
@@ -664,7 +720,9 @@ class TestPromptBuilderConstants:
         ), "CLI hint should explicitly discourage MEDIA: tags."
         # Messaging hints should still advertise MEDIA: positively (sanity
         # check that this test is calibrated correctly).
-        assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
+        # Dieted (#95681): messaging hints now share the _MEDIA_NATIVE
+        # spine ("write MEDIA:/absolute/path..."), not per-hint prose.
+        assert "MEDIA:/absolute/path" in PLATFORM_HINTS["telegram"]
 
 
 
@@ -683,19 +741,22 @@ class TestEnvironmentHints:
 
 
     def test_build_environment_hints_suppresses_host_on_docker_backend(self, monkeypatch):
-        """Docker/remote backends must hide host info — the agent can only touch the backend."""
+        """Docker/remote backends must hide host info — the agent can only touch the backend.
+
+        Host-independent: suppression is a property of the remote-backend
+        branch, so instead of faking a Windows host we assert no host line of
+        any kind is emitted.
+        """
         import agent.prompt_builder as _pb
-        import sys
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
-        monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         # Force the probe to fail so we exercise the static fallback path
         # deterministically (the live probe would try to spin up docker).
         monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         result = _pb.build_environment_hints()
         # Host suppression: none of the local-backend lines should appear.
-        assert "Host: Windows" not in result
+        assert "Host:" not in result
         assert "User home directory:" not in result
         assert "PowerShell" not in result
         # Backend info must appear instead.
@@ -712,7 +773,7 @@ class TestEnvironmentHints:
         configured.mkdir()
         monkeypatch.setenv("TERMINAL_CWD", str(configured))
         monkeypatch.chdir(tmp_path)
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {configured}" in _pb.build_environment_hints()
 
     def test_build_environment_hints_falls_back_to_launch_dir(self, monkeypatch, tmp_path):
@@ -722,7 +783,7 @@ class TestEnvironmentHints:
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         monkeypatch.chdir(tmp_path)
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         assert f"Current working directory: {tmp_path}" in _pb.build_environment_hints()
 
 
@@ -737,7 +798,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
 
         class _FakeEnv:
             def execute(self, cmd, timeout=None):
@@ -755,9 +816,9 @@ class TestEnvironmentHints:
             created["env_type"] = env_type
             return _FakeEnv()
 
-        # Patch the REAL factory in tools.terminal_tool — the probe imports it
+        # Patch the REAL factory in tools.terminal_tool_backends — the probe imports it
         # locally, so the import itself must succeed (the bug was here).
-        import tools.terminal_tool as _tt
+        import tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
 
         line = _pb._probe_remote_backend("docker")
@@ -766,6 +827,126 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_probe_remote_backend_tears_down_its_sandbox(self, monkeypatch):
+        """THE BUG: the probe leaked a second, permanently idle sandbox.
+
+        ``_probe_remote_backend`` spins up an environment with
+        ``task_id="prompt-backend-probe"`` purely to run one ``uname``. Container
+        backends default to ``container_persistent`` /
+        ``docker_persist_across_processes``, so that throwaway sandbox stayed up
+        for the whole process lifetime *next to* the agent's own ``default``
+        sandbox — one wasted idle container per profile, forever. The probe owns
+        that environment, so it must tear it down.
+        """
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        cleaned = {}
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/root\n"
+                        "cwd=/workspace\nuser=root\n"
+                    ),
+                }
+
+            def cleanup(self, *, force_remove=False):
+                cleaned["force_remove"] = force_remove
+
+        import tools.terminal_tool_backends as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _FakeEnv())
+
+        assert _pb._probe_remote_backend("docker") is not None
+        # force_remove=True: persist mode would otherwise leave it running.
+        assert cleaned == {"force_remove": True}
+
+    def test_probe_remote_backend_tears_down_sandbox_on_failure(self, monkeypatch):
+        """Teardown must also run when the probe command blows up — a flaky
+        backend would otherwise leak the container the probe just created."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        _pb._clear_backend_probe_cache()
+
+        cleaned = []
+
+        class _ExplodingEnv:
+            def execute(self, cmd, timeout=None):
+                raise RuntimeError("backend went away")
+
+            def cleanup(self, *, force_remove=False):
+                cleaned.append(force_remove)
+
+        import tools.terminal_tool_backends as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _ExplodingEnv())
+
+        assert _pb._probe_remote_backend("docker") is None
+        assert cleaned == [True]
+
+    def test_probe_remote_backend_tolerates_kwargless_cleanup(self, monkeypatch):
+        """Backends that inherit the base ``cleanup(self)`` take no kwargs; the
+        probe must use the bare call instead of dying on TypeError."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "singularity")
+        _pb._clear_backend_probe_cache()
+
+        calls = []
+
+        class _LegacyEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/u\n"
+                        "cwd=/home/u\nuser=u\n"
+                    ),
+                }
+
+            def cleanup(self):
+                calls.append("bare")
+
+        import tools.terminal_tool_backends as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
+
+        assert _pb._probe_remote_backend("singularity") is not None
+        assert calls == ["bare"]
+
+    def test_probe_remote_backend_does_not_tear_down_ssh(self, monkeypatch):
+        """SSH has no task-scoped sandbox: its cleanup() closes a ControlMaster
+        socket shared with the agent's real environment, so the probe must
+        leave it alone (nothing leaks — ControlPersist expires the master)."""
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        _pb._clear_backend_probe_cache()
+
+        calls = []
+
+        class _SharedSshEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/u\n"
+                        "cwd=/home/u\nuser=u\n"
+                    ),
+                }
+
+            def cleanup(self):
+                calls.append("cleanup")
+
+        import tools.terminal_tool_backends as _tt
+        monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _SharedSshEnv())
+
+        assert _pb._probe_remote_backend("ssh") is not None
+        assert calls == []
+
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""
@@ -773,7 +954,7 @@ class TestEnvironmentHints:
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", "Running inside an OpenShell sandbox.")
-        _pb._clear_backend_probe_cache()
+        _pb._BACKEND_PROBE_CACHE.clear()
         result = _pb.build_environment_hints()
         assert "Running inside an OpenShell sandbox." in result
         # The factual host block must still come first.
@@ -894,6 +1075,58 @@ class TestOpenAIModelExecutionGuidance:
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
 
+    def test_guidance_covers_external_write_readback(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "read" in text and "back" in text
+        assert "successful tool call is not a successful task" in text
+
+    def test_guidance_covers_count_reconciliation(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "has_more" in text
+        assert "hard assertions" in text
+
+    def test_guidance_covers_literal_preservation(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "normalize" in text
+        assert "malformed" in text
+
+    def test_guidance_covers_retry_differently(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "suspiciously narrow" in text
+        assert "retry" in text
+
+    def test_guidance_gates_completion_on_verification(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "plausible subset" in text
+
+
+class TestExecutionGuidanceModels:
+    """Behavior contracts for the default auto-match model list."""
+
+    def test_includes_historical_families(self):
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        for fam in ("gpt", "codex", "grok"):
+            assert fam in EXECUTION_GUIDANCE_MODELS
+
+    def test_includes_composio_eval_families(self):
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        for fam in ("deepseek", "kimi", "qwen", "glm", "minimax", "mimo", "mistral"):
+            assert fam in EXECUTION_GUIDANCE_MODELS
+
+    def test_muse_spark_gets_both_guidance_blocks(self):
+        # Muse Spark closes the turn after a chat-only response on defaults
+        # (#96550) — it needs tool-use enforcement AND execution guidance.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in TOOL_USE_ENFORCEMENT_MODELS)
+        assert any(p in "meta/muse-spark-1.3-contributor" for p in EXECUTION_GUIDANCE_MODELS)
+
+    def test_excludes_google_and_claude(self):
+        # Gemini/Gemma get GOOGLE_MODEL_OPERATIONAL_GUIDANCE instead;
+        # Claude doesn't exhibit the targeted failure modes.
+        from agent.prompt_builder import EXECUTION_GUIDANCE_MODELS
+        for fam in ("gemini", "gemma", "claude"):
+            assert fam not in EXECUTION_GUIDANCE_MODELS
+
 
 class TestParallelToolCallGuidance:
     """Behavior contracts for the universal parallel-tool-call guidance block.
@@ -921,3 +1154,40 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+class TestContextFileReadTimeout:
+    def test_slow_hermes_md_is_skipped_and_agents_md_still_loads(self, tmp_path, monkeypatch, caplog):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".hermes.md").write_text("Hermes project rules.")
+        (tmp_path / "AGENTS.md").write_text("Agent fallback rules.")
+        # Patch the module object build_context_files_prompt actually closes
+        # over: an earlier test re-imports agent.prompt_builder, so the
+        # sys.modules entry can be a different module object.
+        pb_mod = sys.modules[build_context_files_prompt.__module__]
+        monkeypatch.setattr(pb_mod, "_get_context_file_read_timeout", lambda: 0.05)
+
+        original_read_text = Path.read_text
+
+        def slow_read_text(self, *args, **kwargs):
+            if self.name == ".hermes.md":
+                time.sleep(0.6)
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", slow_read_text)
+
+        start = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger=pb_mod.__name__):
+            result = build_context_files_prompt(cwd=str(tmp_path))
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.4, f"context load blocked for {elapsed:.2f}s"
+        assert "Agent fallback rules" in result
+        assert "Hermes project rules" not in result
+        assert "timed out" in caplog.text.lower()
+
+    def test_read_errors_still_propagate_to_caller(self, tmp_path):
+        from agent.prompt_builder import _read_text_with_timeout
+
+        with pytest.raises(FileNotFoundError):
+            _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)

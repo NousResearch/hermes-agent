@@ -31,8 +31,10 @@ describe('hermesDirectiveFormatter.parse', () => {
   it('still parses unquoted paths', () => {
     const segments = hermesDirectiveFormatter.parse('@file:src/main.tsx the entry point')
 
+    // The label keeps its directory: it's the same string the `@` popover row
+    // showed, and a bare `main.tsx` can't tell two files apart.
     expect(segments).toEqual([
-      { kind: 'mention', type: 'file', label: 'main.tsx', id: 'src/main.tsx' },
+      { kind: 'mention', type: 'file', label: 'src/main.tsx', id: 'src/main.tsx' },
       { kind: 'text', text: ' the entry point' }
     ])
   })

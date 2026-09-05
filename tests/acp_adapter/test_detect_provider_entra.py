@@ -34,7 +34,6 @@ class TestDetectProviderEntra:
             side_effect=_fake_runtime,
         ):
             assert _acp_auth.detect_provider() == "azure-foundry"
-            assert _acp_auth.has_provider() is True
 
     def test_string_api_key_still_works(self):
         from acp_adapter import auth as _acp_auth

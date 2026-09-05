@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 
-import { $bindings } from '@/store/keybinds'
+import { $registryVersion } from '@/contrib/registry'
+import { $bindings, bindingsFor } from '@/store/keybinds'
 
 import { KEYBIND_READONLY } from './actions'
 import { formatCombo } from './combo'
@@ -12,7 +13,14 @@ import { formatCombo } from './combo'
 export function useKeybindHint(actionId: string): string | null {
   const bindings = useStore($bindings)
 
-  const rebindable = bindings[actionId]?.[0]
+  // `bindingsFor`, not a raw `bindings[id]`: $bindings is seeded at module init
+  // from the actions known THEN, so a plugin action contributed later isn't in
+  // it and a raw lookup renders no hint at all. The resolver falls through to
+  // the stored override and the action's own defaults. Subscribing to the
+  // registry version repaints the hint when that late registration lands.
+  useStore($registryVersion)
+
+  const rebindable = bindingsFor(actionId, bindings)[0]
 
   if (rebindable) {
     return formatCombo(rebindable)

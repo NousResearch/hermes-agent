@@ -169,6 +169,15 @@ class TestScanFile:
         assert findings == []
 
 
+    def test_detect_gitlab_pat(self, tmp_path):
+        f = tmp_path / "leak.md"
+        # Concatenated so no contiguous token literal exists in this file
+        # (GitHub push protection blocks GitLab-PAT-shaped literals).
+        fake_token = "glpat-" + "Zx9AbCdEfGhIjKlMnOpQ"
+        f.write_text(f"Use {fake_token} to authenticate.\n")
+        findings = scan_file(f, "leak.md")
+        assert any(fi.pattern_id == "gitlab_token_leaked" for fi in findings)
+
     def test_detect_markdown_injection(self, tmp_path):
         f = tmp_path / "bad.md"
         f.write_text(
@@ -399,10 +408,58 @@ class TestFalsePositiveReductions:
         assert 1 not in env_lines
         # Bare os.environ access is still flagged.
         assert 3 in env_lines
-        # Secret-named lookups stay critical.
+        # Secret-named lookups are medium (informational): reading your own
+        # API key from the environment is the normal auth pattern — the read
+        # itself sends nothing (#60709). Exfil sinks are scored separately.
         sec = [fi for fi in findings if fi.pattern_id == "python_environ_get_secret"]
         assert sec
-        assert all(fi.severity == "critical" for fi in sec)
+        assert all(fi.severity == "medium" for fi in sec)
+
+    # ── python_os_environ: inline-comment / docstring false positives ──
+
+    def test_os_environ_in_inline_comment_not_flagged(self, tmp_path):
+        """Inline comment like 'x = 1  # os.environ must not trigger."""
+        f = tmp_path / "lib.py"
+        f.write_text('cfg = environ.get("HOME")  # os.environ available globally\n')
+        findings = scan_file(f, "lib.py")
+        assert not any(fi.pattern_id == "python_os_environ" for fi in findings)
+
+    def test_os_environ_in_docstring_not_flagged(self, tmp_path):
+        """os.environ inside a docstring/multiline comment must not trigger."""
+        f = tmp_path / "lib.py"
+        f.write_text(
+            '"""\n'
+            'This module uses os.environ to read configuration. The\n'
+            'os.environ dictionary is populated from the shell at startup.\n'
+            '"""\n'
+        )
+        findings = scan_file(f, "lib.py")
+        assert not any(fi.pattern_id == "python_os_environ" for fi in findings)
+
+    def test_os_environ_in_triple_single_quote_docstring_not_flagged(self, tmp_path):
+        """os.environ inside ''' tripled-quoted string must not trigger."""
+        f = tmp_path / "lib.py"
+        f.write_text(
+            "'''\n"
+            "Example: os.environ['PATH'] gives the system path.\n"
+            "'''\n"
+        )
+        findings = scan_file(f, "lib.py")
+        assert not any(fi.pattern_id == "python_os_environ" for fi in findings)
+
+    def test_os_environ_comment_line_not_flagged(self, tmp_path):
+        """Full-line comment with os.environ must not trigger."""
+        f = tmp_path / "lib.py"
+        f.write_text("# os.environ is available after import os\n")
+        findings = scan_file(f, "lib.py")
+        assert not any(fi.pattern_id == "python_os_environ" for fi in findings)
+
+    def test_os_environ_bare_dict_fork_for_real_code_still_flagged(self, tmp_path):
+        """Bare dict() cast on os.environ without .get() still triggers."""
+        f = tmp_path / "lib.py"
+        f.write_text("env_copy = dict(os.environ)\n")
+        findings = scan_file(f, "lib.py")
+        assert any(fi.pattern_id == "python_os_environ" for fi in findings)
 
 
 # ---------------------------------------------------------------------------

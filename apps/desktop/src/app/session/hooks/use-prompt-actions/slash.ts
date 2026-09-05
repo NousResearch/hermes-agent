@@ -23,12 +23,19 @@ import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  captureNewChatSource,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $connection,
   $sessions,
   $yoloActive,
   resolveComposerSessionKey,
+  setActiveSessionId,
   setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
@@ -62,13 +69,18 @@ import {
   renderCommandsCatalog,
   renderRpcResult,
   slashStatusText,
-  type SubmitTextOptions
+  type SubmitTextOptions,
+  withSessionNotFoundResume
 } from './utils'
 
 // Manual compression is LLM-bound and routinely outlives the desktop's 30s
-// default WS request timeout on large sessions — give it the TUI client's
-// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
-const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+// default WS request timeout on large sessions. The gateway blocks its own
+// compute-host wait for up to compression.context_total_ceiling_seconds + 30s
+// (capped at 630s, tui_gateway/server.py _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS)
+// and then answers `status: 'pending'` rather than an error, so this budget
+// must sit above that cap or the desktop reports a false timeout while the
+// host is still compressing (#97948).
+export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
 const WAKE_START_TIMEOUT_MS = 180_000
 
 const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
@@ -263,6 +275,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
         ): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
+            // `/goal clear|pause|resume|status` can come back as a TYPED exec
+            // dispatch (command.dispatch routing) instead of the plain-output
+            // shape handled below. This branch used to render and return
+            // without touching the goal store, so "✓ Goal cleared." printed
+            // while the stale "Goal paused" card kept showing until the chat
+            // was reopened (#80348). Mirror the output into the store exactly
+            // like the plain-output path does.
+            if (name === 'goal' && dispatch.output) {
+              applyGoalStatusText(sessionId, dispatch.output)
+            }
+
             renderSlashOutput(dispatch.output ?? '(no output)')
 
             return
@@ -478,6 +501,99 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         branch: async () => {
           await branchCurrentSession()
         },
+        // Desktop owns the active turn, while the historical slash worker
+        // only stops background terminal processes. Interrupt the exact chat
+        // first (the same backend path as the composer Stop button), then keep
+        // the existing process cleanup so /stop retains both meanings.
+        stop: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
+          const lines: string[] = []
+
+          try {
+            await withSessionNotFoundResume(
+              initialSessionId,
+              storedSessionId,
+              liveId => requestGateway('session.interrupt', { session_id: liveId }),
+              {
+                requestGateway,
+                onRecovered: recoveredId => {
+                  if (activeSessionIdRef.current === initialSessionId) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
+                }
+              }
+            )
+            lines.push('Stopped the active turn.')
+          } catch (err) {
+            lines.push(`Could not stop the active turn: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          try {
+            const result = await requestGateway<unknown>('process.stop', {})
+            const processMessage = renderRpcResult(result, ctx.name)
+
+            if (processMessage) {
+              lines.push(processMessage)
+            }
+          } catch (err) {
+            lines.push(`Could not stop background processes: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          renderSlashOutput(lines.join('\n'))
+        },
+        // /btw uses prompt.btw (the TUI's path). It must NOT go through
+        // runExec: the slash worker prints the answer after process_command
+        // returns, past the stdout capture window (#99065). The RPC replies
+        // with a task id; the answer arrives later as btw.complete.
+        btw: async ctx => {
+          const question = ctx.arg.trim()
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if (!question) {
+            renderSlashOutput(
+              'Usage: /btw <question> — answered from a snapshot of this conversation without interrupting it.'
+            )
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<{ task_id?: string }>('prompt.btw', {
+              session_id: sessionId,
+              text: question
+            })
+
+            renderSlashOutput(
+              result.task_id
+                ? `btw ${result.task_id} — answering from a conversation snapshot`
+                : 'btw — answering from a conversation snapshot'
+            )
+          } catch (err) {
+            // Older gateways without the dedicated RPC still have the
+            // slash-worker route — same compatibility fallback as runRpc.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
         // /compress (alias /compact) runs the gateway's dedicated
         // session.compress RPC — the TUI's path
         // (ui-tui/src/app/slash/commands/session.ts). It must NOT go through
@@ -499,7 +615,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+          const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
+          let sessionId = initialSessionId
           const focusTopic = ctx.arg.trim()
           const noticeId = `session-compress:${sessionId}`
 
@@ -518,14 +635,50 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           })
 
           try {
-            const result = await requestGateway<SessionCompressResponse>(
-              'session.compress',
+            // Same stale-runtime recovery as prompt.submit: after sleep/wake a
+            // dead id 404s session.compress while plain chat still works, so
+            // /compress reported "session not found" on a healthy session.
+            // NOT alsoTimeout — compress is legitimately LLM-slow and a
+            // timeout here must not be retried as a dead session.
+            const { result, sessionId: liveSessionId } = await withSessionNotFoundResume(
+              sessionId,
+              storedSessionId,
+              liveId =>
+                requestGateway<SessionCompressResponse>(
+                  'session.compress',
+                  {
+                    session_id: liveId,
+                    ...(focusTopic ? { focus_topic: focusTopic } : {})
+                  },
+                  SESSION_COMPRESS_TIMEOUT_MS
+                ),
               {
-                session_id: sessionId,
-                ...(focusTopic ? { focus_topic: focusTopic } : {})
-              },
-              SESSION_COMPRESS_TIMEOUT_MS
+                requestGateway,
+                onRecovered: recoveredId => {
+                  // Move the in-flight claim onto the live id so the coalesce
+                  // guard releases the right key in `finally`.
+                  compressInFlightRef.current.delete(sessionId)
+                  compressInFlightRef.current.add(recoveredId)
+
+                  if (activeSessionIdRef.current === initialSessionId) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
+                }
+              }
             )
+
+            sessionId = liveSessionId
+
+            // The gateway's compute-host wait expired but compression is still
+            // running there; it pushes session.info + a `compacted` status edge
+            // when the host finishes. Not an error (#97948).
+            if (result?.status === 'pending') {
+              const pendingMessage = result.message || 'compression still running in the background'
+              notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: pendingMessage })
+
+              return
+            }
 
             // Replace the transcript with the post-compress history so the
             // summarized bubbles actually disappear. `messages` is the same
@@ -659,7 +812,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           const status = async (): Promise<WakeStatusResponse> => {
-            const current = await requestGateway<WakeStatusResponse>('wake.status', {})
+            const current = await requestGateway<WakeStatusResponse>('wake.status', {
+              client_capture: true,
+              surface: 'gui'
+            })
+
             applyWakeStatus(current)
 
             return current
@@ -677,7 +834,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             if (action === 'on') {
               const started = await requestGateway<WakeStartResponse>(
                 'wake.start',
-                { persist: true, surface: 'gui' },
+                { persist: true, surface: 'gui', client_capture: true },
                 WAKE_START_TIMEOUT_MS
               )
 
@@ -758,6 +915,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
             $newChatProfile.set(key)
             await ensureGatewayProfile(key)
+            // Capture the source the swap landed on (null on the v1 profile path)
+            // so the draft's owner matches the socket that will mint it.
+            captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)

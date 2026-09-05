@@ -14,9 +14,11 @@ there is no env-var override. Tests patch ``_load_config`` directly.
 
 import json
 import os
+import subprocess
 import sys
 import unittest
-from contextlib import contextmanager
+import unittest.mock
+from contextlib import contextmanager, ExitStack
 from unittest.mock import patch
 
 import pytest
@@ -30,14 +32,32 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_kernel_registry():
+    """Session kernels are always on: dispose them per-test so a lingering
+    kernel child can't outlive the run (hangs pytest at exit) or leak one
+    test's interpreter state into the next."""
+    from tools.code_kernel import shutdown_all_kernels
+
+    shutdown_all_kernels()
+    yield
+    shutdown_all_kernels()
+
+
+from tools.code_execution_env import (
+    _is_usable_python,
+    _python_environment_prefix,
+    _python_prefix_cache,
+    _resolve_child_cwd,
+    _resolve_child_python,
+    _usable_python_cache,
+    _uses_hermes_python_environment,
+)
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     DEFAULT_EXECUTION_MODE,
     EXECUTION_MODES,
     _get_execution_mode,
-    _is_usable_python,
-    _resolve_child_cwd,
-    _resolve_child_python,
     build_execute_code_schema,
     execute_code,
 )
@@ -102,8 +122,28 @@ class TestResolveChildPython(unittest.TestCase):
 
 
     def test_is_usable_python_accepts_real_python(self):
-        _is_usable_python.cache_clear()
+        _usable_python_cache.clear()
         self.assertTrue(_is_usable_python(sys.executable))
+
+    def test_is_usable_python_failure_is_not_cached(self):
+        """A transient probe failure must not stick — the next call retries.
+
+        A sticky cached False would silently pin project mode to
+        sys.executable for the process lifetime.
+        """
+        _usable_python_cache.clear()
+        try:
+            with patch("subprocess.run",
+                       side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
+                self.assertFalse(_is_usable_python("/flaky/python"))
+            self.assertEqual(mock_run.call_count, 1)
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = unittest.mock.MagicMock(returncode=0)
+                self.assertTrue(_is_usable_python("/flaky/python"))
+            self.assertEqual(mock_run.call_count, 1,
+                             "probe must be retried after a failure")
+        finally:
+            _usable_python_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -196,18 +236,30 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
             with patch.dict(os.environ, env_overrides):
                 with patch("model_tools.handle_function_call",
                            side_effect=_mock_handle_function_call):
+                    # reset=True: kernel cwd/interpreter are frozen at spawn
+                    # (like env), so mode-resolution rules are only
+                    # observable on a fresh kernel.
                     raw = execute_code(
                         code=code,
                         task_id=f"test-{mode}",
                         enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS),
+                        reset=True,
                     )
         return json.loads(raw)
 
     def test_strict_mode_runs_in_tmpdir(self):
-        """Strict mode: script's os.getcwd() is the staging tmpdir."""
+        """Strict mode: script's os.getcwd() is a staging tmpdir, never the
+        session cwd. Behavior contract, not a prefix snapshot: the per-call
+        path stages in hermes_sandbox_*, the session kernel in
+        hermes_kernel_* — either satisfies strict mode's isolation promise."""
         result = self._run("import os; print(os.getcwd())", mode="strict")
         self.assertEqual(result["status"], "success")
-        self.assertIn("hermes_sandbox_", result["output"])
+        cwd = result["output"].strip()
+        self.assertTrue(
+            "hermes_sandbox_" in cwd or "hermes_kernel_" in cwd,
+            f"strict-mode cwd is not a staging tmpdir: {cwd!r}",
+        )
+        self.assertNotEqual(os.path.realpath(cwd), os.path.realpath(os.getcwd()))
 
 
     def test_project_mode_interpreter_is_venv_python(self):
@@ -371,6 +423,204 @@ class TestSecurityInvariantsAcrossModes(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("execute_code_available: False", result["output"])
         self.assertIn("delegate_task_available: False", result["output"])
+
+
+# ---------------------------------------------------------------------------
+# _python_environment_prefix / _uses_hermes_python_environment
+# ---------------------------------------------------------------------------
+
+class TestPythonEnvironmentPrefix(unittest.TestCase):
+    """Unit tests for the helper that queries sys.prefix of an interpreter."""
+
+    def setUp(self):
+        _python_prefix_cache.clear()
+
+    def tearDown(self):
+        _python_prefix_cache.clear()
+
+    def test_returns_realpath_of_current_interpreter_prefix(self):
+        """Happy path: sys.executable reports its own prefix."""
+        prefix = _python_environment_prefix(sys.executable)
+        self.assertEqual(prefix, os.path.realpath(sys.prefix))
+
+    def test_returns_empty_string_for_nonexistent_path(self):
+        """A path that doesn't exist → OSError → empty string."""
+        result = _python_environment_prefix("/nonexistent/python-does-not-exist")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_when_subprocess_times_out(self):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)):
+            result = _python_environment_prefix("/some/python")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_on_nonzero_exit(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        with patch("subprocess.run", return_value=mock_result):
+            result = _python_environment_prefix("/bad/python")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_when_stdout_is_blank(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "   \n"
+        with patch("subprocess.run", return_value=mock_result):
+            result = _python_environment_prefix("/blank/python")
+        self.assertEqual(result, "")
+
+    def test_result_is_cached(self):
+        """Second call returns cached value without spawning another process."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.MagicMock(
+                returncode=0, stdout="/fake/prefix\n"
+            )
+            _python_environment_prefix("/cached/python")
+            _python_environment_prefix("/cached/python")
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_failure_is_not_cached(self):
+        """A transient probe failure must not stick — the next call retries.
+
+        A sticky cached failure would silently drop the hermes root from
+        every subsequent execute_code call in the process.
+        """
+        with patch("subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
+            self.assertEqual(_python_environment_prefix("/flaky/python"), "")
+        self.assertEqual(mock_run.call_count, 1)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.MagicMock(
+                returncode=0, stdout="/recovered/prefix\n"
+            )
+            result = _python_environment_prefix("/flaky/python")
+        self.assertEqual(mock_run.call_count, 1, "probe must be retried after a failure")
+        self.assertEqual(result, os.path.realpath("/recovered/prefix"))
+
+
+class TestUsesHermesPythonEnvironment(unittest.TestCase):
+    """Unit tests for _uses_hermes_python_environment."""
+
+    def setUp(self):
+        _python_prefix_cache.clear()
+
+    def tearDown(self):
+        _python_prefix_cache.clear()
+
+    def test_true_for_current_interpreter(self):
+        """sys.executable always belongs to the current environment."""
+        self.assertTrue(_uses_hermes_python_environment(sys.executable))
+
+    def test_true_for_current_interpreter_without_probe(self):
+        """sys.executable short-circuits — no subprocess probe on the default path.
+
+        Guards the strict-mode invariant: a flaky probe (timeout under load)
+        must never drop the hermes root for the interpreter Hermes itself runs.
+        """
+        with patch("subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
+            self.assertTrue(_uses_hermes_python_environment(sys.executable))
+        mock_run.assert_not_called()
+
+    def test_false_for_different_prefix(self):
+        """An interpreter reporting a different prefix is external."""
+        with patch("tools.code_execution_env._python_environment_prefix",
+                   return_value="/some/other/venv"):
+            self.assertFalse(_uses_hermes_python_environment("/other/python"))
+
+    def test_false_when_prefix_is_empty(self):
+        """If prefix cannot be determined (error path), treat as external."""
+        with patch("tools.code_execution_env._python_environment_prefix",
+                   return_value=""):
+            self.assertFalse(_uses_hermes_python_environment("/bad/python"))
+
+    def test_true_when_prefix_matches_sys_prefix(self):
+        hermes_prefix = os.path.realpath(sys.prefix)
+        with patch("tools.code_execution_env._python_environment_prefix",
+                   return_value=hermes_prefix):
+            self.assertTrue(_uses_hermes_python_environment("/same/env/python"))
+
+
+# ---------------------------------------------------------------------------
+# PYTHONPATH composition — hermes root included only for same-env interpreters
+# ---------------------------------------------------------------------------
+
+class TestPythonPathComposition(unittest.TestCase):
+    """Verify hermes root inclusion in PYTHONPATH depends on env match.
+
+    Patches ``_uses_hermes_python_environment`` directly so these tests are
+    independent of subprocess availability — the unit tests above already
+    cover the detection logic end-to-end.
+    """
+
+    def _capture_pythonpath(self, same_env: bool) -> tuple:
+        """Return (PYTHONPATH, staging_dir) that execute_code passes to the child."""
+        captured = {}
+
+        class _Captured(RuntimeError):
+            pass
+
+        def _fake_popen(cmd, **kwargs):
+            env = kwargs.get("env") or {}
+            captured["PYTHONPATH"] = env.get("PYTHONPATH", "")
+            # cmd is [python, <staging_dir>/script.py] (per-call) or
+            # [python, <staging_dir>/hermes_kernel_runner.py] (session
+            # kernel) — staging dir derivation is identical.
+            captured["staging_dir"] = os.path.dirname(cmd[1])
+            # Abort the spawn after capture: returning a MagicMock proc
+            # would leave the kernel's reader threads spinning on mock
+            # reads and hang the cell wait loop (always-on session
+            # kernels; the pre-kernel version of this helper could get
+            # away with a fake proc because the per-call path only
+            # .wait()ed on it).
+            raise _Captured()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"mode": "strict"}), \
+             patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call), \
+             patch("tools.code_execution_env._uses_hermes_python_environment",
+                   return_value=same_env), \
+             patch("subprocess.Popen", side_effect=_fake_popen):
+            try:
+                execute_code(code="pass", task_id="test-pp",
+                             enabled_tools=[], reset=True)
+            except _Captured:
+                pass  # expected: spawn aborted right after env capture
+            except Exception:
+                pass  # kernel path wraps the abort; capture already happened
+
+        # If execute_code never reached Popen, the capture is empty and any
+        # "X not in PYTHONPATH" assertion downstream would pass vacuously.
+        self.assertIn("PYTHONPATH", captured,
+                      "execute_code never spawned the child process")
+        return captured["PYTHONPATH"], captured["staging_dir"]
+
+    def _hermes_root(self) -> str:
+        import tools.code_execution_tool as _cet
+        tools_dir = os.path.dirname(os.path.abspath(_cet.__file__))
+        return os.path.dirname(tools_dir)
+
+    def test_hermes_root_included_when_same_env(self):
+        """When interpreter is in the Hermes env, hermes root is in PYTHONPATH."""
+        pythonpath, _ = self._capture_pythonpath(same_env=True)
+        parts = pythonpath.split(os.pathsep)
+        self.assertIn(self._hermes_root(), parts,
+                      "hermes root must be in PYTHONPATH for same-env interpreters")
+
+    def test_hermes_root_excluded_when_external_env(self):
+        """When interpreter is external, hermes root must NOT be in PYTHONPATH."""
+        pythonpath, _ = self._capture_pythonpath(same_env=False)
+        parts = pythonpath.split(os.pathsep)
+        self.assertNotIn(self._hermes_root(), parts,
+                         "hermes root must not leak into an external interpreter's PYTHONPATH")
+
+    def test_staging_dir_always_first(self):
+        """The staging tmpdir must always be the first PYTHONPATH entry."""
+        for same_env in (True, False):
+            with self.subTest(same_env=same_env):
+                pythonpath, staging_dir = self._capture_pythonpath(same_env=same_env)
+                parts = pythonpath.split(os.pathsep)
+                self.assertEqual(parts[0], staging_dir,
+                                 "PYTHONPATH must start with the staging tmpdir")
 
 
 if __name__ == "__main__":

@@ -69,3 +69,101 @@ def test_direct_api_call_runs_two_sequential_requests_on_same_thread():
     assert calls["n"] == 2
     assert fake_client.chat.completions.create.call_count == 2
     assert agent._close_request_openai_client.call_count == 2
+
+
+def test_direct_api_call_keeps_activity_alive_during_slow_wait(monkeypatch):
+    """Mid-wait activity heartbeats must tick while the inline request blocks.
+
+    Subagents use direct_api_call (non-streaming). Without mid-call
+    ``_touch_activity`` ticks, the async stall monitor treats a slow-but-
+    healthy local model wait as frozen progress and interrupts around 450s
+    (``Operation interrupted: waiting for model response``).
+    """
+    import threading
+    import time
+
+    from agent import chat_completion_helpers as helpers
+
+    monkeypatch.setattr(helpers, "_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS", 0.05)
+
+    agent = _make_agent(platform="subagent")
+    started = threading.Event()
+    release = threading.Event()
+    fake_client = MagicMock()
+
+    def _slow_create(**_kwargs):
+        started.set()
+        assert release.wait(timeout=2.0)
+        return SimpleNamespace(id="slow")
+
+    fake_client.chat.completions.create.side_effect = _slow_create
+    agent._create_request_openai_client.return_value = fake_client
+
+    result_box = {}
+
+    def _runner():
+        result_box["response"] = direct_api_call(
+            agent, {"model": "m", "messages": []}
+        )
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    assert started.wait(timeout=2.0)
+
+    # Allow several heartbeat intervals while the request is still blocked.
+    deadline = time.time() + 1.0
+    while time.time() < deadline and agent._touch_activity.call_count < 3:
+        time.sleep(0.05)
+
+    touches_while_blocked = agent._touch_activity.call_count
+    release.set()
+    worker.join(timeout=2.0)
+
+    assert worker.is_alive() is False
+    assert result_box["response"].id == "slow"
+    assert touches_while_blocked >= 3, (
+        f"expected mid-wait activity heartbeats, got {touches_while_blocked}"
+    )
+    assert all(
+        call.args[0] == "waiting for non-streaming API response"
+        for call in agent._touch_activity.call_args_list
+    )
+
+
+def test_direct_api_call_heartbeat_stops_on_exception(monkeypatch):
+    """The activity heartbeat thread must be joined on error paths so no
+    stray _touch_activity fires after the call has failed.
+    """
+    import threading
+    import time
+
+    from agent import chat_completion_helpers as helpers
+
+    monkeypatch.setattr(helpers, "_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS", 0.05)
+
+    agent = _make_agent(platform="subagent")
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = RuntimeError("provider down")
+    agent._create_request_openai_client.return_value = fake_client
+
+    raised = threading.Event()
+
+    def _runner():
+        try:
+            direct_api_call(agent, {"model": "m", "messages": []})
+        except RuntimeError:
+            raised.set()
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    worker.join(timeout=3.0)
+
+    assert raised.is_set(), "expected RuntimeError from direct_api_call"
+    # Give any stray heartbeat a chance to fire after the call returned.
+    time.sleep(0.2)
+    touches_before = agent._touch_activity.call_count
+    time.sleep(0.2)
+    touches_after = agent._touch_activity.call_count
+    assert touches_after == touches_before, (
+        "heartbeat thread still firing after direct_api_call raised"
+    )

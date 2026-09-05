@@ -1,46 +1,52 @@
 import { useStore } from '@nanostores/react'
-import { computed } from 'nanostores'
+import { atom, computed } from 'nanostores'
 import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
-import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
+import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
-import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
-import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, groupLeafIds, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
-import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $layoutTree,
+  bindPaneVisibility,
+  bindToolPaneCollapse,
   bindTreeSideVisibility,
   declareDefaultTree,
   dismissTreePane,
-  dockPaneBeside,
+  isPaneVisible,
   markCollapsePane,
   mirrorLayoutTree,
   paneRootSide,
   registerLayoutResetHandler,
   registerPaneCloser,
   registerPaneOpener,
+  removeTreePane,
   resetLayoutTree,
   revealTreePane,
-  setPaneCollapsed,
-  setTreePaneHidden,
-  setTreeSideCollapsed,
-  treeSideOfPane,
+  setStripTabHidden,
+  targetZoneTabStripVisible,
+  togglePaneVisible,
+  toggleTargetZoneTabStrip,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
+import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
-import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { LayoutDashboard, PanelBottom } from '@/lib/icons'
+import { translateNow } from '@/i18n'
+import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
+import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
-import { Codecs, persistentAtom } from '@/lib/persisted'
+import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
+import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
 import {
   $fileBrowserOpen,
@@ -54,25 +60,40 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH
 } from '@/store/layout'
-import { $previewOpenRequest, $previewTabs, closeRightRail } from '@/store/preview'
-import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
-import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
+import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import {
+  $reviewOpen,
+  $reviewScopeCwd,
+  $reviewScopeTarget,
+  closeReview,
+  openReview,
+  REVIEW_PANE_ID
+} from '@/store/review'
+import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
-import { $statusbarVisible, toggleStatusbarVisible } from '@/store/statusbar-prefs'
+import { $botChatScopes } from '@/store/session-states'
+import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
+import { $statusbarVisible } from '@/store/statusbar-prefs'
+import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
+import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
+import { watchPreviewTiles } from '../chat/preview-tile'
 import { watchRouteTiles } from '../chat/route-tile'
 import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
   stackSessionTilesIntoMain,
+  startUnrestoredTileTitleBackfill,
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { AppContextMenu } from '../context-menu/app-context-menu'
+import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
-import { FilesPane, LogsPane, PreviewRailPane, ReviewPaneContent } from './panes'
+import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
 
 /**
@@ -122,14 +143,14 @@ const workspaceDragPayload = (): SessionDragPayload | null => {
 // The main tab drags like a session tile — drop it on a composer to link the
 // chat, on a zone/edge to stack/split. Defers (`false`) to the generic pane
 // move when there's no loaded session to carry.
-const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) => {
+const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => void) => {
   const payload = workspaceDragPayload()
 
   if (!payload) {
     return false
   }
 
-  startSessionDrag(payload, event, { double, onTap })
+  startSessionDrag(payload, event, { onTap })
 
   return true
 }
@@ -147,6 +168,9 @@ registry.registerMany([
       collapsible: true,
       dock: { pane: 'workspace', pos: 'left' },
       revealAliases: ['chat-sidebar'],
+      // Standing chrome: no close gestures at all — the tab is shown/hidden
+      // (zone menu Show/Hide rows + the auto-registered ⌘K toggle below).
+      hideOnly: true,
       width: `${SIDEBAR_DEFAULT_WIDTH}px`,
       minWidth: `${SIDEBAR_DEFAULT_WIDTH}px`,
       maxWidth: `${SIDEBAR_MAX_WIDTH}px`
@@ -157,7 +181,7 @@ registry.registerMany([
     id: 'workspace',
     area: 'panes',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
-    title: 'New session',
+    title: NEW_SESSION_TITLE,
     data: {
       placement: 'main',
       minWidth: '22vw',
@@ -176,7 +200,17 @@ registry.registerMany([
     // staying collapsed behind the ⌃` toggle. height sizes the fixed track (a
     // single-pane zone declaring a height is a fixed track — the preset weight
     // is moot): a short deck, not a third of the window.
-    data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
+    //
+    // NO minHeight: a tool panel drags all the way down to its collapsed
+    // header (the sash floors it at COLLAPSED_ZONE_PX and folds the zone to
+    // its rail there). A real floor left a sliver of unusable terminal.
+    data: {
+      placement: 'bottom',
+      height: '20vh',
+      maxHeight: '80vh',
+      revealOnPreset: true,
+      lifecycleKeepAlive: true
+    },
     render: () => <WiredPane part="terminal" />
   },
   {
@@ -196,24 +230,6 @@ registry.registerMany([
     render: () => idle(<FilesPane />)
   },
   {
-    id: 'preview',
-    area: 'panes',
-    title: 'preview',
-    // The rail brings its OWN tab strip (per-target tabs with close buttons).
-    // Exists only while something is previewed — visibility is bound to the
-    // preview targets below, like every other self-managed surface. dock:
-    // adoption seed only — dockPaneBeside re-docks it next to files on every
-    // reveal anyway (position-aware).
-    data: {
-      placement: 'right',
-      dock: { pane: 'files', pos: 'left' },
-      width: 'clamp(18rem, 36vw, 32rem)',
-      minWidth: PREVIEW_RAIL_MIN_WIDTH,
-      maxWidth: PREVIEW_RAIL_MAX_WIDTH
-    },
-    render: () => idle(<PreviewRailPane />)
-  },
-  {
     id: 'review',
     area: 'panes',
     title: 'review',
@@ -228,17 +244,6 @@ registry.registerMany([
       maxWidth: FILE_BROWSER_MAX_WIDTH
     },
     render: () => idle(<ReviewPaneContent />)
-  },
-  {
-    // Optional chrome — in NO default layout. Adoption stacks it with the
-    // terminal; $logsOpen (default off, ⌘K "Toggle logs") reveals it.
-    id: 'logs',
-    area: 'panes',
-    title: 'logs',
-    // revealOnPreset: the Quad layout places logs, so applying it turns the
-    // logs pane on (like a ⌘K "Toggle logs") instead of leaving it collapsed.
-    data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
-    render: () => idle(<LogsPane />)
   }
 ])
 
@@ -267,18 +272,15 @@ registry.registerMany([
       run: toggleLayoutEditMode
     } satisfies KeybindContribution
   },
-  {
+  paletteToggle({
     id: 'layout.editMode',
-    area: PALETTE_AREA,
-    data: {
-      id: 'layout.editMode',
-      label: 'Toggle layout edit mode',
-      action: 'layout.editMode',
-      icon: LayoutDashboard,
-      keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
-      run: toggleLayoutEditMode
-    } satisfies PaletteContribution
-  },
+    label: 'Toggle layout edit mode',
+    action: 'layout.editMode',
+    icon: LayoutDashboard,
+    keywords: ['layout', 'zones', 'panes', 'edit', 'rearrange'],
+    get: () => $layoutEditMode.get(),
+    set: enabled => $layoutEditMode.set(enabled)
+  }),
   // The agent's write -> see loop: rescan <hermes home>/desktop-plugins
   // without relaunching (same-id reloads dispose the previous incarnation).
   {
@@ -290,6 +292,19 @@ registry.registerMany([
       keywords: ['plugins', 'reload', 'refresh', 'desktop'],
       run: () => void discoverRuntimePlugins()
     } satisfies PaletteContribution
+  },
+  // The core `::preview{file="…"}` transcript directive — the model (or a
+  // skill) renders a workspace HTML file LIVE inside its own message
+  // (sandboxed srcdoc iframe; falls back to the classic preview card for
+  // non-HTML targets and remote gateways). Also the reference consumer for
+  // the `transcript.directives` area plugins register into.
+  {
+    id: 'transcript.preview',
+    area: TRANSCRIPT_DIRECTIVE_AREA,
+    data: {
+      name: 'preview',
+      render: ({ attrs, streaming }) => <InlinePreviewDirective attrs={attrs} streaming={streaming} />
+    } satisfies TranscriptDirectiveContribution
   },
   {
     id: 'layout.reset',
@@ -304,18 +319,27 @@ registry.registerMany([
   },
   // Hiding the bar removes the surface that would otherwise offer it back, so
   // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S).
-  {
+  paletteToggle({
     id: 'view.toggleStatusbar',
-    area: PALETTE_AREA,
-    data: {
-      id: 'view.toggleStatusbar',
-      label: 'Toggle status bar',
-      action: 'view.toggleStatusbar',
-      icon: PanelBottom,
-      keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
-      run: toggleStatusbarVisible
-    } satisfies PaletteContribution
-  },
+    label: 'Toggle status bar',
+    action: 'view.toggleStatusbar',
+    icon: PanelBottom,
+    keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
+    get: () => $statusbarVisible.get(),
+    set: enabled => $statusbarVisible.set(enabled)
+  }),
+  paletteToggle({
+    id: 'view.toggleTabStrip',
+    label: 'Toggle tabs',
+    action: 'view.toggleTabStrip',
+    icon: PanelTop,
+    keywords: ['tab strip', 'tab bar', 'tabs', 'header', 'zone', 'hide', 'show', 'chrome'],
+    // On-screen truth for the zone the verbs target, not a stored flag: a zone
+    // on auto has no stored value, and the row must read as "what pressing
+    // this does to what I can see".
+    get: () => Boolean(targetZoneTabStripVisible()),
+    set: () => void toggleTargetZoneTabStrip()
+  }),
   // The keybind panel's non-titlebar door (the keyboard icon is gone).
   {
     id: 'keybinds.panel',
@@ -326,6 +350,31 @@ registry.registerMany([
       keywords: ['keybinds', 'shortcuts', 'hotkeys', 'keyboard'],
       run: () => window.dispatchEvent(new CustomEvent('hermes:open-keybinds'))
     } satisfies PaletteContribution
+  },
+  // Profile sharing: bundle the active profile (config, skills, theme, layout)
+  // into a portable archive, or adopt someone else's. Both open native dialogs,
+  // so the palette closing on select is correct.
+  {
+    id: 'profile.export',
+    area: PALETTE_AREA,
+    data: {
+      id: 'profile.export',
+      label: 'Export profile…',
+      icon: Upload,
+      keywords: ['profile', 'export', 'share', 'bundle', 'theme', 'settings', 'backup'],
+      run: () => void runExportProfileFlow()
+    } satisfies PaletteContribution
+  },
+  {
+    id: 'profile.import',
+    area: PALETTE_AREA,
+    data: {
+      id: 'profile.import',
+      label: 'Import profile…',
+      icon: Download,
+      keywords: ['profile', 'import', 'share', 'bundle', 'archive', 'restore'],
+      run: () => void runImportProfileFlow()
+    } satisfies PaletteContribution
   }
 ])
 
@@ -333,14 +382,15 @@ registry.registerMany([
 // Layout presets — CHAT (main) always dominates.
 // ---------------------------------------------------------------------------
 
-// The REAL default: sessions left, chat main, and the right sidebars in
-// column order main | … | review | preview | file-browser (files outermost,
-// preview DIRECTLY left of the file tree). Each is its OWN zone — main
-// parity: a file double-click slides the preview open as its own pane beside
-// the tree, never as a tab stacked into the files sidebar. Preview/review
-// zones collapse to nothing while their pane is hidden (no target / ⌘G off).
-// This static spot is just the seed — dockPaneBeside keeps preview adjacent
-// to files WHEREVER files moves (see the target listeners below).
+// The REAL default: sessions left, chat main, and the right sidebars in column
+// order main | … | review | file-browser (files outermost). Each is its OWN
+// zone. Review collapses to nothing while its pane is hidden (⌘G off).
+//
+// Preview tiles are DYNAMIC panes (like session tiles), so no preset names one:
+// they're registered by watchPreviewTiles as tabs open, and dockPaneBeside lands
+// each one directly beside the file tree wherever that currently lives — so a
+// file double-click still slides a preview open as its own pane next to the
+// tree, never as a tab stacked into the files sidebar.
 const DEFAULT_TREE = split(
   'row',
   [
@@ -351,12 +401,8 @@ const DEFAULT_TREE = split(
       [
         split(
           'row',
-          [
-            group(['review'], { id: 'grp-review' }),
-            group(['preview'], { id: 'grp-preview' }),
-            group(['files'], { id: 'grp-files' })
-          ],
-          [1, 1, 1.2],
+          [group(['review'], { id: 'grp-review' }), group(['files'], { id: 'grp-files' })],
+          [1, 1.2],
           'spl-rail'
         ),
         group(['terminal'], { id: 'grp-terminal' })
@@ -369,16 +415,12 @@ const DEFAULT_TREE = split(
   'spl-root'
 )
 
-const FOCUS_TREE = split(
-  'row',
-  [group(['sessions']), group(['workspace', 'files', 'preview', 'review', 'terminal'])],
-  [1, 4.6]
-)
+const FOCUS_TREE = split('row', [group(['sessions']), group(['workspace', 'files', 'review', 'terminal'])], [1, 4.6])
 
 const TERMINAL_TREE = split(
   'column',
   [
-    split('row', [group(['sessions']), group(['workspace']), group(['files', 'preview', 'review'])], [1, 3.2, 1.2]),
+    split('row', [group(['sessions']), group(['workspace']), group(['files', 'review'])], [1, 3.2, 1.2]),
     group(['terminal'])
   ],
   [3, 1]
@@ -388,7 +430,7 @@ const QUAD_TREE = split(
   'column',
   [
     split('row', [group(['sessions', 'files']), group(['workspace'])], [1, 3]),
-    split('row', [group(['terminal']), group(['preview', 'review', 'logs'])], [1.4, 1])
+    split('row', [group(['terminal']), group(['review'])], [1.4, 1])
   ],
   [3, 1]
 )
@@ -412,9 +454,16 @@ discoverBundledPlugins()
 watchContributedPanes()
 
 // Session + route (page) tiles: persisted splits register panes docked beside
-// main.
-watchSessionTiles()
-watchRouteTiles()
+// main. A popped-out Browser and the HUD have no layout tree — registering
+// tiles there would still run, and preview-tile watching would try to dock
+// into a tree this window never renders (and, in the HUD, paint a webview
+// into the transparent overlay).
+if (!isBrowserWindow() && !isHudWindow()) {
+  watchSessionTiles()
+  startUnrestoredTileTitleBackfill()
+  watchRouteTiles()
+  watchPreviewTiles()
+}
 
 // Composer pop-out state is keyed by layout zone, so drop entries for zones the
 // user has since closed or merged away — otherwise a long-lived install keeps a
@@ -429,6 +478,9 @@ $layoutTree.subscribe(tree => {
 // never hides a pinned chat (and pre-existing pins migrate transparently).
 watchSessionPins()
 
+// Release unread-write guards once a list page confirms the value we wrote.
+watchUnreadWriteGuard()
+
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
 // register() replaces same-id in place; the render fn is the shared constant
@@ -440,12 +492,24 @@ const syncWorkspaceTitle = () => {
   registry.register({
     id: 'workspace',
     area: 'panes',
-    title: stored ? storedSessionTitle(stored) : 'New session',
+    // The placeholder, not the draft's live name — `tabTitle` below renders
+    // that. Keeping it here would re-register the pane on every keystroke.
+    // A bot chat reads as its BOT: every canonical Bot Chat is stored under
+    // the same name, which told two open bots apart by nothing (#99152).
+    title: workspaceOwnerTitle(
+      stored ? storedSessionTitle(stored) : NEW_SESSION_TITLE,
+      selected ? $botChatScopes.get()[selected] : undefined
+    ),
     data: {
       // The tab's status dot — the SAME primitive the sidebar row and session
-      // tiles render, so the main tab never disagrees with its sidebar row. No
-      // dot on a fresh draft (no session yet).
-      tabLead: selected ? () => <SessionStatusDot session={stored} storedSessionId={selected} /> : undefined,
+      // tiles render, so the main tab never disagrees with its sidebar row. A
+      // fresh draft has no session to key by, which IS its status: the dot
+      // resolves to `draft` and marks the tab rather than leaving a hole.
+      tabLead: () => <SessionStatusDot session={stored} storedSessionId={selected} />,
+      // A draft's name lives in its composer, not in any session row, so the
+      // label subscribes to it directly — typing renames the tab without
+      // re-registering the pane.
+      tabTitle: stored ? undefined : () => <SessionDraftTitle scope={selected} />,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       placement: 'main',
@@ -460,6 +524,8 @@ const syncWorkspaceTitle = () => {
 
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
+$botChatScopes.listen(syncWorkspaceTitle)
+$workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 
 // Layout reset collapses every session tile into main as a tab (after the
@@ -473,44 +539,13 @@ registerLayoutResetHandler(stackSessionTilesIntoMain)
 // toggle mirrors the root row.
 // ---------------------------------------------------------------------------
 
-function bindPaneVisibility(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close?: () => void,
-  open?: () => void
-) {
-  setTreePaneHidden(paneId, !$open.get())
-  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
+// HIDE-STYLE PANES (files, review, preview): the binding lives in the tree
+// store — bindPaneVisibility — alongside bindToolPaneCollapse, so both are
+// testable against the real function instead of a copy.
 
-  // The tab menu's Close routes through the owning store (never dismissal),
-  // so the pane's toggle buttons stay truthful.
-  if (close) {
-    registerPaneCloser(paneId, close)
-  }
-
-  // The opener is the mirror: preset application (revealOnPreset) shows the
-  // pane through the same store, so the toggle stays truthful.
-  if (open) {
-    registerPaneOpener(paneId, open)
-  }
-}
-
-// TOOL PANELS (terminal, logs): like bindPaneVisibility but the toggle COLLAPSES
-// the zone to a persistent rail (tab stays) instead of hiding it — the
-// IntelliJ/VS-Code tool-window model. Restore routes back through `open` (rail
-// click / chevron) so ⌃`/the button stay truthful; the tab's ✕ removes it.
-function bindPaneCollapse(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close: () => void,
-  open: () => void
-) {
-  markCollapsePane(paneId)
-  setPaneCollapsed(paneId, !$open.get())
-  $open.listen(isOpen => setPaneCollapsed(paneId, !isOpen))
-  registerPaneCloser(paneId, close)
-  registerPaneOpener(paneId, open)
-}
+// TOOL PANELS (terminal, logs): the binding lives in the tree store —
+// bindToolPaneCollapse — so the boot rule it encodes is testable against the
+// real function instead of a copy. See its docblock for the semantics.
 
 // SIDES have one source of truth: the TREE. The legacy $panesFlipped flag is
 // DERIVED from where the sessions zone actually sits (TitlebarControls maps
@@ -561,54 +596,195 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
 // The tree pane's own presence tracks ⌘J directly, not just the column's
-// collapse — otherwise revealing a preview (which opens that shared column)
-// would drag the tree along with it. See revealPreview.
+// collapse — otherwise a pane revealed into that shared column would drag the
+// tree along with it.
+//
+// Both get a CLOSER and an OPENER. The closer keeps ⌘J/⌘G truthful when the
+// pane is closed from the tab menu; the opener is its mirror, so bringing the
+// pane back through the tree (the toggle's reveal path, the rail, a preset)
+// writes the store too. Without the opener the boolean went stale the moment
+// anything but the toggle showed the pane — the divergence this whole change
+// is about.
 bindPaneVisibility(
   'files',
-  computed([$hasWorkspace, $fileBrowserOpen], (workspace, open) => workspace && open)
+  computed([$hasWorkspace, $fileBrowserOpen], (workspace, open) => workspace && open),
+  () => setFileBrowserOpen(false),
+  () => setFileBrowserOpen(true)
 )
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
-  closeReview
+  closeReview,
+  () => openReview($reviewScopeCwd.get(), $reviewScopeTarget.get())
 )
 // ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
 // hides; PTYs stay alive while collapsed (see PersistentTerminal).
-bindPaneCollapse(
+bindToolPaneCollapse(
   'terminal',
   $terminalTakeover,
   () => setTerminalTakeover(false),
   () => setTerminalTakeover(true)
 )
-
-// Preview EXISTS only while something is previewed (old-shell semantics:
-// closing the last preview tab closes the pane; a new target opens + fronts
-// it). Same visibility binding as every other self-managed surface, driven
-// by the open tabs instead of a toggle.
-const $previewVisible = computed($previewTabs, tabs => tabs.length > 0)
-
-bindPaneVisibility('preview', $previewVisible, closeRightRail)
-
-// Logs are optional chrome: off by default, toggled from ⌘K, persisted.
-const $logsOpen = persistentAtom('hermes.desktop.logsOpen', false, Codecs.bool)
-
-bindPaneCollapse(
-  'logs',
-  $logsOpen,
-  () => $logsOpen.set(false),
-  () => $logsOpen.set(true)
+// ⌘K door onto the same pane the keybind and statusbar pill flip — was a
+// one-way "open" row under Go to, so it never showed on/off and couldn't hide.
+// Reads the TREE like every other pane toggle: `$terminalTakeover` stays true
+// behind a stacked sibling tab or a minimized zone, which would light the row
+// "on" for a terminal that isn't on screen.
+registry.register(
+  paletteToggle({
+    id: 'view.showTerminal',
+    label: 'Toggle terminal',
+    action: 'view.showTerminal',
+    icon: Terminal,
+    keywords: ['terminal', 'shell', 'console', 'pty'],
+    get: () => isPaneVisible('terminal'),
+    set: () => togglePaneVisible('terminal')
+  })
 )
-registry.register({
-  id: 'logs.toggle',
-  area: PALETTE_AREA,
-  data: {
+
+// Logs are ⌘K-ONLY chrome: the pane contribution EXISTS only while $logsOpen
+// is on. Off (the default) keeps logs out of the registry and the tree
+// entirely — no secondary tab riding the terminal strip, no preset or
+// adoption path that resurrects it. Session-only on purpose (not persisted):
+// a fresh boot never re-opens logs automatically. The palette toggle is the
+// single door in; tab ✕ / ⌘W / the toggle itself remove it again.
+const $logsOpen = atom(false)
+
+let unregisterLogsPane: (() => void) | null = null
+
+const syncLogsPane = (open: boolean) => {
+  if (open) {
+    unregisterLogsPane ??= registry.register({
+      id: 'logs',
+      area: 'panes',
+      title: 'logs',
+      // Same tool-panel sizing rule as the terminal above — no minHeight, so
+      // the sash floors it at COLLAPSED_ZONE_PX and folds the zone to its rail
+      // rather than leaving a sliver. dock: its OWN zone beside the terminal —
+      // never a tab in the terminal's strip.
+      data: {
+        placement: 'bottom',
+        dock: { pane: 'terminal', pos: 'right' },
+        height: '20vh',
+        maxHeight: '80vh'
+      },
+      render: () => idle(<LogsPane />)
+    })
+    // Summoning logs is explicit intent — front it (un-dismisses if a ✕ close
+    // left a dismissal record behind).
+    revealTreePane('logs')
+  } else {
+    unregisterLogsPane?.()
+    unregisterLogsPane = null
+
+    // No dismissal record — the next toggle-on must re-adopt cleanly. Also
+    // sweeps 'logs' out of persisted trees from before it was summon-only.
+    // Guarded: removePane rebuilds the tree even for an absent pane, and a
+    // no-op boot sweep would commit (and persist) a fresh identical tree.
+    const tree = $layoutTree.get()
+
+    if (tree && allPaneIds(tree).includes('logs')) {
+      removeTreePane('logs')
+    }
+  }
+}
+
+// Tool-panel tab semantics (✕ / ⌘W route through the store) so the palette
+// toggle stays truthful either way.
+markCollapsePane('logs')
+registerPaneCloser('logs', () => $logsOpen.set(false))
+registerPaneOpener('logs', () => $logsOpen.set(true))
+syncLogsPane($logsOpen.get())
+$logsOpen.listen(syncLogsPane)
+
+registry.register(
+  paletteToggle({
     id: 'logs.toggle',
     label: 'Toggle logs',
+    icon: FileText,
     keywords: ['logs', 'agent log', 'tail', 'debug'],
-    run: () => $logsOpen.set(!$logsOpen.get())
-  } satisfies PaletteContribution
-})
+    // On-screen, not the store's boolean. Summon-only keeps the two in step
+    // while logs sits in its own zone, but the user can still drag it into the
+    // terminal's strip or minimize its zone — and then `$logsOpen` reads true
+    // with nothing visible, so the row would show "on" and its press would
+    // spend itself re-asserting a value it already held.
+    get: () => isPaneVisible('logs'),
+    set: () => togglePaneVisible('logs')
+  })
+)
+
+// Hide-only chrome tabs (sessions / Bots) get a ⌘K toggle each — the palette
+// door onto the same show/hide the zone menu offers. Auto-registered from the
+// panes area so a plugin's hideOnly pane (Bots registers at plugin load, after
+// this module runs) gets its row for free; disposers keep it in step when a
+// plugin unloads. Registry writes during a subscriber callback are safe (the
+// registry snapshots per-area and re-notifies), and re-registering the same
+// palette id replaces the row instead of stacking duplicates.
+{
+  const stripTabToggles = new Map<string, () => void>()
+
+  const syncStripTabToggles = () => {
+    const hideOnlyPanes = registry
+      .getArea('panes')
+      .filter(c => (c.data as { hideOnly?: boolean } | undefined)?.hideOnly)
+
+    const wanted = new Set(hideOnlyPanes.map(c => c.id))
+
+    for (const [paneId, dispose] of stripTabToggles) {
+      if (!wanted.has(paneId)) {
+        dispose()
+        stripTabToggles.delete(paneId)
+      }
+    }
+
+    for (const pane of hideOnlyPanes) {
+      if (stripTabToggles.has(pane.id)) {
+        continue
+      }
+
+      const title = String(pane.title ?? pane.id)
+
+      stripTabToggles.set(
+        pane.id,
+        registry.register(
+          paletteToggle({
+            id: `strip-tab.${pane.id}`,
+            label: translateNow('zones.toggleStripTab', title),
+            icon: LayoutDashboard,
+            keywords: [title.toLowerCase(), 'tab', 'pane', 'sidebar', 'show', 'hide'],
+            // On-screen truth, same contract as the logs toggle above.
+            get: () => isPaneVisible(pane.id),
+            set: visible => {
+              if (visible) {
+                revealTreePane(pane.id)
+              } else {
+                setStripTabHidden(pane.id, true)
+              }
+            }
+          })
+        )
+      )
+    }
+  }
+
+  syncStripTabToggles()
+  registry.subscribeArea('panes', syncStripTabToggles)
+}
+
+// YOLO (dangerous-command approval bypass) is a status-bar zap and a /yolo
+// command; ⌘K is the third door onto the SAME store function, so a user who
+// lives in the palette never has to hunt for the pill.
+registry.register(
+  paletteToggle({
+    id: 'session.yolo',
+    label: 'Toggle yolo',
+    icon: Zap,
+    keywords: ['yolo', 'approvals', 'auto-approve', 'bypass', 'dangerous', 'commands'],
+    get: () => $yoloActive.get(),
+    set: enabled => void setYoloEnabled(enabled).catch(() => undefined)
+  })
+)
 
 // Sessions/files Close = collapse their SIDE (⌘B/⌘J truthful, titlebar button
 // flips back) — but only while the pane actually lives in that root side
@@ -621,33 +797,6 @@ registerPaneCloser('sessions', () =>
 registerPaneCloser('files', () =>
   paneRootSide('files') === 'right' ? setFileBrowserOpen(false) : dismissTreePane('files')
 )
-
-// A preview target lands NEXT TO the file tree — position-aware: wherever
-// files currently lives (default rail, ⌘\-flipped, dragged into a stack), the
-// preview zone docks directly beside it. A user who drags the preview pane
-// somewhere pins it there instead (until a preset/reset). Then reveal: open
-// the side, unhide, front — a NEW target while already visible still fronts.
-const revealPreview = () => {
-  dockPaneBeside('preview', 'files')
-
-  // The preview shares a collapsible column with the file tree, and
-  // revealTreePane un-collapses a column through its bound store — here ⌘J /
-  // $fileBrowserOpen, which IS the tree's toggle. Going through it would open
-  // the tree every time a preview opened. Un-collapse the column directly and
-  // leave the toggle alone, so a preview can appear on its own.
-  const side = treeSideOfPane('preview')
-
-  if (side) {
-    setTreeSideCollapsed(side, false)
-  }
-
-  revealTreePane('preview')
-}
-
-// Keyed on open REQUESTS, not on the tab list: re-opening a tab that already
-// exists must still un-hide and front the pane, and closing one of two tabs
-// must not.
-$previewOpenRequest.listen(() => revealPreview())
 
 // ---------------------------------------------------------------------------
 
@@ -675,6 +824,27 @@ export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
   const statusbarVisible = useStore($statusbarVisible)
 
+  // HUD mode is the SAME app with its frame removed: the wiring (gateway,
+  // sessions, streams, submit) mounts identically, and only the shell around
+  // the chat surface differs. Branching here rather than at the window entry
+  // is what keeps the HUD's composer the real composer.
+  if (isHudWindow()) {
+    return (
+      <ContribWiring>
+        <AppContextMenu />
+        <HudShell />
+      </ContribWiring>
+    )
+  }
+
+  if (isBrowserWindow()) {
+    return (
+      <ContribWiring>
+        <BrowserPopoutShell />
+      </ContribWiring>
+    )
+  }
+
   return (
     <SidebarProvider
       className="h-screen min-h-0 flex-col bg-background"
@@ -683,8 +853,15 @@ export function ContribController() {
       style={{ '--sidebar-width': '100%' } as CSSProperties}
     >
       <ContribWiring>
+        <AppContextMenu />
         <div
           className="flex h-screen min-h-0 w-screen flex-col bg-(--ui-bg-chrome) text-(--ui-text-primary)"
+          // Window-glass hook: this div and the sidebar-wrapper above it are
+          // the app shell's two full-window opaque painters; the
+          // [data-hermes-glass] rules in styles.css clear them so the tint
+          // painted by <body> is the only thing between the page and the
+          // vibrancy material.
+          data-contrib-shell=""
           style={{ '--titlebar-height': '0px' } as CSSProperties}
         >
           {/* Title bar: fixed chrome outside the grid, composable via slots.
@@ -711,13 +888,13 @@ export function ContribController() {
             />
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute inset-y-0 left-[calc(var(--titlebar-controls-left,14px)+(var(--titlebar-control-size,1.25rem)*2)+0.75rem)] right-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,5.5rem)+0.75rem)] [-webkit-app-region:drag]"
+              className="pointer-events-none absolute inset-y-0 left-[calc(var(--titlebar-controls-left,14px)+(var(--titlebar-control-size,24px)*2)+0.75rem)] right-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,5.5rem)+0.75rem)] [-webkit-app-region:drag]"
             />
             <TitlebarSlot
               area="titleBar.left"
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
-                left: 'max(calc(var(--workspace-left, 0px) + 0.5rem), calc(var(--titlebar-controls-left, 14px) + 2 * var(--titlebar-control-size, 1.25rem) + 1rem))'
+                left: 'max(calc(var(--workspace-left, 0px) + 0.5rem), calc(var(--titlebar-controls-left, 14px) + 2 * var(--titlebar-control-size, 24px) + 1rem))'
               }}
             />
             <TitlebarSlot
@@ -729,7 +906,10 @@ export function ContribController() {
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 right:
-                  'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 4 * (var(--titlebar-control-size, 1.25rem) + 0.25rem) + 0.5rem))'
+                  // Five static cluster buttons: four systemTools plus the
+                  // always-present right-sidebar toggle (titlebar-controls.tsx).
+                  // Keep in sync with wiring.tsx's SYSTEM_TOOL_COUNT.
+                  'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 5 * var(--titlebar-control-size, 24px) + 0.5rem))'
               }}
             />
           </div>

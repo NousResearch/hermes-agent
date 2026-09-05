@@ -129,7 +129,6 @@ Hermes 在执行 `hermes update` 时也会同步内置技能，但同步清单�
 | [`arxiv`](/user-guide/skills/bundled/research/research-arxiv) | 按关键词、作者、分类或 ID 搜索 arXiv 论文。 | `research/arxiv` |
 | [`blogwatcher`](/user-guide/skills/bundled/research/research-blogwatcher) | 通过 blogwatcher-cli 工具监控博客和 RSS/Atom 订阅源。 | `research/blogwatcher` |
 | [`llm-wiki`](/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy 的 LLM Wiki：构建/查询互联 Markdown 知识库。 | `research/llm-wiki` |
-| [`polymarket`](/user-guide/skills/bundled/research/research-polymarket) | 查询 Polymarket：市场、价格、订单簿、历史数据。 | `research/polymarket` |
 | [`research-paper-writing`](/user-guide/skills/bundled/research/research-research-paper-writing) | 为 NeurIPS/ICML/ICLR 撰写 ML 论文：从设计到投稿。 | `research/research-paper-writing` |
 
 ## smart-home
@@ -151,7 +150,6 @@ Hermes 在执行 `hermes update` 时也会同步内置技能，但同步清单�
 | [`dogfood`](/user-guide/skills/bundled/software-development/software-development-dogfood) | Web 应用探索性 QA：发现 bug、收集证据、生成报告。 | `software-development/dogfood` |
 | [`hermes-agent-skill-authoring`](/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring) | 编写仓库内 SKILL.md：frontmatter、验证器、结构规范。 | `software-development/hermes-agent-skill-authoring` |
 | [`node-inspect-debugger`](/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger) | 通过 --inspect + Chrome DevTools Protocol CLI 调试 Node.js。 | `software-development/node-inspect-debugger` |
-| [`plan`](/user-guide/skills/bundled/software-development/software-development-plan) | 计划模式：将 Markdown 计划写入 `.hermes/plans/`，不执行。 | `software-development/plan` |
 | [`python-debugpy`](/user-guide/skills/bundled/software-development/software-development-python-debugpy) | 调试 Python：pdb REPL + debugpy 远程调试（DAP）。 | `software-development/python-debugpy` |
 | [`requesting-code-review`](/user-guide/skills/bundled/software-development/software-development-requesting-code-review) | 提交前审查：安全扫描、质量门控、自动修复。 | `software-development/requesting-code-review` |
 | [`spike`](/user-guide/skills/bundled/software-development/software-development-spike) | 一次性实验，在正式构建前验证想法。 | `software-development/spike` |

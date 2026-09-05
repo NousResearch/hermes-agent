@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { inlineSlashTrigger, splitSlashSkillRefs } from '../domain/slash.js'
+import { inlineSlashTrigger } from '../domain/slash.js'
 import { completionRequestForInput } from '../hooks/useCompletion.js'
 
 describe('inlineSlashTrigger', () => {
@@ -64,49 +64,30 @@ describe('completionRequestForInput — inline skill references', () => {
     })
   })
 
+  it('completes a second slash in a line that starts with a command', () => {
+    // Only the first slash is an invocation. Routing the whole line to the
+    // completer offered nothing, so `/work /cle` went dead while
+    // `do /work then /cle` completed fine.
+    expect(completionRequestForInput('/work /cle')).toMatchObject({
+      method: 'complete.slash',
+      params: { text: '/cle' },
+      replaceFrom: 7,
+      skillsOnly: true
+    })
+  })
+
+  it('leaves a command own arguments to the command', () => {
+    for (const input of ['/personality alic', '/cron ad', '/details ']) {
+      expect(completionRequestForInput(input)).toEqual({
+        method: 'complete.slash',
+        params: { text: input },
+        replaceFrom: 1
+      })
+    }
+  })
+
   it('routes a real mid-message path to path completion, not skills', () => {
     expect(completionRequestForInput('open src/foo/ba')).toMatchObject({ method: 'complete.path' })
     expect(completionRequestForInput('open /usr/lo')).toMatchObject({ method: 'complete.path' })
-  })
-})
-
-describe('splitSlashSkillRefs', () => {
-  it('marks a skill referenced mid-prose', () => {
-    expect(splitSlashSkillRefs('clean this up with /clean')).toEqual([
-      { ref: false, text: 'clean this up with ' },
-      { ref: true, text: '/clean' }
-    ])
-  })
-
-  it('keeps the prose on both sides of the reference', () => {
-    expect(splitSlashSkillRefs('run /clean then ship')).toEqual([
-      { ref: false, text: 'run ' },
-      { ref: true, text: '/clean' },
-      { ref: false, text: ' then ship' }
-    ])
-  })
-
-  it('does not mark paths', () => {
-    for (const text of ['look at /usr/local/bin', 'check src/foo/bar', 'a 3 /4 b']) {
-      expect(splitSlashSkillRefs(text)).toEqual([{ ref: false, text }])
-    }
-  })
-
-  it('does not mark a leading slash — that is a command, not a reference', () => {
-    expect(splitSlashSkillRefs('/clean')).toEqual([{ ref: false, text: '/clean' }])
-  })
-
-  it('round-trips the input exactly', () => {
-    for (const text of ['run /clean then /work ok', 'plain text', '', 'look at /usr/local/bin']) {
-      expect(
-        splitSlashSkillRefs(text)
-          .map(s => s.text)
-          .join('')
-      ).toBe(text)
-    }
-  })
-
-  it('always returns at least one segment', () => {
-    expect(splitSlashSkillRefs('')).toEqual([{ ref: false, text: '' }])
   })
 })

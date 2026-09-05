@@ -154,6 +154,9 @@ def _install_fake_tools_package():
         sys.modules[f"plugins.browser.{_name}.provider"] = types.SimpleNamespace(
             **{_classname: _provider_stub_cls},
         )
+    # The fake ``plugins.browser`` package has an empty __path__, so the shared
+    # base the real vendor modules import must be loaded by path as well.
+    _load_plugin_module("plugins.browser._common", "browser/_common.py")
 
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
         "tools.managed_tool_gateway",
@@ -192,7 +195,16 @@ def _install_fake_tools_package():
         def cleanup(self):
             return None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyEnvironment)
+    class _DummyConnectionError(Exception):
+        def __init__(self, message="", backend="", detail="", *args):
+            super().__init__(message, *args)
+            self.backend = backend
+            self.detail = detail
+
+    sys.modules["tools.environments.base"] = types.SimpleNamespace(
+        BaseEnvironment=_DummyEnvironment,
+        EnvironmentConnectionError=_DummyConnectionError,
+    )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.singularity"] = types.SimpleNamespace(
         _get_scratch_dir=lambda: Path(tempfile.gettempdir()),
@@ -216,10 +228,11 @@ def test_browser_use_explicit_local_mode_stays_local_even_when_managed_gateway_i
     })
 
     with patch.dict(os.environ, env, clear=True):
-        browser_tool = _load_tool_module("tools.browser_tool", "browser_tool.py")
+        _load_tool_module("tools.browser_tool", "browser_tool.py")
+        browser_tool_cloud = sys.modules["tools.browser_tool_cloud"]
 
-        local_mode = browser_tool._is_local_mode()
-        provider = browser_tool._get_cloud_provider()
+        local_mode = browser_tool_cloud._is_local_mode()
+        provider = browser_tool_cloud._get_cloud_provider()
 
     assert local_mode is True
     assert provider is None
@@ -252,14 +265,15 @@ def test_terminal_tool_respects_direct_modal_mode_without_falling_back_to_manage
     env.pop("MODAL_TOKEN_SECRET", None)
 
     with patch.dict(os.environ, env, clear=True):
-        terminal_tool = _load_tool_module("tools.terminal_tool", "terminal_tool.py")
+        _load_tool_module("tools.terminal_tool", "terminal_tool.py")
+        terminal_tool_backends = sys.modules["tools.terminal_tool_backends"]
 
         with (
-            patch.object(terminal_tool, "is_managed_tool_gateway_ready", return_value=True),
+            patch.object(terminal_tool_backends, "is_managed_tool_gateway_ready", return_value=True),
             patch.object(Path, "exists", return_value=False),
         ):
             with pytest.raises(ValueError, match="direct Modal credentials"):
-                terminal_tool._create_environment(
+                terminal_tool_backends._create_environment(
                     env_type="modal",
                     image="python:3.11",
                     cwd="/root",

@@ -18,12 +18,18 @@ import {
 
 import { useSessionView } from '@/app/chat/session-view'
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
+import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
+import {
+  SCAFFOLD_GLYPH_CLASS,
+  SCAFFOLD_LABEL_CLASS,
+  SCAFFOLD_META_CLASS,
+  ScaffoldRow
+} from '@/components/chat/scaffold-row'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -53,6 +59,7 @@ import {
   cleanVisibleText,
   countDiffLineStats,
   inlineDiffFromResult,
+  isCardTool,
   isFileEditTool,
   isPreviewableTarget,
   looksRedundant,
@@ -82,7 +89,7 @@ const SEARCH_HIT_TITLE_CLASS =
 const TOOL_HEADER_SUBTITLE_CLASS =
   'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)'
 
-const TOOL_HEADER_GLYPH_WRAP_CLASS = 'grid size-3.5 shrink-0 place-items-center self-center'
+const TOOL_HEADER_GLYPH_WRAP_CLASS = cn(SCAFFOLD_GLYPH_CLASS, 'self-center')
 
 // Glass-style section label that sits above any pre/JSON/output block.
 // Lowercase tracking + tiny size so it reads as a quiet field label rather
@@ -352,11 +359,11 @@ function ToolEntry({ part }: ToolEntryProps) {
   // below and re-running buildToolView (full JSON.stringify of result) on every
   // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
   // the referentially-stable args/result so the memos hold across deltas.
-  const { args, isError, result, toolCallId, toolName } = part
+  const { args, completedAt, isError, result, timestamp, toolCallId, toolName } = part
 
   const stablePart = useMemo<ToolPart>(
-    () => ({ args, isError, result, toolCallId, toolName, type: 'tool-call' }),
-    [args, isError, result, toolCallId, toolName]
+    () => ({ args, completedAt, isError, result, timestamp, toolCallId, toolName, type: 'tool-call' }),
+    [args, completedAt, isError, result, timestamp, toolCallId, toolName]
   )
 
   const disclosureId = toolEntryDisclosureId(messageId, stablePart)
@@ -487,8 +494,12 @@ function ToolEntry({ part }: ToolEntryProps) {
   // `opacity-0` (yet still clickable) button straddling the caret/duration made
   // the disclosure caret hard to hit. Copy now lives in the expanded body's
   // top-right, where it can't fight the caret for the right edge.
-  const trailing =
-    isPending && !embedded ? <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} /> : undefined
+  const trailing = !embedded ? (
+    <span className="flex shrink-0 items-center gap-1.5">
+      <TimelineTimestamp className={SCAFFOLD_META_CLASS} completedAt={completedAt} timestamp={timestamp} />
+      {isPending && <ActivityTimerText className={SCAFFOLD_META_CLASS} seconds={elapsed} />}
+    </span>
+  ) : undefined
 
   // Once a turn has settled, a hover/focus-revealed dismiss lets the user clear
   // a completed/failed row that would otherwise sit at the tail of the chat.
@@ -738,22 +749,9 @@ function TerminalTranscript({ command, exitCode }: TerminalTranscriptProps) {
 }
 
 // Tools that draw their own surface and must never be folded into a run's
-// summary. Two kinds, for the same reason — the thing on screen IS the point:
-//
-//   - File edits are the deliverable, not scaffolding. The diff is what the
-//     user reviews, so it stays visible at its place in the turn, live and
-//     settled, the way a PR shows its changes.
-//   - `clarify`, `image_generate` and `delegate_task` bypass ToolEntry to
-//     render their own markup: a question the user has to answer, an image
-//     they asked for, the several agents a fan-out is running.
-//
-// Everything else is ephemeral activity — reads, searches, commands — which is
-// what a run summarizes and what the live ticker cycles through.
-const CARD_TOOLS = new Set(['clarify', 'delegate_task', 'image_generate'])
-
-export function isCardTool(toolName: string): boolean {
-  return CARD_TOOLS.has(toolName) || isFileEditTool(toolName)
-}
+// summary live in `fallback-model` (`isCardTool`) — the DOM render budget
+// prices a turn by the same rule, so both sides have to agree on which rows
+// collapse into a summary line and which mount their own markup.
 
 export type RunItem = { end: number; kind: 'run'; start: number } | { index: number; kind: 'card' }
 
@@ -802,19 +800,27 @@ export function splitRunItems(toolNames: readonly string[]): RunItem[] {
 // files, ran 5 commands". Live, it narrates in the present tense above the
 // ticker and offers no toggle, since there is nothing settled to unfold yet.
 function ToolRunHeader({
+  completedAt,
   live,
   onToggle,
   open,
+  startedAt,
   summary
 }: {
+  completedAt?: number
   live: boolean
   onToggle?: () => void
   open: boolean
+  startedAt?: number
   summary: string
 }) {
   return (
     <div data-conversation-scaffold="" data-tool-summary="">
-      <ScaffoldRow onToggle={onToggle} open={open}>
+      <ScaffoldRow
+        onToggle={onToggle}
+        open={open}
+        trailing={<TimelineTimestamp completedAt={completedAt} timestamp={startedAt} />}
+      >
         <FadeText className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>
           {live ? <span className="shimmer">{summary}</span> : summary}
         </FadeText>
@@ -824,11 +830,13 @@ function ToolRunHeader({
 }
 
 interface ToolRunState {
+  completedAt?: number
   count: number
   /** Disclosure id of each row in the run, so the run can tell when one is open. */
   entryIds: readonly string[]
   key: string
   live: boolean
+  startedAt?: number
   /** A call still awaiting a result that could be the one blocking on approval. */
   pendingApprovalTool: boolean
   summary: string
@@ -844,6 +852,7 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
   return useAuiState(state => {
     const parts = state.message.parts
     const tools = parts.slice(Math.max(0, startIndex), endIndex + 1).filter(isToolCallPart)
+    const timelineTools = tools as unknown as ToolPart[]
 
     // Live means the turn is still working and nothing has come after this run
     // — not that some call is unresolved. Those differ in the gap between one
@@ -855,8 +864,11 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
     // that moves on to later parts, leaves the run settled and collapsible.
     const live = selectMessageRunning(state) && endIndex >= parts.length - 1
 
-    const signature = tools
-      .map(tool => `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}`)
+    const signature = timelineTools
+      .map(
+        tool =>
+          `${tool.toolCallId}:${tool.result === undefined ? 0 : 1}:${tool.timestamp ?? ''}:${tool.completedAt ?? ''}`
+      )
       .concat(String(live))
       .join('|')
 
@@ -864,10 +876,28 @@ function useToolRun(startIndex: number, endIndex: number): ToolRunState {
       cache.current = {
         signature,
         value: {
+          completedAt: timelineTools.reduce<number | undefined>(
+            (latest, tool) =>
+              tool.completedAt === undefined
+                ? latest
+                : latest === undefined
+                  ? tool.completedAt
+                  : Math.max(latest, tool.completedAt),
+            undefined
+          ),
           count: tools.length,
           entryIds: tools.map(tool => toolEntryDisclosureId(state.message.id, tool)),
           key: tools[0]?.toolCallId ?? '',
           live,
+          startedAt: timelineTools.reduce<number | undefined>(
+            (earliest, tool) =>
+              tool.timestamp === undefined
+                ? earliest
+                : earliest === undefined
+                  ? tool.timestamp
+                  : Math.min(earliest, tool.timestamp),
+            undefined
+          ),
           pendingApprovalTool: tools.some(tool => tool.result === undefined && APPROVAL_TOOLS.has(tool.toolName)),
           summary: summarizeToolRun(tools, live)
         }
@@ -898,7 +928,12 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
   startIndex
 }) => {
   const messageRunning = useAuiState(selectMessageRunning)
-  const { count, entryIds, key, live, pendingApprovalTool, summary } = useToolRun(startIndex, endIndex)
+
+  const { completedAt, count, entryIds, key, live, pendingApprovalTool, startedAt, summary } = useToolRun(
+    startIndex,
+    endIndex
+  )
+
   const sessionId = useStore(useSessionView().$runtimeId)
   const approval = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   const disclosureId = `tool-run:${key}`
@@ -929,9 +964,11 @@ const ToolRun: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> =
       ref={enterRef}
     >
       <ToolRunHeader
+        completedAt={completedAt}
         live={live}
         onToggle={live ? undefined : () => setToolDisclosureOpen(disclosureId, !expanded)}
         open={expanded}
+        startedAt={startedAt}
         summary={summary}
       />
       {live && !unfurled && <ToolRunTicker>{children}</ToolRunTicker>}
@@ -990,8 +1027,18 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
  * its return type and the underlying ToolEntry stays mounted across
  * group-shape changes.
  */
-export const ToolFallback = ({ toolCallId, toolName, args, isError, result }: ToolCallMessagePartProps) => {
-  const part: ToolPart = { args, isError, result, toolCallId, toolName, type: 'tool-call' }
+type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
+
+export const ToolFallback = ({
+  toolCallId,
+  toolName,
+  args,
+  completedAt,
+  isError,
+  result,
+  timestamp
+}: TimelineToolCallProps) => {
+  const part: ToolPart = { args, completedAt, isError, result, timestamp, toolCallId, toolName, type: 'tool-call' }
 
   return <ToolEntry part={part} />
 }

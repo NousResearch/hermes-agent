@@ -18,6 +18,13 @@ export const PTY_RESUME_RECONNECT_THROTTLE_MS = 1000;
 // and force-closed so `onclose` → scheduleReconnect can recover it.
 export const PTY_CONNECTING_TIMEOUT_MS = 8000;
 
+// The same budget for the phase *before* the socket exists: in gated mode a
+// connect first awaits a fresh single-use ticket. That request produces no
+// WebSocket, so a rejection or a hang is invisible to both `onclose` and the
+// CONNECTING timer above — the tab would sit on "connecting" forever with no
+// retry. Bound it so the failure routes into the ordinary backoff instead.
+export const PTY_TICKET_TIMEOUT_MS = 8000;
+
 // How long after a resumed socket opens we keep suppressing ANSI erase codes
 // (`ESC[K` / `ESC[X`) from the PTY stream. Ink's two-pass virtual scroll emits
 // them while replaying a long session; past that replay they are legitimate

@@ -344,6 +344,7 @@ import {
 import { missingRendererAssets } from './renderer-bundle'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
+import { safeSuggestedImageName } from './safe-suggested-image-name'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -6075,14 +6076,16 @@ async function resourceBufferFromUrl(rawUrl) {
   })
 }
 
-async function saveImageFromUrl(rawUrl) {
+async function saveImageFromUrl(rawUrl, suggestedName?: string) {
   const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
   const extension = extensionForMimeType(mimeType) || '.png'
   // Generated-image URLs (fal.media etc.) usually end in an extensionless
   // content hash. Keep the name but always guarantee an extension — without
   // one Windows saves an unopenable "All Files" blob (#image18 report).
-  const baseName = filenameFromUrl(rawUrl, `image${extension}`)
-  const fallbackName = path.extname(baseName) ? baseName : `${baseName}${extension}`
+
+  const fallbackName = suggestedName
+    ? safeSuggestedImageName(suggestedName, extension)
+    : filenameFromUrl(rawUrl, `image${extension}`)
 
   let downloadsDir = ''
 
@@ -16870,7 +16873,11 @@ ipcMain.handle('hermes:readClipboard', () => clipboard.readText())
 
 ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(payload))
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('hermes:saveImageFromUrl', (_event, payload) => {
+  const url = typeof payload === 'string' ? payload : String(payload?.url || '')
+  const suggestedName = typeof payload === 'string' || payload == null ? undefined : payload.suggestedName
+  return saveImageFromUrl(url, suggestedName)
+})
 
 // The custom context menu's edit verbs. They act on the SENDER's focused
 // element, so the renderer restores focus to the editable before invoking.

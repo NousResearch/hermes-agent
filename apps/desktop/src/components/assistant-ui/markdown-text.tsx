@@ -435,6 +435,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
         className
       )}
       containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
+      downloadName={name}
       slot="aui_markdown-image"
       src={resolvedSrc}
       {...props}

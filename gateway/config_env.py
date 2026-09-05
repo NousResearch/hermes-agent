@@ -488,6 +488,15 @@ def _scrub_explicit_markers(config: GatewayConfig) -> None:
     for platform_config in config.platforms.values():
         platform_config.extra.pop("_enabled_explicit", None)
 
+
+def _hosted_rooms_env(config: GatewayConfig) -> None:
+    """Allow env override to disable the hosted rooms worker (opt-out for
+    multi-profile installs that hit the concurrent-restart corruption
+    issue #102120). Env var wins over config.yaml."""
+    hosted_rooms_env = getenv("HERMES_GATEWAY_HOSTED_ROOMS_ENABLED", "")
+    if hosted_rooms_env:
+        config.hosted_rooms_enabled = is_truthy_value(hosted_rooms_env)
+
 # Order is significant: a home channel only attaches to a platform that already exists (Telegram's
 # reply mode may create the entry first; Discord reads home first). Relay disabling runs after the
 # plugin pass; the marker scrub must be last.
@@ -626,6 +635,7 @@ _ENV_STEPS: tuple = (
     _session_settings,
     _enable_plugin_platforms_from_env,
     _relay,
+    _hosted_rooms_env,
     _scrub_explicit_markers,
 )
 

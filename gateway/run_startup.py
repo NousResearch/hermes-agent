@@ -1127,14 +1127,29 @@ class GatewayStartupMixin:
     async def _start_post_connect_services(self, connected_count: int) -> None:
         """Room worker, heartbeat, gateway:startup hook, channel directory, /update notice."""
         from gateway.run import _hermes_home
-        try:
-            await self._ensure_hosted_room_worker()
-        except Exception:
-            logger.error(
-                "Group Chat worker failed to start; mutating Group Chat commands "
-                "will fail closed until supervision recovers it", exc_info=True,
+        # Group Chat (hosted rooms) worker: opt-out via config. The worker
+        # always points at the install-wide SHARED state.db, and on a
+        # multi-profile install every profile gateway starts one at boot — so
+        # a fleet restart that fires them back-to-back (e.g. `hermes update`)
+        # opens N concurrent writers on one file inside the same window and
+        # has corrupted the shared store in the field (#102120). Installs
+        # that don't use Group Chat can disable the worker entirely;
+        # enabled-by-default preserves today's behavior for everyone else.
+        if not getattr(self.config, "hosted_rooms_enabled", True):
+            logger.info(
+                "Group Chat worker disabled by config "
+                "(gateway.hosted_rooms_enabled=false); skipping shared "
+                "state.db worker"
             )
-        self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
+        else:
+            try:
+                await self._ensure_hosted_room_worker()
+            except Exception:
+                logger.error(
+                    "Group Chat worker failed to start; mutating Group Chat commands "
+                    "will fail closed until supervision recovers it", exc_info=True,
+                )
+            self._spawn_supervised(self._hosted_room_worker_watcher, "hosted_room_worker")
         self._start_loop_heartbeat_task()
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:

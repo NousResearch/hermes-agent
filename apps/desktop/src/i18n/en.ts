@@ -3449,6 +3449,8 @@ export const en: Translations = {
       continueLabel: 'Continue',
       confirmAndContinueLabel: 'Confirm and continue',
       answeredBadge: 'Answered',
+      singleSelectHint: 'Pick one',
+      multiSelectHint: 'Select all that apply',
       questionProgress: (answered, total) => `${answered} of ${total} answered`,
       lateAnswer: (question, choice) => `Re: "${question}" — my answer: ${choice}`,
       lateAnswerTip: 'Draft this answer as a follow-up message',

@@ -3044,6 +3044,8 @@ export const ja = defineLocale({
       continueLabel: '続行',
       confirmAndContinueLabel: '確定して続行',
       answeredBadge: '回答済み',
+      singleSelectHint: '1つ選ぶ',
+      multiSelectHint: '該当するものをすべて選択',
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
       lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',

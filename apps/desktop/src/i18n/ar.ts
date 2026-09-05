@@ -2597,6 +2597,8 @@ export const ar = defineLocale({
       continueLabel: 'متابعة',
       confirmAndContinueLabel: 'تأكيد ومتابعة',
       answeredBadge: 'تمت الإجابة',
+      singleSelectHint: 'اختر واحدا',
+      multiSelectHint: 'حدد كل ما ينطبق',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
     tool: {

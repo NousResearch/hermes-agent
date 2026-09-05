@@ -3431,6 +3431,8 @@ export const ru = defineLocale({
       continueLabel: 'Продолжить',
       confirmAndContinueLabel: 'Подтвердить и продолжить',
       answeredBadge: 'Ответ дан',
+      singleSelectHint: 'Выберите один',
+      multiSelectHint: 'Выберите все подходящие',
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
       lateAnswer: (question, choice) => `Re: «${question}» — мой ответ: ${choice}`,
       lateAnswerTip: 'Составить этот ответ как продолжение',

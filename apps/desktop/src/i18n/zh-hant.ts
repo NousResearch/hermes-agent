@@ -2937,6 +2937,8 @@ export const zhHant = defineLocale({
       continueLabel: '繼續',
       confirmAndContinueLabel: '確認並繼續',
       answeredBadge: '已回答',
+      singleSelectHint: '選一個',
+      multiSelectHint: '可多選',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',

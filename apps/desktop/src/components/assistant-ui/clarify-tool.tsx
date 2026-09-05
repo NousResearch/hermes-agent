@@ -740,6 +740,14 @@ function ClarifyToolSinglePending({
           <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
             {question}
           </span>
+          {hasChoices ? (
+            <span
+              className="mt-px shrink-0 rounded-sm bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] text-(--ui-text-tertiary)"
+              data-clarify-select-mode={multiSelect ? 'multi' : 'single'}
+            >
+              {multiSelect ? copy.multiSelectHint : copy.singleSelectHint}
+            </span>
+          ) : null}
           <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
         </div>
 
@@ -893,6 +901,14 @@ function BatchQuestionBlock({
         <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
           {question.question}
         </span>
+        {choices.length > 0 ? (
+          <span
+            className="mt-px shrink-0 rounded-sm bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] text-(--ui-text-tertiary)"
+            data-clarify-select-mode={question.multiSelect ? 'multi' : 'single'}
+          >
+            {question.multiSelect ? copy.multiSelectHint : copy.singleSelectHint}
+          </span>
+        ) : null}
         {locked ? (
           <span className="shrink-0 rounded-sm bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] text-(--ui-text-tertiary)">
             ✓ {copy.answeredBadge}

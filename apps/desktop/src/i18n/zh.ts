@@ -3592,6 +3592,8 @@ export const zh: Translations = {
       continueLabel: '继续',
       confirmAndContinueLabel: '确认并继续',
       answeredBadge: '已回答',
+      singleSelectHint: '选一个',
+      multiSelectHint: '可多选',
       questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
       lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
       lateAnswerTip: '将此回答起草为后续消息',

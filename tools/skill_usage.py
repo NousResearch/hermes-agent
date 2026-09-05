@@ -394,14 +394,17 @@ def canonical_skill_key(skill_name: Any) -> str:
     frontmatter ``name:`` (directory name vs frontmatter name split). Plain
     (separator-free) names pass through untouched — no disk reads on the hot
     path. Never raises; unresolvable input degrades to the normalized text."""
-    text = str(skill_name or "").replace("\\", "/").strip().strip("/")
+    try:
+        text = str(skill_name or "").replace("\\", "/").strip().strip("/")
+    except (OSError, ValueError):
+        return ""
     if not text or "/" not in text:
         return text
     try:
         candidate = (_skills_dir() / text) if not Path(text).is_absolute() else Path(text)
         if candidate.is_dir() and (candidate / "SKILL.md").is_file():
             return _read_skill_name(candidate / "SKILL.md", fallback=text)
-    except OSError:
+    except (OSError, ValueError):
         pass
     return text
 

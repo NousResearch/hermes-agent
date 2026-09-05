@@ -53,6 +53,20 @@ def test_canonical_key_never_raises_and_degrades(skills_home):
     assert canonical_skill_key(object()) != ""
 
 
+def test_canonical_key_survives_hostile_input(skills_home):
+    """The never-raises contract holds for hostile __str__ and null bytes."""
+
+    class Hostile:
+        def __bool__(self):
+            return True
+
+        def __str__(self):
+            raise ValueError("boom")
+
+    assert canonical_skill_key(Hostile()) == ""
+    assert canonical_skill_key("a\0b/c") == "a\0b/c"
+
+
 def test_separator_split_aggregates_under_one_key(skills_home):
     """Issue split #1: `/` vs `\\` writes land on a single record."""
     bump_use("devops\\plain-skill")

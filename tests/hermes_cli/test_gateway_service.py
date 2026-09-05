@@ -1246,6 +1246,7 @@ class TestSystemUnitHermesHome:
             "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", str(target_home)),
         )
+        monkeypatch.setattr(gateway_cli, "_system_service_uid", lambda username: 1000)
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_hermes)
         monkeypatch.setattr(gateway_cli, "_build_service_path_dirs", lambda: [])
 
@@ -1287,6 +1288,7 @@ class TestSystemUnitHermesHome:
             gateway_cli, "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", "/home/alice"),
         )
+        monkeypatch.setattr(gateway_cli, "_system_service_uid", lambda username: 1000)
         monkeypatch.setattr(
             gateway_cli, "_build_user_local_paths",
             lambda home, existing: [],
@@ -1304,6 +1306,67 @@ class TestSystemUnitHermesHome:
 
         hermes_home = str(gateway_cli.get_hermes_home().resolve())
         assert f'HERMES_HOME={hermes_home}' in unit
+
+
+class TestSystemUnitUserBusEnv:
+    """System units must reach the target user's systemd bus: cron workers spawn via
+    ``systemd-run --user --scope``, and a system service starts with a minimal environment."""
+
+    def test_system_unit_points_at_target_users_runtime_dir_and_bus(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(gateway_cli, "_system_service_uid", lambda username: 1234)
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'Environment="XDG_RUNTIME_DIR=/run/user/1234"' in unit
+        assert 'Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1234/bus"' in unit
+
+    def test_system_unit_uid_comes_from_the_target_user_not_the_caller(self, monkeypatch):
+        seen: list[str] = []
+
+        def fake_uid(username):
+            seen.append(username)
+            return 4321
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(gateway_cli, "_system_service_uid", fake_uid)
+        monkeypatch.setattr(
+            gateway_cli, "_build_user_local_paths",
+            lambda home, existing: [],
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert seen == ["alice"]
+        assert "/run/user/4321" in unit
+
+    def test_user_unit_leaves_runtime_dir_to_the_user_manager(self):
+        # user@.service already exports XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS to user units.
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert "XDG_RUNTIME_DIR" not in unit
+        assert "DBUS_SESSION_BUS_ADDRESS" not in unit
+
+    def test_system_service_uid_resolves_via_passwd(self):
+        assert gateway_cli._system_service_uid("root") == 0
+
+    def test_system_service_uid_rejects_unknown_user(self):
+        with pytest.raises(ValueError, match="Unknown user"):
+            gateway_cli._system_service_uid("hermes-no-such-user-xyz")
 
 
 class TestSystemUnitRefreshSyncsHermesHome:
@@ -1330,6 +1393,7 @@ class TestSystemUnitRefreshSyncsHermesHome:
             "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", str(alice_home)),
         )
+        monkeypatch.setattr(gateway_cli, "_system_service_uid", lambda username: 1000)
         monkeypatch.setattr(
             gateway_cli, "_build_user_local_paths", lambda home, existing: []
         )
@@ -1650,6 +1714,7 @@ class TestProfileArg:
             "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", str(target_home)),
         )
+        monkeypatch.setattr(gateway_cli, "_system_service_uid", lambda username: 1000)
 
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
@@ -1740,6 +1805,7 @@ class TestSystemUnitPathRemapping:
             gateway_cli, "_system_service_identity",
             lambda run_as_user=None: ("alice", "alice", target_home),
         )
+        monkeypatch.setattr(gateway_cli, "_system_service_uid", lambda username: 1000)
 
         unit = gateway_cli.generate_systemd_unit(system=True)
 

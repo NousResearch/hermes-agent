@@ -2362,6 +2362,15 @@ def _system_service_identity(run_as_user: str | None = None) -> tuple[str, str, 
     return username, grp.getgrgid(user_info.pw_gid).gr_name, user_info.pw_dir
 
 
+def _system_service_uid(username: str) -> int:
+    """Numeric uid of the system-service target user; its runtime dir is ``/run/user/<uid>``."""
+    import pwd
+    try:
+        return pwd.getpwnam(username).pw_uid  # windows-footgun: ok — POSIX systemd helper, never invoked on Windows
+    except KeyError as e:
+        raise ValueError(f"Unknown user: {username}") from e
+
+
 def _read_systemd_user_from_unit(unit_path: Path) -> str | None:
     if not unit_path.exists():
         return None
@@ -2774,10 +2783,16 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries = [e for e in _target_node_entries if e not in path_entries] + path_entries
         user_home = Path(home_dir)
         identity_lines = f"User={username}\nGroup={group_name}\n"
+        # Cron workers are launched via `systemd-run --user --scope`, which needs the target user's
+        # systemd/D-Bus session bus. A system service starts with a minimal environment (user-scope
+        # units inherit these from user@.service), so point at /run/user/<uid> explicitly.
+        uid = _system_service_uid(username)
         env_lines = (
             f'Environment="HOME={home_dir}"\n'
             f'Environment="USER={username}"\n'
             f'Environment="LOGNAME={username}"\n'
+            f'Environment="XDG_RUNTIME_DIR=/run/user/{uid}"\n'
+            f'Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"\n'
         )
         wanted_by = "multi-user.target"
     else:

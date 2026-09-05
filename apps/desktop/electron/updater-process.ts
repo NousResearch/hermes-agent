@@ -188,6 +188,86 @@ export function sandboxFallbackFromEnv(env: Record<string, string | undefined>, 
   return Array.isArray(launchArgs) && launchArgs.includes('--no-sandbox')
 }
 
+export interface ResolveUpdateTargetDeps {
+  isMac?: boolean
+  realpathSync?: (p: string) => string
+}
+
+export interface ResolveUpdateTargetResult {
+  /** Canonical managed bundle under updateRoot, null if not Mac. */
+  canonical: string | null
+  /** True when the running bundle is the canonical target. */
+  ok: boolean
+  /** Human-readable reason when ok is false. */
+  error?: string
+}
+
+/**
+ * Resolve the canonical update target from updateRoot and validate the
+ * running bundle against it.
+ *
+ * A packaged self-update may promote only to the normalized managed bundle
+ * under the update root.  A running worktree, artifact, symlink escape, or
+ * outside-install path must be rejected before the updater spawns — the
+ * marker write, rm, ditto, and mv must never touch a noncanonical bundle.
+ *
+ * Returns the canonical path and ok=true when the running bundle IS the
+ * canonical target (or its supported fallback).  On non-Mac platforms
+ * returns { canonical: null, ok: true } — the gate only applies to macOS
+ * .app bundles.
+ */
+export function resolveUpdateTarget(
+  updateRoot: string,
+  runningBundle: string | null,
+  deps: ResolveUpdateTargetDeps = {}
+): ResolveUpdateTargetResult {
+  const isMac = deps.isMac ?? process.platform === 'darwin'
+
+  if (!isMac) {
+    return { canonical: null, ok: true }
+  }
+
+  if (!runningBundle) {
+    return { canonical: null, ok: false, error: 'no-running-bundle' }
+  }
+
+  const realpath = deps.realpathSync ?? defaultRealpathSync
+
+  // Normalize both paths through the filesystem so symlink escapes and
+  // case-variant paths collapse to the same physical location.  An absent
+  // path is treated as a mismatch — the canonical target must exist.
+  let normalizedRoot: string
+  let normalizedBundle: string
+  try {
+    normalizedRoot = realpath(updateRoot)
+    normalizedBundle = realpath(runningBundle)
+  } catch {
+    return { canonical: null, ok: false, error: 'noncanonical-install' }
+  }
+
+  // Supported managed release bundle locations derived from the actual
+  // source topology.  The primary (Apple Silicon) and fallback (Intel)
+  // are both accepted.
+  const canonicalTarget = path.join(normalizedRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app')
+  const fallbackTarget = path.join(normalizedRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
+
+  if (normalizedBundle === canonicalTarget) {
+    return { canonical: canonicalTarget, ok: true }
+  }
+  if (normalizedBundle === fallbackTarget) {
+    return { canonical: fallbackTarget, ok: true }
+  }
+
+  return { canonical: canonicalTarget, ok: false, error: 'noncanonical-install' }
+}
+
+function defaultRealpathSync(p: string): string {
+  // fs.realpathSync.native throws ENOENT on absent paths — that is the
+  // desired fail-closed behavior for this gate.
+  const { realpathSync } = require('node:fs') as typeof import('node:fs')
+  return realpathSync.native(p)
+}
+
 export interface ResolveStagedUpdaterBinaryDeps {
   isWindows?: boolean
   fileExists?: (candidate: string) => boolean

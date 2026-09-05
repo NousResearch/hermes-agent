@@ -39,7 +39,7 @@ ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0
+SELF_TEST_TCC_HEAL=0 SELF_TEST_MAC_TARGET=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -56,6 +56,7 @@ while [ $# -gt 0 ]; do
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
+    --self-test-mac-target) SELF_TEST_MAC_TARGET=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
@@ -332,12 +333,38 @@ linux_gate() {
   GATE=manual GATE_MSG="Update complete, but the rebuilt app can't relaunch itself (its sandbox helper needs root ownership). Reopen Hermes to finish."
 }
 
+# ── macOS canonical target gate ─────────────────────────────────────────
+# Defense-in-depth: posix.sh is independently callable.  Physically
+# normalize INSTALL_ROOT and RELAUNCH_TARGET (resolving symlinks) then
+# compare against the exact expected bundle path derived from the
+# install root.  A noncanonical target must stop before rm, ditto, or mv.
+mac_target_gate() {
+  local physical_root physical_target canonical fallback
+  physical_root="$(cd "$INSTALL_ROOT" 2>/dev/null && pwd -P)" || return 1
+  physical_target="$(cd "$RELAUNCH_TARGET" 2>/dev/null && pwd -P)" || return 1
+  canonical="$physical_root/apps/desktop/release/mac-arm64/Hermes.app"
+  fallback="$physical_root/apps/desktop/release/mac/Hermes.app"
+  if [ "$physical_target" = "$canonical" ] || [ "$physical_target" = "$fallback" ]; then
+    return 0
+  fi
+  return 1
+}
+
 mac_swap() {
   local rebuilt="" c
   for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
            "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
     [ -d "$c" ] && { rebuilt="$c"; break; }
   done
+
+  # Canonical target gate: refuse to mutate a noncanonical bundle.
+  # The Electron main process gates this before spawn, but posix.sh is
+  # independently callable — defense-in-depth.
+  if ! mac_target_gate; then
+    DONE_NOTE="Update complete, but this copy of Hermes cannot self-update — it is running from outside the managed install location. Reinstall Hermes to enable automatic updates."
+    log "refusing noncanonical relaunch target: $RELAUNCH_TARGET"
+    return
+  fi
 
   # Transactional swap: stage a full copy, move the old bundle aside, move
   # the copy in. Every step checked; a failed final move ROLLS BACK so the
@@ -624,6 +651,18 @@ if [ "$SELF_TEST_GATE" -eq 1 ]; then
   trap - EXIT
   linux_gate
   echo "$GATE${GATE_MSG:+:$GATE_MSG}"
+  exit 0
+fi
+
+if [ "$SELF_TEST_MAC_TARGET" -eq 1 ]; then
+  # Prints the mac target gate decision for the given
+  # --install-root/--relaunch-target and exits.
+  trap - EXIT
+  if mac_target_gate; then
+    echo "canonical"
+  else
+    echo "noncanonical"
+  fi
   exit 0
 fi
 

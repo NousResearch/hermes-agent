@@ -9,8 +9,12 @@
  * app restart. The renderer mirrors the values for its UI and prewarm
  * guard over IPC.
  *
- * Defaults preserve the historical hard-coded behavior (3 backends, 10min
- * idle) so machines that never open Settings behave exactly as before.
+ * Defaults keep the warm pool large enough for a realistic multi-bot roster
+ * (the old 3-backend ceiling silently LRU-evicted spawned backends on
+ * 6-bot setups, #102822, and caused slot timeouts on 5-profile switching,
+ * #103401) while staying far under the RAM budget of the machines that run
+ * Desktop at all; 10min idle preserves the historical behavior for machines
+ * that never open Settings.
  */
 
 export interface PoolLimits {
@@ -21,7 +25,7 @@ export interface PoolLimits {
 }
 
 export const POOL_LIMITS_DEFAULTS: PoolLimits = {
-  maxBackends: 3,
+  maxBackends: 8,
   idleMs: 10 * 60_000
 }
 

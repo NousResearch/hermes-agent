@@ -1217,6 +1217,14 @@ const MEDIA_MIME_TYPES = {
 
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
 const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
+
+const PREVIEW_OFFICE_KIND: Record<string, 'document' | 'spreadsheet'> = {
+  '.docx': 'document',
+  '.xlsm': 'spreadsheet',
+  '.xlsx': 'spreadsheet'
+}
+
+const OFFICE_PREVIEW_MAX_BYTES = 16 * 1024 * 1024
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -6183,13 +6191,21 @@ async function previewFileTarget(rawTarget, baseDir) {
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
   const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
+  const officeKind = PREVIEW_OFFICE_KIND[ext]
+
+  const previewKind = isHtml
+    ? 'html'
+    : isImage
+      ? 'image'
+      : isPdf
+        ? 'pdf'
+        : officeKind || (metadata.binary ? 'binary' : 'text')
 
   return {
-    binary: metadata.binary,
+    binary: officeKind ? false : metadata.binary,
     byteSize: metadata.byteSize,
     kind: 'file',
-    large: metadata.large,
+    large: officeKind ? metadata.byteSize > OFFICE_PREVIEW_MAX_BYTES : metadata.large,
     label: path.basename(resolved),
     language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
     mimeType,

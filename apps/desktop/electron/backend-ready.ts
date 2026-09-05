@@ -134,6 +134,14 @@ function waitForDashboardPort(
 }
 
 function readDashboardReadyFile(readyFile: fs.PathOrFileDescriptor) {
+  return readDashboardReadyPayload(readyFile)?.port ?? null
+}
+
+/**
+ * Read the private local backend handshake. The token is optional so a new
+ * Desktop remains compatible with an older backend that wrote only {port}.
+ */
+function readDashboardReadyPayload(readyFile: fs.PathOrFileDescriptor) {
   if (!readyFile) {
     return null
   }
@@ -142,7 +150,14 @@ function readDashboardReadyFile(readyFile: fs.PathOrFileDescriptor) {
     const parsed = JSON.parse(fs.readFileSync(readyFile, 'utf8'))
     const port = Number(parsed?.port)
 
-    return Number.isInteger(port) && port > 0 ? port : null
+    if (!Number.isInteger(port) || port <= 0) {
+      return null
+    }
+
+    return {
+      port,
+      sessionToken: typeof parsed?.session_token === 'string' && parsed.session_token ? parsed.session_token : null
+    }
   } catch {
     return null
   }
@@ -230,17 +245,106 @@ function waitForDashboardPortAnnouncement(
   const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
   const describeOutputTail = options.describeOutputTail ?? (() => '')
 
-  if (options.readyFile) {
-    return waitForDashboardReadyFile(options.readyFile, child, timeoutMs, describeOutputTail)
+  if (!options.readyFile) {
+    return waitForDashboardPort(child, timeoutMs, describeOutputTail, options.bufferedOutput ?? (() => ''))
   }
 
-  return waitForDashboardPort(child, timeoutMs, describeOutputTail, options.bufferedOutput ?? (() => ''))
+  // New backends publish a private ready file; older runtimes ignore its env
+  // var and only emit the stdout sentinel. Watch both through one lifecycle so
+  // either compatibility path wins without leaving a timer/listener behind.
+  return new Promise((resolve, reject) => {
+    let done = false
+    let interval = null
+    let buf = ''
+
+    function cleanup() {
+      if (done) {
+        return
+      }
+
+      done = true
+      clearTimeout(timer)
+
+      if (interval) {
+        clearInterval(interval)
+      }
+      child.stdout.off('data', onData)
+      child.off('exit', onExit)
+      child.off('error', onError)
+    }
+
+    function resolvePort(port) {
+      cleanup()
+      resolve(port)
+    }
+
+    function checkReadyFile() {
+      const payload = readDashboardReadyPayload(options.readyFile)
+
+      if (payload) {
+        resolvePort(payload.port)
+      }
+    }
+
+    function onData(chunk) {
+      buf += chunk.toString()
+      let nl
+
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl)
+        buf = buf.slice(nl + 1)
+        const match = line.match(_READY_RE)
+
+        if (match) {
+          resolvePort(parseInt(match[1], 10))
+
+          return
+        }
+      }
+    }
+
+    function onExit(code, signal) {
+      cleanup()
+      reject(new Error(`Hermes backend: exited before port announcement (${signal || code})${describeOutputTail()}`))
+    }
+
+    function onError(error) {
+      cleanup()
+      reject(error)
+    }
+
+    const timer = setTimeout(() => {
+      cleanup()
+      reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
+    }, timeoutMs)
+
+    child.stdout.on('data', onData)
+    child.on('exit', onExit)
+    child.on('error', onError)
+    interval = setInterval(checkReadyFile, 50)
+
+    if (typeof interval.unref === 'function') {
+      interval.unref()
+    }
+
+    checkReadyFile()
+
+    if (!done) {
+      const buffered = options.bufferedOutput?.()
+      const match = buffered ? buffered.match(_READY_RE) : null
+
+      if (match) {
+        resolvePort(parseInt(match[1], 10))
+      }
+    }
+  })
 }
 
 export {
   DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS,
   MIN_PORT_ANNOUNCE_TIMEOUT_MS,
   readDashboardReadyFile,
+  readDashboardReadyPayload,
   resolvePortAnnounceTimeoutMs,
   waitForDashboardPort,
   waitForDashboardPortAnnouncement,

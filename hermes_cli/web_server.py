@@ -1226,7 +1226,7 @@ def _on_server_started(
 
     _best_effort("process-identity registration", _register_identity)
 
-    _write_dashboard_ready_file(actual_port)
+    _write_dashboard_ready_file(actual_port, _SESSION_TOKEN)
     # Port-discovery sentinel parsed by the Desktop spawn (matches either
     # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
     # stderr at import, and the Desktop watches child.stdout (#96282).

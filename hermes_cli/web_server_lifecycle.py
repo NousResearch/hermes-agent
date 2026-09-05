@@ -192,12 +192,8 @@ def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     return fallback
 
 
-def _write_dashboard_ready_file(actual_port: int) -> None:
-    """Publish the port through an atomic ready file when ``HERMES_DESKTOP_READY_FILE`` is set.
-
-    Windows Desktop launches via ``pythonw.exe`` (no console flash) cannot use
-    stdout for the port announcement, so Electron waits for this JSON instead.
-    """
+def _write_dashboard_ready_file(actual_port: int, session_token: str) -> None:
+    """Publish Desktop's private port-and-token handshake when requested."""
     target = os.environ.get("HERMES_DESKTOP_READY_FILE")
     if not target:
         return
@@ -205,8 +201,12 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
     tmp_name = ""
     try:
         path = Path(target)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            path.parent.chmod(0o700)
+        payload = json.dumps(
+            {"port": int(actual_port), "session_token": session_token}, separators=(",", ":")
+        )
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", dir=str(path.parent), prefix=f"{path.name}.", suffix=".tmp", delete=False
         ) as fh:
@@ -214,6 +214,8 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
             fh.flush()
             os.fsync(fh.fileno())
             tmp_name = fh.name
+        if os.name != "nt":
+            os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
     except Exception as exc:
         if tmp_name:

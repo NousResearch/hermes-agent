@@ -9,6 +9,7 @@ import {
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
+  resolveProfileSessionAggregateRoute,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse
 } from './profile-session-routing'
@@ -54,6 +55,82 @@ test('remote sidebar slices fall back to the all-profiles scope and default limi
     assert.equal(slices.cron.get('limit'), '50')
     assert.equal(slices.messaging.get('limit'), '100')
   }
+})
+
+test('mixed global remote and primary override reads the aggregate from the global backend', () => {
+  assert.equal(
+    resolveProfileSessionAggregateRoute({ globalRemote: true, primaryProfileRemoteOverride: true }),
+    'global-remote'
+  )
+})
+
+test('global remote without a primary override reuses the primary backend', () => {
+  assert.equal(
+    resolveProfileSessionAggregateRoute({ globalRemote: true, primaryProfileRemoteOverride: false }),
+    'primary'
+  )
+})
+
+test('mixed remote aggregate fetches bypass the primary profile override', async () => {
+  const expected = { sessions: [{ id: 'default-telegram' }], total: 1, profile_totals: { default: 1 } }
+  const calls: string[] = []
+
+  const result = await fetchPrimaryProfileSessions(
+    new URLSearchParams({ profile: 'all' }),
+    async () => {
+      calls.push('primary')
+      throw new Error('the active profile override does not serve default')
+    },
+    {
+      globalRemote: true,
+      primaryProfileRemoteOverride: true,
+      fetchJsonForGlobalRemote: async () => {
+        calls.push('global-remote')
+
+        return expected
+      }
+    }
+  )
+
+  assert.equal(result, expected)
+  assert.deepEqual(calls, ['global-remote'])
+})
+
+test('mixed global aggregate survives connected registry session splicing', async () => {
+  const base = await fetchPrimaryProfileSessions(
+    new URLSearchParams({ profile: 'all' }),
+    async () => {
+      throw new Error('the active profile override does not own inherited sessions')
+    },
+    {
+      globalRemote: true,
+      primaryProfileRemoteOverride: true,
+      fetchJsonForGlobalRemote: async () => ({
+        sessions: [{ id: 'default-telegram', profile: 'default' }],
+        total: 1,
+        profile_totals: { default: 1 }
+      })
+    }
+  )
+
+  const merged = [...base.sessions]
+  const profileTotals = { ...base.profile_totals }
+
+  const result = spliceRegistrySessionRows(
+    merged,
+    [
+      { id: 'registry-chat', profile: 'research', connection_id: 'gateway-1' },
+      { id: 'default-telegram', profile: 'default', connection_id: 'gateway-1' }
+    ],
+    profileTotals
+  )
+
+  assert.equal(result.added, 1)
+  assert.deepEqual(
+    merged.map(row => (row as { id: string }).id),
+    ['default-telegram', 'registry-chat']
+  )
+  assert.deepEqual(profileTotals, { default: 1, research: 1 })
 })
 
 test('primary session reads use the profile-aware request path', async () => {

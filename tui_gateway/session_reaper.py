@@ -26,16 +26,21 @@ def _flush_session_messages(session: dict | None) -> bool:
 
     See #13121.
     """
-    agent = session.get("agent") if session else None
-    snapshot = getattr(agent, "_session_messages", None) if hasattr(agent, "_persist_session") else None
-    if not snapshot:
+    if not session:
         return False
-    try:
-        agent._persist_session(snapshot)
-        return True
-    except Exception:
-        logger.debug("incremental session flush failed", exc_info=True)
-        return False
+    with (session.get("history_lock") or contextlib.nullcontext()):
+        if session.get("_closing"):
+            return False
+        agent = session.get("agent")
+        snapshot = getattr(agent, "_session_messages", None) if hasattr(agent, "_persist_session") else None
+        if not snapshot:
+            return False
+        try:
+            agent._persist_session(snapshot)
+            return True
+        except Exception:
+            logger.debug("incremental session flush failed", exc_info=True)
+            return False
 
 
 def _reaper_session_snapshot() -> list:
@@ -160,6 +165,12 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
 
 def _reap_idle_sessions() -> None:
     now = time.time()
+    from tui_gateway import server
+    from tui_gateway.hosted_room_sessions import retire_hosted_session
+    with _sessions_lock:
+        retired_hosted = [(sid, s) for sid, s in _sessions.items() if s.get("_hosted_retirement_pending")]
+    for sid, session in retired_hosted:
+        retire_hosted_session(server, sid, session)
     try:  # piggyback the incremental flush on the reaper tick — no new timer subsystem
         _flush_dirty_sessions()
     except Exception:

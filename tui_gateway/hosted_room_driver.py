@@ -688,6 +688,7 @@ class HostedRoomRuntime:
     ) -> None:
         profile, submit_attempted = task["payload"]["target_profile"], False
         transport = self._transport_for(binding, task)
+        session_id = None
         with self._status_lock:
             self._current_tasks[binding.room_id] = attempt.identity
         try:
@@ -713,7 +714,7 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            if bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
@@ -730,6 +731,13 @@ class HostedRoomRuntime:
             else:
                 self._settle_failure_if_current(attempt, exc)
         finally:
+            if transport is self.rpc and session_id is not None:
+                retire_idle = getattr(transport, "retire_idle", None)
+                if callable(retire_idle):
+                    try:
+                        retire_idle(session_id=session_id)
+                    except Exception:
+                        self._record_error("Unused hosted session reservation could not be retired")
             with self._status_lock:
                 self._current_tasks.pop(binding.room_id, None)
                 # The task may have published a reply or exposed the next turn while this

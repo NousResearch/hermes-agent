@@ -836,6 +836,11 @@ def _run_prompt_submit(
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, st.agent)
         _run_post_turn_followups(rid, sid, session, st.result, goal_followup)
+        if terminal_callback is not None and st.receipt_committed:
+            from tui_gateway import server
+            from tui_gateway.hosted_room_sessions import retire_hosted_session
+            session["_hosted_retirement_pending"] = True
+            retire_hosted_session(server, sid, session, turn_finished=True)
     run_thread = threading.Thread(target=run, daemon=True)
     with _sessions_lock:
         registered = _sessions.get(sid)

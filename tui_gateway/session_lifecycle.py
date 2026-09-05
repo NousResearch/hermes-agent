@@ -47,14 +47,17 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
-    if session.get("active_session_lease") is not None:
-        return None
-    lease, limit_message = _claim_active_session_slot(
-        str(session.get("session_key") or ""), live_session_id=sid,
-        surface=_session_source(session), profile_home=session.get("profile_home"))
-    if limit_message is None:
-        session["active_session_lease"] = lease
-    return limit_message
+    with (session.get("history_lock") or contextlib.nullcontext()):
+        if session.get("_closing"):
+            return _SESSION_OWNERSHIP_UNAVAILABLE
+        if session.get("active_session_lease") is not None:
+            return None
+        lease, limit_message = _claim_active_session_slot(
+            str(session.get("session_key") or ""), live_session_id=sid,
+            surface=_session_source(session), profile_home=session.get("profile_home"))
+        if limit_message is None:
+            session["active_session_lease"] = lease
+        return limit_message
 
 
 def _lease_retry(attempts: int, fn) -> Exception | None:
@@ -88,9 +91,11 @@ def _release_active_session_slot(session: dict | None) -> bool:
 
 def _own_live_lease_ids(*, exclude=None) -> set[str]:
     """Snapshot leases still backed by this process's live session records."""
+    from tui_gateway.hosted_room_sessions import reserved_lease_ids
     with _sessions_lock:
-        return {str(lease.lease_id) for session in _sessions.values()
-                if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        owned = {str(lease.lease_id) for session in _sessions.values()
+                 if (lease := session.get("active_session_lease")) is not None and lease is not exclude}
+        return owned | (reserved_lease_ids() - {str(getattr(exclude, "lease_id", ""))})
 
 
 @contextlib.contextmanager
@@ -314,6 +319,8 @@ def _pop_session_by_id(sid: str) -> dict | None:
     """Atomically detach one live session from the registry — the ownership claim for teardown (a concurrent
     close/reaper no-ops). Separate from ``_teardown_session``: slow finalization must not run under the resume lock."""
     with _sessions_lock:
+        if (current := _sessions.get(sid)) is not None and current.get("_closing"):
+            return None
         session = _sessions.pop(sid, None)
         if session is not None:
             session["_closing"] = True

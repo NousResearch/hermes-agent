@@ -508,6 +508,8 @@ def _lock_in_submit_turn(
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
     with session["history_lock"]:
+        if session.get("_closing"):
+            return _err(rid, 4007, "session is retiring; resume its stored id"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
@@ -526,6 +528,7 @@ def _lock_in_submit_turn(
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
+            session.pop("_hosted_retirement_pending", None)
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text)
     return None, fields

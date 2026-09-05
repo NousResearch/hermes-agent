@@ -38,3 +38,12 @@ def test_zero_disables_and_an_already_resolved_trigger_is_reclamped():
     assert child.context_compressor.threshold_tokens == 850_000
     _apply_child_compression_cap(child, {"compression_threshold_tokens": 300_000})
     assert child.context_compressor.threshold_tokens == 300_000
+
+
+def test_config_values_are_validated_not_coerced():
+    """Independent-review witnesses: YAML `true` coerced to int 1 (a one-token trigger) and "200k"
+    silently disabled the cap. Both fall back to the default with a warning; 0/false/null disable."""
+    from tools.delegate_tool import _child_compression_cap_tokens as cap
+    assert cap(True) == 200_000 and cap("200k") == 200_000 and cap(5) == 200_000
+    assert cap(0) is None and cap(False) is None and cap(None) is None
+    assert cap(150_000) == 150_000 and cap(300_000.0) == 300_000

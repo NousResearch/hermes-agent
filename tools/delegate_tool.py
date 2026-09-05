@@ -103,6 +103,26 @@ def _open_child_session_db(parent_agent) -> Any:
     return None
 
 
+_CHILD_CAP_DEFAULT = 200_000
+_CHILD_CAP_MIN = 16_000  # below this a child compresses on every call; treat as a config error
+
+
+def _child_compression_cap_tokens(raw) -> "int | None":
+    """Validated ``delegation.compression_threshold_tokens``: an int >= 16000, or None for "no cap".
+    ``0``/``false``/``null`` disable on purpose. A bool ``true`` (YAML) would coerce to 1 and make
+    every call compress; a string like ``"200k"`` would silently disable the default. Both are
+    config errors: warn once and fall back to the default so the mistake never costs money."""
+    if raw is None or raw is False or raw == 0:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) < _CHILD_CAP_MIN:
+        logger.warning(
+            "delegation.compression_threshold_tokens=%r is not a token count >= %d; using the default %d "
+            "(set 0 to disable the subagent cap).", raw, _CHILD_CAP_MIN, _CHILD_CAP_DEFAULT,
+        )
+        return _CHILD_CAP_DEFAULT
+    return int(raw)
+
+
 def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     """Cap the child's compaction trigger at ``delegation.compression_threshold_tokens`` (lower of it
     and any global ``compression.threshold_tokens``). The compressor applies the cap on first window
@@ -112,11 +132,8 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
     cc = getattr(child, "context_compressor", None)
     if not isinstance(cc, ContextCompressor):
         return
-    try:
-        cap = int((delegation_cfg or {}).get("compression_threshold_tokens", 200_000) or 0)
-    except (TypeError, ValueError):
-        cap = 0
-    if cap <= 0:
+    cap = _child_compression_cap_tokens((delegation_cfg or {}).get("compression_threshold_tokens", 200_000))
+    if cap is None:
         return
     existing = cc.threshold_tokens_cap
     cc.threshold_tokens_cap = min(cap, existing) if isinstance(existing, int) and existing > 0 else cap

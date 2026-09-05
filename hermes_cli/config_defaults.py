@@ -488,6 +488,14 @@ DEFAULT_CONFIG = {
         # re-sends the full prefix) — costly on long-context models. When false the watcher still
         # detects the change and prints /reload-mcp guidance.
         "auto_reload_on_config_change": True,
+        # Per-server MCP circuit breaker (closed -> open short-circuit -> half-open probe). Defaults
+        # match the historical hardcoded values. enabled=false keeps error tracking for diagnostics
+        # but never short-circuits calls.
+        "circuit_breaker": {
+            "enabled": True,
+            "threshold": 3,
+            "cooldown_seconds": 60.0,
+        },
     },
     # Tool-output truncation. max_bytes: terminal_tool output cap in chars (head+tail kept; 50_000 ≈
     # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.

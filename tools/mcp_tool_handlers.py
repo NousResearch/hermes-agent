@@ -63,13 +63,20 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
 
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
-    half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
+    half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown.
+
+    Threshold and cooldown come from config (``mcp.circuit_breaker.*``). When the breaker is
+    disabled the gate never short-circuits: calls always proceed.
+    """
+    enabled, threshold, cooldown = _core._get_circuit_breaker_config()
+    if not enabled:
+        return None
     failures = _core._server_error_counts.get(server_name, 0)
     age = time.monotonic() - _core._server_breaker_opened_at.get(server_name, 0.0)
-    if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
+    if failures < threshold or age >= cooldown:
         return None
     return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
-                      f"Auto-retry available in ~{max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))}s. Do NOT retry "
+                      f"Auto-retry available in ~{max(1, int(cooldown - age))}s. Do NOT retry "
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
 
 

@@ -1484,6 +1484,13 @@ platform_toolsets:
 #       max_tool_rounds: 5      # tool loop limit (0 = disable)
 #       log_level: "info"       # audit verbosity
 
+# MCP runtime behavior (distinct from mcp_servers: server definitions above).
+# mcp:
+#   circuit_breaker:
+#     enabled: true          # false = never short-circuit calls (errors still tracked for diagnostics)
+#     threshold: 3           # consecutive failures before the per-server breaker opens
+#     cooldown_seconds: 60.0 # open duration before the next call is a half-open probe
+
 # =============================================================================
 # Text-to-Speech
 # =============================================================================

@@ -259,6 +259,32 @@ class TestGatewayLifecyclePattern:
         assert not _contains_gateway_lifecycle_command(text), f"Should NOT match: {text!r}"
 
     @pytest.mark.parametrize("text", [
+        (
+            "python3 - <<'PY'\n"
+            'import os; os.system("hermes gateway restart")\n'
+            "PY"
+        ),
+        (
+            "osascript <<'APPLESCRIPT'\n"
+            'do shell script "hermes gateway restart"\n'
+            "APPLESCRIPT"
+        ),
+    ])
+    def test_executable_interpreter_heredoc_body_still_scanned(self, text):
+        """Quoted source is inert to the shell, not to its interpreter."""
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    def test_interpreter_heredoc_prose_fails_closed(self):
+        """Keep interpreter source visible even when it only prints prose.
+
+        This deliberately accepts a false positive: Python source can execute
+        commands, so deciding whether a string is merely prose would require
+        interpreting the program rather than conservatively scanning it.
+        """
+        text = "python3 - <<'PY'\nprint('hermes gateway restart')\nPY"
+        assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+    @pytest.mark.parametrize("text", [
         # Executable heredoc (shell consumer) must stay blocked.
         "bash <<EOF\nhermes gateway restart\nEOF",
         # Unquoted delimiter = expansion-capable = fail open to scanning.

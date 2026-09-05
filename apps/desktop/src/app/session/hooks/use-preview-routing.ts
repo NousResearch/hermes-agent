@@ -3,6 +3,7 @@ import { useCallback } from 'react'
 import { gatewayEventCompletedFileDiff } from '@/lib/gateway-events'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { sessionIsOnScreen } from '@/lib/preview-visibility'
 import {
   $previewTabs,
   beginPreviewServerRestart,
@@ -13,8 +14,8 @@ import {
   progressPreviewServerRestart,
   requestPreviewReload
 } from '@/store/preview'
-import { $activeSessionId, $currentCwd } from '@/store/session'
-import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
+import { $currentCwd } from '@/store/session'
+import { $focusedRuntimeId } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 type EventHandler = (event: RpcEvent) => void
@@ -27,14 +28,6 @@ interface PreviewRoutingOptions {
 
 function asRecord(payload: unknown): Record<string, unknown> {
   return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
-}
-
-function sessionIsOnScreen(sessionId: string): boolean {
-  return (
-    sessionId === $focusedRuntimeId.get() ||
-    sessionId === $activeSessionId.get() ||
-    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
-  )
 }
 
 export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestGateway }: PreviewRoutingOptions) {

@@ -59,6 +59,10 @@ MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
+# A session webhook can only be refreshed by a new inbound message. Warn before
+# the five-minute send-time safety margin in ``_get_valid_webhook`` evicts it.
+_WEBHOOK_NEAR_EXPIRY_WINDOW_MS = 10 * 60 * 1000
+_WEBHOOK_WATCHER_INTERVAL_SEC = 60.0
 _TRUTHY = {"true", "1", "yes", "on"}
 _EMOTION_ID = "2659900"
 _EMOTION_BG = "im_bg_1"
@@ -147,6 +151,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._robot_code: str = extra.get("robot_code") or self._client_id
         self._dedup = MessageDeduplicator(max_size=1000)
         self._session_webhooks: Dict[str, tuple[str, int]] = {}  # chat_id -> (webhook, expired_time_ms)
+        self._webhook_expiry_warned: Dict[str, int] = {}
+        self._webhook_watch_task: Optional[asyncio.Task] = None
         self._message_contexts: Dict[str, Any] = {}  # chat_id -> last inbound ChatbotMessage (per-chat: no clobber)
         self._card_template_id: Optional[str] = extra.get("card_template_id")
         self._done_emoji_fired: Set[str] = set()  # chats whose Done reaction fired this turn; reset per inbound
@@ -179,6 +185,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                     logger.info("[%s] Robot SDK initialized (media download)", self.name)
             self._stream_client.register_callback_handler(dingtalk_stream.ChatbotMessage.TOPIC, _IncomingHandler(self, asyncio.get_running_loop()))
             self._stream_task = asyncio.create_task(self._run_stream())
+            self._webhook_watch_task = asyncio.create_task(self._watch_webhook_expiry())
             self._mark_connected()
             logger.info("[%s] Connected via Stream Mode", self.name)
             self._wire_plugin_handlers(self._stream_client)  # plugin-registered native handlers
@@ -231,6 +238,13 @@ class DingTalkAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
             self._stream_task = None
+        if self._webhook_watch_task:
+            self._webhook_watch_task.cancel()
+            try:
+                await asyncio.wait_for(self._webhook_watch_task, timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._webhook_watch_task = None
         for task in list(self._bg_tasks):
             task.cancel()
         if self._bg_tasks:
@@ -242,7 +256,7 @@ class DingTalkAdapter(BasePlatformAdapter):
         if self._http_client:
             await self._http_client.aclose()
         self._http_client = self._stream_client = None
-        for store in (self._session_webhooks, self._message_contexts, self._streaming_cards, self._done_emoji_fired, self._dedup, self._bg_tasks):
+        for store in (self._session_webhooks, self._webhook_expiry_warned, self._message_contexts, self._streaming_cards, self._done_emoji_fired, self._dedup, self._bg_tasks):
             store.clear()
         logger.info("[%s] Disconnected", self.name)
 
@@ -441,8 +455,41 @@ class DingTalkAdapter(BasePlatformAdapter):
         expired_time_ms = info[1] if info else 0
         if expired_time_ms and expired_time_ms > 0 and int(datetime.now(tz=timezone.utc).timestamp() * 1000) + 5 * 60 * 1000 >= expired_time_ms:
             self._session_webhooks.pop(chat_id, None)
+            self._webhook_expiry_warned.pop(chat_id, None)
             return None
         return info or None
+
+    async def _watch_webhook_expiry(self) -> None:
+        """Warn while cached session webhooks can still be refreshed."""
+        try:
+            while self._running:
+                self._scan_webhooks_for_near_expiry()
+                await asyncio.sleep(_WEBHOOK_WATCHER_INTERVAL_SEC)
+        except asyncio.CancelledError:
+            return
+
+    def _scan_webhooks_for_near_expiry(self) -> None:
+        """Log one warning per cached webhook expiry within the warning window."""
+        for chat_id, warned_expiry in list(self._webhook_expiry_warned.items()):
+            webhook = self._session_webhooks.get(chat_id)
+            if webhook is None or webhook[1] != warned_expiry:
+                self._webhook_expiry_warned.pop(chat_id, None)
+
+        now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        for chat_id, (_, expired_time_ms) in self._session_webhooks.items():
+            expires_in_ms = expired_time_ms - now_ms
+            if not 0 < expires_in_ms <= _WEBHOOK_NEAR_EXPIRY_WINDOW_MS:
+                continue
+            if self._webhook_expiry_warned.get(chat_id) == expired_time_ms:
+                continue
+            logger.warning(
+                "[%s] DingTalk session_webhook for chat_id=%s expires in %.1f minutes; "
+                "it can only be refreshed by a new inbound message.",
+                self.name,
+                chat_id,
+                expires_in_ms / 60_000,
+            )
+            self._webhook_expiry_warned[chat_id] = expired_time_ms
 
     async def _create_and_stream_card(self, chat_id: str, message: Any, content: str, *, finalize: bool = True) -> Optional[SendResult]:
         """Create, deliver and stream an AI Card; ``finalize=False`` leaves it open for ``edit_message`` by out_track_id."""

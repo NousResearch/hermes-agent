@@ -4,6 +4,7 @@ server shutdown and draining of the background MCP loop."""
 import logging
 import asyncio
 import os
+import threading
 import time
 from typing import Dict, Optional
 from tools.mcp_tool_common import _core
@@ -214,6 +215,92 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
     # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL
     # dance still leaves the supervisor holding them.
     _core._update_death_supervisor("unregister", pgids.values())
+
+
+# Background orphan janitor (#81880). The teardown finally in _run_stdio
+# correctly marks live children as orphans when a session closes — but in a
+# long-lived desktop/gateway process, nothing reaps _orphan_stdio_pids until
+# the whole process exits. Every closed session's leaked stdio children
+# therefore accumulate for the lifetime of the process (field reports: ~30
+# python + ~28 node processes resident after days of desktop-app use, OOM
+# on 16GB Macs, sustained fan/thermal load on Windows laptops). The existing
+# reapers all target different producers:
+#
+#   - _stop_mcp_loop's exit sweep (process exit only)
+#   - the CLI session-rotation boundary reaper (#82141, cli.py only)
+#   - the parent-death watchdog (ungraceful exit of this process)
+#
+# This janitor closes the remaining gap: one lazily-started daemon thread
+# that periodically calls _kill_orphaned_mcp_children() (the sweep that
+# already exists and is race-safe against live sessions by design — it only
+# touches _orphan_stdio_pids). The thread starts when the first orphan is
+# recorded and exits when no orphans remain for a while, so MCP-free and
+# clean-teardown processes pay nothing.
+_orphan_janitor_interval = 30.0  # seconds between sweeps
+_orphan_janitor_idle_stops = 3  # consecutive empty sweeps before the thread exits
+_orphan_janitor_thread: Optional[threading.Thread] = None
+_orphan_janitor_lock = threading.Lock()
+_orphan_janitor_wakeup: Optional[threading.Event] = None
+
+
+def _maybe_start_orphan_janitor() -> None:
+    """Start the background orphan reaper if it is not running.
+
+    Called whenever an orphan PID is recorded, so the janitor exists exactly
+    when there is something to reap. Cheaply idempotent.
+    """
+    global _orphan_janitor_thread, _orphan_janitor_wakeup
+    with _orphan_janitor_lock:
+        if _orphan_janitor_thread is not None and _orphan_janitor_thread.is_alive():
+            if _orphan_janitor_wakeup is not None:
+                # Nudge an idle-waiting janitor so a freshly-recorded orphan
+                # is swept promptly instead of after the next poll tick.
+                _orphan_janitor_wakeup.set()
+            return
+        _orphan_janitor_wakeup = threading.Event()
+
+        def _janitor() -> None:
+            empty_streak = 0
+            while True:
+                wakeup = _orphan_janitor_wakeup
+                if wakeup is not None:
+                    wakeup.wait(timeout=_orphan_janitor_interval)
+                    wakeup.clear()
+                with _core._lock:
+                    pending = len(_orphan_stdio_pids)
+                if pending:
+                    empty_streak = 0
+                    try:
+                        _kill_orphaned_mcp_children()
+                    except Exception:
+                        # The sweep already logs per-pid failures; never let
+                        # the janitor die on an unexpected error.
+                        logger.debug(
+                            "MCP orphan janitor sweep raised", exc_info=True
+                        )
+                else:
+                    empty_streak += 1
+                    if empty_streak >= _orphan_janitor_idle_stops:
+                        # Nothing left to reap for a while. A fresh thread
+                        # starts when the next orphan appears.
+                        global _orphan_janitor_thread
+                        with _orphan_janitor_lock:
+                            if (
+                                _orphan_janitor_thread is not None
+                                and threading.current_thread()
+                                is _orphan_janitor_thread
+                            ):
+                                _orphan_janitor_thread = None
+                        return
+
+        thread = threading.Thread(
+            target=_janitor, name="mcp-orphan-janitor", daemon=True
+        )
+        _orphan_janitor_thread = thread
+        thread.start()
+        logger.debug(
+            "MCP orphan janitor started (interval %.0fs)", _orphan_janitor_interval
+        )
 
 
 def _stop_mcp_loop_if_idle() -> bool:

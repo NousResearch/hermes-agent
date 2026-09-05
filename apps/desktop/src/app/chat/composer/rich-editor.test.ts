@@ -145,6 +145,38 @@ describe('normalizeComposerEditorDom', () => {
     expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
     expect(editor.querySelector('br')).toBeNull()
   })
+
+  it('preserves a live caret anchored in an empty direct text node', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+
+    const leadingLitter = document.createTextNode('')
+    const caretContainer = document.createTextNode('')
+    const trailingLitter = document.createTextNode('')
+    editor.append(leadingLitter, refChipElement('file', '`src/foo.ts`'), caretContainer, trailingLitter)
+
+    const caret = document.createRange()
+    caret.setStart(caretContainer, 0)
+    caret.collapse(true)
+
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    normalizeComposerEditorDom(editor)
+
+    expect(leadingLitter.isConnected).toBe(false)
+    expect(trailingLitter.isConnected).toBe(false)
+    expect(caretContainer.isConnected).toBe(true)
+    expect(editor.contains(selection.getRangeAt(0).startContainer)).toBe(true)
+    expect(selection.getRangeAt(0).startContainer).toBe(caretContainer)
+    expect(composerPlainText(editor)).toBe('@file:`src/foo.ts`')
+
+    selection.removeAllRanges()
+    editor.remove()
+  })
 })
 
 describe('insertInlineRefsIntoEditor', () => {

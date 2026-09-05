@@ -834,6 +834,11 @@ export interface DesktopConnectionConfig {
   // connected instance was discovered under, so Settings → Gateway can reopen
   // into that org. Empty string for remote/local.
   cloudOrg: string
+  // For a 'cloud' connection: the instance name the portal knows this agent by.
+  // It — not the machine-assigned, immutable dashboard host — is what the
+  // desktop shows, and a rename in the portal lands here on the next discovery.
+  // Empty string for remote/local.
+  cloudName: string
   sshHost: string
   sshUser: string
   sshPort: number | null
@@ -857,6 +862,10 @@ export interface DesktopConnectionConfigInput {
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
   cloudOrg?: string
+  // For a 'cloud' connection: the selected instance's portal name, persisted so
+  // the registry can label the connection with it. Omit to keep the saved name;
+  // ignored for remote/local modes.
+  cloudName?: string
   sshHost?: string
   sshUser?: string
   sshPort?: number | null
@@ -901,6 +910,9 @@ export interface DesktopRegistryConnection {
   url?: string
   authMode?: 'oauth' | 'token'
   org?: string
+  // cloud: the instance name the portal knows it by. `label` follows this until
+  // the user types their own device name here, after which theirs wins.
+  cloudName?: string
   host?: string
   user?: string
   port?: number

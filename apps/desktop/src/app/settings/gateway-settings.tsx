@@ -53,6 +53,10 @@ export interface GatewaySettingsState {
   remoteTokenPlainText: boolean
   remoteUrl: string
   cloudOrg: string
+  // The Hermes Cloud instance name (the portal's own display name for this
+  // agent). Shown wherever the connection is named, so a rename in the portal
+  // reaches the desktop instead of the fixed dashboard host.
+  cloudName: string
   sshHost: string
   sshUser: string
   sshPort: number | null
@@ -74,6 +78,7 @@ const EMPTY_STATE: GatewaySettingsState = {
   remoteTokenPlainText: false,
   remoteUrl: '',
   cloudOrg: '',
+  cloudName: '',
   sshHost: '',
   sshUser: '',
   sshPort: null,
@@ -911,7 +916,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         mode: 'cloud',
         remoteAuthMode: 'oauth',
         remoteUrl: agent.dashboardUrl,
-        cloudOrg: cloudOrgRef.current ?? undefined
+        cloudOrg: cloudOrgRef.current ?? undefined,
+        // Name the connection after the instance, not its dashboard host: the
+        // host is machine-assigned and immutable, the name is what the user
+        // set in the portal (and can rename there later).
+        cloudName: agent.name
       })
 
       if (seq !== contextSeq.current) {

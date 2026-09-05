@@ -138,6 +138,7 @@ import {
   normalizeRegistry,
   parseBackendScopeKey,
   reconcileAppliedGlobalConnection,
+  reconcileCloudInstanceNames,
   reconcileRegistryDrift,
   registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
@@ -8769,6 +8770,83 @@ function trimCloudAgents(body) {
     }))
 }
 
+// Fold the names from a discovery pass into both connection stores so a rename
+// in the portal reaches the desktop. The registry drives every label the user
+// sees (sidebar switcher, Connections list); connection.json holds the same
+// name so a later Apply re-derives from a fresh value instead of resurrecting
+// the one captured at connect time. Best effort — discovery must still return
+// its agents if either write fails.
+function refreshCloudInstanceNames(agents) {
+  const named = (Array.isArray(agents) ? agents : []).filter(agent => agent?.dashboardUrl && agent?.name)
+
+  if (named.length === 0) {
+    return
+  }
+
+  try {
+    const previous = readDesktopConnectionsRegistry()
+    const result = reconcileCloudInstanceNames(previous, named)
+
+    if (result.changed) {
+      writeDesktopConnectionsRegistry(result.registry)
+
+      // 'saved' — a rename moves no endpoint, so windows re-pull the registry
+      // snapshot without disposing or re-dialing the connection's sockets.
+      for (const connection of result.registry.connections) {
+        const before = previous.connections.find(candidate => candidate.id === connection.id)
+
+        if (before?.label !== connection.label) {
+          broadcastConnectionsChanged({ connectionId: connection.id, reason: 'saved' })
+        }
+      }
+    }
+  } catch (error) {
+    rememberLog(`[cloud] could not refresh instance names in the registry: ${error.message}`)
+  }
+
+  try {
+    // Clone: readDesktopConnectionConfig hands back the CACHED object, and a
+    // failed write must not leave an unsaved name behind in memory. Round-trip
+    // through JSON — the same projection writeDesktopConnectionConfig applies —
+    // so the clone can never differ from what would land on disk.
+    const config = JSON.parse(JSON.stringify(readDesktopConnectionConfig()))
+    const byUrl = new Map(named.map(agent => [cloudUrlKey(agent.dashboardUrl), String(agent.name).trim()]))
+
+    // Every cloud-mode block in the v1 config: the global route plus any
+    // per-profile override pinned to a Hermes Cloud instance.
+    const blocks = [
+      config.mode === 'cloud' ? config.remote : null,
+      ...Object.values(config.profiles || {}).filter((entry: any) => entry?.mode === 'cloud')
+    ].filter(Boolean) as Record<string, any>[]
+
+    let changed = false
+
+    for (const block of blocks) {
+      const name = byUrl.get(cloudUrlKey(block.url))
+
+      if (name && block.name !== name) {
+        block.name = name
+        changed = true
+      }
+    }
+
+    if (changed) {
+      writeDesktopConnectionConfig(config)
+    }
+  } catch (error) {
+    rememberLog(`[cloud] could not refresh instance names in connection.json: ${error.message}`)
+  }
+}
+
+// Comparison key for a dashboard URL: NAS returns it raw, our stores hold the
+// normalizeRemoteBaseUrl form, so both sides get trimmed/lowercased alike.
+function cloudUrlKey(url) {
+  return String(url || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
 // Silent per-agent sign-in: open the selected agent dashboard's /login in the
 // SAME OAuth partition. Because the user already holds a live portal session
 // there, the agent's /oauth/authorize auto-approves (org member) and 302s back,
@@ -9756,6 +9834,9 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
     // remote/local. Lets Settings → Gateway reopen into the same org.
     cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
+    // The instance name the portal knows this cloud agent by — what the desktop
+    // shows instead of the machine-assigned dashboard host.
+    cloudName: mode === 'cloud' ? String(block.name || '') : '',
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
     // Whether the OS keyring can encrypt a token; drives the plain-text opt-in
@@ -9780,13 +9861,16 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // resolveRemoteBackend), so only token-auth remotes require a saved token.
 // `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
 // under — persisted so Settings can reopen into the same org; omitted from the
-// block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object) {
+// block when empty so plain remote connections stay unchanged. `name` is the
+// Hermes Cloud instance name (the portal's own display name), persisted so the
+// registry can label the connection with it instead of the immutable
+// dashboard host.
+function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: object, name?: string) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  const block: { url: string; authMode: string; token: object; headers?: object; org?: string } = {
+  const block: { url: string; authMode: string; token: object; headers?: object; org?: string; name?: string } = {
     url: normalizeRemoteBaseUrl(remoteUrl),
     authMode,
     token
@@ -9802,6 +9886,12 @@ function buildRemoteBlock(remoteUrl, authMode, token, org?: string, headers?: ob
 
   if (orgValue) {
     block.org = orgValue
+  }
+
+  const nameValue = typeof name === 'string' ? name.trim() : ''
+
+  if (nameValue) {
+    block.name = nameValue
   }
 
   return block
@@ -9835,6 +9925,10 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // inherit the saved org. A plain 'remote' connection never carries an org
   // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
+  // Cloud instance name: same inheritance rule as the org — an explicit value
+  // (the agent the user just picked) wins, an omitted field keeps the saved
+  // name, and a non-cloud mode carries none.
+  const cloudName = mode === 'cloud' ? String(input.cloudName ?? existingBlock.name ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
   const remoteHeaders =
@@ -9878,7 +9972,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     if (remoteLike) {
       profiles[key] = {
         mode,
-        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
       }
     } else {
       const localEntry = localProfileEntry(rawExistingBlock)
@@ -9898,7 +9992,7 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders)
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg, remoteHeaders, cloudName)
     : existingMode === 'ssh'
       ? rawExistingBlock
       : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
@@ -15957,7 +16051,15 @@ ipcMain.handle('hermes:cloud:logout', async () => {
 ipcMain.handle('hermes:cloud:discover', async (_event, org) => {
   // Returns { agents } or { needsOrgSelection: true, orgs }. `org` (optional)
   // scopes discovery to a chosen org for multi-org users.
-  return discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
+  const result = await discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
+
+  // Discovery is the only moment the desktop hears an instance's current name,
+  // so it is also where a portal rename lands on already-registered cloud
+  // connections. Refreshing here (not in the renderer) means any surface that
+  // triggers discovery keeps the labels honest.
+  refreshCloudInstanceNames(result?.agents)
+
+  return result
 })
 ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
   // Silent per-agent sign-in via the shared portal session. Returns the agent's

@@ -15,6 +15,7 @@ import {
   backendScopeKey,
   backendScopePrefix,
   buildAgentRoster,
+  cloudLabelIsDerived,
   connectionDialFieldsChanged,
   connectionIdForLabel,
   labelKey,
@@ -26,6 +27,7 @@ import {
   normalizeRegistry,
   parseRemoteProfileListing,
   reconcileAppliedGlobalConnection,
+  reconcileCloudInstanceNames,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
   registrySourceOwnsPrimaryBackend,
@@ -1503,6 +1505,152 @@ test('Apply remote preserves an existing URL identity and label without duplicat
   assert.equal(matches[0].authMode, 'oauth')
   assert.equal(applied.primary, 'hermes-alex')
   assert.equal(applied.lastUsed, 'hermes-alex')
+})
+
+// --- Hermes Cloud instance names ---
+
+const CLOUD_URL = 'https://agent-7f3a.hermes.nousresearch.com'
+
+function appliedCloud(registry: ConnectionRegistry, name?: string): ConnectionRegistry {
+  return reconcileAppliedGlobalConnection(registry, {
+    mode: 'cloud',
+    remote: { url: CLOUD_URL, authMode: 'oauth', org: 'nous', ...(name === undefined ? {} : { name }) }
+  })
+}
+
+test('Apply cloud labels the connection with the instance name, not the dashboard host', () => {
+  const registry = appliedCloud(emptyRegistry(), 'Research Bot')
+  const cloud = registry.connections.find(connection => connection.kind === 'cloud')
+
+  assert.ok(cloud)
+  assert.equal(cloud.label, 'Research Bot')
+  assert.equal(cloud.cloudName, 'Research Bot')
+  assert.equal(cloud.url, CLOUD_URL)
+})
+
+test('Apply cloud still falls back to the host when the instance has no name', () => {
+  const cloud = appliedCloud(emptyRegistry()).connections.find(connection => connection.kind === 'cloud')
+
+  assert.ok(cloud)
+  assert.equal(cloud.label, 'agent-7f3a.hermes.nousresearch.com')
+  assert.equal(cloud.cloudName, undefined)
+})
+
+test('Apply cloud replaces a host-derived label once the instance name is known', () => {
+  const registry = appliedCloud(emptyRegistry())
+  const renamed = appliedCloud(registry, 'Research Bot')
+  const cloud = renamed.connections.find(connection => connection.kind === 'cloud')
+
+  assert.ok(cloud)
+  assert.equal(cloud.label, 'Research Bot')
+  // Same entry, not a second registration for the same gateway.
+  assert.equal(renamed.connections.filter(connection => connection.kind === 'cloud').length, 1)
+})
+
+test('Apply cloud never overwrites a device name the user typed here', () => {
+  let registry = appliedCloud(emptyRegistry(), 'Research Bot')
+  const cloudId = registry.connections.find(connection => connection.kind === 'cloud')!.id
+
+  registry = upsertConnection(registry, {
+    ...registry.connections.find(connection => connection.id === cloudId)!,
+    label: 'Work bot'
+  })
+
+  const cloud = appliedCloud(registry, 'Renamed In Portal').connections.find(connection => connection.id === cloudId)
+
+  assert.ok(cloud)
+  assert.equal(cloud.label, 'Work bot')
+  assert.equal(cloud.cloudName, 'Renamed In Portal')
+})
+
+test('cloudLabelIsDerived tells our label apart from a user-typed one', () => {
+  assert.equal(cloudLabelIsDerived({ cloudName: 'Research Bot', label: 'Research Bot', url: CLOUD_URL }), true)
+  assert.equal(cloudLabelIsDerived({ cloudName: 'Research Bot', label: 'Work bot', url: CLOUD_URL }), false)
+  // Registered before names were stored: the host label is ours too.
+  assert.equal(cloudLabelIsDerived({ label: 'agent-7f3a.hermes.nousresearch.com', url: CLOUD_URL }), true)
+  assert.equal(cloudLabelIsDerived({ label: 'Work bot', url: CLOUD_URL }), false)
+})
+
+test('discovery folds a portal rename into the registry label', () => {
+  const registry = appliedCloud(emptyRegistry(), 'Research Bot')
+  const result = reconcileCloudInstanceNames(registry, [{ dashboardUrl: `${CLOUD_URL}/`, name: 'Renamed In Portal' }])
+  const cloud = result.registry.connections.find(connection => connection.kind === 'cloud')
+
+  assert.equal(result.changed, true)
+  assert.ok(cloud)
+  assert.equal(cloud.label, 'Renamed In Portal')
+  assert.equal(cloud.cloudName, 'Renamed In Portal')
+})
+
+test('discovery leaves an unchanged roster (and unrelated sources) alone', () => {
+  const registry = appliedCloud(emptyRegistry(), 'Research Bot')
+
+  const same = reconcileCloudInstanceNames(registry, [{ dashboardUrl: CLOUD_URL, name: 'Research Bot' }])
+
+  assert.equal(same.changed, false)
+  assert.equal(same.registry, registry)
+
+  const unrelated = reconcileCloudInstanceNames(registry, [
+    { dashboardUrl: 'https://other.hermes.nousresearch.com', name: 'Other Bot' }
+  ])
+
+  assert.equal(unrelated.changed, false)
+  assert.equal(unrelated.registry.connections.find(connection => connection.kind === 'cloud')!.label, 'Research Bot')
+})
+
+test('discovery keeps a user-typed device name while still tracking the portal name', () => {
+  let registry = appliedCloud(emptyRegistry(), 'Research Bot')
+  const cloudId = registry.connections.find(connection => connection.kind === 'cloud')!.id
+
+  registry = upsertConnection(registry, {
+    ...registry.connections.find(connection => connection.id === cloudId)!,
+    label: 'Work bot'
+  })
+
+  const result = reconcileCloudInstanceNames(registry, [{ dashboardUrl: CLOUD_URL, name: 'Renamed In Portal' }])
+  const cloud = result.registry.connections.find(connection => connection.id === cloudId)
+
+  assert.equal(result.changed, true)
+  assert.ok(cloud)
+  assert.equal(cloud.label, 'Work bot')
+  assert.equal(cloud.cloudName, 'Renamed In Portal')
+})
+
+test('discovery suffixes rather than colliding when another source owns the name', () => {
+  let registry = appliedCloud(emptyRegistry(), 'Research Bot')
+
+  registry = upsertConnection(registry, {
+    id: 'hermes-alex',
+    kind: 'remote',
+    label: 'Renamed In Portal',
+    url: 'https://gateway.example.com',
+    authMode: 'oauth'
+  })
+
+  const result = reconcileCloudInstanceNames(registry, [{ dashboardUrl: CLOUD_URL, name: 'Renamed In Portal' }])
+  const cloud = result.registry.connections.find(connection => connection.kind === 'cloud')
+
+  assert.ok(cloud)
+  assert.equal(cloud.label, 'Renamed In Portal 2')
+  assert.equal(cloud.cloudName, 'Renamed In Portal')
+})
+
+test('a cloud rename survives normalizeRegistry and a label-only edit', () => {
+  const registry = appliedCloud(emptyRegistry(), 'Research Bot')
+  const reloaded = normalizeRegistry(JSON.parse(JSON.stringify(registry)))
+  const cloud = reloaded.connections.find(connection => connection.kind === 'cloud')
+
+  assert.ok(cloud)
+  assert.equal(cloud.cloudName, 'Research Bot')
+
+  const edited = normalizeConnectionInput(
+    mergeConnectionInput({ id: cloud.id, kind: 'cloud', label: 'Work bot' }, cloud),
+    reloaded
+  )
+
+  assert.equal(edited.cloudName, 'Research Bot')
+  assert.equal(edited.url, CLOUD_URL)
+  assert.equal(edited.org, 'nous')
 })
 
 test('Apply local moves primary/current to This device without deleting registered remotes', () => {

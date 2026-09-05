@@ -64,6 +64,12 @@ export interface RegistryConnection {
   headers?: Record<string, unknown>
   /** cloud: portal org slug/id the instance was discovered under. */
   org?: string
+  /** cloud: the instance name as the portal knows it. The dashboard URL is
+   * machine-assigned and immutable, so it makes a poor device name; the portal
+   * name is the one users actually set and rename. Kept alongside `label` so a
+   * later rename in the portal can be told apart from a rename the user typed
+   * HERE — see cloudLabelIsDerived / reconcileCloudInstanceNames. */
+  cloudName?: string
   /** ssh fields (normalizeSshConfig shapes). */
   host?: string
   user?: string
@@ -822,6 +828,7 @@ export interface ConnectionInput {
   token?: unknown
   headers?: Record<string, unknown>
   org?: string
+  cloudName?: string
   host?: string
   user?: string
   port?: number | string
@@ -955,6 +962,14 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       entry.org = org
     }
 
+    const cloudName = String(input.cloudName || '')
+      .trim()
+      .slice(0, LABEL_MAX)
+
+    if (kind === 'cloud' && cloudName) {
+      entry.cloudName = cloudName
+    }
+
     return entry
   }
 
@@ -986,6 +1001,7 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
   inherit('url')
   inherit('authMode')
   inherit('org')
+  inherit('cloudName')
   inherit('host')
   inherit('keyPath')
   inherit('remoteHermesPath')
@@ -1133,7 +1149,9 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
         // Defensive: registry entries are always written with labels, but a
         // hand-edited file may drop one. Derive rather than discard.
         label =
-          kind === 'ssh' ? String(entry.host || 'ssh') : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
+          kind === 'ssh'
+            ? String(entry.host || 'ssh')
+            : String(entry.cloudName || '').trim() || hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
       }
 
       label = uniqueLabel(label, seenLabels)
@@ -1179,6 +1197,14 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
 
         if (kind === 'cloud' && org) {
           clean.org = org
+        }
+
+        const cloudName = String(entry.cloudName || '')
+          .trim()
+          .slice(0, LABEL_MAX)
+
+        if (kind === 'cloud' && cloudName) {
+          clean.cloudName = cloudName
         }
       } else if (kind === 'ssh') {
         const ssh = normalizeSshConfig({ ...entry, mode: 'ssh' })
@@ -1252,8 +1278,10 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
       return existing
     }
 
+    const cloudName = kind === 'cloud' ? String(block.name || '').trim() : ''
+
     const label = uniqueLabel(
-      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
+      cloudName || hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
       connections.map(c => c.label)
     )
 
@@ -1282,6 +1310,10 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
 
     if (kind === 'cloud' && org) {
       entry.org = org
+    }
+
+    if (cloudName) {
+      entry.cloudName = cloudName
     }
 
     connections.push(entry)
@@ -1418,6 +1450,104 @@ export function setLastUsedConnection(registry: ConnectionRegistry, id: string):
 }
 
 /**
+ * Whether a cloud entry's label is still one WE derived (the portal instance
+ * name, or — for entries registered before names were stored — the dashboard
+ * host) rather than a device name the user typed in Settings → Connections.
+ *
+ * This is the whole arbitration rule for cloud labels: a rename in the portal
+ * must reach the desktop, because the dashboard URL is machine-assigned and
+ * immutable and nobody wants `agent-7f3a….hermes.nousresearch.com` in the
+ * sidebar. But a name the user typed HERE is theirs and outranks the portal.
+ */
+export function cloudLabelIsDerived(connection: Pick<RegistryConnection, 'cloudName' | 'label' | 'url'>): boolean {
+  const label = labelKey(connection.label)
+
+  if (connection.cloudName) {
+    return label === labelKey(connection.cloudName)
+  }
+
+  // No stored name: the entry predates this field (or was migrated from v1),
+  // so the only label we could have given it is the host one.
+  return label === labelKey(hostLabelFromBaseUrl(connection.url || '') || '') || label === labelKey('Hermes Cloud')
+}
+
+/** Comparison key for a gateway URL: trimmed, trailing slashes dropped, lowercased. */
+function gatewayUrlKey(value: string): string {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .toLowerCase()
+}
+
+/** A discovered Hermes Cloud instance, trimmed to what naming needs. */
+export interface CloudInstanceName {
+  dashboardUrl?: null | string
+  name?: null | string
+}
+
+/**
+ * Fold the instance names from a Hermes Cloud discovery pass into the registry
+ * so a rename in the portal shows up in the desktop's sidebar and Connections
+ * list. Matches on the dashboard URL (the immutable identity); updates the
+ * stored `cloudName` always, and the visible `label` only while it is still
+ * derived (see cloudLabelIsDerived), so a user-typed device name survives.
+ *
+ * Returns the same registry object when nothing moved, so callers can skip the
+ * disk write on the common no-change refresh.
+ */
+export function reconcileCloudInstanceNames(
+  registry: ConnectionRegistry,
+  instances: readonly CloudInstanceName[]
+): { changed: boolean; registry: ConnectionRegistry } {
+  const byUrl = new Map<string, string>()
+
+  for (const instance of instances || []) {
+    const url = gatewayUrlKey(String(instance?.dashboardUrl || ''))
+    const name = String(instance?.name || '')
+      .trim()
+      .slice(0, LABEL_MAX)
+
+    if (url && name && !byUrl.has(url)) {
+      byUrl.set(url, name)
+    }
+  }
+
+  if (byUrl.size === 0) {
+    return { changed: false, registry }
+  }
+
+  let changed = false
+  const connections = registry.connections.map(connection => {
+    if (connection.kind !== 'cloud') {
+      return connection
+    }
+
+    const name = byUrl.get(gatewayUrlKey(connection.url || ''))
+
+    if (!name || (connection.cloudName === name && labelKey(connection.label) === labelKey(name))) {
+      return connection
+    }
+
+    const next: RegistryConnection = { ...connection, cloudName: name }
+
+    if (cloudLabelIsDerived(connection)) {
+      // Another source may already answer to this name; uniqueLabel suffixes
+      // rather than throwing a collision at a background refresh.
+      next.label = uniqueLabel(
+        name,
+        registry.connections.filter(c => c.id !== connection.id).map(c => c.label)
+      )
+    }
+
+    changed = true
+
+    return next
+  })
+
+  return changed ? { changed, registry: { ...registry, connections } } : { changed: false, registry }
+}
+
+/**
  * Reconcile a successfully-coerced global v1 connection config into the v2
  * registry. Settings still writes connection.json for compatibility, but an
  * Apply must publish the same primary identity to connections.json in the
@@ -1425,9 +1555,10 @@ export function setLastUsedConnection(registry: ConnectionRegistry, id: string):
  *
  * Remote-shaped entries are matched by normalized URL across remote/cloud so
  * changing provenance never duplicates a gateway. Existing identity and
- * user-chosen label win; a new entry derives both from the host. Switching to
- * local keeps registered remotes available while moving primary/last-used
- * back to This device.
+ * user-chosen label win; a new entry derives both from the Hermes Cloud
+ * instance name, or the host when there is none. Switching to local keeps
+ * registered remotes available while moving primary/last-used back to This
+ * device.
  */
 export function reconcileAppliedGlobalConnection(
   registry: ConnectionRegistry,
@@ -1462,12 +1593,18 @@ export function reconcileAppliedGlobalConnection(
 
   const kind: ConnectionKind = mode === 'cloud' ? 'cloud' : 'remote'
 
+  // Hermes Cloud carries the instance name the portal knows it by. Prefer it
+  // over the dashboard host — the host is machine-assigned and immutable, the
+  // name is what the user set — and let a portal rename replace a label we
+  // derived ourselves, while a device name the user typed here is preserved.
+  const cloudName = kind === 'cloud' ? String(block.name || existing?.cloudName || '').trim() : ''
   const label =
-    existing?.label ||
-    uniqueLabel(
-      hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
-      registry.connections.map(connection => connection.label)
-    )
+    existing && (!cloudName || !cloudLabelIsDerived(existing))
+      ? existing.label
+      : uniqueLabel(
+          cloudName || hostLabelFromBaseUrl(url) || (kind === 'cloud' ? 'Hermes Cloud' : 'Remote gateway'),
+          registry.connections.filter(connection => connection.id !== existing?.id).map(connection => connection.label)
+        )
 
   const entry = normalizeConnectionInput(
     {
@@ -1478,7 +1615,8 @@ export function reconcileAppliedGlobalConnection(
       authMode: block.authMode,
       token: block.token,
       headers: block.headers,
-      org: block.org
+      org: block.org,
+      cloudName
     },
     registry
   )

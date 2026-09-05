@@ -100,6 +100,7 @@ export interface Translations {
     revealInSidebar: string
     copyPath: string
     copyRelativePath: string
+    copyContent: string
     download: string
     downloadSaved: string
     downloadFailed: string
@@ -110,6 +111,7 @@ export interface Translations {
     deleteTitle: (name: string) => string
     deleteBody: string
     pathCopied: string
+    contentCopied: string
   }
 
   boot: {

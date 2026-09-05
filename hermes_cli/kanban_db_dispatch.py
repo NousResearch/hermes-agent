@@ -1122,6 +1122,88 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _authenticated_review_rework_after_comment(
+    conn: sqlite3.Connection,
+    task_id: str,
+    comment_id: int,
+    comment_created_at: int,
+) -> bool:
+    """Whether durable reviewer-requested rework causally follows a PR comment.
+
+    ``created_at`` has one-second resolution, so equal timestamps are ordered
+    by the task event stream: ``add_comment`` emits ``commented`` before any
+    later lifecycle event. Legacy comments without that event fail closed for
+    an equal-second comparison. The run/event provenance checks mirror
+    ``request_changes`` so arbitrary operator mutations or forged task-scoped
+    events cannot turn an active PR into dispatch authority.
+    """
+    comment_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM task_comments "
+        "WHERE task_id = ? AND created_at = ?",
+        (task_id, comment_created_at),
+    ).fetchone()["count"]
+    comment_rank = conn.execute(
+        "SELECT COUNT(*) AS count FROM task_comments "
+        "WHERE task_id = ? AND created_at = ? AND id <= ?",
+        (task_id, comment_created_at, comment_id),
+    ).fetchone()["count"]
+    comment_events = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND kind = 'commented' AND created_at = ? "
+        "ORDER BY id ASC",
+        (task_id, comment_created_at),
+    ).fetchall()
+    # Comment rows and their audit events are inserted in the same serialized
+    # transaction. Match them by ordinal within the second; if legacy/raw SQL
+    # left either stream incomplete, equal-second causality cannot be proven.
+    comment_boundary = None
+    if len(comment_events) == int(comment_count) and comment_rank:
+        comment_boundary = comment_events[int(comment_rank) - 1]["id"]
+    candidates = conn.execute(
+        "SELECT e.id, e.created_at, e.run_id, e.payload, r.profile "
+        "FROM task_events e JOIN task_runs r "
+        "ON r.id = e.run_id AND r.task_id = e.task_id "
+        "WHERE e.task_id = ? AND e.kind = 'changes_requested' "
+        "AND e.created_at >= ? AND r.outcome = 'changes_requested' "
+        "AND r.ended_at IS NOT NULL ORDER BY e.created_at DESC, e.id DESC",
+        (task_id, comment_created_at),
+    ).fetchall()
+    for event in candidates:
+        if int(event["created_at"]) == comment_created_at:
+            if comment_boundary is None or int(event["id"]) <= int(comment_boundary):
+                continue
+        payload = _kb._json_dict(event["payload"])
+        reviewer = payload.get("reviewer")
+        implementer = payload.get("implementer")
+        if not isinstance(reviewer, str) or not reviewer.strip():
+            continue
+        if not isinstance(implementer, str) or not implementer.strip():
+            continue
+        if event["profile"] != reviewer:
+            continue
+        claimed = conn.execute(
+            "SELECT id, payload FROM task_events "
+            "WHERE task_id = ? AND run_id = ? AND kind = 'claimed' AND id < ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, event["run_id"], event["id"]),
+        ).fetchone()
+        if claimed is None or _kb._json_dict(claimed["payload"]).get("source_status") != "review":
+            continue
+        handoff = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'review_requested' AND id < ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, claimed["id"]),
+        ).fetchone()
+        handoff_payload = _kb._json_dict(handoff["payload"] if handoff else None)
+        if handoff_payload.get("implementer") != implementer:
+            continue
+        if handoff_payload.get("reviewer") not in (None, reviewer):
+            continue
+        return True
+    return False
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1135,9 +1217,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    (PR URL in a recent comment; re-spawning risks a duplicate PR unless a
+    durable, authenticated reviewer ``changes_requested`` lifecycle later
+    returned this same task to its implementer). The review lane skips the last
+    two: they are the *inputs* to a review handoff. Stale / dead claim locks are
+    NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1203,14 +1287,29 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. A fresh PR comment normally proves another implementation already
+    #    exists. The sole exception is a later, authenticated request_changes
+    #    lifecycle on this same task: that is authority to resume the artifact,
+    #    not to create a second one. Use the freshest PR comment and durable
+    #    event ids for same-second ordering so a newer replacement PR wins.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+    pr_comment = None
+    for comment in conn.execute(
+        "SELECT body, created_at, id FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if comment["body"] and _RESPAWN_GUARD_PR_URL_RE.search(comment["body"]):
+            pr_comment = comment
+            break
+    if pr_comment is not None and not _authenticated_review_rework_after_comment(
+        conn,
+        task_id,
+        int(pr_comment["id"]),
+        int(pr_comment["created_at"] or 0),
+    ):
+        return "active_pr"
 
     return None
 

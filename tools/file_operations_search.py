@@ -612,9 +612,9 @@ class SearchMixin:
         base = (f"find {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
                 f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
         if order == "modified":
-            cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"
+            cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | command head -n {fetch_limit}"
         else:
-            cmd = "set -o pipefail; " + base + f" -print 2>/dev/null | head -n {fetch_limit}"
+            cmd = "set -o pipefail; " + base + f" -print 2>/dev/null | command head -n {fetch_limit}"
 
         keys = _filename_search_root_keys(self.env, roots, self.cwd)
         if not _acquire_filename_search_roots(keys):
@@ -695,7 +695,7 @@ class SearchMixin:
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
         cmd = (f"set -o pipefail; {cd_prefix}{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
-               f"{exclusion_args} -- {root_args} 2>/dev/null | head -n {fetch_limit}")
+               f"{exclusion_args} -- {root_args} 2>/dev/null | command head -n {fetch_limit}")
         result = self._exec(cmd, timeout=60)
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
@@ -752,7 +752,8 @@ class SearchMixin:
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
         fetch_limit = limit + offset + (200 if context > 0 else 0)
-        parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
+        # Bypass aliases and functions restored in terminal snapshots.
+        parts = cmd_parts + ["|", "command", "head", "-n", str(fetch_limit)]
         if line_cap and output_mode not in ("files_only", "count"):
             parts += ["|", "cut", "-c1-2000"]
         result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)

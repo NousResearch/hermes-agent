@@ -182,7 +182,15 @@ export const flashPetActivity = (next: Partial<PetActivity>, ms = 1600) => {
   flashTimer = setTimeout(() => setPetActivity({ celebrate: false, error: false, justCompleted: false }), ms)
 }
 
-export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
+export const setPetInfo = (info: PetInfo) => {
+  const current = $petInfo.get()
+
+  if (!current.enabled && !info.enabled) {
+    return
+  }
+
+  $petInfo.set(info)
+}
 
 /**
  * Resolve the live activity state from the dedicated activity atom, falling back

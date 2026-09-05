@@ -3,9 +3,10 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import { SESSION_IMPORT_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@/components/ui/context-menu'
@@ -333,6 +334,7 @@ export function ChatSidebar({
   const { t } = useI18n()
   const s = t.sidebar
   const { pathname } = useLocation()
+  const navigate = useNavigate()
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
@@ -1616,6 +1618,13 @@ export function ChatSidebar({
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        <div className="shrink-0 px-3 py-2">
+          <Button onClick={() => navigate(SESSION_IMPORT_ROUTE)} size="sm" variant="text">
+            <Codicon name="cloud-download" />
+            {t.sessionImport.action}
+          </Button>
+        </div>
 
         {showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">

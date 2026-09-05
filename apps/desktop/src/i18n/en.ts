@@ -3,6 +3,43 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  sessionImport: {
+    refresh: 'Refresh sessions',
+    title: 'Continue from another app',
+    subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
+    action: 'Import session',
+    readingFrom: 'Reading from',
+    connectedComputer: 'the connected computer',
+    destination: 'Import into',
+    all: 'All',
+    search: 'Search loaded sessions',
+    scanning: 'Finding conversations',
+    retry: 'Try again',
+    scanError: 'Could not find sessions',
+    scanHelp: 'Check your backend connection, then try again. Older backends may need an update.',
+    empty: 'No conversations found',
+    emptyHelp: 'Claude Code and Codex sessions on this backend will appear here.',
+    noMatches: 'No matching conversations',
+    searchHelp: 'Try another title or folder, or load more sessions.',
+    skipped: 'Some logs were empty, unreadable, or too large to preview.',
+    more: 'Load more sessions',
+    messages: 'messages',
+    choose: 'A conversation worth continuing',
+    chooseHelp: 'Choose a session to read its history before bringing it into Hermes.',
+    back: 'Back to sessions',
+    previewLoading: 'Opening preview',
+    previewError: 'Preview unavailable',
+    previewHelp: 'The source may have moved or changed. Refresh the list and try again.',
+    previewLimit: 'Preview shortened for readability. The complete conversation is imported.',
+    you: 'You',
+    snapshot: 'This conversation is already in Hermes. Open your existing copy to continue.',
+    copyNotice:
+      'Copies conversation text. Source files stay unchanged. Tool output and reasoning are not carried over.',
+    importing: 'Importing…',
+    open: 'Open in Hermes',
+    continue: 'Continue in Hermes',
+    importError: 'Could not import this conversation.'
+  },
   common: {
     apply: 'Apply',
     back: 'Back',

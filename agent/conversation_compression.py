@@ -3651,10 +3651,21 @@ def compress_context(
     try:
         # Capture the verdict before rotation callbacks: lifecycle hooks may reset
         # compressor fields on rebind; record only after the full boundary commits.
-        _compression_made_progress, _compression_used_fallback, _compression_feasibility_skip = (
-            bool(getattr(agent.context_compressor, name, False))
-            for name in ("_last_compression_made_progress", "_last_summary_fallback_used", "_last_feasibility_skip")
+        # Plugin context engines (``context.engine``, e.g. hermes-lcm) never set the
+        # built-in compressor's private progress latch, so the host falls back to the
+        # same structural no-op comparison _candidate_rejected() applies below: a
+        # committed rewrite that actually differs from the input proves progress.
+        # Without this the boundary latch below never arms and the per-turn budget
+        # reads as "compactions this turn" instead of the documented consecutive
+        # ineffective-attempt backstop (#103355).
+        _cc = agent.context_compressor
+        _compression_made_progress = bool(getattr(_cc, "_last_compression_made_progress", False)) or (
+            compressed != messages_before_compression
+            and _strip_marker_for_comparison(compressed)
+            != _strip_marker_for_comparison(messages_before_compression)
         )
+        _compression_used_fallback = bool(getattr(_cc, "_last_summary_fallback_used", False))
+        _compression_feasibility_skip = bool(getattr(_cc, "_last_feasibility_skip", False))
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
             attempt_started_at=attempt.started_at,

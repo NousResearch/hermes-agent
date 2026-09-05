@@ -161,7 +161,7 @@ class TestOriginalUrlDetection:
 
     def test_kimi_coding_hint_uses_the_messages_wire(self):
         """api.kimi.com/coding serves Anthropic Messages only; the fallback must not POST
-        /chat/completions there (404, #77256). A lookalike host stays on chat_completions."""
+        /chat/completions there (404, #77256)."""
         fbs = [{"provider": "kimi-coding", "model": "kimi-for-coding",
                 "base_url": "https://api.kimi.com/coding/v1", "api_key": "k"}]
         agent = _make_agent(fallback_model=fbs)
@@ -169,6 +169,7 @@ class TestOriginalUrlDetection:
         assert agent.api_mode == "anthropic_messages"
         assert mock_rpc.call_args.kwargs["api_mode"] == "anthropic_messages"
 
+    def test_kimi_lookalike_host_stays_chat_completions(self):
         lookalike = "https://api.kimi.com.attacker.test/coding/v1"
         agent = _make_agent(fallback_model=[{"provider": "custom", "model": "m", "base_url": lookalike, "api_key": "k"}])
         _activate(agent, lookalike, "m")

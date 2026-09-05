@@ -479,7 +479,8 @@ class TurnRunner:
     async def _send_progress_text(self, st, text: str):
         ctx = self._ctx
         metadata = ctx._progress_metadata
-        if st.is_matrix:
+        # Native task-card fallback shares this sender but has no editable-list state.
+        if isinstance(st, self._ProgressEditState) and st.is_matrix:
             text, metadata = self._matrix_progress_payload(st.progress_lines)
         result = await st.adapter.send(
             chat_id=ctx.source.chat_id, content=text, reply_to=ctx._progress_reply_to, metadata=metadata,

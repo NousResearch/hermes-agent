@@ -206,5 +206,3 @@ async def test_progress_edit_failure_never_falls_back_to_new_message(error):
     assert adapter.send.call_count == 1
     assert state.progress_msg_id == "$root"
     assert state.can_edit
-
-

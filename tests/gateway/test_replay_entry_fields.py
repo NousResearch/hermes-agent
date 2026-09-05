@@ -88,6 +88,25 @@ class TestBuildReplayEntry:
         assert entry["finish_reason"] == "stop"
 
 
+    def test_assistant_carries_display_kind_marker(self):
+        """A projected background-result row must stay identifiable through
+        this rebuild or the continuity digest cannot exclude it — the digest
+        re-presenting the agent's own delivered answer is the
+        double-presentation pathology the SDK background lane fixes."""
+        msg = {
+            "role": "assistant",
+            "content": "report",
+            "display_kind": "sdk_background_result",
+        }
+        entry = _build_replay_entry("assistant", "report", msg)
+        assert entry["display_kind"] == "sdk_background_result"
+        # Non-assistant rows keep the minimal shape.
+        user = _build_replay_entry(
+            "user", "hi",
+            {"role": "user", "content": "hi", "display_kind": "hidden"},
+        )
+        assert "display_kind" not in user
+
     def test_replay_fields_constant_is_stable(self):
         """Pin the whitelist explicitly so accidental renames are caught."""
         assert _ASSISTANT_REPLAY_FIELDS == (

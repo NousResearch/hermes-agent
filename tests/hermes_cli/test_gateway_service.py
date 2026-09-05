@@ -345,6 +345,50 @@ class TestGeneratedSystemdUnits:
 
 
 
+    def test_launchd_plist_avoids_external_volume_paths(self, tmp_path, monkeypatch):
+        """#88267: a HERMES_HOME symlinked to an external volume must not pin
+        WorkingDirectory or the log paths there — launchd fails EX_CONFIG
+        before Hermes logs anything. Same-volume homes are untouched."""
+        from hermes_cli import gateway as gateway_cli
+
+        external = tmp_path / "external"
+        external.mkdir()
+        home_link = tmp_path / "home"
+        home_link.mkdir()
+        hermes_link = home_link / ".hermes"
+        hermes_link.symlink_to(external)
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_link)
+        # Simulate the volume boundary: the symlink target reports a
+        # different device than the user home.
+        monkeypatch.setattr(gateway_cli, "_same_volume", lambda a, b: False)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        # HERMES_HOME still points at the real home on the external volume…
+        assert str(external) in plist
+        # …but WorkingDirectory and the log paths never do: they fall back
+        # to the user home / ~/Library/Logs/<label>.
+        assert "<key>WorkingDirectory</key>\n    <string>" + str(Path.home()) + "</string>" in plist
+        assert f"{external}/logs" not in plist
+        assert "Library/Logs" in plist
+
+    def test_launchd_plist_keeps_same_volume_home_paths(self, tmp_path, monkeypatch):
+        """No volume boundary: WorkingDirectory + logs stay under HERMES_HOME."""
+        from hermes_cli import gateway as gateway_cli
+
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(gateway_cli, "_same_volume", lambda a, b: True)
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert str(home) in plist
+        assert "Library/Logs" not in plist
+
+
 class TestGatewayStopCleanup:
     @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):

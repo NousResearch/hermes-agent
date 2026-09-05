@@ -286,6 +286,43 @@ class HermesTokenStorage:
     _meta_path = partialmethod(_path, ".meta.json")
     _cimd_rejected_path = partialmethod(_path, ".cimd-off")
 
+    async def acquire_refresh_lock(self, timeout: float = 30.0):
+        """Serialize rotating-token refreshes across processes sharing this token file."""
+        path = self._tokens_path().resolve().with_suffix(".refresh.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o600), "r+b", buffering=0)
+        deadline = time.monotonic() + timeout
+        try:
+            if sys.platform == "win32" and os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b"\0")
+            while True:
+                try:
+                    if sys.platform == "win32":
+                        import msvcrt
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return handle
+                except OSError as exc:
+                    import errno
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for MCP OAuth refresh") from None
+                    # No executor thread can outlive cancellation and acquire an orphaned lock.
+                    await asyncio.sleep(0.05)
+        except BaseException:
+            handle.close()
+            raise
+
+    @staticmethod
+    def release_refresh_lock(handle) -> None:
+        if handle is not None:
+            # Closing the file releases flock / the Windows byte-range lock.
+            handle.close()
+
     def _state_paths(self) -> tuple[Path, Path, Path]:
         return self._tokens_path(), self._client_info_path(), self._meta_path()
 

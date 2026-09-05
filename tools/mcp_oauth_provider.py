@@ -34,6 +34,33 @@ class HermesProviderMixin:
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+        self._hermes_refresh_lock = None
+
+    def _release_refresh_lock(self) -> None:
+        handle = getattr(self, "_hermes_refresh_lock", None)
+        self._hermes_refresh_lock = None
+        if handle is not None:
+            handle.close()
+
+    async def async_auth_flow(self, request):
+        # Preserve httpx's bidirectional generator protocol for both the legacy
+        # provider and the manager. A transport failure may close it before the
+        # refresh-response handler gets a chance to release the file lock.
+        inner = super().async_auth_flow(request)
+        try:
+            outgoing = await inner.__anext__()
+            while True:
+                incoming = yield outgoing
+                outgoing = await inner.asend(incoming)
+        except StopAsyncIteration:
+            return
+        finally:
+            import anyio
+            try:
+                with anyio.CancelScope(shield=True):
+                    await inner.aclose()
+            finally:
+                self._release_refresh_lock()
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""
@@ -59,8 +86,19 @@ class HermesProviderMixin:
         return self._prepare_token_request(await super()._exchange_token_authorization_code(*args, **kwargs))
 
     async def _refresh_token(self):
-        self._coerce_client_secret_post()
-        return self._prepare_token_request(await super()._refresh_token())
+        from tools.mcp_oauth import HermesTokenStorage
+        storage = self.context.storage
+        try:
+            if isinstance(storage, HermesTokenStorage):
+                # The SDK already holds its in-process context lock here.
+                self._hermes_refresh_lock = await storage.acquire_refresh_lock()
+                # A different process may have rotated the token while we waited.
+                self.context.current_tokens = await storage.get_tokens()
+            self._coerce_client_secret_post()
+            return self._prepare_token_request(await super()._refresh_token())
+        except BaseException:
+            self._release_refresh_lock()
+            raise
 
     async def _store_tokens(self, token_response) -> None:
         self.context.current_tokens = token_response
@@ -82,6 +120,12 @@ class HermesProviderMixin:
 
     async def _handle_refresh_response(self, response) -> bool:
         """Accept any 2xx refresh response; never log the body."""
+        try:
+            return await self._store_refresh_response(response)
+        finally:
+            self._release_refresh_lock()
+
+    async def _store_refresh_response(self, response) -> bool:
         if not (200 <= response.status_code < 300):
             self._hermes_logger.warning("Token refresh failed: %s", response.status_code)
             self.context.clear_tokens()

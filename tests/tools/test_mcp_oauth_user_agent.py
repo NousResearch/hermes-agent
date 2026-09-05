@@ -91,6 +91,8 @@ def _ready_for_token_requests(provider):
         "token_type": "Bearer",
         "refresh_token": "rt",
     })
+    # Refresh re-reads the shared store after taking its cross-process lock.
+    asyncio.run(provider.context.storage.set_tokens(provider.context.current_tokens))
 
 
 def _build_provider_via(builder, monkeypatch, tmp_path, cfg):
@@ -122,7 +124,10 @@ def test_token_requests_carry_the_configured_user_agent(
     exchange = asyncio.run(
         provider._exchange_token_authorization_code("code", "verifier")
     )
-    refresh = asyncio.run(provider._refresh_token())
+    try:
+        refresh = asyncio.run(provider._refresh_token())
+    finally:
+        provider._release_refresh_lock()
 
     assert exchange.headers["User-Agent"] == "My-MCP-Client/1.0"
     assert refresh.headers["User-Agent"] == "My-MCP-Client/1.0"
@@ -144,7 +149,10 @@ def test_unconfigured_user_agent_leaves_the_default_header(
     exchange = asyncio.run(
         provider._exchange_token_authorization_code("code", "verifier")
     )
-    refresh = asyncio.run(provider._refresh_token())
+    try:
+        refresh = asyncio.run(provider._refresh_token())
+    finally:
+        provider._release_refresh_lock()
 
     default_ua = httpx.Request("POST", "https://x.example/").headers.get("User-Agent")
     assert exchange.headers.get("User-Agent") == default_ua

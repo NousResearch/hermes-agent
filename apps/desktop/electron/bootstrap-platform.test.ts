@@ -7,6 +7,8 @@ import {
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,
+  linuxWaylandVulkanDisableFeatures,
+  mergeDisableFeatures,
   resolveLinuxPasswordStore
 } from './bootstrap-platform'
 
@@ -122,4 +124,48 @@ test('resolveLinuxPasswordStore warns on unknown values instead of applying them
 
   assert.equal(result.store, null)
   assert.match(String(result.warning), /keychain-of-wonders/)
+})
+
+test('linuxWaylandVulkanDisableFeatures is linux+wayland ozone only', () => {
+  const wayland = { XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' }
+
+  assert.equal(linuxWaylandVulkanDisableFeatures({ platform: 'darwin', env: wayland }), null)
+  assert.equal(linuxWaylandVulkanDisableFeatures({ platform: 'win32', env: wayland }), null)
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({ platform: 'linux', env: { DISPLAY: ':0' } }),
+    null
+  )
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: wayland,
+      argv: ['--ozone-platform=x11']
+    }),
+    null
+  )
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({ platform: 'linux', env: wayland }),
+    'Vulkan'
+  )
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: { DISPLAY: ':0', ELECTRON_OZONE_PLATFORM_HINT: 'wayland' }
+    }),
+    'Vulkan'
+  )
+})
+
+test('linuxWaylandVulkanDisableFeatures merges existing disable-features', () => {
+  const wayland = { XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' }
+
+  assert.equal(
+    linuxWaylandVulkanDisableFeatures({
+      platform: 'linux',
+      env: wayland,
+      existingDisableFeatures: 'UseOzonePlatform,Vulkan'
+    }),
+    'UseOzonePlatform,Vulkan'
+  )
+  assert.equal(mergeDisableFeatures('Foo, Bar', ['Vulkan', 'foo']), 'Foo,Bar,Vulkan')
 })

@@ -174,6 +174,7 @@ toolsets:
 
 def test_default_spawn_refuses_unresolved_assignee_before_popen(monkeypatch, tmp_path):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
     def _missing(_profile):
         raise FileNotFoundError("missing profile")
@@ -186,13 +187,14 @@ def test_default_spawn_refuses_unresolved_assignee_before_popen(monkeypatch, tmp
     )
 
     with pytest.raises(RuntimeError, match="unresolved profile"):
-        kb._default_spawn(_make_task(kb, assignee="missing"), str(tmp_path))
+        kbd._default_spawn(_make_task(kb, assignee="missing"), str(tmp_path))
 
 
 def test_default_spawn_same_profile_preserves_trusted_shell_password(
     monkeypatch, tmp_path
 ):
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
 
     root = tmp_path / ".hermes"
     root.mkdir()
@@ -204,7 +206,7 @@ def test_default_spawn_same_profile_preserves_trusted_shell_password(
     monkeypatch.setenv("DB_PASSWORD", "trusted-shell")
     monkeypatch.setattr("hermes_constants.get_process_hermes_home", lambda: root)
     monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda _profile: root)
-    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
     class FakeProc:
@@ -216,7 +218,7 @@ def test_default_spawn_same_profile_preserves_trusted_shell_password(
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    pid = kb._default_spawn(
+    pid = kbd._default_spawn(
         _make_task(kb, assignee="default"),
         str(workspace),
     )

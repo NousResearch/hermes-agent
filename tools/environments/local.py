@@ -23,7 +23,9 @@ from tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
-    _is_hermes_internal_secret, _is_terminal_first_party_env,
+    _build_model_provider_env_names, _credential_target_env_name,
+    _get_configured_bws_token_env,
+    _is_blocked_provider_env, _is_hermes_internal_secret, _is_terminal_first_party_env,
     _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys)
 from tools.environments.local_gitbash_probe import (
     _bash_probe_details_cache, _bash_starts, _git_bash_aslr_help,
@@ -301,14 +303,136 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     return _finalize_child_env(out)
 
 
-def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = None) -> dict:
+def _is_credential_shaped_password(key: str) -> bool:
+    upper = _credential_target_env_name(key).upper()
+    return "PASSWORD" in upper or (upper.endswith("_PWD") and upper != "PWD")
+
+
+def _materialize_target_passthrough_values(env, boundary, *, is_passthrough, plugin_strip):
+    result = dict(env)
+    if boundary.source_home == boundary.target_home:
+        return result
+    for key, value in boundary.compiled_target_values().items():
+        if not is_passthrough(key):
+            continue
+        if _is_hermes_internal_secret(key) or key in plugin_strip:
+            continue
+        if _is_blocked_provider_env(key):
+            continue
+        result[key] = str(value)
+    return result
+
+
+def _finalize_child_env_policy(
+    env, is_passthrough, explicit_force_targets=(), *, enforce_password_policy=False
+):
+    plugin_strip = {
+        _credential_target_env_name(name).upper()
+        for name in _plugin_terminal_env_strip_keys()
+    }
+    always_strip = {name.upper() for name in _ALWAYS_STRIP_KEYS}
+    force_targets = {str(name).upper() for name in explicit_force_targets}
+    for key in list(env):
+        target_key = _credential_target_env_name(key)
+        target_upper = target_key.upper()
+        allowed = target_upper in force_targets or is_passthrough(target_key)
+        if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+            env.pop(key, None)
+        elif _is_hermes_internal_secret(target_key):
+            env.pop(key, None)
+        elif target_upper in always_strip or target_upper in plugin_strip:
+            env.pop(key, None)
+        elif _is_blocked_provider_env(target_key) and not (
+            allowed or _is_terminal_first_party_env(target_key)
+        ):
+            env.pop(key, None)
+        elif enforce_password_policy and _is_credential_shaped_password(target_key) and not allowed:
+            env.pop(key, None)
+    return env
+
+
+def _sanitize_subprocess_env(
+    base_env: dict | None,
+    extra_env: dict | None = None,
+    *,
+    profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+    enforce_profile_boundary: bool = False,
+) -> dict:
     """Filter Hermes-managed secrets from a subprocess environment (background/PTY
     spawn path, search workers, computer-use driver, user-script runners)."""
-    return _scrubbed_env([(base_env or {}, False), (extra_env or {}, True)],
-                         _plugin_terminal_env_strip_keys(), lambda p: p)
+    protected = dict(base_env or {})
+    boundary = None
+    from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+
+    boundary_active = enforce_profile_boundary or is_multiplex_active()
+    if boundary_active:
+        try:
+            boundary = build_profile_env_boundary(source_profile_home, profile_home)
+            protected = boundary.sanitize(protected)
+        except Exception as exc:
+            raise RuntimeError(
+                "profile environment boundary could not be constructed; refusing "
+                f"to spawn with ambient environment: {exc}"
+            ) from exc
+    cross_profile = bool(boundary and boundary.source_home != boundary.target_home)
+    try:
+        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+        is_pass = (
+            (lambda name: is_env_passthrough(name, profile_home=profile_home))
+            if profile_home is not None
+            else is_env_passthrough
+        )
+    except Exception:
+        is_pass = lambda _name: False
+        resolve_passthrough_value = lambda _name, fallback: fallback
+    plugin_strip = _plugin_terminal_env_strip_keys()
+    out = {}
+    explicit_force = set()
+    for items, unwrap in ((protected, False), (extra_env or {}, True)):
+        for key, value in items.items():
+            forced = False
+            if key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+                if not unwrap:
+                    continue
+                key = key[len(_HERMES_PROVIDER_ENV_FORCE_PREFIX):]
+                explicit_force.add(key)
+                forced = True
+                if _is_hermes_internal_secret(key):
+                    continue
+            if _is_hermes_internal_secret(key) or key in plugin_strip:
+                continue
+            first_party = _is_terminal_first_party_env(key)
+            passthrough = is_pass(key)
+            if _is_blocked_provider_env(key) and not (forced or passthrough or first_party):
+                continue
+            if cross_profile and _is_credential_shaped_password(key) and not passthrough:
+                continue
+            resolved = value
+            if passthrough and not first_party:
+                resolved = resolve_passthrough_value(key, value)
+            if resolved is not None:
+                out[key] = resolved
+    if boundary is not None:
+        out = boundary.sanitize(out)
+        out = _materialize_target_passthrough_values(
+            out, boundary, is_passthrough=is_pass, plugin_strip=plugin_strip
+        )
+    out = _finalize_child_env_policy(
+        out, is_pass, explicit_force, enforce_password_policy=cross_profile
+    )
+    if profile_home is not None:
+        out["HERMES_HOME"] = str(profile_home)
+    out = _finalize_child_env(out)
+    path_key = _path_env_key(out)
+    if path_key is not None:
+        out[path_key] = _prepend_hermes_bin_dir(out.get(path_key, ""))
+    return out
 
 
-def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str]:
+def hermes_subprocess_env(
+    *, inherit_credentials: bool = False, profile_boundary: "ProfileEnvBoundary | None" = None
+) -> dict[str, str]:
     """Sanitized env for the **non-terminal** spawn surface (browser, ACP/CLI executors,
     computer-use driver, TUI Node host). Tier 1 (``_ALWAYS_STRIP_KEYS``, plugin keys,
     force-prefixed hints, dynamic internal secrets) is always removed; Tier 2 (the
@@ -316,20 +440,39 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     children that legitimately need LLM credentials (user-blessed claude/codex/gemini
     CLI, TUI Node host). Terminal/execute_code use ``_sanitize_subprocess_env``."""
     env = os.environ.copy()
-    strip = _ALWAYS_STRIP_KEYS | _plugin_terminal_env_strip_keys()
-    if not inherit_credentials:
-        strip |= _HERMES_PROVIDER_ENV_BLOCKLIST
+    from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+    boundary = profile_boundary
+    if is_multiplex_active() or boundary is not None:
+        boundary = boundary or build_profile_env_boundary()
+        env = boundary.sanitize(env)
+        if inherit_credentials:
+            model_names = _build_model_provider_env_names()
+            for key, value in boundary.compiled_target_values().items():
+                if _credential_target_env_name(key).upper() in model_names:
+                    env[key] = value
+    strip = {name.upper() for name in _ALWAYS_STRIP_KEYS}
+    strip |= {_credential_target_env_name(name).upper() for name in _plugin_terminal_env_strip_keys()}
     for key in list(env):
-        if (key in strip or key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
-                or _is_hermes_internal_secret(key)):
+        target = _credential_target_env_name(key)
+        if (target.upper() in strip or key.upper().startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+                or _is_hermes_internal_secret(target)
+                or (not inherit_credentials and _is_blocked_provider_env(target))
+                or (boundary is not None and boundary.source_home != boundary.target_home
+                    and _is_credential_shaped_password(target))):
             del env[key]
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
+    if boundary is not None:
+        env["HERMES_HOME"] = str(boundary.target_home)
     return _finalize_child_env(env)
 
 
 def build_subprocess_env(
     base: "Mapping[str, str] | None" = None, *, inherit_profile_home: bool = True,
-    scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None) -> dict[str, str]:
+    scrub_secrets: bool = True, extra: "Mapping[str, str] | None" = None,
+    profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+    enforce_profile_boundary: bool = False,
+) -> dict[str, str]:
     """Single factory for child-process envs. ``base=None`` snapshots ``os.environ``.
     ``scrub_secrets=True`` -> :func:`_sanitize_subprocess_env` (profile home inherent,
     ``inherit_profile_home`` ignored). ``scrub_secrets=False`` keeps the base
@@ -337,7 +480,11 @@ def build_subprocess_env(
     bridges HERMES_HOME + HOME and ``extra`` is applied last so caller overrides win."""
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if scrub_secrets:
-        return _sanitize_subprocess_env(env, dict(extra) if extra else None)
+        return _sanitize_subprocess_env(
+            env, dict(extra) if extra else None, profile_home=profile_home,
+            source_profile_home=source_profile_home,
+            enforce_profile_boundary=enforce_profile_boundary,
+        )
     if inherit_profile_home:
         _apply_profile_home(env)
     if extra:
@@ -549,8 +696,22 @@ def _path_env_key(run_env: dict) -> str | None:
 
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
-    return _scrubbed_env([(dict(os.environ | env), True)], frozenset(),
-                         lambda p: _prepend_git_bash_dirs(_append_missing_sane_path_entries(p)))
+    run_env = _sanitize_subprocess_env(os.environ.copy(), env)
+    from agent.secret_scope import is_multiplex_active
+    if is_multiplex_active():
+        try:
+            from tools.env_passthrough import is_env_passthrough
+        except Exception:
+            is_env_passthrough = lambda _name: False
+        for key in list(run_env):
+            if _is_credential_shaped_password(key) and not is_env_passthrough(key):
+                run_env.pop(key, None)
+    path_key = _path_env_key(run_env)
+    if path_key is not None:
+        path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        path = _prepend_git_bash_dirs(path)
+        run_env[path_key] = _prepend_hermes_bin_dir(path)
+    return run_env
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---

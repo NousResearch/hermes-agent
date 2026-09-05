@@ -255,6 +255,17 @@ def _popen_bash(cmd: list[str], stdin_data: str | None = None, **kwargs) -> subp
     asynchronously via :func:`_pipe_stdin`. Backends with special Popen needs (e.g. local's
     ``preexec_fn``) can bypass this and call :func:`_pipe_stdin` directly."""
     kwargs.setdefault("creationflags", windows_hide_flags())
+    from tools.environments.local import build_subprocess_env
+
+    profile_home = kwargs.pop("profile_home", None)
+    source_profile_home = kwargs.pop("source_profile_home", None)
+    enforce_profile_boundary = kwargs.pop("enforce_profile_boundary", False)
+    kwargs["env"] = build_subprocess_env(
+        base=kwargs.get("env"),
+        profile_home=profile_home,
+        source_profile_home=source_profile_home,
+        enforce_profile_boundary=enforce_profile_boundary,
+    )
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

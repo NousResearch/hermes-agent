@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.environments import base as base_env
+from tools.environments import base_output as base_env
 from tools.environments import docker as docker_env
 from tools.environments import local as local_env
 from tools.environments import singularity as singularity_env

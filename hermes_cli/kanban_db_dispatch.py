@@ -2173,15 +2173,23 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         raise ValueError(f"task {task.id} has no assignee")
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import get_process_hermes_home
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import is_multiplex_active
     from tools.environments.local import build_subprocess_env
 
+    try:
+        target_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"refusing to spawn Kanban worker for unresolved profile {profile_arg!r}"
+        ) from exc
     env = build_subprocess_env(
-        scrub_secrets=is_multiplex_active(),
-        inherit_profile_home=True,
+        base=os.environ,
+        profile_home=target_home,
+        source_profile_home=get_process_hermes_home(),
+        enforce_profile_boundary=True,
     )
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
@@ -2193,12 +2201,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # without it the child's get_hermes_home() falls back to the DEFAULT
     # profile root because `hermes -p` applies its override before
     # hermes_constants is imported.
-    try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        pass
+    # The boundary factory already installs target HERMES_HOME and derives HOME.
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

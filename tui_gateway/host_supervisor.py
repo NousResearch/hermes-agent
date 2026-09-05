@@ -23,6 +23,7 @@ from hermes_constants import get_hermes_home
 from tools.environments.local import build_subprocess_env, hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
+_Thread = threading.Thread
 
 MUTATOR_ROUTE_TABLE: dict[str, str] = {
     "prompt.submit": "turn-path", "session.interrupt": "turn-path", "reload.mcp": "run-concurrent",
@@ -140,6 +141,14 @@ class HostSupervisor:
         self.expected_build_sha = _build_sha() if expected_build_sha is None else expected_build_sha
         self.expected_hermes_home = (
             str(get_hermes_home()) if expected_hermes_home is None else expected_hermes_home)
+        from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+        from hermes_constants import get_process_hermes_home
+
+        source_home = Path(get_process_hermes_home()).resolve()
+        target_home = Path(self.expected_hermes_home).resolve()
+        self._profile_env_boundary = None
+        if is_multiplex_active() or source_home != target_home:
+            self._profile_env_boundary = build_profile_env_boundary(source_home, target_home)
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[str] | None = None
         self._hello_event = threading.Event()
@@ -311,7 +320,25 @@ class HostSupervisor:
             raise RuntimeError("compute host respawn disabled after crash loop")
         self._hello_event.clear()
         self._hello = {}
-        env = {**hermes_subprocess_env(inherit_credentials=True), **os.environ, **(self.env or {})}
+        boundary = self._profile_env_boundary
+        if boundary is not None:
+            from agent.secret_scope import build_profile_env_boundary
+
+            boundary = build_profile_env_boundary(boundary.source_home, boundary.target_home)
+            self._profile_env_boundary = boundary
+        env = hermes_subprocess_env(
+            inherit_credentials=True, profile_boundary=boundary
+        )
+        if self.env:
+            if boundary is None:
+                explicit = build_subprocess_env(base={}, extra=self.env)
+            else:
+                explicit = build_subprocess_env(
+                    base={}, extra=self.env, profile_home=boundary.target_home,
+                    source_profile_home=boundary.source_home,
+                    enforce_profile_boundary=True,
+                )
+            env.update(explicit)
         env["HERMES_COMPUTE_HOST_HEARTBEAT_SECS"] = str(self.heartbeat_secs)
         root = str(_repo_root())
         env.setdefault("PYTHONPATH", root)
@@ -326,7 +353,7 @@ class HostSupervisor:
         for target, name in ((self._drain_stdout, "compute-host-stdout"),
                              (self._drain_stderr, "compute-host-stderr"),
                              (self._wait_for_exit, "compute-host-wait")):
-            threading.Thread(target=target, args=(proc,), name=name, daemon=True).start()
+            _Thread(target=target, args=(proc,), name=name, daemon=True).start()
         if not self._hello_event.wait(timeout=10.0):
             self._terminate_process(proc)
             raise RuntimeError(f"compute host did not send hello; stderr={self._stderr_tail[-5:]}")
@@ -462,7 +489,7 @@ class HostSupervisor:
                     self._spawn_locked(reason="crash")
                 except Exception:
                     logger.exception("compute host respawn failed")
-        threading.Thread(target=_respawn, name="compute-host-respawn", daemon=True).start()
+        _Thread(target=_respawn, name="compute-host-respawn", daemon=True).start()
 
     _pid_matches_compute_host = staticmethod(is_compute_host_identity)
 

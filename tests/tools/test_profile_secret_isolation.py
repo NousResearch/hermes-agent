@@ -831,7 +831,7 @@ def test_snapshot_restore_cannot_reintroduce_foreign_value(tmp_path, multiplex_m
 
 
 def test_kanban_spawn_fails_closed_for_missing_profile(monkeypatch, tmp_path):
-    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kb
 
     class _Task:
         id = "task-missing-profile"

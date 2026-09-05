@@ -220,10 +220,27 @@ class BaseEnvironment(ABC):
             _multiplex_active = is_multiplex_active()
             if _multiplex_active:
                 from tools.env_passthrough import get_all_passthrough
-                names = (*get_all_passthrough(), *self._additional_profile_scoped_passthrough_names())
+                boundary = getattr(self, "_profile_env_boundary", None)
+                if boundary is None:
+                    boundary = build_profile_env_boundary()
+                    self._profile_env_boundary = boundary
+                source_owned_names = get_profile_owned_secret_names(
+                    boundary.source_home,
+                    fail_closed_external=True,
+                )
+                names = (
+                    *get_all_passthrough(profile_home=boundary.target_home),
+                    *self._additional_profile_scoped_passthrough_names(),
+                    *source_owned_names,
+                )
                 self._snapshot_passthrough_names.update(
                     name for name in names if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
-        except Exception:
+        except Exception as exc:
+            if _multiplex_active:
+                raise RuntimeError(
+                    "profile-owned snapshot exclusions could not be refreshed; "
+                    "refusing to update or source the shared snapshot"
+                ) from exc
             logger.debug("Could not refresh profile-scoped snapshot exclusions", exc_info=True)
         return tuple(sorted(self._snapshot_passthrough_names))
 

@@ -293,9 +293,10 @@ def test_sif_build_is_published_once_and_reused(monkeypatch, tmp_path):
 
     def _fake_run(cmd, **_kwargs):
         calls.append(list(cmd))
-        build_path = singularity_env.Path(cmd[2])
-        build_path.parent.mkdir(parents=True, exist_ok=True)
-        build_path.write_bytes(b"fake-sif")
+        if len(cmd) >= 3 and cmd[1] == "build":
+            build_path = singularity_env.Path(cmd[2])
+            build_path.parent.mkdir(parents=True, exist_ok=True)
+            build_path.write_bytes(b"fake-sif")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(singularity_env.subprocess, "run", _fake_run)
@@ -330,9 +331,10 @@ def test_mutable_sif_tag_is_not_reused_across_multiplex_policy_actions(
 
     def _fake_run(cmd, **_kwargs):
         calls.append(list(cmd))
-        build_path = singularity_env.Path(cmd[2])
-        build_path.parent.mkdir(parents=True, exist_ok=True)
-        build_path.write_bytes(b"fake-sif")
+        if len(cmd) >= 3 and cmd[1] == "build":
+            build_path = singularity_env.Path(cmd[2])
+            build_path.parent.mkdir(parents=True, exist_ok=True)
+            build_path.write_bytes(b"fake-sif")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(singularity_env.subprocess, "run", _fake_run)
@@ -372,9 +374,10 @@ def test_digest_pinned_sif_is_reused_within_one_policy_generation(
 
     def _fake_run(cmd, **_kwargs):
         calls.append(list(cmd))
-        build_path = singularity_env.Path(cmd[2])
-        build_path.parent.mkdir(parents=True, exist_ok=True)
-        build_path.write_bytes(b"fake-sif")
+        if len(cmd) >= 3 and cmd[1] == "build":
+            build_path = singularity_env.Path(cmd[2])
+            build_path.parent.mkdir(parents=True, exist_ok=True)
+            build_path.write_bytes(b"fake-sif")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(singularity_env.subprocess, "run", _fake_run)

@@ -89,7 +89,9 @@ def is_multiplex_active() -> bool:
     return _MULTIPLEX_ACTIVE
 
 
-_SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
+_SECRET_SCOPE: ContextVar[Optional["ProfileSecretScope"]] = ContextVar(
+    "_SECRET_SCOPE", default=None
+)
 
 
 class UnscopedSecretError(RuntimeError):
@@ -200,17 +202,48 @@ def _immutable_scope(
 
 
 def set_secret_scope(secrets: Optional[Mapping[str, str]]) -> Token:
-    """Install the active profile's secret mapping; ``None`` clears. Returns a reset token."""
-    return _SECRET_SCOPE.set(secrets)
+    """Install the active profile's secret mapping; ``None`` clears."""
+    if secrets is None:
+        scope = None
+    elif isinstance(secrets, ProfileSecretScope):
+        scope = secrets
+    else:
+        scope = _immutable_scope(
+            secrets,
+            profile_home=None,
+            source_status="legacy_mapping",
+        )
+    return _SECRET_SCOPE.set(scope)
 
 
 def reset_secret_scope(token: Token) -> None:
     _SECRET_SCOPE.reset(token)
 
 
-def current_secret_scope() -> Optional[Mapping[str, str]]:
+def current_secret_scope() -> Optional[ProfileSecretScope]:
     """The active secret mapping, or None when no scope is installed."""
     return _SECRET_SCOPE.get()
+
+
+def update_secret_scope(name: str, value: Optional[str]) -> bool:
+    """Replace one value in the active immutable scope."""
+    scope = current_secret_scope()
+    if scope is None:
+        return False
+    values = dict(scope.data)
+    if value is None:
+        values.pop(name, None)
+    else:
+        values[name] = str(value)
+    _SECRET_SCOPE.set(
+        _immutable_scope(
+            values,
+            profile_home=scope.profile_home,
+            source_status=scope.source_status,
+            external_generation=scope.external_generation,
+        )
+    )
+    return True
 
 
 # Genuinely-global env vars: process/deployment settings, NOT profile secrets.
@@ -257,7 +290,13 @@ _GLOBAL_ENV_PREFIXES: tuple[str, ...] = ()
 
 def _is_global_env(name: str) -> bool:
     """True for genuinely process-global (non-profile-secret) env vars."""
-    return name in _GLOBAL_ENV_EXACT or name.startswith(_GLOBAL_ENV_PREFIXES)
+    candidate = _direct_env_name_key(name)
+    if candidate in {_direct_env_name_key(item) for item in _GLOBAL_ENV_EXACT}:
+        return True
+    return any(
+        candidate.startswith(_direct_env_name_key(prefix))
+        for prefix in _GLOBAL_ENV_PREFIXES
+    )
 
 
 def _environ_or(name: str, default: Optional[str]) -> Optional[str]:
@@ -318,11 +357,9 @@ def _strip_inline_comment(value: str) -> str:
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
-    """Parse a ``.env`` file into a dict WITHOUT touching ``os.environ``: ``export``
-    prefix, ``#`` comments, and the writer's quote escapes reversed via the canonical
-    ``_parse_env_value``. ``utf-8-sig`` so a BOM doesn't prefix the first key."""
-    secrets: Dict[str, str] = {}
+def load_env_file_snapshot(env_path: Path) -> EnvFileSnapshot:
+    """Parse one dotenv file without collapsing read failure into emptiness."""
+    env_path = Path(env_path)
     try:
         text = env_path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
@@ -356,25 +393,92 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
             continue
         if line.startswith("export "):
             line = line[len("export "):].lstrip()
-        key, sep, value = line.partition("=")
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
         key = key.strip()
-        if sep and key:
+        if key:
             secrets[key] = _parse_env_value(_strip_inline_comment(value))
-    return secrets
+    return EnvFileSnapshot(
+        path=env_path,
+        data=MappingProxyType(secrets),
+        status="ready" if secrets else "empty",
+    )
 
 
-def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from ``<home>/.env`` plus its external
-    secret sources. Global vars are NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` — so the scope holds only profile secrets."""
-    secrets = load_env_file(Path(hermes_home) / ".env")
+def load_env_file(env_path: Path) -> Dict[str, str]:
+    """Parse a ``.env`` file into a dict without touching ``os.environ``."""
+    return dict(load_env_file_snapshot(env_path).data)
+
+
+def _profile_external_secret_snapshot(home: Path, *, fail_closed: bool):
     try:
-        from hermes_cli.env_loader import get_secret_source_values
-        external_secrets = get_secret_source_values(Path(hermes_home))
+        from hermes_cli import env_loader
+
+        snapshot = env_loader.get_external_secret_snapshot(home)
+        if snapshot.status in {"not_hydrated", "stale"}:
+            env_loader.hydrate_profile_secret_sources(home)
+            snapshot = env_loader.get_external_secret_snapshot(home)
+        if fail_closed and snapshot.status in {
+            "degraded",
+            "failed",
+            "not_hydrated",
+            "stale",
+        }:
+            raise RuntimeError(
+                f"external secret snapshot is {snapshot.status}; refusing boundary"
+            )
+        return snapshot
     except Exception:
-        external_secrets = {}
-    secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
-    return secrets
+        if fail_closed:
+            raise
+        from types import SimpleNamespace
+
+        return SimpleNamespace(data={}, status="failed", generation=0)
+
+
+def _profile_external_secret_values(home: Path, *, fail_closed: bool) -> Dict[str, str]:
+    return dict(_profile_external_secret_snapshot(home, fail_closed=fail_closed).data)
+
+
+def build_profile_secret_scope(
+    hermes_home: Path,
+    *,
+    fail_closed_external: bool = False,
+) -> ProfileSecretScope:
+    """Build an immutable identity-bound profile secret scope."""
+    home = Path(hermes_home)
+    op_snapshot = load_env_file_snapshot(home / ".op.env")
+    env_snapshot = load_env_file_snapshot(home / ".env")
+    if fail_closed_external:
+        failed = [s for s in (op_snapshot, env_snapshot) if s.status == "failed"]
+        if failed:
+            details = ", ".join(
+                f"{snapshot.path.name}:{snapshot.error_kind or 'read'}"
+                for snapshot in failed
+            )
+            raise RuntimeError(
+                f"profile dotenv snapshot unavailable ({details}); refusing boundary"
+            )
+    secrets = dict(op_snapshot.data)
+    secrets.update(env_snapshot.data)
+    external_snapshot = _profile_external_secret_snapshot(
+        home, fail_closed=fail_closed_external
+    )
+    secrets.update(
+        (key, value)
+        for key, value in external_snapshot.data.items()
+        if not _is_global_env(key)
+    )
+    return _immutable_scope(
+        secrets,
+        profile_home=home,
+        source_status=(
+            f"dotenv:{op_snapshot.status}/{env_snapshot.status};"
+            f"external:{external_snapshot.status}"
+        ),
+        external_generation=int(external_snapshot.generation),
+    )
 
 
 @dataclass(frozen=True)

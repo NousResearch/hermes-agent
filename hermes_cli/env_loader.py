@@ -35,11 +35,114 @@ _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex d
 _SECRET_SOURCES: dict[str, str] = {}
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+
+
+@dataclass(frozen=True)
+class ExternalSecretSnapshot:
+    """Typed state for one profile's external-secret generation."""
+
+    profile_home: Path
+    data: Mapping[str, str]
+    status: str
+    generation: int
+    error_kind: str | None = None
+    source_identity: str = ""
+
+
+_SECRET_SOURCE_SNAPSHOTS_BY_HOME: dict[str, ExternalSecretSnapshot] = {}
+_SECRET_SOURCE_GENERATION_BY_HOME: dict[str, int] = {}
+_SECRET_SOURCE_IDENTITY_KEY = os.urandom(32)
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
 _APPLIED_HOMES: set[str] = set()
 _SECRET_SOURCE_CACHE_LOCK = threading.RLock()
+
+
+def _external_secret_source_identity(home: Path) -> str:
+    """Hash every profile-owned input that can change external hydration."""
+    digest = hashlib.sha256()
+    for name in ("config.yaml", ".env", ".op.env"):
+        path = home.resolve() / name
+        digest.update(name.encode())
+        digest.update(b"\0")
+        try:
+            payload = path.read_bytes()
+        except FileNotFoundError:
+            digest.update(b"absent")
+        except OSError as exc:
+            digest.update(f"error:{type(exc).__name__}".encode())
+        else:
+            digest.update(
+                hmac.new(
+                    _SECRET_SOURCE_IDENTITY_KEY, payload, hashlib.sha256
+                ).digest()
+            )
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _record_external_secret_snapshot(
+    home: Path,
+    *,
+    data: Mapping[str, str],
+    status: str,
+    error_kind: str | None = None,
+) -> ExternalSecretSnapshot:
+    home = home.resolve()
+    home_key = str(home)
+    with _SECRET_SOURCE_CACHE_LOCK:
+        generation = _SECRET_SOURCE_GENERATION_BY_HOME.get(home_key, 0) + 1
+        _SECRET_SOURCE_GENERATION_BY_HOME[home_key] = generation
+        snapshot = ExternalSecretSnapshot(
+            profile_home=home,
+            data=MappingProxyType(
+                {str(key): str(value) for key, value in data.items()}
+            ),
+            status=status,
+            generation=generation,
+            error_kind=error_kind,
+            source_identity=_external_secret_source_identity(home),
+        )
+        _SECRET_SOURCE_SNAPSHOTS_BY_HOME[home_key] = snapshot
+        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = dict(snapshot.data)
+        return snapshot
+
+
+def get_external_secret_snapshot(
+    hermes_home: str | os.PathLike,
+) -> ExternalSecretSnapshot:
+    home = Path(hermes_home).resolve()
+    home_key = str(home)
+    with _SECRET_SOURCE_CACHE_LOCK:
+        snapshot = _SECRET_SOURCE_SNAPSHOTS_BY_HOME.get(home_key)
+        if snapshot is not None:
+            current_identity = _external_secret_source_identity(home)
+            if snapshot.source_identity != current_identity:
+                return ExternalSecretSnapshot(
+                    profile_home=home,
+                    data=MappingProxyType({}),
+                    status="stale",
+                    generation=snapshot.generation,
+                    error_kind="source_changed",
+                    source_identity=current_identity,
+                )
+            return snapshot
+        legacy = _SECRET_SOURCE_VALUES_BY_HOME.get(home_key)
+        if legacy is not None:
+            return ExternalSecretSnapshot(
+                profile_home=home,
+                data=MappingProxyType(dict(legacy)),
+                status="degraded",
+                generation=0,
+                error_kind="legacy_unversioned",
+            )
+        return ExternalSecretSnapshot(
+            profile_home=home,
+            data=MappingProxyType({}),
+            status="not_hydrated",
+            generation=0,
+        )
 
 # Behavioral routing keys a parent Hermes process injects into child env that silently redirect a profile
 # onto the wrong provider path; these — and ONLY these — are scrubbed at startup when absent from the
@@ -95,7 +198,7 @@ def get_secret_source(env_var: str) -> str | None:
 
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
-    return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
+    return dict(get_external_secret_snapshot(hermes_home).data)
 
 
 def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, str]:
@@ -184,6 +287,9 @@ def reset_secret_source_cache() -> None:
     _APPLIED_HOMES.clear()
     _SECRET_SOURCES.clear()
     _SECRET_SOURCE_VALUES_BY_HOME.clear()
+    _SECRET_SOURCE_SNAPSHOTS_BY_HOME.clear()
+    # Generation epochs remain monotonic across reset. A reset authorizes a
+    # refresh; it must not make a later snapshot look like the revoked epoch.
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -510,11 +616,11 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # load_hermes_dotenv() calls per startup don't re-fetch / re-print — error retries within one process
     # are opt-in via reset_secret_source_cache(). Marking AFTER the attempt (not before, see #40597) is what
     # lets the earlier failure paths stay retryable.
+    values: dict[str, str] = {}
     if report.applied_any:
         _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
         # Re-run the ASCII sanitization pass: vault values are user-supplied and might have the same
         # copy-paste corruption as a manually edited .env (see #6843).
-        values: dict[str, str] = {}
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
             if name in os.environ:

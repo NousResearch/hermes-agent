@@ -498,9 +498,25 @@ export function ChatSidebar({
   // rows, no project tree, no date or status dividers.
   const scopedSessions = useMemo(() => {
     const pool = showArchived ? archivedSessions : sessions
+    const filtered = filterSessionsByProfileScope(pool, profileScope)
 
-    return filterSessionsByProfileScope(pool, profileScope)
-  }, [sessions, archivedSessions, showArchived, profileScope])
+    // The active (focused) session must always be visible in the sidebar
+    // even when a stale profile filter would otherwise hide it. The backend
+    // returns it as the #1 recents row, but a case or scoping mismatch
+    // (e.g. Windows case-insensitive profile dirs) can make the scope
+    // filter drop it, leaving the user looking at a chat that has no row.
+    if (selectedSessionId) {
+      const hasActive = filtered.some(s => s.id === selectedSessionId)
+      if (!hasActive) {
+        const activeRow = pool.find(s => s.id === selectedSessionId)
+        if (activeRow) {
+          return [...filtered, activeRow]
+        }
+      }
+    }
+
+    return filtered
+  }, [sessions, archivedSessions, showArchived, profileScope, selectedSessionId])
 
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded
@@ -539,9 +555,20 @@ export function ChatSidebar({
     prFilter.length > 0 ||
     (showAllProfiles && profileFilter.length > 0)
 
-  const visibleSessions = useMemo(
-    () => (filtersNarrow ? scopedSessions.filter(sessionMatchesFilters) : scopedSessions),
-    [scopedSessions, filtersNarrow, sessionMatchesFilters]
+  const visibleSessions = useMemo(() => {
+    const base = filtersNarrow ? scopedSessions.filter(sessionMatchesFilters) : scopedSessions
+
+    // The active session must survive any filter — the user is looking at
+    // this chat, so hiding its row while its tile is open is always wrong.
+    if (selectedSessionId && !base.some(s => s.id === selectedSessionId)) {
+      const activeRow = scopedSessions.find(s => s.id === selectedSessionId)
+      if (activeRow) {
+        return [...base, activeRow]
+      }
+    }
+
+    return base
+  }, [scopedSessions, filtersNarrow, sessionMatchesFilters, selectedSessionId])
   )
 
   // Recents by activity (last_active || started_at). User send stamps

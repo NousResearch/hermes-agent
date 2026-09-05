@@ -34,8 +34,10 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
 // compare a session's owning profile against the live gateway's profile.
+// Lower-cases so Windows case-insensitive filesystem aliases ("Default" on disk
+// vs "default" from the API) cannot hide a session from its own profile scope.
 export function normalizeProfileKey(name: string | null | undefined): string {
-  const value = (name ?? '').trim()
+  const value = (name ?? '').trim().toLowerCase()
 
   return value || 'default'
 }

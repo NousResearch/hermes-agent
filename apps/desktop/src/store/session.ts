@@ -518,7 +518,7 @@ export function resolveComposerSessionKey(
  *  either its live `id` or its `_lineage_root_id`. Optimistic deletes/archives
  *  drop the row from `previous` (and unpin it), so a removed session can't be
  *  resurrected here. */
-const profileKeyOf = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
+const profileKeyOf = (profile: null | string | undefined): string => (profile ?? '').trim().toLowerCase() || 'default'
 
 function carriedConnectionId(prev: SessionInfo | undefined, incoming: SessionInfo): string | undefined {
   if (incoming.connection_id?.trim()) {
@@ -553,7 +553,7 @@ export function mergeSessionPage(
   // carry behavior below.
   // (Local normalize: importing @/store/profile here would be circular —
   // same '' → 'default' rule as normalizeProfileKey.)
-  const profileKeyOf = (session: SessionInfo) => (session.profile ?? '').trim() || 'default'
+  const profileKeyOf = (session: SessionInfo) => (session.profile ?? '').trim().toLowerCase() || 'default'
   const identity = (session: SessionInfo) => `${profileKeyOf(session)}::${session.id}`
 
   const lineageIdentity = (session: SessionInfo) =>

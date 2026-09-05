@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, Set
 
 from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,17 @@ _MAX_ANCESTOR_WALK = 5  # ancestor levels walked per path — bounds deep-path s
 
 # Shared with broad recursive search probes so context discovery and search never drift into
 # different dependency/cache/build trees (those hold *copies* of context files, never authoritative ones).
-_EXCLUDED_DIR_NAMES = SEARCH_PRUNE_DIR_NAMES
+# Locally extended with tooling home dirs: their AGENTS.md files are tool docs (e.g. the Hermes
+# dev guide), not user-project context. Sessions rooted at $HOME would otherwise walk up into
+# ~/.hermes/ and inject them. Sessions whose working_dir IS inside .hermes/ still load hints
+# normally (the relative_to() check in _is_excluded only screens segments below working_dir).
+_EXCLUDED_DIR_NAMES = SEARCH_PRUNE_DIR_NAMES | frozenset({".hermes"})
+
+# Case-insensitive matching set: macOS/Windows filesystems are not
+# case-sensitive, so ".Hermes" / ".HERMES" would otherwise slip past the
+# literal-name check on those platforms.  Keep the readable original above
+# as the source of truth.
+_EXCLUDED_DIR_NAMES_CASEFOLD = frozenset(name.casefold() for name in _EXCLUDED_DIR_NAMES)
 
 
 def _digest(content: str) -> str:
@@ -150,7 +161,31 @@ class SubdirectoryHintTracker:
             rel_parts = path.relative_to(self.working_dir).parts
         except ValueError:
             return True  # outside the tree — already rejected upstream
-        return any(part in _EXCLUDED_DIR_NAMES for part in rel_parts)
+        if any(part.casefold() in _EXCLUDED_DIR_NAMES_CASEFOLD for part in rel_parts):
+            return True
+        # HERMES_HOME is configurable, so a home not literally named ".hermes"
+        # (e.g. /opt/hermes-data) would still leak its AGENTS.md into
+        # home-rooted sessions.  Mirror the name-based carve-out above: the
+        # home counts as tooling only when the working dir is NOT inside it.
+        try:
+            home = get_hermes_home().resolve()
+        except OSError:
+            return False
+        try:
+            working_resolved = self.working_dir.resolve()
+        except OSError:
+            working_resolved = self.working_dir
+        try:
+            inside_home = working_resolved.is_relative_to(home)
+        except (OSError, ValueError):
+            inside_home = False
+        if not inside_home:
+            try:
+                path.resolve().relative_to(home)
+                return True
+            except (OSError, ValueError):
+                pass
+        return False
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""

@@ -1,16 +1,3 @@
-/**
- * Tests for electron/secret-storage-policy.ts — the "is OS-keychain
- * encryption enabled at all?" decision seam.
- *
- * The behavior this file pins: keychain-backed encryption is OPT-IN
- * (default OFF), and once the one-shot legacy migration has run, a
- * safeStorage blob under an opted-out policy reads as 'drop' — i.e. the
- * caller must treat it as absent WITHOUT touching safeStorage, so a broken
- * macOS login keychain can never raise its password dialog on launch.
- *
- * (Wired into the vitest `electron` project via electron/**\/*.test.ts.)
- */
-
 import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
@@ -18,6 +5,7 @@ import { test } from 'vitest'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
+  SECRET_STORAGE_POLICY_VERSION,
   type SecretStoragePolicyIo,
   writeSecretStoragePolicy
 } from './secret-storage-policy'
@@ -40,64 +28,81 @@ function fakeIo(initial: string | null = null): SecretStoragePolicyIo & { fileTe
   }
 }
 
-// ── defaults ────────────────────────────────────────────────────────────────
+const SECURE_DEFAULT = { on: true, migrated: false }
 
-test('missing policy file defaults to encryption OFF, not migrated', () => {
-  const policy = readSecretStoragePolicy(fakeIo())
-
-  assert.deepEqual(policy, { on: false, migrated: false })
-})
-
-test('corrupt or non-object policy file reads as the default', () => {
-  for (const bad of ['not-json', '[]', '"on"', 'null', '123']) {
-    assert.deepEqual(readSecretStoragePolicy(fakeIo(bad)), { on: false, migrated: false })
+test('missing or malformed policy fails closed to encryption ON', () => {
+  for (const input of [null, 'not-json', '[]', '"on"', 'null', '123']) {
+    assert.deepEqual(readSecretStoragePolicy(fakeIo(input)), SECURE_DEFAULT)
   }
 })
 
-test('truthy-but-not-true values do NOT enable encryption', () => {
-  // Strict === true coercion: a hand-edited "on": 1 or "yes" must not turn
-  // keychain prompts back on.
-  for (const bad of ['{"on":1}', '{"on":"yes"}', '{"on":"true"}']) {
-    assert.equal(readSecretStoragePolicy(fakeIo(bad)).on, false)
+test('legacy two-field plaintext records do not masquerade as explicit consent', () => {
+  assert.deepEqual(readSecretStoragePolicy(fakeIo('{"on":false,"migrated":true}')), SECURE_DEFAULT)
+  assert.deepEqual(readSecretStoragePolicy(fakeIo('{"on":true,"migrated":false}')), SECURE_DEFAULT)
+})
+
+test('only the exact current schema is authoritative', () => {
+  const invalid = [
+    '{"version":1,"on":false,"migrated":true}',
+    '{"version":2,"on":false}',
+    '{"version":2,"on":0,"migrated":true}',
+    '{"version":2,"on":false,"migrated":true,"unknown":false}',
+    '{"version":2,"on":true,"on":false,"migrated":true}',
+    '{"version":2,"on":false,"migrated":true} trailing'
+  ]
+
+  for (const input of invalid) {
+    assert.deepEqual(readSecretStoragePolicy(fakeIo(input)), SECURE_DEFAULT)
   }
 })
 
-test('round trip preserves both fields', () => {
+test('current-schema explicit opt-out and opt-in are both honored', () => {
+  assert.deepEqual(
+    readSecretStoragePolicy(fakeIo('{"version":2,"on":false,"migrated":true}')),
+    { on: false, migrated: true }
+  )
+  assert.deepEqual(
+    readSecretStoragePolicy(fakeIo('{"version":2,"on":true,"migrated":false}')),
+    { on: true, migrated: false }
+  )
+})
+
+test('writes the current schema and round-trips both policy states', () => {
   const io = fakeIo()
 
-  writeSecretStoragePolicy({ on: true, migrated: true }, io)
-  assert.deepEqual(readSecretStoragePolicy(io), { on: true, migrated: true })
-
   writeSecretStoragePolicy({ on: false, migrated: true }, io)
+  assert.deepEqual(JSON.parse(io.fileText() || ''), {
+    version: SECRET_STORAGE_POLICY_VERSION,
+    on: false,
+    migrated: true
+  })
   assert.deepEqual(readSecretStoragePolicy(io), { on: false, migrated: true })
-})
 
-// ── classification ──────────────────────────────────────────────────────────
+  writeSecretStoragePolicy({ on: true, migrated: false }, io)
+  assert.deepEqual(readSecretStoragePolicy(io), { on: true, migrated: false })
+})
 
 const SAFE_BLOB = { encoding: 'safeStorage', value: 'AAAA' }
 const PLAIN_BLOB = { encoding: 'plain', value: 'tok' }
 
-test('non-safeStorage blobs are always keep, under every policy', () => {
+test('non-safeStorage blobs are always kept', () => {
   for (const policy of [
     { on: false, migrated: false },
     { on: false, migrated: true },
-    { on: true, migrated: true }
+    { on: true, migrated: false }
   ]) {
     assert.equal(classifyStoredSecret(PLAIN_BLOB, policy), 'keep')
     assert.equal(classifyStoredSecret(null, policy), 'keep')
     assert.equal(classifyStoredSecret(undefined, policy), 'keep')
-    assert.equal(classifyStoredSecret({} as any, policy), 'keep')
+    assert.equal(classifyStoredSecret({}, policy), 'keep')
   }
 })
 
-test('safeStorage blob with encryption ON is keep', () => {
-  assert.equal(classifyStoredSecret(SAFE_BLOB, { on: true, migrated: true }), 'keep')
+test('safeStorage blobs stay available while encryption is on', () => {
+  assert.equal(classifyStoredSecret(SAFE_BLOB, { on: true, migrated: false }), 'keep')
 })
 
-test('safeStorage blob, encryption OFF, pre-migration is migrate', () => {
+test('explicit opt-out migrates once and then drops undecryptable blobs without another keychain touch', () => {
   assert.equal(classifyStoredSecret(SAFE_BLOB, { on: false, migrated: false }), 'migrate')
-})
-
-test('safeStorage blob, encryption OFF, post-migration is drop — never touch the keychain again', () => {
   assert.equal(classifyStoredSecret(SAFE_BLOB, { on: false, migrated: true }), 'drop')
 })

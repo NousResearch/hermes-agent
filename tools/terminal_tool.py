@@ -43,7 +43,7 @@ from tools.terminal_tool_lifecycle import (
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
 )
 from tools.terminal_tool_config import (
-    _HOST_CWD_PREFIXES, _is_container_backend, _is_unusable_container_cwd, _parse_env_var,
+    _is_container_backend, _is_host_cwd, _is_unusable_container_cwd, _parse_env_var,
     _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
 )
 from tools.terminal_tool_backends import (
@@ -580,7 +580,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     if env_type == "docker" and mount_docker_cwd:
         candidate = os.path.abspath(os.path.expanduser(_tenv("TERMINAL_CWD") or _safe_getcwd()))
         if (
-            any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
+            _is_host_cwd(candidate)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
         ):
             host_cwd = candidate

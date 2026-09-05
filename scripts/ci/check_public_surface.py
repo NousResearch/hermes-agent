@@ -69,20 +69,34 @@ def public_toplevel(src: str) -> set[str] | None:
     return {n for n in names if not n.startswith("_")}
 
 
+def _is_public_method(name: str) -> bool:
+    return not name.startswith("_") or name.startswith("__")
+
+
 def public_methods(src: str) -> set[str]:
-    """``Class.method`` for public and dunder methods of top-level classes."""
+    """``Class.method`` for public and dunder methods REACHABLE on each top-level class: defined on it
+    or inherited from a base class defined in the same module. Extracting a method into a mixin/base
+    that the class still derives from is not a removal (the attribute still resolves)."""
     try:
         tree = ast.parse(src)
     except SyntaxError:
         return set()
+    classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+
+    def own(cls: ast.ClassDef) -> set[str]:
+        return {m.name for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and _is_public_method(m.name)}
+
+    def reachable(cls: ast.ClassDef, seen: set[str]) -> set[str]:
+        names = own(cls)
+        for base in cls.bases:
+            base_name = base.id if isinstance(base, ast.Name) else (base.attr if isinstance(base, ast.Attribute) else None)
+            if base_name in classes and base_name not in seen:
+                names |= reachable(classes[base_name], seen | {base_name})
+        return names
+
     out: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            for m in node.body:
-                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-                    not m.name.startswith("_") or m.name.startswith("__")
-                ):
-                    out.add(f"{node.name}.{m.name}")
+    for name, cls in classes.items():
+        out.update(f"{name}.{m}" for m in reachable(cls, {name}))
     return out
 
 
@@ -145,7 +159,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--strict", action="store_true", help="exit 1 on any finding")
     ap.add_argument("--json", dest="json_out", help="also write the report as JSON")
     args = ap.parse_args(argv)
-    base = _git("merge-base", args.base, args.head).strip() or args.base
+    for ref in (args.base, args.head):
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], capture_output=True).returncode != 0:
+            print(f"public-surface: cannot resolve ref {ref!r} (fetch it first); refusing to report a clean diff", file=sys.stderr)
+            return 2
+    base = _git("merge-base", args.base, args.head).strip()
+    if not base:
+        print(f"public-surface: no merge-base between {args.base!r} and {args.head!r}", file=sys.stderr)
+        return 2
     report = diff_surface(base, args.head)
     print(render(report))
     if args.json_out:

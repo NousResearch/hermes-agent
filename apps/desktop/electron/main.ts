@@ -14697,7 +14697,7 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('hermes:connection', async (_event, profile) => {
+ipcMain.handle('hermes:connection', async (event, profile) => {
   // Coalesce concurrent renderer dials for one profile scope (#90812): the
   // renderer-side reconnect lock is per-window, so two windows waking at once
   // both land here. The claim key mirrors ensureBackend()'s own profile
@@ -14705,15 +14705,16 @@ ipcMain.handle('hermes:connection', async (_event, profile) => {
   const profileKey = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
   const connection = await backendDialClaims.run(backendScopeKey(null, profileKey), () => ensureBackend(profile))
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
+  const windowState = getWindowState(BrowserWindow.fromWebContents(event.sender) || mainWindow)
 
-  return connectionId ? { ...connection, connectionId } : connection
+  return connectionId ? { ...connection, ...windowState, connectionId } : { ...connection, ...windowState }
 })
 // Registry-scoped variant: resolve a backend for (connectionId, profile).
 // connectionId '' / 'local' / the registry primary all behave sensibly; the
 // local kind delegates to ensureBackend when the v1 route is local, and
 // forces a genuinely-local child when the v1 global mode is remote (the
 // registry 'local' entry always means this machine).
-ipcMain.handle('hermes:connection:for', async (_event, payload) => {
+ipcMain.handle('hermes:connection:for', async (event, payload) => {
   const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
@@ -14721,8 +14722,9 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   // (connectionId, profile) scope (#90812): concurrent registry dials for one
   // scope share the first spawn instead of bootstrapping duplicate remotes.
   const connection = await backendDialClaims.run(backendScopeKey(id, profile), () => ensureRegistryBackend(id, profile))
+  const windowState = getWindowState(BrowserWindow.fromWebContents(event.sender) || mainWindow)
 
-  return { ...connection, connectionId: id, registryScoped: true }
+  return { ...connection, ...windowState, connectionId: id, registryScoped: true }
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()

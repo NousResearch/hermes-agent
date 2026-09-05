@@ -2657,6 +2657,17 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     if provider == "anthropic":
         env_vars = ["ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]
 
+    # Also seed any env-source pool entries already on disk that aren't in
+    # the registry's tuple. A user can put `source: env:PROVIDER_API_KEY_2`
+    # in auth.json expecting it to be picked up from the environment; the
+    # registry only declares the primary env var, so this loop fills the
+    # gap and keeps multi-key rotation working without per-provider code.
+    for entry in entries:
+        if entry.source.startswith("env:"):
+            env_name = entry.source.split(":", 1)[1]
+            if env_name and env_name not in env_vars:
+                env_vars.append(env_name)
+
     resolve_base_url = _ENV_BASE_URL_RESOLVERS.get(provider)
     for env_var in env_vars:
         token = get_env_prefer_dotenv(env_var)

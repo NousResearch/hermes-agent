@@ -748,7 +748,14 @@ const ChatViewContent = memo(function ChatViewContent({
               busy={busy}
               cwd={currentCwd}
               disabled={!gatewayOpen}
-              focusKey={activeSessionId}
+              // threadKey, not activeSessionId: the runtime binding churns (unbinds
+              // to null, then rebinds) on every resume-retry attempt of the SAME
+              // routed session — e.g. the reconciliation loop after a backend
+              // restart mid-turn (#101712). threadKey stays constant across that
+              // churn (it prefers the durable stored id), so the composer's
+              // focus-on-key-change effect no longer yanks focus out of wherever
+              // the user is (composer, model picker, …) on every failed retry.
+              focusKey={threadKey}
               gateway={gateway}
               maxRecordingSeconds={maxVoiceRecordingSeconds}
               onAddContextRef={onAddContextRef}

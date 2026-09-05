@@ -279,13 +279,20 @@ def _derive_responses_function_call_id(call_id: str, response_item_id: Optional[
 
 # --- Schema conversion --------------------------------------------------------
 
-def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
-    """Convert chat-completions tool schemas to Responses function-tool schemas."""
+def _responses_tools(
+    tools: Optional[List[Dict[str, Any]]] = None, *, async_tools: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
+    """Convert chat-completions schemas to Responses function-tool schemas.
+
+    ``async_tools`` is explicit and only enabled by the direct Astra midstream executor.
+    It is intentionally unrelated to the registry's Python-coroutine metadata.
+    """
     fns = [item.get("function", {}) if isinstance(item, dict) else {} for item in tools or []]
     converted = [
         {
             "type": "function", "name": fn["name"], "description": fn.get("description", ""), "strict": False,
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            **({"async": True} if async_tools else {}),
         }
         for fn in fns if _nonblank(fn.get("name"))
     ]
@@ -381,10 +388,13 @@ def _replay_tool_call_items(msg: Dict[str, Any], *, start_index: int) -> List[Di
             continue
         index = start_index + len(replayed)
         call_id = _resolve_call_id(tc.get("call_id"), tc.get("id"), fn_name, str(arguments), index, canonicalize_fc=True)
-        replayed.append({
+        replayed_item = {
             "type": "function_call", "call_id": _clamp_responses_call_id(call_id),
             "name": _sanitize_replayed_fn_name(fn_name), "arguments": _coerce_arguments(arguments),
-        })
+        }
+        if tc.get("async") is True or tc.get("async_") is True:
+            replayed_item["async"] = True
+        replayed.append(replayed_item)
     return replayed
 
 
@@ -584,10 +594,13 @@ def _preflight_function_call(item: Dict[str, Any], idx: int, ctx: _PreflightCtx)
         raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
     if not _nonblank(name):
         raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
-    return {
+    normalized = {
         "type": "function_call", "call_id": call_id.strip(), "name": _sanitize_replayed_fn_name(name),
         "arguments": ctx.sanitize_text(_coerce_arguments(item.get("arguments", "{}"))),
     }
+    if item.get("async") is True or item.get("async_") is True:
+        normalized["async"] = True
+    return normalized
 
 
 def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
@@ -721,10 +734,13 @@ def _preflight_tool(tool: Any, idx: int) -> Dict[str, Any]:
     for ok, what in ((_nonblank(name), "a valid name"), (isinstance(parameters, dict), "valid parameters")):
         if not ok:
             raise ValueError(f"Codex Responses tools[{idx}] is missing {what}.")
-    return {
+    normalized = {
         "type": "function", "name": name.strip(), "description": _str_or_empty(tool.get("description", "")),
         "strict": bool(tool.get("strict", False)), "parameters": parameters,
     }
+    if tool.get("async") is True or tool.get("async_") is True:
+        normalized["async"] = True
+    return normalized
 
 
 # Optional scalar request fields, in wire order: (key, accept(value), coerce). Values
@@ -739,7 +755,7 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
     # Cache routing/retention and tool-dispatch hints pass through as-is.
     *(
         (key, lambda v: v is not None, None)
-        for key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention")
+        for key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options")
     ),
     # Native compaction directive; eligibility is resolved in agent/native_compaction.py.
     ("context_management", lambda v: isinstance(v, list) and bool(v), None),
@@ -866,10 +882,14 @@ def _response_tool_call(item: Any, item_type: str, index: int) -> SimpleNamespac
     raw_item_id = getattr(item, "id", None)
     call_id = _resolve_call_id(getattr(item, "call_id", None), raw_item_id, fn_name, arguments, index, canonicalize_fc=False)
     fc_id = _derive_responses_function_call_id(call_id, raw_item_id if isinstance(raw_item_id, str) else None)
-    return SimpleNamespace(
+    tool_call = SimpleNamespace(
         id=call_id, call_id=call_id, response_item_id=fc_id, type="function",
         function=SimpleNamespace(name=fn_name, arguments=arguments),
     )
+    if getattr(item, "async", False) is True or getattr(item, "async_", False) is True:
+        setattr(tool_call, "async", True)
+        setattr(tool_call, "async_", True)
+    return tool_call
 
 
 def _capture_encrypted_item(item: Any, item_type: str, issuer_kind: Optional[str]) -> Optional[Dict[str, Any]]:

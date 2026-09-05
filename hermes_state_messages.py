@@ -310,9 +310,33 @@ class SessionMessagesMixin:
             inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
+            self._ack_astra_fallback_redirects(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def _ack_astra_fallback_redirects(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Ack exact rejected-steer admissions in the transaction inserting their user row."""
+        deliveries = [(msg, (msg.get("display_metadata") or {}).get("_astra_steering_fallback"))
+                      for msg in messages if msg.get("role") == "user"
+                      and isinstance(msg.get("display_metadata"), dict)]
+        deliveries = [(msg, receipts) for msg, receipts in deliveries if receipts]
+        if not deliveries:
+            return
+        row = conn.execute("SELECT model_config FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        config = json.loads(row[0] or "{}") if row else {}
+        journal = config.get("_astra_steering") or {}
+        entries = {entry.get("admission_id"): entry for entry in journal.get("entries", [])
+                   if isinstance(entry, dict)}
+        for msg, receipts in deliveries:
+            for receipt in receipts:
+                entry = entries.get(receipt.get("admission_id"))
+                if (entry is None or entry.get("state") not in {"failed", "fallback_queued"}
+                        or entry.get("input_sha256", "") != receipt.get("input_sha256", "")):
+                    raise ValueError("Astra fallback redirect lacks an unconsumed rejected admission")
+                entry["state"] = "fallback_delivered"
+                entry["fallback_message_row_id"] = msg["_row_id"]
+        conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (json.dumps(config), session_id))
 
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,

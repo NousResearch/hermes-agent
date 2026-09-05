@@ -235,14 +235,35 @@ def begin_iteration(
             _turn_exit_reason=_turn_exit_reason,
         )
 
+    from agent.transports.astra_websocket_session import (
+        confirm_astra_redirect_persisted, restore_astra_fallback_redirects,
+    )
+    restore_astra_fallback_redirects(agent)
     _redirect_text = agent._drain_pending_redirect()
     if _redirect_text:
         _apply_active_turn_redirect(agent, messages, _redirect_text)
+        _astra_receipts = getattr(agent, "_astra_drained_redirect_receipts", None) or []
+        if _astra_receipts:
+            messages[-1]["display_metadata"] = {
+                **(messages[-1].get("display_metadata") or {}),
+                "_astra_steering_fallback": list(_astra_receipts),
+            }
         if isinstance(original_user_message, str):
             original_user_message = (
                 f"{original_user_message}\n\n" f"User correction during the turn: {_redirect_text}"
             )
-        agent._persist_session(messages, conversation_history)
+        try:
+            agent._persist_session(messages, conversation_history)
+            confirm_astra_redirect_persisted(agent, _astra_receipts)
+        except Exception:
+            if _astra_receipts:
+                # The CLI can keep this agent after discarding the failed turn's
+                # messages. Re-read durable truth on retry: the transaction may
+                # have rolled back OR committed before a readback failure. Never
+                # blindly requeue the text and risk delivering it twice.
+                agent._astra_fallback_restore_session = None
+                agent._astra_drained_redirect_receipts = []
+            raise
 
     # Reset per-turn checkpoint dedup so each iteration can take one snapshot.
     agent._checkpoint_mgr.new_turn()

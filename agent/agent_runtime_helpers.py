@@ -909,7 +909,8 @@ def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
 
 
 def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
-    """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA facade / native Anthropic / OpenAI wire)."""
+    """Rebuild the primary client from a ``_primary_runtime`` snapshot (MoA
+    facade / native Anthropic / Bedrock / OpenAI wire)."""
     if (agent.provider or "").strip().lower() == "moa":
         # MoA has empty client_kwargs; rebuild via the shared facade factory so the
         # reference_callback relay survives recovery.
@@ -922,6 +923,46 @@ def _rebuild_primary_client(agent, rt: Dict[str, Any], *, reason: str) -> None:
         agent._anthropic_client = None
     elif agent.api_mode == "anthropic_messages":
         _build_anthropic_client_from_runtime(agent, rt)
+    elif agent.api_mode == "bedrock_converse":
+        # AWS Bedrock — the runtime client is the Bedrock-SDK-backed Anthropic
+        # client, NOT an OpenAI-compatible client. The generic else branch below
+        # would call _create_openai_client(), which demands an OPENAI_API_KEY and
+        # raises a spurious "The api_key client option must be set ..." error for
+        # Bedrock (authenticated via the boto3 chain) — stranding the fallback
+        # chain for every subsequent turn (#102860).
+        from agent.anthropic_adapter import build_anthropic_bedrock_client
+
+        # The region was captured at init from the primary base_url
+        # (bedrock-runtime.<region>.amazonaws.com) into _bedrock_region.
+        # Fall back to re-extracting it from the restored base_url in case the
+        # attribute is missing (e.g. a rebuilt agent), then to the SDK default.
+        _region = str(getattr(agent, "_bedrock_region", "") or "").strip()
+        _region_source = "agent._bedrock_region" if _region else ""
+        if not _region:
+            _region_match = re.search(
+                r"bedrock-runtime\.([a-z0-9-]+)\.", str(rt.get("base_url") or "")
+            )
+            if _region_match:
+                _region = _region_match.group(1)
+                _region_source = "runtime snapshot base_url"
+            else:
+                _region = "us-east-1"
+                _region_source = "SDK default"
+                logger.debug(
+                    "_rebuild_primary_client: no _bedrock_region and no "
+                    "bedrock-runtime.<region>. in base_url %r — falling back to "
+                    "region %r; check the primary base_url for drift",
+                    rt.get("base_url"), _region,
+                )
+        agent._bedrock_region = _region
+        logger.debug(
+            "_rebuild_primary_client[%s]: rebuilding Bedrock client for region %s "
+            "(resolved from %s)",
+            reason, _region, _region_source,
+        )
+        agent._anthropic_client = build_anthropic_bedrock_client(_region)
+        agent.client = None
+        agent._client_kwargs = {}
     else:
         agent.client = agent._create_openai_client(dict(rt["client_kwargs"]), reason=reason, shared=True)
 

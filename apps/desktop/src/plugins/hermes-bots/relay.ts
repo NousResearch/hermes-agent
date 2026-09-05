@@ -9,7 +9,7 @@
 
 import { host, LruCache } from '@hermes/plugin-sdk'
 
-import { botHandle, clearBotAttention, noteBotAttention } from './data'
+import { botHandle, botMentionTag, clearBotAttention, noteBotAttention } from './data'
 import type { ProfileRoute, RosterRow } from './types'
 
 // ── cross-connection bot relay ────────────────────────────────────────────
@@ -122,10 +122,61 @@ interface RelayAgentRow {
 
 /** A queued cross-connection message drained from a gateway's outbox. */
 interface RelayEnvelope {
+  from_handle?: string
+  from_profile?: string
   id?: string
   message?: string
   target_connection?: string
   target_profile?: string
+}
+
+const RELAY_HANDLE_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/
+
+/** Prefer the same friendly title slug the mention picker inserts, but only
+ * when it cannot collide with another row on this connection. The canonical
+ * profile remains a resolver alias and the fallback for invalid titles. */
+function relayAgentHandle(profile: RosterRow, profiles: RosterRow[]): string {
+  const canonical = botHandle(profile?.name, profile)
+  const friendly = botMentionTag(profile)
+
+  if (!RELAY_HANDLE_RE.test(friendly) || friendly === canonical) {
+    return canonical
+  }
+
+  const normalized = friendly.toLowerCase()
+
+  const conflicts = profiles.some(other => {
+    if (other === profile) {
+      return false
+    }
+
+    return [other?.name, botHandle(other?.name, other), botMentionTag(other)].some(
+      form => String(form || '').toLowerCase() === normalized
+    )
+  })
+
+  return conflicts ? canonical : friendly
+}
+
+/** The gateway stamps a sender before it can know Desktop's connection id.
+ * Add that missing route at the Desktop boundary so replying to the displayed
+ * handle cannot accidentally hit the receiver's same-named local profile. */
+function qualifyRelaySender(message: unknown, envelope: RelayEnvelope, connectionId: string): string {
+  const text = String(message || '')
+  const handle = String(envelope?.from_handle || '').replace(/^@/, '')
+
+  if (!RELAY_HANDLE_RE.test(handle) || !RELAY_HANDLE_RE.test(connectionId) || !text.startsWith('Message from 🤖 ')) {
+    return text
+  }
+
+  const marker = `(@${handle}):`
+  const markerAt = text.indexOf(marker)
+
+  if (markerAt < 0 || markerAt > 200) {
+    return text
+  }
+
+  return `${text.slice(0, markerAt)}(@${handle}@${connectionId}):${text.slice(markerAt + marker.length)}`
 }
 
 /** Reconcile retention with the CURRENT connection set: pin new connections,
@@ -222,7 +273,7 @@ async function relayAgentsOn(connection: RelayConnection): Promise<RelayAgentRow
     return profiles
       .map(profile => ({
         profile: String(profile?.name || ''),
-        handle: botHandle(profile?.name, profile),
+        handle: relayAgentHandle(profile, profiles),
         connection_id: connection.id,
         connection_label: label,
         title: String(profile?.ui_meta?.['hermes-bots']?.title || profile?.display_name || ''),
@@ -398,7 +449,7 @@ async function drainRelayOutboxes() {
             'bot_relay.deliver',
             {
               profile: String(envelope?.target_profile || ''),
-              message: String(envelope?.message || '')
+              message: qualifyRelaySender(envelope?.message, envelope, sender.id)
             },
             RELAY_DELIVER_TIMEOUT_MS
           )

@@ -48,6 +48,11 @@ vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock, LruCache: UnboundedCache 
 
 vi.mock('./data', () => ({
   botHandle: (name: string) => (name === 'default' ? 'hermes' : name),
+  botMentionTag: (profile: { name: string; ui_meta?: Record<string, { title?: string }> }) =>
+    String(profile.ui_meta?.['hermes-bots']?.title || (profile.name === 'default' ? 'hermes' : profile.name))
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, ''),
   clearBotAttention: clearBotAttentionMock,
   noteBotAttention: noteBotAttentionMock
 }))
@@ -434,6 +439,34 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     stopBotRelay()
   })
 
+  it('publishes a remote default under its Bot Mode title handle', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return {
+          profiles: [
+            call.connectionId === 'a'
+              ? { name: 'ops' }
+              : { name: 'default', ui_meta: { 'hermes-bots': { title: 'CoS Bot' } } }
+          ]
+        }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pushedToA = calls.find(call => call.method === 'bot_relay.roster.sync' && call.connectionId === 'a')
+
+    expect(pushedToA?.params.agents).toEqual([
+      expect.objectContaining({ connection_id: 'b', handle: 'cos-bot', profile: 'default', title: 'CoS Bot' })
+    ])
+    stopBotRelay()
+  })
+
   it('drops the cached rows of a connection that genuinely disconnected', async () => {
     const calls = respondWith(call =>
       call.method === 'profiles.list' ? { profiles: [{ name: call.connectionId }] } : {}
@@ -473,8 +506,10 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
 
 describe('the drain loop wires drain → deliver → reply', () => {
   const envelope = {
+    from_handle: 'hermes',
+    from_profile: 'default',
     id: 'env-1',
-    message: 'status?',
+    message: 'Message from 🤖 hermes (@hermes): status?',
     target_connection: 'b',
     target_profile: 'ops'
   }
@@ -499,7 +534,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
 
     expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
       connectionId: 'b',
-      params: { message: 'status?', profile: 'ops' }
+      params: { message: 'Message from 🤖 hermes (@hermes@a): status?', profile: 'ops' }
     })
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',

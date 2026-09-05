@@ -414,6 +414,7 @@ import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from 
 import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
+import { createBootSplashWindow, gateBootSplash } from './boot-splash-window'
 import {
   bindGeometryPersistence,
   computeWindowOptions,
@@ -14479,6 +14480,31 @@ function createWindow() {
 
   const createdMainWindow = mainWindow
 
+  // #102419: pre-renderer boot splash. The primary window starts hidden and
+  // only shows after its first themed paint; on macOS first launch the
+  // Chromium system-keychain walk can delay that paint for minutes, leaving
+  // only a frozen Dock icon. A tiny hidden splash (its own frame paints long
+  // before the heavy renderer load) takes over if the main window still has
+  // not appeared shortly after startup, reports the live boot phase from
+  // bootProgressState, and closes itself when the main window finally shows.
+  // Skipped under Playwright, where the reveal is forced immediately below.
+  let disposeBootSplash = null
+
+  if (process.env.TEST_WORKER_INDEX === undefined) {
+    const splash = createBootSplashWindow({
+      version: app.getVersion(),
+      stampLabel: INSTALL_STAMP
+        ? `${INSTALL_STAMP.commit.slice(0, 12)}${INSTALL_STAMP.branch ? ` (${INSTALL_STAMP.branch})` : ''}`
+        : null
+    })
+
+    disposeBootSplash = gateBootSplash({
+      splash,
+      getMainWindow: () => mainWindow,
+      getStatusMessage: () => bootProgressState.message || 'Starting Hermes…'
+    })
+  }
+
   // Chat-surface registration: see applyWindowTranslucency.
   translucencyBackedWindows.add(mainWindow)
 
@@ -14559,6 +14585,14 @@ function createWindow() {
   mainWindow.on('closed', () => {
     closePetOverlay()
     wakeIndicatorController.close()
+
+    // #102419: the splash outlives nothing. If the main window is gone
+    // before the reveal (crash-relaunch, quit race), stop its timers and
+    // close it so no orphan splash window lingers.
+    if (disposeBootSplash) {
+      disposeBootSplash()
+      disposeBootSplash = null
+    }
 
     if (mainWindow === createdMainWindow) {
       mainWindow = null

@@ -150,9 +150,8 @@ function linkList(value: unknown): ListingLink[] {
     }
 
     const label =
-      (typeof entry === 'object' && entry !== null
-        ? text((entry as { label?: unknown }).label)
-        : undefined) ?? hostLabel(url)
+      (typeof entry === 'object' && entry !== null ? text((entry as { label?: unknown }).label) : undefined) ??
+      hostLabel(url)
 
     links.push({ label, url })
 
@@ -221,7 +220,7 @@ export function parseListings(code: string): Listing[] {
   const entries = Array.isArray(data)
     ? data
     : typeof data === 'object' && data !== null && Array.isArray((data as { listings?: unknown }).listings)
-      ? ((data as { listings: unknown[] }).listings)
+      ? (data as { listings: unknown[] }).listings
       : [data]
 
   const listings: Listing[] = []

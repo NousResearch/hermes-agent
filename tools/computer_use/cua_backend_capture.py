@@ -230,8 +230,8 @@ class _CaptureMixin:
     def _gws_args(self) -> Dict[str, Any]:
         return {"pid": self._active_pid, "window_id": self._active_window_id, "session": self._session_id}
 
-    def _capture_vision(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
-        """Pixels only, ``elements`` always empty: ``(png_b64, mime, [], window_title)``. Drivers advertising the
+    def _capture_vision(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str, Optional[str]]:
+        """Pixels only, ``elements`` always empty: ``(png_b64, mime, [], window_title, snapshot_id)``. Drivers advertising the
         cheaper standalone ``screenshot`` tool use it; current drivers folded PNG capture into ``get_window_state``
         (tree DISCARDED here). Before discovery ran we still try ``screenshot`` first and fall back, so the path
         self-heals on any driver version."""
@@ -251,10 +251,10 @@ class _CaptureMixin:
                 self._active_window_id) or {}
             if cli_out.get("images"):
                 png_b64, image_mime_type = cli_out["images"][0], "image/png"
-        return png_b64, image_mime_type, [], window_title
+        return png_b64, image_mime_type, [], window_title, None
 
-    def _capture_window_state(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str]:
-        """AX tree + screenshot. Returns ``(png_b64, mime, elements, window_title)``."""
+    def _capture_window_state(self) -> Tuple[Optional[str], Optional[str], List[UIElement], str, Optional[str]]:
+        """AX tree + screenshot. Returns ``(png_b64, mime, elements, window_title, snapshot_id)``."""
         # A flaky bridge can return a degenerate result (no screenshot AND no parseable tree) WITHOUT raising
         # — a silent 0x0 to the model. Distinct from the EAGAIN path handled in call_tool: here MCP "succeeded".
         gws_out = self._fetch_or_refetch(
@@ -273,7 +273,20 @@ class _CaptureMixin:
                     else _parse_elements_from_tree(tree) if tree else [])
         # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
         self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
-        return *_image_from_tool_result(gws_out), elements, window_title
+        # Same lifetime for the snapshot handle: the driver publishes it next to `elements` (absent on
+        # pre-snapshot builds and on snapshots that registered none, e.g. unresolved window scope).
+        raw_snapshot_id = (gws_out.get("structuredContent") or {}).get("snapshot_id")
+        self._last_snapshot_id = (
+            raw_snapshot_id
+            if isinstance(raw_snapshot_id, str) and raw_snapshot_id
+            else None
+        )
+        return (
+            *_image_from_tool_result(gws_out),
+            elements,
+            window_title,
+            self._last_snapshot_id,
+        )
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,
                 window_id: Optional[int] = None) -> CaptureResult:
@@ -296,11 +309,21 @@ class _CaptureMixin:
         # to the frontmost window.
         if app or not self._last_app:
             self._last_app = app_name or app or ""
-        png_b64, image_mime_type, elements, window_title = (
+        png_b64, image_mime_type, elements, window_title, snapshot_id = (
             self._capture_vision() if mode == "vision" else self._capture_window_state())
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
-        return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
-                             window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type)
+        return CaptureResult(
+            mode=mode,
+            width=width,
+            height=height,
+            png_b64=png_b64,
+            elements=elements,
+            app=app_name,
+            window_title=window_title,
+            png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
+            snapshot_id=snapshot_id,
+        )
 
     def _capture_full_screen(self, mode: str) -> CaptureResult:
         """Composited PrtScn-style grab via `get_desktop_state` (the shell window would only show wallpaper + icons).

@@ -2272,6 +2272,182 @@ class TestElementTokenAttachment:
         assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
 
 
+class TestSnapshotIdAttachment:
+    """Snapshot-scoped element addressing (trycua/cua element_token gate):
+    newer cua-driver builds refuse a bare `element_index` — the call must
+    carry `element_token`, or `snapshot_id` next to the index. The wrapper
+    learns the snapshot handle from `get_window_state`'s structuredContent
+    and attaches it schema-gated, so pre-snapshot drivers never see an
+    unknown property (additionalProperties=false rejects those)."""
+
+    def _backend_with_session(self, capabilities, input_properties):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok", "images": [], "image_mime_types": [],
+            "structuredContent": None, "isError": False,
+        }
+        backend._session.supports_capability = lambda cap, tool=None: (
+            cap in capabilities.get(tool or "", set())
+        )
+        backend._session.supports_input_property = lambda tool, prop: (
+            prop in input_properties.get(tool, set())
+        )
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        return backend
+
+    def test_snapshot_id_attached_when_schema_accepts(self):
+        backend = self._backend_with_session(
+            capabilities={"click": set()},
+            input_properties={
+                "click": {"element_index", "element_token", "snapshot_id"}
+            },
+        )
+        backend._snapshot_tokens = {}
+        backend._last_snapshot_id = "s0000beef"
+        backend.click(element=5, button="left")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "click"
+        assert args["element_index"] == 5
+        assert args["snapshot_id"] == "s0000beef"
+
+    def test_token_wins_over_snapshot_id(self):
+        """When the per-element token is attachable it already pins the
+        snapshot — sending the handle too is redundant."""
+        backend = self._backend_with_session(
+            capabilities={"click": {"accessibility.element_tokens"}},
+            input_properties={
+                "click": {"element_index", "element_token", "snapshot_id"}
+            },
+        )
+        backend._snapshot_tokens = {5: "s0000beef:5"}
+        backend._last_snapshot_id = "s0000beef"
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s0000beef:5"
+        assert "snapshot_id" not in args
+
+    def test_snapshot_id_not_sent_to_pre_snapshot_drivers(self):
+        backend = self._backend_with_session(
+            capabilities={"click": set()}, input_properties={"click": {"element_index"}}
+        )
+        backend._snapshot_tokens = {}
+        backend._last_snapshot_id = "s0000beef"
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_index"] == 5
+        assert "snapshot_id" not in args
+        assert "element_token" not in args
+
+    def test_no_snapshot_handle_means_bare_index(self):
+        """Old structured shape without snapshot_id: nothing to attach, the
+        call keeps its pre-existing form."""
+        backend = self._backend_with_session(
+            capabilities={"click": set()},
+            input_properties={"click": {"element_index", "snapshot_id"}},
+        )
+        backend._snapshot_tokens = {}
+        backend._last_snapshot_id = None
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_index"] == 5
+        assert "snapshot_id" not in args
+
+    def test_capture_parses_snapshot_handle(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.supports_capability = lambda cap, tool=None: True
+        backend._last_snapshot_id = "sdeadbeef"  # stale handle from a prior capture
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [], "isError": False,
+                        "structuredContent": {"windows": [{
+                            "app_name": "Demo", "pid": 9, "window_id": 1,
+                            "is_on_screen": True, "title": "", "z_index": 0}]}}
+            if name == "get_window_state":
+                return {
+                    "data": "Demo tree", "images": [], "image_mime_types": [],
+                    "isError": False,
+                    "structuredContent": {
+                        "snapshot_id": "s0000beef",
+                        "elements": [{"element_index": 1, "role": "AXButton",
+                                      "label": "OK", "element_token": "s0000beef:1"}],
+                    },
+                }
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="ax")
+        assert backend._last_snapshot_id == "s0000beef"
+        assert cap.snapshot_id == "s0000beef"
+
+    def test_capture_without_snapshot_handle_clears_stale_one(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.supports_capability = lambda cap, tool=None: False
+        backend._last_snapshot_id = "sdeadbeef"
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [], "isError": False,
+                        "structuredContent": {"windows": [{
+                            "app_name": "Demo", "pid": 9, "window_id": 1,
+                            "is_on_screen": True, "title": "", "z_index": 0}]}}
+            if name == "get_window_state":
+                return {"data": "Demo tree", "images": [], "image_mime_types": [],
+                        "isError": False,
+                        "structuredContent": {"elements": [
+                            {"element_index": 1, "role": "AXButton", "label": "OK"}]}}
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="ax")
+        assert backend._last_snapshot_id is None
+        assert cap.snapshot_id is None
+
+
+class TestZeroDeliveryTypeVerdict:
+    """Zero-delivery `type` verdict: web inputs behind trusted-event checks
+    swallow synthetic keystrokes entirely (delivered 0 of N). Retrying the
+    same delivery rung cannot help; the actionable next step is the AX
+    set_value path, which bypasses synthetic-event filtering."""
+
+    def _result(self, delivered):
+        from tools.computer_use.backend import ActionResult
+        return ActionResult(
+            ok=True,
+            action="type",
+            message="type_text incomplete",
+            code="type_text_incomplete",
+            meta={"delivered_chars": delivered, "requested_chars": 11},
+        )
+
+    def test_zero_delivery_recommends_set_value(self):
+        from tools.computer_use.tool import _classify_action_result
+        verdict = _classify_action_result(self._result(0))
+        assert verdict["decision"] == "escalate"
+        assert verdict["recommended"] == "set_value"
+        assert "set_value" in verdict["hint"]
+
+    def test_partial_delivery_keeps_generic_ladder(self):
+        from tools.computer_use.tool import _classify_action_result
+        verdict = _classify_action_result(self._result(7))
+        assert verdict.get("recommended") != "set_value"
+
+
 class TestSessionLifecycle:
     """Surface gap (audit June 2026): Hermes never declared a cua-driver
     session, so the agent-cursor overlay was inert and per-run state

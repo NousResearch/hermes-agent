@@ -415,6 +415,27 @@ def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
         return {"decision": "verify_fresh_state", "hint": ("Input was delivered but not confirmed. Re-capture and check the "
                 "result BEFORE any retry — do not repeat the input on an escalation recommendation alone.")}
     if res.effect == "suspected_noop" or not res.ok or res.code is not None:
+        meta = res.meta if isinstance(res.meta, dict) else {}
+        delivered, requested = meta.get("delivered_chars"), meta.get("requested_chars")
+        if (
+            res.action in ("type", "type_text")
+            and isinstance(delivered, int)
+            and isinstance(requested, int)
+            and requested > 0
+            and delivered <= 0
+        ):
+            # Zero delivery: the field swallowed every synthetic keystroke (trusted-event checks on web
+            # inputs do this). Neither rung of the delivery ladder can fix a target that drops events at
+            # the source — the AX set_value path writes the value directly and bypasses event filtering.
+            return {
+                "decision": "escalate",
+                "recommended": "set_value",
+                "hint": (
+                    "0 characters landed: this input drops synthetic keystrokes, so no delivery rung will fix it. "
+                    "Use set_value on the field's element index instead — it sets the value through the "
+                    "accessibility API and bypasses event filtering. Re-capture first if the index is stale."
+                ),
+            }
         return {"decision": "escalate", **({"recommended": res.escalation.get("recommended")}
                                            if isinstance(res.escalation, dict) else {}), "hint": (
             "The input likely did not land. Climb one rung following `recommended`: 'px' → re-issue by coordinate; "
@@ -508,11 +529,21 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
-    return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
-                           truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
-                           elements_file=_spill_elements_to_file(cap) if lost_detail else None,
-                           screenshot_path=_persist_capture_image(cap) if has_image else None,
-                           dims_omitted=dims if too_small else None, has_image=has_image)
+    return SimpleNamespace(
+        cap=cap,
+        visible=visible,
+        total=len(cap.elements),
+        width=width,
+        height=height,
+        truncated=len(cap.elements) - len(visible),
+        bounds_scale=scale,
+        bounds_note=note,
+        elements_file=_spill_elements_to_file(cap) if lost_detail else None,
+        screenshot_path=_persist_capture_image(cap) if has_image else None,
+        dims_omitted=dims if too_small else None,
+        has_image=has_image,
+        snapshot_id=getattr(cap, "snapshot_id", None),
+    )
 
 def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
     """Human-readable capture summary; line ORDER is contract. Lists only what `elements` surfaces, otherwise the
@@ -542,8 +573,13 @@ def _text_capture_payload(v: SimpleNamespace, summary: str, extra: Optional[Dict
         "mode": v.cap.mode, "width": v.width, "height": v.height, "app": v.cap.app, "window_title": v.cap.window_title,
         "elements": [_element_to_dict(e) for e in v.visible], "total_elements": v.total, "summary": summary,
         **(extra or {}),
-        **_present(truncated_elements=v.truncated, elements_file=v.elements_file, screenshot_path=v.screenshot_path,
-                   bounds_scale=v.bounds_scale),
+        **_present(
+            truncated_elements=v.truncated,
+            elements_file=v.elements_file,
+            screenshot_path=v.screenshot_path,
+            bounds_scale=v.bounds_scale,
+            snapshot_id=getattr(v, "snapshot_id", None),
+        ),
     })
 
 def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:

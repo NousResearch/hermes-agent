@@ -77,6 +77,11 @@ _UNKNOWN_OUTCOME_MESSAGES = {
         "taken effect on the remote screen. The session has been marked suspect and will be "
         "recreated before the next computer-use call. Take fresh state before deciding "
         "whether to act again."),
+    "remote_transport_outcome_unknown": (
+        "remote cua-driver transport failed during {name}; the action outcome is unknown and "
+        "may still have taken effect on the remote screen. Remote sessions have no local CLI "
+        "fallback, so Hermes did not replay it. Take fresh state before deciding whether to "
+        "act again."),
 }
 
 def _outcome_unknown(name: str, exc: Exception, code: str) -> Dict[str, Any]:
@@ -167,6 +172,30 @@ def _is_ended_session_result(result: Any) -> bool:
             and ("has ended" in message or "session ended" in message))
 
 
+def _remote_http_client_kwargs(token: str) -> dict:
+    """AsyncClient kwargs for the remote CUA transport (indexed streams path).
+
+    The SDK sends its requests through its own httpx (httpx2 on mcp >= 2.0), so the
+    caller-owned client MUST come from the SDK's module (see
+    mcp_tool_transport.py::_streamable_http_transport). trust_env=False/proxy=None:
+    env proxies must never receive the bearer token; read=None keeps long tool calls
+    (screenshots, UI waits) alive past httpx2's 5s default read timeout. The seeded
+    mcp-protocol-version header keeps the handshake-era initialize on the envelope
+    ladder's accepted path.
+    """
+    from tools.mcp_tool_common import _core
+    return {
+        "headers": {
+            "Authorization": f"Bearer {token}",
+            "mcp-protocol-version": _core.LATEST_HANDSHAKE_VERSION,
+        },
+        "follow_redirects": False,
+        "trust_env": False,
+        "proxy": None,
+        "timeout": _core.sdk_httpx().Timeout(30.0, read=None, write=30.0, pool=10.0),
+    }
+
+
 class _CuaDriverSession:
     """Holds the mcp ClientSession. Spawned lazily; re-entered on drop. Lifecycle ownership: one long-running
     coroutine (`_lifecycle_coro`) opens the stdio_client + ClientSession contexts, populates capabilities, sets
@@ -230,24 +259,33 @@ class _CuaDriverSession:
             # cua-driver session). Config is validated fail-closed in remote.py.
             remote_config = getattr(self, "_remote_config", None)
             if remote_config is not None:
-                import httpx
                 from mcp.client.streamable_http import streamable_http_client
+                from tools.mcp_tool_common import _core
+                # The SDK sends its requests through its own httpx (httpx2 on mcp >= 2.0),
+                # so the caller-owned client MUST come from the SDK's module (see
+                # mcp_tool_transport.py::_streamable_http_transport).
+                httpx = _core.sdk_httpx()
 
                 async def _reject_redirect(response: Any) -> None:
                     if response.is_redirect:
                         raise RuntimeError("remote computer use refused an HTTP redirect")
 
                 self._startup_phase = "remote-connect"
+                # trust_env=False/proxy=None: env proxies must never receive the bearer
+                # token; read=None keeps long tool calls (screenshots, UI waits) alive.
                 async with httpx.AsyncClient(
-                    headers={"Authorization": f"Bearer {remote_config.token}"},
-                    follow_redirects=False,
+                    **_remote_http_client_kwargs(remote_config.token),
                     event_hooks={"response": [_reject_redirect]},
                 ) as http_client:
+                    # Index the streams: mcp 2.x yields (read, write), 1.x yields
+                    # (read, write, get_session_id) — a fixed-arity unpack fails on one
+                    # of the two (same class of bug as the _run_http arity fix).
                     async with streamable_http_client(
                         remote_config.url,
                         http_client=http_client,
                         terminate_on_close=True,
-                    ) as (read, write, _get_session_id):
+                    ) as streams:
+                        read, write = streams[0], streams[1]
                         self._startup_phase = "mcp-initialize"
                         async with ClientSession(read, write) as session:
                             await session.initialize()
@@ -540,6 +578,13 @@ class _CuaDriverSession:
                 if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
                     self._notify_transport_reset()
                     return _outcome_unknown(name, e, "transport_outcome_unknown")
+                if self._remote_config is not None:
+                    # A remote session must never spawn a LOCAL cua-driver — the
+                    # fallback would drive this machine's desktop instead of the
+                    # remote one.
+                    logger.warning("remote cua-driver transport failed on %s (%s); "
+                                   "no local CLI fallback for remote sessions", name, e)
+                    return _outcome_unknown(name, e, "remote_transport_outcome_unknown")
                 logger.warning("cua-driver MCP transport failed on %s (%s); "
                                "falling back to CLI transport", name, e)
                 return self._call_tool_via_cli(name, args, timeout)

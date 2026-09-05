@@ -847,22 +847,35 @@ def _sanitize_remote_script_text(
     text: Optional[str], *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
     """Apply the local-read contract to text from an untrusted ``read_remote_script`` callback: NUL
-    means binary (nothing to scan, checked first); oversized fails closed. Size compares re-encoded
-    *bytes* (matching the ``head -c`` wire bound): a >1 MiB multibyte file truncated at the byte cap
-    decodes to fewer chars, and a char count would scan instead of failing.
+    padded text is still scanned after NUL stripping; oversized fails closed. Size compares
+    re-encoded *bytes* (matching the ``head -c`` wire bound): a >1 MiB multibyte file truncated at
+    the byte cap decodes to fewer chars, and a char count would scan instead of failing.
 
     The recursion boundary must not trust its callbacks: any backend (SSH, Modal, Daytona, or a future one)
-    can hand back raw binary bytes decoded as text, or arbitrarily large output. Enforced here rather than
-    inside each callback so the guarantee holds for every callback, not just the ones we hardened. See
-    #76762, #77703.
+    can hand back raw binary bytes decoded as text, or arbitrarily large output. Mirror
+    ``_read_referenced_script``'s semantics exactly — binaries are identified by magic number and
+    skipped (#77703), oversized text fails closed like an oversized local file (#76762), and a
+    NUL-bearing *text* payload has its NULs stripped and is then scanned — so remote and local reads
+    can never diverge again.
+
+    The magic check runs against the encoded bytes, because a signature is a byte-level fact; the
+    callback's decode leaves ASCII-range magic (``MZ``, ``\\x7fELF``, ``!<arch>``, ``PK\\x03\\x04``)
+    intact, and anything it mangled beyond recognition is text as far as this boundary can tell and
+    gets scanned rather than skipped. Enforced here rather than inside each callback so the guarantee
+    holds for every callback, not just the ones we hardened.
     """
-    if not text or "\x00" in text:
+    if not text:
         return None, False
     byte_limit = _capped_read_limit(max_bytes)
-    if len(text) > byte_limit:
-        return None, True  # chars <= bytes: over the cap without encoding
-    if len(text.encode("utf-8", errors="replace")) > byte_limit:
+    encoded = text.encode("utf-8", errors="replace")
+    if _has_binary_magic(encoded):
+        return None, False
+    # Size before stripping, for the same reason as the local read: stripping
+    # shrinks the buffer and would let an oversized payload duck this branch.
+    if len(encoded) > byte_limit:
         return None, True
+    if "\x00" in text:
+        text = text.replace("\x00", "")
     return text, False
 
 

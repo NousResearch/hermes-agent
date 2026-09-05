@@ -308,6 +308,7 @@ import contextlib
 import json
 import shutil
 import subprocess
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -3302,6 +3303,49 @@ def _default_to_chat(args) -> None:
     _promote_top_level_resume(args)
     _set_chat_arg_defaults(args)
     cmd_chat(args)
+
+
+def _sanitize_group_display_name(value: str) -> str:
+    value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    return "".join(char for char in value if ord(char) >= 0x20 and ord(char) != 0x7F and unicodedata.category(char) not in {"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"}).strip()
+
+
+def _list_whatsapp_groups(args) -> None:
+    """List groups from an already-running loopback bridge; never starts WhatsApp."""
+    from urllib.error import HTTPError, URLError
+    from urllib.request import urlopen
+    port = getattr(args, "bridge_port", None) or 3000
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        print("Invalid bridge port.")
+        raise SystemExit(1)
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/groups", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError):
+        print("Could not read groups from the local WhatsApp bridge.")
+        print("Start a paired bridge first; this command does not start WhatsApp.")
+        raise SystemExit(1)
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    if not isinstance(groups, list):
+        print("Local bridge returned an invalid group inventory.")
+        raise SystemExit(1)
+    valid = []
+    for item in groups:
+        if not isinstance(item, dict) or not isinstance(item.get("group_jid"), str) or re.fullmatch(r"\d+@g\.us", item["group_jid"]) is None or not isinstance(item.get("name"), str):
+            print("Local bridge returned an invalid group inventory.")
+            raise SystemExit(1)
+        name = _sanitize_group_display_name(item["name"])
+        if not name:
+            print("Local bridge returned an invalid group inventory.")
+            raise SystemExit(1)
+        valid.append({"group_jid": item["group_jid"], "name": name})
+    valid.sort(key=lambda item: item["group_jid"])
+    if not valid:
+        print("No participating WhatsApp groups found.")
+        return
+    print("Participating WhatsApp groups (JID is the identity; name is informational):")
+    for item in valid:
+        print(f"- {item['group_jid']}  {item['name']}")
 
 
 def main():

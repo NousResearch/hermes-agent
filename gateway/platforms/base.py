@@ -110,8 +110,6 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
-    if not metadata:
-        return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         if str(thread_id) not in {"", "1"}:
@@ -124,12 +122,27 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     profile = str(getattr(source, "profile", None) or "").strip()
     if profile:
         metadata["hermes_profile"] = profile
+    delivery_route = getattr(source, "_delivery_route", None)
+    if isinstance(delivery_route, dict) and delivery_route:
+        metadata["hermes_delivery_route"] = dict(delivery_route)
+        if delivery_route.get("read_only") is True:
+            metadata["disable_streaming"] = True
+    if not metadata:
+        return None
     return metadata
 
 
 def _thread_metadata_for_event(event) -> dict | None:
     """``_thread_metadata_for_source`` for an event, anchored on its reply id."""
     return _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+
+
+def _delivery_ledger_target(source, metadata: dict | None) -> tuple[str, str, str | None]:
+    """Durable final-response destination, honoring an explicit read-only relay route."""
+    route = metadata.get("hermes_delivery_route") if isinstance(metadata, dict) else None
+    if isinstance(route, dict) and route.get("read_only") is True and isinstance(route.get("telegram_chat_id"), str) and isinstance(route.get("telegram_thread_id"), str):
+        return "telegram", route["telegram_chat_id"], route["telegram_thread_id"]
+    return _platform_name(getattr(source, "platform", None)), source.chat_id, getattr(source, "thread_id", None)
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
@@ -3627,12 +3640,14 @@ class BasePlatformAdapter(ABC):
             if not await asyncio.to_thread(ledger_enabled):
                 return None
             source = event.source
+            delivery_metadata = _thread_metadata_for_event(event) or {}
+            ledger_platform, ledger_chat_id, ledger_thread_id = _delivery_ledger_target(source, delivery_metadata)
             obligation_id = compute_obligation_id(
                 session_key, str(getattr(event, "message_id", "") or ""), text_content)
             await asyncio.to_thread(
                 record_obligation, obligation_id=obligation_id, session_key=session_key,
-                platform=str(getattr(source.platform, "value", source.platform)),
-                chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
+                platform=ledger_platform,
+                chat_id=ledger_chat_id, thread_id=ledger_thread_id,
                 content=text_content,
                 adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
             await asyncio.to_thread(mark_attempting, obligation_id)

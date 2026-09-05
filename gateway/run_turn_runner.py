@@ -793,10 +793,13 @@ class TurnRunner:
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
+        route = ctx._status_thread_metadata.get("hermes_delivery_route") if isinstance(ctx._status_thread_metadata, dict) else None
+        bordero_read_only = isinstance(route, dict) and route.get("read_only") is True
         want_stream_deltas = (
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
-        want_interim_messages = ctx.interim_assistant_messages_enabled
+        want_stream_deltas = want_stream_deltas and not bordero_read_only
+        want_interim_messages = ctx.interim_assistant_messages_enabled and not bordero_read_only
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer

@@ -18,6 +18,30 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+export function summarizeParticipatingGroups(groups) {
+  if (!groups || typeof groups !== 'object' || Array.isArray(groups)) return [];
+  return Object.entries(groups)
+    .filter(([jid, metadata]) => /^\d+@g\.us$/.test(jid) && metadata && typeof metadata === 'object' && typeof metadata.subject === 'string' && metadata.subject.trim())
+    .map(([jid, metadata]) => ({ group_jid: jid, name: metadata.subject.trim() }))
+    .sort((a, b) => a.group_jid.localeCompare(b.group_jid));
+}
+
+export function inboundPolicyRejection({ fromMe = false, isGroup = false, mode = 'self-chat', dmPolicy = 'open', senderAllowed = false, borderoReadOnly = false, groupJid = null, allowedGroupJids = null } = {}) {
+  if (borderoReadOnly && !isGroup) return 'bordero_dm_disabled';
+  if (borderoReadOnly && (!groupJid || !allowedGroupJids || !allowedGroupJids.has(groupJid))) return 'bordero_group_not_allowlisted';
+  if (fromMe) return null;
+  if (mode === 'self-chat') return 'self_chat_mode_rejects_non_self';
+  if ((!isGroup || !borderoReadOnly) && dmPolicy !== 'pairing' && !senderAllowed) return 'allowlist_mismatch';
+  return null;
+}
+
+export function borderoWriteRejection({ enabled = false, method = 'GET', path = '' } = {}) {
+  const writePaths = new Set(['/send', '/edit', '/send-media', '/send-poll', '/send-location', '/typing', '/read']);
+  const normalizedPath = String(path).replace(/\/+$/, '') || '/';
+  if (enabled && String(method).toUpperCase() !== 'GET' && writePaths.has(normalizedPath)) return 'bordero_read_only_writes_disabled';
+  return null;
+}
+
 export function getMessageContent(msg) {
   const content = msg?.message || {};
   if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;

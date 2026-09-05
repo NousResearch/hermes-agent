@@ -3224,6 +3224,40 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
     return adapter_cls(config)
 
 
+def _is_read_only_delivery_route(metadata: Any) -> bool:
+    route = metadata.get("hermes_delivery_route") if isinstance(metadata, dict) else None
+    return isinstance(route, dict) and route.get("read_only") is True
+
+
+def _rehydrate_bordero_delivery_route(source: Any, adapter: Any) -> None:
+    """Restore a validated Borderô route when a pending session is resumed."""
+    platform = getattr(getattr(source, "platform", None), "value", getattr(source, "platform", None))
+    if str(platform or "").lower() != "whatsapp":
+        return
+    try:
+        _field_names = {field.name for field in dataclasses.fields(source)}
+    except (TypeError, AttributeError):
+        _field_names = set()
+    for _name in ("_delivery_route", "_channel_prompt"):
+        if _name in _field_names:
+            setattr(source, _name, None)
+        elif hasattr(source, _name):
+            delattr(source, _name)
+    reader = getattr(adapter, "_bordero_reader", None)
+    route = getattr(reader, "routes", {}).get(getattr(source, "chat_id", None)) if reader and getattr(reader, "enabled", False) else None
+    if route is None:
+        return
+    source._delivery_route = {
+        "group_jid": route.group_jid,
+        "telegram_chat_id": route.telegram_chat_id,
+        "telegram_thread_id": route.telegram_thread_id,
+        "telegram_target": route.telegram_target,
+        "read_only": True,
+    }
+    from plugins.platforms.whatsapp.bordero_reader import build_ingest_prompt
+    source._channel_prompt = build_ingest_prompt(route)
+
+
 class GatewayRunner(
     GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
@@ -4026,6 +4060,12 @@ class GatewayRunner(
         if profile and metadata is not None:
             metadata = dict(metadata)
             metadata["hermes_profile"] = profile
+        delivery_route = getattr(source, "_delivery_route", None)
+        if isinstance(delivery_route, dict) and delivery_route:
+            metadata = dict(metadata or {})
+            metadata["hermes_delivery_route"] = dict(delivery_route)
+            if delivery_route.get("read_only") is True:
+                metadata["disable_streaming"] = True
         return metadata
 
     def _thread_metadata_for_target(

@@ -300,6 +300,14 @@ class GatewayTurnMixin:
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
+        with suppress(Exception):
+            from gateway.run import _rehydrate_bordero_delivery_route
+            _adapter_for_source = getattr(self, "_adapter_for_source", None)
+            if callable(_adapter_for_source):
+                _rehydrate_bordero_delivery_route(source, _adapter_for_source(source))
+                _channel_prompt = getattr(source, "_channel_prompt", None)
+                if _channel_prompt and not getattr(event, "channel_prompt", None):
+                    event.channel_prompt = _channel_prompt
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
@@ -2399,6 +2407,8 @@ class GatewayTurnMixin:
         _streaming_enabled = (
             _scfg.enabled and _scfg.transport != "off" if _plat_streaming is None else bool(_plat_streaming)
         )
+        if isinstance(_thread_metadata, dict) and _thread_metadata.get("disable_streaming") is True:
+            _streaming_enabled = False
         if not _streaming_enabled:
             return None
         try:
@@ -2422,6 +2432,7 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        channel_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2465,6 +2476,8 @@ class GatewayTurnMixin:
         # OpenAI chat format. The remote keeps continuity via X-Hermes-Session-Id; send the current
         # message plus a compact text-only history for a remote that has none yet.
         api_messages: List[Dict[str, str]] = [{"role": "system", "content": context_prompt}] if context_prompt else []
+        if channel_prompt:
+            api_messages.append({"role": "system", "content": channel_prompt})
         api_messages += [
             {"role": msg.get("role"), "content": msg.get("content")}
             for msg in history if msg.get("role") in {"user", "assistant"} and msg.get("content")
@@ -3788,6 +3801,7 @@ class GatewayTurnMixin:
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id,
+                channel_prompt=channel_prompt,
             )
 
         from run_agent import AIAgent

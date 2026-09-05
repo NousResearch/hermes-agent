@@ -124,6 +124,10 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
 
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
+    if getattr(args, "list_groups", False) is True:
+        from hermes_cli.main import _list_whatsapp_groups
+        _list_whatsapp_groups(args)
+        return
     from hermes_cli.main import _require_tty, get_hermes_home
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value

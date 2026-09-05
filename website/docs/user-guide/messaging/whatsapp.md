@@ -138,6 +138,38 @@ hermes gateway install      # Install as a user service
 sudo hermes gateway install --system   # Linux only: boot-time system service
 ```
 
+## Borderô read-only reader
+
+Borderô mode is an opt-in, fail-closed reader for exactly two configured WhatsApp groups. It
+requires `mode: bot`, disables DMs and read receipts, and never sends to WhatsApp. Final reports
+are relayed only to the exact Telegram forum topics configured for each route.
+
+```yaml
+whatsapp:
+  enabled: true
+  mode: bot
+  bordero_read_only: true
+  dm_policy: disabled
+  group_policy: allowlist
+  send_read_receipts: false
+  bordero_routes:
+    - group_jid: "<PTT_GROUP_JID>@g.us"
+      store: PTT
+      location: UBBO
+      telegram_chat_id: "-1000000000000"
+      telegram_thread_id: "123"
+    - group_jid: "<ODI_GROUP_JID>@g.us"
+      store: ODI
+      location: Saldanha
+      telegram_chat_id: "-1000000000000"
+      telegram_thread_id: "456"
+```
+
+The two JIDs and Telegram topic IDs are exact identifiers, not display names. Use
+`hermes whatsapp --list-groups` to inspect group JIDs; the command performs discovery only and
+does not send messages or mark them read. The reader rejects DMs, unknown groups, malformed
+routes, and configurations that do not contain exactly PTT/UBBO and ODI/Saldanha.
+
 The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ---

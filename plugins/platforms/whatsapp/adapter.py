@@ -175,6 +175,15 @@ from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
+from .bordero_reader import (
+    BorderoReaderConfigError,
+    BorderoRoute,
+    bordero_send_message_block,
+    build_ingest_prompt,
+    is_configured_bordero_group,
+    load_bordero_reader_config,
+    route_for_message,
+)
 from utils import env_int
 
 
@@ -239,6 +248,8 @@ def _needs_bridge(method):
     """Adapter-method decorator: return ``SendResult(error=...)`` when ``_bridge_unavailable()`` says so."""
     @wraps(method)
     async def _guarded(self, *args, **kwargs):
+        if getattr(self, "_bordero_reader_enabled", lambda: False)():
+            return self._suppressed_send_result(kwargs.get("chat_id", args[0] if args else ""))
         unavailable = await self._bridge_unavailable()
         return SendResult(success=False, error=unavailable) if unavailable else await method(self, *args, **kwargs)
     return _guarded
@@ -257,6 +268,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         extra = config.extra
+        self._bordero_reader = load_bordero_reader_config(extra)
+        if self._bordero_reader.enabled:
+            if str(extra.get("mode") or "").strip().lower() != "bot":
+                raise BorderoReaderConfigError("borderô read-only mode requires mode=bot")
+            if str(extra.get("dm_policy") or "").strip().lower() != "disabled":
+                raise BorderoReaderConfigError("borderô read-only mode requires dm_policy=disabled")
+            if extra.get("group_policy") is not None and str(extra["group_policy"]).strip().lower() != "allowlist":
+                raise BorderoReaderConfigError("borderô read-only mode requires group_policy=allowlist")
+            configured_groups = extra.get("group_allow_from")
+            if configured_groups is not None and self._coerce_allow_list(configured_groups) != set(self._bordero_reader.group_jids):
+                raise BorderoReaderConfigError("group_allow_from must exactly match the configured borderô routes")
+            self._group_policy = "allowlist"
+            self._group_allow_from = set(self._bordero_reader.group_jids)
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = extra.get("bridge_port", 3000)
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
@@ -268,6 +292,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._group_allow_from = self._coerce_allow_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
+        if self._bordero_reader.enabled:
+            self._group_policy = "allowlist"
+            self._group_allow_from = set(self._bordero_reader.group_jids)
+        if self._bordero_reader.enabled and self._send_read_receipts:
+            raise BorderoReaderConfigError("borderô read-only mode requires send_read_receipts=false")
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = self._bridge_log = self._poll_task = self._http_session = None
@@ -354,13 +383,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
                 return False
             running_hash, disk_hash = data.get("scriptHash", ""), _file_content_hash(bridge_path)
-            if running_hash and disk_hash and running_hash == disk_hash and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts:
+            running_groups = data.get("borderoGroupJids")
+            if not isinstance(running_groups, list):
+                running_groups = []
+            desired_groups = sorted(getattr(getattr(self, "_bordero_reader", None), "group_jids", ()))
+            if (running_hash and disk_hash and running_hash == disk_hash
+                    and bool(data.get("sendReadReceipts", False)) == self._send_read_receipts
+                    and bool(data.get("borderoReadOnly", False)) == self._bordero_reader_enabled()
+                    and sorted(running_groups) == desired_groups):
                 print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                 self._mark_connected()
                 self._attach_to_bridge(None)  # Not managed by us
                 self._wire_plugin_handlers(None)
                 return True
-            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
+            stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "bridge policy configuration changed"
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
         except Exception:
             pass  # Bridge not running, start a new one
@@ -373,9 +409,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if self._reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
+        bridge_env["WHATSAPP_BORDERO_READ_ONLY"] = "true" if self._bordero_reader_enabled() else "false"
+        bridge_env["WHATSAPP_BORDERO_GROUP_JIDS"] = ",".join(sorted(getattr(getattr(self, "_bordero_reader", None), "group_jids", ())))
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
                 bridge_env[_key] = _v
+        if self._bordero_reader_enabled():
+            bridge_env.update(
+                WHATSAPP_MODE="bot",
+                WHATSAPP_DM_POLICY="disabled",
+                WHATSAPP_GROUP_POLICY="allowlist",
+                WHATSAPP_SEND_READ_RECEIPTS="false",
+            )
         # Without these the bridge hardcodes ~/.hermes/{image,audio,document}_cache (wrong under HERMES_HOME/profiles/cache layout).
         img_dir, audio_dir, _video_dir, doc_dir = _cache_dirs()
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))
@@ -473,7 +518,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
             self._bridge_process = subprocess.Popen(
                 [find_node_executable("node") or "node", str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
-                 "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
+                 "--mode", "bot" if self._bordero_reader_enabled() else _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
                 return False
@@ -546,7 +591,76 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         print(f"[{self.name}] Disconnected")
 
     async def _bridge_unavailable(self) -> Optional[str]:
-        return "Not connected" if not self._running or not self._http_session else (await self._check_managed_bridge_exit() or None)
+        return "Not connected" if not getattr(self, "_running", False) or not getattr(self, "_http_session", None) else (await self._check_managed_bridge_exit() or None)
+
+    def _bordero_route_for_message(self, data: dict[str, Any]) -> Optional[BorderoRoute]:
+        return route_for_message(data, getattr(self, "_bordero_reader", None)) if getattr(self, "_bordero_reader", None) else None
+
+    def _bordero_reader_enabled(self) -> bool:
+        return bool(getattr(getattr(self, "_bordero_reader", None), "enabled", False))
+
+    def _is_silent_bordero_chat(self, chat_id: Any) -> bool:
+        return is_configured_bordero_group(chat_id, getattr(self, "_bordero_reader", None)) if getattr(self, "_bordero_reader", None) else False
+
+    @staticmethod
+    def _suppressed_send_result(chat_id: Any) -> SendResult:
+        return SendResult(success=False, error="bordero_read_only_whatsapp", raw_response={
+            "suppressed": True, "reason": "bordero_read_only_whatsapp", "chat_id": str(chat_id),
+        })
+
+    def _should_process_message(self, data: dict[str, Any]) -> bool:
+        if self._bordero_reader_enabled():
+            return self._bordero_route_for_message(data) is not None
+        return super()._should_process_message(data)
+
+    def _resolve_bordero_delivery(self, metadata: Optional[Dict[str, Any]]):
+        route_data = metadata.get("hermes_delivery_route") if isinstance(metadata, dict) else None
+        if not isinstance(route_data, dict):
+            return None, None, None, None
+        group_jid = route_data.get("group_jid")
+        config = getattr(self, "_bordero_reader", None)
+        route = config.routes.get(group_jid) if config and isinstance(group_jid, str) else None
+        if route is None or route_data.get("read_only") is not True or route_data.get("telegram_target") != route.telegram_target:
+            return None, None, None, "bordero_delivery_route_invalid"
+        runner = getattr(self, "gateway_runner", None)
+        profile = str((metadata or {}).get("hermes_profile") or "").strip()
+        adapters = (getattr(runner, "_profile_adapters", {}) or {}).get(profile) if profile and profile != "default" else getattr(runner, "adapters", None)
+        telegram = adapters.get(Platform.TELEGRAM) if isinstance(adapters, dict) else None
+        if telegram is None or telegram is self:
+            return None, None, None, "bordero_telegram_adapter_unavailable"
+        return telegram, route.telegram_chat_id, {"thread_id": route.telegram_thread_id, "notify": bool((metadata or {}).get("notify", True))}, None
+
+    async def _send_bordero_via_telegram(self, chat_id: str, content: str, metadata: Optional[Dict[str, Any]] = None):
+        if not isinstance(metadata, dict) or "hermes_delivery_route" not in metadata:
+            return None
+        target, target_chat, target_metadata, error = self._resolve_bordero_delivery(metadata)
+        if error or target is None:
+            return SendResult(success=False, error=error or "bordero_delivery_route_invalid")
+        return await target._send_with_retry(chat_id=target_chat, content=content, reply_to=None, metadata=target_metadata)
+
+    async def _send_bordero_media_via_telegram(self, chat_id, file_path, media_type, caption, file_name, metadata):
+        if not isinstance(metadata, dict) or "hermes_delivery_route" not in metadata:
+            return None
+        target, target_chat, target_metadata, error = self._resolve_bordero_delivery(metadata)
+        if error or target is None:
+            return SendResult(success=False, error=error or "bordero_delivery_route_invalid")
+        method_name = {"image": "send_image_file", "video": "send_video", "audio": "send_voice", "document": "send_document"}.get(media_type)
+        method = getattr(target, method_name, None) if method_name else None
+        if not callable(method):
+            return SendResult(success=False, error=f"bordero_telegram_media_unsupported:{media_type}")
+        kwargs = {"chat_id": target_chat, "caption": caption, "reply_to": None, "metadata": target_metadata}
+        if media_type == "document":
+            kwargs.update(file_path=file_path, file_name=file_name)
+        elif media_type == "video":
+            kwargs["video_path"] = file_path
+        elif media_type == "audio":
+            kwargs["audio_path"] = file_path
+        else:
+            kwargs["image_path"] = file_path
+        try:
+            return await method(**kwargs)
+        except Exception:
+            return SendResult(success=False, error="bordero_telegram_media_delivery_failed")
 
     async def _post_bridge_message(self, path: str, payload: Dict[str, Any], *, timeout: float) -> SendResult:
         """POST to the bridge; 200 → SendResult(messageId, raw_response), else the error text."""
@@ -559,9 +673,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
-    @_needs_bridge
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
+        routed = await self._send_bordero_via_telegram(chat_id, content, metadata)
+        if routed is not None:
+            return routed
+        if self._bordero_reader_enabled():
+            return self._suppressed_send_result(chat_id)
+        unavailable = await self._bridge_unavailable()
+        if unavailable:
+            return SendResult(success=False, error=unavailable)
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         chat_id = to_whatsapp_jid(chat_id)
@@ -611,6 +732,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
                            metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Multiple-choice clarify as a native poll (the pick arrives as message text for the normal intercept); else text prompt."""
+        if self._bordero_reader_enabled():
+            return self._suppressed_send_result(chat_id)
         clean_choices = [str(choice).strip() for choice in (choices or []) if str(choice).strip()]
         if 2 <= len(clean_choices) <= 12:
             result = await self.send_poll(chat_id, str(question or "").strip(), clean_choices, selectable_count=1)
@@ -632,6 +755,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
                          metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Download image URL to cache, send natively via bridge (``metadata`` honors the base contract)."""
+        if self._bordero_reader_enabled():
+            target, target_chat, target_metadata, error = self._resolve_bordero_delivery(metadata)
+            if isinstance(metadata, dict) and "hermes_delivery_route" in metadata:
+                if error or target is None:
+                    return SendResult(success=False, error=error or "bordero_delivery_route_invalid")
+                return await target.send_image(target_chat, image_url, caption, None, target_metadata)
+            return self._suppressed_send_result(chat_id)
         try:
             local_path = await cache_image_from_url(image_url)
             return await self._send_media_to_bridge(chat_id, local_path, "image", caption)
@@ -639,19 +769,41 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata)
 
     async def send_image_file(self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
+        routed = await self._send_bordero_media_via_telegram(chat_id, image_path, "image", caption, None, kwargs.get("metadata"))
+        if routed is not None:
+            return routed
+        if self._bordero_reader_enabled():
+            return self._suppressed_send_result(chat_id)
         return await self._send_media_to_bridge(chat_id, image_path, "image", caption)
 
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
+        routed = await self._send_bordero_media_via_telegram(chat_id, video_path, "video", caption, None, kwargs.get("metadata"))
+        if routed is not None:
+            return routed
+        if self._bordero_reader_enabled():
+            return self._suppressed_send_result(chat_id)
         return await self._send_media_to_bridge(chat_id, video_path, "video", caption)
 
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
+        routed = await self._send_bordero_media_via_telegram(chat_id, audio_path, "audio", caption, None, kwargs.get("metadata"))
+        if routed is not None:
+            return routed
+        if self._bordero_reader_enabled():
+            return self._suppressed_send_result(chat_id)
         return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
                             reply_to: Optional[str] = None, **kwargs) -> SendResult:
+        routed = await self._send_bordero_media_via_telegram(chat_id, file_path, "document", caption, file_name, kwargs.get("metadata"))
+        if routed is not None:
+            return routed
+        if self._bordero_reader_enabled():
+            return self._suppressed_send_result(chat_id)
         return await self._send_media_to_bridge(chat_id, file_path, "document", caption, file_name or os.path.basename(file_path))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
+        if self._bordero_reader_enabled():
+            return
         if await self._bridge_unavailable():
             return
         with suppress(Exception):
@@ -808,6 +960,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
             ) if v}
+            bordero_route = self._bordero_route_for_message(data)
+            if bordero_route is not None:
+                delivery_route = {
+                    "group_jid": bordero_route.group_jid,
+                    "telegram_chat_id": bordero_route.telegram_chat_id,
+                    "telegram_thread_id": bordero_route.telegram_thread_id,
+                    "telegram_target": bordero_route.telegram_target,
+                    "read_only": True,
+                }
+                metadata["bordero_reader"] = {**delivery_route, "store": bordero_route.store, "location": bordero_route.location}
+                metadata["suppress_whatsapp_egress"] = True
+                setattr(source, "_delivery_route", delivery_route)
+                setattr(source, "_channel_prompt", build_ingest_prompt(bordero_route))
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.
             if data.get("fromOwner"):
@@ -821,6 +986,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
+                channel_prompt=build_ingest_prompt(bordero_route) if bordero_route else None,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
@@ -843,6 +1009,12 @@ def _bridge_media_type(file_path: str, is_voice: bool, force_document: bool) -> 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, caption=None):
     """Out-of-process delivery via the bridge HTTP API (standalone_sender_fn: cron apart from the gateway); ``caption`` rides on the media bubble."""
+    try:
+        reader = load_bordero_reader_config(getattr(pconfig, "extra", {}) or {})
+    except BorderoReaderConfigError as exc:
+        return {"error": f"Borderô reader configuration rejected: {exc}"}
+    if reader.enabled:
+        return {"error": "WhatsApp Borderô reader is read-only; standalone outbound delivery is blocked"}
     try:
         import aiohttp
     except ImportError:
@@ -929,6 +1101,22 @@ def _apply_yaml_config(yaml_cfg: dict, whatsapp_cfg: dict) -> dict | None:
     precedence over YAML. Returns None — everything flows through env. See #24849.
     """
     import json as _json
+    whatsapp_cfg = dict(whatsapp_cfg or {})
+    nested_extra = whatsapp_cfg.get("extra")
+    if isinstance(nested_extra, dict):
+        whatsapp_cfg.update(nested_extra)
+    if "bordero_read_only" in whatsapp_cfg and type(whatsapp_cfg["bordero_read_only"]) is not bool:
+        from plugins.platforms.whatsapp.bordero_reader import BorderoReaderConfigError
+        raise BorderoReaderConfigError(
+            "bordero_read_only must be a YAML boolean (true or false)"
+        )
+    bordero_enabled = whatsapp_cfg.get("bordero_read_only", False)
+    routes = whatsapp_cfg.get("bordero_routes")
+    group_jids = sorted({r["group_jid"] for r in routes or () if isinstance(r, dict) and isinstance(r.get("group_jid"), str) and re.fullmatch(r"\d+@g\.us", r["group_jid"])}) if bordero_enabled and isinstance(routes, (list, tuple)) else []
+    os.environ["WHATSAPP_BORDERO_GROUP_JIDS"] = ",".join(group_jids)
+    os.environ["WHATSAPP_BORDERO_READ_ONLY"] = "true" if bordero_enabled else "false"
+    if bordero_enabled:
+        os.environ.update(WHATSAPP_MODE="bot", WHATSAPP_DM_POLICY="disabled", WHATSAPP_GROUP_POLICY="allowlist", WHATSAPP_SEND_READ_RECEIPTS="false")
     for key, env in _YAML_LOWERCASE_KEYS:
         if key in whatsapp_cfg and not os.getenv(env):
             os.environ[env] = str(whatsapp_cfg[key]).lower()
@@ -954,6 +1142,24 @@ def _build_adapter(config):
     return WhatsAppAdapter(config)
 
 
+def _bordero_pre_tool_call(tool_name=None, args=None, **kwargs):
+    """Fail closed before ``send_message`` can reach any transport."""
+    if tool_name != "send_message":
+        return None
+    try:
+        from gateway.session_context import get_session_env
+        if str(get_session_env("HERMES_SESSION_PLATFORM", "")).lower() != "whatsapp":
+            return None
+        from gateway.config import Platform, load_gateway_config
+        config = load_gateway_config().platforms.get(Platform.WHATSAPP)
+        reader = load_bordero_reader_config(getattr(config, "extra", {}) if config else {})
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    except Exception:
+        return {"action": "block", "message": "BLOCKED: could not verify the WhatsApp Borderô egress policy"}
+    reason = bordero_send_message_block(tool_name, args, platform="whatsapp", chat_id=chat_id, config=reader)
+    return {"action": "block", "message": reason} if reason else None
+
+
 def register(ctx) -> None:
     ctx.register_platform(
         name="whatsapp", label="WhatsApp", adapter_factory=_build_adapter, check_fn=check_whatsapp_requirements,
@@ -963,3 +1169,6 @@ def register(ctx) -> None:
         allow_all_env="WHATSAPP_ALLOW_ALL_USERS", cron_deliver_env_var="WHATSAPP_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, max_message_length=4096, emoji="💬", allow_update_command=True,
     )
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        register_hook("pre_tool_call", _bordero_pre_tool_call)

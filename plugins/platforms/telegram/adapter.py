@@ -12,7 +12,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set, Union
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -145,7 +145,10 @@ from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, classify_send_error,
     cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len)
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ids import (
+    normalize_telegram_chat_id,
+    telegram_chat_id_key,
+)
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -365,6 +368,28 @@ class _PollingLifecycleAbort(RuntimeError):
     """Internal control flow for polling startup fenced by teardown."""
 
 
+def _is_stale_telegram_edit_target(error: object) -> bool:
+    """True when this message_id cannot be edited or deleted again.
+
+    Covers gone ids (deleted / inaccessible) and Bot API permanent refusals
+    to mutate that id. Does not match ``message is not modified`` (success),
+    flood-control, or transient network errors.
+    """
+    text = str(error or "").lower().replace("’", "'")
+    if "not modified" in text:
+        return False
+    return (
+        "message to edit not found" in text
+        or "message to delete not found" in text
+        or "message can't be edited" in text
+        or "message cannot be edited" in text
+        or "message can't be deleted" in text
+        or "message cannot be deleted" in text
+        or "message_id_invalid" in text
+        or "message identifier is not specified" in text
+    )
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -526,6 +551,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # Last truncated mid-stream preview per (chat_id, message_id): past the 4096 cap every edit
         # truncates to the SAME text, and resending burns flood budget. Dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
+
+    def _forget_status_message_id(self, chat_id: Union[str, int], message_id: str) -> None:
+        """Drop status-cache rows that point at a deleted/missing Telegram message."""
+        chat = telegram_chat_id_key(chat_id)
+        mid = str(message_id)
+        stale = [
+            key
+            for key, cached in self._status_message_ids.items()
+            if telegram_chat_id_key(key[0]) == chat and str(cached) == mid
+        ]
+        for key in stale:
+            self._status_message_ids.pop(key, None)
 
     @property
     def send_path_degraded(self) -> bool:
@@ -3392,7 +3429,7 @@ class TelegramAdapter(BasePlatformAdapter):
         append a fresh bubble on every call. With this method, the first call sends and the message id is
         remembered; subsequent calls with the same (chat_id, status_key) edit that same message in place.
         """
-        key = (str(chat_id), str(status_key))
+        key = (telegram_chat_id_key(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
             result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)
@@ -3421,6 +3458,9 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
+            if _is_stale_telegram_edit_target(fmt_err):
+                self._forget_status_message_id(chat_id, message_id)
+                raise
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
             await self._edit_text(chat_id, message_id, plain)
         return False
@@ -3523,6 +3563,10 @@ class TelegramAdapter(BasePlatformAdapter):
             if any(m in err_str for m in _transient_markers):
                 logger.warning("[%s] Transient network error editing message %s (will retry): %s", self.name, message_id, safe_error)
                 return SendResult(success=False, error=safe_error, retryable=True)
+            if _is_stale_telegram_edit_target(e):
+                self._forget_status_message_id(chat_id, message_id)
+                logger.debug("[%s] Edit target %s is gone; cache dropped: %s", self.name, message_id, safe_error)
+                return SendResult(success=False, error=safe_error)
             logger.error("[%s] Failed to edit Telegram message %s: %s", self.name, message_id, safe_error)
             return SendResult(success=False, error=safe_error)
 
@@ -3632,8 +3676,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         try:
             await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
+            self._forget_status_message_id(chat_id, message_id)
             return True
         except Exception as e:
+            if _is_stale_telegram_edit_target(e):
+                self._forget_status_message_id(chat_id, message_id)
             logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))
             return False
 

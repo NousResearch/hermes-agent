@@ -99,6 +99,7 @@ class TestMatrixExecApprovalReactions:
             content=content,
         )
 
+        adapter.edit_message = AsyncMock(return_value=types.SimpleNamespace(success=True, message_id="$edit"))
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._on_reaction(event)
 

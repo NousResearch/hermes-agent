@@ -426,6 +426,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `EMAIL_SMTP_HOST` | SMTP hostname for the email adapter |
 | `EMAIL_SMTP_PORT` | SMTP port |
 | `EMAIL_ALLOWED_USERS` | Comma-separated email addresses allowed to message the bot |
+| `EMAIL_AUTHSERV_ID` | Exact authserv-id that stamps the receiving MTA's topmost `Authentication-Results`; required with an allowlist unless authenticated-sender verification is disabled |
 | `EMAIL_HOME_ADDRESS` | Default recipient for proactive email delivery |
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |

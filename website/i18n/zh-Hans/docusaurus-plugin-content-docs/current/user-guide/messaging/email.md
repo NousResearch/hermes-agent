@@ -66,6 +66,9 @@ EMAIL_SMTP_HOST=smtp.gmail.com
 
 # 安全设置（推荐）
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
+# 接收 MTA 在最上层 Authentication-Results 中写入的精确 authserv-id。
+# 使用白名单时，请先确认该 MTA 会移除伪造此 id 的入站头部，再写入自己的结果。
+EMAIL_AUTHSERV_ID=mx.google.com
 
 # 可选
 EMAIL_IMAP_PORT=993                    # 默认：993（IMAP SSL）
@@ -141,6 +144,8 @@ platforms:
 2. **未设置白名单** → 未知发件人会收到配对码
 3. **`EMAIL_ALLOW_ALL_USERS=true`** → 接受任意发件人（请谨慎使用）
 
+当 `EMAIL_ALLOWED_USERS` 授予访问权限时，发件人认证默认开启。请将 `EMAIL_AUTHSERV_ID` 设置为接收 MTA 在**最上层** `Authentication-Results` 头中写入的精确 id。未设置该 pin 或顶部头部不匹配时，Hermes 会拒绝邮件。还须确认 MTA 会先移除声称该 id 的入站 `Authentication-Results` 头，再添加自己的头部，因为仅复制 id 不能证明头部来自该 MTA。若服务商无法满足此要求，可显式设置 `platforms.email.require_authenticated_sender: false` 或 `EMAIL_TRUST_FROM_HEADER=true` 来接受风险。
+
 :::warning
 **请务必配置 `EMAIL_ALLOWED_USERS`。** 若不配置，任何知道 Agent 邮箱地址的人都可以发送命令。Agent 默认具有终端访问权限。
 :::
@@ -153,7 +158,7 @@ platforms:
 |---------|----------|
 | 启动时出现 **"IMAP connection failed"** | 检查 `EMAIL_IMAP_HOST` 和 `EMAIL_IMAP_PORT`。确保账户已启用 IMAP。对于 Gmail，在设置 → 转发和 POP/IMAP 中启用。 |
 | 启动时出现 **"SMTP connection failed"** | 检查 `EMAIL_SMTP_HOST` 和 `EMAIL_SMTP_PORT`。确认密码正确（Gmail 请使用应用专用密码）。 |
-| **未收到邮件** | 检查 `EMAIL_ALLOWED_USERS` 是否包含发件人邮箱。检查垃圾邮件文件夹——部分服务商会将自动回复标记为垃圾邮件。 |
+| **未收到邮件** | 检查 `EMAIL_ALLOWED_USERS` 是否包含发件人邮箱。使用白名单时，将 `EMAIL_AUTHSERV_ID` 设为接收 MTA 写入的精确 id，并确认它位于最上层 `Authentication-Results` 头。检查垃圾邮件文件夹——部分服务商会将自动回复标记为垃圾邮件。 |
 | **"Authentication failed"** | 对于 Gmail，必须使用应用专用密码，而非常规密码。请先确保已启用双重验证。 |
 | **重复回复** | 确保只有一个 gateway 实例在运行。检查 `hermes gateway status`。 |
 | **响应缓慢** | 默认轮询间隔为 15 秒。设置 `EMAIL_POLL_INTERVAL=5` 可加快响应速度（但会增加 IMAP 连接次数）。 |
@@ -169,6 +174,7 @@ platforms:
 
 - 使用**应用专用密码**代替主密码（Gmail 开启双重验证后必须如此）
 - 设置 `EMAIL_ALLOWED_USERS` 以限制可与 Agent 交互的用户
+- 使用白名单时，将 `EMAIL_AUTHSERV_ID` 设为接收 MTA 最上层 `Authentication-Results` 头的精确 id，并确认该 MTA 会移除伪造此 id 的入站头部
 - 密码存储在 `~/.hermes/.env` 中——请保护此文件（`chmod 600`）
 - IMAP 默认使用 SSL（端口 993），SMTP 默认使用 STARTTLS（端口 587）——连接已加密
 
@@ -186,5 +192,6 @@ platforms:
 | `EMAIL_SMTP_PORT` | 否 | `587` | SMTP 服务器端口 |
 | `EMAIL_POLL_INTERVAL` | 否 | `15` | 收件箱检查间隔（秒） |
 | `EMAIL_ALLOWED_USERS` | 否 | — | 允许的发件人地址，逗号分隔 |
+| `EMAIL_AUTHSERV_ID` | 否 | — | 接收 MTA 最上层 `Authentication-Results` 中的精确 authserv-id；使用白名单时必须设置，除非已禁用发件人认证校验 |
 | `EMAIL_HOME_ADDRESS` | 否 | — | cron 任务的默认投递目标 |
 | `EMAIL_ALLOW_ALL_USERS` | 否 | `false` | 允许所有发件人（不推荐） |

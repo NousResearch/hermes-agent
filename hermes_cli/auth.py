@@ -932,15 +932,10 @@ def write_credential_pool(
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
     disk but missing from *entries* (added concurrently) are merged back unless in *removed_ids*,
-    so a rotation/exhaustion rewrite never drops a concurrent credential.
-
-    Pass ``status_cleared_ids`` for entries whose status the caller intentionally
-    cleared — the same problem one step further in. The recency merge cannot tell
-    an operator's ``hermes auth reset`` from a stale snapshot: a clear sets
-    ``last_status_at`` to None, which compares as epoch 0 and so always loses to
-    the on-disk timestamp, and the cooldown was copied straight back. Declaring
-    the intent is what separates "I have not seen the newer status" from "I have
-    seen it and I am dropping it"."""
+    so a rotation/exhaustion rewrite never drops a concurrent credential. Entries in
+    *status_cleared_ids* were cleared deliberately (``hermes auth reset``) and skip the
+    recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
+    epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -954,13 +949,10 @@ def write_credential_pool(
         new_ids = set(_entry_ids(sanitized))
         status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = [
-            e
-            if isinstance(e, dict) and e.get("id") in status_cleared
-            else (
-                _merge_disk_cooldown_state(e, existing_by_id.get(e.get("id")), provider_id)
-                if isinstance(e, dict)
-                else e
+            _merge_disk_cooldown_state(
+                e, None if e.get("id") in status_cleared else existing_by_id.get(e.get("id")), provider_id,
             )
+            if isinstance(e, dict) else e
             for e in sanitized]
         for disk_entry in existing_list:
             disk_id = disk_entry.get("id") if isinstance(disk_entry, dict) else None

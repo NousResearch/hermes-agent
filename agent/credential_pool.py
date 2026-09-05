@@ -811,6 +811,7 @@ def _update_root_pool_rows(
         existing = pool.get(provider)
         existing_list = existing if isinstance(existing, list) else []
         incoming_by_id = {p.get("id"): p for p in payloads if isinstance(p, dict) and p.get("id")}
+        cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = []
         changed = False
         for disk_entry in existing_list:
@@ -819,13 +820,10 @@ def _update_root_pool_rows(
             if incoming is None:
                 merged.append(disk_entry)
                 continue
-            cleared = {cid for cid in (status_cleared_ids or ()) if cid}
-            if did in cleared:
-                # The caller deliberately cleared this entry's status; do not
-                # let the disk recency merge restore the cooldown.
-                updated = incoming
-            else:
-                updated = auth_mod._merge_disk_cooldown_state(incoming, disk_entry, provider)
+            # A deliberately cleared entry has no disk cooldown worth keeping.
+            updated = auth_mod._merge_disk_cooldown_state(
+                incoming, None if did in cleared else disk_entry, provider,
+            )
             if updated != disk_entry:
                 changed = True
             merged.append(updated)
@@ -870,9 +868,7 @@ def persist_pool_entries(
                 )
             return
     write_credential_pool(
-        provider, payloads,
-        removed_ids=removed_ids,
-        **({"status_cleared_ids": status_cleared_ids} if status_cleared_ids else {}),
+        provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
     )
 
 
@@ -2164,61 +2160,28 @@ class CredentialPool:
     def reset_statuses(self) -> int:
         """Clear exhaustion state on every entry. Returns how many were cleared.
 
-        Two details are load-bearing, and both were missing:
-
-        ``failure_reason`` is cleared alongside the status fields. It lives in
-        ``extra`` rather than as a dataclass field, so ``replace()`` cannot reach
-        it and it survived every reset — leaving an entry with no status but
-        still classified ``billing``, a contradiction ``hermes auth list``
-        renders as if it were a finding.
-
-        The persist declares the clear as DELIBERATE. ``write_credential_pool``
-        merges on-disk status over the caller's snapshot whenever the disk copy
-        is more recent and still binding, so a process cannot resurrect a key
-        another one has just rate-limited. Clearing sets ``last_status_at`` to
-        None, which compares as epoch 0 — older than any real timestamp — so
-        that merge read an operator reset as exactly the stale snapshot it
-        exists to reject and copied the cooldown straight back. The command
-        reported success and changed nothing, and only while the cooldown was
-        still binding: once expired the merge bails out early and the reset
-        appeared to work. Broken precisely when it is needed.
+        ``failure_reason`` lives in ``extra``, not a dataclass field, so it is
+        stripped explicitly. The persist declares the cleared ids because the
+        disk-recency merge reads a cleared ``last_status_at`` (None -> epoch 0)
+        as a stale snapshot and would copy a still-binding cooldown back.
         """
         with self._lock:
-            count = 0
-            cleared_ids: List[str] = []
-            new_entries = []
-            for entry in self._entries:
-                if (
-                    entry.last_status
-                    or entry.last_status_at
-                    or entry.last_error_code
-                    or getattr(entry, "failure_reason", None)
-                ):
-                    extra = {
-                        key: value
-                        for key, value in (entry.extra or {}).items()
-                        if key != "failure_reason"
-                    }
-                    new_entries.append(
-                        replace(
-                            entry,
-                            last_status=None,
-                            last_status_at=None,
-                            last_error_code=None,
-                            last_error_reason=None,
-                            last_error_message=None,
-                            last_error_reset_at=None,
-                            extra=extra,
-                        )
+            stale = [
+                e for e in self._entries
+                if e.last_status or e.last_status_at or e.last_error_code or e.failure_reason
+            ]
+            if stale:
+                stale_ids = {e.id for e in stale}
+                self._entries = [
+                    replace(
+                        e, **_CLEAR_STATUS,
+                        extra={k: v for k, v in e.extra.items() if k != "failure_reason"},
                     )
-                    cleared_ids.append(entry.id)
-                    count += 1
-                else:
-                    new_entries.append(entry)
-            if count:
-                self._entries = new_entries
-                self._persist(status_cleared_ids=cleared_ids)
-            return count
+                    if e.id in stale_ids else e
+                    for e in self._entries
+                ]
+                self._persist(status_cleared_ids=list(stale_ids))
+            return len(stale)
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:
         with self._lock:

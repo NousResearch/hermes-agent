@@ -1500,7 +1500,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[Dict[str, Any]] = None,
+        is_voice: bool = False) -> SendResult:
         """Upload audio as an MSC3245 voice message. Voice bubbles need Ogg/Opus but callers pass any
         format (e.g. TTS output), so transcode here — best-effort: without ffmpeg the original is sent."""
         converted_path: Optional[str] = None

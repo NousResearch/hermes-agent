@@ -1001,9 +1001,11 @@ export function useSessionActions({
       // dial the owning backend without moving $activeGatewayProfile.
       if ($showAllProfiles.get()) {
         if (resolvedConnectionId) {
-          await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
+          await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default', {
+            spawnPriority: 'foreground'
+          })
         } else if (sessionProfile) {
-          await openGatewayForProfile(normalizeProfileKey(sessionProfile))
+          await openGatewayForProfile(normalizeProfileKey(sessionProfile), { spawnPriority: 'foreground' })
         }
       } else if (resolvedConnectionId) {
         await ensureGatewayAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')

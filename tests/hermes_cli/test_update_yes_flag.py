@@ -12,7 +12,18 @@ import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.main import cmd_update
+
+
+@pytest.fixture(autouse=True)
+def _patch_gateway_discovery():
+    """Keep updater gateway restarts isolated from live system services."""
+    with patch("hermes_cli.gateway.find_gateway_pids", return_value=[]), \
+         patch("hermes_cli.gateway.supports_systemd_services", return_value=False), \
+         patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]):
+        yield
 
 
 def _make_run_side_effect(

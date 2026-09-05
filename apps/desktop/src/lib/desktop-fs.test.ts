@@ -85,13 +85,15 @@ describe('desktop filesystem facade', () => {
       entries: [{ name: 'local', path: '/local', isDirectory: true }]
     })
     await expect(readDesktopFileText('/work/file.txt')).resolves.toMatchObject({ text: 'local' })
-    await expect(readDesktopFileDataUrl('/work/file.txt')).resolves.toBe('data:text/plain;base64,bG9jYWw=')
+    await expect(readDesktopFileDataUrl('/work/file.txt', '/work/report.md', 2_097_152)).resolves.toBe(
+      'data:text/plain;base64,bG9jYWw='
+    )
     await expect(desktopGitRoot('/work')).resolves.toBe('/local')
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/local'])
 
     expect(readDir).toHaveBeenCalledWith('/work')
     expect(readFileText).toHaveBeenCalledWith('/work/file.txt')
-    expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt')
+    expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt', '/work/report.md', 2_097_152)
     expect(gitRoot).toHaveBeenCalledWith('/work')
     expect(selectPaths).toHaveBeenCalledWith({ directories: true, profile: 'team-local' })
     expect(api).not.toHaveBeenCalled()
@@ -102,19 +104,30 @@ describe('desktop filesystem facade', () => {
 
     await expect(readDesktopDir('/home/user/project')).resolves.toMatchObject({ entries: [{ name: 'remote' }] })
     await expect(readDesktopFileText('/home/user/project/a b.txt')).resolves.toMatchObject({ text: 'remote' })
-    await expect(readDesktopFileDataUrl('/home/user/project/a b.txt')).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
+    await expect(
+      readDesktopFileDataUrl('/home/user/project/a b.txt', '/home/user/project/report.md', 2_097_152)
+    ).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
     await expect(desktopGitRoot('/home/user/project')).resolves.toBe('/remote')
     await expect(desktopDefaultCwd()).resolves.toEqual({ cwd: '/backend/project', branch: 'main' })
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fhome%2Fuser%2Fproject' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
-    expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt&relative_to_file=%2Fhome%2Fuser%2Fproject%2Freport.md&max_bytes=2097152'
+    })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/git-root?path=%2Fhome%2Fuser%2Fproject' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd' })
     expect(readDir).not.toHaveBeenCalled()
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty data URL response', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    api.mockResolvedValueOnce({} as never)
+
+    await expect(readDesktopFileDataUrl('/remote/chart.svg')).rejects.toThrow('empty data URL')
   })
 
   it('does not retry the same unreadable path through the local facade', async () => {

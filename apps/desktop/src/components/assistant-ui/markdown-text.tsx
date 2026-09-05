@@ -356,7 +356,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 // This is split from the image path because that path is built on hooks: a
 // conditional return inside it would have to sit after every hook call, which
 // would still fire an image resolve for media we never render as an image.
-export function MarkdownImage(props: ComponentProps<'img'>) {
+export type MarkdownImageProps = ComponentProps<'img'> & {
+  allowOpenOnFailure?: boolean
+  resolveSrc?: (src: string) => Promise<string>
+}
+
+export function MarkdownImage({ resolveSrc, ...props }: MarkdownImageProps) {
   const rawSrc = typeof props.src === 'string' ? props.src : ''
   const kind = rawSrc ? mediaKind(rawSrc) : 'file'
 
@@ -364,10 +369,18 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
     return <MediaAttachment path={rawSrc} />
   }
 
-  return <MarkdownImageContent {...props} />
+  return <MarkdownImageContent resolveSrc={resolveSrc} {...props} />
 }
 
-function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<'img'>) {
+function MarkdownImageContent({
+  allowOpenOnFailure = true,
+  className,
+  src,
+  alt,
+  onError,
+  resolveSrc,
+  ...props
+}: MarkdownImageProps) {
   const rawSrc = typeof src === 'string' ? src : ''
   const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
   const [failed, setFailed] = useState(false)
@@ -386,8 +399,12 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
       }
     }
 
-    void resolveMediaDisplaySrc(rawSrc)
+    void (resolveSrc ? resolveSrc(rawSrc) : resolveMediaDisplaySrc(rawSrc))
       .then(value => {
+        if (!value) {
+          throw new Error('Image resolver returned an empty source')
+        }
+
         if (!cancelled) {
           setResolvedSrc(value)
         }
@@ -401,7 +418,7 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
     return () => {
       cancelled = true
     }
-  }, [rawSrc])
+  }, [rawSrc, resolveSrc])
 
   if (!rawSrc) {
     return null
@@ -411,10 +428,12 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
     return (
       <span className="my-2 block text-sm text-muted-foreground">
         Couldn&apos;t load {name}.{' '}
-        <button className="ref font-medium text-foreground" onClick={open} type="button">
-          Open image
-        </button>
-        {openFailed && <OpenMediaFailedNote name={name} />}
+        {allowOpenOnFailure && (
+          <button className="ref font-medium text-foreground" onClick={open} type="button">
+            Open image
+          </button>
+        )}
+        {allowOpenOnFailure && openFailed && <OpenMediaFailedNote name={name} />}
       </span>
     )
   }
@@ -435,6 +454,10 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
         className
       )}
       containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
+      onError={event => {
+        setFailed(true)
+        onError?.(event)
+      }}
       slot="aui_markdown-image"
       src={resolvedSrc}
       {...props}

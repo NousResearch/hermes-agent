@@ -24,6 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as cli_main
+from hermes_cli import main_desktop
 
 PE_AMD64 = 0x8664
 PE_ARM64 = 0xAA64
@@ -154,7 +155,7 @@ def test_native_machine_reports_os_arch_not_process_arch():
     # WinDLL only exists on Windows; create=True so Linux/macOS CI can stub it.
     with patch.object(ctypes, "WinDLL", _fake_windll(PE_ARM64), create=True), \
          patch("platform.machine", return_value="AMD64"):
-        assert cli_main._windows_native_machine() == "ARM64"
+        assert main_desktop._windows_native_machine() == "ARM64"
 
 
 @pytest.mark.windows_only
@@ -178,7 +179,7 @@ def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch)
         ),
         create=True,
     ), patch("platform.machine", return_value="AMD64"):
-        assert cli_main._expected_windows_pe_machines() == {PE_ARM64, PE_AMD64}
+        assert main_desktop._expected_windows_pe_machines() == {PE_ARM64, PE_AMD64}
 
 
 
@@ -214,12 +215,12 @@ def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
     backup_exe = desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe"
     make_pe(backup_exe, PE_AMD64)  # valid old build
 
-    with patch("hermes_cli.main._windows_native_machine", return_value="AMD64"):
-        restored = cli_main._rollback_desktop_from_backup(exe)
+    with patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"):
+        restored = main_desktop._rollback_desktop_from_backup(exe)
 
     assert restored == exe
     # The restored exe is the old, valid build.
-    assert cli_main._parse_pe_machine(exe) == PE_AMD64
+    assert main_desktop._parse_pe_machine(exe) == PE_AMD64
     assert exe.stat().st_size == 0x400
     # Corrupt tree preserved for diagnostics; backup consumed.
     assert (desktop_dir / "release" / "win-unpacked.corrupt" / "Hermes.exe").exists()
@@ -245,9 +246,9 @@ def test_gate_fails_clearly_without_backup(tmp_path, capsys):
     fake.parent.mkdir(parents=True)
     fake.write_bytes(b"<html>proxy error</html>" + b" " * 600)
 
-    with patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main._desktop_stamp_path", return_value=tmp_path / "stamp.json"):
-        verified, rolled_back = cli_main._ensure_desktop_exe_launchable(desktop_dir, exe)
+    with patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main_desktop._desktop_stamp_path", return_value=tmp_path / "stamp.json"):
+        verified, rolled_back = main_desktop._ensure_desktop_exe_launchable(desktop_dir, exe)
 
     assert verified is None
     assert rolled_back is False
@@ -309,23 +310,23 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
         make_pe(staging / "win-unpacked" / "Hermes.exe", PE_AMD64, truncate_to=0x300)
         return subprocess.CompletedProcess(list(cmd), 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main._resolve_node_runtime_npm", return_value="npm.cmd"), \
-         patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
-         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
-         patch("hermes_cli.main._stop_desktop_processes_locking_build", return_value=[]), \
-         patch("hermes_cli.main._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main._desktop_stamp_path", return_value=tmp_path / "stamp.json"), \
-         patch("hermes_cli.main._write_desktop_build_stamp") as mock_stamp, \
-         patch("hermes_cli.main._windows_native_machine", return_value="AMD64"), \
-         patch("hermes_cli.main.subprocess.run", side_effect=pack_into_staging), \
+    with patch("hermes_cli.main_desktop.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="npm.cmd"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]), \
+         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]), \
+         patch("hermes_cli.main_desktop._desktop_stamp_path", return_value=tmp_path / "stamp.json"), \
+         patch("hermes_cli.main_desktop._write_desktop_build_stamp") as mock_stamp, \
+         patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"), \
+         patch("hermes_cli.main_desktop.subprocess.run", side_effect=pack_into_staging), \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 1
     # The previous working exe was never touched...
     assert live_exe.read_bytes() == live_bytes
-    assert cli_main._parse_pe_machine(live_exe) == PE_AMD64
+    assert main_desktop._parse_pe_machine(live_exe) == PE_AMD64
     # ...the staged corrupt tree was discarded...
     assert not list((desktop_dir / "release").glob(".staging-*"))
     # ...and the poisoned build was never stamped as good.

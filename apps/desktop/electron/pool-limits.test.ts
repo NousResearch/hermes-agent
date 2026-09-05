@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { clampPoolLimits, parsePoolLimits, POOL_LIMITS_BOUNDS, POOL_LIMITS_DEFAULTS, POOL_LIMITS_MIN } from './pool-limits'
+import {
+  clampPoolLimits,
+  parsePoolLimits,
+  POOL_LIMITS_BOUNDS,
+  POOL_LIMITS_DEFAULTS,
+  POOL_LIMITS_MIN
+} from './pool-limits'
 
 describe('parsePoolLimits', () => {
   it('falls back to defaults for null/empty/corrupt input', () => {

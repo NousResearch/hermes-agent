@@ -6,10 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
-import {
-  LocalBackendSpawnCoordinator,
-  releaseLocalBackendSlotAfterExit
-} from './pool-spawn-coordinator'
+import { LocalBackendSpawnCoordinator, releaseLocalBackendSlotAfterExit } from './pool-spawn-coordinator'
 
 const deferred = () => {
   let resolve!: () => void
@@ -220,18 +217,9 @@ test('an invalid timeout never enqueues a waiter', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(1)
   const releaseFirst = await coordinator.acquire('first')
 
-  assert.throws(
-    () => coordinator.request('invalid', { timeoutMs: 0 }),
-    /timeout must be a positive number/
-  )
-  assert.throws(
-    () => coordinator.request('invalid', { timeoutMs: Number.NaN }),
-    /timeout must be a positive number/
-  )
-  assert.throws(
-    () => coordinator.request('invalid', { timeoutMs: -5 }),
-    /timeout must be a positive number/
-  )
+  assert.throws(() => coordinator.request('invalid', { timeoutMs: 0 }), /timeout must be a positive number/)
+  assert.throws(() => coordinator.request('invalid', { timeoutMs: Number.NaN }), /timeout must be a positive number/)
+  assert.throws(() => coordinator.request('invalid', { timeoutMs: -5 }), /timeout must be a positive number/)
 
   assert.equal(coordinator.activeCount, 1)
   assert.equal(coordinator.queuedCount, 0)
@@ -267,7 +255,6 @@ test('a failed or repeated cleanup releases exactly one slot', async () => {
   releaseSecond()
   assert.equal(coordinator.activeCount, 0)
 })
-
 
 test('raising the limit at runtime drains queued waiters into the new slots', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(1)

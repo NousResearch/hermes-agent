@@ -27,7 +27,8 @@ from pathlib import Path
 import pytest
 
 import hermes_state_common
-from hermes_state import FTS_STALE_KEY, SessionDB, _FTS_TRIGGERS
+from hermes_state import SessionDB
+from hermes_state_common import FTS_STALE_KEY, _FTS_TRIGGERS
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX flock child-process harness"
@@ -338,9 +339,9 @@ class TestOrphanedHolderStalenessBreak:
 import os, sys, time
 sys.path.insert(0, {repo!r})
 from pathlib import Path
-import hermes_state
+import hermes_state_repair
 
-lock_cm = hermes_state._cross_process_repair_lock(Path({db!r}))
+lock_cm = hermes_state_repair._cross_process_repair_lock(Path({db!r}))
 assert lock_cm.__enter__() is True
 pid = os.fork()
 if pid == 0:
@@ -358,9 +359,9 @@ os._exit(1)
         grandchild = int(proc.stdout.readline().strip().split()[1])
         proc.wait(timeout=10)
         try:
-            import hermes_state as hs
+            import hermes_state_repair
 
-            with hs._cross_process_repair_lock(db_path) as holding:
+            with hermes_state_repair._cross_process_repair_lock(db_path) as holding:
                 assert holding is True
         finally:
             with contextlib.suppress(OSError):
@@ -463,6 +464,7 @@ class TestNonContentionErrnoFailsFast:
         import fcntl
 
         import hermes_state
+        import hermes_state_repair
 
         monkeypatch.setattr(hermes_state, "_REPAIR_LOCK_TIMEOUT_SECONDS", 30.0)
 
@@ -471,7 +473,7 @@ class TestNonContentionErrnoFailsFast:
 
         monkeypatch.setattr(fcntl, "flock", _flock)
         t0 = time.monotonic()
-        with hermes_state._cross_process_repair_lock(tmp_path / "state.db") as ok:
+        with hermes_state_repair._cross_process_repair_lock(tmp_path / "state.db") as ok:
             assert ok is False
         assert time.monotonic() - t0 < 2.0
 

@@ -45,7 +45,7 @@ class TestHomeTargetFollowsOwningProfile:
         # tick lock) carries the DEFAULT profile's home channel in os.environ.
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "5697433938")
 
-        from cron.scheduler import _env_home_target_chat_id
+        from cron.scheduler_delivery import _env_home_target_chat_id
 
         assert _env_home_target_chat_id("telegram") == "111111111"
 
@@ -54,7 +54,7 @@ class TestHomeTargetFollowsOwningProfile:
     ):
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL_THREAD_ID", "7")
 
-        from cron.scheduler import _get_home_target_thread_id
+        from cron.scheduler_delivery import _get_home_target_thread_id
 
         assert _get_home_target_thread_id("telegram") == "42"
 
@@ -62,7 +62,7 @@ class TestHomeTargetFollowsOwningProfile:
         """Single-profile deployments (no scope installed) read os.environ."""
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "5697433938")
 
-        from cron.scheduler import _env_home_target_chat_id
+        from cron.scheduler_delivery import _env_home_target_chat_id
 
         assert secret_scope.current_secret_scope() is None
         assert _env_home_target_chat_id("telegram") == "5697433938"

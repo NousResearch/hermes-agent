@@ -20,7 +20,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_undelivered_interim_synthetic",
 )
 
 
@@ -210,6 +210,51 @@ def finish_text_response(
         and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
     ):
         messages.pop()
+
+    from agent.conversation_loop import _final_response_covers_interim_content
+
+    undelivered_interim = getattr(agent, "_undelivered_tool_call_content", None)
+    if (
+        undelivered_interim
+        and not getattr(agent, "_undelivered_tool_call_content_nudged", False)
+        and not _final_response_covers_interim_content(final_response, undelivered_interim)
+    ):
+        agent._undelivered_tool_call_content_nudged = True
+        final_msg["finish_reason"] = "undelivered_interim_recovery"
+        final_msg["_undelivered_interim_synthetic"] = True
+        append_message(messages, final_msg)
+        append_message(messages, {
+            "role": "user",
+            "content": (
+                "[System: internal reconciliation — the user sees none of this. "
+                "An assistant message generated while tool calls were running was "
+                "never delivered to the user, and the draft final response below "
+                "has not been sent either. Your next message replaces the draft "
+                "and is delivered to the user verbatim as the actual reply.\n\n"
+                "Write the complete, final user-facing reply now: start from the "
+                "draft and merge in any user-facing facts, numbers, instructions, "
+                "or decisions from the undelivered text that the user still "
+                "needs; skip anything that was only progress narration. If the "
+                "draft already covers everything, repeat the draft verbatim.\n\n"
+                "Never respond ABOUT the draft or this check — no verdicts like "
+                "'the draft is accurate', 'already shown to the user', or 'no "
+                "changes needed', and no mention of drafts, reviews, or hidden "
+                "messages. Output only the reply itself.\n\n"
+                f"Undelivered assistant text:\n{undelivered_interim}\n\n"
+                f"Draft final response:\n{final_response}]"
+            ),
+            "_undelivered_interim_synthetic": True,
+        })
+        agent._session_messages = messages
+        logger.info(
+            "Final response omitted undelivered tool-call content; "
+            "nudging model to reconcile it"
+        )
+        final_response = None
+        return _verdict("continue")
+
+    agent._undelivered_tool_call_content = None
+    agent._undelivered_tool_call_content_nudged = False
 
     _sg = apply_stop_gates(
         agent, final_msg, final_response=final_response, messages=messages,

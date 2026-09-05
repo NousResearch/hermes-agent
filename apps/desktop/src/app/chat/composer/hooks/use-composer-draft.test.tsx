@@ -1,9 +1,15 @@
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
-import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
+import {
+  clearSessionDraft,
+  type ComposerAttachment,
+  mainComposerScope,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
@@ -14,24 +20,144 @@ import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '
 import { useComposerDraft } from './use-composer-draft'
 
 const mockComposerApi = { setText: vi.fn() }
+let mockComposerRuntimeText = ''
+let mockComposerRuntimeListener: (() => void) | null = null
+
+const mockComposerRuntime = {
+  getState: () => ({ text: mockComposerRuntimeText }),
+  subscribe: (listener: () => void) => {
+    mockComposerRuntimeListener = listener
+
+    return () => {
+      mockComposerRuntimeListener = null
+    }
+  }
+}
 
 vi.mock('@assistant-ui/react', () => ({
   useAui: () => ({ composer: () => mockComposerApi }),
   useAuiState: (selector: (state: { composer: { text: string } }) => unknown) => selector({ composer: { text: '' } }),
-  useComposerRuntime: () => ({
-    getState: () => ({ text: '' }),
-    subscribe: () => () => undefined
-  })
+  useComposerRuntime: () => mockComposerRuntime
 }))
+
+describe('useComposerDraft — main draft isolation', () => {
+  afterEach(() => {
+    cleanup()
+
+    mockComposerApi.setText.mockClear()
+    mockComposerRuntimeText = ''
+    mockComposerRuntimeListener = null
+    clearSessionDraft('session-perf')
+  })
+
+  it('keeps draft text out of the shared Assistant UI runtime', () => {
+    const { result } = renderHook(() =>
+      useComposerDraft({
+        activeQueueSessionKey: 'session-perf',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null as QueueEditState | null },
+        sessionId: 'session-perf'
+      })
+    )
+
+    mockComposerApi.setText.mockClear()
+
+    act(() => result.current.setComposerText('a normal draft'))
+
+    expect(mockComposerApi.setText).not.toHaveBeenCalled()
+  })
+
+  it('derives composer eligibility from the local draft', () => {
+    const { result } = renderHook(() =>
+      useComposerDraft({
+        activeQueueSessionKey: 'session-perf',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null as QueueEditState | null },
+        sessionId: 'session-perf'
+      })
+    )
+
+    act(() => result.current.setComposerText('?'))
+    expect(result.current.hasText).toBe(true)
+    expect(result.current.isHelpHint).toBe(true)
+    expect(result.current.isSteerableText).toBe(true)
+
+    act(() => result.current.setComposerText('/help'))
+    expect(result.current.hasText).toBe(true)
+    expect(result.current.isHelpHint).toBe(false)
+    expect(result.current.isSteerableText).toBe(false)
+  })
+
+  it('derives multiline layout edges from the local draft', () => {
+    const { result } = renderHook(() =>
+      useComposerDraft({
+        activeQueueSessionKey: 'session-perf',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null as QueueEditState | null },
+        sessionId: 'session-perf'
+      })
+    )
+
+    act(() => result.current.setComposerText('line one\nline two'))
+    expect(result.current.isEmpty).toBe(false)
+    expect(result.current.hasHardNewline).toBe(true)
+
+    act(() => result.current.setComposerText('line one\n'))
+    expect(result.current.hasHardNewline).toBe(false)
+
+    act(() => result.current.setComposerText(''))
+    expect(result.current.isEmpty).toBe(true)
+    expect(result.current.hasHardNewline).toBe(false)
+  })
+
+  it('persists the local draft after the debounce window', async () => {
+    const queueEditRef = { current: null as QueueEditState | null }
+
+    const { result } = renderHook(() =>
+      useComposerDraft({
+        activeQueueSessionKey: 'session-perf',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef,
+        sessionId: 'session-perf'
+      })
+    )
+
+    act(() => result.current.setComposerText('survives navigation'))
+
+    await waitFor(() => expect(takeSessionDraft('session-perf').text).toBe('survives navigation'), { timeout: 1_000 })
+  })
+
+  it('does not let the shared runtime overwrite a local draft', () => {
+    const { result } = renderHook(() =>
+      useComposerDraft({
+        activeQueueSessionKey: 'session-perf',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null as QueueEditState | null },
+        sessionId: 'session-perf'
+      })
+    )
+
+    act(() => result.current.setComposerText('keep this text'))
+    mockComposerRuntimeText = ''
+    act(() => mockComposerRuntimeListener?.())
+
+    expect(result.current.draftRef.current).toBe('keep this text')
+  })
+})
 
 interface ProbeHarnessProps {
   activeQueueSessionKey: string | null
-  onLayoutSnapshot: (attachments: ComposerAttachment[]) => void
+  onLayoutSnapshot: (attachments: ComposerAttachment[], text: string) => void
   sessionId: string
 }
 
 function ProbeHarness({ activeQueueSessionKey, onLayoutSnapshot, sessionId }: ProbeHarnessProps) {
-  useComposerDraft({
+  const draft = useComposerDraft({
     activeQueueSessionKey,
     focusKey: null,
     inputDisabled: false,
@@ -45,7 +171,7 @@ function ProbeHarness({ activeQueueSessionKey, onLayoutSnapshot, sessionId }: Pr
   // synchronous read here — the same read ChatBar's `attachments` prop
   // performs at render time — observes the OUTGOING session's attachments.
   useLayoutEffect(() => {
-    onLayoutSnapshot(mainComposerScope.$attachments.get())
+    onLayoutSnapshot(mainComposerScope.$attachments.get(), draft.draftRef.current)
   })
 
   return null
@@ -237,15 +363,20 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     // NOT drop it with the React state.
     unmount()
 
-    mockComposerApi.setText.mockClear()
+    const restoredTexts: string[] = []
 
     const remount = render(
-      <ProbeHarness activeQueueSessionKey="session-nav" onLayoutSnapshot={() => undefined} sessionId="session-nav" />
+      <ProbeHarness
+        activeQueueSessionKey="session-nav"
+        onLayoutSnapshot={(_attachments, text) => restoredTexts.push(text)}
+        sessionId="session-nav"
+      />
     )
 
-    // Remount restored the text into the composer core (setText mirrors
-    // paintDraft's write path — the editor DOM isn't mounted in this harness).
-    expect(mockComposerApi.setText).toHaveBeenCalledWith('unsent thought')
+    // Remount restored the text into the composer's authoritative local mirror
+    // without routing it through the transcript-owning Assistant UI runtime.
+    expect(restoredTexts).toContain('unsent thought')
+    expect(mockComposerApi.setText).not.toHaveBeenCalledWith('unsent thought')
 
     remount.unmount()
   })

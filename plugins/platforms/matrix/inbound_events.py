@@ -78,6 +78,8 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
                         return
                     self._event_context_cache.invalidate(room_id, target)
                     await self._event_context_cache.resolve(self._client, room_id, target)
+            if self._process_edits and (msgtype == "m.text" or (msgtype == "m.notice" and self._process_notices)):
+                await self._handle_edit_message(room_id, sender, event_id, source_content, relates_to)
             return
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.
         if msgtype == "m.notice" and not self._process_notices:
@@ -249,3 +251,45 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             event.media_types = event.media_types or []
             self._retain_rich_content(event, source_content, event_id, sender)
         return event
+
+    @staticmethod
+    def _parse_process_edits(config) -> bool:
+        """process_edits from config.extra, else MATRIX_PROCESS_EDITS (default false). Opt-in:
+        forwards an ``m.replace`` edit of a user's own message as a new agent turn carrying the
+        corrected text, instead of the default of silently ignoring edits."""
+        from .adapter import MatrixAdapter, _env_truthy
+
+        configured = MatrixAdapter._configured_bool(config, "process_edits")
+        if configured is not None:
+            return configured
+        return _env_truthy("MATRIX_PROCESS_EDITS", "false")
+
+
+    async def _handle_edit_message(
+        self: "MatrixAdapter", room_id: str, sender: str, event_id: str, source_content: dict, relates_to: dict) -> None:
+        """process_edits (opt-in): forward the corrected body of an ``m.replace`` edit as a new
+        agent turn. Reuses the normal message gate (mention/thread/session/auth, all keyed off
+        ``m.new_content`` exactly as a fresh event would be) so an edit is authorized and routed
+        the same way a brand-new message from the same sender would be; the edit's own event_id
+        (checked by the caller before this point) gives per-edit dedup for free. Preserves the
+        original event as metadata rather than rewriting any prior turn."""
+        target_event_id = str(relates_to.get("event_id") or "")
+        if not target_event_id:
+            return
+        new_content = source_content.get("m.new_content")
+        if not isinstance(new_content, dict):
+            return
+        body = new_content.get("body", "") or ""
+        if not body:
+            return
+        # Threaded edits mirror the thread relation into m.new_content (MSC2676); the top-level
+        # relates_to on an edit is exclusively the m.replace pointer, never m.thread.
+        new_relates_to = new_content.get("m.relates_to")
+        if not isinstance(new_relates_to, dict):
+            new_relates_to = {}
+        msg_event = await self._build_inbound_event(
+            room_id, sender, event_id, body, new_content, new_relates_to,
+            metadata={"edited_message": True, "edited_message_original_id": target_event_id})
+        if msg_event is None:
+            return
+        await self.handle_message(msg_event)

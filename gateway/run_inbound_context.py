@@ -263,6 +263,11 @@ class GatewayInboundContextMixin:
             from gateway.session import _discord_tools_loaded as _disc_tools_loaded
             if _disc_tools_loaded():
                 message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
+
+        if getattr(event, "metadata", None) and event.metadata.get("edited_message"):
+            # Platform edit forwarded as a new turn (e.g. Matrix ``process_edits``): flag it so the
+            # agent treats this as a correction/follow-up rather than an unrelated fresh prompt.
+            message_text = f"[Edited message — this corrects/replaces your previous prompt]\n\n{message_text}"
         return message_text
 
 

@@ -530,6 +530,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_FREE_RESPONSE_ROOMS` | Comma-separated room IDs where bot responds without `@mention`. DMs (rooms whose joined members are exactly the bot and one other user) already respond without a mention and ignore this list. |
 | `MATRIX_IGNORE_USER_PATTERNS` | Comma-separated regular expressions for Matrix bridge/appservice ghost user IDs to ignore |
 | `MATRIX_PROCESS_NOTICES` | Process inbound Matrix `m.notice` events (default: `false`) |
+| `MATRIX_PROCESS_EDITS` | Forward an inbound `m.replace` edit of a user's message as a new agent turn carrying the corrected text (default: `false`) |
 | `MATRIX_SESSION_SCOPE` | Matrix session scope for project rooms: `auto`, `room`, or `thread` (default: `auto`) |
 | `MATRIX_ALLOW_ROOM_MENTIONS` | Allow outbound `@room` mentions to notify all room members (default: `false`) |
 | `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`). DMs (rooms whose joined members are exactly the bot and one other user) follow `MATRIX_DM_AUTO_THREAD` instead. |

@@ -23,7 +23,12 @@ from hermes_time import now as _hermes_now
 # that temporarily enter another profile cannot leak that profile's records into the import-time
 # home.
 EXECUTIONS_FILE: Optional[Path] = None
-MAX_TERMINAL_EXECUTIONS = 1000
+_DEFAULT_MAX_TERMINAL_EXECUTIONS = 1000
+_DEFAULT_MIN_TERMINAL_EXECUTIONS_PER_JOB = 5
+# Backward-compatible test override. Production reads
+# ``cron.execution_retention`` at prune time so a config change does not
+# require a Python reinstall.
+MAX_TERMINAL_EXECUTIONS = _DEFAULT_MAX_TERMINAL_EXECUTIONS
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
@@ -161,14 +166,72 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     return current is not None and current == started_at
 
 
+def _terminal_execution_retention() -> int:
+    """Resolve the terminal execution-row cap from profile-local config."""
+    if MAX_TERMINAL_EXECUTIONS != _DEFAULT_MAX_TERMINAL_EXECUTIONS:
+        return max(0, int(MAX_TERMINAL_EXECUTIONS))
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        value = cron_cfg.get(
+            "execution_retention", _DEFAULT_MAX_TERMINAL_EXECUTIONS
+        ) if isinstance(cron_cfg, dict) else _DEFAULT_MAX_TERMINAL_EXECUTIONS
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TERMINAL_EXECUTIONS
+
+
+def _terminal_execution_retention_per_job() -> int:
+    """Resolve the fair per-job floor within the global terminal-row cap."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        value = (
+            cron_cfg.get(
+                "execution_retention_per_job",
+                _DEFAULT_MIN_TERMINAL_EXECUTIONS_PER_JOB,
+            )
+            if isinstance(cron_cfg, dict)
+            else _DEFAULT_MIN_TERMINAL_EXECUTIONS_PER_JOB
+        )
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return _DEFAULT_MIN_TERMINAL_EXECUTIONS_PER_JOB
+
+
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
+    limit = _terminal_execution_retention()
+    per_job = _terminal_execution_retention_per_job()
     conn.execute(
-        """DELETE FROM executions WHERE id IN (
-             SELECT id FROM executions
+        """WITH ranked AS (
+             SELECT id, status, claimed_at, finished_at,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY job_id
+                      ORDER BY finished_at DESC, claimed_at DESC, id DESC
+                    ) AS job_rank
+             FROM executions
              WHERE status IN ('completed','failed','unknown')
-             ORDER BY finished_at DESC, claimed_at DESC, id DESC LIMIT -1 OFFSET ?
-           )""",
-        (max(0, int(MAX_TERMINAL_EXECUTIONS)),),
+           ), keepers AS (
+             SELECT id FROM ranked
+             ORDER BY
+               CASE
+                 WHEN job_rank = 1 THEN 0
+                 WHEN status = 'failed' THEN 1
+                 WHEN job_rank <= ? THEN 2
+                 ELSE 3
+               END,
+               CASE WHEN job_rank <= ? THEN job_rank ELSE NULL END,
+               finished_at DESC, claimed_at DESC, id DESC
+             LIMIT ?
+           )
+           DELETE FROM executions
+           WHERE status IN ('completed','failed','unknown')
+             AND id NOT IN (SELECT id FROM keepers)""",
+        (per_job, per_job, limit),
     )
 
 

@@ -231,6 +231,12 @@ class PeerRunsHTTPClient:
         self._profile_prefix = (
             f"/p/{urllib.parse.quote(profile, safe='')}" if profile else ""
         )
+        scoped = re.search(r"/p/([^/]+)$", urllib.parse.urlsplit(base_url).path)
+        if profile and scoped:
+            if urllib.parse.unquote(scoped.group(1), errors="strict") != profile:
+                raise ValueError("peer target profile does not match the scoped endpoint")
+            # Desktop and saved routes may already include the profile.
+            self._profile_prefix = ""
         self.base_url, self.api_key, self.clock = base_url, api_key, clock
         self.timeout_seconds = float(timeout_seconds)
         self.receipt_db_path = Path(receipt_db_path) if receipt_db_path else None

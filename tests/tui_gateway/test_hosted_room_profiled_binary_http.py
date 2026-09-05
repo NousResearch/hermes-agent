@@ -201,17 +201,19 @@ def _input(claims, data):
 
 
 @pytest.mark.parametrize(
-    "profile,size",
-    [(None, 12), ("default", 12), ("reviewer", 12), ("reviewer", 10_000_001)],
+    "profile,size,scoped",
+    [(None, 12, False), ("default", 12, False), ("reviewer", 12, False),
+     ("reviewer", 10_000_001, False), ("reviewer", 12, True), ("default", 12, True)],
 )
 def test_binary_upload_reaches_real_selected_profile_and_retires_exact_batch(
-    bridge, profile, size
+    bridge, profile, size, scoped
 ):
     grant, claims, home = _grant(bridge, profile or "default")
     data = b"x" * size
     dispatch, manifest = _input(claims, data)
     client = http.PeerRunsHTTPClient(
-        base_url="https://files.invalid", api_key="", target_profile=profile
+        base_url="https://files.invalid" + ("/p/" + profile if scoped else ""),
+        api_key="", target_profile=profile
     )
     result = client.stage_attachments(
         dispatch=dispatch.as_mapping(),
@@ -477,11 +479,13 @@ def test_cold_named_profile_artifact_publication_uses_real_middleware_and_bytes(
 
 
 @pytest.mark.parametrize(
-    "profile,prefix",
-    [(None, ""), ("default", "/p/default"), ("reviewer:west", "/p/reviewer%3Awest")],
+    "profile,prefix,scoped",
+    [(None, "", False), ("default", "/p/default", False),
+     ("reviewer:west", "/p/reviewer%3Awest", False),
+     ("reviewer:west", "/p/reviewer%3Awest", True), ("default", "/p/default", True)],
 )
 def test_all_request_builders_preserve_base_path_profile_and_escaped_ids(
-    monkeypatch, profile, prefix
+    monkeypatch, profile, prefix, scoped
 ):
     requests = []
 
@@ -491,7 +495,8 @@ def test_all_request_builders_preserve_base_path_profile_and_escaped_ids(
 
     monkeypatch.setattr(http, "_open_roomlink_url", opened)
     client = http.PeerRunsHTTPClient(
-        base_url="https://files.invalid/gateway/", api_key="", target_profile=profile
+        base_url="https://files.invalid/gateway" + (prefix if scoped else "") + "/",
+        api_key="", target_profile=profile
     )
     client.probe(grant="synthetic.grant")
     client._put_attachment("/v1/upload", data=b"bytes", grant="synthetic.grant")

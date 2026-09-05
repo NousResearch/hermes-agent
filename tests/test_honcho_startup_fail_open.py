@@ -283,8 +283,8 @@ def test_honcho_tools_eager_init_failure_does_not_leave_ready_manager(monkeypatc
     assert provider._manager is None
 
 
-def _init_with_unresolved_peer(monkeypatch, cfg) -> tuple[HonchoMemoryProvider, list[int]]:
-    """Provider whose session init fails because no user peer can be named; returns the attempt log."""
+def _init_with_unresolved_peer(monkeypatch, cfg, platform: str = "cli") -> tuple[HonchoMemoryProvider, list[int]]:
+    """Provider whose session init fails because no user peer can be named. Returns the attempt log."""
     from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
 
     provider = HonchoMemoryProvider()
@@ -296,7 +296,7 @@ def _init_with_unresolved_peer(monkeypatch, cfg) -> tuple[HonchoMemoryProvider, 
         raise HonchoPeerUnresolvedError("Honcho has no user peer for session 'x': honcho.json declares no peerName.")
 
     monkeypatch.setattr(HonchoMemoryProvider, "_do_session_init", no_peer)
-    provider.initialize("session-1", platform="cli")
+    provider.initialize("session-1", platform=platform)
     if provider._init_thread:
         provider._init_thread.join(timeout=5)
     return provider, attempts
@@ -324,7 +324,29 @@ def test_honcho_unresolved_peer_tool_error_names_the_fix(monkeypatch):
     result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
 
     assert "peerName" in result["error"]
+    assert "hermes honcho peer --user" in result["error"]
     assert "could not be initialized" not in result["error"]
+
+
+def test_honcho_unresolved_peer_on_a_gateway_platform_does_not_recommend_peer_name(monkeypatch):
+    """A shared peerName on a multi-user gateway would merge every human onto one peer."""
+    provider, _ = _init_with_unresolved_peer(monkeypatch, _configured_hybrid_config(), platform="telegram")
+
+    notice = provider.prefetch("what did we decide about the schema?")
+
+    assert "Honcho memory is off" in notice
+    assert "hermes honcho peer --user" not in notice
+    assert "Do not suggest peerName" in notice
+
+
+def test_honcho_unresolved_peer_tool_error_on_a_gateway_platform_omits_the_peer_name_fix(monkeypatch):
+    cfg = _configured_tools_config(init_on_session_start=True)
+    provider, _ = _init_with_unresolved_peer(monkeypatch, cfg, platform="discord")
+
+    result = json.loads(provider.handle_tool_call("honcho_profile", {"peer": "user"}))
+
+    assert "hermes honcho peer --user" not in result["error"]
+    assert "supplied no user id" in result["error"]
 
 
 def test_honcho_tools_lazy_hooks_do_not_prestart_background_init(monkeypatch):

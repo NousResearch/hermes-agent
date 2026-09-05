@@ -354,6 +354,39 @@ class TestAsyncWriterThread:
 # async retry on failure
 # ---------------------------------------------------------------------------
 
+class TestStopAsyncWriterDrain:
+    def test_items_queued_before_the_join_are_flushed(self, make_manager):
+        mgr = make_manager("async")
+        flushed = []
+        mgr._flush_session = lambda s: flushed.append(s.key) or True
+        mgr._async_queue.put(_make_session(key="late"))
+
+        mgr.stop_async_writer()
+
+        assert flushed == ["late"]
+        assert mgr._async_queue.empty()
+
+    def test_save_after_the_writer_stopped_flushes_inline(self, make_manager):
+        mgr = make_manager("async")
+        flushed = []
+        mgr._flush_session = lambda s: flushed.append(s.key) or True
+        mgr.stop_async_writer()
+
+        mgr.save(_make_session(key="after"))
+
+        assert flushed == ["after"]
+        assert mgr._async_queue.empty()
+
+    def test_shutdown_passes_the_join_timeout_through(self, make_manager, monkeypatch):
+        mgr = make_manager("async")
+        seen = {}
+        monkeypatch.setattr(mgr, "stop_async_writer", lambda timeout=10.0: seen.setdefault("timeout", timeout))
+
+        mgr.shutdown(timeout=2.5)
+
+        assert seen["timeout"] == 2.5
+
+
 class TestAsyncWriterRetry:
     def test_retries_once_on_failure(self, make_manager):
         mgr = make_manager(write_frequency="async")

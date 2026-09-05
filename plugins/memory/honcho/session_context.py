@@ -12,7 +12,7 @@ logger = logging.getLogger("plugins.memory.honcho.session")
 
 _FAILED = object()  # sentinel: a guarded call raised (distinct from a legitimately empty/None result)
 
-# Reasoning-channel markers a summarizer model can leave inside a persisted session summary (#97639).
+# Reasoning-channel markers a summarizer model can leave inside a persisted session summary.
 _THINK_BLOCK_RE = re.compile(
     r"<\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\s*>.*?"
     r"<\s*/\s*(?:think|thinking|reasoning|thought|reasoning_scratchpad)\s*>",

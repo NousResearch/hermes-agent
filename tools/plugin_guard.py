@@ -45,6 +45,28 @@ CODE_EXEMPT_PATTERN_IDS = {
 SEVERITY_REMAP = {
     "binary_file": "high", "hermes_env_access": "medium", "curl_pipe_shell": "high"}
 
+# Plugin scans gate a HOST install: what matters is what executes on the host. Findings that
+# describe the author's own dev workflow — prose in documentation files, and fixtures under
+# test trees — never run on the installing host, so they are demoted one tier (critical → high)
+# instead of hard-blocking an otherwise auditable plugin. The same content in runtime code keeps
+# its critical severity, and real token-shaped literals (sk-, ghp_, AKIA, glpat-, private keys)
+# keep their own critical patterns everywhere.
+DOC_PROSE_EXTENSIONS = {".md", ".txt", ".rst", ".html"}
+TEST_PATH_SEGMENTS = {"tests", "test", "__tests__"}
+DOC_PROSE_DEMOTIONS = {
+    # Prose modification bullets ("- Modify: `CLAUDE.md`") in plan/design docs describe the
+    # repo's own files; only executable intent (shell writes, code) stays critical.
+    "agent_config_mod": "high",
+    # Example/demo credentials quoted in docs (placeholder hex, test tokens).
+    "hardcoded_secret": "high",
+}
+TEST_PATH_DEMOTIONS = {
+    # ``cp ~/.claude/CLAUDE.md ...`` inside the author's CI/test harness, not install-time code.
+    "agent_config_mod_shell": "high",
+    # Test fixtures commonly hardcode fake tokens (``const TOKEN = 'testtoken-...'``).
+    "hardcoded_secret": "high",
+}
+
 # Structural limits — plugins are real codebases, far larger than skills.
 MAX_PLUGIN_FILE_COUNT = 400
 MAX_PLUGIN_TOTAL_SIZE_KB = 10 * 1024   # 10MB of scannable tree
@@ -69,10 +91,17 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
 def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
+    ext = Path(rel_path).suffix.lower()
+    is_doc_prose = ext in DOC_PROSE_EXTENSIONS
+    in_test_tree = bool(set(Path(rel_path).parts) & TEST_PATH_SEGMENTS)
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
+        if in_test_tree and f.pattern_id in TEST_PATH_DEMOTIONS:
+            f.severity = TEST_PATH_DEMOTIONS[f.pattern_id]
+        elif is_doc_prose and f.pattern_id in DOC_PROSE_DEMOTIONS:
+            f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
         f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
         out.append(f)
     return out

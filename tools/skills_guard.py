@@ -102,6 +102,15 @@ def _content_contract_re(file_alt: str) -> str:
     separable statically, so the tier is scored high (caution → confirmation), never critical."""
     return rf'{file_alt}\b[^\n]{{0,40}}?\b(?:should|must|needs?\s+to)\s+(?:contain|say|include|have|list)\b'
 
+
+# ── context_exfil helpers ──
+# Negation guard: never/not/doesn't ... right after the verb marks descriptive prose (subagent
+# isolation notes, release notes) — the opposite of a transfer directive.
+_NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn\'?t|aren\'?t|can\'?t|cannot|mustn\'?t|shouldn\'?t)\b)')
+# Real directives are short; unbounded filler let prose (output never enters your own context)
+# and feature descriptions match.
+_SHORT_FILLER = r'(?:\w+\s+){0,3}?'
+
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
     # env_exfil_* share a loopback exemption: a same-line literal scheme-anchored loopback destination
@@ -182,7 +191,10 @@ THREAT_PATTERNS = [
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
-    (r'rm\s+-rf\s+/', "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
+    # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
+    # test/smoke scripts and CI; anything else rooted at "/" stays critical.
+    (r'rm\s+-rf\s+/(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))',
+     "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),
     (r'chmod\s+777', "insecure_perms", "medium", "destructive", "sets world-writable permissions"),
@@ -343,7 +355,13 @@ THREAT_PATTERNS = [
     (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions',
      "fake_policy", "medium", "injection", "claims new policy/guidelines (may be social engineering)"),
     # ── Context window exfiltration ──
-    (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
+    # Instruction shapes only. Descriptive prose about context handling ("The output never enters
+    # your own context", "**Include context:** cwd, env vars", "save tokens (no need to include code
+    # in context)") describes the OPPOSITE of exfiltration and must not match: the verb→target gap is
+    # bounded, a negation right after the verb voids the match, and a bare ``context`` target counts
+    # only under transfer verbs (print/send/share) — "include context" is window/information talk.
+    (rf'\b(?:include|output|print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
+     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}context\b',
      "context_exfil", "high", "exfiltration", "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),

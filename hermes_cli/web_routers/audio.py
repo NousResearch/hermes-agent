@@ -483,3 +483,223 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         pump.cancel()
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+def _converse_stt_model(profile: Optional[str]) -> Optional[str]:
+    """STT model override for the converse loop, mirroring cli_voice_mixin._voice_stt_model.
+
+    Local provider prefers ``stt.local.model`` (default ``base``); every other
+    provider uses ``stt.model`` (or the provider default when unset). Resolved
+    under the requesting profile's config scope.
+    """
+    with _config_profile_scope(profile):
+        from hermes_cli.config import load_config
+
+        stt = (load_config().get("stt") or {})
+        if str(stt.get("provider") or "").strip().lower() == "local":
+            local = stt.get("local") if isinstance(stt.get("local"), dict) else {}
+            return (local or {}).get("model") or "base"
+        return stt.get("model")
+
+
+# Start-frame deadline: the client must send its {"type":"start", ...} within this window.
+_CONVERSE_FIRST_FRAME_TIMEOUT = 5.0
+
+
+async def _read_converse_start_frame(ws: "WebSocket") -> Optional[dict]:
+    """Read the client's FIRST frame; return the parsed ``{"type":"start", ...}`` dict.
+
+    Returns ``None`` (the caller sends ``bad_start`` + close 4400) on timeout, a
+    disconnect/binary first frame, non-JSON, or any frame whose ``type`` isn't ``"start"``.
+    Dashboard auth is the pre-accept token check, so no key is validated here.
+    """
+    try:
+        message = await asyncio.wait_for(ws.receive(), timeout=_CONVERSE_FIRST_FRAME_TIMEOUT)
+    except (asyncio.TimeoutError, Exception):
+        return None
+    if message.get("type") != "websocket.receive":
+        return None
+    text = message.get("text")
+    if text is None:
+        return None
+    try:
+        frame = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(frame, dict) or frame.get("type") != "start":
+        return None
+    return frame
+
+
+@router.websocket("/api/audio/converse")
+async def converse_ws(ws: "WebSocket") -> None:
+    """Off-device realtime voice loop: mic PCM in, agent speech out, over one WS.
+
+    The client sends a single ``{"type":"start", ...}`` frame first (carrying session
+    config: input_rate/output_rate/idle_interval/name/profile; auth is the pre-accept
+    dashboard token, so start.key is not consulted here), then streams PCM16 mono at
+    ``input_rate`` as binary frames; the server does VAD → STT → a REAL agent turn
+    (``prompt.submit`` in-process, so the spoken conversation persists) → streaming
+    TTS, sending PCM16 (at ``output_rate``) back as binary frames. JSON text frames
+    carry control. Barge-in is supported: speech during playback cuts the reply.
+
+    Protocol:
+      client → ``{"type":"start", ...}`` (FIRST frame; all config fields optional),
+               then binary PCM16 mono frames at ``input_rate`` (30 ms blocks preferred),
+               ``{"stop": true}`` to end, ``{"commit": true}`` to force endpoint
+      server → ``{"type": "ready", "input": {...}, "output": {...}}``,
+               ``{"type": "transcript", "text": ...}``,
+               ``{"type": "speaking"}`` then binary PCM frames,
+               ``{"type": "interrupted"}`` on barge-in,
+               ``{"type": "turn_done"}`` after each reply,
+               ``{"type": "error", "error": ...}`` on failure.
+
+    The heavy lifting lives in the shared driver
+    :func:`tools.voice_converse_loop.drive_converse_turns` (plus the dashboard turn
+    glue in :mod:`hermes_cli.web_routers._converse_loop`); this handler only gates
+    auth, pre-creates the session, wires the client pump, and adapts ``run_voice_turn``
+    onto the driver.
+
+    BARGE-IN (v1 limitation): a VAD trip while playing stops TTS PLAYBACK (tts_stop +
+    mark_speech_interrupted) and emits ``{"type":"interrupted"}``, but the in-flight
+    agent turn (``run_voice_turn`` / ``prompt.submit``) is NOT cancelled in v1 — it
+    runs to completion, so a barged turn may still finish and fire tools, and the next
+    utterance queues behind it. Cancelling the in-flight turn is a deliberate follow-up.
+    """
+    if not _ws_auth_ok(ws):
+        await ws.close(code=4401)
+        return
+    if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+
+    # The client's FIRST frame is the single {"type":"start", ...} carrying all session
+    # config (rates, idle_interval, name, profile). Dashboard auth is the pre-accept token
+    # check above, so start.key is not consulted here — the frame need only be a valid start.
+    frame = await _read_converse_start_frame(ws)
+    if frame is None:
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "error": "bad_start"})
+            await ws.close(code=4400)
+        return
+
+    from tools.voice_converse_loop import parse_start_config
+
+    input_rate, output_rate, idle_interval, name, profile = parse_start_config(frame)
+    loop = asyncio.get_running_loop()
+
+    def _resolve():
+        import numpy as np
+        from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
+        from tools.voice_converse_loop import resample_synth, resolve_converse_synthesizer
+        from hermes_cli.web_routers._converse_loop import ConverseSession, create_voice_session
+
+        stt_model = _converse_stt_model(profile)
+        with _config_profile_scope(profile):
+            cfg = _load_tts_config()
+            # Always resolves a synthesizer (streaming when available, else the one-shot
+            # fallback) — works with any provider, incl. edge — wrapped to emit at output_rate.
+            synth = resample_synth(resolve_converse_synthesizer(cfg), output_rate)
+            cap = _resolve_max_text_length(_get_provider(cfg), cfg)
+        session = ConverseSession(np, stt_model=stt_model, input_rate=input_rate)
+        sid = create_voice_session()
+        return synth, cap, session, sid
+
+    try:
+        synth, cap, session, sid = await loop.run_in_executor(None, _resolve)
+    except Exception:
+        _log.exception("converse setup failed")
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "error": "converse setup failed"})
+            await ws.close()
+        return
+
+    await ws.send_json({
+        "type": "ready",
+        "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
+        "output": {"sample_rate": output_rate, "format": "pcm16"},
+    })
+
+    session.start()
+
+    # The tui_gateway session (``sid``) owns the durable conversation state used by
+    # each ``run_voice_turn`` (via prompt.submit), so this list is NOT fed to the
+    # agent; it exists only so the shared driver can record the turn transcript/reply
+    # under a bounded tail cap (keeping a long-lived socket's memory in check).
+    conversation_history: list = []
+
+    async def _pump_client():
+        # Binary frames feed the mic shim; {"stop"}/disconnect ends; {"commit"}
+        # forces the current utterance to endpoint.
+        try:
+            while True:
+                frame = await ws.receive()
+                if frame.get("bytes") is not None:
+                    session.stream.feed(frame["bytes"])
+                    continue
+                text = frame.get("text")
+                if text is None:
+                    break  # websocket.disconnect
+                try:
+                    msg = json.loads(text)
+                except (ValueError, TypeError):
+                    continue
+                if msg.get("stop"):
+                    break
+                if msg.get("commit"):
+                    session.commit()
+        except Exception:
+            _log.debug("converse client pump ended", exc_info=True)
+        session.stop()
+
+    # NAME (v1 dashboard limitation): run_voice_turn -> prompt.submit has no clean per-turn
+    # ephemeral-system-prompt seam (unlike the gateway's _run_agent), so the name-aware voice
+    # prompt can't be injected as a system prompt here. As a fallback we prepend a one-line
+    # identity note to the FIRST turn's transcript only, so the model learns its name once
+    # without polluting every subsequent turn's history.
+    _identity_pending = [bool(name)]
+
+    async def _run_turn(transcript, on_delta, *, interrupted: bool):
+        # Dashboard turn adapter for drive_converse_turns: run the real agent turn via
+        # run_voice_turn (prompt.submit in-process), streaming deltas out through
+        # on_delta. Returns (reply_text, err): run_voice_turn already returns the error
+        # (or None), and the reply is the joined deltas (computed by the driver, so we
+        # return "" here). The per-turn barge-in note is plumbed via `interrupted`.
+        # run_voice_turn is sync (blocks until the turn ends), so run it off the loop.
+        from hermes_cli.web_routers._converse_loop import run_voice_turn
+
+        text = transcript
+        if _identity_pending[0]:
+            _identity_pending[0] = False
+            text = (f"(You are {name}. This is a live voice conversation — keep replies to a "
+                    f"couple of short spoken sentences.)\n\n{transcript}")
+        err = await loop.run_in_executor(
+            None, lambda: run_voice_turn(sid, text, on_delta, interrupted=interrupted))
+        return "", err
+
+    async def _drive_turns():
+        from tools.voice_converse_loop import drive_converse_turns
+
+        # start.idle_interval: session mode — periodic {"type":"idle"} during quiet (socket
+        # stays open) + spoken stop phrases become {"type":"stop_word"}. 0 = continuous.
+        await drive_converse_turns(
+            session=session, synth=synth, cap=cap, loop=loop,
+            send_json=ws.send_json, send_bytes=ws.send_bytes,
+            run_turn=_run_turn, history=conversation_history,
+            idle_interval=idle_interval)
+
+    pump = asyncio.ensure_future(_pump_client())
+    driver = asyncio.ensure_future(_drive_turns())
+    try:
+        await driver
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    except Exception:
+        _log.exception("converse loop crashed")
+    finally:
+        session.stop()
+        pump.cancel()
+        driver.cancel()
+        with contextlib.suppress(Exception):
+            await ws.close()

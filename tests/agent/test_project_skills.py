@@ -139,6 +139,24 @@ class TestNonInteractiveInheritance:
         assert su.find_project_root() == project_env["repo"].resolve()
         assert su.get_project_skills_dirs() != []
 
+    def test_session_cwd_overrides_stale_terminal_cwd(self, project_env, monkeypatch, tmp_path):
+        # Desktop binds the selected workspace per session while the gateway's
+        # process-level fallback may still point at another relative directory.
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        monkeypatch.chdir(outside)
+        monkeypatch.setenv("TERMINAL_CWD", "./workspace")
+        _trust(project_env["config"], project_env["repo"])
+
+        from agent.runtime_cwd import clear_session_cwd, set_session_cwd
+
+        set_session_cwd(str(project_env["repo"]))
+        try:
+            assert su.find_project_root() == project_env["repo"].resolve()
+            assert su.get_project_skills_dirs() != []
+        finally:
+            clear_session_cwd()
+
     def test_no_workdir_no_trust_inheritance(self, project_env, monkeypatch, tmp_path):
         # A surface running outside any repo (API server from home-like dir)
         # resolves no project even when OTHER repos are trusted.

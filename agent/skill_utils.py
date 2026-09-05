@@ -414,20 +414,24 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
-    cron/API surfaces inherit an interactive trust decision by project identity.
+    Without *start*, the surface's effective cwd wins over process cwd. This
+    includes a per-session cwd override before the scoped ``TERMINAL_CWD``, so
+    Desktop sessions and non-interactive surfaces inherit trust by project
+    identity.
 
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    When *start* is not given, the surface's working directory wins over the
+    process cwd: the session override or ``TERMINAL_CWD`` is the same
+    per-surface workdir the terminal tool and cron jobs use (a cron job sets it
+    from its per-job ``workdir`` without chdir'ing the scheduler process). This
+    is what lets interactive and non-interactive surfaces inherit a prior trust
+    decision by project identity — and a surface with no workdir in a trusted
+    repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_context_cwd
+            context_cwd = resolve_context_cwd()
+            start = context_cwd if context_cwd is not None else Path.cwd()
         cur = Path(start).resolve()
     except OSError:
         return None

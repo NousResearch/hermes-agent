@@ -2,7 +2,14 @@ import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  allPaneIds as allPaneIdsOf,
+  type GroupNode,
+  type LayoutNode,
+  type SplitNode
+} from '@/components/pane-shell/tree/model'
+import { isPaneVisible, revealTreePane, setTreeGroupMinimized, $layoutTree } from '@/components/pane-shell/tree/store'
+import { registry } from '@/contrib/registry'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { connectionScopedAtom } from '@/lib/connection-scoped'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
@@ -515,6 +522,124 @@ export function toggleSidebarOpen() {
   if (!revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
     togglePane(CHAT_SIDEBAR_PANE_ID)
   }
+}
+
+// POSITIONAL right-side toggle. The titlebar button and ⌘J promise
+// "everything on your physical right" — but preview tiles (the Browser) dock
+// beside main with placement 'main', so the SEMANTIC side derivation never
+// classifies their column as a side column, and the old pane-bound toggle
+// (files) pressed a pane that had been dragged into the left stack. Resolve
+// the target from the TREE instead: the rightmost root-row column that isn't
+// the main column, whatever panes live there — then fold/unfold it through
+// the tree's own zone minimize, which keeps its tab on a persistent rail so
+// the toggle round-trips exactly like the zone chevron.
+export function toggleRightSide() {
+  if (revealNarrowPane(FILE_BROWSER_PANE_ID, 'toggle')) {
+    return
+  }
+
+  const group = rightSideGroup()
+
+  if (!group) {
+    // No side column on the right (e.g. terminal-deck): fall back to the
+    // semantic branch so ⌘J is never a dead key.
+    toggleFileBrowserOpen()
+
+    return
+  }
+
+  if (group.minimized) {
+    revealTreePane(group.active ?? group.panes[0])
+
+    return
+  }
+
+  setTreeGroupMinimized(group.id, true)
+}
+
+/** Reactive: is the positional right side currently OPEN (unfolded + shown)?
+ *  The truthful source for the titlebar button's label — the files store
+ *  can't speak for a browser-only right column, and a files-open state says
+ *  nothing about the column the toggle actually folds. */
+export const $rightSideOpen = computed([$layoutTree], () => {
+  const group = rightSideGroup()
+
+  return Boolean(group && !group.minimized && group.panes.some(id => isPaneVisible(id)))
+})
+
+// Placement of a pane contribution ('left' | 'main' | 'right' | …) — panes
+// not yet registered (runtime plugins) read as undefined and skip the walk.
+function panePlacement(id: string): string | undefined {
+  return (registry.getArea('panes').find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement
+}
+
+// The physically-rightmost foldable column of the root row — the POSITIONAL
+// right side, derived from the live tree. Unlike the semantic `rootChildSide`
+// (which sees only placement-tagged side panes), this ALSO catches a
+// preview-tile column (the Browser): its panes register `placement: 'main'`,
+// so the semantic walk classifies their zone as main and skips it. Here a
+// column qualifies when it is a leaf group, sits right of the main column,
+// and holds no main zone (the workspace/session-tile surfaces). Null when
+// nothing foldable lives there.
+function rightSideGroup(): GroupNode | null {
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return null
+  }
+
+  const row = rootRowOf(tree)
+
+  for (let i = row.children.length - 1; i >= 0; i--) {
+    const child = row.children[i]!
+
+    // Only a leaf group folds; a nested split would strand inner zones.
+    if (child.type !== 'group') {
+      continue
+    }
+
+    const placements = child.panes.map(panePlacement)
+
+    // The main column itself (workspace / session tiles) is never a side.
+    if (placements.includes('main') && child.panes.some(isMainSurface)) {
+      continue
+    }
+
+    return child
+  }
+
+  return null
+}
+
+// Is `paneId` a main surface (the workspace or a session/route tile)? Those
+// are the panes whose `placement: 'main'` marks THE main column; preview
+// tiles share the placement but are docked side surfaces.
+function isMainSurface(paneId: string): boolean {
+  return paneId === 'workspace' || paneId.startsWith('session-tile:') || paneId.startsWith('route-tile:')
+}
+
+// Root row of the layout — the split the side-collapse system operates on:
+// a row root (Default/Focus) or the row child inside a column root that
+// contains main (Terminal deck/Quad), mirroring TreeSplit's `rootRow`
+// propagation.
+function rootRowOf(tree: LayoutNode): SplitNode {
+  if (tree.type === 'split' && tree.orientation === 'row') {
+    return tree
+  }
+
+  if (tree.type === 'split' && tree.orientation === 'column') {
+    const row = tree.children.find(
+      child => child.type === 'split' && child.orientation === 'row' && allPaneIdsOf(child).some(id => panePlacement(id) === 'main')
+    )
+
+    if (row && row.type === 'split') {
+      return row
+    }
+  }
+
+  // Defensive: a lone-group root (or an unexpected shape) — wrap it in a row
+  // so the caller's column walk still has a frame to walk.
+  return { type: 'split', orientation: 'row', children: [tree], weights: [1], id: 'fallback-row' } as SplitNode
 }
 
 export function toggleFileBrowserOpen() {

@@ -20,7 +20,13 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { $sessionStates, $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
+import {
+  $sessionStates,
+  $sessionTiles,
+  isSessionInForeground,
+  publishSessionState,
+  releaseSessionTranscript
+} from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 import { SessionStateCache } from '../session-state-cache'
@@ -163,7 +169,7 @@ export function useSessionStateCache({
 
             // A rotation event needs a real next id — a null/cleared stored id
             // is a detach, not a rotation the route-follow effect should chase.
-            if (storedSessionId && sessionId === $activeSessionId.get()) {
+            if (storedSessionId && sessionId === $activeSessionId.get() && isSessionInForeground(existing.storedSessionId)) {
               setActiveSessionStoredIdRotation({
                 nextStoredSessionId: storedSessionId,
                 previousStoredSessionId: existing.storedSessionId,

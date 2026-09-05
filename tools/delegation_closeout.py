@@ -1246,13 +1246,18 @@ def _reveal_closed_closeout_provisionals(conn: sqlite3.Connection) -> int:
         if not (work_id and delivery_id):
             continue
         group = conn.execute(
-            "SELECT state, closeout_delivery_id FROM async_delegation_work_groups "
+            "SELECT state, closeout_delivery_id, terminal_disposition, closeout_turn_id "
+            "FROM async_delegation_work_groups "
             "WHERE work_id=?",
             (work_id,),
         ).fetchone()
         if (
             group is None
             or group["state"] != "closed"
+            # Session-boundary closure clears the bound turn; cancelled/dropped
+            # work must never publish a provisional, even with the old delivery id.
+            or not group["closeout_turn_id"]
+            or group["terminal_disposition"] not in {"success", "blocked", "failed"}
             or str(group["closeout_delivery_id"] or "") != delivery_id
         ):
             continue

@@ -176,6 +176,48 @@ def test_closed_group_recovery_reveals_crash_window_provisional():
     ]
 
 
+@pytest.mark.parametrize("disposition,boundary,revealed", [
+    ("cancelled", True, False), ("dropped", True, False),
+    ("success", False, True), ("blocked", False, True), ("failed", False, True),
+    ("cancelled", False, False), ("dropped", False, False),
+])
+def test_recovery_reveals_only_committed_finals(tmp_path, disposition, boundary, revealed):
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session(session_id="parent", source="cli")
+        assert _register()
+        _finish("deleg-1")
+        assert ad.seal_work_group("work-1", "turn-1")
+        claimed = _claim_bound()
+        delivery = claimed["envelope"]["delivery_id"]
+        db.append_message(
+            "parent", role="assistant", content="Proposed final",
+            display_kind="delegation_closeout_provisional",
+            display_metadata={"work_id": "work-1", "delivery_id": delivery},
+        )
+        if boundary:
+            assert ad.close_work_groups_for_session(
+                parent_session_id="parent", disposition=disposition,
+            ) == 1
+        else:
+            assert ad.close_work_group(
+                "work-1", 0, delivery, claimed["claim_id"], "closeout-1",
+                disposition=disposition,
+            )
+        ad.recover_work_groups()
+        assert ad.reconcile_closed_closeout_provisionals() == 0  # idempotent
+        with ad._transaction() as conn:
+            row = conn.execute(
+                "SELECT content, display_kind FROM messages WHERE session_id='parent'"
+            ).fetchone()
+        assert row[0] == "Proposed final"
+        assert row[1] == (None if revealed else "delegation_closeout_provisional")
+    finally:
+        db.close()
+
+
 def test_old_async_delegation_schema_is_upgraded_additively_and_legacy_restores(tmp_path):
     db = tmp_path / "state.db"
     conn = sqlite3.connect(db)

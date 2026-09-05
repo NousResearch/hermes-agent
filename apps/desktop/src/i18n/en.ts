@@ -2598,11 +2598,31 @@ export const en: Translations = {
     images: 'Images…',
     pasteImage: 'Paste image',
     url: 'URL…',
-    promptSnippets: 'Prompt snippets…',
+    promptTemplates: 'Prompt templates…',
     tipPre: 'Tip: type ',
     tipPost: ' to reference files inline.',
-    snippetsTitle: 'Prompt snippets',
-    snippetsDesc: 'Pick a starter prompt to drop into the composer.',
+    templatesTitle: 'Prompt templates',
+    templatesDesc: 'Pick a starter prompt to insert. Drag rows to reorder; drop onto a folder to group.',
+    templateAdd: 'Add template',
+    templateAddFolder: 'Add folder',
+    templateEdit: 'Edit',
+    templateDelete: 'Delete',
+    templateReorder: 'Drag to reorder',
+    templateMoveUp: 'Move up',
+    templateMoveDown: 'Move down',
+    templateIndent: 'Nest under folder above',
+    templateOutdent: 'Move out of folder',
+    templateReset: 'Reset to defaults',
+    templateFolderPlaceholder: 'Folder name',
+    templateConfirmDeleteFolder: 'Delete this folder and everything inside it?',
+    templateResetConfirm: 'Reset all templates to the three built-in defaults? Your custom templates will be lost.',
+    templateLabelPlaceholder: 'Label',
+    templateDescPlaceholder: 'Description (optional)',
+    templateTextPlaceholder: 'Prompt text',
+    templateSave: 'Save',
+    templateCancel: 'Cancel',
+    templateEmpty: 'No templates yet. Add one to get started.',
+    templateConfirmDelete: 'Delete this template?',
     dropFiles: 'Drop files to attach',
     dropSession: 'Drop to link this chat',
     mcpSuggestions: {
@@ -2642,21 +2662,21 @@ export const en: Translations = {
       done: 'Marked for scheduling',
       doneTip: 'Send it and the agent creates the job'
     },
-    snippets: {
+    templates: {
       codeReview: {
         label: 'Code review',
-        description: 'Audit the current change for regressions, dropped edge cases, and missing tests.',
-        text: 'Please review this for bugs, regressions, and missing tests.'
+        description: 'Check recent changes for regressions and untested edge cases.',
+        text: 'Review the code I shared. Flag any bugs, regressions, missing tests, or risky patterns — be specific about line numbers and suggest fixes.'
       },
       implementationPlan: {
         label: 'Implementation plan',
-        description: 'Outline an approach before touching code so the diff stays focused.',
-        text: 'Please make a concise implementation plan before changing code.'
+        description: 'Draft a step-by-step approach before writing any code.',
+        text: 'Before writing code, outline the implementation steps for this task. List the files you would change, the approach for each, and any risks or trade-offs.'
       },
       explainThis: {
         label: 'Explain this',
-        description: 'Walk through how the selected code works and link to the key files.',
-        text: 'Please explain how this works and point me to the key files.'
+        description: 'Get a walkthrough of how a piece of code works.',
+        text: 'Walk me through how this code works, step by step. Explain the key design decisions and point me to the files or functions that matter most.'
       }
     }
   },

@@ -580,10 +580,16 @@ def _bare_model(model: Optional[str]) -> str:
     return (model or "").strip().lower().rsplit("/", 1)[-1]
 
 
+# K3 slug family: bare k3, plan variants like k3-256k, kimi-k3* aliases.
+# Same boundary-token regex as agent/reasoning_effort._KIMI_K3_SLUG_RE (from #76427,
+# credit @ruizanthony) so temperature handling and effort vocabulary never disagree.
+_KIMI_K3_SLUG_RE = re.compile(r"(?:^|[^a-z0-9])k3(?:[^a-z0-9]|$)")
+
+
 def _is_kimi_model(model: Optional[str]) -> bool:
     """True for any Kimi / Moonshot model that manages temperature server-side."""
     bare = _bare_model(model)
-    return bare.startswith("kimi-") or bare == "kimi"
+    return bare.startswith("kimi-") or bare == "kimi" or bool(_KIMI_K3_SLUG_RE.search(bare))
 
 
 def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:

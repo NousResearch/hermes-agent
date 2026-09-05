@@ -1,9 +1,10 @@
 """Oneshot (-z) mode: send a prompt, get the final content block, exit.
 
 Toolsets = explicit --toolsets, else the user's "cli" toolsets from `hermes tools`. Rules /
-memory / AGENTS.md / preloaded skills = same as a normal chat turn. Approvals are auto-bypassed
-(HERMES_YOLO_MODE=1). Model/provider mirror `hermes chat`: both optional; only --model → auto-detect
-the provider; only --provider → error (ambiguous).
+memory / AGENTS.md / preloaded skills = same as a normal chat turn unless --ignore-rules /
+HERMES_IGNORE_RULES or safe mode is set. Approvals are auto-bypassed (HERMES_YOLO_MODE=1).
+Model/provider mirror `hermes chat`: both optional; only --model → auto-detect the provider;
+only --provider → error (ambiguous).
 """
 
 from __future__ import annotations
@@ -167,6 +168,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    ignore_rules: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -193,6 +195,7 @@ def run_oneshot(
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
+    effective_ignore_rules = _effective_ignore_rules(ignore_rules)
 
     # Non-interactive by definition — an approval prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -220,6 +223,7 @@ def run_oneshot(
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
                 skills=skills,
+                ignore_rules=effective_ignore_rules,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -270,6 +274,15 @@ def _create_session_db_for_oneshot():
     except Exception as exc:
         logging.debug("SQLite session store not available for oneshot mode: %s", exc)
         return None
+
+
+def _effective_ignore_rules(ignore_rules: bool) -> bool:
+    """Resolve one-shot isolation from the explicit flag or env equivalents."""
+    return bool(
+        ignore_rules
+        or os.environ.get("HERMES_IGNORE_RULES") == "1"
+        or os.environ.get("HERMES_SAFE_MODE") == "1"
+    )
 
 
 @dataclass
@@ -347,6 +360,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    ignore_rules: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -382,6 +396,7 @@ def _run_agent(
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
     session_db = _create_session_db_for_oneshot()
+    effective_ignore_rules = _effective_ignore_rules(ignore_rules)
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
@@ -397,6 +412,8 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
+            skip_context_files=effective_ignore_rules,
+            skip_memory=effective_ignore_rules,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,

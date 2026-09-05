@@ -2625,8 +2625,22 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     @_require_auth
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
-        """GET /v1/skills — deterministic JSON listing of installed skills (name, description,
-        category), the same set ``/skills list`` shows."""
+        """GET /v1/skills — list installed skills visible to the API-server agent.
+
+        Read-only listing intended for external clients that need to know
+        which skills are available without sending a chat message and asking
+        the model. Mirrors what the gateway/CLI surfaces through
+        ``/skills list``, but as a deterministic JSON payload.
+
+        Returns the same skill metadata (name, description, category) the
+        skills hub uses internally. Disabled skills are excluded.
+
+        This is a *user*-facing listing, so it deliberately still includes
+        skills marked ``disable-model-invocation`` even though the model
+        cannot load them -- they remain invocable as ``/name``. It therefore
+        lists a superset of what the agent auto-loads; use the skills index
+        in the system prompt if you need the model's own view.
+        """
         try:
             from tools.skills_tool import _find_all_skills, _sort_skills
             skills = _sort_skills(_find_all_skills(skip_disabled=False))

@@ -24,7 +24,7 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    skill_matches_environment_list, skill_is_manual_only, skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write
@@ -1123,10 +1123,21 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     skill_name = skill_file.parent.name  # == parts[-2] whenever a parent component exists
     category = "general" if len(parts) < 2 else "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
     platforms = frontmatter.get("platforms") or []
-    platforms = [platforms] if isinstance(platforms, str) else platforms
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    environments = frontmatter.get("environments") or []
+    if isinstance(environments, str):
+        environments = [environments]
     entry = {
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
+        "environments": [str(e).strip() for e in environments if str(e).strip()],
+        # Same reason again, and the same failure when it is missing: the
+        # manual-invocation gate runs on the cold scan only, so without the
+        # verdict recorded here every warm rebuild re-lists manual-only skills
+        # by bare name. The description stays empty, but the name is the part
+        # that costs context and the part that invites the model to try.
+        "manual_only": skill_is_manual_only(frontmatter),
         "conditions": extract_skill_conditions(frontmatter),
     }
     if org_id:
@@ -1146,6 +1157,16 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         # Host-platform / runtime-environment gates are offer-time only; explicit loads bypass them.
         if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
             return False, frontmatter, ""
+
+        # Manual-invocation gate (offer-time only), same field and semantics as
+        # Claude Code: the skill stays registered and `/name` still works, but
+        # its description never enters the system prompt, so the model cannot
+        # auto-match it. Command wrappers mirrored from the hub carry this flag
+        # precisely because they must cost zero context. Explicit loads bypass
+        # it, exactly like the environment gate above.
+        if skill_is_manual_only(frontmatter):
+            return False, frontmatter, ""
+
         return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
         logger.warning("Failed to parse skill file %s: %s", skill_file, e)
@@ -1353,7 +1374,9 @@ def _build_skills_system_prompt_inner(
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
     snapshot = _load_skills_snapshot(skills_dir)
     if snapshot is not None:
-        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or []))
+        candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
+                       and skill_matches_environment_list(entry.get("environments") or [])
+                       and not entry.get("manual_only"))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
         category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}
     else:

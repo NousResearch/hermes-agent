@@ -10,14 +10,18 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 # Monotonic counter for jitter-seed uniqueness within a process; locked
 # because concurrent gateway sessions retry simultaneously.
 _jitter_counter = 0
 _jitter_lock = threading.Lock()
 
-# Z.AI Coding Plan's GLM-5.2 endpoint often returns 429 code 1305 ("service may be
-# temporarily overloaded"). Short retries hammer the same window, so after
+# Z.AI returns HTTP 429 code 1305 ("The service may be temporarily
+# overloaded...") for otherwise valid Hermes requests. First seen on the Coding
+# Plan's GLM-5.2 endpoint, hence the names here, but the shape belongs to the
+# SERVICE: the same 429/1305 arrives for other models on api.z.ai.
+# Short retries hammer the same window, so after
 # ``_ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS`` normal retries the wait widens progressively;
 # the cap stays interactive-friendly (a TUI message should fail visibly in minutes).
 # The short count is shared by ``adaptive_rate_limit_backoff`` and
@@ -85,16 +89,49 @@ def _error_text(error: Any) -> str:
     return " ".join(str(part) for part in parts if part is not None).lower()
 
 
+def _is_zai_host(base_url: str | None) -> bool:
+    """True when ``base_url`` names Z.AI's API, on any of its paths.
+
+    The host is PARSED rather than substring-matched: ``"z.ai" in base_url``
+    would also accept a lookalike like ``api.z.ai.example.com``, and this
+    predicate decides how long Hermes is willing to wait on someone's endpoint.
+    Call sites are not guaranteed to pass a scheme, so a bare ``host/path``
+    still resolves.
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    host = (urlsplit(raw).hostname or "").lower()
+    if not host:
+        host = raw.split("/", 1)[0].split(":", 1)[0].lower()
+    return host == "z.ai" or host.endswith(".z.ai")
+
+
 def is_zai_coding_overload_error(*, base_url: str | None, model: str | None, error: Any) -> bool:
-    """True only for the narrow Z.AI Coding Plan overload shape (429 + code
-    1305 / "temporarily overloaded"), so ordinary quota 429s still fail fast."""
+    """Return True for Z.AI transient overload 429s.
+
+    Z.AI reports service overload as HTTP 429 with body code 1305 and message
+    "The service may be temporarily overloaded...". Only that narrow shape is
+    treated specially, so ordinary quota/billing 429s ("Weekly/Monthly Limit
+    Exhausted", code 1302 "Rate limit reached for requests") still fail fast.
+
+    The shape belongs to the SERVICE, not to one model on one path. While this
+    was pinned to ``api.z.ai/api/coding/paas/v4`` AND the literal ``glm-5.2``,
+    a worker on ``api.z.ai/api/paas/v4`` running ``glm-4.7-flash`` got the
+    identical 429/1305 and none of the policy: three short retries over ~15s
+    and the turn was over, with the whole 30/60/90/120s schedule dead code for
+    it. ``model`` stays in the signature for call-site symmetry and future
+    per-model policy.
+
+    (The ``coding`` in the name is historical — the behaviour was first seen on
+    the Coding Plan.)
+    """
+    if getattr(error, "status_code", None) != 429:
+        return False
+    if not _is_zai_host(base_url):
+        return False
     text = _error_text(error)
-    return (
-        getattr(error, "status_code", None) == 429
-        and "api.z.ai/api/coding/paas/v4" in (base_url or "").lower()
-        and "glm-5.2" in (model or "").lower()
-        and ("1305" in text or "temporarily overloaded" in text)
-    )
+    return "1305" in text or "temporarily overloaded" in text
 
 
 def adaptive_rate_limit_backoff(

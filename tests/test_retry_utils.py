@@ -121,6 +121,150 @@ def _zai_overload_error():
 
 
 
+def _zai_quota_wall_error():
+    """Z.AI's OTHER 429: the plan's window is spent. Must keep failing fast."""
+    return SimpleNamespace(
+        status_code=429,
+        body={
+            "error": {
+                "code": "1113",
+                "message": (
+                    "Weekly/Monthly Limit Exhausted. Your limit will reset at "
+                    "2026-08-31 01:47:59"
+                ),
+            }
+        },
+    )
+
+
+def _zai_request_rate_error():
+    """Z.AI code 1302: too many requests per unit time, not service overload."""
+    return SimpleNamespace(
+        status_code=429,
+        body={"error": {"code": "1302", "message": "Rate limit reached for requests"}},
+    )
+
+
+# ---------------------------------------------------------------------------
+# is_zai_coding_overload_error — the predicate that gates the long-backoff tier
+# ---------------------------------------------------------------------------
+
+
+def test_the_historical_coding_plan_shape_still_matches():
+    """The shape the policy was written for, kept as a regression."""
+    assert is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        model="glm-5.2",
+        error=_zai_overload_error(),
+    )
+
+
+def test_the_same_overload_on_another_model_and_path_matches():
+    """The shape belongs to the SERVICE, not to one model on one path.
+
+    Observed on a live board: workers on ``api.z.ai/api/paas/v4`` running
+    ``glm-4.7-flash`` take the identical 429/1305. While the predicate was
+    pinned to the coding path AND the literal ``glm-5.2``, those runs got three
+    short retries over ~15s and gave up, with the entire 30/60/90/120s schedule
+    unreachable for them.
+    """
+    assert is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4/",
+        model="glm-4.7-flash",
+        error=_zai_overload_error(),
+    )
+
+
+def test_a_quota_wall_is_not_an_overload():
+    """The assertion that keeps this from swallowing the exhausted-plan case.
+
+    A spent weekly/monthly window does not get better in 120 seconds — it must
+    fail fast so the chain falls over to another rail.
+    """
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4/",
+        model="glm-5.3",
+        error=_zai_quota_wall_error(),
+    )
+
+
+def test_a_request_rate_429_is_not_an_overload():
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4/",
+        model="glm-4.7-flash",
+        error=_zai_request_rate_error(),
+    )
+
+
+def test_another_providers_overload_keeps_its_own_policy():
+    """Host-scoped: the long schedule is tuned to Z.AI's windows, not everyone's."""
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.openai.com/v1",
+        model="gpt-5.6-terra",
+        error=_zai_overload_error(),
+    )
+
+
+def test_a_lookalike_host_does_not_match():
+    """``"z.ai" in base_url`` would hand a stranger's endpoint a 2-minute wait."""
+    for base in (
+        "https://api.z.ai.example.com/v1",
+        "https://notz.ai/v1",
+        "https://z.ai.attacker.test/api/paas/v4",
+    ):
+        assert not is_zai_coding_overload_error(
+            base_url=base, model="glm-4.7-flash", error=_zai_overload_error()
+        ), base
+
+
+def test_a_base_url_without_a_scheme_still_matches():
+    """Call sites are not guaranteed to pass one."""
+    assert is_zai_coding_overload_error(
+        base_url="api.z.ai/api/paas/v4",
+        model="glm-4.7-flash",
+        error=_zai_overload_error(),
+    )
+
+
+def test_a_missing_base_url_does_not_match():
+    for base in (None, "", "   "):
+        assert not is_zai_coding_overload_error(
+            base_url=base, model="glm-4.7-flash", error=_zai_overload_error()
+        ), repr(base)
+
+
+def test_a_non_429_with_overload_text_does_not_match():
+    """The status is part of the shape; a 500 saying 'overloaded' retries normally."""
+    err = SimpleNamespace(
+        status_code=500,
+        body={"error": {"code": "1305", "message": "The service may be temporarily overloaded"}},
+    )
+    assert not is_zai_coding_overload_error(
+        base_url="https://api.z.ai/api/paas/v4/", model="glm-4.7-flash", error=err
+    )
+
+
+def test_the_long_tier_is_reachable_for_the_standard_endpoint(monkeypatch):
+    """The end-to-end consequence of the widening, on the shape that was stuck."""
+    monkeypatch.setattr(retry_utils, "jittered_backoff", lambda *a, **kw: kw["base_delay"])
+    from agent.retry_utils import zai_coding_overload_retry_ceiling
+
+    err = _zai_overload_error()
+    long_waits = []
+    for attempt in range(1, zai_coding_overload_retry_ceiling()):
+        _wait, policy = adaptive_rate_limit_backoff(
+            attempt,
+            base_url="https://api.z.ai/api/paas/v4/",
+            model="glm-4.7-flash",
+            error=err,
+            default_wait=1.0,
+        )
+        if policy == "zai_coding_overload_long":
+            long_waits.append(_wait)
+
+    assert long_waits == [30.0, 60.0, 90.0, 120.0]
+
+
 def test_zai_overload_retry_ceiling_exceeds_short_attempts():
     """Invariant: the ceiling must sit above the short-retry threshold, or the
     long-backoff tier is unreachable and the whole schedule is dead code

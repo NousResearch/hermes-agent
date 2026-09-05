@@ -965,6 +965,11 @@ class TelegramAdapter(BasePlatformAdapter):
         DM-topic id does not match the Hermes topic lane and can render the message in a different chat
         lane.
         """
+        business_kwargs = cls._business_kwargs(metadata)
+
+        def routed(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+            return {**kwargs, **business_kwargs}
+
         fallback = cls._dm_topic_fallback(metadata)
         if fallback and reply_to_mode != "off":
             if reply_to_message_id is None:
@@ -977,13 +982,162 @@ class TelegramAdapter(BasePlatformAdapter):
                 # lane than the topic the session runs in.
                 thread_message_id = cls._message_thread_id_for_send(thread_id)
                 if thread_message_id is not None:
-                    return {"message_thread_id": thread_message_id}
-                return cls._direct_topic_kwargs(metadata) or {}
+                    return routed({"message_thread_id": thread_message_id})
+                return routed(cls._direct_topic_kwargs(metadata) or {})
         elif not fallback:
             direct_kwargs = cls._direct_topic_kwargs(metadata)
             if direct_kwargs is not None:
-                return direct_kwargs
-        return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}
+                return routed(direct_kwargs)
+        return routed({"message_thread_id": cls._message_thread_id_for_send(thread_id)})
+
+    @staticmethod
+    def _business_kwargs(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Return delegated-account routing only for an exact trusted opt-in."""
+        if (metadata or {}).get("allow_business_send_as_account") is not True:
+            return {}
+        connection_id = str((metadata or {}).get("business_connection_id") or "").strip()
+        return {"business_connection_id": connection_id} if connection_id else {}
+
+    def _business_config(self) -> Dict[str, Any]:
+        extra = getattr(self.config, "extra", None)
+        raw = extra.get("business", {}) if isinstance(extra, dict) else {}
+        return _normalize_business_config(raw)
+
+    def _business_scope_allowed(self, owner_id: Any, connection_id: Any) -> bool:
+        """Require an explicit owner/connection allowlist for delegated inbox authority."""
+        config = self._business_config()
+        owner_id = str(owner_id or "").strip()
+        connection_id = str(connection_id or "").strip()
+        allowed_owners = set(config.get("allowed_owner_ids") or ())
+        allowed_connections = set(config.get("allowed_connection_ids") or ())
+        if not owner_id or not connection_id or not (allowed_owners or allowed_connections):
+            return False
+        if allowed_owners and owner_id not in allowed_owners:
+            return False
+        if allowed_connections and connection_id not in allowed_connections:
+            return False
+        return True
+
+    def _business_trigger_text(self, message: Message) -> Optional[str]:
+        """Return customer text after an explicit configured trigger."""
+        text = (
+            getattr(message, "text", None)
+            or getattr(message, "caption", None)
+            or ""
+        ).strip()
+        if not text:
+            return None
+        for word in self._business_config()["trigger_words"]:
+            match = re.match(
+                rf"^{re.escape(word)}(?=$|[\s,.:;!?—–-])"
+                rf"[\s,.:;!?—–-]*(.*)$",
+                text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if match:
+                return match.group(1).strip()
+        return None
+
+    async def _business_connection_owner_id(
+        self, connection_id: str
+    ) -> Optional[str]:
+        """Resolve the connected account owner from Telegram, failing closed."""
+        bot = getattr(self, "_bot", None)
+        get_connection = getattr(bot, "get_business_connection", None)
+        if not callable(get_connection):
+            return None
+        try:
+            connection = await get_connection(connection_id)
+        except Exception:
+            logger.warning(
+                "[%s] Could not verify Telegram Business connection owner; "
+                "dropping delegated inbox update",
+                self.name,
+                exc_info=True,
+            )
+            return None
+        if not bool(getattr(connection, "is_enabled", False)):
+            return None
+        resolved_id = str(getattr(connection, "id", "") or "").strip()
+        owner = getattr(getattr(connection, "user", None), "id", None)
+        if resolved_id != connection_id or owner is None or isinstance(owner, bool):
+            return None
+        return str(owner)
+
+    async def _handle_business_message(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        """Route explicitly-triggered Telegram Business customer messages.
+
+        Business traffic is disabled by default, isolated from ordinary bot
+        DMs by connection scope, denied gateway-control authority, and allowed
+        to send as the connected account only on the immediate trusted reply.
+        """
+        del context
+        cfg = self._business_config()
+        if not cfg["enabled"] or not cfg["trigger_words"]:
+            return
+        message = getattr(update, "business_message", None)
+        connection_id = str(
+            getattr(message, "business_connection_id", "") or ""
+        ).strip()
+        if message is None or not connection_id:
+            return
+        actor = getattr(message, "from_user", None)
+        sender_business_bot = getattr(message, "sender_business_bot", None)
+        if (
+            actor is None
+            or bool(getattr(actor, "is_bot", False))
+            or sender_business_bot is not None
+        ):
+            # Bot-authored Business updates are delivery echoes, never new
+            # customer input. Re-enqueueing them creates a reply loop.
+            return
+        chat_id = str(getattr(getattr(message, "chat", None), "id", "") or "")
+        if not chat_id or (cfg["allowed_chats"] and chat_id not in cfg["allowed_chats"]):
+            return
+        text = self._business_trigger_text(message)
+        if text is None:
+            return
+        actor_id = getattr(actor, "id", None)
+        owner_id = await self._business_connection_owner_id(connection_id)
+        if (
+            owner_id is None
+            or actor_id is None
+            or isinstance(actor_id, bool)
+            or str(actor_id) == owner_id
+            or not self._business_scope_allowed(owner_id, connection_id)
+        ):
+            # Business owners can write through the connected account too.
+            # Treat their updates as operator traffic, not delegated-customer
+            # prompts; an unverifiable connection likewise fails closed.
+            return
+
+        event = self._build_message_event(
+            message,
+            MessageType.TEXT,
+            update_id=getattr(update, "update_id", None),
+        )
+        event.text = text
+        event.source.scope_id = f"telegram-business:{connection_id}"
+        event.source.chat_type = "dm"
+        event.source.authorized_via_telegram_business = True
+        event.source.telegram_business_owner_id = owner_id
+        event.metadata = dict(event.metadata or {})
+        event.metadata.update(
+            {
+                "allow_business_send_as_account": cfg[
+                    "allow_business_send_as_account"
+                ],
+                "business_connection_id": connection_id,
+            }
+        )
+        # External customers can converse, but cannot invoke gateway lifecycle
+        # or administrative controls through the delegated inbox.
+        event.allow_gateway_control = False
+        self._enqueue_text_event(event)
 
     @classmethod
     def _direct_topic_kwargs(cls, metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1459,6 +1613,7 @@ class TelegramAdapter(BasePlatformAdapter):
         finalizes without send+delete. Same contract as :meth:`_try_send_rich`."""
         # No topic routing on edits: message_thread_id/direct_messages_topic_id make Telegram reject it.
         payload = {**self._rich_payload_base(chat_id, content), "message_id": int(message_id)}
+        payload.update(self._business_kwargs(metadata))
         try:
             await self._bot.do_api_request("editMessageText", api_kwargs=payload)
         except Exception as exc:
@@ -2681,6 +2836,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
+        business_filter = getattr(
+            getattr(filters, "UpdateType", None), "BUSINESS_MESSAGE", None
+        )
+        if business_filter is not None:
+            app.add_handler(TelegramMessageHandler(
+                business_filter,
+                self._handle_business_message,
+            ))
         app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(
@@ -3249,7 +3412,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._prune_stale_dm_topic_binding(chat_id, effective_thread_id, metadata=metadata)
                         used_thread_fallback = True
                         effective_thread_id = None
-                        thread_kwargs = {"message_thread_id": None}
+                        thread_kwargs = self._business_kwargs(metadata)
                         continue
                     if "message to be replied not found" in str(send_err).lower() and reply_to_id is not None:
                         safe_send_error = _redact_telegram_error_text(send_err)
@@ -3259,7 +3422,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         logger.warning("[%s] Reply target deleted, retrying without reply_to: %s", self.name, safe_send_error)
                         reply_to_id = None
                         if self._dm_topic_fallback(metadata):
-                            thread_kwargs = {}
+                            thread_kwargs = self._business_kwargs(metadata)
                         else:
                             thread_kwargs = self._thread_kwargs_for_send(
                                 chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode)
@@ -3406,23 +3569,32 @@ class TelegramAdapter(BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
-    async def _edit_text(self, chat_id: str, message_id: str, text: str, parse_mode: Any = None) -> None:
+    async def _edit_text(
+        self, chat_id: str, message_id: str, text: str,
+        parse_mode: Any = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """``editMessageText`` with normalized ids; ``parse_mode=None`` sends plain text."""
         kwargs: Dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "message_id": int(message_id), "text": text}
+        kwargs.update(self._business_kwargs(metadata))
         if parse_mode is not None:
             kwargs["parse_mode"] = parse_mode
         await self._bot.edit_message_text(**kwargs)
 
-    async def _edit_markdown_or_plain(self, chat_id: str, message_id: str, formatted: str, plain: str, warn_fmt: str) -> bool:
+    async def _edit_markdown_or_plain(
+        self, chat_id: str, message_id: str, formatted: str, plain: str,
+        warn_fmt: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """MarkdownV2 edit with plain-text fallback. Returns True on a "not modified" no-op (caller may
         skip further work); the fallback edit's exceptions propagate."""
         try:
-            await self._edit_text(chat_id, message_id, formatted, ParseMode.MARKDOWN_V2)
+            await self._edit_text(
+                chat_id, message_id, formatted, ParseMode.MARKDOWN_V2, metadata
+            )
         except Exception as fmt_err:
             if "not modified" in str(fmt_err).lower():
                 return True
             logger.warning(warn_fmt, self.name, _redact_telegram_error_text(fmt_err))
-            await self._edit_text(chat_id, message_id, plain)
+            await self._edit_text(chat_id, message_id, plain, metadata=metadata)
         return False
 
     async def edit_message(
@@ -3473,13 +3645,13 @@ class TelegramAdapter(BasePlatformAdapter):
             self._last_overflow_preview.pop(_preview_key, None)
         try:
             if not finalize:
-                await self._edit_text(chat_id, message_id, content)
+                await self._edit_text(chat_id, message_id, content, metadata=metadata)
                 if _saturated_preview:
                     self._last_overflow_preview[_preview_key] = content
                 return SendResult(success=True, message_id=message_id)
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
-                "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
+                "[%s] MarkdownV2 edit failed, falling back to plain text: %s", metadata)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -3496,7 +3668,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 truncated = self._truncate_stream_overflow_preview(content)
                 if self._last_overflow_preview.get(_preview_key) == truncated:
                     return SendResult(success=True, message_id=message_id)
-                await self._edit_text(chat_id, message_id, truncated)
+                await self._edit_text(chat_id, message_id, truncated, metadata=metadata)
                 self._last_overflow_preview[_preview_key] = truncated
                 return SendResult(success=True, message_id=message_id)
             # Flood control: short waits retry inline; long waits fail immediately so streaming falls back
@@ -3509,7 +3681,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return _flood_cap_result(wait)
                 await asyncio.sleep(wait)
                 try:
-                    await self._edit_text(chat_id, message_id, content)
+                    await self._edit_text(chat_id, message_id, content, metadata=metadata)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     safe_retry_error = _redact_telegram_error_text(retry_err)
@@ -3556,7 +3728,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if "reply message not found" in str(send_err).lower():
                     # Private DM topic fallback needs anchor + topic id together; forum topics keep thread id.
                     retry_thread_kwargs = (
-                        {} if self._dm_topic_fallback(metadata)
+                        self._business_kwargs(metadata) if self._dm_topic_fallback(metadata)
                         else self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=None))
                     try:
                         return await self._bot.send_message(
@@ -3585,9 +3757,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if finalize:
                 await self._edit_markdown_or_plain(
                     chat_id, message_id, _separate_chunk_indicator_from_fence(self.format_message(first_chunk)), _strip_mdv2(first_chunk),
-                    "[%s] Overflow split: MarkdownV2 first-chunk edit failed, falling back to plain text: %s")
+                    "[%s] Overflow split: MarkdownV2 first-chunk edit failed, falling back to plain text: %s", metadata)
             else:
-                await self._edit_text(chat_id, message_id, first_chunk)
+                await self._edit_text(chat_id, message_id, first_chunk, metadata=metadata)
         except Exception as e:
             if "not modified" not in str(e).lower():  # identical first chunk still sends continuations
                 logger.error("[%s] Overflow split: first-chunk edit failed: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
@@ -3640,6 +3812,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def supports_draft_streaming(self, chat_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """sendMessageDraft works for private chats only (Bot API 9.5) and needs PTB >= 22.6; groups and
         older installs use the edit-based path. ``rich_drafts`` controls draft *format*, not availability."""
+        if self._business_kwargs(metadata):
+            # Bot API sendMessageDraft has no business_connection_id parameter.
+            return False
         if not self._bot or not hasattr(self._bot, "send_message_draft"):
             return False
         return (chat_type or "").lower() in {"dm", "private"}
@@ -3649,6 +3824,8 @@ class TelegramAdapter(BasePlatformAdapter):
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
         if not self._bot:
             return SendResult(success=False, error="not_connected")
+        if self._business_kwargs(metadata):
+            return SendResult(success=False, error="business_draft_unsupported")
         # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
         if self._should_attempt_rich_draft(content) and await self._try_send_rich_draft(chat_id, draft_id, content, metadata):
             return SendResult(success=True, message_id=None)
@@ -4846,9 +5023,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None
+        business_kwargs = self._business_kwargs(metadata)
 
         async def _action(**kw) -> None:
-            await self._bot.send_chat_action(chat_id=normalize_telegram_chat_id(chat_id), action="typing", **kw)
+            await self._bot.send_chat_action(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                action="typing",
+                **business_kwargs,
+                **kw,
+            )
             self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         try:
             _is_dm_topic = self._dm_topic_fallback(metadata)
@@ -5640,7 +5823,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
-        """Message-like payload for normal messages and channel posts (``update.channel_post``)."""
+        """Message-like payload for ordinary messages and channel posts.
+
+        Delegated Business messages have a dedicated, opt-in handler and must not
+        also enter the ordinary bot intake path.
+        """
+        if getattr(update, "business_message", None) is not None:
+            return None
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
@@ -6408,6 +6597,42 @@ def interactive_setup() -> None:
     setup_platforms._setup_telegram()
 
 
+def _normalize_business_config(raw: Any) -> Dict[str, Any]:
+    """Normalize opt-in Telegram Business routing configuration."""
+    raw = raw if isinstance(raw, dict) else {}
+
+    def _items(value: Any) -> List[str]:
+        values = value if isinstance(value, (list, tuple, set)) else [value]
+        return [
+            normalized
+            for item in values
+            if item is not None and (normalized := str(item).strip())
+        ]
+
+    enabled = raw.get("enabled", False)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = bool(enabled)
+    allow_send_as_account = raw.get("allow_business_send_as_account", False)
+    if isinstance(allow_send_as_account, str):
+        allow_send_as_account = allow_send_as_account.strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+    else:
+        allow_send_as_account = bool(allow_send_as_account)
+    return {
+        "enabled": enabled,
+        "allow_business_send_as_account": allow_send_as_account,
+        "allowed_chats": _items(raw.get("allowed_chats", [])),
+        "allowed_owner_ids": _items(
+            raw.get("allowed_owner_ids", raw.get("allow_from", []))
+        ),
+        "allowed_connection_ids": _items(raw.get("allowed_connection_ids", [])),
+        "trigger_words": _items(raw.get("trigger_words", [])),
+    }
+
+
 def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     """Translate config.yaml telegram: keys into TELEGRAM_* env vars and PlatformConfig.extra. Env vars
     take precedence over YAML. Returns extras to merge into PlatformConfig.extra, or None.
@@ -6417,6 +6642,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
     """
     import json as _json
     extras: dict = {}
+    extras["business"] = _normalize_business_config(telegram_cfg.get("business"))
     # Under multiplex a secondary profile's authorization gates must NOT hit the process-global env
     # (first-writer-wins would pin them for every profile); they flow via extra/secret scope.
     try:

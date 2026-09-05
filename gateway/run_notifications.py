@@ -268,7 +268,11 @@ class GatewayNotificationsMixin:
             _thread_meta = (
                 dict(thread_metadata)
                 if thread_metadata is not None
-                else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+                else self._thread_metadata_for_source(
+                    event.source,
+                    self._reply_anchor_for_event(event),
+                    getattr(event, "metadata", None),
+                )
             )
             chat_id = event.source.chat_id
             # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
@@ -313,14 +317,18 @@ class GatewayNotificationsMixin:
                 # a plain send here would duplicate it.
                 _reconciled = False
                 _sc_msg_id = getattr(stream_consumer, "message_id", None)
+                _sc_edit_message = getattr(stream_consumer, "_edit_message", None)
                 if (
                     _sc_msg_id
                     and _sc_msg_id != "__no_edit__"
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
+                    and callable(_sc_edit_message)
                 ):
                     try:
-                        _edit_res = await adapter.edit_message(
-                            chat_id=source.chat_id, message_id=_sc_msg_id, content=text_content, finalize=True,
+                        _edit_res = await cast(Any, _sc_edit_message)(
+                            message_id=_sc_msg_id,
+                            content=text_content,
+                            finalize=True,
                         )
                         if getattr(_edit_res, "success", False):
                             _reconciled = True

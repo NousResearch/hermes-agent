@@ -351,7 +351,9 @@ class GatewayBusySessionMixin:
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
             reply_to=reply_anchor if plain_anchor else self._busy_reply_to(event, reply_anchor),
-            metadata=self._thread_metadata_for_source(event.source, reply_anchor),
+            metadata=self._thread_metadata_for_source(
+                event.source, reply_anchor, event.metadata
+            ),
         )
 
     async def _send_busy_drain_notice(self, event: MessageEvent, session_key: str, effective_mode: str) -> None:

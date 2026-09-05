@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  actions: write # to trigger deploy-site.yml on schedule
 
 jobs:
   build-index:
@@ -31,6 +30,7 @@ jobs:
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: read
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -59,6 +59,9 @@ jobs:
   trigger-deploy:
     needs: build-index
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: write # trigger deploy-site.yml on schedule or manual refresh
+      contents: read # check out the local token-minting action
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: trusted-automation
@@ -75,6 +78,7 @@ jobs:
         with:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-actions: write
 
       - name: Trigger Deploy Site workflow
         env:

@@ -12,7 +12,8 @@ description: >-
 
   Composite actions cannot access contexts directly, so callers pass the
   public vars.APP_CLIENT_ID and protected secrets.APP_PRIVATE_KEY as inputs.
-  When the private key is empty, the fallback fires.
+  When either credential is empty, the fallback fires rather than attempting
+  to mint with a partial credential pair.
 
 inputs:
   client-id:
@@ -31,6 +32,30 @@ inputs:
     description: Comma- or newline-separated repositories to scope within the installation owner.
     required: false
     default: ''
+  permission-actions:
+    description: Actions API permission requested for the token (read or write).
+    required: false
+    default: ''
+  permission-checks:
+    description: Checks API permission requested for the token (read or write).
+    required: false
+    default: ''
+  permission-contents:
+    description: Repository contents permission requested for the token (read or write).
+    required: false
+    default: ''
+  permission-issues:
+    description: Issues permission requested for the token (read or write).
+    required: false
+    default: ''
+  permission-pull-requests:
+    description: Pull request permission requested for the token (read or write).
+    required: false
+    default: ''
+  permission-statuses:
+    description: Commit status permission requested for the token (read or write).
+    required: false
+    default: ''
 
 outputs:
   token:
@@ -45,8 +70,9 @@ runs:
       shell: bash
       env:
         CLIENT_ID: ${{ inputs.client-id }}
+        PRIVATE_KEY: ${{ inputs.private-key }}
       run: |
-        if [ -n "$CLIENT_ID" ]; then
+        if [ -n "$CLIENT_ID" ] && [ -n "$PRIVATE_KEY" ]; then
           echo "has_app=true" >> "$GITHUB_OUTPUT"
         else
           echo "has_app=false" >> "$GITHUB_OUTPUT"
@@ -61,6 +87,12 @@ runs:
         private-key: ${{ inputs.private-key }}
         owner: ${{ inputs.owner }}
         repositories: ${{ inputs.repositories }}
+        permission-actions: ${{ inputs.permission-actions }}
+        permission-checks: ${{ inputs.permission-checks }}
+        permission-contents: ${{ inputs.permission-contents }}
+        permission-issues: ${{ inputs.permission-issues }}
+        permission-pull-requests: ${{ inputs.permission-pull-requests }}
+        permission-statuses: ${{ inputs.permission-statuses }}
 
     - name: Fall back to GITHUB_TOKEN
       id: fallback

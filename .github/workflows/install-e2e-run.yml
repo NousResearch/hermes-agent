@@ -82,18 +82,20 @@ jobs:
           grep "^$(id -un):" /etc/subuid /etc/subgid || echo "  (none — sandbox will say so)"
 
       - name: Run install + update E2E
-        run: |
-          set -euo pipefail
-          tests/install/install-update-e2e.sh \
-            --route '${{ inputs.route }}' \
-            --install-ref '${{ inputs.install-ref }}'
         env:
+          INSTALL_REF: ${{ inputs.install-ref }}
+          ROUTE: ${{ inputs.route }}
           # Outside the workspace on purpose: the script creates this directory
           # up front, and an untracked dir inside the repo makes the worktree
           # dirty -- which dev-sandbox reacts to by snapshotting the working
           # copy into a fresh fake-main commit on every invocation, moving the
           # update target mid-run.
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+        run: |
+          set -euo pipefail
+          tests/install/install-update-e2e.sh \
+            --route "$ROUTE" \
+            --install-ref "$INSTALL_REF"
 
       # Artifact names cannot contain '/', and install-ref may be a full ref
       # like refs/heads/main. GitHub Actions expressions have no string-replace
@@ -102,11 +104,14 @@ jobs:
       - name: Build artifact name
         if: always()
         id: artifact
+        env:
+          INSTALL_REF: ${{ inputs.install-ref }}
+          ROUTE: ${{ inputs.route }}
         run: |
           set -euo pipefail
-          safe_ref='${{ inputs.install-ref }}'
+          safe_ref="$INSTALL_REF"
           safe_ref="${safe_ref//\//-}"
-          echo "name=install-e2e-${{ inputs.route }}-${safe_ref}" >> "$GITHUB_OUTPUT"
+          echo "name=install-e2e-${ROUTE}-${safe_ref}" >> "$GITHUB_OUTPUT"
 
       # The installer's own transcripts say far more than the assertion that
       # tripped when a real install breaks.

@@ -133,23 +133,20 @@ export function isPeerInstanceWindow(search = typeof window === 'undefined' ? ''
 // before, so ordinary windows and single-profile users are untouched.
 // Not cached: it is read a handful of times per boot and staying cache-free
 // keeps it honest under test.
-function windowRouteOverride(
-  name: string,
-  search = typeof window === 'undefined' ? '' : window.location.search
-): null | string {
+function windowRouteOverride(name: string): null | string {
   try {
-    return new URLSearchParams(search).get(name)?.trim() || null
+    return new URLSearchParams(window.location.search).get(name)?.trim() || null
   } catch {
     return null
   }
 }
 
-export function windowProfileOverride(search?: string): null | string {
-  return windowRouteOverride('profile', search)
+export function windowProfileOverride(): null | string {
+  return windowRouteOverride('profile')
 }
 
-export function windowConnectionIdOverride(search?: string): null | string {
-  return windowRouteOverride('connectionId', search)
+export function windowConnectionIdOverride(): null | string {
+  return windowRouteOverride('connectionId')
 }
 
 /** Resolve the backend this renderer was opened for. Helper windows carry an

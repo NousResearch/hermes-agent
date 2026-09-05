@@ -70,6 +70,12 @@ from hermes_cli.colors import Colors, color
 
 logger = logging.getLogger(__name__)
 
+# The smoke script lives under the operator-controlled HERMES_HOME, so it may
+# only be launched by service managers that run in that same user's scope.
+# System systemd services, Windows services, and detached/manual restarts are
+# intentionally unsupported.
+VAULT_SMOKE_RESTART_BACKENDS = frozenset({"systemd-user", "launchd"})
+
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
 _CAPTURE_TEXT = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -3016,6 +3022,36 @@ def _get_restart_drain_timeout() -> float:
     return parse_restart_drain_timeout(raw)
 
 
+def _schedule_vault_runtime_smoke(backend: str, delay_seconds: float = 8.0) -> None:
+    """Launch the optional post-restart smoke script for a user service."""
+    if backend not in VAULT_SMOKE_RESTART_BACKENDS:
+        return
+
+    hermes_home = get_hermes_home()
+    script = hermes_home / "scripts" / "hermes_vault_runtime_smoke.py"
+    if not script.exists():
+        return
+
+    log_path = hermes_home / "logs" / "vault_runtime_smoke.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # Popen duplicates the descriptor for the child. Closing this parent
+        # handle immediately prevents one descriptor leak per restart.
+        with open(log_path, "ab") as log:
+            subprocess.Popen(
+                [sys.executable, str(script), "--delay", str(delay_seconds)],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        print(f"↻ Scheduled post-restart vault smoke test → {log_path}")
+    except Exception as exc:
+        print(
+            "⚠ Could not schedule post-restart vault smoke test: "
+            f"{exc.__class__.__name__}"
+        )
+
+
 def _agent_timeout_setting(env_var: str, key: str, parse) -> float:
     """``parse(env)`` when the env var is non-empty, else ``parse(agent.<key>)`` (None if unset)."""
     env_raw = os.getenv(env_var)
@@ -3211,7 +3247,9 @@ def systemd_restart(system: bool = False):
         svc = get_service_name()
         _run_systemctl(["reset-failed", svc], system=system, check=False, timeout=30)
         _run_systemctl(["restart", svc], system=system, check=False, timeout=90)
-        _wait_for_systemd_service_restart(system=system, previous_pid=pid)
+        if _wait_for_systemd_service_restart(system=system, previous_pid=pid):
+            if not system:
+                _schedule_vault_runtime_smoke("systemd-user")
         return
     if pid is not None:
         service_action = _systemd_graceful_restart_action(system, pid)
@@ -3220,6 +3258,8 @@ def systemd_restart(system: bool = False):
         return
 
     if _recover_pending_systemd_restart(system=system, previous_pid=pid):
+        if not system:
+            _schedule_vault_runtime_smoke("systemd-user")
         return
     _systemd_reset_and_run("restart", system=system, previous_pid=pid)
 
@@ -3251,6 +3291,8 @@ def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
     # Exit 75 hands restart ownership to systemd; observe that replacement rather than restarting again.
     replacement_observed: list[bool] = []
     if _wait_for_systemd_service_restart(system=system, previous_pid=pid, replacement_observed=replacement_observed):
+        if not system:
+            _schedule_vault_runtime_smoke("systemd-user")
         return None
     if replacement_observed or _systemd_service_is_start_limited(system=system):
         return None
@@ -3290,7 +3332,9 @@ def _systemd_reset_and_run(action: str, *, system: bool, previous_pid) -> None:
             "check `hermes gateway status` or logs for final state."
         )
         return
-    _wait_for_systemd_service_restart(system=system, previous_pid=previous_pid)
+    if _wait_for_systemd_service_restart(system=system, previous_pid=previous_pid):
+        if not system:
+            _schedule_vault_runtime_smoke("systemd-user")
 
 
 def systemd_status(deep: bool = False, system: bool = False, full: bool = False):
@@ -4038,6 +4082,7 @@ def launchd_restart():
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
             _launchd_ok("✓ Service restart requested")
+            _schedule_vault_runtime_smoke("launchd", delay_seconds=15.0)
             return
         if pid is not None and probe_gateway_loop_liveness(pid) == GATEWAY_LOOP_WEDGED:
             # Event loop provably dead: it can't process a graceful shutdown, so a full drain wait
@@ -4062,6 +4107,7 @@ def launchd_restart():
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         _launchd_ok("✓ Service restarted")
+        _schedule_vault_runtime_smoke("launchd")
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
             _launchd_degrade_or_raise(e, "launchctl kickstart")
@@ -4078,6 +4124,7 @@ def launchd_restart():
             _launchd_degrade_or_raise(e2, "launchctl")
             return
         _launchd_ok("✓ Service restarted")
+        _schedule_vault_runtime_smoke("launchd")
 
 
 # KeepAlive relaunches at most ~once per 10s, so a self-restart leaves the label pid-less that long.

@@ -31,6 +31,7 @@ import {
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { hudOutranksSpeechClaim, isSpeechCue, SPEECH_CLAIM_TTL_MS } from './ambient-claim'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
@@ -16617,10 +16618,37 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 // handles IPC serially, so the first window to claim a key wins with no race.
 const isDuplicateNotification = createEventDeduper()
 const claimedAmbientCue = createEventDeduper()
+// Speech is seconds of audio keyed by backend message id, not one instant beep
+// keyed by kind+session, so its claim stands for the life of the reply — a
+// throttled hidden window waking late must not find the claim expired and read
+// the same reply aloud a second time (#99717). See ambient-claim.ts.
+const claimedSpeechCue = createEventDeduper(SPEECH_CLAIM_TTL_MS)
 
 // A window asks "do I own this ambient cue (turn-end sound / spoken reply)?".
 // The first caller within the window gets true; peers get false and stay quiet.
-ipcMain.handle('hermes:ambient:claim', (_event, key) => !claimedAmbientCue(String(key ?? '')))
+// An open HUD outranks the app window it hid on its way up: the visible surface
+// owns the audio, so the stop control is the one the user can actually reach.
+ipcMain.handle('hermes:ambient:claim', (event, key) => {
+  const cue = String(key ?? '')
+  const hud = hudWindow && !hudWindow.isDestroyed() ? hudWindow : null
+
+  if (
+    hudOutranksSpeechClaim(cue, {
+      fromHud: Boolean(hud) && event.sender === hud.webContents,
+      hudOpen: Boolean(hud),
+      senderDisplacedByHud:
+        hudRestoreMainWindow &&
+        Boolean(mainWindow) &&
+        !mainWindow.isDestroyed() &&
+        event.sender === mainWindow.webContents &&
+        !mainWindow.isVisible()
+    })
+  ) {
+    return false
+  }
+
+  return !(isSpeechCue(cue) ? claimedSpeechCue(cue) : claimedAmbientCue(cue))
+})
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) {

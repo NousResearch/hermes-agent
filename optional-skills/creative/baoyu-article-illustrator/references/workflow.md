@@ -2,7 +2,7 @@
 
 ## Step 1: Detect Reference Images
 
-If the user provides reference images (local path or URL), the goal is to produce **textual descriptions** that can be embedded in prompts — `image_generate` doesn't accept reference-image inputs, and Hermes' text file tools can't read or write binaries.
+If the user provides reference images (local path or URL), produce **textual descriptions** for prompts and preserve the exact source for optional image inputs. `image_generate` accepts a public URL or absolute local path in `image_url` for edits/transforms, plus up to 16 additional `reference_image_urls` (URLs or absolute local paths) guiding the edit. Hermes' text file tools can't read or write binaries.
 
 **Tool rules**:
 
@@ -103,7 +103,7 @@ For each reference image (use the `vision_analyze` description from Step 1):
 | `style` | Extract visual style characteristics only | Append style traits to prompt body |
 | `palette` | Extract color scheme only | Append extracted hex colors to prompt body |
 
-Note: `image_generate` does not accept reference-image inputs under any usage type. Everything is mediated through the `vision_analyze` description.
+Retain the `vision_analyze` description under every usage type. When editing/transforming a source, also pass it as `image_url`, with optional `reference_image_urls` for additional guidance. Text-only style/palette extraction remains appropriate when no image edit is intended.
 
 ---
 
@@ -266,7 +266,7 @@ For each illustration in the outline:
 
 ### 5.1 Process References (if analyzed in Step 1)
 
-Read the `vision_analyze` description from the sidecar `references/NN-ref-{slug}.md` (via `read_file`) and embed it in the prompt body. `image_generate` never receives the binary.
+Read the `vision_analyze` description from the sidecar `references/NN-ref-{slug}.md` (via `read_file`) and embed it in the prompt body. Record any selected `image_url` / `reference_image_urls` alongside the saved prompt, retaining the sidecar's exact original source. Resolve local inputs to existing absolute paths; never invent references.
 
 | Usage | Action |
 |-------|--------|
@@ -278,19 +278,25 @@ Read the `vision_analyze` description from the sidecar `references/NN-ref-{slug}
 
 ## Step 6: Generate Images
 
-`image_generate` returns a JSON blob with a URL (`{"success": true, "image": "<url>"}`). It does NOT save a local file, does NOT accept an output path, and does NOT let the agent pick a backend/model. Treat the URL as a temporary artifact and download it explicitly.
+`image_generate` returns an `image` field containing a URL or an absolute local file path. It does NOT accept an output path or let the agent pick a backend/model. Save the result at the intended output path, downloading only when it is a URL.
+
+Edit example (replace paths with verified sources and save the full prompt/arguments first; use only arguments advertised by the exposed schema):
+
+```python
+image_generate(prompt="Simplify this diagram, retaining its exact labels and the recorded palette.", aspect_ratio="landscape", image_url="/absolute/references/diagram.png", reference_image_urls=["/absolute/references/style.png"])
+```
 
 For each prompt file:
 
 1. Read the prompt file (via `read_file`) and extract the assembled prompt
 2. Map the prompt's `ASPECT` to `image_generate`'s enum: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`. Custom ratios → nearest named aspect.
-3. Call `image_generate(prompt=<assembled>, aspect_ratio=<enum>)` and extract the `image` URL from the returned JSON.
+3. Call `image_generate(prompt=<assembled>, aspect_ratio=<enum>)` for text-to-image, or add the recorded `image_url` and optional `reference_image_urls` for an edit. Extract the `image` field from the result.
 4. **Backup rule**: If `{output-dir}/NN-{type}-{slug}.png` already exists, rename it via `terminal` (`mv "{output-dir}/NN-{type}-{slug}.png" "{output-dir}/NN-{type}-{slug}-backup-YYYYMMDD-HHMMSS.png"`) before writing.
-5. Download the URL via `terminal`:
+5. Resolve the output directory to an absolute path. For a URL result, download via `terminal`:
    ```bash
-   curl -sSL -o "{output-dir}/NN-{type}-{slug}.png" "{image_url}"
+   curl -fsSL -o "/absolute/output-dir/NN-type-slug.png" "<returned-image-url>"
    ```
-   If `curl` is unavailable, fall back to `wget -qO "{output-dir}/NN-{type}-{slug}.png" "{image_url}"`.
+   If `curl` is unavailable, use `wget` with the same absolute target. For a local-path result, copy it via `terminal` (`cp "<returned-absolute-path>" "/absolute/output-dir/NN-type-slug.png"`), or reuse it if already at the target. Convert non-PNG data before saving with a `.png` extension.
 6. Verify the file exists and has non-zero size (`terminal`: `test -s "{path}" && echo ok`).
 7. On generation failure, retry `image_generate` once. On download failure, retry `curl` once with a longer timeout. Then log and continue.
 8. After each generation, report "Generated X/N".

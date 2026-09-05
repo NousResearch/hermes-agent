@@ -22,6 +22,7 @@ from tools.registry import registry
 
 @pytest.fixture
 def live_path(tmp_path, monkeypatch):
+    pytest.importorskip("mautrix.client", reason="Real SDK coverage requires the optional Matrix dependencies")
     from mautrix.client import Client
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -38,7 +38,9 @@ def check_matrix_tool_requirements() -> bool:
     """
     token = (get_secret("MATRIX_ACCESS_TOKEN") or "").strip()
     homeserver = (get_secret("MATRIX_HOMESERVER") or "").strip()
-    return bool(token and homeserver)
+    user_id = (get_secret("MATRIX_USER_ID") or "").strip()
+    password = get_secret("MATRIX_PASSWORD") or ""
+    return bool(homeserver and (token or (user_id and password)))
 
 
 def _matrix_tools_cfg() -> Dict[str, Any]:

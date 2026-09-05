@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -793,6 +795,134 @@ def test_board_param_none_falls_back_to_env(worker_env):
     # 'alt' board path. Confirms the override path was not silently
     # forced.
     assert kb.kanban_db_path() == kb.kanban_db_path(board="default")
+
+
+def _init_git_repo(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "-b", "main", str(repo)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "kanban@example.com"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Kanban Test"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "README.md"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_complete_worktree_artifact_uses_explicit_board_not_ambient(
+    monkeypatch, tmp_path
+):
+    """kanban_complete(board=X) must snapshot worktree artifacts under board X.
+
+    Regression for explicit-board completion while ambient/current board is
+    different: DB writes follow board=X, but worktree preservation previously
+    resolved task_attachments_dir(..., board=None) against the ambient board.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    explicit_board = "alt"
+    bytes_a = b"cross-board-worktree-artifact"
+
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    kb.create_board(explicit_board)
+    assert kb.get_current_board() == kb.DEFAULT_BOARD
+
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    target = repo / ".worktrees" / "artifact-task"
+    branch = "wt/artifact-task"
+
+    conn = kb.connect(board=explicit_board)
+    try:
+        tid = kb.create_task(
+            conn,
+            title="certify report",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+            branch_name=branch,
+        )
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+        conn.commit()
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, tid, ws)
+        artifact = ws / "certification.md"
+        artifact.write_bytes(bytes_a)
+    finally:
+        conn.close()
+
+    assert kb.get_current_board() == kb.DEFAULT_BOARD
+    expected_dir = kb.task_attachments_dir(tid, board=explicit_board)
+    ambient_dir = kb.task_attachments_dir(tid, board=kb.DEFAULT_BOARD)
+    assert expected_dir != ambient_dir
+
+    out = json.loads(kt._handle_complete({
+        "task_id": tid,
+        "board": explicit_board,
+        "summary": "report ready",
+        "artifacts": [str(artifact)],
+    }))
+    assert out.get("ok") is True, out
+    assert kb.get_current_board() == kb.DEFAULT_BOARD
+
+    conn = kb.connect(board=explicit_board)
+    try:
+        completed = [e for e in kb.list_events(conn, tid) if e.kind == "completed"][-1]
+        run = kb.latest_run(conn, tid)
+        attachments = kb.list_attachments(conn, tid)
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    assert task is not None and task.status == "done"
+    assert completed.payload.get("artifacts"), (
+        "completed event must retain an artifact reference"
+    )
+    persisted = Path(completed.payload["artifacts"][0])
+    assert run is not None
+    assert run.metadata.get("artifacts") == [str(persisted)]
+    assert persisted.parent == expected_dir
+    assert persisted.exists()
+    assert persisted.read_bytes() == bytes_a
+    assert not persisted.resolve().is_relative_to(ambient_dir.resolve())
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("certification.md", str(persisted.resolve()))
+    ]
 
 
 # ---------------------------------------------------------------------------

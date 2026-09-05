@@ -5933,7 +5933,7 @@ class HallucinatedCardsError(ValueError):
 
 
 class ArtifactPreservationError(RuntimeError):
-    """Raised when a declared scratch deliverable cannot be preserved."""
+    """Raised when a declared scratch or worktree deliverable cannot be preserved."""
 
 
 def _controller_attempt_id(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
@@ -6683,7 +6683,14 @@ def _persist_scratch_completion_artifacts(
     task_id: str,
     metadata: dict,
 ) -> None:
-    """Copy scratch-workspace completion artifacts before cleanup removes them."""
+    """Copy scratch/worktree completion artifacts before they can change or vanish.
+
+    Managed scratch workspaces are deleted at completion. Worktree workspaces
+    may survive, but their files remain mutable. In both cases a declared
+    regular file contained in the task workspace is snapshotted into durable
+    attachment storage so the completed event and run metadata refer to the
+    bytes present at the completion boundary. ``dir`` workspaces are unchanged.
+    """
     raw_artifacts = metadata.get("artifacts")
     if not isinstance(raw_artifacts, (list, tuple)):
         return
@@ -6692,12 +6699,19 @@ def _persist_scratch_completion_artifacts(
         "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
-    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
+    if not row or not row["workspace_path"]:
         return
 
+    kind = row["workspace_kind"]
     workspace = Path(row["workspace_path"]).expanduser()
-    is_managed, board = _managed_scratch_path_info(workspace)
-    if not is_managed:
+    board: Optional[str] = None
+    if kind == "scratch":
+        is_managed, board = _managed_scratch_path_info(workspace)
+        if not is_managed:
+            return
+    elif kind == "worktree":
+        board = None
+    else:
         return
 
     try:
@@ -6705,6 +6719,7 @@ def _persist_scratch_completion_artifacts(
     except OSError:
         return
 
+    kind_label = "scratch" if kind == "scratch" else "worktree"
     attachment_dir = task_attachments_dir(task_id, board=board)
     persisted: list[str] = []
     used_destinations: set[Path] = set()
@@ -6739,14 +6754,14 @@ def _persist_scratch_completion_artifacts(
         if not src.is_file():
             _discard_copies()
             raise ArtifactPreservationError(
-                f"declared scratch artifact is unavailable or not a regular file: {artifact}"
+                f"declared {kind_label} artifact is unavailable or not a regular file: {artifact}"
             )
 
         size = resolved_src.stat().st_size
         if size > KANBAN_ATTACHMENT_MAX_BYTES:
             _discard_copies()
             raise ArtifactPreservationError(
-                f"declared scratch artifact exceeds the "
+                f"declared {kind_label} artifact exceeds the "
                 f"{KANBAN_ATTACHMENT_MAX_BYTES}-byte limit: {artifact}"
             )
 
@@ -6760,7 +6775,7 @@ def _persist_scratch_completion_artifacts(
                     copied += len(chunk)
                     if copied > KANBAN_ATTACHMENT_MAX_BYTES:
                         raise ArtifactPreservationError(
-                            f"declared scratch artifact grew beyond the size limit: {artifact}"
+                            f"declared {kind_label} artifact grew beyond the size limit: {artifact}"
                         )
                     destination_file.write(chunk)
         except Exception as exc:
@@ -6773,7 +6788,7 @@ def _persist_scratch_completion_artifacts(
             if isinstance(exc, ArtifactPreservationError):
                 raise
             raise ArtifactPreservationError(
-                f"could not preserve declared scratch artifact {artifact}: {exc}"
+                f"could not preserve declared {kind_label} artifact {artifact}: {exc}"
             ) from exc
 
         used_destinations.add(dest)

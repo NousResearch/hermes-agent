@@ -28,6 +28,7 @@ through the board.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -782,17 +783,25 @@ def _handle_complete(args: dict, **kw) -> str:
                 )
 
             try:
-                ok = kb.complete_task(
-                    conn, tid,
-                    result=result, summary=summary, metadata=metadata,
-                    created_cards=created_cards,
-                    expected_run_id=_worker_run_id(tid),
+                # Pin the active board for complete_task so worktree artifact
+                # snapshots (which currently resolve task_attachments_dir with
+                # board=None) land under the explicitly selected board rather
+                # than the ambient/current board.
+                board_scope = (
+                    kb.scoped_current_board(board) if board else contextlib.nullcontext()
                 )
+                with board_scope:
+                    ok = kb.complete_task(
+                        conn, tid,
+                        result=result, summary=summary, metadata=metadata,
+                        created_cards=created_cards,
+                        expected_run_id=_worker_run_id(tid),
+                    )
             except kb.ArtifactPreservationError as artifact_err:
                 return tool_error(
                     f"kanban_complete could not preserve the declared artifacts: "
                     f"{artifact_err}. Your task is still in-flight and its "
-                    f"scratch workspace was kept. Fix the artifact path or "
+                    f"workspace was kept. Fix the artifact path or "
                     f"storage error, then retry kanban_complete with the same handoff."
                 )
             except kb.HallucinatedCardsError as hall_err:
@@ -1880,9 +1889,10 @@ KANBAN_COMPLETE_SCHEMA = {
                     "intermediate scratch files and references that "
                     "are not the deliverable. The path must exist "
                     "on disk at completion. Files inside a managed scratch "
-                    "workspace are copied to durable task attachments before "
-                    "cleanup; a missing declared scratch artifact keeps the "
-                    "task in-flight so you can fix the path and retry."
+                    "or worktree workspace are copied to durable task "
+                    "attachments before they can change or vanish; a missing "
+                    "declared artifact keeps the task in-flight so you can "
+                    "fix the path and retry."
                 ),
             },
             "terminal_result": {

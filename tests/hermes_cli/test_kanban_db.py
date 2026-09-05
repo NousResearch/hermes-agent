@@ -613,6 +613,83 @@ def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
 
 
 
+def test_complete_task_snapshots_worktree_artifacts_independently_of_workspace(
+    kanban_home, tmp_path
+):
+    """Worktree completion artifacts must snapshot bytes at the completion boundary.
+
+    Scratch workspaces already copy declared artifacts into durable attachment
+    storage before cleanup. A worktree worker declaring
+    ``kanban_complete(artifacts=[path])`` must receive equivalent durability:
+    later mutation or removal of the original worktree file must not change
+    the completed artifact bytes.
+
+    Worktree cleanup is not required to expose a missing snapshot — mutating
+    the original file after ``complete_task()`` returns is sufficient.
+    """
+    bytes_a = b"worktree-artifact-bytes-A"
+    bytes_b = b"worktree-artifact-bytes-B-MUTATED"
+
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    target = repo / ".worktrees" / "artifact-task"
+    branch = "wt/artifact-task"
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="certify report",
+            workspace_kind="worktree",
+            workspace_path=str(target),
+            branch_name=branch,
+        )
+        task = kb.get_task(conn, t)
+        assert task is not None
+        ws = kb.resolve_workspace(task)
+        kb.set_workspace_path(conn, t, ws)
+        artifact = ws / "certification.md"
+        artifact.write_bytes(bytes_a)
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": [str(artifact)]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        run = kb.latest_run(conn, t)
+        attachments_at_complete = kb.list_attachments(conn, t)
+
+    assert completed.payload.get("artifacts"), (
+        "completed event must retain an artifact reference"
+    )
+    persisted = Path(completed.payload["artifacts"][0])
+    assert run is not None
+    assert run.metadata.get("artifacts"), (
+        "run metadata must retain an artifact reference"
+    )
+
+    # Mutate the original worktree file after complete_task returns. This is
+    # the tight durability probe: no worktree removal is involved.
+    artifact.write_bytes(bytes_b)
+
+    assert persisted.exists(), (
+        "completed artifact must remain available after source mutation"
+    )
+    assert persisted.read_bytes() == bytes_a, (
+        "completed artifact must remain byte-identical to the completion-boundary bytes; "
+        f"got {persisted.read_bytes()!r} from {persisted}"
+    )
+    assert not persisted.resolve().is_relative_to(ws.resolve()), (
+        "completed artifact must reside independently of the original worktree"
+    )
+    assert run.metadata["artifacts"] == [str(persisted)]
+    assert persisted.parent == kb.task_attachments_dir(t)
+    assert [(a.filename, a.stored_path) for a in attachments_at_complete] == [
+        ("certification.md", str(persisted.resolve()))
+    ]
+
 
 # ---------------------------------------------------------------------------
 # Deferred scratch cleanup for parent/child handoff (#33774)

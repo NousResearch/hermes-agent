@@ -2785,6 +2785,8 @@ def _standalone_error(resp: Any) -> Dict[str, Any]:
 # Cron jobs, notification fanout, and `hermes send` all deliver through
 # _standalone_send; a brief Photon overflow or connection reset would
 # otherwise drop a scheduled message outright.
+# One retry adds at most 2s of backoff per text or attachment request;
+# sequential fanout accumulates that delay for each failed request.
 _STANDALONE_SEND_RETRIES = 1
 _STANDALONE_RETRY_BASE_DELAY_SECONDS = 2.0
 
@@ -2925,14 +2927,11 @@ async def _standalone_send(
                 }
                 if guessed:
                     att_body["mimeType"] = guessed
-                resp = await client.post(
-                    f"{base}/send-attachment", json=att_body, headers=headers,
+                data, error = await _standalone_post_with_retry(
+                    client, f"{base}/send-attachment", att_body, headers,
                 )
-                if resp.status_code != 200:
-                    return _standalone_error(resp)
-                data = resp.json() or {}
-                if not data.get("ok"):
-                    return _standalone_error(resp)
+                if error is not None:
+                    return error
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

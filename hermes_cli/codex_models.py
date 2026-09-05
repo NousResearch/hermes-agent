@@ -94,9 +94,12 @@ def _finalize_codex_models(model_ids: List[str], *, allow_astra: bool = False) -
     Cached/configured model names are useful compatibility hints, but only the
     account-scoped Codex endpoint is authoritative for current Astra access.
     """
+    from agent.model_metadata import strip_codex_context_variant_suffix
+
     finalized = _add_forward_compat_models(model_ids)
     if not allow_astra:
-        finalized = [model for model in finalized if model.lower().rsplit("/", 1)[-1] != "gpt-6-astra"]
+        finalized = [model for model in finalized
+                     if strip_codex_context_variant_suffix(model.lower()).rsplit("/", 1)[-1] != "gpt-6-astra"]
     return _add_context_variants(finalized)
 
 

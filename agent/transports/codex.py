@@ -266,7 +266,7 @@ def _default_prompt_cache_retention_for_request(model: str, base_url: Any) -> Op
 
 
 def _is_astra_model(model: Any) -> bool:
-    return str(model or "").strip().lower().rsplit("/", 1)[-1] == "gpt-6-astra"
+    return str(model or "").strip().lower().rsplit("/", 1)[-1] in ("gpt-6-astra", "gpt-6-astra-900k")
 
 
 def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:

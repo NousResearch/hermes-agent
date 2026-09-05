@@ -83,7 +83,7 @@ META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
 def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     """Supported effort set for an OpenAI/Codex Responses model."""
-    if (model or "").strip().lower().rsplit("/", 1)[-1] == "gpt-6-astra":
+    if (model or "").strip().lower().rsplit("/", 1)[-1] in ("gpt-6-astra", "gpt-6-astra-900k"):
         return CODEX_ASTRA_EFFORTS
     return CODEX_GPT56_EFFORTS if "gpt-5.6" in (model or "").lower() else CODEX_LEGACY_EFFORTS
 

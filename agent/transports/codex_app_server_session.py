@@ -143,6 +143,20 @@ class _ServerRequestRouting:
     auto_approve_apply_patch: bool = False
 
 
+def _extract_thread_id(result: dict) -> Optional[str]:
+    """Cross-fill thread.id/sessionId — different codex versions have
+    serialized this under either key. Mirrors openclaw beta.8's tolerance
+    fix so future codex drops/renames don't KeyError us at handshake
+    time."""
+    thread_obj = result.get("thread") or {}
+    return (
+        thread_obj.get("id")
+        or thread_obj.get("sessionId")
+        or result.get("sessionId")
+        or result.get("threadId")
+    )
+
+
 class CodexAppServerSession:
     """One Codex thread per Hermes session, lifetime owned by AIAgent. Not thread-safe: one caller at a time."""
 
@@ -153,8 +167,10 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        resume_thread_id: Optional[str] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
+        self._resume_thread_id = resume_thread_id
         self._codex_bin = codex_bin
         self._codex_home = codex_home
         self._permission_profile = permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
@@ -184,6 +200,24 @@ class CodexAppServerSession:
         self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
+        if self._resume_thread_id:
+            # Never replace a continuation with an empty thread. Transient
+            # errors can be retried; a deliberate reset gets a new Hermes ID.
+            result = self._client.request(
+                "thread/resume",
+                {"threadId": self._resume_thread_id, "cwd": self._cwd},
+                timeout=15,
+            )
+            thread_id = _extract_thread_id(result)
+            if thread_id != self._resume_thread_id:
+                raise CodexAppServerError(
+                    code=-32603,
+                    message="Codex did not resume the saved thread; conversation was not reset.",
+                )
+            self._thread_id = thread_id
+            logger.info("codex app-server thread resumed: id=%s", thread_id[:8])
+            return thread_id
+
         result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
         # Different codex versions serialize the id under thread.id / sessionId / threadId.
         thread_obj = result.get("thread") or {}

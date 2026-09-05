@@ -347,6 +347,57 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 # --- Codex app-server turn ----------------------------------------------------
 
 
+def _codex_thread_scope() -> str:
+    from pathlib import Path
+
+    return str(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().resolve())
+
+
+def _load_codex_thread_id(agent) -> str | None:
+    """Read the binding from the same profile-scoped DB as the transcript.
+
+    A failed read must not look like a new conversation. Scope mismatches
+    require an explicit new session rather than borrowing another Codex home.
+    """
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is None or not session_id or getattr(agent, "platform", "") == "gateway_hygiene":
+        return None
+    session = db.get_session(session_id)
+    if not session:
+        raise RuntimeError("Cannot load the saved Hermes session; conversation was not reset.")
+    raw = session.get("model_config")
+    config = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
+    binding = config.get("codex_thread_binding")
+    if binding is None:
+        return None
+    if (not isinstance(binding, dict)
+            or not isinstance(binding.get("thread_id"), str)
+            or not binding["thread_id"]
+            or binding.get("codex_home") != _codex_thread_scope()):
+        raise RuntimeError("Cannot resume the saved Codex conversation in this profile/home. "
+                           "Restore the original Codex home or use /new to explicitly start over.")
+    return binding["thread_id"]
+
+
+def _store_codex_thread_id(agent, thread_id: str | None) -> None:
+    """Atomically merge one binding; concurrent sessions cannot overwrite it.
+
+    Store before sending the user turn so a crash during execution cannot
+    orphan the provider thread. No pruning: the binding lives with its session.
+    """
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is None or not session_id or getattr(agent, "platform", "") == "gateway_hygiene":
+        return
+    if not thread_id:
+        raise RuntimeError("Codex did not return a conversation ID; no user turn was sent.")
+    binding = {"thread_id": thread_id, "codex_home": _codex_thread_scope()}
+    db.patch_session_model_config(session_id, {"codex_thread_binding": binding})
+    if _load_codex_thread_id(agent) != thread_id:
+        raise RuntimeError("Could not save the Codex conversation binding; no user turn was sent.")
+
+
 def _close_codex_session(agent) -> None:
     """Drop the session so the next turn respawns codex instead of reusing a dead client."""
     with suppress(Exception):
@@ -364,10 +415,17 @@ def _consume_user_interrupt(agent, active: bool = True) -> tuple[bool, Any]:
     return interrupted, message
 
 
-def _ensure_codex_session(agent) -> None:
+def _ensure_codex_session(agent, messages=None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook)."""
     if getattr(agent, "_codex_session", None) is not None:
         return
+    resume_thread_id = _load_codex_thread_id(agent)
+    if not resume_thread_id and any(m.get("role") == "assistant" for m in (messages or [])):
+        raise RuntimeError(
+            "This conversation has history but no saved Codex thread binding. "
+            "Restore its binding or use /new to explicitly start over; "
+            "no empty replacement conversation was started."
+        )
     from agent.runtime_cwd import resolve_agent_cwd
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
@@ -392,6 +450,7 @@ def _ensure_codex_session(agent) -> None:
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
         request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
         on_event=make_codex_app_server_event_bridge(agent),
+        resume_thread_id=resume_thread_id,
     )
 
 
@@ -454,8 +513,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
-    _ensure_codex_session(agent)
     try:
+        _ensure_codex_session(agent, messages)
+        _store_codex_thread_id(agent, agent._codex_session.ensure_started())
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")

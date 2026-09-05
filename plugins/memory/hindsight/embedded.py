@@ -9,9 +9,10 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from agent.secret_scope import get_secret
+from hermes_constants import get_hermes_home
 
 from .settings import _DEFAULT_IDLE_TIMEOUT, _daemon_llm_provider, _parse_int_setting
 
@@ -110,27 +111,94 @@ def _embedded_profile_env_path(config: dict[str, Any]) -> Path:
     return Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
 
 
+def _hermes_dotenv() -> dict[str, str]:
+    """Read $HERMES_HOME/.env from disk. A long-lived gateway process env can be stale."""
+    path = get_hermes_home() / ".env"
+    return _load_simple_env(path) if path.exists() else {}
+
+
+def _disk_secret(name: str, fallback: str = "") -> str:
+    """Prefer the on-disk Hermes .env secret over initialize-time process env."""
+    disk = _hermes_dotenv().get(name, "")
+    if disk:
+        return disk
+    return get_secret(name, fallback) or os.environ.get(name, "") or fallback
+
+
+def _put_env(env_values: dict[str, str], key: str, value: Any) -> None:
+    if value is None:
+        return
+    text = str(value)
+    if text == "":
+        return
+    env_values[key] = text
+
+
 def _embedded_llm_api_key(config: dict[str, Any]) -> str:
-    return config.get("llmApiKey") or config.get("llm_api_key") or get_secret("HINDSIGHT_LLM_API_KEY", "")
+    return config.get("llmApiKey") or config.get("llm_api_key") or _disk_secret("HINDSIGHT_LLM_API_KEY")
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
-    """Build the profile-scoped env that standalone hindsight-embed consumes."""
+    """Build the profile-scoped env that standalone hindsight-embed consumes.
+
+    Must forward embeddings/reranker from hindsight/config.json. An LLM-only
+    snapshot lets the daemon fall back to local BAAI/bge-small-en-v1.5 (384-d)
+    and crash on a custom-dimension bank when HindsightEmbedded.ensure_running
+    re-registers the profile.
+    """
     if llm_api_key is None:
         llm_api_key = _embedded_llm_api_key(config)
-    env_values = {
+    env_values: dict[str, str] = {
         "HINDSIGHT_API_LLM_PROVIDER": str(_daemon_llm_provider(config.get("llm_provider", ""))),
         "HINDSIGHT_API_LLM_API_KEY": str(llm_api_key or ""),
         "HINDSIGHT_API_LLM_MODEL": str(config.get("llm_model", "")),
         "HINDSIGHT_API_LOG_LEVEL": "info",
     }
-    base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
-    if base_url:
-        env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url)
+    base_url = (
+        config.get("llm_base_url")
+        or _hermes_dotenv().get("HINDSIGHT_API_LLM_BASE_URL")
+        or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+    )
+    _put_env(env_values, "HINDSIGHT_API_LLM_BASE_URL", base_url)
+    _put_env(env_values, "HINDSIGHT_API_PORT", config.get("api_port"))
+    _put_env(env_values, "HINDSIGHT_API_LLM_TIMEOUT", config.get("llm_timeout"))
+    _put_env(env_values, "HINDSIGHT_API_LLM_REASONING_EFFORT", config.get("llm_reasoning_effort"))
+    _put_env(env_values, "HINDSIGHT_API_LLM_WIRE", config.get("llm_wire"))
     if (idle_timeout := config.get("idle_timeout")) is None:
-        idle_timeout = os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
+        idle_timeout = _hermes_dotenv().get("HINDSIGHT_IDLE_TIMEOUT") or os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
     if idle_timeout is not None and idle_timeout != "":
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(_parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT))
+
+    _put_env(env_values, "HINDSIGHT_API_EMBEDDINGS_PROVIDER", config.get("embeddings_provider"))
+    _put_env(env_values, "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL", config.get("embeddings_openai_model"))
+    _put_env(env_values, "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL", config.get("embeddings_openai_base_url"))
+    _put_env(env_values, "HINDSIGHT_API_EMBEDDINGS_QUERY_PREFIX", config.get("embeddings_query_prefix"))
+    _put_env(env_values, "HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL", config.get("embeddings_local_model"))
+    _put_env(
+        env_values,
+        "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY",
+        _disk_secret("HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"),
+    )
+
+    _put_env(env_values, "HINDSIGHT_API_RERANKER_PROVIDER", config.get("reranker_provider"))
+    _put_env(env_values, "HINDSIGHT_API_RERANKER_SILICONFLOW_MODEL", config.get("reranker_siliconflow_model"))
+    _put_env(env_values, "HINDSIGHT_API_RERANKER_SILICONFLOW_BASE_URL", config.get("reranker_siliconflow_base_url"))
+    _put_env(env_values, "HINDSIGHT_API_RERANKER_SILICONFLOW_TIMEOUT", config.get("reranker_siliconflow_timeout"))
+    _put_env(
+        env_values,
+        "HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY",
+        _disk_secret("HINDSIGHT_API_RERANKER_SILICONFLOW_API_KEY"),
+    )
+    failover = config.get("reranker_failover_provider")
+    _put_env(env_values, "HINDSIGHT_API_RERANKER_1_PROVIDER", failover)
+    local_model = config.get("reranker_local_model")
+    if str(failover or "") == "local":
+        _put_env(env_values, "HINDSIGHT_API_RERANKER_1_LOCAL_MODEL", local_model)
+    if str(config.get("reranker_provider") or "") == "local":
+        _put_env(env_values, "HINDSIGHT_API_RERANKER_LOCAL_MODEL", local_model)
+    # The embedded daemon is a separate process; inherit the parent proxy.
+    _put_env(env_values, "HTTP_PROXY", os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"))
+    _put_env(env_values, "HTTPS_PROXY", os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy"))
     return env_values
 
 
@@ -166,6 +234,13 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    # Keep unknown extra keys (HTTP_PROXY, operator-added HINDSIGHT_API_*) so a
+    # partial builder cannot wipe them on the next cold start.
+    if profile_env.exists():
+        saved = _load_simple_env(profile_env)
+        merged = dict(saved)
+        merged.update(env_values)
+        env_values = merged
     content = "".join(f"{key}={value}\n" for key, value in env_values.items())
     try:
         _secure_write_profile_env(profile_env, content)
@@ -175,3 +250,69 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
             profile_env.unlink()
         raise
     return profile_env
+
+
+def _install_profile_env_guard(
+    client,
+    config: dict[str, Any],
+    *,
+    load_config: Callable[[], dict[str, Any]] | None = None,
+) -> None:
+    """Keep embeddings/reranker active across official profile registration.
+
+    HindsightEmbedded.ensure_running calls _register_profile even when the
+    daemon is already up. render_config comments out every key missing from
+    that dict, so a constructor-only LLM snapshot wipes custom embeddings.
+    Last-writer rematerialize is not enough: the dict passed into
+    ensure_running must already contain the full profile env.
+    """
+    if client is None or getattr(client, "_hermes_profile_env_guard", False):
+        return
+
+    def _current_config() -> dict[str, Any]:
+        if load_config is not None:
+            try:
+                return load_config() or config
+            except Exception:
+                return config
+        return config
+
+    def _full_profile_env() -> dict[str, str]:
+        return _build_embedded_profile_env(_current_config())
+
+    manager = getattr(client, "_manager", None)
+    orig_ensure_running = getattr(manager, "ensure_running", None) if manager is not None else None
+    if callable(orig_ensure_running) and not getattr(manager, "_hermes_ensure_running_guard", False):
+        def _ensure_running_with_full_env(cfg, profile, extra_args=None):
+            target = str(_current_config().get("profile") or "hermes")
+            merged = dict(cfg or {})
+            if not profile or str(profile) == target:
+                full = _full_profile_env()
+                merged.update(full)
+                if hasattr(client, "config") and isinstance(getattr(client, "config", None), dict):
+                    client.config.update(full)
+            if extra_args is None:
+                return orig_ensure_running(merged, profile)
+            return orig_ensure_running(merged, profile, extra_args)
+
+        manager.ensure_running = _ensure_running_with_full_env
+        manager._hermes_ensure_running_guard = True
+
+    orig = getattr(client, "_ensure_started", None)
+    if callable(orig):
+        def _ensure_started_and_repair(*args, **kwargs):
+            try:
+                return orig(*args, **kwargs)
+            finally:
+                try:
+                    _materialize_embedded_profile_env(_current_config())
+                except Exception:
+                    logger.debug("Could not rematerialize Hindsight profile env", exc_info=True)
+
+        client._ensure_started = _ensure_started_and_repair
+
+    client._hermes_profile_env_guard = True
+    try:
+        _materialize_embedded_profile_env(config)
+    except Exception:
+        logger.debug("Could not rematerialize Hindsight profile env", exc_info=True)

@@ -2750,6 +2750,7 @@ def _save_compose_deliver(
                 deliver_content,
                 adapters=adapters,
                 loop=loop,
+                output_file=output_file,
                 # Failure summaries (and drift/blocked-config alerts composed into deliver_content
                 # on the failure path) honor the job's failure_deliver override (NS-788).
                 for_failure=not d.success,

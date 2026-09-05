@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -946,6 +947,72 @@ def _confirm_adapter_delivery(
     return True
 
 
+def _send_result_message_id(send_result) -> str:
+    """Extract a platform message/event id from adapter/router result shapes."""
+    if isinstance(send_result, dict):
+        for key in ("message_id", "event_id"):
+            value = send_result.get(key)
+            if value:
+                return str(value)
+        raw = send_result.get("raw_response")
+        if isinstance(raw, dict):
+            for key in ("message_id", "event_id"):
+                value = raw.get(key)
+                if value:
+                    return str(value)
+        return ""
+    return str(
+        getattr(send_result, "message_id", "")
+        or getattr(send_result, "event_id", "")
+        or ""
+    )
+
+
+def _register_matrix_digest_details_if_applicable(
+    *,
+    job: dict,
+    platform,
+    chat_id: str,
+    send_result,
+    output_file: str | Path | None = None,
+) -> None:
+    """Register confirmed Matrix digest delivery metadata for later 🧾 reactions."""
+    try:
+        if getattr(platform, "value", str(platform)).lower() != "matrix":
+            return
+        from cron.digest_reactions import normalize_context_from, register_digest_delivery
+
+        source_job_ids = normalize_context_from(job.get("context_from"))
+        event_id = _send_result_message_id(send_result)
+        if not source_job_ids or not event_id or not _confirm_adapter_delivery(send_result):
+            return
+        source_names: dict[str, str] = {}
+        try:
+            from cron.jobs import load_jobs
+
+            for candidate in load_jobs():
+                candidate_id = str(candidate.get("id") or "")
+                if candidate_id in source_job_ids:
+                    source_names[candidate_id] = str(candidate.get("name") or candidate_id)
+        except Exception:
+            pass
+        register_digest_delivery(
+            room_id=str(chat_id),
+            event_id=event_id,
+            digest_job=job,
+            source_job_ids=source_job_ids,
+            output_file=output_file,
+            source_names=source_names,
+            source_output_paths=(
+                job.get("_context_source_output_paths")
+                if isinstance(job.get("_context_source_output_paths"), dict)
+                else None
+            ),
+        )
+    except Exception as exc:
+        logger.debug("Matrix digest detail registration skipped: %s", exc)
+
+
 def _is_channel_dm_topic(runtime_adapter: Any, chat_id: Any, loop: Any, job_id: str) -> bool:
     """Is an ambiguous ``telegram:<positive_chat_id>:<numeric_thread_id>`` target a channel
     Direct-Messages topic (``direct_messages_topic_id``) rather than a private-chat forum topic
@@ -1227,6 +1294,13 @@ def _live_send_text(
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
+    _register_matrix_digest_details_if_applicable(
+        job=job,
+        platform=t.platform,
+        chat_id=t.chat_id,
+        send_result=send_result,
+        output_file=job.get("_output_file"),
+    )
     if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
         requested_thread_id = send_raw_response.get("requested_thread_id") or t.thread_id
         _note_target_error(
@@ -1455,6 +1529,13 @@ def _deliver_standalone(
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
+    _register_matrix_digest_details_if_applicable(
+        job=job,
+        platform=t.platform,
+        chat_id=t.chat_id,
+        send_result=result,
+        output_file=job.get("_output_file"),
+    )
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
@@ -1592,12 +1673,21 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
 
 
 def _deliver_result(
-    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    output_file: str | Path | None = None,
+    *,
+    for_failure: bool = False,
 ) -> Optional[str]:
     """Deliver job output to the configured target(s). With ``adapters``/``loop`` (gateway
     running) the live adapter is tried first (E2EE rooms can't use the standalone HTTP path), then
     standalone fallback. ``for_failure=True`` routes failure-category notices through the job's
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
+    if output_file is not None:
+        job = dict(job)
+        job["_output_file"] = str(output_file)
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         return _unresolved_delivery_outcome(job, for_failure)

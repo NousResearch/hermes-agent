@@ -65,6 +65,7 @@ _UPSTREAM_CONTEXT_INTRO = (
 
 def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     """Prepend the latest output of each ``context_from`` job; returns ``(prompt, injected)``."""
+    job.pop("_context_source_output_paths", None)
     context_from = job.get("context_from")
     if not context_from:
         return prompt, False
@@ -73,6 +74,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     if isinstance(context_from, str):
         context_from = [context_from]
     injected = False
+    source_output_paths: dict[str, str] = {}
     for source_job_id in context_from:
         # "self" = the job's own id: continuity across runs without touching session history.
         if isinstance(source_job_id, str) and source_job_id.strip().lower() == "self":
@@ -93,7 +95,8 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
             )
             if not output_files:
                 continue  # silent skip — no output yet
-            latest_output = output_files[0].read_text(encoding="utf-8").strip()
+            source_output = output_files[0]
+            latest_output = source_output.read_text(encoding="utf-8").strip()
             if len(latest_output) > _MAX_CONTEXT_CHARS:
                 latest_output = (
                     latest_output[:_MAX_CONTEXT_CHARS] + "\n\n[... output truncated ...]")
@@ -107,10 +110,12 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
                     prompt, f"Output from job '{source_job_id}'", _UPSTREAM_CONTEXT_INTRO,
                     latest_output,
                 )
+            source_output_paths[str(source_job_id)] = str(source_output)
             injected = True
         except (OSError, PermissionError) as e:
             # silent skip — never put error text into the prompt
             logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
+    job["_context_source_output_paths"] = source_output_paths
     return prompt, injected
 
 

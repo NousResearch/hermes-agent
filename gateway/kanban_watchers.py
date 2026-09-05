@@ -219,9 +219,40 @@ class GatewayKanbanWatchersMixin:
         _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
         _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
         if _lock_state == "contended":
-            logger.info("kanban dispatcher: another gateway already holds the dispatcher "
-                        "lock (%s); this gateway will NOT dispatch.", _lock_path)
-            return None
+            # Stale-lock recovery (issue #103527): a SIGKILL/OOM leaves the
+            # previous gateway with no exit path, so the lifecycle ledger still
+            # shows phase=running for a dead PID. The flock is normally released
+            # on death, but on certain mounts / inherited-fd cases the advisory
+            # lock can outlive the life and block the new gateway. When the
+            # ledger proves the previous life died uncleanly, break the stale
+            # file and retry once; a live holder keeps contended.
+            _recovered = False
+            try:
+                from gateway.lifecycle_ledger import detect_unclean_exit
+                evidence = detect_unclean_exit()
+                if evidence is not None:
+                    import contextlib as _ctx_recover
+                    logger.warning(
+                        "kanban dispatcher: clearing stale dispatcher lock after "
+                        "unclean gateway exit (prior_pid=%s, prior_started_at=%s) — %s",
+                        evidence.get("prior_pid"),
+                        evidence.get("prior_started_at"),
+                        _lock_path,
+                    )
+                    with _ctx_recover.suppress(Exception):
+                        _lock_path.unlink()
+                    _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
+                    _recovered = True
+            except Exception:
+                logger.debug("kanban dispatcher: stale-lock recovery probe failed", exc_info=True)
+            if _lock_state == "contended":
+                if not _recovered:
+                    logger.info("kanban dispatcher: another gateway already holds the dispatcher "
+                                "lock (%s); this gateway will NOT dispatch.", _lock_path)
+                else:
+                    logger.info("kanban dispatcher: dispatcher lock still contended after "
+                                "stale-lock recovery (%s); this gateway will NOT dispatch.", _lock_path)
+                return None
         if _lock_state == "held":
             self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
             logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)

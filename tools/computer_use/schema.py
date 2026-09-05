@@ -35,9 +35,9 @@ _PROPERTIES: Dict[str, Any] = {
         ],
         "description": (
             "Which action to perform. `capture` is free (no side effects). All other actions "
-            "require approval unless auto-approved. Use `set_value` for select/popup elements and "
-            "sliders — it selects the matching option directly without opening the native menu (no "
-            "focus steal)."
+            "require approval unless auto-approved. Use `set_value` where the driver exposes "
+            "direct value setting, including select/popup elements, sliders, and editable text / "
+            "contenteditable controls. It replaces the current value without synthetic keystrokes."
         ),
     },
     "mode": {
@@ -76,8 +76,8 @@ _PROPERTIES: Dict[str, Any] = {
     "element": {
         "type": "integer",
         "description": (
-            "The 1-based SOM index returned by the last `capture(mode='som')` call. Strongly "
-            "preferred over raw coordinates."
+            "The SOM index returned by the last `capture(mode='som')` call. Use the number exactly "
+            "as returned; do not adjust it. Strongly preferred over raw coordinates."
         ),
     },
     "coordinate": {
@@ -136,8 +136,9 @@ _PROPERTIES: Dict[str, Any] = {
         "type": "string",
         "description": (
             "For action='set_value': the value to set on the element. For AXPopUpButton / select "
-            "dropdowns, pass the option's display label (e.g. 'Blue'). For sliders and other "
-            "AXValue-settable elements, pass the numeric or string value."
+            "dropdowns, pass the option's display label (e.g. 'Blue'). For sliders, editable text / "
+            "contenteditable controls, and other AXValue-settable elements, pass the replacement "
+            "numeric or string value. Unlike action='type', `set_value` replaces rather than appends."
         ),
     },
     "text": {"type": "string", "description": "Text to type (respects the current layout)."},

@@ -89,7 +89,7 @@ def _report_child_done(parent_agent, spinner_ref, entry, tag, task_labels, n_tas
         with _quiet("Spinner update_text failed: %s"):
             spinner_ref.update_text(f"🔀 {'[' + tag + '] ' if tag else ''}{remaining} task{'s' if remaining != 1 else ''} remaining")
 
-def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool) -> None:
+def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interrupt: bool, detached: bool = False) -> None:
     """Run the batch's children in parallel, appending entries to ``results`` (sorted by task_index on return, one
     completion line printed per child). Polls futures with a short ``wait()`` timeout instead of ``as_completed()``
     so a wedged child cannot block the parent forever after an interrupt; on parent interrupt the still-pending
@@ -126,9 +126,17 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                 entry = _entry_of(future, futures[future])
                 results.append(entry)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_tasks - len(results))
+                if detached and entry.get("status") in SUBAGENT_FAILURE_STATUSES and len(results) < n_tasks:
+                    # The parent is not watching a spinner: tell it NOW, not when the last sibling finishes.
+                    with _quiet("task failure notice failed", exc_info=True):
+                        from tools.async_delegation import push_task_failure_notice
+                        _i = entry.get("task_index", -1)
+                        _live = batch.live_paths[_i] if isinstance(_i, int) and 0 <= _i < len(batch.live_paths) else None
+                        push_task_failure_notice(
+                            batch.live_deleg_id, {**entry, **({"live_transcript": _live} if _live else {})}, n_tasks=n_tasks)
     results.sort(key=lambda r: r["task_index"])  # match input order
 
-def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True) -> dict:
+def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True, detached: bool = False) -> dict:
     """Run all built children, join, finalize (hooks + cost rollup), return the combined dict. Shared by the sync path
     and the background runner: even in the background the batch JOINS on itself here so ONE consolidated results
     block re-enters the conversation. Live transcripts are finalized but retained as the full-fidelity record
@@ -138,7 +146,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     if len(batch.task_list) == 1:
         results.append(batch.run_child(*batch.children[0]))
     else:
-        _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
+        _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt, detached=detached)
 
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
@@ -319,7 +327,7 @@ def _dispatch_background(batch: _Batch) -> str:
         role=batch.top_role, model=batch.creds["model"], session_key=session_key,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=wake_sid,
         parent_session_id=getattr(parent_agent, "session_id", None),
-        runner=lambda: _execute_and_aggregate(batch, honor_parent_interrupt=False),
+        runner=lambda: _execute_and_aggregate(batch, honor_parent_interrupt=False, detached=True),
         interrupt_fn=_batch_interrupt, max_async_children=_get_max_async_children(),
         # Reuse the live-transcript directory's id (when created) so the returned delegation_id matches
         # cache/delegation/live/<id>/.

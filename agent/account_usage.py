@@ -614,7 +614,7 @@ def _fetch_ollama_account_usage(
         cost_value = 0.0
     if cost_value > 0:
         period = str((activity.get("period") or {}).get("type") or "period")
-        details.append(f"PAYG activity ({period}): ${float(cost):.2f}")
+        details.append(f"PAYG activity ({period}): ${cost_value:.2f}")
     return AccountUsageSnapshot(
         provider="ollama-cloud",
         source="usage_api",

@@ -281,3 +281,20 @@ def test_ollama_usage_missing_windows_yields_empty_snapshot(monkeypatch):
     assert snapshot is not None
     assert snapshot.windows == () and snapshot.details == ()
     assert not snapshot.available
+
+
+def test_ollama_usage_non_numeric_cost_is_ignored(monkeypatch):
+    calls = []
+
+    def fake_runtime(**kwargs):
+        return {"api_key": "k-ollama", "base_url": "https://ollama.com/v1"}
+
+    monkeypatch.setattr(account_usage, "resolve_runtime_provider", fake_runtime)
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda **kw: _FakeClient(calls, {"limits": {"session": {"usage": 0.5}}, "activity": {"cost": None}}),
+    )
+    snapshot = account_usage.fetch_account_usage("ollama-cloud")
+    assert snapshot is not None
+    assert snapshot.details == ()

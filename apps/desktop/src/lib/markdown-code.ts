@@ -1,14 +1,18 @@
 import { normalize } from '@/lib/text'
 
 const VALID_LANGUAGE_RE = /^[a-z0-9][a-z0-9+#-]*$/i
-const NON_CODE_FENCE_LANGUAGES = new Set(['', 'text', 'plain', 'plaintext', 'md', 'markdown'])
+const PROSE_FENCE_LANGUAGES = new Set(['', 'md', 'markdown'])
+const PLAIN_TEXT_CODE_FENCE_LANGUAGES = new Set(['text', 'plain', 'plaintext'])
 
 const COMMON_CODE_LANGUAGES = new Set([
   'bash',
   'c',
+  'cmd',
+  'console',
   'cpp',
   'css',
   'diff',
+  'fish',
   'go',
   'html',
   'java',
@@ -19,12 +23,15 @@ const COMMON_CODE_LANGUAGES = new Set([
   'markdown',
   'md',
   'php',
+  'powershell',
+  'ps1',
   'python',
   'py',
   'ruby',
   'rust',
   'rs',
   'sh',
+  'shell',
   'sql',
   'swift',
   'tsx',
@@ -32,7 +39,8 @@ const COMMON_CODE_LANGUAGES = new Set([
   'typescript',
   'xml',
   'yaml',
-  'yml'
+  'yml',
+  'zsh'
 ])
 
 interface CodeSignals {
@@ -353,6 +361,10 @@ export function isLikelyProseFence(info: string, body: string): boolean {
     return false
   }
 
+  if (PLAIN_TEXT_CODE_FENCE_LANGUAGES.has(language)) {
+    return false
+  }
+
   if (
     hasInfoTail &&
     signals.codeSignals <= 2 &&
@@ -361,7 +373,7 @@ export function isLikelyProseFence(info: string, body: string): boolean {
     return true
   }
 
-  if (!NON_CODE_FENCE_LANGUAGES.has(language)) {
+  if (!PROSE_FENCE_LANGUAGES.has(language)) {
     return false
   }
 
@@ -386,6 +398,10 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
     return false
   }
 
+  if (PLAIN_TEXT_CODE_FENCE_LANGUAGES.has(cleanLanguage)) {
+    return false
+  }
+
   // A bullet list with markdown emphasis is prose even when it happens to be
   // structured; the config veto below is only meant to protect config/kv
   // listings, so let the bullet-prose case win first.
@@ -399,7 +415,7 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
     return false
   }
 
-  if (NON_CODE_FENCE_LANGUAGES.has(cleanLanguage)) {
+  if (PROSE_FENCE_LANGUAGES.has(cleanLanguage)) {
     return signals.proseLines >= 3 && signals.codeSignals === 0
   }
 

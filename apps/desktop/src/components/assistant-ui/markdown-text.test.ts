@@ -70,6 +70,42 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('const value = 1;')
   })
 
+  it('keeps text-labeled shell command fences intact', () => {
+    const fence = '```'
+
+    const input = [
+      `${fence}text`,
+      'cd ~/Documents/',
+      'bash -n install.sh',
+      'brew bundle check --file=packages/Brewfile',
+      'env -i HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" SHELL=/bin/zsh TERM=xterm-256color \\',
+      "/bin/zsh -lic 'command -v brew && command -v starship && command -v gh && command -v stow'",
+      fence
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+  })
+
+  it('keeps explicit plain-text file-list fences intact', () => {
+    const fence = '```'
+
+    const input = [
+      `${fence}text`,
+      'apps/desktop/src/components/assistant-ui/thread/index.tsx',
+      'apps/desktop/src/components/assistant-ui/markdown-text.tsx',
+      'apps/desktop/src/lib/markdown-code.ts',
+      'apps/desktop/src/lib/markdown-preprocess.ts',
+      'apps/desktop/src/styles.css',
+      fence
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(input)
+  })
+
   it('keeps dangling real code fences during streaming', () => {
     const input = ['```ts', 'const value = 1;'].join('\n')
     const output = preprocessMarkdown(input)

@@ -389,6 +389,14 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+class CronPromptFileError(Exception):
+    """Raised by _build_job_prompt when a job's prompt_file (its sole payload)
+    cannot be read at fire time. Caught in run_job so the operator sees a clean
+    error delivery instead of the job firing with an empty prompt (burning an
+    unattended model call on a no-op).
+    """
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive: ``messaging``/``clarify`` always
     (interactive); ``cronjob`` by default (loop prevention, not a security boundary —
@@ -2076,6 +2084,21 @@ def _prepare_job_prompt(
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
         return (False, blocked_doc, "", str(block_exc)), None
+    except CronPromptFileError as pf_exc:
+        # prompt_file was the sole payload and could not be read at fire time.
+        # Fail the run loudly instead of firing an empty prompt.
+        logger.warning(
+            "Job '%s' (ID: %s): prompt_file unreadable at fire time -- %s",
+            job_name, job_id, pf_exc,
+        )
+        pf_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** ERROR\n\n"
+            f"{pf_exc}\n"
+        )
+        return (False, pf_doc, "", str(pf_exc)), None
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return (True, "", SILENT_MARKER, None), None

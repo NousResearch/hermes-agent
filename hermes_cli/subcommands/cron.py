@@ -80,6 +80,43 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "into its prompt, so it can dedupe against what was already "
             "reported and continue where the last run left off (scouts, "
             "monitors, incremental digests). First run is unchanged.")
+    cron_create.add_argument(
+        "--attach-to-session",
+        dest="attach_to_session",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Make the job's delivery a continuable session: the report arrives "
+            "as a real message the user can reply to, with the run's context in "
+            "scope (briefings, routines that ask follow-up questions). Absent = "
+            "one-way delivery."
+        ),
+    )
+    cron_create.add_argument(
+        "--prompt-file",
+        dest="prompt_file",
+        help=(
+            "Path to a file whose contents ARE the prompt, read fresh on every "
+            "run so edits to the file land on the next fire (single source of "
+            "truth for a routine file). Stored as an absolute path. An inline "
+            "prompt argument, if given, wins over this. Create-only; not "
+            "editable via `cron edit`."
+        ),
+    )
+    cron_create.add_argument(
+        "--no-cron-hint",
+        dest="no_cron_hint",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Suppress the execution-guidance banner normally prepended to a "
+            "cron job's prompt (delivery + [SILENT] convention). Use for jobs "
+            "that always deliver via an attached session and manage their own "
+            "output."
+        ),
+    )
 
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")

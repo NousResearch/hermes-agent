@@ -430,9 +430,11 @@ def job_payload_is_empty(job: Dict[str, Any]) -> bool:
     least one payload field is explicitly present. ``no_agent`` already requires a script."""
     if _coerce_job_text(job.get("prompt")).strip() or _coerce_job_text(job.get("script")).strip():
         return False
+    if _coerce_job_text(job.get("prompt_file")).strip():
+        return False
     if _normalize_skill_list(job.get("skill"), job.get("skills")):
         return False
-    return any(k in job for k in ("prompt", "script", "skill", "skills"))
+    return any(k in job for k in ("prompt", "script", "skill", "skills", "prompt_file"))
 
 
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
@@ -1696,6 +1698,8 @@ def create_job(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    prompt_file: Optional[str] = None,
+    no_cron_hint: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1722,10 +1726,28 @@ def create_job(
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
+    normalized_prompt_file = str(prompt_file).strip() if isinstance(prompt_file, str) else None
+    normalized_prompt_file = normalized_prompt_file or None
+    normalized_no_cron_hint = no_cron_hint if isinstance(no_cron_hint, bool) else None
+    # prompt_file must resolve to a readable file at create time so a typo fails
+    # fast here instead of silently at every fire. It is read fresh each run (see
+    # scheduler_prompt._build_job_prompt), so it stays the single source of truth for a
+    # routine that lives in a git-backed file.
+    if normalized_prompt_file is not None:
+        _pf = Path(normalized_prompt_file).expanduser()
+        if not _pf.is_file():
+            raise ValueError(
+                f"prompt_file does not exist or is not a readable file: {normalized_prompt_file}"
+            )
+        # Store the resolved absolute path so create-time validation and the
+        # fire-time read (scheduler runs under its own cwd) refer to the same
+        # file -- a relative path would resolve differently at each. Mirrors
+        # _normalize_workdir's expand+resolve contract.
+        normalized_prompt_file = str(_pf.resolve())
 
     _validate_job_mode_invariants(f["monitor_script"], f["monitor_url"], f["no_agent"], f["script"])
     prompt_text = _coerce_job_text(prompt).strip()
-    if not prompt_text and not f["script"] and not normalized_skills:
+    if not prompt_text and not f["script"] and not normalized_skills and not normalized_prompt_file:
         raise ValueError(EMPTY_PAYLOAD_ERROR)
     # Reject gateway-lifecycle commands (respawn loops) here, not just in the CLI: covers the tool.
     from cron.lifecycle_guard import check_gateway_lifecycle
@@ -1786,6 +1808,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]),
+        ("prompt_file", normalized_prompt_file), ("no_cron_hint", normalized_no_cron_hint),
     ):
         if value is not None:
             job[key] = value

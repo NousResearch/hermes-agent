@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -201,6 +202,19 @@ def _build_job_prompt(
     ``cronjob(action='run')``, 57331 — salvaged from #57342 by @liuhao1024).
     """
     user_prompt = str(job.get("prompt") or "")
+    # prompt_file fallback: when there is no inline prompt, read the file fresh
+    # each fire so edits to a routine file land on the next run without
+    # re-creating the job (single source of truth). An inline prompt wins.
+    # A read failure raises rather than firing an empty prompt (the file IS the
+    # payload) -- run_job catches it and records the run as an error.
+    if not user_prompt.strip() and job.get("prompt_file"):
+        pf = Path(str(job["prompt_file"])).expanduser()
+        try:
+            user_prompt = pf.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise _sched.CronPromptFileError(
+                f"prompt_file {pf} could not be read at fire time: {exc}"
+            ) from exc
     if extra_prompt:
         user_prompt = f"{user_prompt}\n\n## Run Context\n{extra_prompt}"
     prompt = user_prompt
@@ -233,7 +247,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = _CRON_HINT + prompt if not job.get("no_cron_hint") else prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

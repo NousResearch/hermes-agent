@@ -401,9 +401,14 @@ class SearchMixin:
 
     def _rg_exclusion_globs(self, path: str) -> List[str]:
         """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
+        # rg anchors --glob to the shell cwd, not the search root, so the
+        # root-relative form only matches when cwd == root. Emit the ``**/``
+        # form too (same trade-off as _search_prune_glob_args) so a search
+        # rooted at $HOME from ~/workspace still skips ~/Library & co.
         out: List[str] = []
         for item in self._macos_search_exclusions(path):
-            out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
+            for prefix in ("", "**/"):
+                out.extend(["--glob", self._escape_shell_arg(f"!{prefix}{item}/**")])
         return out
 
     def _path_exists_probe(self, path: str) -> str:
@@ -593,6 +598,11 @@ class SearchMixin:
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        # Probes must honour the same protected-dir pruning as the main pass;
+        # --hidden --no-ignore otherwise walks all of ~/Library.
+        exclusion_expr = " ".join(self._rg_exclusion_globs(path))
+        if exclusion_expr:
+            glob_expr = f"{glob_expr} {exclusion_expr}"
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -768,8 +778,9 @@ class SearchMixin:
                 for _r, _rel, absolute in effective_exclusions]
         else:
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
-                for _r, relative, _abs in effective_exclusions]
+                f"--glob {self._escape_shell_arg(f'!{prefix}{relative}/**')}"
+                for _r, relative, _abs in effective_exclusions
+                for prefix in ("", "**/")]
         exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
         rg_executable = rg_executable or self._resolve_command("rg")

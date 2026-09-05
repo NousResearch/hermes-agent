@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 import tools.file_operations as file_operations
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
@@ -382,3 +384,46 @@ def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypat
     paths = [match.path for match in result.matches]
     assert any("visible.txt" in path for path in paths)
     assert all("protected.txt" not in path for path in paths)
+
+
+def test_protected_globs_survive_shell_cwd_outside_search_root(tmp_path, monkeypatch):
+    """rg anchors --glob to the shell cwd, not the search root. With cwd at
+    ~/workspace and the search rooted at ~, the root-relative ``!Library/**``
+    never matches, so the walk descends into ~/Library. The ``**/`` form must
+    also be emitted, on the main pass and on every zero-match probe."""
+    import shutil
+    if not shutil.which("rg"):
+        pytest.skip("ripgrep not installed")
+    home = tmp_path / "Users" / "alice"
+    workspace = home / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / "notes.txt").write_text("needle here\n")
+    library = home / "Library" / "App"
+    library.mkdir(parents=True)
+    (library / "secret.txt").write_text("needle protected\n")
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(workspace)))
+
+    result = ops.search("needle", path=str(home), target="content")
+
+    matched_paths = [m.path for m in (result.matches or [])]
+    assert any(str(workspace / "notes.txt") in p for p in matched_paths)
+    assert not any(str(library / "secret.txt") in p for p in matched_paths)
+
+
+def test_zero_match_probes_carry_protected_globs(tmp_path, monkeypatch):
+    home = tmp_path / "Users" / "alice"
+    home.mkdir(parents=True)
+    env = RecordingEnvironment(home / "workspace")
+    ops = ShellFileOperations(env)
+    monkeypatch.setattr(file_operations, "_HOME", str(home))
+    monkeypatch.setattr(file_operations.sys, "platform", "darwin")
+
+    ops.search("needle", path=str(home), target="content")
+
+    probes = [c for c in env.commands if "--count-matches" in c]
+    assert probes, "zero-match probes should run on an empty result"
+    for command in probes:
+        for dirname in PROTECTED_NAMES:
+            assert f"!**/{dirname}/**" in command

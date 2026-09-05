@@ -74,12 +74,13 @@ export function collectUnspokenTurnSpeech(
   lastSpokenId: string | null
 ): UnspokenTurnSpeech | null {
   const spokenIndex = lastSpokenId ? messages.findLastIndex(m => m.id === lastSpokenId) : -1
+  const startIndex = spokenIndex >= 0 ? spokenIndex : messages.findLastIndex(m => m.role === 'user' && !m.hidden)
 
   let id: string | null = null
   let pending = false
   const parts: string[] = []
 
-  for (const message of messages.slice(spokenIndex + 1)) {
+  for (const message of messages.slice(startIndex + 1)) {
     if (message.role !== 'assistant' || message.hidden) {
       continue
     }

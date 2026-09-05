@@ -1337,6 +1337,22 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(speech?.pending).toBe(true)
   })
 
+  it('bounds speech to the latest visible user turn when lastSpokenId is null in multi-turn history', () => {
+    const messages = [
+      user('u0', 'First ancient question'),
+      assistant('a0', 'First ancient answer from question 1.'),
+      user('u1', 'Latest current question'),
+      assistant('a1', 'Narration.', { interim: true }),
+      assistant('a2', 'Current real answer.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech?.id).toBe('a1')
+    expect(speech?.text).toBe('Narration.\n\nCurrent real answer.')
+    expect(speech?.text).not.toContain('First ancient answer')
+  })
+
   it('returns null when everything is spoken or there is no assistant text', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()

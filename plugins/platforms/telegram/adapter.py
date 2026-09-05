@@ -4225,6 +4225,22 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         data = query.data
         cb = self._callback_ctx(query)
+        # Hermes-owned Paperclip bridge callbacks (pcb:...) run before the generic dispatch table.
+        try:
+            from plugins.platforms.telegram.paperclip_bridge import maybe_handle_callback as _maybe_handle_paperclip_bridge_callback
+            if await _maybe_handle_paperclip_bridge_callback(
+                self,
+                query,
+                data,
+                query_chat_id=cb["chat_id"],
+                query_chat_type=cb["chat_type"],
+                query_thread_id=cb["thread_id"],
+                query_user_name=cb["user_name"],
+            ):
+                return
+        except Exception as exc:
+            logger.error("[%s] Paperclip bridge callback handling failed: %s", self.name, exc, exc_info=True)
+
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
             (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
@@ -5696,7 +5712,13 @@ class TelegramAdapter(BasePlatformAdapter):
         if len(event.text or "") >= self._SPLIT_THRESHOLD:
             self._enqueue_text_event(event)
             return
-        await self.handle_message(event)
+        try:
+            from plugins.platforms.telegram.paperclip_bridge import dispatch_text_event
+        except Exception as exc:
+            logger.error("[%s] Paperclip command routing unavailable: %s", self.name, exc, exc_info=True)
+            await self.handle_message(event)
+        else:
+            await dispatch_text_event(self, event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
@@ -5761,7 +5783,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
             if log_fn is not None:
                 log_fn(event)
-            await self.handle_message(event)
+            if where == "text":
+                try:
+                    from plugins.platforms.telegram.paperclip_bridge import dispatch_text_event
+                except Exception as exc:
+                    logger.error("[%s] Paperclip text routing unavailable: %s", self.name, exc, exc_info=True)
+                    await self.handle_message(event)
+                else:
+                    await dispatch_text_event(self, event)
+            else:
+                await self.handle_message(event)
             event = None
         except asyncio.CancelledError:
             if event is not None:

@@ -196,7 +196,7 @@ class TestProbeLaunchdDomainForLabel:
 
 
 class TestGetServicePidsScoping:
-    def _wire(self, monkeypatch):
+    def _wire(self, monkeypatch, *, bare_list_stdout=""):
         monkeypatch.setattr(gw, "is_macos", lambda: True)
         monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
@@ -213,6 +213,21 @@ class TestGetServicePidsScoping:
         monkeypatch.setattr(
             gw, "_locate_launchd_gateway_service", lambda label: located[label]
         )
+        # The all-profiles belt-and-suspenders branch runs a REAL bare
+        # ``launchctl list`` prefix scan (unmocked subprocess.run) that picks
+        # up ai.hermes.gateway* agents this fixture never declared — on a
+        # host with a live gateway the real service PID leaked into the
+        # assertion and made the test host-dependent (#95827). Serve a
+        # canned listing instead so only fixture state is visible.
+        def _fake_bare_list_run(argv, *args, **kwargs):
+            assert argv[:2] == ["launchctl", "list"], (
+                f"unexpected subprocess call under test: {argv}"
+            )
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout=bare_list_stdout, stderr=""
+            )
+
+        monkeypatch.setattr(gw.subprocess, "run", _fake_bare_list_run)
 
     def test_all_profiles_returns_every_gateway_service_pid(self, monkeypatch):
         """The update sweep's exclude-set must protect ALL freshly-restarted
@@ -220,6 +235,18 @@ class TestGetServicePidsScoping:
         gateways launchd just respawned)."""
         self._wire(monkeypatch)
         assert gw._get_service_pids(all_profiles=True) == {100, 200}
+
+    def test_all_profiles_scan_merges_unmapped_agent_pids(self, monkeypatch):
+        """The bare ``launchctl list`` prefix scan (#74075) must still add
+        PIDs for agents the label derivation can't map — pinned here with a
+        canned listing so the merge stays deterministic on any host."""
+        listing = (
+            "PID\tStatus\tLabel\n"
+            "300\t0\tai.hermes.gateway-renamed\n"
+            "999\t0\tcom.apple.somethingelse\n"
+        )
+        self._wire(monkeypatch, bare_list_stdout=listing)
+        assert gw._get_service_pids(all_profiles=True) == {100, 200, 300}
 
     def test_default_stays_scoped_to_current_profile(self, monkeypatch):
         """Regression guard: default-scope callers (gateway status, cron,
@@ -642,13 +669,25 @@ class TestWaitForLaunchdServicePid:
 
 
 class TestIncompleteWarningMentionsLaunchctl:
-    def test_launchd_labels_get_launchctl_hint(self, capsys):
+    def test_launchd_labels_get_launchctl_hint(self, monkeypatch, capsys):
+        # The warning reads is_macos() via a call-time ``from hermes_cli
+        # .gateway import is_macos``, so patching the gateway attribute pins
+        # the branch on every host — without this the macOS early-return
+        # branch (bootstrap contract, #88848) ran on macOS while Linux CI
+        # exercised the legacy kickstart line, i.e. the test asserted
+        # different contracts per host (#95827).
+        monkeypatch.setattr(gw, "is_macos", lambda: True)
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-        assert "launchctl kickstart -k" in out
+        # #88848: a launchd label in this list means the job is likely
+        # deregistered, and kickstart cannot revive a job launchd no longer
+        # knows about — the recovery contract is bootstrap.
+        assert "launchctl bootstrap" in out
+        assert "launchctl kickstart" not in out
 
-    def test_systemd_units_keep_systemctl_hint(self, capsys):
+    def test_systemd_units_keep_systemctl_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(gw, "is_macos", lambda: False)
         _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
         out = capsys.readouterr().out
         assert "systemctl" in out

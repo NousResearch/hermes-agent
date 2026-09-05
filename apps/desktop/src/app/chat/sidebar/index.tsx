@@ -72,6 +72,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
+import { $worldEnabled } from '@/store/lunar-city'
 import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
@@ -138,6 +139,7 @@ import {
   type AppView,
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
+  LUNAR_CITY_ROUTE,
   MESSAGING_ROUTE,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
@@ -225,6 +227,12 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
     icon: props => <Codicon name="watch" {...props} />,
     route: CRON_ROUTE,
     keybindActionId: 'nav.cron'
+  },
+  {
+    id: 'lunar-city',
+    label: 'Lunar City',
+    icon: props => <Codicon name="globe" {...props} />,
+    route: LUNAR_CITY_ROUTE
   }
 ]
 
@@ -336,6 +344,7 @@ export function ChatSidebar({
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
+  const worldEnabled = useStore($worldEnabled)
 
   const contributedNav = useMemo<SidebarNavItem[]>(
     () =>
@@ -1471,6 +1480,8 @@ export function ChatSidebar({
       })
     )
 
+  const visibleNav = [...SIDEBAR_NAV, ...contributedNav].filter(item => item.id !== 'lunar-city' || worldEnabled)
+
   return (
     <Sidebar
       className={cn(
@@ -1489,7 +1500,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {[...SIDEBAR_NAV, ...contributedNav].map(item => {
+              {visibleNav.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =

@@ -26,6 +26,31 @@ export interface AgentNoticePayload {
   id?: string
 }
 
+export type AgentNoticeListener = (payload: AgentNoticePayload) => void
+
+const agentNoticeListeners = new Set<AgentNoticeListener>()
+
+/** Renderer-local observer used by alternate views such as Lunar City. */
+export function subscribeAgentNotices(listener: AgentNoticeListener): () => void {
+  agentNoticeListeners.add(listener)
+
+  return () => agentNoticeListeners.delete(listener)
+}
+
+export function publishAgentNotice(payload: AgentNoticePayload | undefined): void {
+  if (!payload) {
+    return
+  }
+
+  for (const listener of agentNoticeListeners) {
+    try {
+      listener(payload)
+    } catch {
+      /* alternate surfaces cannot interfere with the standard notice path */
+    }
+  }
+}
+
 const LEVEL_TO_TOAST_KIND: Record<string, NotificationKind> = {
   error: 'error',
   info: 'info',

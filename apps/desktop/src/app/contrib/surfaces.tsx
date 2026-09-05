@@ -37,6 +37,7 @@ import type { SidebarActions, WiringActions } from './types'
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
 const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
+const LunarCityView = lazy(async () => ({ default: (await import('../lunar-city')).LunarCity }))
 
 export function LegacySessionRedirect() {
   const { sessionId } = useParams()
@@ -170,6 +171,16 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       <Route element={page(<SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="skills" />
       <Route element={page(<MessagingView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="messaging" />
       <Route element={page(<ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />)} path="artifacts" />
+      <Route
+        element={page(
+          <LunarCityView
+            onNewSession={async () => {
+              actions.onNewSessionSplit('right')
+            }}
+          />
+        )}
+        path="lunar-city"
+      />
       <Route element={null} path="agents" />
       <Route element={null} path="command-center" />
       <Route element={null} path="cron" />

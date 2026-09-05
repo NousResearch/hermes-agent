@@ -143,6 +143,7 @@
     "streamdown": "2.5.0",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.3",
+    "three": "0.180.0",
     "tw-shimmer": "0.4.12",
     "unicode-animations": "1.0.3",
     "unified": "11.0.5",

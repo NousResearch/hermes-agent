@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "source": "hermes-profile-roster-sanitized",
+  "classes": [
+    {
+      "role": "audit",
+      "personality": "methodical",
+      "visualTags": [
+        "inspection",
+        "violet",
+        "worker"
+      ],
+      "count": 10
+    },
+    {
+      "role": "operations",
+      "personality": "protective",
+      "visualTags": [
+        "operations",
+        "cyan",
+        "worker"
+      ],
+      "count": 1
+    },
+    {
+      "role": "release",
+      "personality": "bold",
+      "visualTags": [
+        "release",
+        "amber",
+        "worker"
+      ],
+      "count": 19
+    },
+    {
+      "role": "research",
+      "personality": "curious",
+      "visualTags": [
+        "research",
+        "cyan",
+        "worker"
+      ],
+      "count": 10
+    },
+    {
+      "role": "review",
+      "personality": "methodical",
+      "visualTags": [
+        "inspection",
+        "violet",
+        "leader"
+      ],
+      "count": 4
+    },
+    {
+      "role": "review",
+      "personality": "methodical",
+      "visualTags": [
+        "inspection",
+        "violet",
+        "worker"
+      ],
+      "count": 45
+    }
+  ]
+}

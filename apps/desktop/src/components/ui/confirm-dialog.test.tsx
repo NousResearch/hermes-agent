@@ -39,9 +39,9 @@ describe('ConfirmDialog secondary action', () => {
 
     const dialog = await screen.findByRole('dialog')
 
-    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
-    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+
     fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))

@@ -45,9 +45,9 @@ describe('confirm()', () => {
 
     const { dialog, pending, read } = await ask()
 
-    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
-    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+
     fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
 
     await pending

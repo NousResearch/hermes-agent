@@ -243,7 +243,8 @@ function Harness({
     actions.steerPrompt,
     actions.submitText,
     activeSessionIdRef,
-    onReady
+    onReady,
+    actions
   ])
 
   return null

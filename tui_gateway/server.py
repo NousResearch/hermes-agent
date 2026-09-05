@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -2367,6 +2368,34 @@ def _init_session(
 
 def _new_session_key() -> str:
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
+# Server-minted session keys are ``%Y%m%d_%H%M%S_`` + 6 hex chars (see
+# ``_new_session_key``). session.resume uses this shape as the fail-closed gate
+# for materializing a row for a minted-but-never-persisted key: only keys the
+# server itself could have produced qualify — arbitrary strings and 8-hex
+# runtime session ids (``uuid4().hex[:8]``) are rejected.
+_MINTED_SESSION_KEY_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-f]{6}$")
+
+
+def _is_server_minted_key(value: str | None) -> bool:
+    return bool(value and _MINTED_SESSION_KEY_RE.fullmatch(value))
+
+
+def _any_live_session_claims_key(target: str) -> bool:
+    """True if any live registry record claims this stored key (any profile).
+
+    Fail-closed gate for minted-key materialization: a key claimed by a live
+    session — even one scoped to a different profile — is owned, so an
+    unscoped resume must not mint a phantom row in the launch store (#93296
+    cross-profile rule: routing guesses are forbidden).
+    """
+    for record in list(_sessions.values()):
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("session_key") or "") == target:
+            return True
+    return False
 
 
 def _with_checkpoints(session, fn):

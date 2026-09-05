@@ -588,6 +588,48 @@ def _resume_locate(ctx: _Resume) -> dict | None:
         return _resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
         _resume_adopt_stranded(ctx)
+    if (
+        not ctx.found
+        and not ctx.lazy
+        and _is_server_minted_key(ctx.target)
+        and not _any_live_session_claims_key(ctx.target)
+    ):
+        # Minted-but-never-persisted key rescue. session.create mints the stored
+        # key but intentionally writes no DB row until the first prompt (no
+        # "Untitled" litter). If the backend dies between create and that first
+        # prompt, the key exists client-side (pinned tile, stored id) but has no
+        # row anywhere — and after a restart the in-memory live-lazy lookup
+        # above can't find it either, so this resume used to 4007 forever
+        # ("no route to the backend holding this session"). When the target is a
+        # well-formed server-minted key, materialize the row and let the normal
+        # resume path continue with empty history. Abandoned drafts still leave
+        # no row: nothing is written until a client explicitly resumes the exact
+        # key. Fail-closed: anything not matching the minted shape (garbage,
+        # 8-hex runtime ids, titles) still 4007s, and a key claimed by ANY live
+        # session (even under a different profile) is owned — an unscoped resume
+        # must never mint a phantom row in the launch store (#93296 cross-profile
+        # rule: routing guesses are forbidden). Lazy watch windows (subagent
+        # viewers) are excluded: they attach to live children by design, and a
+        # dead child should honestly 4007 rather than mint a phantom row.
+        try:
+            ctx.db.create_session(
+                ctx.target,
+                source=_resolve_session_source(
+                    _str_param(ctx.params, "source") or None
+                ),
+                model=_resolve_model(),
+                profile_name=Path(ctx.profile_home).name if ctx.profile_home else None,
+            )
+            ctx.found = ctx.db.get_session(ctx.target)
+            logger.info(
+                "materialized session row for minted-but-unpersisted "
+                "key %s (resume no longer 4007s)",
+                ctx.target,
+            )
+        except Exception:
+            logger.warning(
+                "failed to materialize session row for %s", ctx.target, exc_info=True
+            )
     return None if ctx.found else _err(ctx.rid, 4007, "session not found")
 
 

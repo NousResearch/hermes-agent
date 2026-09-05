@@ -780,24 +780,35 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
 })
 
 test('buildSpawnCommand exports HERMES_HOME for a named profile so the frozen DB path is the profile DB (#103467)', () => {
-  // tilde home: the profile HERMES_HOME must $HOME-expand at the remote shell.
+  // buildSpawnCommand wraps the serve line in the update-mutex + detached-spawn
+  // quoting layers, so the HERMES_HOME assignment's own single-quotes are
+  // re-escaped (`'` -> `'\''`) in the returned string; only the quote-free spans
+  // survive verbatim. Assert on those, mirroring the sibling "headless serve"
+  // test, rather than on the pre-wrap fragment.
+
+  // tilde home: the profile HERMES_HOME $HOME-expands at the remote shell.
   const tildeCmd = buildSpawnCommand('/x/hermes', 'work', {
     hermesHome: '~/.hermes',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
   })
-  assert.match(tildeCmd, /env HERMES_DESKTOP=1 HERMES_HOME="\$HOME"'\/\.hermes\/profiles\/work' /)
-  // absolute home is shell-quoted verbatim.
+  assert.match(tildeCmd, /env HERMES_DESKTOP=1 /)
+  assert.match(tildeCmd, /HERMES_HOME="\$HOME"/)
+  assert.match(tildeCmd, /\/\.hermes\/profiles\/work/)
+  // absolute home is passed through verbatim, with no $HOME expansion.
   const absCmd = buildSpawnCommand('/x/hermes', 'work', {
     hermesHome: '/root/.hermes',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
   })
-  assert.match(absCmd, /HERMES_HOME='\/root\/\.hermes\/profiles\/work'/)
+  assert.match(absCmd, /HERMES_HOME=/)
+  assert.match(absCmd, /\/root\/\.hermes\/profiles\/work/)
+  assert.doesNotMatch(absCmd, /HERMES_HOME="\$HOME"/)
   // A profile home already ending in /profiles/<name> is not double-nested.
   const nestedCmd = buildSpawnCommand('/x/hermes', 'work', {
     hermesHome: '/root/.hermes/profiles/other',
     logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
   })
-  assert.match(nestedCmd, /HERMES_HOME='\/root\/\.hermes\/profiles\/work'/)
+  assert.match(nestedCmd, /\/root\/\.hermes\/profiles\/work/)
+  assert.doesNotMatch(nestedCmd, /profiles\/other/)
 })
 
 test('buildSpawnCommand omits HERMES_HOME for the default (unnamed) profile', () => {

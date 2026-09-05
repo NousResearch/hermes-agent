@@ -4,6 +4,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 ``web_server`` stay there and are late-bound (cycle-safe).
 """
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -16,15 +17,24 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from agent.memory_provider import MemoryProviderConfigConflictError
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
 from hermes_cli.web_server_memory import (
     _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
 )
-from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
+from hermes_cli.web_models import (
+    MemoryProviderActionRequest,
+    MemoryProviderConfigUpdate,
+    MemoryProviderSetupRequest,
+)
 from hermes_cli.web_routers._common import scoped_to_thread
 from plugins.memory.config_schema import (
-    STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
+    STORAGE_HONCHO_HOST_BLOCK,
+    ProviderConfigAction,
+    ProviderConfigSchema,
+    ProviderField,
+    get_provider_config_schema,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -38,6 +48,7 @@ save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
 _dependency_importable = late("_dependency_importable", "hermes_cli.web_server_memory")
 load_env = late("load_env", "hermes_cli.config")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 # Sentinel: remove this key so it falls back to the host or built-in default.
 _UNSET: Any = object()
 
@@ -240,7 +251,89 @@ def _declared_field_is_set(field: ProviderField, sources: tuple, env: Dict[str, 
     return any(source.get(k) for source in sources for k in (field.key, *field.aliases))
 
 
+def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
+    """Static, storage-independent field shape consumed by Desktop."""
+    return {
+        "key": field.key,
+        "label": field.label,
+        "kind": field.kind,
+        "description": field.description,
+        "info": field.info,
+        "help_url": field.help_url,
+        "help_label": field.help_label,
+        "placeholder": field.placeholder,
+        "search_placeholder": field.search_placeholder,
+        "inline": field.inline,
+        "group": field.group,
+        "required": field.required,
+        "read_only": field.read_only,
+        "dynamic_options": field.dynamic_options,
+        "searchable": field.searchable,
+        "visible_when": [
+            {"key": condition.key, "values": list(condition.values), "pattern": condition.pattern}
+            for condition in field.visible_when
+        ],
+        "options": [
+            {"value": option.value, "label": option.label, "description": option.description}
+            for option in field.options
+        ],
+    }
+
+
+def _provider_action_entry(action: ProviderConfigAction) -> Dict[str, Any]:
+    return {
+        "name": action.name,
+        "label": action.label,
+        "description": action.description,
+        "after_field": action.after_field,
+        "payload_fields": list(action.payload_fields),
+        "refresh_after": action.refresh_after,
+        "visible_when": [
+            {"key": condition.key, "values": list(condition.values), "pattern": condition.pattern}
+            for condition in action.visible_when
+        ],
+    }
+
+
 def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]:
+    if provider.submit_action:
+        plugin = _load_memory_provider(provider.name)
+        if plugin is None:
+            raise _unknown_provider(provider.name)
+
+        state = plugin.get_desktop_config(hermes_home=str(get_hermes_home())) or {}
+        values = state.get("values") if isinstance(state.get("values"), dict) else {}
+        is_set = state.get("is_set") if isinstance(state.get("is_set"), dict) else {}
+        option_overrides = state.get("options") if isinstance(state.get("options"), dict) else {}
+        fields: List[Dict[str, Any]] = []
+        for field in provider.fields:
+            entry = _provider_field_entry(field)
+            if field.dynamic_options and isinstance(option_overrides.get(field.key), list):
+                entry["options"] = [
+                    {
+                        "value": str(option.get("value") or ""),
+                        "label": str(option.get("label") or option.get("value") or ""),
+                        "description": str(option.get("description") or ""),
+                    }
+                    for option in option_overrides[field.key]
+                    if isinstance(option, dict) and str(option.get("value") or "")
+                ]
+            entry["value"] = "" if field.is_secret else _serialize_field_value(field, values.get(field.key))
+            entry["is_set"] = bool(is_set.get(field.key)) if field.is_secret else field.key in values
+            fields.append(entry)
+        return {
+            "name": provider.name,
+            "label": provider.label,
+            "description": provider.description,
+            "docs_url": provider.docs_url,
+            "submit_action": provider.submit_action,
+            "submit_label": provider.submit_label,
+            "status_action": provider.status_action,
+            "actions": [_provider_action_entry(action) for action in provider.actions],
+            "summary": state.get("summary") if isinstance(state.get("summary"), dict) else None,
+            "fields": fields,
+        }
+
     env = load_env()
     is_honcho = provider.storage == STORAGE_HONCHO_HOST_BLOCK
     if is_honcho:
@@ -259,8 +352,7 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
 
     fields: List[Dict[str, Any]] = []
     for field in provider.fields:
-        entry = {k: getattr(field, k) for k in ("key", "label", "kind", "description", "info", "placeholder", "inline", "group")}
-        entry["options"] = [{"value": o.value, "label": o.label, "description": o.description} for o in field.options]
+        entry = _provider_field_entry(field)
         sources = sources_for(field)
         if field.is_secret:
             entry["value"] = ""  # secrets are write-only over the API
@@ -278,7 +370,18 @@ def _declared_provider_payload(provider: ProviderConfigSchema) -> Dict[str, Any]
         # Presence, not truthiness — a stored False/0 is still "set".
         entry["is_set"] = native is not None if is_honcho else bool(value)
         fields.append(entry)
-    return {"name": provider.name, "label": provider.label, "docs_url": provider.docs_url, "fields": fields}
+    return {
+        "name": provider.name,
+        "label": provider.label,
+        "description": provider.description,
+        "docs_url": provider.docs_url,
+        "submit_action": "",
+        "submit_label": "Save changes",
+        "status_action": "",
+        "actions": [],
+        "summary": None,
+        "fields": fields,
+    }
 
 
 def _stringify_submitted(value: Any) -> str:
@@ -546,6 +649,58 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
     return _install_memory_provider_setup(name)
 
 
+@router.post("/api/memory/providers/{name}/actions/{action}")
+async def run_memory_provider_action(
+    name: str,
+    action: str,
+    body: MemoryProviderActionRequest,
+    profile: Optional[str] = None,
+):
+    """Run a provider-owned operation through the shared config extension."""
+    _require_valid_memory_provider_name(name)
+    if not _MEMORY_PROVIDER_NAME_RE.fullmatch(action or ""):
+        raise HTTPException(status_code=404, detail=f"Unknown memory provider action: {action}")
+
+    def _run():
+        declared = get_provider_config_schema(name)
+        allowed = {item.name for item in declared.actions} if declared else set()
+        if declared and declared.submit_action:
+            allowed.add(declared.submit_action)
+        if declared and declared.status_action:
+            allowed.add(declared.status_action)
+        if declared is None or action not in allowed:
+            raise HTTPException(status_code=404, detail=f"Unknown memory provider action: {action}")
+
+        provider = _load_memory_provider(name)
+        if provider is None:
+            raise _unknown_provider(name)
+        return provider.handle_desktop_config_action(
+            action,
+            dict(body.payload or {}),
+            hermes_home=str(get_hermes_home()),
+        )
+
+    def _run_scoped():
+        # Actions may probe the network. The config-only scope avoids holding
+        # the process-wide skills lock while still targeting this profile.
+        with _config_profile_scope(profile):
+            return _run()
+
+    try:
+        return await asyncio.to_thread(_run_scoped)
+    except HTTPException:
+        raise
+    except MemoryProviderConfigConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        _log.exception("POST /api/memory/providers/%s/actions/%s failed", name, action)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @router.put("/api/memory/providers/{name}/config")
 async def update_memory_provider_config(
     name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None, profile: Optional[str] = None
@@ -558,6 +713,11 @@ async def update_memory_provider_config(
             declared = get_provider_config_schema(name)
             if declared is None:
                 raise _unknown_provider(name)
+            if declared.submit_action:
+                raise HTTPException(
+                    status_code=405,
+                    detail=f"{declared.label} configuration must use its registered submit action.",
+                )
             _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()})
             _invalidate_plugins_hub_cache()
             return {"ok": True}

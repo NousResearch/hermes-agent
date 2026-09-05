@@ -34,6 +34,10 @@ class RecallStatus:
     glyph: str = INDICATOR_GLYPH
 
 
+class MemoryProviderConfigConflictError(ValueError):
+    """A provider-owned config save requires explicit overwrite approval."""
+
+
 # Prompts with no semantic signal; single source of truth for the core prefetch gate and
 # provider-side classifiers. Anchored and followed only by whitespace/punctuation, so
 # "k8s"/"yolo"/"note" do NOT match while "hi!"/"thanks :)"/"done???" do.
@@ -154,6 +158,23 @@ class MemoryProvider(ABC):
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Write non-secret setup ``values`` to the provider's native config. Plugins MUST either
         override this or use only env vars (every schema field carrying ``env_var``)."""
+
+    def get_desktop_config(self, *, hermes_home: str) -> Dict[str, Any]:
+        """Return provider-owned values for a declarative Desktop form.
+
+        This must remain filesystem-only because it runs while settings load.
+        """
+        return {}
+
+    def handle_desktop_config_action(
+        self,
+        action: str,
+        payload: Dict[str, Any],
+        *,
+        hermes_home: str,
+    ) -> Dict[str, Any]:
+        """Run an atomic provider-owned Desktop configuration operation."""
+        raise NotImplementedError(f"Provider {self.name} does not handle config action {action}")
 
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:

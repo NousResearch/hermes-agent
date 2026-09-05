@@ -2594,8 +2594,15 @@ OPTIONAL_ENV_VARS = {
     # ── OpenViking ──
     "OPENVIKING_API_KEY": _tool("OpenViking API key (leave blank for local dev mode)",
         "OpenViking API key", tools=["viking_search"]),
-    "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
-        "OpenViking endpoint", password=None, advanced=True),
+    "OPENVIKING_URL": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
+        "OpenViking URL", password=None, advanced=True),
+    "OPENVIKING_ACCOUNT": _tool("OpenViking tenant account for local or trusted mode",
+        "OpenViking account", password=None, advanced=True),
+    "OPENVIKING_USER": _tool("OpenViking tenant user for local or trusted mode",
+        "OpenViking user", password=None, advanced=True),
+    "OPENVIKING_ACTOR_PEER_ID": _tool(
+        "Optional peer ID for separate assistant context (blank uses user memory)",
+        "OpenViking agent ID", password=None, advanced=True),
     # ── Langfuse observability ──
     "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
         "Langfuse public key", "https://cloud.langfuse.com", password=False),

@@ -4865,3 +4865,93 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+class TestFormatResponsePreview:
+    """Shape-aware preview produced by `_format_response_preview`.
+
+    Regression: previous implementation was `str(response)[:120]`, which
+    produced a syntactically malformed fragment (mid-token truncation)
+    dominated by all-None pydantic field padding.
+    """
+
+    def test_none_returns_literal(self):
+        from agent.auxiliary_client import _format_response_preview
+
+        assert _format_response_preview(None) == "None"
+
+    def test_short_str_is_repr_d(self):
+        from agent.auxiliary_client import _format_response_preview
+
+        out = _format_response_preview("hello")
+        assert out == "str(5 chars): 'hello'"
+
+    def test_long_str_is_ellipsized(self):
+        from agent.auxiliary_client import _format_response_preview
+
+        s = "x" * 500
+        out = _format_response_preview(s, budget=50)
+        assert out.startswith("str(500 chars): ")
+        assert out.endswith("...")
+        # 50 chars of body + suffix
+        assert len(out) > 50
+
+    def test_dict_shows_keys_not_values(self):
+        from agent.auxiliary_client import _format_response_preview
+
+        out = _format_response_preview({"data": {"choices": []}, "success": True})
+        assert "dict(2 keys" in out
+        assert "data" in out
+        assert "success" in out
+
+    def test_pydantic_like_object_shows_only_populated_fields(self):
+        from types import SimpleNamespace
+
+        from agent.auxiliary_client import _format_response_preview
+
+        obj = SimpleNamespace(
+            id="gen-1",
+            choices=None,
+            created=None,
+            model=None,
+            object=None,
+            service_tier=None,
+        )
+        out = _format_response_preview(obj)
+        # Only `id` is non-None
+        assert "non-None fields" in out
+        assert "id='gen-1'" in out
+        # None-fields must NOT appear
+        assert "choices=None" not in out
+        assert "created=None" not in out
+        # Output must remain bounded regardless of input field count
+        assert len(out) < 200
+
+    def test_object_with_no_public_non_none_fields_falls_back_to_repr(self):
+        from types import SimpleNamespace
+
+        from agent.auxiliary_client import _format_response_preview
+
+        obj = SimpleNamespace(choices=None, created=None)
+        out = _format_response_preview(obj)
+        assert "no non-None fields" in out
+
+    def test_validate_llm_response_uses_shape_aware_preview(self):
+        """End-to-end: malformed response produces a closed, informative error."""
+        from types import SimpleNamespace
+
+        from agent.auxiliary_client import _validate_llm_response
+
+        fake = SimpleNamespace(
+            id="gen-test", choices=None, created=None, model=None
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            _validate_llm_response(fake, task="vision")
+        msg = str(excinfo.value)
+        # New format: "SimpleNamespace(N non-None fields): ..."
+        assert "non-None fields" in msg
+        assert "id='gen-test'" in msg
+        # No mid-token truncation artifact
+        assert not msg.endswith('ti".')
+        # No unmatched surrounding double quote on preview
+        assert 'invalid response (type=SimpleNamespace): "' not in msg

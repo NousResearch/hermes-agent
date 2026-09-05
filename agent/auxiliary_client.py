@@ -5972,6 +5972,51 @@ def _build_call_kwargs(
     return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
 
 
+def _format_response_preview(response: Any, budget: int = 300) -> str:
+    """Bounded, shape-aware preview of an invalid LLM response for diagnostics.
+
+    Unlike ``str(response)[:N]`` on a pydantic object — which pads the output
+    with all-``None`` fields and truncates mid-token — this produces a
+    compact, correctly-closed description of the response *shape*, so a
+    reader can tell the difference between ``None``, a raw string, an
+    envelope dict, and a partially-populated model instance.
+    """
+    if response is None:
+        return "None"
+    if isinstance(response, str):
+        s = response
+        suffix = "..." if len(s) > budget else ""
+        return f"str({len(s)} chars): {s[:budget]!r}{suffix}"
+    if isinstance(response, dict):
+        keys = sorted(str(k) for k in response.keys())[:10]
+        suffix = "..." if len(response) > 10 else ""
+        return f"dict({len(response)} keys: {', '.join(keys)}{suffix})"
+    # Pydantic model / SimpleNamespace / arbitrary object: project public
+    # non-None fields so the preview reflects signal rather than padding.
+    fields: dict = {}
+    try:
+        raw = vars(response)
+    except TypeError:
+        raw = {}
+    if isinstance(raw, dict):
+        fields = {
+            k: v
+            for k, v in raw.items()
+            if not str(k).startswith("_") and v is not None
+        }
+    if not fields:
+        # No public non-None fields — fall back to a bounded repr.
+        r = repr(response)
+        suffix = "..." if len(r) > budget else ""
+        return f"{type(response).__name__}(no non-None fields); repr: {r[:budget]!r}{suffix}"
+    items = ", ".join(f"{k}={v!r}"[:budget] for k, v in list(fields.items())[:6])
+    suffix = "..." if len(fields) > 6 else ""
+    return (
+        f"{type(response).__name__}({len(fields)} non-None fields): "
+        f"{items}{suffix}"
+    )
+
+
 def _validate_llm_response(
     response: Any, task: Optional[str] = None, provider: Optional[str] = None, base_url: Optional[str] = None,
 ) -> Any:
@@ -5996,19 +6041,25 @@ def _validate_llm_response(
             raise AttributeError("missing choices[0].message")
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
+        if recovered is not None:
+            response = recovered
+        # Retain the provider-reported model for terminal relay route attribution.
+        context = _RELAY_AUX_CALL_CONTEXT.get()
+        if context is not None:
+            model = _field(response, "model")
+            if isinstance(model, str) and model.strip():
+                context["response_model"] = model
         if recovered is None:
+            # Shape-aware, bounded preview: a pydantic model dumps useful fields instead
+            # of all-None padding, and a giant response cannot flood stderr (#100421).
+            response_type = type(response).__name__
+            response_preview = _format_response_preview(response)
             raise RuntimeError(
-                f"Auxiliary {task or 'call'}: LLM returned invalid response (type={type(response).__name__}): "
-                f"{str(response)[:120]!r}. Expected object with .choices[0].message — check provider "
+                f"Auxiliary {task or 'call'}: LLM returned invalid response "
+                f"(type={response_type}): {response_preview}. "
+                f"Expected object with .choices[0].message — check provider "
                 f"adapter or custom endpoint compatibility."
             ) from exc
-        response = recovered
-    # Retain the provider-reported model for terminal relay route attribution.
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is not None:
-        model = _field(response, "model")
-        if isinstance(model, str) and model.strip():
-            context["response_model"] = model
     _complete_relay_auxiliary_call()
     return response
 

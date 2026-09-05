@@ -67,6 +67,8 @@ export interface WiringActions extends SidebarActions, ChatActions {
   requestGateway: GatewayRequester
   selectModel: ComponentProps<typeof ModelMenuPanel>['onSelectModel']
   toggleCommandCenter: () => void
+  /** Change the workspace directory for the current conversation only. */
+  changeSessionCwd: (cwd: string, sessionId?: string) => Promise<void>
 }
 
 /** The four wired surfaces the controller publishes; `WiredPane` renders one by

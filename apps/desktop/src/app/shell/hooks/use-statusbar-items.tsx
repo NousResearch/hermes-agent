@@ -13,6 +13,7 @@ import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/st
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { displayPath, pathLeaf } from '@/lib/display-path'
 import {
   Activity,
@@ -82,6 +83,8 @@ interface StatusbarItemsOptions {
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
+  /** Change the workspace directory for the current conversation only. */
+  changeSessionCwd?: (cwd: string, sessionId?: string) => Promise<void>
 }
 
 export function useStatusbarItems({
@@ -96,7 +99,8 @@ export function useStatusbarItems({
   openCommandCenterSection,
   requestGateway,
   statusSnapshot,
-  toggleCommandCenter
+  toggleCommandCenter,
+  changeSessionCwd
 }: StatusbarItemsOptions) {
   const { t } = useI18n()
   const copy = t.shell.statusbar
@@ -234,6 +238,27 @@ export function useStatusbarItems({
   // the tree changes; null (no named project) falls back to the cwd leaf below.
   const projectTree = useStore($projectTree)
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+
+  // Open the workspace folder picker, switch the focused conversation's cwd.
+  // selectDesktopPaths is the remote-aware seam: a remote gateway browses the
+  // backend filesystem where sessions run; local mode opens the native dialog.
+  const pickAndChangeWorkspaceCwd = useCallback(async () => {
+    const [selected] = await selectDesktopPaths({
+      directories: true,
+      multiple: false,
+      title: fileMenu.changeCwdTitle
+    })
+
+    if (!selected?.trim()) {
+      return
+    }
+
+    // Target the FOCUSED session (a tile, else the primary) — the same scope
+    // the statusbar's cwd readout describes. changeSessionCwd falls back to
+    // the primary ref when no override is passed, so existing callers (and
+    // the no-session draft path) are unaffected.
+    await changeSessionCwd?.(selected, activeSessionId ?? undefined)
+  }, [activeSessionId, changeSessionCwd, fileMenu.changeCwdTitle])
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
@@ -461,6 +486,12 @@ export function useStatusbarItems({
         menuItems: currentCwd
           ? [
               {
+                id: 'change-workspace-path',
+                label: fileMenu.changeCwdTitle,
+                onSelect: () => void pickAndChangeWorkspaceCwd(),
+                title: displayPath(currentCwd)
+              },
+              {
                 id: 'copy-workspace-path',
                 label: fileMenu.copyPath,
                 onSelect: () => void copyFilePath(currentCwd),
@@ -533,6 +564,7 @@ export function useStatusbarItems({
       commandCenterOpen,
       copy,
       currentCwd,
+      fileMenu.changeCwdTitle,
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
@@ -543,6 +575,7 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
+      pickAndChangeWorkspaceCwd,
       projectName,
       sessionsShowing,
       subagentsFailed,

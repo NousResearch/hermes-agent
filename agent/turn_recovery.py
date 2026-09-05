@@ -971,18 +971,19 @@ _ZAI_POLICY_NOTES = {
 
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
-    is_zai_coding_overload: bool, base_url: Any, model: Any,
+    is_zai_coding_overload: bool, base_url: Any, model: Any, is_overloaded: bool = False,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for rate
-    limits (capped at 600s: Anthropic Tier 1 buckets reset in ~171s, so a 120s cap re-tripped
-    the limit); otherwise jittered backoff, replaced by the adaptive policy for 429s / Z.AI
-    overloads. Normal retries are buffered; long Z.AI Coding waits surface immediately."""
+    limits and provider-overloaded responses (capped at 600s: Anthropic Tier 1 buckets reset
+    in ~171s, so a 120s cap re-tripped the limit); otherwise jittered backoff, replaced by the adaptive
+    policy for 429s / Z.AI overloads. Normal retries are buffered; long Z.AI Coding waits surface immediately."""
     # Imported lazily so tests that patch ``agent.retry_utils.jittered_backoff`` /
     # ``adaptive_rate_limit_backoff`` (incl. the run_agent conftest fast-backoff fixture) intercept.
     from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
 
     _retry_after = None
-    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None) if is_rate_limited else None
+    _honor_retry_after = is_rate_limited or is_overloaded
+    _resp_headers = getattr(getattr(api_error, "response", None), "headers", None) if _honor_retry_after else None
     if _resp_headers and hasattr(_resp_headers, "get"):
         _ra_raw = _resp_headers.get("retry-after") or _resp_headers.get("Retry-After")
         if _ra_raw:

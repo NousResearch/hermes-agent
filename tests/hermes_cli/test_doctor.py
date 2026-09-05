@@ -26,6 +26,34 @@ from hermes_cli import doctor_config
 from tools import browser_tool_install as bt_install
 
 
+def test_doctor_quick_skips_network_checks(monkeypatch):
+    import argparse
+    from unittest.mock import Mock
+
+    from hermes_cli.doctor_report import Finding
+    from hermes_cli.subcommands.doctor import build_doctor_parser
+
+    local_check = Mock(return_value=Finding())
+    npm_check = Mock(side_effect=AssertionError("npm audit ran in quick mode"))
+    api_check = Mock(side_effect=AssertionError("API connectivity ran in quick mode"))
+
+    monkeypatch.setattr(doctor_mod, "_check_npm_audit", npm_check)
+    monkeypatch.setattr(doctor_mod, "_check_api_connectivity", api_check)
+    monkeypatch.setattr(doctor_mod, "DOCTOR_CHECKS", (
+        (None, local_check),
+        (None, npm_check),
+        (None, api_check),
+    ))
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_doctor_parser(subparsers, cmd_doctor=doctor_mod.run_doctor)
+    args = parser.parse_args(["doctor", "--quick"])
+    args.func(args)
+
+    local_check.assert_called_once_with(False)
+
+
 class TestDoctorPlatformHints:
     def test_termux_package_hint(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")

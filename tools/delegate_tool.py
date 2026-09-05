@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 # ``tools.delegate_tool.<name>`` is re-imported here. Mutable flag globals live only in their owning module.
 from tools.delegate_tool_child_run import (  # noqa: F401
     _ChildRun, _attach_child, _build_result_entry, _dump_subagent_timeout_diagnostic, _fabricated_entry,
-    _lease_child_credential, _merge_late_steer, _register_child, _start_heartbeat, _validate_child_output_schema,
+    _lease_child_credential, _merge_late_steer, _register_child, _route_telemetry, _start_heartbeat,
+    _validate_child_output_schema,
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
@@ -219,6 +220,17 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    # Spawn-time route provenance (telemetry only; never consulted for routing). Legacy profile-less
+    # children get no stamp so every reader reports all four as None. resolved_model is frozen HERE —
+    # the child's live ``model`` may later diverge when a fallback fires, and that divergence between
+    # the entry's "resolved_model" and "model" keys IS the requested-vs-effective signal.
+    if requested_profile:
+        setattr(child, "_route_requested_profile", requested_profile)
+        setattr(child, "_route_resolved_provider", override_provider)
+        setattr(child, "_route_resolved_model", model)
+        # 'none' = profile route with an empty fallback chain (no model promotion);
+        # 'profile:<name>' = profile route whose own fallback chain replaces the parent's.
+        setattr(child, "_route_fallback_policy", f"profile:{requested_profile}" if override_fallback_model else "none")
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
     try:
@@ -237,7 +249,7 @@ def _build_child_agent(
     _attach_child(parent_agent, child)  # interrupt propagation
     # spawn_requested now — the child may queue for seconds when the pool is
     # saturated — then the subagent_start lifecycle hook.
-    _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal)
+    _safe_progress(child_progress_cb, "subagent.spawn_requested", preview=goal, **_route_telemetry(child))
     with _quiet("subagent_start hook invocation failed", exc_info=True):
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _invoke_hook(
@@ -282,7 +294,7 @@ def _run_single_child(
     _child_close_deferred = False
     try:
         heartbeat.start()
-        _safe_progress(child_progress_cb, "subagent.start", preview=goal)
+        _safe_progress(child_progress_cb, "subagent.start", preview=goal, **_route_telemetry(child))
         run.seed_workspace()
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:

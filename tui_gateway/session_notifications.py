@@ -474,6 +474,11 @@ def _wire_desktop_sinks() -> None:
 
     def _owner_sid(session) -> str:
         # session may be None (process already finished/pruned) — the tab can still linger and be closed.
+        origin_sid = str(getattr(session, "origin_ui_session_id", "") or "") if session is not None else ""
+        if origin_sid:
+            with _sessions_lock:
+                if origin_sid in _sessions:
+                    return origin_sid
         session_key = str(getattr(session, "session_key", "") or "") if session is not None else ""
         if not session_key:
             return ""

@@ -22268,3 +22268,57 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+def test_agent_terminal_output_routes_by_spawn_time_ui_owner(monkeypatch):
+    """#61719 residual: the desktop sink matched only by session_key.
+    A delegated child's process carries the subagent's internal key, which
+    never matches a live TUI session, so its live `agent.terminal.output`
+    chunks were emitted with sid "" and dropped by write_json. The spawn-time
+    `origin_ui_session_id` (captured by terminal_tool for every background
+    spawn) must win when it names a live session; key-equality remains the
+    fallback for processes without a recorded UI origin."""
+    from types import SimpleNamespace
+    from tools.process_registry import process_registry
+
+    monkeypatch.setattr(process_registry, "on_output", None)
+    monkeypatch.setattr(process_registry, "on_close", None)
+    emitted = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload))
+    )
+    server._wire_desktop_sinks()
+
+    saved = dict(server._sessions)
+    server._sessions.clear()
+    try:
+        server._sessions["parent_sid"] = {"session_key": "parent-key"}
+
+        # Delegated-child shape: internal session_key, recorded UI origin.
+        child_proc = SimpleNamespace(
+            id="proc_child", session_key="subagent-internal-key",
+            origin_ui_session_id="parent_sid",
+        )
+        process_registry.on_output(child_proc, "hello from child")
+        assert emitted[-1][0] == "agent.terminal.output"
+        assert emitted[-1][1] == "parent_sid", (
+            "child process live output must route to the spawn-time UI owner"
+        )
+        assert emitted[-1][2] == {"process_id": "proc_child", "chunk": "hello from child"}
+
+        # No recorded origin: legacy session_key equality still routes.
+        plain_proc = SimpleNamespace(
+            id="proc_plain", session_key="parent-key", origin_ui_session_id="",
+        )
+        process_registry.on_output(plain_proc, "plain")
+        assert emitted[-1][1] == "parent_sid"
+
+        # Stale origin (window closed) with unknown key: falls back to "".
+        stale_proc = SimpleNamespace(
+            id="proc_stale", session_key="unknown-key", origin_ui_session_id="gone_sid",
+        )
+        process_registry.on_output(stale_proc, "stale")
+        assert emitted[-1][1] == ""
+    finally:
+        server._sessions.clear()
+        server._sessions.update(saved)
+        process_registry.on_output = None
+        process_registry.on_close = None

@@ -336,6 +336,9 @@ class ProcessSession:
     # Session-db id of the spawning conversation; lets the gateway drop completions whose
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
+    # Spawn-time TUI/Desktop window that commissioned the process. Unlike
+    # session_key, this remains the owning UI when a delegated child spawns it.
+    origin_ui_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
@@ -376,7 +379,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "watch_patterns")
+    "parent_session_id", "origin_ui_session_id", "notify_on_complete", "watch_patterns")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -816,7 +819,8 @@ class ProcessRegistry:
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        origin_ui_session_id: str = "") -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
@@ -827,7 +831,11 @@ class ProcessRegistry:
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key,
+            _resolve_safe_cwd(cwd or os.getcwd()),
+            origin_ui_session_id=origin_ui_session_id,
+        )
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -892,12 +900,17 @@ class ProcessRegistry:
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "",
+        origin_ui_session_id: str = "") -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        session = self._new_session(
+            command, task_id, owner_task_id, session_key, cwd,
+            env_ref=env, pid_scope="sandbox",
+            origin_ui_session_id=origin_ui_session_id,
+        )
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote

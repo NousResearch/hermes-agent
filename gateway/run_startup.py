@@ -291,20 +291,104 @@ class GatewayStartupMixin:
         return claimed
 
     @staticmethod
-    async def _release_runtime_claim_quiet(obligation_id, log_fmt: str) -> None:
-        """Release a runtime delivery-ledger claim as ``send_path_degraded``; log-only on failure."""
+    async def _release_runtime_claim_quiet(obligation_id, log_fmt: str, error: str = "send_path_degraded") -> None:
+        """Release an unsent runtime delivery-ledger claim; log-only on failure. ``error`` is what the row
+        goes back to ``failed`` with: the claim's own pre-claim error when the caller knows it, so a
+        flood-refused row keeps its ``flood_control:<seconds>`` and stays on the flood timer's list (the
+        release re-stamps ``updated_at``, so it waits the platform's figure once more); else
+        ``send_path_degraded`` (ledger-flood-retry)."""
         from gateway.delivery_ledger import release_runtime_claim
         try:
-            await asyncio.to_thread(release_runtime_claim, obligation_id, "send_path_degraded")
+            await asyncio.to_thread(release_runtime_claim, obligation_id, error)
         except Exception:
             logger.debug(log_fmt, obligation_id, exc_info=True)
+
+    def _schedule_flood_redelivery(self, platform, *, profile: Optional[str] = None, error: str = "",
+                                   wait_seconds: Optional[float] = None):
+        """Retry a flood-refused final reply once the platform's penalty has passed (ledger-flood-retry).
+
+        Adapters fail a flood-controlled final send closed as ``flood_control:<seconds>`` so the send
+        coroutine never sleeps a long penalty (#91969), on the understanding that the delivery ledger
+        owns the wait. Nothing did: the row sat in ``failed`` until the next restart's sweep, which then
+        redelivered it hours late under the "gateway restarted during delivery" marker. This arms one
+        timer per adapter identity that runs the existing runtime sweep after the wait (read from
+        ``error``, or given as ``wait_seconds`` for rows already in the ledger). The sweep claims every
+        row whose own deadline has passed and leaves the rest, and the timer re-arms for whatever is
+        still waiting, so a capped sleep or a shorter sibling never sends early. Bounded like every
+        redelivery by the ledger's attempts cap and stale cutoff. Returns the delay, or None when a timer
+        for this identity is already waiting."""
+        from gateway.delivery_ledger import flood_retry_delay, flood_wait_seconds
+        pvalue = getattr(platform, "value", str(platform))
+        key = (pvalue, profile or "default")
+        pending = getattr(self, "_flood_redelivery_tasks", None)
+        if pending is None:
+            pending = self._flood_redelivery_tasks = {}
+        existing = pending.get(key)
+        try:
+            caller_task = asyncio.current_task()
+        except RuntimeError:
+            caller_task = None
+        # One live timer per identity, except that the running timer itself (a refusal during its sweep,
+        # rows still inside their wait afterwards) may arm its successor into the slot: a timer must never
+        # block its own re-arm, and the slot stays occupied until the task ends so nothing observing it
+        # mistakes a sweep in progress for a finished timer.
+        if existing is not None and not existing.done() and existing is not caller_task:
+            return None
+        delay = flood_retry_delay(wait_seconds if wait_seconds is not None else flood_wait_seconds(error))
+
+        async def _redeliver_after_wait():
+            try:
+                await asyncio.sleep(delay)
+                if not getattr(self, "_running", True):
+                    return
+                target = platform if isinstance(platform, Platform) else Platform(pvalue)
+                await self._redeliver_failed_obligations_for_platform(target, profile=profile)
+                self._arm_flood_timers_for_waiting_rows()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("flood-control redelivery for %s failed", key, exc_info=True)
+            finally:
+                if pending.get(key) is asyncio.current_task():
+                    pending.pop(key, None)
+
+        try:
+            task = asyncio.get_running_loop().create_task(
+                _redeliver_after_wait(), name="flood-redelivery:%s:%s" % key)
+        except RuntimeError:
+            return None
+        pending[key] = task
+        logger.info("Flood control refused a final reply on %s (%s); ledger redelivery scheduled in %.0fs",
+                    key[0], key[1], delay)
+        return delay
+
+    def _arm_flood_timers_for_waiting_rows(self) -> int:
+        """Arm a redelivery timer for every adapter identity that still owns a flood-refused row: rows
+        adopted from a dead owner at boot, rows a sweep skipped because their wait had not passed, rows
+        refused again on redelivery. Best-effort; returns how many timers were armed."""
+        try:
+            from gateway.delivery_ledger import pending_flood_retries
+            waiting = pending_flood_retries()
+        except Exception:
+            logger.debug("could not list waiting flood-refused rows", exc_info=True)
+            return 0
+        armed = 0
+        now = time.time()
+        for item in waiting:
+            try:
+                if self._schedule_flood_redelivery(
+                        item["platform"], profile=item["profile"], wait_seconds=item["not_before"] - now) is not None:
+                    armed += 1
+            except Exception:
+                logger.debug("could not arm a flood redelivery timer for %r", item, exc_info=True)
+        return armed
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the
         bounded boot-send task, so a flood-limited send can be abandoned by the restore gate without
         reopening the turn-replay window. Returns the redelivered count."""
-        if not claimed:
-            return 0
+        # No early return on an empty claim: the boot sweep may have ADOPTED flood-refused rows that are
+        # not due yet, and those still need their timer armed below.
         try:
             from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
         except Exception:
@@ -336,6 +420,10 @@ class GatewayStartupMixin:
                     await asyncio.to_thread(
                         mark_failed, row["obligation_id"], str(getattr(result, "error", "") or "send failed")
                     )
+        # Whatever is still waiting on a flood penalty (adopted at boot, skipped as not yet due, refused
+        # again just now) gets a timer, so no flood-refused reply waits for the next restart.
+        with _log_suppressed(logging.DEBUG, "arming flood redelivery timers failed", exc_info=True):
+            self._arm_flood_timers_for_waiting_rows()
         return redelivered
 
     async def _obligation_adapter(self, row: dict):
@@ -354,7 +442,8 @@ class GatewayStartupMixin:
         # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
         if adapter is None and row.get("runtime_recovery"):
             await self._release_runtime_claim_quiet(
-                row["obligation_id"], "failed to release undispatched runtime obligation %s"
+                row["obligation_id"], "failed to release undispatched runtime obligation %s",
+                error=row.get("last_error") or "send_path_degraded",
             )
         return adapter
 
@@ -387,7 +476,8 @@ class GatewayStartupMixin:
         for row in claimed:
             if row["obligation_id"] not in sendable_ids:
                 await self._release_runtime_claim_quiet(
-                    row["obligation_id"], "failed to release runtime delivery claim %s"
+                    row["obligation_id"], "failed to release runtime delivery claim %s",
+                    error=row.get("last_error") or "send_path_degraded",
                 )
         return await self._redeliver_claimed_obligations(sendable)
 

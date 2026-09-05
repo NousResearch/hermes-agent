@@ -3537,9 +3537,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 code="rate_limit_exceeded", headers={"Retry-After": "1"})
         return None
 
-    @staticmethod
     def _bind_api_server_session(
-        *, chat_id: str = "", session_key: str = "", session_id: str = "",
+        self, *, chat_id: str = "", session_key: str = "", session_id: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "") -> list:
         """Bind session contextvars for an API-server agent run — the SINGLE chokepoint for every
         agent-entry path. Hardwires ``platform="api_server"`` + ``async_delivery=False`` (HTTP
@@ -3554,7 +3553,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, closeout_delivery=bool(session_id), cron_session="")
+            # Self-wakes resume via an authenticated session-id header. No-key
+            # local APIs remain supported, but must return delegated work inline.
+            async_delivery=False, closeout_delivery=bool(session_id and self._api_key), cron_session="")
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],

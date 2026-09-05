@@ -98,8 +98,9 @@ class TestStatelessChannelForcesSyncDelegation:
     on a channel that can never deliver the completion.
     """
 
+    @pytest.mark.parametrize("channel", ["stateless", "no_key_api"])
     def test_background_delegation_runs_inline_when_channel_is_stateless(
-        self, monkeypatch
+        self, monkeypatch, channel
     ):
         import tools.delegate_tool as dt
         from gateway.session_context import declare_stateless_channel
@@ -134,12 +135,27 @@ class TestStatelessChannelForcesSyncDelegation:
         )
 
         reset_session_vars()
+        tokens = None
         try:
-            declare_stateless_channel()
+            parent = _Parent()
+            if channel == "no_key_api":
+                from gateway.config import PlatformConfig
+                from gateway.platforms.api_server import APIServerAdapter
+
+                adapter = APIServerAdapter(PlatformConfig(extra={"key": ""}))
+                tokens = adapter._bind_api_server_session(session_id="derived-session")
+                parent._current_work_id = "work"
+            else:
+                declare_stateless_channel()
+            background = dt._model_background_value({}, parent)
+            if channel == "no_key_api":
+                assert background is False
             out = dt.delegate_task(
-                goal="review the spec", background=True, parent_agent=_Parent()
+                goal="review the spec", background=background, parent_agent=parent
             )
         finally:
+            if tokens is not None:
+                clear_session_vars(tokens)
             reset_session_vars()
 
         parsed = json.loads(out)
@@ -158,19 +174,29 @@ class TestStatelessChannelForcesSyncDelegation:
 class TestAdapterCapabilityFlag:
 
 
-    def test_api_server_bind_chokepoint_hardwires_no_delivery(self):
+    @pytest.mark.parametrize("api_key,session_id", [("", "sid1"), ("adapter-key", "sid1"), ("adapter-key", "")])
+    def test_api_server_bind_chokepoint_hardwires_no_delivery(self, monkeypatch, api_key, session_id):
         """Every API-server agent-entry path binds through
         _bind_api_server_session, which hardwires async_delivery=False — a new
         route physically cannot reintroduce the silent no-op (#10760)."""
         from gateway.platforms.api_server import APIServerAdapter
         from gateway.session_context import clear_session_vars, get_session_env
 
-        tokens = APIServerAdapter._bind_api_server_session(
-            chat_id="c1", session_key="sk1", session_id="sid1"
+        from gateway.config import PlatformConfig
+        from tools.delegate_tool import _model_background_value
+        from types import SimpleNamespace
+
+        # An environment key must not override this adapter's configured capability.
+        monkeypatch.setenv("API_SERVER_KEY", "env-key" if not api_key else "")
+        adapter = APIServerAdapter(PlatformConfig(extra={"key": api_key}))
+        tokens = adapter._bind_api_server_session(
+            chat_id="c1", session_key="sk1", session_id=session_id
         )
         try:
+            expected = bool(api_key and session_id)
             assert async_delivery_supported() is False
-            assert closeout_delivery_supported() is True
+            assert closeout_delivery_supported() is expected
+            assert _model_background_value({}, SimpleNamespace(_delegate_depth=0, _current_work_id="work")) is expected
             assert get_session_env("HERMES_SESSION_PLATFORM") == "api_server"
         finally:
             clear_session_vars(tokens)
@@ -181,7 +207,10 @@ class TestAdapterCapabilityFlag:
     def test_api_server_without_raw_session_id_cannot_close_out(self):
         from gateway.platforms.api_server import APIServerAdapter
 
-        tokens = APIServerAdapter._bind_api_server_session()
+        from gateway.config import PlatformConfig
+
+        adapter = APIServerAdapter(PlatformConfig(extra={"key": "adapter-key"}))
+        tokens = adapter._bind_api_server_session()
         try:
             assert async_delivery_supported() is False
             assert closeout_delivery_supported() is False

@@ -409,6 +409,30 @@ describe('clarify and approvals (#90694)', () => {
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
   })
 
+  it('#102294: the clarify card badge stays a plain name for scoped members', async () => {
+    const { chat, turns } = await loadRoom()
+
+    const scopedMember: GroupMember = {
+      connectionId: 'cloud',
+      connectionKind: 'cloud',
+      connectionLabel: 'Cloud',
+      name: 'default',
+      remoteSource: true,
+      route: { connectionId: 'cloud', mode: 'remote', profile: 'default', targetProfile: 'default' },
+      sourceScoped: true,
+      title: ''
+    }
+
+    expect(turns.syncGroupClarify('Badge', scopedMember, { pending_clarify: CLARIFY })).toBe(true)
+
+    const mirrored = Object.values(chat.$groupClarify.get())
+
+    expect(mirrored).toHaveLength(1)
+    // The display badge is the plain profile name — never the working key.
+    expect(mirrored[0].member).toBe('default')
+    expect(mirrored[0].memberKey).toBe('cloud::default')
+  })
+
   it('never mirrors a question for older backends without pending_clarify', async () => {
     const { chat, turns } = await loadRoom()
 

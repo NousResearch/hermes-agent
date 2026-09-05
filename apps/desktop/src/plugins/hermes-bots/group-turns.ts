@@ -8,7 +8,7 @@
 
 import { host } from '@hermes/plugin-sdk'
 
-import { recordGroupActivity } from './group-activity'
+import { groupActivityMemberId, recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, $groupNeedsYou, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberKey, groupSessionOwner } from './group-membership'
@@ -457,6 +457,11 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
   const base = {
     requestId,
     group,
+    // Display badge: the plain profile name — the card renders this through
+    // raw-name helpers (botHandle) and matches its member via `memberKey`,
+    // so the route-qualified working key would leak as a visible
+    // `cloud::default` label. Activity rows use the working key; this is
+    // the one place that deliberately stays raw.
     member: member.name,
     memberKey: groupMemberKey(member),
     // approval.respond keys on the session, not just the request — carry the
@@ -618,7 +623,7 @@ async function runGroupChatMemberTurnLeased(
   const memberKey = groupMemberKey(member)
   recordGroupActivity(group, {
     kind: 'working',
-    member: member.name,
+    member: groupActivityMemberId(member),
     thread
   })
 
@@ -752,7 +757,7 @@ async function runGroupChatMemberTurnLeased(
       if (replyText !== null) {
         recordGroupActivity(group, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
-          member: member.name,
+          member: groupActivityMemberId(member),
           thread
         })
 
@@ -761,7 +766,7 @@ async function runGroupChatMemberTurnLeased(
 
       recordGroupActivity(group, {
         kind: 'passed',
-        member: member.name,
+        member: groupActivityMemberId(member),
         thread
       })
 
@@ -782,7 +787,7 @@ async function runGroupChatMemberTurnLeased(
   // thread instead of vanishing.
   recordGroupActivity(group, {
     kind: 'timed-out',
-    member: member.name,
+    member: groupActivityMemberId(member),
     thread
   })
   syncGroupClarify(group, member, null)
@@ -860,7 +865,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   if (reply && !isGroupPassText(reply)) {
     recordGroupActivity(group, {
       kind: 'delivered',
-      member: member.name,
+      member: groupActivityMemberId(member),
       thread: strandedThread
     })
     appendGroupChatEntry(

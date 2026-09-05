@@ -13,6 +13,8 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
+import { displayName } from './labels'
+import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
 import type {
   Attachment,
@@ -1236,10 +1238,43 @@ export function groupSpeakerLabel(name?: null | string) {
     return title
   }
 
+  // The ACTIVE gateway's own primary profile row, if the roster has one.
+  // Roster rows are connection-qualified; the local default is the one
+  // without a remote source or an explicit connection route.
+  const isLocalDefaultRow = (bot: RosterRow | null | undefined) =>
+    bot?.name === 'default' && !bot?.remoteSource && !bot?.sourceScoped
+
   // Core profile display_name (`hermes profile rename …` / dashboard) from
   // the ACTIVE gateway's roster row. Source-scoped remote speakers carry
   // their device suffix separately and keep their raw name here.
   const roster = $lastRoster.get()
+
+  const exactRow = Array.isArray(roster) ? roster.find(bot => botRosterKey(bot) === trimmed) : null
+
+  if (exactRow) {
+    return displayName(exactRow, botRosterMeta(exactRow, $botMeta.get()))
+  }
+
+  // #102294: a unique raw name must also resolve through the roster's
+  // friendly identity — most importantly a remote profile's display_name
+  // (a renamed remote `default` labeled the whole room `Hermes`). The
+  // primary-profile borrow guard is preserved: an implicit local `default`
+  // never inherits a remote row's identity, and `name === 'default'`
+  // resolves only through an explicit exact row (#102180/#102207's case)
+  // or the local rungs — a unique-but-remote default keeps reading as
+  // `Hermes` until the room passes route-qualified keys. Uniqueness is
+  // required on top: with same-named members the raw name alone cannot say
+  // which connection spoke, so fall through to the legacy rungs instead of
+  // guessing (collision disambiguation is #94869/#96558's layer).
+  const scoped = Array.isArray(roster)
+    ? roster.filter(bot => bot?.name === trimmed && !(trimmed.toLowerCase() === 'default' && !isLocalDefaultRow(bot)))
+    : []
+
+  const unique = scoped.length === 1 ? scoped[0] : null
+
+  if (unique) {
+    return displayName(unique, botRosterMeta(unique, $botMeta.get()))
+  }
 
   const row = Array.isArray(roster)
     ? roster.find(bot => bot?.name === trimmed && !bot?.remoteSource && !bot?.sourceScoped)

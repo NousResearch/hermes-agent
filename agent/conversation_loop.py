@@ -39,6 +39,9 @@ from agent.conversation_compression import (
     conversation_history_after_compression,
 )
 from agent.context_engine import automatic_compaction_status_message
+from agent.transports.chat_completions import (
+    usage_attribution as _usage_attribution,
+)
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
@@ -4960,11 +4963,18 @@ def run_conversation(
                                 if cost_result.status == "included" else None,
                                 model=agent.model,
                                 api_call_count=1,
-                                provider_name=str(getattr(response, "provider_name", "") or ""),
-                                native_tokens_prompt=int(getattr(response.usage, "native_tokens_prompt", 0) or 0),
-                                native_tokens_cached=int(getattr(response.usage, "native_tokens_cached", 0) or 0),
-                                cache_discount=float(getattr(response.usage, "cache_discount", 0.0) or 0.0),
-                                total_cost=float(getattr(response.usage, "total_cost", 0.0) or 0.0),
+                                # ``response`` here is the RAW SDK ChatCompletion,
+                                # NOT a NormalizedResponse — normalize_response()
+                                # results are bound to other names in this loop.
+                                # So these five must be extracted from the raw
+                                # wire object. Reading `response.provider_name`
+                                # (a NormalizedResponse field) silently returned
+                                # "" on every call and left 5,387 usage rows with
+                                # no upstream host. Verified 2026-09-05 by
+                                # restarting the gateways and watching it STILL
+                                # record nothing. (`provider` is the field
+                                # OpenRouter actually sends.)
+                                **_usage_attribution(response),
                             )
                         except Exception as e:
                             # Log token persistence failures so they're

@@ -100,6 +100,9 @@ def record_aux_usage(
         if raw_usage is None:
             return
 
+        from agent.transports.chat_completions import (  # noqa: PLC0415
+            usage_attribution as _aux_usage_attribution,
+        )
         from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
         usage = normalize_usage(raw_usage, provider=provider)
@@ -133,11 +136,12 @@ def record_aux_usage(
             cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens,
             estimated_cost_usd=estimated_cost,
-            provider_name=str(getattr(response, "provider_name", "") or ""),
-            native_tokens_prompt=int(getattr(raw_usage, "native_tokens_prompt", 0) or 0),
-            native_tokens_cached=int(getattr(raw_usage, "native_tokens_cached", 0) or 0),
-            cache_discount=float(getattr(raw_usage, "cache_discount", 0.0) or 0.0),
-            total_cost=float(getattr(raw_usage, "total_cost", 0.0) or 0.0),
+            # Same correction as conversation_loop: ``response`` is the raw SDK
+            # object, so the aggregator fields must be extracted from the wire
+            # shape rather than read as NormalizedResponse attributes. Auxiliary
+            # calls (compression, titles, vision, MoA slots) are a real slice of
+            # spend and were equally unattributed. (2026-09-05)
+            **_aux_usage_attribution(response),
         )
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)

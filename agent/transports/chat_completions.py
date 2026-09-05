@@ -195,6 +195,31 @@ def _aggregator_usage_extras(usage: Any) -> dict[str, Any]:
     return out
 
 
+def usage_attribution(response: Any) -> dict[str, Any]:
+    """The five accounting fields, extracted from a RAW SDK response.
+
+    This is the seam the 2026-09-05 fix originally missed. The extraction was
+    wired into ``normalize_response``, but the two places that actually WRITE
+    usage — ``conversation_loop`` and ``aux_accounting`` — hold the raw SDK
+    ChatCompletion, not a ``NormalizedResponse``. They were reading
+    ``response.provider_name``, a field only the normalized object has, so the
+    getattr default won every time. The gateways were restarted, the code was
+    live, and it still recorded nothing; that measurement is what found this.
+
+    Returns kwargs ready to splat into ``queue_token_counts`` /
+    ``update_token_counts``. Always returns all five keys so the writer's
+    behaviour is identical for providers that report none of them.
+    """
+    extras = _aggregator_usage_extras(getattr(response, "usage", None))
+    return {
+        "provider_name": _aggregator_provider_name(response),
+        "native_tokens_prompt": int(extras.get("native_tokens_prompt", 0) or 0),
+        "native_tokens_cached": int(extras.get("native_tokens_cached", 0) or 0),
+        "cache_discount": float(extras.get("cache_discount", 0.0) or 0.0),
+        "total_cost": float(extras.get("total_cost", 0.0) or 0.0),
+    }
+
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
 

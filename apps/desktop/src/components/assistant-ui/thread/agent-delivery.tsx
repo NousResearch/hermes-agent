@@ -59,7 +59,7 @@ const NOTICE_CLASS =
   'flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60'
 
 const AgentGlyph: FC<{ handle: string }> = ({ handle }) => {
-  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase()) ?? null)
+  const [avatar, setAvatar] = useState<null | string>(() => agentAvatarCache.get(handle.toLowerCase())?.url ?? null)
 
   useEffect(() => {
     let live = true

@@ -2500,6 +2500,15 @@ export interface Translations {
     price: (input: string, output: string) => string
     change: string
     startChatting: string
+    connectors: {
+      title: string
+      subtitle: string
+      searchPlaceholder: string
+      noResults: (query: string) => string
+      noneAvailable: string
+      continueWith: (count: number) => string
+      skip: string
+    }
     docs: (provider: string) => string
   }
 
@@ -2993,22 +3002,24 @@ export interface Translations {
       lateAnswerHint: string
     }
     mcpSetup: {
-      installTitle: (server: string) => string
-      enableTitle: (server: string) => string
-      authorizeTitle: (server: string) => string
-      installAction: string
-      enableAction: string
-      authorizeAction: string
+      lookingUp: (connectors: string) => string
+      connectAction: string
+      retryAction: string
+      grantAction: string
+      phase: Record<'adding' | 'enabling' | 'installing' | 'probing' | 'signing_in', string>
       decline: string
-      declined: string
-      installed: (server: string) => string
-      enabled: (server: string) => string
-      authorized: (server: string) => string
-      failed: (server: string) => string
-      unanswered: string
+      dismiss: string
       toolCount: (count: number) => string
-      notInCatalog: (server: string) => string
-      catalogSource: string
+      notFound: (connectors: string) => string
+      stateConnected: string
+      stateDeclined: string
+      stateFailed: string
+      stateDisabled: string
+      stateNeedsAuth: string
+      trustVerified: (publisher: string) => string
+      trustVerifiedTip: (publisher: string) => string
+      trustCommunity: string
+      trustCommunityTip: (host: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string

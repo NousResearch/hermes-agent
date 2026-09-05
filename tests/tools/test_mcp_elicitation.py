@@ -9,6 +9,7 @@ optional dependency under the `[mcp]` extra).
 """
 
 import asyncio
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
@@ -18,7 +19,29 @@ pytest.importorskip("mcp.types")
 
 from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
 
-from tools.mcp_tool_sampling import ElicitationHandler, _format_elicitation_schema_summary  # noqa: E402
+import tools.mcp_tool_sampling as mcp_tool  # noqa: E402
+
+from tools.mcp_tool_sampling import (  # noqa: E402
+    ElicitationHandler,
+    _format_elicitation_schema_summary,
+    set_elicitation_input_callback,
+)
+
+
+@contextmanager
+def _input_callback(cb):
+    """Stand in for the surface that asks the user a question.
+
+    Restores whatever was registered, so one test's fake answerer can't make
+    the next test's unwired-surface case quietly pass.
+    """
+    previous = mcp_tool._elicitation_input_cb
+
+    set_elicitation_input_callback(cb)
+    try:
+        yield
+    finally:
+        set_elicitation_input_callback(previous)
 
 
 def _form_params(message="please confirm", schema=None):
@@ -66,12 +89,10 @@ class TestSchemaSummary:
 
 
 class TestElicitationHandlerFormMode:
-    def test_user_accepts_once_returns_accept(self):
+    def test_a_bare_confirmation_accepts(self):
+        """No properties means the server asked a yes/no, which consent answers."""
         handler = ElicitationHandler("pay", {"timeout": 5})
-        params = _form_params(
-            "authorize a payment of $0.50",
-            {"properties": {"approved": {"type": "boolean"}}},
-        )
+        params = _form_params("authorize a payment of $0.50", {"type": "object"})
 
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
             result = asyncio.run(handler(context=None, params=params))
@@ -81,6 +102,136 @@ class TestElicitationHandlerFormMode:
         assert result.content == {}
         assert handler.metrics["accepted"] == 1
         assert handler.metrics["declined"] == 0
+
+    def test_a_request_for_fields_is_answered_with_the_fields(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "how much should I send?",
+            {"properties": {"amount": {"type": "string"}}, "required": ["amount"]},
+        )
+
+        with _input_callback(lambda question, choices: "12.50"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert result.content == {"amount": "12.50"}
+        assert handler.metrics["accepted"] == 1
+
+    def test_the_server_sentence_leads_the_first_question_only(self):
+        """It explains why any of this is being asked. Repeating it above
+        every field turns a two-field form into the same paragraph twice."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "authorizing your payment",
+            {"properties": {"amount": {"type": "string"}, "note": {"type": "string"}}},
+        )
+        asked: list = []
+
+        with _input_callback(lambda question, choices: asked.append(question) or "x"):
+            asyncio.run(handler(context=None, params=params))
+
+        assert asked[0].startswith("authorizing your payment")
+        assert "authorizing your payment" not in asked[1]
+
+    def test_declared_types_survive_the_round_trip(self):
+        """The user answers in text; the server declared types. Handing back
+        the string "3" for an integer field is a contract violation the server
+        has no way to see coming."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "details",
+            {
+                "properties": {
+                    "count": {"type": "integer"},
+                    "rate": {"type": "number"},
+                    "confirm": {"type": "boolean"},
+                    "label": {"type": "string"},
+                }
+            },
+        )
+        answers = {"count": "3", "rate": "1.5", "confirm": "Yes", "label": "hi"}
+
+        def answer(question, choices):
+            return next(value for field, value in answers.items() if field in question)
+
+        with _input_callback(answer):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.content == {"count": 3, "rate": 1.5, "confirm": True, "label": "hi"}
+
+    def test_an_enum_is_offered_as_choices_rather_than_typed_out(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "pick one",
+            {"properties": {"tier": {"type": "string", "enum": ["basic", "pro"]}}},
+        )
+        offered: list = []
+
+        with _input_callback(lambda question, choices: (offered.append(choices), "pro")[1]):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert offered == [["basic", "pro"]]
+        assert result.content == {"tier": "pro"}
+
+    def test_a_blank_required_field_declines_the_whole_form(self):
+        """Half a form is not an answer: the server asked for this one."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "how much?",
+            {"properties": {"amount": {"type": "string"}}, "required": ["amount"]},
+        )
+
+        with _input_callback(lambda question, choices: "   "):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert handler.metrics["declined"] == 1
+
+    def test_a_blank_optional_field_is_simply_absent(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "details",
+            {
+                "properties": {"amount": {"type": "string"}, "note": {"type": "string"}},
+                "required": ["amount"],
+            },
+        )
+
+        with _input_callback(lambda question, choices: "" if "note" in question else "5"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert result.content == {"amount": "5"}
+
+    def test_a_surface_that_cannot_ask_declines_instead_of_inventing_data(self):
+        """Accepting with no content would tell the server the user filled the
+        form in and left every field blank."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "how much should I send?",
+            {"properties": {"amount": {"type": "string"}}, "required": ["amount"]},
+        )
+
+        with _input_callback(None):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert handler.metrics["accepted"] == 0
+        assert handler.metrics["declined"] == 1
+
+    def test_an_oversized_form_is_declined_rather_than_marched_through(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "everything about you",
+            {"properties": {f"field_{i}": {"type": "string"} for i in range(20)}},
+        )
+        asked: list = []
+
+        with _input_callback(lambda question, choices: asked.append(question) or "x"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert asked == []
 
 
     def test_schema_read_from_real_sdk_params_reaches_the_summary(self):
@@ -103,18 +254,12 @@ class TestElicitationHandlerFormMode:
             },
         )
         handler = ElicitationHandler("pay", {"timeout": 5})
-        captured: dict = {}
+        asked: list = []
 
-        def _capture(*args, **kwargs):
-            captured["description"] = kwargs.get("description") or (
-                args[1] if len(args) > 1 else ""
-            )
-            return "decline"
-
-        with patch("tools.approval_prompt.request_elicitation_consent", _capture):
+        with _input_callback(lambda question, choices: asked.append(question) or "4111"):
             asyncio.run(handler(context=None, params=params))
 
-        assert "card_number" in (captured.get("description") or ""), captured
+        assert any("card_number" in question for question in asked), asked
 
     def test_cancel_propagates_through(self):
         """request_elicitation_consent returns 'cancel' when the gateway
@@ -131,22 +276,94 @@ class TestElicitationHandlerFormMode:
         assert handler.metrics["errors"] == 1
 
 
-class TestElicitationHandlerFailureModes:
-    def test_url_mode_is_declined_without_prompting(self):
-        handler = ElicitationHandler("pay", {"timeout": 5})
-        params = _url_params()
+class TestUrlMode:
+    """Handing the user off to a page the server owns."""
 
-        # If the handler tried to prompt, this would raise AssertionError
-        # because the side_effect treats the call as a test failure.
-        with patch(
-            "tools.approval_prompt.request_elicitation_consent",
-            side_effect=AssertionError("URL mode must not prompt"),
+    def test_the_destination_host_is_in_what_the_user_is_asked(self):
+        """The domain IS the security decision. A user consenting to 'open a
+        page' has been told nothing; a user consenting to open evil.example
+        can refuse."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _url_params(url="https://checkout.stripe.com/pay/abc")
+        asked: dict = {}
+
+        def _capture(message, description, **kwargs):
+            asked["message"] = message
+            asked["description"] = description
+            return "decline"
+
+        with patch("tools.approval_prompt.request_elicitation_consent", _capture):
+            asyncio.run(handler(context=None, params=params))
+
+        assert "checkout.stripe.com" in asked["description"]
+
+    def test_accepting_opens_the_browser(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _url_params(url="https://accounts.google.com/o/oauth2/auth")
+
+        with (
+            patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"),
+            patch("webbrowser.open", return_value=True) as opened,
         ):
             result = asyncio.run(handler(context=None, params=params))
 
+        assert result.action == "accept"
+        opened.assert_called_once_with("https://accounts.google.com/o/oauth2/auth")
+        assert handler.metrics["accepted"] == 1
+
+    def test_declining_opens_nothing(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+
+        with (
+            patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"),
+            patch("webbrowser.open") as opened,
+        ):
+            result = asyncio.run(handler(context=None, params=_url_params()))
+
         assert result.action == "decline"
+        assert not opened.called
         assert handler.metrics["declined"] == 1
 
+    def test_consent_is_still_honoured_when_no_browser_opens(self):
+        """Headless: the user agreed and knows the address, so the server is
+        told the hand-off happened rather than being sent a false refusal."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+
+        with (
+            patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"),
+            patch("webbrowser.open", return_value=False),
+        ):
+            result = asyncio.run(handler(context=None, params=_url_params()))
+
+        assert result.action == "accept"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "not-a-url",
+            "",
+        ],
+    )
+    def test_an_unopenable_url_is_refused_without_asking(self, url):
+        """No answer the user gives makes these safe, so they are not asked."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+
+        with (
+            patch(
+                "tools.approval_prompt.request_elicitation_consent",
+                side_effect=AssertionError("must not prompt for an unusable URL"),
+            ),
+            patch("webbrowser.open") as opened,
+        ):
+            result = asyncio.run(handler(context=None, params=_url_params(url=url)))
+
+        assert result.action == "decline"
+        assert not opened.called
+
+
+class TestElicitationHandlerFailureModes:
     def test_exception_in_approval_fails_closed_to_decline(self):
         handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params()
@@ -313,17 +530,11 @@ class TestRequestedSchemaFieldName:
             },
         )
         handler = ElicitationHandler("pay", {"timeout": 5})
-        captured: dict = {}
+        asked: list = []
 
-        def _capture(*args, **kwargs):
-            captured["description"] = kwargs.get("description") or (
-                args[1] if len(args) > 1 else ""
-            )
-            return "decline"
-
-        with patch("tools.approval_prompt.request_elicitation_consent", _capture):
+        # A schema we failed to read is an empty one, which asks nothing at
+        # all — so the field reaching the question is the proof.
+        with _input_callback(lambda question, choices: asked.append(question) or "4111"):
             asyncio.run(handler(context=None, params=params))
 
-        # An empty schema renders the generic "Approval requested by ..."
-        # fallback, so the field name is what proves the schema was read.
-        assert "card_number" in (captured.get("description") or ""), captured
+        assert any("card_number" in question for question in asked), asked

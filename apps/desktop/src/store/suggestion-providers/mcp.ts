@@ -1,14 +1,7 @@
-import {
-  addMcpServer,
-  authMcpServer,
-  cancelMcpOAuthFlow,
-  getMcpCatalog,
-  getMcpOAuthFlow,
-  listMcpServers,
-  removeMcpServer
-} from '@/hermes'
+import { getMcpCatalog, listMcpServers } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
+import { connectConnector, ConnectorCancelled, invalidateConnectorCache, resolveConnectors } from '@/lib/mcp-connectors'
+import { McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { MCP_DIRECTORY } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
@@ -191,24 +184,16 @@ export function matchSuggestions(text: string, index: KeywordEntry[]): McpMatch[
 
 async function connect(known: SuggestibleServer, sessionId: string | null, cancelled: () => boolean): Promise<void> {
   try {
-    await addMcpServer({ name: known.server, url: known.url })
+    // Same engine the inline consent card runs, so a pill and a card connect
+    // the same server identically — including the no-auth case, where this
+    // resolves to a config write and a probe rather than a browser tab.
+    const [connector] = (await resolveConnectors([known.server])).connectors
 
-    try {
-      await completeMcpDesktopOAuth({
-        serverName: known.server,
-        start: authMcpServer,
-        status: getMcpOAuthFlow,
-        cancelled,
-        cancel: cancelMcpOAuthFlow,
-        openExternal: url => window.hermesDesktop.openExternal(url)
-      })
-    } catch (error) {
-      // Decline/failure means "no server" — roll back the config write
-      // rather than stranding an unauthorized entry (authoritative-write
-      // rule). Best-effort; the primary error wins.
-      await removeMcpServer(known.server).catch(() => {})
-      throw error
+    if (!connector) {
+      throw new Error(`Could not resolve ${known.server}`)
     }
+
+    await connectConnector(connector, 'not_configured', { cancelled })
 
     // Tools reach the live session before the pill claims success — the
     // same write-through the Capabilities tab and the setup card use.
@@ -218,8 +203,9 @@ async function connect(known: SuggestibleServer, sessionId: string | null, cance
       .catch(() => {})
 
     invalidateMcpSuggestionIndex()
+    invalidateConnectorCache()
   } catch (error) {
-    if (!(error instanceof McpOAuthCancelled)) {
+    if (!(error instanceof McpOAuthCancelled) && !(error instanceof ConnectorCancelled)) {
       notifyError(error, translateNow('composer.mcpSuggestions.connectFailed', prettyName(known.server)))
     }
 

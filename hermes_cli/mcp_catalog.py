@@ -93,6 +93,16 @@ class SuggestSpec:
 
 
 @dataclass
+class SetupStep:
+    """One thing only the user can do before the connector can work (create a Google Cloud project, generate a
+    token in someone's admin console) — work on another site that no automation on our side removes; the most a
+    client can do is name it precisely and link to the page. ``text`` carries inline markdown links because a real
+    step routinely points at more than one page. Distinct from ``post_install`` (notes for once it works)."""
+
+    text: str
+
+
+@dataclass
 class CatalogEntry:
     name: str
     description: str
@@ -104,6 +114,11 @@ class CatalogEntry:
     post_install: str = ""
     suggest: Optional[SuggestSpec] = None
     manifest_path: Path = field(default_factory=Path)
+    # The product's own site ("https://n8n.io"): an identity hint only — UIs read its favicon so a connector
+    # without a bundled brand glyph still shows its own mark. `source` can't stand in (it points at the bridge's
+    # repo, so a third-party bridge to n8n would wear GitHub's logo).
+    homepage: str = ""
+    setup: List[SetupStep] = field(default_factory=list)
 
 
 class CatalogError(Exception):
@@ -253,6 +268,13 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     description = str(data.get("description") or "").strip()
     if not description:
         raise CatalogError(f"{path}: 'description' required")
+    homepage = str(data.get("homepage") or "").strip()
+    if homepage and not homepage.startswith(("http://", "https://")):
+        raise CatalogError(f"{path}: 'homepage' must be an http(s) URL")
+    setup_raw = data.get("setup") or []
+    if not isinstance(setup_raw, list):
+        raise CatalogError(f"{path}: 'setup' must be a list of steps")
+    setup = [SetupStep(text=text) for text in (str(s).strip() for s in setup_raw) if text]
 
     # Validation order (transport, auth, tools, suggest, install) determines which error surfaces.
     transport = _parse_transport(path, data.get("transport"))
@@ -264,6 +286,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         name=name, description=description, source=str(data.get("source") or "").strip(),
         transport=transport, auth=auth, tools=tools, install=install,
         post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
+        homepage=homepage, setup=setup,
     )
 
 
@@ -434,8 +457,14 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)
         if t.args:
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
-        if t.env:
-            cfg["env"] = dict(t.env)
+        env = dict(t.env) if t.env else {}
+        if entry.auth.type == "api_key":
+            # A stdio child's environment is allowlist-filtered (_build_safe_env), so a credential in .env reaches
+            # it only if the stanza names it. Referenced, not inlined: ${NAME} resolves at connect time.
+            for var in entry.auth.env:
+                env.setdefault(var.name, f"${{{var.name}}}")
+        if env:
+            cfg["env"] = env
     elif t.type == "http":
         cfg["url"] = t.url
         if entry.auth.type == "oauth":

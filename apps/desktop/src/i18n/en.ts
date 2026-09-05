@@ -2954,6 +2954,16 @@ export const en: Translations = {
     price: (input, output) => `${input} in / ${output} out per Mtok`,
     change: 'Change',
     startChatting: 'Begin',
+    connectors: {
+      title: 'Which apps do you use?',
+      subtitle:
+        'Hermes will offer to connect these the first time it needs one. Nothing is connected now, and you can change this any time.',
+      searchPlaceholder: 'Search apps…',
+      noResults: query => `Nothing found for “${query}”`,
+      noneAvailable: 'No apps available yet',
+      continueWith: count => (count === 1 ? 'Begin with 1 app' : `Begin with ${count} apps`),
+      skip: 'Skip for now'
+    },
     docs: provider => `${provider} docs`
   },
 
@@ -3455,25 +3465,35 @@ export const en: Translations = {
       lateAnswerHint: 'This prompt is no longer waiting. Pick an option to draft it as a follow-up message.'
     },
     mcpSetup: {
-      installTitle: server => `Add the ${server} MCP server?`,
-      enableTitle: server => `Enable the ${server} MCP server?`,
-      authorizeTitle: server => `Authorize the ${server} MCP server?`,
-      installAction: 'Install',
-      enableAction: 'Enable',
-      authorizeAction: 'Authorize',
+      lookingUp: connectors => `Looking up ${connectors}…`,
+      connectAction: 'Connect',
+      retryAction: 'Retry',
+      grantAction: 'Grant access',
+      phase: {
+        adding: 'Adding…',
+        enabling: 'Enabling…',
+        installing: 'Installing…',
+        probing: 'Checking…',
+        signing_in: 'Signing in…'
+      },
       decline: 'Not now',
-      declined: 'Declined',
-      installed: server => `Installed ${server}`,
-      enabled: server => `Enabled ${server}`,
-      authorized: server => `Authorized ${server}`,
-      failed: server => `Setup failed for ${server}`,
-      unanswered: 'No response',
+      dismiss: 'Dismiss',
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
-      notInCatalog: server => `“${server}” is not in the MCP catalog`,
-      catalogSource: 'From the Nous-approved catalog',
+      notFound: connectors => `Could not find ${connectors}`,
+      stateConnected: 'Connected',
+      stateDeclined: 'Skipped',
+      stateFailed: 'Failed',
+      stateDisabled: 'currently off',
+      stateNeedsAuth: 'signed out',
+      trustVerified: publisher => `verified · ${publisher}`,
+      trustVerifiedTip: publisher =>
+        `The publisher proved it owns ${publisher}, the domain serving this endpoint. That is an identity check, not an endorsement.`,
+      trustCommunity: 'unreviewed',
+      trustCommunityTip: host =>
+        `Nobody has verified who runs ${host || 'this endpoint'} — the publisher’s registry name does not match the domain it connects to.`,
       envRequired: 'Fill in the required credentials first',
-      sendFailed: 'Could not send MCP setup response',
-      reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',
+      sendFailed: 'Could not send connector setup response',
+      reloadFailed: 'Connector saved, but reloading its tools failed — they load next session',
       gatewayDisconnected: 'Hermes gateway is not connected'
     },
     tool: {

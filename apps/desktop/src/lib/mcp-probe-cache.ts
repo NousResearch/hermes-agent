@@ -7,7 +7,12 @@ import type { McpTestResult } from '@/hermes'
 // may re-probe what the other just learned.
 // ---------------------------------------------------------------------------
 
-export const NEEDS_AUTH_RE = /\b(401|unauthorized|forbidden|invalid[_ ]?token|authentication|oauth)\b/i
+// 403 and insufficient_scope belong here with 401: the server is reachable
+// and refusing us, which is answered by granting something rather than by
+// retrying. A grant that authenticated fine but never covered the tools comes
+// back exactly this way.
+export const NEEDS_AUTH_RE =
+  /\b(401|403|unauthorized|forbidden|insufficient[_ ]?scope|invalid[_ ]?token|authentication|oauth)\b/i
 
 // Probe results outlive any component: each probe is a real connect/disconnect,
 // so re-entering the MCP page (or a background sweep) must not re-probe the

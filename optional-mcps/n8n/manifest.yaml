@@ -8,6 +8,12 @@ name: n8n
 description: Manage and inspect n8n workflows from Hermes (stdio bridge, no public port).
 source: https://github.com/CyberSamuraiX/hermes-n8n-mcp
 
+# The product this connects to, for UIs that show a connector's mark. Optional
+# — omit it when the name already has a bundled brand glyph. Never `source`:
+# that's the bridge's repo, and a favicon read from it would put GitHub's logo
+# on an n8n connector.
+homepage: https://n8n.io
+
 # How to launch the server once installed. The keys here map 1:1 to the
 # `mcp_servers.<name>` block written into ~/.hermes/config.yaml by the
 # existing `_save_mcp_server()` helper in hermes_cli/mcp_config.py.

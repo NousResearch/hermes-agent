@@ -5,6 +5,7 @@ manifest_version: 1
 name: unreal-engine
 description: Drive the Unreal Engine 5.8 editor over its local MCP server.
 source: https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor
+homepage: https://www.unrealengine.com
 
 # Epic's official "Unreal MCP" plugin (internal id ModelContextProtocol)
 # embeds an MCP server inside the running Unreal Editor process and serves it
@@ -32,17 +33,19 @@ auth:
 # toolsets. Leave default_enabled unset — the install-time probe lists whatever
 # the live editor exposes and pre-checks all of it; users prune from there.
 
+# The server runs inside the editor, so there is nothing to connect to until
+# the user turns it on over there. Steps rather than post_install prose: this
+# is work that blocks the connection, and the consent card shows it before
+# offering Connect.
+setup:
+  - Open your project in [Unreal Editor 5.8+](https://www.unrealengine.com/en-US/download).
+  - Edit > Plugins, search "Unreal MCP", enable it, then restart the editor
+    (the Toolset Registry dependency enables automatically).
+  - Edit > Editor Preferences > General > Model Context Protocol, turn on
+    "Auto Start Server" — or run `ModelContextProtocol.StartServer` in the
+    editor console. It binds to http://127.0.0.1:8000/mcp by default.
+
 post_install: |
-  This entry connects to Epic's official Unreal MCP plugin, which runs INSIDE
-  the Unreal Editor. Before Hermes can connect:
-
-    1. Open your project in Unreal Editor 5.8+.
-    2. Edit > Plugins, search "Unreal MCP", enable it, restart the editor
-       (the Toolset Registry dependency enables automatically).
-    3. Edit > Editor Preferences > General > Model Context Protocol, turn on
-       "Auto Start Server" (or run `ModelContextProtocol.StartServer` in the
-       editor console). It binds to http://127.0.0.1:8000/mcp by default.
-
   Start Hermes AFTER the editor's server is running so the tools are probed.
   If you changed the port or URL path in Editor Preferences, update the url in
   mcp_servers.unreal-engine to match.

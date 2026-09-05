@@ -108,10 +108,17 @@ def _agent_cbs(sid: str) -> dict:
         "drive_preview_callback": lambda payload: _block("preview.act.request", sid, dict(payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _block("window.read.request", sid, {}, timeout=30),
-        # setup_mcp (desktop GUI): consent card + install/enable/OAuth; long timeout on purpose
-        # (typing an API key, browser OAuth) and, like clarify, a late answer is tolerated.
-        "setup_mcp_callback": lambda server, action, reason: _block(
-            "mcp.setup.request", sid, {"server": server, "action": action, "reason": reason}, timeout=600),
+        # setup_mcp (desktop GUI): consent card with a switch per connector; add/enable/key/OAuth via REST, then
+        # mcp.setup.respond. 30 min on purpose: a catalog entry with setup steps sends the user off to somebody
+        # else's admin console first (a Google Cloud project + client JSON is a quarter hour for a first-timer), and
+        # the card expiring mid-console is the worst moment to lose it. Not now / Esc answer instantly, so nobody is
+        # trapped by the longer wait. Like clarify, a late answer is tolerated. `server` rides alongside `servers`
+        # so an older renderer that only reads the scalar keeps working.
+        "setup_mcp_callback": lambda servers, action, reason, steps=(): _block(
+            "mcp.setup.request", sid,
+            {"server": servers[0] if servers else "", "servers": list(servers), "action": action,
+             "reason": reason, "steps": list(steps)},
+            timeout=1800),
         # tour (desktop GUI): renderer drives driver.js and answers tour.respond.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 
@@ -168,6 +175,11 @@ def _wire_callbacks(sid: str):
     set_sudo_password_callback(lambda: _block("sudo.request", sid, {}, timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
+    # An MCP server asking for a value mid-tool-call is the same interaction as the agent asking one, so it
+    # reuses the clarify prompt rather than introducing a second kind of question. Surfaces that don't wire
+    # this decline the request, which is what every surface did before.
+    from tools.mcp_tool_sampling import set_elicitation_input_callback
+    set_elicitation_input_callback(lambda question, choices: _clarify_block(sid, question, choices))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:

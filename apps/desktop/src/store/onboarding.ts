@@ -45,6 +45,17 @@ export type OnboardingFlow =
       saving: boolean
       status: 'confirming_model'
     }
+  | {
+      // Last step, after the model is settled: "which apps do you use?".
+      // Checking one declares INTENT, not a connection — nothing is written
+      // to mcp_servers and no credential is asked for here. The point is to
+      // defer sign-in to the moment a task actually needs the app, where the
+      // inline consent card can explain why. Onboarding just records the
+      // list so the agent knows to offer instead of apologizing.
+      selected: string[]
+      saving: boolean
+      status: 'choosing_connectors'
+    }
   | { message: string; provider?: OAuthProvider; start?: OAuthStartResponse; status: 'error' }
 
 export interface DesktopOnboardingState {
@@ -965,20 +976,67 @@ export async function setOnboardingModel(model: string) {
   }
 }
 
-// User clicked "Start chatting" on the confirm card. Finalizes onboarding
-// — the model was already persisted by completeWithModelConfirm (or by
-// setOnboardingModel if they changed it), so all that's left is to mark
-// onboarding done and unblock the rest of the app.
-export function confirmOnboardingModel(ctx: OnboardingContext) {
+// User accepted the model. The model was already persisted by
+// completeWithModelConfirm (or setOnboardingModel if they changed it), so
+// this just advances to the connector picker — the last step before chat.
+export function confirmOnboardingModel(_ctx: OnboardingContext) {
   const { flow } = $desktopOnboarding.get()
 
   if (flow.status !== 'confirming_model') {
     return
   }
 
-  // No success toast here: the confirm-model screen already showed "<provider>
-  // connected." notifyReady is reserved for completion paths that SKIP this
-  // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
+  setFlow({ saving: false, selected: [], status: 'choosing_connectors' })
+}
+
+export function toggleOnboardingConnector(name: string) {
+  const { flow } = $desktopOnboarding.get()
+
+  if (flow.status !== 'choosing_connectors') {
+    return
+  }
+
+  setFlow({
+    ...flow,
+    selected: flow.selected.includes(name) ? flow.selected.filter(entry => entry !== name) : [...flow.selected, name]
+  })
+}
+
+/**
+ * Finish onboarding, recording which apps the user says they use.
+ *
+ * The list goes to `mcp.connectors`, which the agent reads at session start
+ * — deliberately NOT to `mcp_servers`. Writing real server entries here would
+ * mean a first-run user watches five OAuth tabs open before they have typed
+ * anything, which is the flow this step exists to avoid.
+ *
+ * A failed save must not trap the user on the last screen of onboarding: the
+ * list is a convenience, so report it and finish anyway. They can pick the
+ * same connectors from Capabilities, and the agent will still offer one when
+ * a task needs it.
+ */
+export async function finishOnboardingConnectors(ctx: OnboardingContext) {
+  const { flow } = $desktopOnboarding.get()
+
+  if (flow.status !== 'choosing_connectors' || flow.saving) {
+    return
+  }
+
+  if (flow.selected.length > 0) {
+    setFlow({ ...flow, saving: true })
+
+    try {
+      const { saveHermesConfig } = await import('@/api/config')
+
+      await saveHermesConfig({ mcp: { connectors: flow.selected } })
+    } catch (error) {
+      notifyError(error, 'Could not save your app selection')
+    }
+  }
+
+  // No success toast: the confirm-model screen already showed "<provider>
+  // connected." notifyReady is reserved for completion paths that SKIP these
+  // screens (no-default fallthrough, local endpoint) so feedback isn't lost.
   completeDesktopOnboarding()
   ctx.onCompleted?.()
 }

@@ -102,8 +102,11 @@ export type GatewayEventPayload = {
   // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
-  // mcp.setup.request (setup_mcp tool — inline MCP consent card)
+  // mcp.setup.request (setup_mcp tool — inline connector consent card).
+  // `servers` is the current contract; `server` is the first of them, kept
+  // so an older backend that only sends the scalar still raises a card.
   server?: string
+  servers?: unknown
   action?: string
   reason?: string
   // approval.request (dangerous command / execute_code) — session-keyed

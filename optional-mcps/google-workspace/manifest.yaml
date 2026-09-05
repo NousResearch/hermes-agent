@@ -1,0 +1,81 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: google-workspace
+description: >-
+  Docs, Drive, Gmail, and Calendar from your Google account.
+source: https://github.com/taylorwilsdon/google_workspace_mcp
+homepage: https://workspace.google.com
+
+transport:
+  type: stdio
+  command: uvx
+  # Pinned exact, same supply-chain rule as a git ref: a floating version is
+  # an unreviewed upgrade on every launch. 1.23.1 released 2026-08-02, past
+  # the two-week soak. Bumping the pin is a PR to this manifest.
+  #
+  # `core` is the essential tool tier. The wider tiers exist (`extended`,
+  # `complete`) but every tool in them ships in the schema on every API call,
+  # so the narrow one is the right default and users widen deliberately.
+  args:
+    - workspace-mcp==1.23.1
+    - --tool-tier
+    - core
+  version: 1.23.1
+
+# Google does not hand out a shared OAuth client for this, so each user brings
+# their own from a Cloud project they control. That is the entire reason this
+# entry has a `setup` block: the credentials cannot be issued by us.
+auth:
+  type: api_key
+  env:
+    - name: GOOGLE_OAUTH_CLIENT_ID
+      prompt: "OAuth client ID (ends in .apps.googleusercontent.com)"
+      required: true
+      secret: false
+    - name: GOOGLE_OAUTH_CLIENT_SECRET
+      prompt: "OAuth client secret"
+      required: true
+      secret: true
+
+# The work only the user can do, in the order it has to happen. Every step
+# links to the exact console page, because finding the page is most of the
+# cost — the clicking takes a minute.
+setup:
+  - Create or pick a project in the
+    [Google Cloud Console](https://console.cloud.google.com/projectcreate).
+  - Enable the APIs you want to use —
+    [Docs](https://console.cloud.google.com/apis/library/docs.googleapis.com),
+    [Drive](https://console.cloud.google.com/apis/library/drive.googleapis.com),
+    [Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com),
+    [Calendar](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com).
+  - Configure the [OAuth consent screen](https://console.cloud.google.com/auth/overview)
+    — External for a personal account, Internal for a Workspace org — and add
+    your own address as a test user.
+  - Create an OAuth client under
+    [Credentials](https://console.cloud.google.com/apis/credentials) with
+    application type "Desktop app", then paste its ID and secret below.
+
+suggest:
+  keywords:
+    - google docs
+    - google drive
+    - google calendar
+    - google sheets
+    - gmail
+  hosts:
+    - docs.google.com
+    - drive.google.com
+    - mail.google.com
+    - calendar.google.com
+
+post_install: |
+  The client ID and secret let the server ASK for access; they are not access
+  themselves. The first tool call opens a Google consent screen for the
+  account whose data you want, and the token it returns is what the server
+  reuses afterwards.
+
+  If a call comes back complaining about scopes, the consent you granted did
+  not cover that API — enable it in the console and authorize again. Adding a
+  service later (Calendar after Docs, say) is that same round trip.

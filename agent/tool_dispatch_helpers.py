@@ -25,7 +25,10 @@ from tools.threat_patterns import scan_for_threats
 logger = logging.getLogger(__name__)
 
 # Interactive / user-facing tools never run concurrently: any of these in a batch is a barrier.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+# Tools that block on a person: their own prompt owns the wait, so the generic per-call deadline must not
+# apply. `setup_mcp` holds a card open while someone works through a cloud console, which routinely
+# outlives the 420s default.
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "setup_mcp"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({

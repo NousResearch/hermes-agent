@@ -34,7 +34,11 @@ def _resolve_profile_path(path_value: Any) -> Optional[Path]:
     if raw == "~/.hermes" or raw.startswith("~/.hermes/"):
         return hermes_home / raw[len("~/.hermes/"):]
     path = Path(raw).expanduser()
-    return path if path.is_absolute() else hermes_home / path
+    resolved = (path if path.is_absolute() else hermes_home / path).resolve()
+    if not resolved.is_relative_to(hermes_home.resolve()):
+        logger.warning("[webhook] filter in_file path resolves outside HERMES_HOME — rejected: %s", resolved)
+        return None
+    return resolved
 
 
 def _resolve_script_path(script_value: Any) -> tuple[Optional[Path], Optional[str]]:
@@ -96,7 +100,7 @@ def _op_regex(value: Any, pattern: Any) -> bool:
 _FIELD_OPERATORS: tuple[tuple[str, Callable[[Any, Any], bool]], ...] = (
     ("exists", lambda value, arg: (value is not _MISSING) is bool(arg)),
     ("equals", lambda value, arg: value is not _MISSING and value == arg),
-    ("not_equals", lambda value, arg: value is _MISSING or value != arg),
+    ("not_equals", lambda value, arg: value is not _MISSING and value != arg),
     ("contains", _op_contains),
     ("in", lambda value, arg: isinstance(arg, list) and value in arg),
     ("in_file", lambda value, arg: value in _load_filter_file_values(arg)),
@@ -117,7 +121,8 @@ class WebhookRouteProcessor:
         parts = [part for part in field.strip().split(".") if part]
         if not parts:
             return _MISSING
-        context = {"payload": payload.get("payload", payload), "event": event_type, "event_type": event_type, "headers": dict(headers or {})}
+        _pl = payload if isinstance(payload, dict) else {}
+        context = {"payload": _pl.get("payload", payload), "event": event_type, "event_type": event_type, "headers": dict(headers or {})}
         value: Any = context[parts.pop(0)] if parts[0] in context else payload
         for part in parts:
             if isinstance(value, dict):

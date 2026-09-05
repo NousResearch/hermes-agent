@@ -14,6 +14,7 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _legacy_reset_child_sql, _placeholders)
+from hermes_state_compression import _CHAIN_STEP_SQL
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -653,6 +654,101 @@ class SessionMessagesMixin:
             if latest:
                 rows.reverse()
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
+
+    def resolve_owned_session_messages(
+        self, session_id: str, *, expected_credential_owner: str,
+        limit: Optional[int] = None, offset: int = 0, latest: bool = False,
+    ) -> Optional[Tuple[str, List[Dict[str, Any]]]]:
+        """Resolve a resume tip and page its messages in one read transaction.
+
+        This narrow operation is for credential-authorized API reads.  The requested row,
+        every selected continuation, and the final message-bearing row must retain the exact
+        expected owner throughout the snapshot; a missing/mismatched row is indistinguishable
+        from not found. ``latest`` uses :meth:`get_messages` semantics: count backward from
+        the newest row, then return the selected page chronologically.
+        """
+        if not session_id or not expected_credential_owner:
+            return None
+        with self._read_ctx() as conn:
+            conn.execute("BEGIN")
+            try:
+                requested = conn.execute(
+                    "SELECT credential_owner FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                if requested is None or requested["credential_owner"] != expected_credential_owner:
+                    return None
+
+                current = session_id
+                seen = {current}
+                for _ in range(100):
+                    child = conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
+                    child_id = child["id"] if child is not None else None
+                    if not child_id or child_id in seen:
+                        break
+                    if child["credential_owner"] != expected_credential_owner:
+                        return None
+                    current = child_id
+                    seen.add(current)
+
+                compression_tip = current
+                resolved = None
+                for _ in range(32):
+                    row = conn.execute(
+                        "SELECT credential_owner FROM sessions WHERE id = ?", (current,)
+                    ).fetchone()
+                    if row is None or row["credential_owner"] != expected_credential_owner:
+                        return None
+                    if conn.execute(
+                        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (current,)
+                    ).fetchone() is not None:
+                        resolved = current
+                    child = conn.execute(
+                        "SELECT id, credential_owner FROM sessions AS child "
+                        "WHERE child.parent_session_id = ? "
+                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+                        f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
+                        "  AND COALESCE(child.source, '') != 'tool' "
+                        "ORDER BY child.started_at DESC, child.id DESC LIMIT 1",
+                        (current,),
+                    ).fetchone()
+                    child_id = child["id"] if child is not None else None
+                    if not child_id or child_id in seen:
+                        break
+                    if child["credential_owner"] != expected_credential_owner:
+                        return None
+                    current = child_id
+                    seen.add(current)
+                resolved = resolved or compression_tip
+                resolved_owner = conn.execute(
+                    "SELECT credential_owner FROM sessions WHERE id = ?", (resolved,)
+                ).fetchone()
+                if (
+                    resolved_owner is None
+                    or resolved_owner["credential_owner"] != expected_credential_owner
+                ):
+                    return None
+
+                sql = (
+                    "SELECT * FROM messages WHERE session_id = ? AND active = 1 "
+                    f"ORDER BY id {'DESC' if latest else 'ASC'}"
+                )
+                params: List[Any] = [resolved]
+                if limit is not None or offset:
+                    sql += " LIMIT ? OFFSET ?"
+                    params.extend([-1 if limit is None else limit, offset])
+                rows = conn.execute(sql, params).fetchall()
+            finally:
+                conn.execute("ROLLBACK")
+        if latest:
+            rows.reverse()
+        return resolved, [
+            self._row_to_message_dict(
+                row, warn_context="resolve_owned_session_messages", summary_flag=True
+            )
+            for row in rows
+        ]
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results containing ``/pull/``: a deliberately loose scan, oldest-first so the caller takes the last."""

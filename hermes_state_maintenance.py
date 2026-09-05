@@ -95,6 +95,12 @@ class SessionMaintenanceMixin:
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id
                   )
             """, (cutoff,)).fetchall()]
+            owned_ids = {row["id"] for row in conn.execute(
+                f"SELECT id FROM sessions WHERE id IN ({_placeholders(ids)}) "
+                "AND credential_owner IS NOT NULL", ids,
+            ).fetchall()} if ids else set()
+            ids = [sid for sid in ids if sid not in owned_ids or not self._write_guards_reject(
+                conn, sid, allow_closed_compression_parent=True)]
             if ids:
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({_placeholders(ids)})", ids)
                 self._delete_unreferenced_system_prompts(conn)
@@ -280,6 +286,8 @@ class SessionMaintenanceMixin:
             if exclude_active_write_guards:
                 session_ids -= {sid for sid in session_ids
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
+            else:
+                self._check_session_delete_guards(conn, session_ids)
             if not session_ids:
                 return 0
             conn.execute(f"UPDATE sessions SET parent_session_id = NULL "

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 import threading
 import time
 from types import SimpleNamespace
 
+import pytest
+
 from agent import relay_runtime
 from hermes_state import SessionDB
+from hermes_state_errors import SessionTurnLeaseLostError
 from run_agent import AIAgent
 
 
@@ -194,6 +198,41 @@ def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
 
     assert observed["history"] is seed
     assert db.events == []
+
+
+def test_preacquired_credential_lease_is_reused_through_history_model_and_persistence(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "state.db"
+    db = SessionDB(path)
+    deleting_db = SessionDB(path)
+    db.create_session("owned", source="api_server", credential_owner="owner-a")
+    db.append_message("owned", role="user", content="canonical")
+    holder = f"pid={os.getpid()}:api-run=test"
+    assert db.try_acquire_session_turn_lease(
+        "owned", holder, expected_credential_owner="owner-a"
+    )
+    agent = _agent_with_db(db, session_id="owned", platform="api_server")
+    agent._credential_owner = "owner-a"
+    agent._preacquired_session_turn_lease_holder = holder
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        with pytest.raises(SessionTurnLeaseLostError):
+            deleting_db.delete_session("owned")
+        observed["owner"] = deleting_db.get_session("owned")["credential_owner"]
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    result = AIAgent.run_conversation(
+        agent, "new message", conversation_history=[{"role": "user", "content": "spoofed"}]
+    )
+
+    assert result["final_response"] == "ok"
+    assert observed["history"][0]["content"] == "canonical"
+    assert observed["owner"] == "owner-a"
+    assert deleting_db.delete_session("owned") is True
 
 
 def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):

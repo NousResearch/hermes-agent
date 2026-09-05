@@ -125,13 +125,18 @@ def set_session_vars(
     return tokens
 
 
+def _clear_session_vars_unconditionally() -> None:
+    """Set the executor-safe empty baseline without relying on reset tokens."""
+    for var in _SESSION_VARS:
+        var.set("")
+    _SESSION_ASYNC_DELIVERY.set(_UNSET)
+
+
 def clear_session_vars(tokens: list) -> None:
     """Mark session context variables as explicitly cleared (``""``, not ``_UNSET``), so
     ``get_session_env`` returns empty instead of stale ``os.environ`` values.  Async-delivery
     goes back to ``_UNSET``: a cleared context is default-supported, not opted-out."""
-    for var in _SESSION_VARS:
-        var.set("")
-    _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _clear_session_vars_unconditionally()
     _runtime_cwd("clear_session_cwd")
 
 

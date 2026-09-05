@@ -82,6 +82,11 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
     _approval_session_key.reset(token)
 
 
+def _clear_current_session_key_unconditionally() -> None:
+    """Set the executor-safe empty baseline without relying on a reset token."""
+    _approval_session_key.set("")
+
+
 _Tokens = tuple[contextvars.Token[str], contextvars.Token[str], contextvars.Token[str]]
 
 

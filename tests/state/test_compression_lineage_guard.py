@@ -276,7 +276,81 @@ def test_publish_compression_child_exposes_complete_child(db: SessionDB) -> None
     assert child is not None
     assert child["id"] == "atomic-child"
     assert child["system_prompt"] == "compressed system"
+    assert child["credential_owner"] is None
     assert [m["content"] for m in db.get_messages("atomic-child")] == ["summary"]
+
+
+def test_publish_compression_child_atomically_preserves_credential_owner(
+    db: SessionDB,
+) -> None:
+    db.create_session(
+        "owned-parent", source="api_server", credential_owner="api-credential:owner-a"
+    )
+    assert db.try_acquire_compression_lock("owned-parent", "winner", ttl_seconds=60)
+
+    db.publish_compression_child(
+        parent_session_id="owned-parent",
+        child_session_id="owned-child",
+        source="api_server",
+        messages=[{"role": "user", "content": "summary"}],
+        compression_lock_holder="winner",
+        expected_credential_owner="api-credential:owner-a",
+    )
+
+    assert db.get_session("owned-parent")["credential_owner"] == "api-credential:owner-a"
+    assert db.get_session("owned-child")["credential_owner"] == "api-credential:owner-a"
+
+
+def test_publish_compression_child_rejects_expected_credential_owner_mismatch(
+    db: SessionDB,
+) -> None:
+    from hermes_state_errors import SessionTurnLeaseLostError
+
+    db.create_session(
+        "owned-parent", source="api_server", credential_owner="api-credential:owner-a"
+    )
+    assert db.try_acquire_compression_lock("owned-parent", "winner", ttl_seconds=60)
+
+    with pytest.raises(SessionTurnLeaseLostError, match="credential ownership changed"):
+        db.publish_compression_child(
+            parent_session_id="owned-parent",
+            child_session_id="owned-child",
+            source="api_server",
+            messages=[{"role": "user", "content": "summary"}],
+            compression_lock_holder="winner",
+            expected_credential_owner="api-credential:owner-b",
+        )
+
+    assert db.get_session("owned-parent")["ended_at"] is None
+    assert db.get_session("owned-child") is None
+
+
+def test_publish_compression_child_rejects_deleted_and_recreated_foreign_parent(
+    db: SessionDB,
+) -> None:
+    from hermes_state_errors import SessionTurnLeaseLostError
+
+    db.create_session(
+        "owned-parent", source="api_server", credential_owner="api-credential:owner-a"
+    )
+    assert db.delete_session("owned-parent")
+    db.create_session(
+        "owned-parent", source="api_server", credential_owner="api-credential:owner-b"
+    )
+
+    with pytest.raises(SessionTurnLeaseLostError, match="credential ownership changed"):
+        db.publish_compression_child(
+            parent_session_id="owned-parent",
+            child_session_id="owned-child",
+            source="api_server",
+            messages=[{"role": "user", "content": "summary"}],
+            require_compression_lease=False,
+            expected_credential_owner="api-credential:owner-a",
+        )
+
+    assert db.get_session("owned-parent")["credential_owner"] == "api-credential:owner-b"
+    assert db.get_session("owned-parent")["ended_at"] is None
+    assert db.get_session("owned-child") is None
 
 
 def test_publish_compression_child_rejects_lost_or_expired_lease(db: SessionDB) -> None:

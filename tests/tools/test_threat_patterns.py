@@ -300,3 +300,97 @@ class TestNFKCNormalisation:
 
     def test_benign_content_not_flagged_by_normalisation(self):
         assert scan_for_threats("Refactor the parser module.", scope="context") == []
+
+
+# =========================================================================
+# ssh_access_write — write-verb-gated SSH path pattern
+# =========================================================================
+
+
+class TestSshAccessWritePattern:
+    """The bare `~/.ssh` mention pattern blocked operational documentation
+    (VPS recovery notes, SSH config write-ups). The pattern now requires a
+    write/append verb before the SSH path so only backdoor-insertion shapes
+    fire, while `authorized_keys` (a separate strict rule) is unchanged."""
+
+    def test_write_to_ssh_path_still_flags(self):
+        for text in (
+            "echo 'ssh-ed25519 AAAA' >> ~/.ssh/authorized_keys",
+            "cp /tmp/evil.sh $HOME/.ssh/id_rsa",
+            "cat stolen_key > ~/.ssh/id_ed25519",
+            "tee -a $HOME/.ssh/config <<EOF",
+        ):
+            findings = scan_for_threats(text, scope="strict")
+            assert "ssh_access_write" in findings, text
+
+    def test_read_only_mentions_are_not_flagged(self):
+        for text in (
+            "The VPS recovery doc explains how to rotate keys in ~/.ssh/known_hosts",
+            "Check permissions on $HOME/.ssh — it must be 700",
+            "SSH config lives at ~/.ssh/config on every Unix",
+            "Restore access by copying the backup into ~/backup first, then ~/.ssh",
+        ):
+            findings = scan_for_threats(text, scope="strict")
+            ssh_findings = [f for f in findings if f.startswith("ssh_access")]
+            assert not ssh_findings, (text, ssh_findings)
+
+    def test_authorized_keys_rule_is_unchanged(self):
+        # The sibling rule keys on the file name alone — unaffected by the
+        # verb gating on ssh_access_write.
+        findings = scan_for_threats("documented ~/.ssh/authorized_keys layout", scope="strict")
+        assert "ssh_backdoor" in findings
+
+
+class TestSshAccessWriteExtendedVerbs:
+    """Reviewer-noted bypass shapes: mv/install/printf/dd/scp/rsync/ln and a
+    bare leading redirect carry no `echo/cat`-style verb the original
+    alternation recognised, yet are pure write primitives."""
+
+    def test_extended_write_verbs_flag(self):
+        for text in (
+            "mv /tmp/evil $HOME/.ssh/id_rsa",
+            "install -m 600 /tmp/key ~/.ssh/id_ed25519",
+            "printf 'ssh-ed25519 AAAA' >> ~/.ssh/authorized_keys",
+            "dd if=/tmp/key of=$HOME/.ssh/id_rsa",
+            "scp evil.sh user@host:~/.ssh/",
+            "rsync -a /tmp/keys/ ~/.ssh/",
+            "ln -sf /tmp/evil $HOME/.ssh/authorized_keys",
+            "mv -f /tmp/stolen ~/.ssh/config",
+        ):
+            findings = scan_for_threats(text, scope="strict")
+            assert "ssh_access_write" in findings, text
+
+    def test_bare_leading_redirect_flags(self):
+        findings = scan_for_threats(
+            "some-command\n> ~/.ssh/authorized_keys_backup", scope="strict"
+        )
+        assert "ssh_access_write" in findings
+
+    def test_flagged_verbs_with_flags_do_not_leak(self):
+        # rsync -a / mv -f style: options between verb and path must not
+        # break the match, but read-only prose stays clean.
+        findings = scan_for_threats(
+            "rsync -av --delete /tmp/keys/ ~/.ssh/", scope="strict"
+        )
+        assert "ssh_access_write" in findings
+
+    def test_documentation_stays_clean(self):
+        for text in (
+            "Your public key belongs in ~/.ssh on the server, not in the repo",
+            "Rotate credentials quarterly; ~/.ssh holds the private material",
+            "Keys under ~/.ssh must have 600 permissions",
+            "The recovery doc explains where ~/.ssh sits in the backup set",
+        ):
+            findings = scan_for_threats(text, scope="strict")
+            ssh_findings = [f for f in findings if f.startswith("ssh_access")]
+            assert not ssh_findings, (text, ssh_findings)
+
+    def test_verb_word_prose_fails_closed(self):
+        # Documented trade-off: prose that names a write primitive AND the
+        # SSH path still flags. A false positive costs a human glance; a
+        # false negative is a backdoor. Fail-closed is the contract.
+        findings = scan_for_threats(
+            "Use `scp` to copy your public key to ~/.ssh on the server",
+            scope="strict",
+        )
+        assert "ssh_access_write" in findings

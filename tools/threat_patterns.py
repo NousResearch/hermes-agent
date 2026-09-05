@@ -76,7 +76,8 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
+    (r'(?:echo|cat|cp|mv|dd|tee|install|printf|rsync|scp|ln|append|add|write|>>?)\s*(?:-[a-zA-Z]+\s+)*[^\n]{0,512}(?:\$HOME/\.ssh|~/\.ssh)', "ssh_access_write", "strict"),
+    (r'(?m)^[^\n]{0,256}(?<![>a-z])>>?\s*(?:\$HOME/\.ssh|~/\.ssh)', "ssh_access_write", "strict"),
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env", "strict"),
     (rf'{_MODIFY}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (rf'{_MODIFY}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),

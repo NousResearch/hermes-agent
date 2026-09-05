@@ -10,9 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
+
+from tools.url_safety import SSRFConnectionBlocked
 
 
 # ---------------------------------------------------------------------------
@@ -1124,12 +1128,52 @@ class _FakeStreamResponse:
         return False
 
 
+class _FakeSafeClient:
+    def __init__(self, response):
+        self._response = response
+
+    def stream(self, method, url):
+        assert method == "GET"
+        assert url == "http://files.example.com/docs/spec.pdf"
+        return self._response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_attach_url_blocks_connect_time_dns_rebind(
+    worker_env, default_url_guard, monkeypatch
+):
+    """A public preflight answer cannot rebind to metadata IP at connect."""
+    from tools import kanban_tools as kt
+
+    for proxy_var in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(proxy_var, raising=False)
+
+    answers = iter(("93.184.216.34", "169.254.169.254"))
+
+    def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+        ip = next(answers)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(SSRFConnectionBlocked):
+        kt._download_url_with_cap("http://rebind.example/file.bin", 1024)
+
+
 def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkeypatch):
     """A public URL passes the guard and the bytes are stored (mocked fetch)."""
-    from pathlib import Path
-
-    import httpx
-
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
@@ -1138,15 +1182,18 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
 
     payload = b"public fetch body"
 
-    def fake_stream(method, url, **kwargs):
-        assert url == "http://files.example.com/docs/spec.pdf"
-        return _FakeStreamResponse(
-            status_code=200,
-            headers={"content-type": "application/pdf; charset=binary"},
-            body=payload,
+    def fake_safe_client(**kwargs):
+        assert kwargs["follow_redirects"] is False
+        assert kwargs["headers"]["User-Agent"] == "hermes-kanban/attach"
+        return _FakeSafeClient(
+            _FakeStreamResponse(
+                status_code=200,
+                headers={"content-type": "application/pdf; charset=binary"},
+                body=payload,
+            )
         )
 
-    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setattr(kt, "create_ssrf_safe_client", fake_safe_client)
 
     out = kt._handle_attach_url({"url": "http://files.example.com/docs/spec.pdf"})
     d = json.loads(out)

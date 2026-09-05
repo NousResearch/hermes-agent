@@ -991,6 +991,113 @@ describe('typing-aware sessions.changed deferral', () => {
   })
 })
 
+describe('legacy visible list polls (no change events)', () => {
+  // Dedicated harness: exposes the refresh spies the shared useSyncHarness
+  // hides behind inner vi.fn()s. Every param identity must stay stable across
+  // renders so the connect-reseed effect does not re-run and pollute counts.
+  function renderListPollSync(
+    refreshSessions: () => Promise<void>,
+    refreshMessagingSessions: () => Promise<void>
+  ) {
+    const stable = {
+      refreshActiveTranscript: async () => undefined,
+      refreshCronJobs: vi.fn(async () => undefined),
+      refreshCurrentModel: vi.fn(async () => undefined),
+      refreshHermesConfig: vi.fn(async () => undefined),
+      requestGateway: vi.fn(async () => ({ sessions: [] })) as never,
+      updateSessionState: vi.fn(
+        (
+          _sessionId: string,
+          updater: (state: ReturnType<typeof createClientSessionState>) => ReturnType<typeof createClientSessionState>
+        ) => updater(createClientSessionState(ACTIVE_STORED_ID))
+      )
+    }
+
+    return renderHook(() => {
+      useBackgroundSync({
+        activeConnectionId: 'local',
+        activeGatewayProfile: 'default',
+        activeIsMessaging: false,
+        activeSessionId: null,
+        activeStoredSessionId: null,
+        freshDraftReady: false,
+        gatewayState: 'open',
+        ...stable,
+        refreshMessagingSessions,
+        refreshSessions
+      })
+    })
+  }
+
+  it('polls the full list so an externally written local session surfaces on its own (#103420)', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(false)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderListPollSync(refreshSessions, vi.fn(async () => undefined))
+    // Connect reseed fires once at mount...
+    await act(async () => Promise.resolve())
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+    refreshSessions.mockClear()
+
+    // ...the legacy poll stays quiet until its first interval...
+    await act(async () => {
+      vi.advanceTimersByTime(29_999)
+      await Promise.resolve()
+    })
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    // ...then re-pulls on its own cadence, so a cron/CLI-written cli-source
+    // session (or any external state.db writer) appears without user action.
+    await act(async () => {
+      vi.advanceTimersByTime(1)
+      await Promise.resolve()
+    })
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the #41827 messaging poll cadence untouched on the legacy backend', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(false)
+    const refreshSessions = vi.fn(async () => undefined)
+    const refreshMessagingSessions = vi.fn(async () => undefined)
+
+    renderListPollSync(refreshSessions, refreshMessagingSessions)
+    await act(async () => Promise.resolve())
+    refreshSessions.mockClear()
+    refreshMessagingSessions.mockClear()
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+
+    // Messaging slices keep their own faster legacy cadence (10s x3 here)...
+    expect(refreshMessagingSessions).toHaveBeenCalledTimes(3)
+    // ...alongside the recents list poll (30s x1).
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not add the recents poll when the backend broadcasts change events', async () => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    const refreshSessions = vi.fn(async () => undefined)
+
+    renderListPollSync(refreshSessions, vi.fn(async () => undefined))
+    await act(async () => Promise.resolve())
+    refreshSessions.mockClear()
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    // sessions.changed ticks own the refresh on event-capable backends; the
+    // visible poll must not double it.
+    expect(refreshSessions).not.toHaveBeenCalled()
+  })
+})
+
 describe('isTypingBurstActive', () => {
   it('marks a burst warm for the quiet threshold and cold at it', () => {
     resetTypingActivityTracking()

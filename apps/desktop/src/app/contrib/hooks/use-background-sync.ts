@@ -290,6 +290,14 @@ export async function reconcileActiveTranscript({
 const CRON_POLL_INTERVAL_MS = 30_000
 const CRON_BACKSTOP_INTERVAL_MS = 5 * 60_000
 const MESSAGING_POLL_INTERVAL_MS = 10_000
+// The recents slice holds local-source sessions (cli/desktop/tui). External
+// writers (cron runs, CLI invocations, plugin helpers) INSERT into state.db
+// without ever signaling the desktop websocket, and the #41827 legacy poll
+// below covers messaging platforms only — so against an older backend the
+// recents slice stayed stale until a manual refresh (#103420). The full-list
+// pass is the heaviest poll in this file (see SESSIONS_LIST_TICK_GAP_MS), so
+// keep this slower than the messaging poll above.
+const SESSIONS_LIST_POLL_INTERVAL_MS = 30_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
 const ACTIVE_MESSAGING_SESSION_BACKSTOP_INTERVAL_MS = 30_000
 // Match the TUI's live-session refresh cadence. Auto-compression can rotate a
@@ -900,6 +908,21 @@ export function useBackgroundSync({
 
     return visiblePoll(MESSAGING_POLL_INTERVAL_MS, () => void refreshMessagingSessions())
   }, [changeEventsAvailable, gatewayState, refreshMessagingSessions])
+
+  // The recents slice against an older backend: the poll above covers
+  // messaging platforms only, so a session an EXTERNAL process writes with a
+  // local source id (cron-delivered `source=cli` sessions, CLI helpers,
+  // plugin spawns) never re-triggered the list until a manual refresh
+  // (#103420). Extend the same legacy visible poll to the full sidebar list;
+  // event-capable backends keep folding this into the trailing
+  // sessions.changed refresh above.
+  useEffect(() => {
+    if (gatewayState !== 'open' || changeEventsAvailable) {
+      return
+    }
+
+    return visiblePoll(SESSIONS_LIST_POLL_INTERVAL_MS, () => void refreshSessions())
+  }, [changeEventsAvailable, gatewayState, refreshSessions])
 
   // A fresh new-session draft (gateway open, no active session) re-pulls the
   // model + config so the composer pill reflects the profile default.

@@ -281,6 +281,94 @@ async def test_private_dm_topic_reply_fallback_without_anchor_fails_loud():
     assert call_log == []
 
 
+@pytest.mark.asyncio
+async def test_html_stt_echo_private_dm_topic_without_anchor_fails_loud():
+    """HTML STT echo must not skip send()'s DM-topic fail-closed contract."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=270454)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="🎙️\n<blockquote expandable>hello once</blockquote>",
+        metadata={
+            "thread_id": "270453",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_html": True,
+        },
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == adapter._dm_topic_missing_anchor_error()
+    assert call_log == []
+
+
+@pytest.mark.asyncio
+async def test_html_stt_echo_private_dm_topic_uses_reply_anchor():
+    """HTML STT echo in a DM topic must reply-anchor like the MarkdownV2 path."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=270454)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="🎙️\n<blockquote expandable>hello once</blockquote>",
+        metadata={
+            "thread_id": "270453",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+            "telegram_html": True,
+        },
+    )
+
+    assert result.success is True
+    assert len(call_log) == 1
+    assert call_log[0]["parse_mode"] == "HTML"
+    assert call_log[0]["reply_to_message_id"] == 462
+    assert call_log[0]["message_thread_id"] == 270453
+
+
+@pytest.mark.asyncio
+async def test_html_stt_echo_private_dm_topic_thread_not_found_fails_closed():
+    """A dead DM topic must not strip message_thread_id and leak the echo."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="🎙️\n<blockquote expandable>hello once</blockquote>",
+        metadata={
+            "thread_id": "270453",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+            "telegram_html": True,
+        },
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert "thread not found" in result.error.lower()
+    assert len(call_log) == 1
+    assert call_log[0].get("message_thread_id") == 270453
+
+
 def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,

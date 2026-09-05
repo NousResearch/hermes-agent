@@ -166,8 +166,8 @@ async def test_pending_voice_interrupt_reuses_transcript_and_echo():
     mock_transcribe.assert_called_once_with("/tmp/telegram-voice.ogg", None, "gateway")
     adapter.send.assert_awaited_once_with(
         "12345",
-        '🎙️ "hello once"',
-        metadata=None,
+        "🎙️\n<blockquote expandable>hello once</blockquote>",
+        metadata={"telegram_html": True},
     )
 
 
@@ -217,7 +217,9 @@ async def test_monitor_to_drain_transcribes_and_echoes_pending_voice_once(
     assert result["final_response"] == "follow-up complete"
     assert _PendingVoiceAgent.messages == ["initial turn", '"hello once"']
     mock_transcribe.assert_called_once_with("/tmp/telegram-pending-voice.ogg", None, "gateway")
-    assert adapter.sent == [("12345", '🎙️ "hello once"', None)]
+    assert adapter.sent == [
+        ("12345", "🎙️\n<blockquote expandable>hello once</blockquote>", {"telegram_html": True})
+    ]
 
 
 @pytest.mark.asyncio

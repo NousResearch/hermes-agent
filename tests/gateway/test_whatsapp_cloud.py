@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import MessageType
 
 
 @pytest.fixture(autouse=True)
@@ -509,6 +510,159 @@ class TestWebhookDispatch:
         assert response.status == 200
         assert len(captured) == 1
         assert captured[0].text == "Yes please"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_renders_location_payload_as_bracketed_text(self):
+        adapter = _make_adapter(app_secret="key")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "x",
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "metadata": {"phone_number_id": "1"},
+                                "contacts": [
+                                    {"profile": {"name": "U"}, "wa_id": "1555"}
+                                ],
+                                "messages": [
+                                    {
+                                        "from": "1555",
+                                        "id": "wamid.location1",
+                                        "timestamp": "0",
+                                        "type": "location",
+                                        "location": {
+                                            "latitude": 52.5200,
+                                            "longitude": 13.4050,
+                                            "name": "Brandenburg Gate",
+                                            "address": "Pariser Platz",
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        body = json.dumps(payload).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+        assert response.status == 200
+        assert len(captured) == 1
+        assert captured[0].text == "[Location: Brandenburg Gate 52.52,13.405]"
+        assert captured[0].message_type == MessageType.TEXT
+
+    @pytest.mark.asyncio
+    async def test_dispatch_renders_location_without_name_as_coords_only(self):
+        adapter = _make_adapter(app_secret="key")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "x",
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "metadata": {"phone_number_id": "1"},
+                                "contacts": [
+                                    {"profile": {"name": "U"}, "wa_id": "1555"}
+                                ],
+                                "messages": [
+                                    {
+                                        "from": "1555",
+                                        "id": "wamid.location2",
+                                        "timestamp": "0",
+                                        "type": "location",
+                                        "location": {"latitude": 1.0, "longitude": 2.5},
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        body = json.dumps(payload).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+        assert response.status == 200
+        assert captured[0].text == "[Location: 1.0,2.5]"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_renders_reaction_payload_as_bracketed_text(self):
+        adapter = _make_adapter(app_secret="key")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "x",
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "metadata": {"phone_number_id": "1"},
+                                "contacts": [
+                                    {"profile": {"name": "U"}, "wa_id": "1555"}
+                                ],
+                                "messages": [
+                                    {
+                                        "from": "1555",
+                                        "id": "wamid.reaction1",
+                                        "timestamp": "0",
+                                        "type": "reaction",
+                                        "reaction": {
+                                            "message_id": "wamid.reacted.to",
+                                            "emoji": "👍",
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        body = json.dumps(payload).encode("utf-8")
+        sig = _sign("key", body)
+
+        response = await adapter._handle_webhook(
+            _post_request(body, {"X-Hub-Signature-256": sig})
+        )
+        assert response.status == 200
+        assert len(captured) == 1
+        assert captured[0].text == "[Reaction: 👍 to wamid.reacted.to]"
+        assert captured[0].message_type == MessageType.TEXT
 
 
 # ---------------------------------------------------------------------------

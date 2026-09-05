@@ -101,6 +101,7 @@ export const ru = defineLocale({
       desktopBootFailed: 'Не удалось запустить приложение',
       gatewayConnectionLost: 'Соединение с шлюзом потеряно',
       gatewaySignInRequired: 'Требуется вход в шлюз',
+      gatewaySessionTokenRejected: 'Вставьте новый токен сессии',
       ipcBridgeUnavailable: 'IPC-мост приложения недоступен.'
     },
     failure: {

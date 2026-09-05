@@ -1,4 +1,10 @@
-import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  GATEWAY_SESSION_TOKEN_REJECTED_MESSAGE,
+  GatewayReauthRequiredError,
+  isGatewayHandshakeAuthFailure,
+  isGatewayReauthRequired,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { describe, expect, it, vi } from 'vitest'
 
 const oauthConn = { authMode: 'oauth' as const, wsUrl: 'ws://host/api/ws?ticket=stale' }
@@ -89,6 +95,28 @@ describe('resolveGatewayWsUrl', () => {
       await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, tokenConn)).resolves.toBe(tokenConn.wsUrl)
     })
 
+    it('does not reuse the stale token URL when mint reports 401', async () => {
+      const getGatewayWsUrl = vi.fn().mockResolvedValue({
+        error: '401: Unauthorized',
+        needsOauthLogin: true,
+        ok: false
+      })
+
+      const error = await resolveGatewayWsUrl({ getGatewayWsUrl }, tokenConn).catch(e => e)
+
+      expect(error).toBeInstanceOf(GatewayReauthRequiredError)
+      expect(error.message).toBe(GATEWAY_SESSION_TOKEN_REJECTED_MESSAGE)
+      expect(isGatewayReauthRequired(error)).toBe(true)
+    })
+
+    it('does not reuse the stale token URL when mint throws 401', async () => {
+      const getGatewayWsUrl = vi.fn().mockRejectedValue(new Error('401: gateway session expired'))
+
+      await expect(resolveGatewayWsUrl({ getGatewayWsUrl }, tokenConn)).rejects.toBeInstanceOf(
+        GatewayReauthRequiredError
+      )
+    })
+
     it('falls back to the cached URL when the preload method is absent', async () => {
       await expect(resolveGatewayWsUrl({}, tokenConn)).resolves.toBe(tokenConn.wsUrl)
     })
@@ -96,6 +124,15 @@ describe('resolveGatewayWsUrl', () => {
     it('treats a missing authMode as non-oauth (falls back safely)', async () => {
       await expect(resolveGatewayWsUrl({}, { wsUrl: tokenConn.wsUrl })).resolves.toBe(tokenConn.wsUrl)
     })
+  })
+})
+
+describe('isGatewayHandshakeAuthFailure', () => {
+  it('matches 4401 handshake errors and structured 401s', () => {
+    expect(isGatewayHandshakeAuthFailure(new Error('WebSocket handshake failed: 4401'))).toBe(true)
+    expect(isGatewayHandshakeAuthFailure({ statusCode: 401 })).toBe(true)
+    expect(isGatewayHandshakeAuthFailure({ ok: false, error: '401: Unauthorized' })).toBe(true)
+    expect(isGatewayHandshakeAuthFailure(new Error('connection closed'))).toBe(false)
   })
 })
 

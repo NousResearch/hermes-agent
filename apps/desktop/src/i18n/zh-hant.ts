@@ -84,6 +84,7 @@ export const zhHant = defineLocale({
       gatewayConnectionLostDetail:
         'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: '需要閘道登入',
+      gatewaySessionTokenRejected: '貼上新的工作階段 Token',
       ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
     },
     failure: {

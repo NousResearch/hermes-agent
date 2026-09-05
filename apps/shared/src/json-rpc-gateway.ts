@@ -100,6 +100,21 @@ const DEFAULT_HEARTBEAT_DEADLINE_MS = 45_000
 // handshake doesn't land in this window, fail to 'error' so callers can retry.
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 
+/** Hermes dashboard/gateway closes an unauthenticated /api/ws upgrade with 4401. */
+function handshakeConnectError(event: { code?: number; reason?: string }, fallback: string): Error {
+  const code = Number(event?.code)
+  const reason = String(event?.reason || '').trim()
+
+  if (code === 4401 || code === 401 || code === 403) {
+    const error = new Error(`WebSocket handshake failed: ${code}${reason ? ` ${reason}` : ''}`)
+    ;(error as Error & { statusCode: number }).statusCode = 401
+
+    return error
+  }
+
+  return new Error(fallback)
+}
+
 export class JsonRpcGatewayClient {
   private nextId = 0
   private pending = new Map<GatewayRequestId, PendingCall>()
@@ -223,6 +238,18 @@ export class JsonRpcGatewayClient {
 
         socket.removeEventListener('open', onOpen)
         socket.removeEventListener('error', onError)
+        socket.removeEventListener('close', onHandshakeClose)
+      }
+
+      const failConnect = (error: Error) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        this.setState('error')
+        reject(error)
       }
 
       const onOpen = () => {
@@ -240,19 +267,21 @@ export class JsonRpcGatewayClient {
         void this.fetchReplay()
       }
 
-      const onError = () => {
-        if (settled || this.socket !== socket) {
-          return
-        }
+      const onHandshakeClose = (event: { code?: number; reason?: string }) => {
+        failConnect(handshakeConnectError(event, this.options.connectErrorMessage))
+      }
 
-        settled = true
-        cleanup()
-        this.setState('error')
-        reject(new Error(this.options.connectErrorMessage))
+      const onError = () => {
+        // Bad-token gate closes with 4401 in a later task than `error`.
+        // A microtask would settle the generic failure first and drop 4401.
+        setTimeout(() => {
+          failConnect(new Error(this.options.connectErrorMessage))
+        }, 0)
       }
 
       socket.addEventListener('open', onOpen, { once: true })
       socket.addEventListener('error', onError, { once: true })
+      socket.addEventListener('close', onHandshakeClose, { once: true })
 
       if (this.options.connectTimeoutMs > 0) {
         timer = setTimeout(() => {

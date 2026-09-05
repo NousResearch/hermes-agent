@@ -84,6 +84,7 @@ export const zh: Translations = {
       gatewayConnectionLostDetail:
         'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: '需要登录网关',
+      gatewaySessionTokenRejected: '粘贴新的会话 token',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },
     failure: {

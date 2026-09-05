@@ -1,4 +1,9 @@
-import { isGatewayReauthRequired, JsonRpcGatewayError, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  isGatewayHandshakeAuthFailure,
+  isGatewayReauthRequired,
+  JsonRpcGatewayError,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { useEffect, useRef } from 'react'
 
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
@@ -388,16 +393,22 @@ export function useGatewayBoot({
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
       } catch (err) {
-        // OAuth session expired mid-reconnect: surface the actionable "sign in
-        // again" recovery overlay once instead of silently looping the backoff
-        // against a ticket that can never succeed. Transport failures fall
-        // through to the backoff in the finally block below — they must NOT
-        // take the full-screen "couldn't start" path (locks reading/drafting).
-        if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
+        // OAuth session expired, or a token gateway closed the upgrade with
+        // 4401/401: surface the recovery overlay once instead of looping
+        // "connecting" against a credential that can never succeed.
+        // Transport failures fall through to the backoff below.
+        if (!cancelled && !reauthNotified && (isGatewayReauthRequired(err) || isGatewayHandshakeAuthFailure(err))) {
           reauthNotified = true
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
+          notifyError(
+            err,
+            translateNow(
+              /paste a new session token|handshake failed: 4401|\b401\b|\b403\b/i.test(message)
+                ? 'boot.errors.gatewaySessionTokenRejected'
+                : 'boot.errors.gatewaySignInRequired'
+            )
+          )
         }
       } finally {
         reconnecting = false

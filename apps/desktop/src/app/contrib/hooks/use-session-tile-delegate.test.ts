@@ -2,6 +2,9 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesModule from '@/hermes'
+import { clearSessionDraft, stashSessionDraft } from '@/store/composer'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -65,6 +68,8 @@ describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
     setSessions([])
     vi.mocked(getLatestSessionMessages).mockClear()
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForProfile).mockReset()
   })
 
   afterEach(() => {
@@ -130,6 +135,203 @@ describe('useSessionTileDelegate resumeTile', () => {
       undefined
     )
     expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('recreates a never-persisted tab runtime under the saved draft key after restart', async () => {
+    const draftId = '20260825_032826_012255'
+    stashSessionDraft(draftId, 'unsent draft survives restart', [])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        throw new Error('4007 session not found')
+      }
+
+      if (method === 'session.create') {
+        return {
+          info: { model: 'gpt-test' },
+          message_count: 0,
+          messages: [],
+          session_id: 'runtime-restored-draft',
+          stored_session_id: draftId
+        } as never
+      }
+
+      throw new Error(`unexpected ${method}: ${JSON.stringify(params)}`)
+    })
+
+    const updateSessionState = vi.fn()
+
+    renderTile(requestGateway, { updateSessionState })
+
+    await expect(sessionTileDelegate()!.resumeTile(draftId)).resolves.toBe('runtime-restored-draft')
+    expect(requestGateway).toHaveBeenNthCalledWith(1, 'session.resume', {
+      cols: 96,
+      omit_messages: true,
+      session_id: draftId
+    })
+    expect(requestGateway).toHaveBeenNthCalledWith(2, 'session.create', {
+      cols: 96,
+      restore_session_id: draftId,
+      source: 'desktop'
+    })
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-restored-draft', expect.any(Function), draftId)
+
+    clearSessionDraft(draftId)
+  })
+
+  it('restores a never-persisted draft through its legacy profile owner', async () => {
+    const draftId = '20260825_032826_012255'
+    const desktopBridge = window.hermesDesktop
+
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    $connectionsRegistry.set(null)
+    $profiles.set([{ name: 'default' }, { name: 'ops' }] as never)
+    $activeGatewayProfile.set('ops')
+    stashSessionDraft(draftId, 'profile-scoped draft survives restart', [])
+
+    vi.mocked(requestGatewayForProfile).mockImplementation(async (_profile, method) => {
+      if (method === 'session.resume') {
+        throw new Error('4007 session not found')
+      }
+
+      if (method === 'session.create') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          session_id: 'runtime-restored-profile-draft',
+          stored_session_id: draftId
+        } as never
+      }
+
+      throw new Error(`unexpected ${method}`)
+    })
+
+    const ambientRequest = vi.fn(async () => ({}) as never)
+
+    try {
+      renderTile(ambientRequest)
+
+      await expect(sessionTileDelegate()!.resumeTile(draftId)).resolves.toBe('runtime-restored-profile-draft')
+      expect(requestGatewayForProfile).toHaveBeenNthCalledWith(
+        1,
+        'ops',
+        'session.resume',
+        { cols: 96, omit_messages: true, profile: 'ops', session_id: draftId },
+        undefined,
+        undefined
+      )
+      expect(requestGatewayForProfile).toHaveBeenNthCalledWith(
+        2,
+        'ops',
+        'session.create',
+        { cols: 96, profile: 'ops', restore_session_id: draftId, source: 'desktop' },
+        undefined,
+        undefined
+      )
+      expect(ambientRequest).not.toHaveBeenCalled()
+    } finally {
+      clearSessionDraft(draftId)
+      $profiles.set([])
+      $activeGatewayProfile.set('default')
+      $connectionsRegistry.set(null)
+
+      if (desktopBridge) {
+        window.hermesDesktop = desktopBridge
+      }
+    }
+  })
+
+  it('single-flights the complete resume-or-restore operation for concurrent callers', async () => {
+    const draftId = '20260825_032826_012255'
+    stashSessionDraft(draftId, 'saved concurrent draft', [])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        await Promise.resolve()
+        throw new Error('4007 session not found')
+      }
+
+      if (method === 'session.create') {
+        await Promise.resolve()
+
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          session_id: 'runtime-shared-restore',
+          stored_session_id: draftId
+        } as never
+      }
+
+      throw new Error(`unexpected ${method}`)
+    })
+
+    renderTile(requestGateway)
+
+    const [first, second] = await Promise.all([
+      sessionTileDelegate()!.resumeTile(draftId),
+      sessionTileDelegate()!.resumeTile(draftId)
+    ])
+
+    expect(first).toBe('runtime-shared-restore')
+    expect(second).toBe(first)
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'session.resume')).toHaveLength(1)
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'session.create')).toHaveLength(1)
+
+    clearSessionDraft(draftId)
+  })
+
+  it('rejects and closes a fallback runtime when an older backend changes the draft key', async () => {
+    const draftId = '20260825_032826_012255'
+    stashSessionDraft(draftId, 'saved draft', [])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('4007 session not found')
+      }
+
+      if (method === 'session.create') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          session_id: 'runtime-wrong-key',
+          stored_session_id: '20260825_040000_deadbe'
+        } as never
+      }
+
+      if (method === 'session.close') {
+        return {} as never
+      }
+
+      throw new Error(`unexpected ${method}`)
+    })
+
+    renderTile(requestGateway)
+
+    await expect(sessionTileDelegate()!.resumeTile(draftId)).rejects.toThrow('did not preserve its session key')
+    expect(requestGateway).toHaveBeenNthCalledWith(3, 'session.close', { session_id: 'runtime-wrong-key' })
+
+    clearSessionDraft(draftId)
+  })
+
+  it('does not fork an ordinary missing session when there is no saved local draft', async () => {
+    const missingId = '20260825_030000_abcdef'
+    clearSessionDraft(missingId)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('4007 session not found')
+      }
+
+      throw new Error(`unexpected ${method}`)
+    })
+
+    renderTile(requestGateway)
+
+    await expect(sessionTileDelegate()!.resumeTile(missingId)).rejects.toThrow('4007 session not found')
+    expect(requestGateway).toHaveBeenCalledTimes(1)
   })
 
   it('carries a session row connection owner into a same-named tile resume', async () => {

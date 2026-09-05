@@ -8,7 +8,10 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { takeSessionDraft } from '@/store/composer'
+import { hasRegistryTopology } from '@/store/connection-registry-state'
 import { notify } from '@/store/notifications'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   isReadOnlyRuntimeId,
   readOnlyRuntimeIdFor,
@@ -18,11 +21,15 @@ import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
 import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } from '@/store/session-states'
-import type { SessionResumeResponse } from '@/types/hermes'
+import type { SessionCreateResponse, SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
-import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
+import {
+  isSessionNotFoundError,
+  markSessionRecentlyInterrupted,
+  withSessionNotFoundResume
+} from '../../session/hooks/use-prompt-actions/utils'
 import {
   chatMessageArraysEquivalent,
   reconcileResumeMessages,
@@ -110,9 +117,20 @@ export function useSessionTileDelegate({
     // row's owner (exact when connection-tagged, else the hint / profile) →
     // the async cross-profile probe (exact when the resolved row is tagged).
     const ownerForStoredSession = async (storedSessionId: string): Promise<SessionOwnerScope> => {
+      // Session tiles are persisted in per-profile buckets. A legacy Desktop
+      // has no registry topology, so that bucket names the exact profile door
+      // even when a never-sent draft has no row or hint yet. Keep the existing
+      // ambient fast path for the one-profile case; never apply this derivation
+      // once registry sources make a bare profile ambiguous.
+      const legacyTileProfile =
+        !hasRegistryTopology() && $profiles.get().length > 1
+          ? normalizeProfileKey($activeGatewayProfile.get())
+          : undefined
+
       const owner =
         sessionTileOwnerRoute(storedSessionId) ??
         knownSessionOwner(ownerLookupSessionRows(), storedSessionId) ??
+        legacyTileProfile ??
         (await resolveSessionOwner(storedSessionId))
 
       return owner
@@ -266,13 +284,62 @@ export function useSessionTileDelegate({
           () => {
             assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
 
-            return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
-                session_id: storedSessionId,
-                cols: 96,
-                omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-              })
+            return singleFlightSessionResume<SessionCreateResponse | SessionResumeResponse>(
+              storedSessionId,
+              async () => {
+                try {
+                  return await requestForSessionProfile<SessionResumeResponse>(
+                    owner,
+                    requestGateway,
+                    'session.resume',
+                    {
+                      session_id: storedSessionId,
+                      cols: 96,
+                      omit_messages: true,
+                      ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                    }
+                  )
+                } catch (error) {
+                  if (!isSessionNotFoundError(error)) {
+                    throw error
+                  }
+
+                  // Despite its historical name, this is a non-destructive
+                  // snapshot read; clearSessionDraft is the mutating API.
+                  const draft = takeSessionDraft(storedSessionId)
+
+                  if (!draft.text.trim() && draft.attachments.length === 0) {
+                    throw error
+                  }
+
+                  // A never-sent tab has a stable stored key in localStorage
+                  // but no DB row. Keep restore inside the single-flight so
+                  // concurrent callers join the same recreated runtime.
+                  const recreated = await requestForSessionProfile<SessionCreateResponse>(
+                    owner,
+                    requestGateway,
+                    'session.create',
+                    {
+                      cols: 96,
+                      restore_session_id: storedSessionId,
+                      source: 'desktop',
+                      ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                    }
+                  )
+
+                  if (recreated.stored_session_id !== storedSessionId) {
+                    if (recreated.session_id) {
+                      await requestForSessionProfile(owner, requestGateway, 'session.close', {
+                        session_id: recreated.session_id
+                      }).catch(() => undefined)
+                    }
+
+                    throw new Error('Draft runtime did not preserve its session key; update the owning Hermes backend.')
+                  }
+
+                  return recreated
+                }
+              }
             )
           },
           async () => {

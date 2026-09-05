@@ -353,6 +353,62 @@ def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
     return install_calls
 
 
+def test_do_install_prints_scan_report_as_plain_text(monkeypatch, tmp_path, hub_env):
+    import tools.skills_guard as guard
+
+    installs = _install_mocks(monkeypatch, tmp_path, _make_url_bundle_fetcher())
+    report = 'finding matched "[/private/repo/skills/example]"'
+    monkeypatch.setattr(guard, "format_scan_report", lambda result: report)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_install(
+        "https://example.com/SKILL.md",
+        console=console,
+        skip_confirm=True,
+        name_override="example",
+    )
+
+    assert installs == [{"name": "example", "category": ""}]
+    assert report in sink.getvalue()
+
+
+@pytest.mark.parametrize("command", ["audit", "publish"])
+def test_scan_findings_render_literally(monkeypatch, tmp_path, hub_env, command):
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_guard as guard
+    import tools.skills_hub as hub
+
+    skill_path = tmp_path / "skills" / "example"
+    skill_path.mkdir(parents=True)
+    (skill_path / "SKILL.md").write_text(
+        "---\nname: example\ndescription: Test skill\n---\n", encoding="utf-8"
+    )
+    match = '[/private/repo/skills/example] [bold]literal[/bold]'
+    result = guard.ScanResult(
+        skill_name="example", source="self", trust_level="community", verdict="dangerous",
+        findings=[guard.Finding("test", "critical", "injection", "SKILL.md", 4, match, "test finding")],
+    )
+    monkeypatch.setattr(guard, "scan_skill", lambda *args, **kwargs: result)
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([
+        {"name": "example", "install_path": "example", "source": "github"},
+    ]))
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+
+    if command == "audit":
+        cli_hub.do_audit(console=console)
+    else:
+        cli_hub.do_publish(str(skill_path), console=console)
+
+    output = sink.getvalue()
+    assert match in output
+    assert "Decision: BLOCKED" in output
+    if command == "publish":
+        assert "Cannot publish a skill with DANGEROUS verdict." in output
+
+
 
 
 

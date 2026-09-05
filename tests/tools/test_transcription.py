@@ -181,38 +181,72 @@ class TestTranscribeOpenAI:
 
 
     @pytest.mark.parametrize("language", ["en,fi", "en, fi", "en"])
-    @pytest.mark.parametrize("source", ["config", "override"])
-    def test_gpt_transcribe_splits_expected_languages(self, monkeypatch, tmp_path, language, source):
+    @pytest.mark.parametrize("source", ["provider", "global", "environment", "override", "hook"])
+    def test_gpt_transcribe_legacy_hints_and_overrides(self, monkeypatch, tmp_path, language, source):
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", language if source == "environment" else "")
         audio_file = tmp_path / "test.ogg"
         audio_file.write_bytes(b"fake audio")
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = {"text": "Hello"}
-        config = {"openai": {"language": language if source == "config" else ""}}
+        config = {"provider": "openai", "cloud_trim_silence": False,
+                  "language": language if source == "global" else "",
+                  "openai": {"model": "gpt-transcribe"}}
+        if source == "provider":
+            config["openai"]["language"] = language
+        elif source in ("override", "hook"):
+            config["openai"].update({"language": "sv", "languages": ["sv"]})
         with patch("tools.transcription_tools._HAS_OPENAI", True), \
              patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("hermes_cli.plugins.has_hook", return_value=source == "hook"), \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[{"language": language}]), \
              patch("openai.OpenAI", return_value=mock_client):
             from tools.transcription_cloud import _transcribe_openai
-            result = _transcribe_openai(
+            from tools.transcription_tools import transcribe_audio
+            result = (transcribe_audio(str(audio_file)) if source == "hook" else _transcribe_openai(
                 str(audio_file), "gpt-transcribe",
                 language=language if source == "override" else None,
-            )
-        assert result["success"] is True
+            ))
+        assert result["success"] is True, result
         kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
         expected = ["en"] if language == "en" else ["en", "fi"]
         assert kwargs["extra_body"] == {"languages": expected}
         assert "language" not in kwargs
 
 
-    @pytest.mark.parametrize(("model", "language", "expected"), [
-        ("gpt-transcribe", "en,fi", {"languages[]": ["en", "fi"]}),
-        ("gpt-transcribe", " en, fi, ", {"languages[]": ["en", "fi"]}),
-        ("gpt-transcribe", "en", {"languages[]": ["en"]}),
-        ("gpt-transcribe", "", {}),
-        ("whisper-1", "fi", {"language": ["fi"]}),
-        ("gpt-4o-transcribe", "fi", {"language": ["fi"]}),
+    @pytest.mark.parametrize(("model", "settings", "expected"), [
+        ("gpt-transcribe", {"language": "en,fi"}, {"languages[]": ["en", "fi"]}),
+        ("gpt-transcribe", {"language": " en, fi, "}, {"languages[]": ["en", "fi"]}),
+        ("gpt-transcribe", {"language": "en"}, {"languages[]": ["en"]}),
+        ("gpt-transcribe", {"language": ""}, {}),
+        ("whisper-1", {"language": "fi"}, {"language": ["fi"]}),
+        ("gpt-4o-transcribe", {"language": "fi"}, {"language": ["fi"]}),
+        pytest.param("gpt-transcribe", {"languages": ["en", "fi"]},
+                     {"languages[]": ["en", "fi"]}, id="native-array"),
+        pytest.param("gpt-transcribe", {"languages": [" en ", " fi "]},
+                     {"languages[]": ["en", "fi"]}, id="trim-array"),
+        pytest.param("gpt-transcribe", {"languages": ["fi"], "language": "sv"},
+                     {"languages[]": ["fi"]}, id="array-precedence"),
+        pytest.param("gpt-transcribe", {"languages": [], "language": "sv"},
+                     {}, id="explicit-auto"),
+        pytest.param("gpt-transcribe", {"languages": None, "language": "fi"},
+                     {"languages[]": ["fi"]}, id="null-fallback"),
+        pytest.param("whisper-1", {"languages": ["en", "fi"], "language": "sv"},
+                     {"language": ["sv"]}, id="legacy-model"),
+        pytest.param("gpt-transcribe", {"model": "whisper-large-v3", "languages": ["fi"]},
+                     {"languages[]": ["fi"]}, id="autocorrect-array-precedence"),
+        pytest.param("gpt-transcribe", {"model": "whisper-large-v3", "languages": []},
+                     {}, id="autocorrect-explicit-auto"),
+        pytest.param("gpt-transcribe", {"model": "whisper-large-v3", "languages": "fi"},
+                     "stt.openai.languages must be an array of nonempty language-code strings",
+                     id="autocorrect-invalid-array"),
+        *[pytest.param("gpt-transcribe", {"languages": value, "language": "sv"},
+                       "stt.openai.languages must be an array of nonempty language-code strings",
+                       id=f"invalid-array-{index}")
+          for index, value in enumerate(("en,fi", "", True, {"en": "fi"}, ["en", 42],
+                                          [None], [" "], ["en,fi"]))],
     ])
-    def test_language_hints_reach_multipart_request(self, monkeypatch, tmp_path, model, language, expected):
+    def test_language_hints_reach_multipart_request(self, monkeypatch, tmp_path, model, settings, expected):
         import wave
         from email import policy
         from email.parser import BytesParser
@@ -223,11 +257,16 @@ class TestTranscribeOpenAI:
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
-        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        if "model" in settings:
+            # Mirror the import-time STT_OPENAI_MODEL default without reloading shared modules.
+            monkeypatch.setattr("tools.transcription_cloud.DEFAULT_STT_MODEL", model)
+        # Competing inherited hints must not override an explicit array (including []).
+        inherited = "languages" in settings
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "pt" if inherited else "")
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({"stt": {
-            "enabled": True, "provider": "openai", "language": "",
+            "enabled": True, "provider": "openai", "language": "de" if inherited else "",
             "cloud_trim_silence": False,
-            "openai": {"model": model, "language": language},
+            "openai": {"model": model, **settings},
         }}), encoding="utf-8")
         audio_file = tmp_path / "test.wav"
         with wave.open(str(audio_file), "wb") as audio:
@@ -259,6 +298,11 @@ class TestTranscribeOpenAI:
         from tools.transcription_tools import transcribe_audio
         result = transcribe_audio(str(audio_file))
 
+        if isinstance(expected, str):
+            assert result["success"] is False, result
+            assert expected in result["error"]
+            assert requests == [], "Invalid config must fail before uploading audio"
+            return
         assert result["success"] is True, result
         assert result["transcript"] == "test transcript"
         assert len(requests) == 1

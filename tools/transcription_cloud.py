@@ -104,6 +104,27 @@ def _transcribe_groq(
     return _with_openai_client(api_key, GROQ_BASE_URL, file_path, "Groq", _run)
 
 
+def _gpt_transcribe_languages(provider_label: str, language: Optional[str]) -> list[str]:
+    """Explicit override > native array > legacy string resolution."""
+    from tools.transcription_tools import _load_stt_config, _resolve_stt_language
+
+    if not language:
+        config = _load_stt_config()
+        languages = _get_stt_section(config, provider_label).get("languages")
+        if languages is not None:
+            if not isinstance(languages, list) or any(
+                not isinstance(code, str) or not code.strip() or "," in code
+                for code in languages
+            ):
+                raise ValueError(
+                    f"stt.{provider_label}.languages must be an array of nonempty language-code "
+                    'strings, e.g. ["en", "fi"]; use [] for automatic detection.'
+                )
+            return [code.strip() for code in languages]
+        language = _resolve_stt_language(provider_label, config)
+    return [code.strip() for code in (language or "").split(",") if code.strip()]
+
+
 def _transcribe_openai(
     file_path: str, model_name: str, *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, provider_label: str = "openai", language: Optional[str] = None,
@@ -118,14 +139,15 @@ def _transcribe_openai(
         except ValueError as exc:
             return _error_result(str(exc))
         base_url = base_url or fallback_base
-    # Language: hook override > stt.<provider>.language > stt.language > env > auto.
-    language = language or _resolve_stt_language(provider_label)
     if not _HAS_OPENAI:
         return _error_result("openai package not installed")
     # Auto-correct a Groq-only model on the native OpenAI path only (third-party endpoints may serve it).
     if provider_label == "openai" and model_name in GROQ_MODELS:
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
+    # Resolve gpt-transcribe separately so the native array precedes legacy config hints.
+    if model_name != "gpt-transcribe":
+        language = language or _resolve_stt_language(provider_label)
 
     def _run(client):
         from openai import BadRequestError
@@ -134,15 +156,13 @@ def _transcribe_openai(
             create_kwargs: Dict[str, Any] = {
                 "model": model_name, "response_format": "text" if model_name == "whisper-1" else "json",
             }
-            if language:
-                # gpt-transcribe takes a ``languages`` list and rejects the legacy field.
-                if model_name == "gpt-transcribe":
-                    # Preserve comma-separated hints as separate expected languages.
-                    languages = [code.strip() for code in language.split(",") if code.strip()]
+            # gpt-transcribe takes a ``languages`` list and rejects the legacy field.
+            if model_name == "gpt-transcribe":
+                languages = _gpt_transcribe_languages(provider_label, language)
+                if languages:
                     create_kwargs["extra_body"] = {"languages": languages}
-                else:
-                    create_kwargs["language"] = language
-                logger.debug("Using language hint '%s' for OpenAI STT", language)
+            elif language:
+                create_kwargs["language"] = language
             if prompt:  # only when set so the bare request stays byte-identical
                 create_kwargs["prompt"] = prompt
             with open(path, "rb") as audio_file:

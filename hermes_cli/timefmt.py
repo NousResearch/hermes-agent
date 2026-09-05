@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import time as _time
 from datetime import datetime
+import math
 
 
 def relative_time(ts) -> str:
-    """Format a timestamp as relative time (e.g., '2h ago', 'yesterday')."""
+    """Format a timestamp as relative time (e.g., '2h ago', 'yesterday').
+
+    Non-numeric values (corrupt TEXT rows under SQLite dynamic typing)
+    render as "?" instead of raising TypeError (#102399); numeric
+    strings coerce to float.
+    """
     if not ts:
+        return "?"
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return "?"
+    if not math.isfinite(ts):
         return "?"
     delta = _time.time() - ts
     if delta < 60:
@@ -21,4 +33,7 @@ def relative_time(ts) -> str:
         return "yesterday"
     if delta < 604800:
         return f"{int(delta / 86400)}d ago"
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    except (OverflowError, OSError, ValueError):
+        return "?"

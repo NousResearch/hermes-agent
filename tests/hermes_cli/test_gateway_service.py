@@ -296,6 +296,28 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in unit
         assert str(profile_node_bin) not in unit
 
+    def test_user_unit_is_current_across_node_directory_aliases(self, tmp_path, monkeypatch):
+        node_bin = tmp_path / "node-version" / "bin"
+        node_bin.mkdir(parents=True)
+        (node_bin / "node").write_text("#!/bin/sh\n")
+        first_shell = tmp_path / "first-shell"
+        second_shell = tmp_path / "second-shell"
+        first_shell.symlink_to(node_bin, target_is_directory=True)
+        second_shell.symlink_to(node_bin, target_is_directory=True)
+        monkeypatch.setattr("hermes_constants.hermes_managed_node_tree_present", lambda root=None: False)
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(first_shell / "node") if cmd == "node" else None)
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text(gateway_cli.generate_systemd_unit())
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: str(second_shell / "node") if cmd == "node" else None)
+
+        assert gateway_cli.systemd_unit_is_current()
+        assert str(node_bin) in unit_path.read_text()
+        assert str(first_shell) not in unit_path.read_text()
+        unit_path.write_text(unit_path.read_text().replace("RestartSec=5", "RestartSec=19"))
+        assert not gateway_cli.systemd_unit_is_current()
+
     def test_launchd_plist_does_not_leak_profile_node_symlink_target(self, tmp_path, monkeypatch):
         # Same #48700 regression for the macOS twin generate_launchd_plist().
         local_bin = tmp_path / ".local" / "bin"

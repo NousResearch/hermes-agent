@@ -2728,8 +2728,9 @@ def _append_node_dir_for_service(path_entries: list[str], hermes_root: Path | No
     if not resolved_node:
         return
 
-    # Use the dir where node is FOUND, not the symlink target (~/.local/bin/node often links into one profile).
-    resolved_node_dir = str(Path(resolved_node).parent)
+    # Resolve directory aliases (for example fnm's per-shell directory), not
+    # the node symlink itself, which may point into another Hermes profile.
+    resolved_node_dir = str(Path(resolved_node).parent.resolve())
     if resolved_node_dir not in path_entries:
         path_entries.append(resolved_node_dir)
 

@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import display_hermes_home
 from utils import env_var_enabled
@@ -54,7 +54,12 @@ def _get_required_environment_variables(frontmatter: Dict[str, Any]) -> List[Dic
     legacy = (prereqs.get("env_vars") if isinstance(prereqs, dict) else None) or []
     legacy = [legacy] if isinstance(legacy, str) else legacy
     required: Dict[str, Dict[str, Any]] = {}  # env name -> entry, insertion-ordered, first wins
-    declared = _as_dict_list(frontmatter.get("required_environment_variables"))
+    declared_raw = frontmatter.get("required_environment_variables")
+    if isinstance(declared_raw, str):
+        raw_items = [s.strip().strip("'\"") for s in declared_raw.strip().strip("[]").split(",") if s.strip()]
+        declared = [{"name": s} for s in raw_items]
+    else:
+        declared = _as_dict_list(declared_raw)
     entries = [{"name": i} if isinstance(i, str) else i for i in declared
                if isinstance(i, (str, dict))]
     # collect_secrets entries: env_var is the name; provider_url (or url) doubles as help.
@@ -79,6 +84,28 @@ def _get_required_environment_variables(frontmatter: Dict[str, Any]) -> List[Dic
             normalized["optional"] = True
         required[env_name] = normalized
     return list(required.values())
+
+
+def _get_required_commands(frontmatter: Dict[str, Any]) -> List[str]:
+    """Extract required CLI commands from frontmatter (`required_commands` or legacy `prerequisites.commands`)."""
+    prereqs = frontmatter.get("prerequisites")
+    legacy = (prereqs.get("commands") if isinstance(prereqs, dict) else None) or []
+    if isinstance(legacy, str):
+        legacy = [s.strip().strip("'\"") for s in legacy.strip().strip("[]").split(",") if s.strip()]
+    declared_raw = frontmatter.get("required_commands")
+    if isinstance(declared_raw, str):
+        declared = [s.strip().strip("'\"") for s in declared_raw.strip().strip("[]").split(",") if s.strip()]
+    else:
+        declared = _as_dict_list(declared_raw)
+    raw_items = declared + list(legacy)
+    seen = set()
+    commands = []
+    for item in raw_items:
+        cmd = str(item.get("name") if isinstance(item, dict) else item or "").strip().strip("[]'\"")
+        if cmd and cmd not in seen:
+            seen.add(cmd)
+            commands.append(cmd)
+    return commands
 
 
 def _capture_result(missing_names, setup_skipped=False, gateway_setup_hint=None):
@@ -137,3 +164,61 @@ def _build_setup_note(
         return None
     note = f"Setup needed before using this skill: missing {', '.join(missing) if missing else 'required prerequisites'}."
     return f"{note} {setup_help}" if setup_help else note
+
+
+def evaluate_skill_readiness(
+    target: Dict[str, Any],
+    env_snapshot: Optional[Dict[str, str]] = None,
+) -> Tuple[bool, List[str]]:
+    """Pure, side-effect-free evaluation of a skill's deterministically verifiable prerequisites.
+
+    Checks:
+      - required environment variables (non-optional) against env_snapshot / os.environ
+      - required commands against shutil.which()
+
+    Returns (is_ready, missing_prerequisites).
+    Missing prerequisite items are formatted:
+      - Env var: "VAR_NAME"
+      - Command: f"{cmd} binary"
+    """
+    import shutil
+
+    # Determine required non-optional environment variables
+    if (
+        "setup" in target
+        or "prerequisites" in target
+        or any(isinstance(x, dict) for x in target.get("required_environment_variables") or [])
+        or isinstance(target.get("required_environment_variables"), str)
+    ):
+        env_entries = _get_required_environment_variables(target)
+        req_envs = [e["name"] for e in env_entries if not e.get("optional")]
+    else:
+        raw_envs = target.get("required_environment_variables") or []
+        if isinstance(raw_envs, str):
+            raw_envs = [s.strip().strip("'\"") for s in raw_envs.strip().strip("[]").split(",") if s.strip()]
+        req_envs = [str(x).strip().strip("'\"") for x in raw_envs if str(x).strip()]
+
+    # Determine required commands
+    if "prerequisites" in target or not isinstance(target.get("required_commands"), list):
+        req_cmds = _get_required_commands(target)
+    else:
+        raw_cmds = target.get("required_commands") or []
+        req_cmds = [str(x).strip().strip("[]'\"") for x in raw_cmds if str(x).strip()]
+
+    missing: List[str] = []
+
+    for var in req_envs:
+        is_set = (
+            bool(env_snapshot[var])
+            if env_snapshot is not None and var in env_snapshot
+            else bool(os.getenv(var))
+        )
+        if not is_set:
+            missing.append(var)
+
+    for cmd in req_cmds:
+        if not shutil.which(cmd):
+            missing.append(f"{cmd} binary")
+
+    return len(missing) == 0, missing
+

@@ -181,10 +181,19 @@ class StreamDeliveryMixin:
             return
         self._deliver_interim(visible, already_streamed=False, record=[visible])
 
-    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
+    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any], *, force_display: bool = False) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
         ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
-        different final summary."""
+        different final summary.
+
+        When ``force_display`` is True, bypass the dedup gate
+        (``_interim_text_was_delivered``) and force ``already_streamed=False``
+        so the gateway calls ``on_commentary()`` (standalone permanent bubble)
+        instead of ``on_segment_break()`` (paragraph separator that can be
+        overwritten by subsequent messages). This is needed for the
+        verify-on-stop and pre_verify paths where the response MUST survive
+        as a permanent UI element, even if similar text was previously
+        streamed or delivered."""
         if not isinstance(assistant_msg, dict):
             return
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
@@ -192,13 +201,13 @@ class StreamDeliveryMixin:
         pending: dict[str, str] = {}
         for part in commentary_parts:
             key = self._normalize_interim_visible_text(part)
-            if key and key not in pending and not self._interim_text_was_delivered(part):
+            if key and key not in pending and (force_display or not self._interim_text_was_delivered(part)):
                 pending[key] = part
         undelivered_parts = list(pending.values())
         visible = "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
-        if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
+        if not visible or visible == "(empty)" or (not force_display and self._interim_text_was_delivered(visible)):
             return
-        already_streamed = self._interim_content_was_streamed(visible)
+        already_streamed = False if force_display else self._interim_content_was_streamed(visible)
         self._enqueue_stream_hook("on_interim_message", text=visible, already_streamed=already_streamed)
         self._deliver_interim(visible, already_streamed=already_streamed, record=undelivered_parts or [visible])
 

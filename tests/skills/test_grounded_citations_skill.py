@@ -82,6 +82,22 @@ def test_skill_body_has_modern_sections() -> None:
         assert heading in body, f"SKILL.md missing section: {heading}"
 
 
+def test_research_paper_handoff_is_not_self_referential() -> None:
+    skill_text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    citation_formats = (
+        SKILL_DIR / "references" / "citation-formats.md"
+    ).read_text(encoding="utf-8")
+    normalized_formats = " ".join(citation_formats.split())
+    assert "Use the `arxiv` skill for paper discovery" in skill_text
+    assert "for conference papers use the `arxiv` skill" not in skill_text
+    assert "Use the `arxiv` skill to discover papers" in normalized_formats
+    assert "save those entries in `references.bib`" in normalized_formats
+    assert "every `\\cite{...}` key in the draft has a matching bibliography entry" in normalized_formats
+    assert "must not overwrite the paper bibliography" in normalized_formats
+    assert "Venue formatting remains a separate step" in normalized_formats
+    assert "Hand off to the `grounded-citations` skill" not in normalized_formats
+
+
 # ---------------------------------------------------------------------------
 # Ledger identity
 # ---------------------------------------------------------------------------

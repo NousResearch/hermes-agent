@@ -12,11 +12,12 @@ import json
 import logging
 import os
 import re
+import shlex
 import stat
 import threading
 import time
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension
@@ -128,6 +129,16 @@ _BLOCKED_PROC_SUFFIXES = (
     "/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps",
     "/mem", "/auxv", "/pagemap")
 
+_INSTRUCTION_FILE_NAMES = frozenset({
+    "skill.md",
+    "agents.md",
+    "claude.md",
+    ".cursorrules",
+    "soul.md",
+    ".hermes.md",
+    "hermes.md",
+})
+
 
 def _file_ops_uses_host_paths(file_ops) -> bool:
     """True when *file_ops* targets the host filesystem (only then may we stat paths
@@ -140,6 +151,36 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     except ImportError:
         return True
     return isinstance(env, LocalEnvironment)
+
+
+def _is_instruction_bearing_path(resolved: Path | PurePath, file_ops) -> bool:
+    """Whether a reread needs the literal text instead of a dedup stub.
+
+    Context files are active instructions. So are files under a ``SKILL.md``
+    root. Host paths can be checked directly; sandbox paths are pure paths and
+    must be checked through the active file backend instead.
+    """
+    if resolved.name.lower() in _INSTRUCTION_FILE_NAMES:
+        return True
+
+    parent = resolved.parent
+    if parent.name == "rules" and parent.parent.name == ".cursor" and resolved.suffix.lower() == ".mdc":
+        return True
+
+    for ancestor in (parent, *parent.parents):
+        marker = ancestor / "SKILL.md"
+        if isinstance(marker, Path):
+            if marker.is_file():
+                return True
+            continue
+        try:
+            result = file_ops._exec(f"test -f {shlex.quote(str(marker))}")
+            if result.exit_code == 0:
+                return True
+        except Exception:
+            logger.debug("Unable to check skill root through file backend", exc_info=True)
+            return False
+    return False
 
 
 # V4A file headers: group 1 = header prefix, 2 = op, 3 = path. ``\s*`` after
@@ -555,7 +596,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
         _resolved = _resolve_path_for_task(path, task_id)
 
         # A read on a FIFO/socket blocks until the exec timeout: a self-shipped DoS.
-        if _file_ops_uses_host_paths(_get_file_ops(task_id)):
+        file_ops = _get_file_ops(task_id)
+        if _file_ops_uses_host_paths(file_ops):
             kind = _special_file_kind(_resolved)
             if kind is not None:
                 return json.dumps({
@@ -598,6 +640,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
+        if cached_mtime is not None and _is_instruction_bearing_path(_resolved, file_ops):
+            # Instruction files must be re-read verbatim, but still use the
+            # normal consecutive-read blocker after repeated real reads.
+            with _read_tracker_lock:
+                task_data["dedup"].pop(dedup_key, None)
+                task_data["dedup_hits"].pop(dedup_key, None)
+            cached_mtime = None
         if cached_mtime is not None:
             try:
                 if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
@@ -605,7 +654,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
             except OSError:
                 pass  # stat failed — fall through to full read
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit)
+        result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:

@@ -313,12 +313,19 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
 
 
 def _is_azure_foundry_responses(params: dict[str, Any]) -> bool:
-    """True for Microsoft Foundry's Responses API (provider id, else host match — not substring)."""
+    """True for Microsoft Foundry's Responses API (provider id, else host match — not substring).
+
+    Single Foundry predicate for the transport: post-tool reasoning suppression and the
+    Foundry wire shape (reasoning ``id``, ``annotations`` on ``output_text``) both key off it,
+    and it must agree with the auxiliary client's host list (#63257). Both Foundry hostnames
+    count — ``services.ai.azure.com`` and the ``openai.azure.com`` resource endpoints.
+    """
     from utils import base_url_host_matches
 
     if str(params.get("provider") or "").strip().lower() == "azure-foundry":
         return True
-    return base_url_host_matches(str(params.get("base_url") or ""), "services.ai.azure.com")
+    url = str(params.get("base_url") or "")
+    return base_url_host_matches(url, "services.ai.azure.com") or base_url_host_matches(url, "openai.azure.com")
 
 
 def _is_post_tool_replay(messages: Optional[list[dict[str, Any]]]) -> bool:

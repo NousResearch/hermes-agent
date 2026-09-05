@@ -830,15 +830,18 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
 
 def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: str,
-                     continue_hint: str) -> Optional[str]:
-    """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
-    applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
-    None to allow."""
+                     continue_hint: str, *, review_handoff: bool = False) -> Optional[str]:
+    """Goal-mode judge gate shared by completion and review handoffs.
+
+    Completion requires ``done``. Review is itself the acceptance path, so a
+    review handoff rejects only ``blocked`` (unachievable); ``continue``/``wait``
+    means the reviewer should decide. Mirrors tools/kanban_tools.py.
+    """
     verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)
     if verdict == "blocked":
         return (f"kanban: goal {handoff} of {tid} rejected: judge ruled "
                 f"the goal unachievable — {rejection}. {blocked_hint}")
-    if rejection is not None:
+    if rejection is not None and not review_handoff:
         return f"kanban: goal {handoff} of {tid} rejected by judge: {rejection}. {continue_hint}"
     return None
 
@@ -950,7 +953,8 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
         gate_err = _goal_gate_error(
             conn, tid, summary or "", "review handoff",
             "Record the block with kanban block instead of requesting review.",
-            "Provide acceptance evidence matching the task.")
+            "Provide acceptance evidence matching the task.",
+            review_handoff=True)
         if gate_err:
             return _err(gate_err)
         ok, reason = kb.request_review(

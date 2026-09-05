@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "herdr-auto-reconcile",
+      "description": "Wake Hermes when allowlisted Herdr panes need reconciliation, without routing or controlling pane work.",
+      "author": "Chris Yau",
+      "tags": ["herdr", "gateway", "automation", "multi-agent", "liveness"],
+      "repo": "chris-yyau/hermes-herdr-auto-reconcile",
+      "ref": "7a01878039c217f7b3a5500a3086dd62a077d100",
+      "homepage": "https://github.com/chris-yyau/hermes-herdr-auto-reconcile",
+      "capabilities": ["gateway"],
+      "api_version": 1,
+      "added_at": "2026-08-28"
     }
   ]
 }

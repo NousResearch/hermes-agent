@@ -718,6 +718,7 @@ export const zh: Translations = {
       },
       stt: {
         enabled: '语音转文字',
+        echoTranscripts: '回显转写文本',
         provider: '语音转文字提供方',
         local: {
           model: '本地转写模型',
@@ -865,6 +866,7 @@ export const zh: Translations = {
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',
+        echoTranscripts: '将语音消息的原始 🎙️ 转写结果回显到聊天中。',
         elevenlabs: {
           languageCode: '可选的 ISO-639-3 语言代码。留空让 ElevenLabs 自动检测。'
         }

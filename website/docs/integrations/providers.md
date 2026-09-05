@@ -908,6 +908,102 @@ You can verify tool support is active by checking `http://localhost:8080/props` 
 Download GGUF models from [Hugging Face](https://huggingface.co/models?library=gguf). Q4_K_M quantization offers the best balance of quality vs. memory usage.
 :::
 
+### Reasoning Control on Local Servers
+
+Thinking models (Qwen3/Qwen3.5, Gemma 4, DeepSeek R1-style GGUFs) emit a
+reasoning/thinking trace before the visible answer. Whether you can cap or
+disable that trace depends entirely on the server, and the knobs are NOT
+portable between backends:
+
+> For providers that support it, Hermes also has a higher-level
+> `reasoning_effort` / thinking-depth control; this section covers the
+> server-side request knobs (`think`, `reasoning_budget_tokens`,
+> `enable_thinking`) that a local backend may or may not honor on the wire.
+
+| Backend | Knob | Honored? |
+|---------|------|----------|
+| Ollama native `/api/chat` | `think: true\|false` | Yes (binary on/off) |
+| Ollama OpenAI-compat `/v1/chat/completions` | `think`, `reasoning_budget_tokens` | **Silently ignored** |
+| llama-server (llama.cpp) >= b10333 | `reasoning_budget_tokens` | Yes (graduated, per-request) |
+| vLLM (Gemma/Qwen) | `chat_template_kwargs.enable_thinking` | Yes (see above) |
+
+:::caution Ollama's OpenAI-compatible endpoint ignores reasoning knobs
+
+Ollama's `/v1/chat/completions` endpoint accepts `think` and
+`reasoning_budget_tokens` in the request body without error, then ignores
+them. A thinking model will burn its entire `max_tokens` budget on the
+reasoning trace and return `content: ""` with `finish_reason: "length"` — no
+answer at all. This is easy to mistake for a truncation or context bug.
+
+If you must talk to Ollama through the OpenAI-compatible endpoint, you cannot
+control thinking there. Use the native API for reasoning control:
+
+```bash
+curl http://localhost:11434/api/chat -d '{
+  "model": "qwen3.5:4b",
+  "messages": [{"role": "user", "content": "What is 17*23?"}],
+  "think": false
+}'
+```
+
+:::
+
+To pass `think` through Hermes' chat-completions transport, put it on the
+custom provider entry — it only takes effect when the target is a server that
+honors it on that transport:
+
+```yaml
+providers:
+  ollama-local:
+    api: http://localhost:11434/v1
+    default_model: qwen3.5:4b
+    extra_body:
+      think: false
+```
+
+#### llama-server graduated reasoning budgets
+
+llama.cpp's `llama-server` (build b10333 and later) is the only local backend
+that supports **graduated** per-request thinking caps via
+`reasoning_budget_tokens` — the server keeps the thinking trace, but stops it
+after N tokens and forces the answer. This is the knob to prefer when it is
+available; it gets most of the accuracy benefit of thinking at a fraction of
+the token cost:
+
+```yaml
+providers:
+  llama-server-local:
+    api: http://localhost:8080/v1
+    default_model: qwen3.5-2b-q4
+    extra_body:
+      reasoning_budget_tokens: 256
+```
+
+Set it per-provider, or vary it per task via `extra_body` overrides if your
+workload mixes heavy-reasoning and quick-lookup calls.
+
+#### Measured guidance: think=false for small thinking models
+
+On sub-10B thinking models (measured 2026-08-08, Ollama 0.32.6 + llama.cpp
+b10333, 24-task eval set across qwen3.5 9b/4b/2b/0.8b), disabling thinking
+consistently beats leaving it on:
+
+| Model | think off acc | think on acc | runaway (on) |
+|-------|--------------|--------------|--------------|
+| qwen3.5:9b | 87.5% | 50.0% | 12/24 |
+| qwen3.5:4b | 79.2% | 33.3% | 16/24 |
+| qwen3.5:2b-q4 | 70.8% | 4.2% | 23/24 |
+| qwen3.5:0.8b | 29.2% | 4.2% | 23/24 |
+
+"Runaway" = the model spent the whole token budget on the thinking trace and
+never emitted an answer. On these sizes, `think: false` is the safe default:
+2–17x better accuracy and zero runaways. Revisit this only when you serve a
+model large enough that its thinking actually pays for itself, or when a
+graduated budget (llama-server) lets you cap instead of disable.
+
+> Attribution: findings from Michael Anselmi's Hermes reasoning-budget
+> research (https://github.com/NousResearch/hermes-agent).
+
 ---
 
 ### LM Studio — Desktop App with Local Models

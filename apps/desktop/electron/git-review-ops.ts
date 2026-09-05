@@ -464,7 +464,7 @@ async function reviewRevParse(repoPath, ref, gitBin) {
 async function reviewCommit(repoPath, message, push, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review commit' })
   const git = gitFor(cwd, gitBin)
-  const status = await git.status()
+  const status = await git.status(['--untracked-files=no'])
 
   if (status.staged.length === 0) {
     await git.raw(['add', '-A'])
@@ -473,7 +473,7 @@ async function reviewCommit(repoPath, message, push, gitBin) {
   await git.commit(message)
 
   if (push) {
-    const fresh = await git.status()
+    const fresh = await git.status(['--untracked-files=no'])
 
     if (fresh.tracking) {
       await git.push()
@@ -505,7 +505,8 @@ async function reviewCommitContext(repoPath, gitBin) {
   let status
 
   try {
-    status = await git.status()
+    // ponytail: normal keeps untracked dirs as one row; bare 'all' recursively explodes on 5k files
+    status = await git.status(['--untracked-files=normal'])
   } catch {
     return { diff: '', recent: '' }
   }
@@ -539,7 +540,7 @@ async function reviewCommitContext(repoPath, gitBin) {
 async function reviewPush(repoPath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review push' })
   const git = gitFor(cwd, gitBin)
-  const status = await git.status()
+  const status = await git.status(['--untracked-files=no'])
 
   if (status.tracking) {
     await git.push()

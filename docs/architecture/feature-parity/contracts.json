@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "contracts": {
+    "slack-feature-parity": [
+      {
+        "revision": 1,
+        "repository": "NousResearch/hermes-agent",
+        "tracker": 79772,
+        "contract_sha256": "8ffda3c6b320eb511743623d4e285eace8676ff5ef181cc6ef99605ec0d0a5ec",
+        "previous_contract_sha256": null,
+        "authority": {
+          "kind": "issue",
+          "number": 79772,
+          "url": "https://github.com/NousResearch/hermes-agent/issues/79772"
+        }
+      }
+    ]
+  }
+}

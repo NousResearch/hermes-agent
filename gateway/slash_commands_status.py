@@ -36,8 +36,8 @@ def _int_value(value: Any) -> int:
         return 0
 
 
-def _parse_gateway_runtime(raw_model_config: Any) -> dict:
-    """Return the persisted live-routing snapshot from a session's model_config.
+def _gateway_runtime(session_row: Any) -> dict:
+    """Persisted live-routing snapshot for a session row, via the canonical parser.
 
     The gateway records the route actually serving a session — including any
     active fallback provider — into ``model_config.gateway_runtime`` on every
@@ -46,21 +46,15 @@ def _parse_gateway_runtime(raw_model_config: Any) -> dict:
     upstream proxy omits streaming usage), so status/usage read this snapshot to
     reflect the live provider rather than the configured default (#75535).
 
-    Accepts the raw ``model_config`` column (a JSON string or already-decoded
-    dict) and always returns a dict, empty when absent or unparseable.
+    Delegates to ``SessionDB.session_gateway_runtime`` — the same parser used by
+    ``/model`` resume — so the two surfaces cannot drift: it decodes the
+    ``model_config`` column (JSON string or dict), tolerates malformed input,
+    None-filters the snapshot, and adds the top-level/``billing_provider``
+    fallbacks. Always returns a dict, empty when absent or unparseable.
     """
-    config: Any = raw_model_config
-    if isinstance(config, str):
-        import json
+    from hermes_state import SessionDB
 
-        try:
-            config = json.loads(config) if config else {}
-        except Exception:
-            return {}
-    if not isinstance(config, dict):
-        return {}
-    runtime = config.get("gateway_runtime")
-    return runtime if isinstance(runtime, dict) else {}
+    return SessionDB.session_gateway_runtime(session_row if isinstance(session_row, dict) else None)
 
 
 def _n(obj, attr: str):
@@ -132,7 +126,7 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
     # often still empty, so /status would otherwise show the configured default
     # instead of the provider actually serving the session (#75535).
     if not provider_name:
-        provider_name = _clean_str(_parse_gateway_runtime(session_row.get("model_config")).get("provider"))
+        provider_name = _clean_str(_gateway_runtime(session_row).get("provider"))
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
     if not model_name or not provider_name or not context_total:
@@ -632,7 +626,7 @@ class GatewayStatusCommandsMixin:
         # A fallback provider persists its live route into gateway_runtime before
         # any billing metadata lands; use it to fill either gap (#75535).
         if not provider or not base_url:
-            runtime = _parse_gateway_runtime(persisted.get("model_config"))
+            runtime = _gateway_runtime(persisted)
             provider = provider or runtime.get("provider")
             base_url = base_url or runtime.get("base_url")
         return provider, base_url

@@ -538,10 +538,13 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
-def _configured_stale_base(agent) -> float:
-    """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
+def _configured_stale_base(agent) -> tuple[float, bool]:
+    """Return the stream stale base and whether a user configured it explicitly."""
     cfg = get_provider_stale_timeout(agent.provider, agent.model)
-    return cfg if cfg is not None else env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+    if cfg is not None:
+        return cfg, True
+    configured_env = os.getenv("HERMES_STREAM_STALE_TIMEOUT")
+    return env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), configured_env is not None
 
 
 def _scale_stale_timeout_for_context(base: float, est_tokens: int) -> float:
@@ -567,10 +570,27 @@ def _cloud_stale_timeout(base: float, api_kwargs: dict) -> float:
     return timeout if floor is None else max(timeout, floor)
 
 
+def _cap_implicit_stale_timeout_to_run_budget(agent, timeout: float, *, explicit: bool) -> float:
+    """Keep an implicit cloud stale timeout within the active run's remaining budget."""
+    if explicit:
+        return timeout
+    run_budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if not run_budget or not started:
+        return timeout
+    try:
+        remaining = float(run_budget) - (time.time() - float(started))
+    except (TypeError, ValueError):
+        return timeout
+    return min(timeout, max(60.0, remaining * 0.5))
+
+
 def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale-stream patience for a provider that is never a local endpoint (Bedrock):
     the OpenAI/Anthropic stale detector's budget minus its local branch."""
-    return _cloud_stale_timeout(_configured_stale_base(agent), api_kwargs)
+    base, explicit = _configured_stale_base(agent)
+    timeout = _cloud_stale_timeout(base, api_kwargs)
+    return _cap_implicit_stale_timeout_to_run_budget(agent, timeout, explicit=explicit)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
@@ -3456,7 +3476,7 @@ class _StreamingCall:
         HERMES_LOCAL_STREAM_STALE_TIMEOUT — an infinite one stalled sessions on a
         crashed endpoint forever. Cloud values scale with context size and are
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
-        base = _configured_stale_base(self.agent)
+        base, explicit = _configured_stale_base(self.agent)
         if base == 180.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
             _local_default = 900.0
             with contextlib.suppress(Exception):
@@ -3470,7 +3490,10 @@ class _StreamingCall:
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
             return
-        self._stream_stale_timeout = _cloud_stale_timeout(base, self.api_kwargs)
+        timeout = _cloud_stale_timeout(base, self.api_kwargs)
+        self._stream_stale_timeout = _cap_implicit_stale_timeout_to_run_budget(
+            self.agent, timeout, explicit=explicit
+        )
 
     def _partial_stream_stub(self):
         """Tokens already reached the platform: a finish_reason="length" stub fires the

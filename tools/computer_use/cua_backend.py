@@ -28,6 +28,7 @@ from tools.computer_use.cua_backend_driver import (
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+from tools.computer_use.remote import resolve_remote_cua_config
 
 logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
@@ -220,17 +221,24 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     def __init__(self, permission_mode: str = "standard") -> None:
         if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
+        self._remote_config = resolve_remote_cua_config(
+            _computer_use_cfg(),
+            permission_mode=permission_mode,
+        )
         self.permission_mode = permission_mode
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
-        if permission_mode != "standard":
+        if permission_mode != "standard" and self._remote_config is None:
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
-            # caps what an approval-bypassed run may touch.
+            # caps what an approval-bypassed run may touch. Skip the embedded daemon when connecting remotely —
+            # the remote host owns the driver process and its permission mode.
             raw = _computer_use_cfg().get("capability_manifest")
             self._embedded_daemon = _EmbeddedCuaDaemon(
                 resolve_cua_driver_cmd() or "", permission_mode,
                 capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
         self._bridge = _AsyncBridge()
-        self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
+        self._session = _CuaDriverSession(
+            self._bridge, self._embedded_daemon,
+            remote_config=self._remote_config)
         # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
         # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so
@@ -246,14 +254,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
-        contract = cua_driver_runtime_contract_status()
-        if not contract.get("ready"):
-            contract = _maybe_repair_runtime_contract(contract)
-        if not contract.get("ready"):
-            raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
-                               + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
-                                  if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
-        _maybe_nudge_update()
+        # Remote transport: skip the local driver contract check — the remote host owns the driver.
+        if self._remote_config is None:
+            contract = cua_driver_runtime_contract_status()
+            if not contract.get("ready"):
+                contract = _maybe_repair_runtime_contract(contract)
+            if not contract.get("ready"):
+                raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
+                                   + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
+                                      if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
+            _maybe_nudge_update()
         # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
         # raises FeatureUnavailable with the exact `uv pip install` hint.
         from tools.lazy_deps import ensure as _lazy_ensure

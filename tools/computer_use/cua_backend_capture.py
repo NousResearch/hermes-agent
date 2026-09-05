@@ -56,7 +56,7 @@ def _linux_x11_active_window_id() -> Optional[int]:
     return _parse_xprop_net_active_window(proc.stdout or "") if proc.returncode == 0 else None
 
 def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool,
-                           exact_target: bool = False) -> Dict[str, Any]:
+                           exact_target: bool = False, allow_local_probe: bool = True) -> Dict[str, Any]:
     """Best window from z-sorted (frontmost-first) list_windows output. Unqualified default captures on
     Linux (no app filter, no exact target) skip desktop/shell helper windows first — targetable but capture
     as empty — and when every remaining candidate shares one ``z_index`` (the common X11 case)
@@ -64,9 +64,12 @@ def _select_capture_target(windows: List[Dict[str, Any]], *, app_requested: bool
 
     Callers pass windows already sorted by ``z_index`` descending (higher = frontmost). When ordering is
     informative, keep that frontmost contract. See #58026.
+
+    ``allow_local_probe`` is False for remote CUA sessions: xprop would probe the agent's local X11
+    display, not the remote desktop the cua-driver is driving.
     """
     pool = [w for w in windows if not w["off_screen"]]
-    if not exact_target and not app_requested and sys.platform == "linux":
+    if allow_local_probe and not exact_target and not app_requested and sys.platform == "linux":
         pool = [w for w in pool if _is_real_app_window(w)] or pool
         if pool and _z_index_uninformative(pool):
             active_id = _linux_x11_active_window_id()
@@ -290,7 +293,9 @@ class _CaptureMixin:
         windows = self._resolve_capture_windows(mode, app, pid, window_id)
         if isinstance(windows, CaptureResult):
             return windows
-        self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
+        self._set_active_target(target := _select_capture_target(
+            windows, app_requested=bool(app), exact_target=exact_target,
+            allow_local_probe=getattr(self, "_remote_config", None) is None))
         app_name = target["app_name"]
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
         # to the frontmost window.

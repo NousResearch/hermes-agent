@@ -167,21 +167,31 @@ function sameRect(a: Rect | null, b: Rect | null) {
 // suppressing the writes recovered 14fps → 51fps. The vars only align titlebar
 // chrome — republishing once on release is visually identical.
 let sashDragDepth = 0
-let onSashDragEnd: null | (() => void) = null
+const sashDragEndListeners = new Set<() => void>()
 
 export function beginSashDrag() {
   sashDragDepth += 1
 }
 
 export function endSashDrag() {
-  sashDragDepth = Math.max(0, sashDragDepth - 1)
+  if (sashDragDepth === 0) {
+    return
+  }
+
+  sashDragDepth -= 1
 
   if (sashDragDepth === 0) {
-    onSashDragEnd?.()
+    sashDragEndListeners.forEach(listener => listener())
   }
 }
 
-const sashDragging = () => sashDragDepth > 0
+export const isSashDragging = () => sashDragDepth > 0
+
+export function onSashDragEnd(listener: () => void): () => void {
+  sashDragEndListeners.add(listener)
+
+  return () => sashDragEndListeners.delete(listener)
+}
 
 /**
  * Publish the workspace zone's viewport edges as root CSS vars:
@@ -204,7 +214,7 @@ export function publishWorkspaceGeometry(): () => void {
   const measure = () => {
     // DEFER during a sash drag (see beginSashDrag above) — republished once on
     // release via the onSashDragEnd hook registered below.
-    if (sashDragging()) {
+    if (isSashDragging()) {
       return
     }
 
@@ -248,13 +258,13 @@ export function publishWorkspaceGeometry(): () => void {
   // side collapses); window resize covers the rest.
   const unsubTree = $layoutTree.listen(() => requestAnimationFrame(measure))
   // Drag released → publish the final geometry the deferral above skipped.
-  onSashDragEnd = () => requestAnimationFrame(measure)
+  const offSashDragEnd = onSashDragEnd(() => requestAnimationFrame(measure))
   window.addEventListener('resize', measure)
   measure()
 
   return () => {
     unsubTree()
-    onSashDragEnd = null
+    offSashDragEnd()
     window.removeEventListener('resize', measure)
     ro.disconnect()
     root.style.removeProperty('--workspace-left')

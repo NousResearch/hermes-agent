@@ -18,7 +18,7 @@ from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
-from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
+from tools.mcp_tool_errors import _is_auth_error, _is_method_not_found_error, _is_session_expired_error
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -450,7 +450,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     return _handler
 
 
-def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None):
+def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None,
+                          method_not_found_result: Optional[dict] = None):
     """``(server_name, tool_timeout) -> sync handler`` for one utility tool: ``rpc(session, args,
     server_name)`` awaited under ``_rpc_lock``, ``render(result, server_name)`` -> JSON-able
     payload, ``required`` validated before any transport work."""
@@ -467,9 +468,19 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 async with server._rpc_lock:
                     result = await rpc(server.session, args, server_name)
                 return json.dumps(render(result, server_name), ensure_ascii=False)
+
+            def _handle_optional_method_not_found(_server_name, exc, _retry_call, _op):
+                if method_not_found_result is None or not _is_method_not_found_error(exc):
+                    return None
+                logger.debug(
+                    "MCP %s/%s is not supported (method not found); returning an empty result",
+                    server_name, log_label,
+                )
+                return json.dumps(method_not_found_result, ensure_ascii=False)
+
             return _dispatch(
                 server_name, server, op, _call, tool_timeout,
-                (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
+                (_handle_optional_method_not_found, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
         return _handler
     return _factory
@@ -533,13 +544,15 @@ def _render_get_prompt(result, server_name: str) -> dict:
 
 _make_list_resources_handler = _make_utility_handler(
     "resources/list", "list_resources",
-    lambda session, args, sn: _core._paginate_full_list(session.list_resources, "resources", sn), _render_resource_list)
+    lambda session, args, sn: _core._paginate_full_list(session.list_resources, "resources", sn), _render_resource_list,
+    method_not_found_result={"resources": []})
 _make_read_resource_handler = _make_utility_handler(
     "resources/read", "read_resource",
     lambda session, args, sn: session.read_resource(args["uri"]), _render_read_resource, required="uri")
 _make_list_prompts_handler = _make_utility_handler(
     "prompts/list", "list_prompts",
-    lambda session, args, sn: _core._paginate_full_list(session.list_prompts, "prompts", sn), _render_prompt_list)
+    lambda session, args, sn: _core._paginate_full_list(session.list_prompts, "prompts", sn), _render_prompt_list,
+    method_not_found_result={"prompts": []})
 _make_get_prompt_handler = _make_utility_handler(
     "prompts/get", "get_prompt",
     lambda session, args, sn: session.get_prompt(args["name"], arguments=args.get("arguments", {})),

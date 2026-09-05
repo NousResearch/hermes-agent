@@ -1681,6 +1681,39 @@ class TestUtilityHandlers:
         finally:
             _servers.pop("srv", None)
 
+    @pytest.mark.parametrize(
+        ("handler_name", "session_method", "expected"),
+        [
+            ("_make_list_resources_handler", "list_resources", {"resources": []}),
+            ("_make_list_prompts_handler", "list_prompts", {"prompts": []}),
+        ],
+    )
+    def test_optional_list_method_not_found_returns_empty_result_at_debug(
+        self, handler_name, session_method, expected, caplog,
+    ):
+        """Servers can contradict their capability advertisement without emitting an error log."""
+        from tools import mcp_tool_handlers
+        from tools.mcp_tool import _servers
+
+        class MethodNotFoundError(Exception):
+            def __init__(self):
+                self.error = SimpleNamespace(code=-32601)
+
+        mock_session = MagicMock()
+        setattr(mock_session, session_method, AsyncMock(side_effect=MethodNotFoundError()))
+        server = _make_mock_server("srv", session=mock_session)
+        _servers["srv"] = server
+
+        try:
+            handler = getattr(mcp_tool_handlers, handler_name)("srv", 120)
+            with self._patch_mcp_loop(), caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+                result = json.loads(handler({}))
+            assert result == expected
+            assert any(record.levelno == logging.DEBUG and "method not found" in record.message for record in caplog.records)
+            assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+        finally:
+            _servers.pop("srv", None)
+
 
     # -- read_resource --
 

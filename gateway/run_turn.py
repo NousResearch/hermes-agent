@@ -2323,7 +2323,7 @@ class GatewayTurnMixin:
             return "\n".join(lines)
 
         except Exception as e:
-            logger.warning("MCP reload failed: %s", e)
+            logger.warning("MCP reload failed: %s", repr(e))
             return t("gateway.reload_mcp.failed", error=e)
 
     def _get_proxy_url(self) -> Optional[str]:

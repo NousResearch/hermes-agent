@@ -693,3 +693,11 @@ def cleanup_all_browsers() -> None:
     ):
         setattr(_bt, flag, False)
         setattr(_bt, cache, None)
+    # Snapshot/timeout lookups re-read profile config after this reset. The
+    # raw YAML cache is keyed by (mtime_ns, size); same-second same-length
+    # writes otherwise keep serving the previous threshold.
+    try:
+        from hermes_cli.config import _RAW_CONFIG_CACHE, get_config_path
+        _RAW_CONFIG_CACHE.pop(str(get_config_path()), None)
+    except Exception:
+        pass

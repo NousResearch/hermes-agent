@@ -38,7 +38,8 @@ def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
             # "local" is a legacy alias for "local_embedded"
             if cfg.get("mode", "") in {"local", "local_embedded"}:
-                deps.append("hindsight-all")
+                from plugins.memory.hindsight.settings import _EMBEDDED_RUNTIME_SPEC
+                deps.append(_EMBEDDED_RUNTIME_SPEC)
         except Exception:
             pass
     return deps

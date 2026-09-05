@@ -904,44 +904,69 @@ class TestFTS5Search:
         assert all("context" in row and row["context"] for row in default)
 
     def test_search_projection_skips_context_enrichment_queries(self, db):
+        from contextlib import contextmanager
+
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="before")
         db.append_message("s1", role="assistant", content="projectionneedle")
         db.append_message("s1", role="user", content="after")
 
-        statements = []
-        read_conn = db._get_read_conn() or db._conn
-        traced_connections = [db._conn]
-        if read_conn is not db._conn:
-            traced_connections.append(read_conn)
-        for conn in traced_connections:
-            conn.set_trace_callback(statements.append)
+        enrichment_queries = []
+        original_finalize = db._finalize_search_matches
+        original_read_ctx = db._read_ctx
 
-        def context_query_count():
-            normalized = (" ".join(sql.upper().split()) for sql in statements)
-            return sum("WITH TARGET AS (" in sql for sql in normalized)
+        @contextmanager
+        def counting_read_ctx():
+            with original_read_ctx() as conn:
+                real_execute = conn.execute
 
+                def execute(sql, parameters=()):
+                    enrichment_queries.append(sql)
+                    return real_execute(sql, parameters)
+
+                conn.execute = execute
+                try:
+                    yield conn
+                finally:
+                    conn.execute = real_execute
+
+        def spy_finalize(matches, result_fields=None):
+            db._read_ctx = counting_read_ctx
+            try:
+                return original_finalize(matches, result_fields=result_fields)
+            finally:
+                db._read_ctx = original_read_ctx
+
+        db._finalize_search_matches = spy_finalize
         try:
             projected = db.search_messages(
                 "projectionneedle", fields=("session_id", "snippet")
             )
             assert len(projected) == 1
-            assert context_query_count() == 0
+            assert "context" not in projected[0]
+            assert projected[0]["snippet"]
+            assert enrichment_queries == []
 
             full = db.search_messages(
                 "projectionneedle", fields=("session_id", "context")
             )
             assert len(full) == 1
             assert full[0]["context"]
-            assert context_query_count() == 1
+            full_contents = [row["content"] for row in full[0]["context"]]
+            assert any("before" in c for c in full_contents)
+            assert any("after" in c for c in full_contents)
+            assert len(enrichment_queries) == 1
 
             default = db.search_messages("projectionneedle")
             assert len(default) == 1
             assert default[0]["context"]
-            assert context_query_count() == 2
+            default_contents = [row["content"] for row in default[0]["context"]]
+            assert any("before" in c for c in default_contents)
+            assert any("after" in c for c in default_contents)
+            assert len(enrichment_queries) == 2
         finally:
-            for conn in traced_connections:
-                conn.set_trace_callback(None)
+            db._finalize_search_matches = original_finalize
+            db._read_ctx = original_read_ctx
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""

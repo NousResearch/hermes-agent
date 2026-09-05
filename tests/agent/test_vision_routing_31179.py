@@ -173,12 +173,33 @@ class TestTextOnlyMainSkippedForVision:
         Pre-fix this silently returned the deepseek client with model
         substitution, producing ``unknown variant 'image_url'`` at call time.
         """
+        import json
+
+        # Cold HERMES_HOME has no models.dev cache; allow_network fetch is
+        # blocked in isolated CI. Seed the catalog the skip path depends on.
+        cache = {
+            "deepseek": {
+                "id": "deepseek",
+                "name": "DeepSeek",
+                "models": {
+                    "deepseek-v4-pro": {
+                        "id": "deepseek-v4-pro",
+                        "modalities": {"input": ["text"]},
+                        "attachment": False,
+                    }
+                },
+            }
+        }
+        with open(os.path.join(isolated_home, "models_dev_cache.json"), "w") as fp:
+            json.dump(cache, fp)
         _write_config(isolated_home, """
 model:
   provider: deepseek
   default: deepseek-v4-pro
 """)
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+        for mod in ("agent.models_dev", "agent.image_routing", "agent.auxiliary_client"):
+            sys.modules.pop(mod, None)
         _fresh_modules()
 
         from agent.auxiliary_client import resolve_vision_provider_client

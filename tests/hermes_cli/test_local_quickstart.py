@@ -37,6 +37,28 @@ def _wait_job(client, job_id: str, timeout: float = 10.0) -> dict:
     raise AssertionError(f"job {job_id} still running after {timeout}s")
 
 
+@pytest.fixture
+def machine_fits_catalog(monkeypatch):
+    """Deterministic hardware-fit at the probe boundary.
+
+    Sequence tests must not depend on host catalog fit (this UMA host reports
+    ram_available_bytes=0 by design, so every catalog row 409s). Does not stub
+    runtime install or staging — unlike quickstart_ready, which also mocks
+    installed_tags and would hide those legs.
+    """
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    budget = HardwareBudget(
+        usable_vram_bytes=64 << 30,
+        total_device_bytes=64 << 30,
+        ram_available_bytes=64 << 30,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.hardware.probe_budget",
+        lambda **kw: budget,
+    )
+
+
 def test_quickstart_unknown_model_404s(client):
     r = client.post("/api/local-models/quickstart", json={"model_id": "no-such"})
     assert r.status_code == 404
@@ -52,7 +74,7 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
     assert "Local Models" in r.json()["detail"]
 
 
-def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
+def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path, machine_fits_catalog):
     """Fresh machine: install runtime -> download recommended -> activate.
     Each leg is asserted by its observable call, in order."""
     calls: list[str] = []
@@ -105,7 +127,7 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     assert load_config()["local_runtime"]["enabled"] is True
 
 
-def test_quickstart_skips_satisfied_legs(client, monkeypatch):
+def test_quickstart_skips_satisfied_legs(client, monkeypatch, machine_fits_catalog):
     """Runtime present and model already staged: the response says so and
     the job goes straight to activation."""
     calls: list[str] = []

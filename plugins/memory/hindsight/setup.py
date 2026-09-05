@@ -14,16 +14,21 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from . import templates as _hs_templates
 from .embedded import _embedded_profile_env_path, _load_simple_env, _materialize_embedded_profile_env
 from .settings import (
-    _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_TIMEOUT, _MIN_CLIENT_VERSION,
-    _PROVIDER_DEFAULT_MODELS,
+    _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_TIMEOUT,
+    _CLIENT_PIP_SPEC, _EMBEDDED_RUNTIME_SPEC, _PROVIDER_DEFAULT_MODELS, _uses_codex_oauth,
 )
 
 _MODE_VALUES = ["cloud", "local_embedded", "local_external"]
 _MODE_ITEMS = [
     ("Cloud", "Hindsight Cloud API (lightweight, just needs an API key)"),
-    ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs LLM key)"),
+    ("Local Embedded", "Run Hindsight locally (downloads ~200MB; LLM key or Codex OAuth)"),
     ("Local External", "Connect to an existing Hindsight instance"),
 ]
+
+
+def _setup_pip_specs(mode: str) -> list[str]:
+    """Mode-specific install specs; local_embedded needs the daemon bundle."""
+    return [_EMBEDDED_RUNTIME_SPEC] if mode == "local_embedded" else [_CLIENT_PIP_SPEC]
 
 
 def _secret_prompt(label: str) -> str:
@@ -60,8 +65,23 @@ def _write_env(env_path: Path, env_writes: dict) -> None:
     env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
+def _llm_provider_choice_items() -> list[tuple[str, str]]:
+    """Wizard rows derived from the canonical provider/default-model table."""
+    items = []
+    for provider, model in _PROVIDER_DEFAULT_MODELS.items():
+        if _uses_codex_oauth(provider):
+            items.append((provider, f"existing Codex/ChatGPT OAuth; default model: {model}"))
+        else:
+            items.append((provider, f"default model: {model}"))
+    return items
+
+
 def _prompt_embedded_llm(llm_provider: str, provider_config: dict, env_writes: dict, hermes_env: Path) -> None:
-    """local_embedded wizard step: endpoint (openai_compatible only), model, LLM key."""
+    """local_embedded wizard step: endpoint (openai_compatible only), model, LLM key.
+
+    openai-codex authenticates via existing Codex/ChatGPT OAuth: no key prompt and
+    HINDSIGHT_LLM_API_KEY is left untouched in the Hermes .env.
+    """
     if llm_provider == "openai_compatible":
         existing_base_url = provider_config.get("llm_base_url", "")
         prompt = "  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1)" + (f" [{existing_base_url}]" if existing_base_url else "")
@@ -72,6 +92,9 @@ def _prompt_embedded_llm(llm_provider: str, provider_config: dict, env_writes: d
     current_model = provider_config.get("llm_model") or _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
     val = input(f"  LLM model [{current_model}]: ").strip()
     provider_config["llm_model"] = val or current_model
+    if _uses_codex_oauth(llm_provider):
+        print("  Authentication: existing Codex/ChatGPT OAuth (no LLM API key).")
+        return
     llm_key = _secret_prompt("  LLM API key: ")
     env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key or _load_simple_env(hermes_env).get("HINDSIGHT_LLM_API_KEY", "")
 
@@ -97,7 +120,7 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
 
     llm_provider = ""
     if mode == "local_embedded":
-        llm_items = [(p, f"default model: {m}") for p, m in _PROVIDER_DEFAULT_MODELS.items()]
+        llm_items = _llm_provider_choice_items()
         llm_provider = _select("  Select LLM provider", llm_items, list(_PROVIDER_DEFAULT_MODELS),
                                provider_config.get("llm_provider"))
         if llm_provider is None:
@@ -108,7 +131,7 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
     # Environment-aware install: sealed hosted venvs redirect to the durable data volume.
     from tools.lazy_deps import install_specs
 
-    deps = ["hindsight-all"] if mode == "local_embedded" else [f"hindsight-client>={_MIN_CLIENT_VERSION}"]
+    deps = _setup_pip_specs(mode)
     outcome = install_specs(deps, timeout=120)
     if outcome.ok:
         print("  ✓ Dependencies up to date")
@@ -170,11 +193,14 @@ def run_setup(provider, hermes_home: str, config: dict) -> None:
             materialized_config = json.loads(
                 (Path(hermes_home) / "hindsight" / "config.json").read_text(encoding="utf-8")
             )
-        llm_api_key = (
-            env_writes.get("HINDSIGHT_LLM_API_KEY", "")
-            or _load_simple_env(hermes_env).get("HINDSIGHT_LLM_API_KEY", "")
-            or _load_simple_env(_embedded_profile_env_path(materialized_config)).get("HINDSIGHT_API_LLM_API_KEY", "")
-        )
+        if _uses_codex_oauth(llm_provider or materialized_config.get("llm_provider", "")):
+            llm_api_key = None
+        else:
+            llm_api_key = (
+                env_writes.get("HINDSIGHT_LLM_API_KEY", "")
+                or _load_simple_env(hermes_env).get("HINDSIGHT_LLM_API_KEY", "")
+                or _load_simple_env(_embedded_profile_env_path(materialized_config)).get("HINDSIGHT_API_LLM_API_KEY", "")
+            )
         _materialize_embedded_profile_env(materialized_config, llm_api_key=llm_api_key or None)
 
     print(f"\n  ✓ Hindsight memory configured ({mode} mode)")

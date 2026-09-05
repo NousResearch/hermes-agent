@@ -6,6 +6,7 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import logging
 import os
 import re
 import stat
@@ -34,7 +35,7 @@ from plugins.memory.hindsight import (
     _resolve_bank_id_template,
     _WRITER_SENTINEL,
 )
-from plugins.memory.hindsight.settings import _sanitize_bank_segment
+from plugins.memory.hindsight.settings import _normalize_min_scores, _sanitize_bank_segment
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +275,7 @@ class TestConfig:
         assert provider._bank_mission == ""
         assert provider._bank_retain_mission is None
         assert provider._retain_context == "conversation between Hermes Agent and the User"
+        assert provider._recall_min_scores is None
 
     def test_recall_types_default_is_observation_only(self, provider):
         """Auto-recall must filter to observation by default."""
@@ -303,6 +305,7 @@ class TestConfig:
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
             bank_mission="Test agent mission",
+            recall_min_scores={"final": 0.25, "semantic": 0.1},
         )
         assert p._tags == ["tag1", "tag2"]
         assert p._retain_tags == ["tag1", "tag2"]
@@ -321,6 +324,7 @@ class TestConfig:
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
+        assert p._recall_min_scores == {"final": 0.25, "semantic": 0.1}
 
     def test_retain_source_defaults_empty(self, provider):
         # Opt-in per AGENTS.md: no attribution tag ships by default.
@@ -356,6 +360,7 @@ class TestConfig:
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("plugins.memory.hindsight._ensure_client_dependency", lambda: None)
 
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"
@@ -372,6 +377,37 @@ class TestConfig:
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+
+    def test_openai_codex_embedded_client_passes_provider_without_key(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("plugins.memory.hindsight._ensure_client_dependency", lambda: None)
+        monkeypatch.setenv("HINDSIGHT_LLM_API_KEY", "sk-should-not-be-used")
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai-codex",
+            "llm_api_key": "sk-config-should-not-be-used",
+            "llm_model": "gpt-5.4-mini",
+            "idle_timeout": 0,
+        }
+        p._llm_base_url = ""
+
+        p._get_client()
+
+        assert captured["llm_provider"] == "openai-codex"
+        assert captured["llm_model"] == "gpt-5.4-mini"
+        assert captured["llm_api_key"] == ""
+        assert captured["idle_timeout"] == 0
+
 
 
 class TestPostSetup:
@@ -436,6 +472,64 @@ class TestPostSetup:
             "HINDSIGHT_API_LOG_LEVEL=info\n"
             "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300\n"
         )
+
+    def test_openai_codex_setup_does_not_prompt_or_write_llm_key(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        preexisting = "HINDSIGHT_LLM_API_KEY=sk-preexisting\nOTHER=keep\n"
+        (hermes_home / ".env").write_text(preexisting)
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        schema = HindsightMemoryProvider().get_config_schema()
+        llm_provider_field = next(f for f in schema if f["key"] == "llm_provider")
+        llm_model_field = next(f for f in schema if f["key"] == "llm_model")
+        assert "openai-codex" in llm_provider_field["choices"]
+        assert llm_model_field["default_from"]["map"]["openai-codex"] == "gpt-5.4-mini"
+        codex_idx = llm_provider_field["choices"].index("openai-codex")
+
+        selections = iter([1, codex_idx])  # local_embedded, openai-codex
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: next(selections))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+
+        def _secret_must_not_run(*args, **kwargs):
+            raise AssertionError("openai-codex must not prompt for an LLM API key")
+
+        monkeypatch.setattr("getpass.getpass", _secret_must_not_run)
+        monkeypatch.setattr("plugins.memory.hindsight.setup._secret_prompt", _secret_must_not_run)
+        import tools.lazy_deps as lazy_deps_mod
+        monkeypatch.setattr(
+            lazy_deps_mod, "install_specs",
+            lambda *a, **kw: lazy_deps_mod.InstallSpecsResult(ok=True),
+        )
+        saved_configs = []
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_configs.append(cfg.copy()))
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {}})
+
+        assert saved_configs[-1]["memory"]["provider"] == "hindsight"
+        env_text = (hermes_home / ".env").read_text()
+        assert "HINDSIGHT_LLM_API_KEY=sk-preexisting\n" in env_text
+        assert env_text.count("HINDSIGHT_LLM_API_KEY=") == 1
+        assert "HINDSIGHT_TIMEOUT=120\n" in env_text
+        assert "HINDSIGHT_IDLE_TIMEOUT=300\n" in env_text
+
+        config = json.loads((hermes_home / "hindsight" / "config.json").read_text())
+        assert config["llm_provider"] == "openai-codex"
+        assert config["llm_model"] == "gpt-5.4-mini"
+
+        profile_text = (user_home / ".hindsight" / "profiles" / "hermes.env").read_text()
+        assert "HINDSIGHT_API_LLM_PROVIDER=openai-codex\n" in profile_text
+        assert "HINDSIGHT_API_LLM_MODEL=gpt-5.4-mini\n" in profile_text
+        assert "HINDSIGHT_API_LLM_API_KEY" not in profile_text
+        assert "sk-preexisting" not in profile_text
+        assert "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300\n" in profile_text
+
 
 
 # ---------------------------------------------------------------------------
@@ -1326,7 +1420,7 @@ class TestConfigSchema:
             "recall_tags", "recall_tags_match",
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
-            "recall_max_tokens", "recall_max_input_chars",
+            "recall_max_tokens", "recall_min_scores", "recall_max_input_chars",
             "recall_prompt_preamble",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"
@@ -1622,13 +1716,13 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
         return calls
 
     def test_upgrade_uses_install_specs_not_subprocess(self, tmp_path, monkeypatch):
-        from plugins.memory.hindsight import _MIN_CLIENT_VERSION
+        from plugins.memory.hindsight import _CLIENT_PIP_SPEC
         from tools.lazy_deps import InstallSpecsResult
 
         calls = self._init_with_outdated_client(
             tmp_path, monkeypatch, InstallSpecsResult(ok=True)
         )
-        assert calls == [(f"hindsight-client>={_MIN_CLIENT_VERSION}",)]
+        assert calls == [(_CLIENT_PIP_SPEC,)]
 
     def test_blocked_upgrade_is_nonfatal_and_surfaces_reason(
         self, tmp_path, monkeypatch, caplog
@@ -1710,3 +1804,209 @@ class TestMultiplexBackgroundScope:
                 t.join(timeout=5)
         assert created == ["p1-secret"]
         assert "Daemon started successfully" in (home / "logs" / "hindsight-embed.log").read_text()
+
+
+class TestHindsightDependencyDeclarations:
+    """Production client/embedded specs must not conflict the way 0.6.1 vs 0.9.2 did."""
+
+    def test_declarations_and_resolver_agree_on_client_floor(self, monkeypatch, tmp_path):
+        import tomllib
+
+        import yaml
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        import tools.lazy_deps as lazy_deps
+        from hermes_cli.memory_setup import _provider_pip_dependencies
+        from plugins.memory.hindsight.settings import (
+            _CLIENT_PIP_SPEC,
+            _EMBEDDED_RUNTIME_SPEC,
+            _MIN_CLIENT_VERSION,
+        )
+        from plugins.memory.hindsight.setup import _setup_pip_specs
+
+        repo = Path(__file__).resolve().parents[3]
+        lazy_spec = lazy_deps.LAZY_DEPS["memory.hindsight"][0]
+        lazy_req = Requirement(lazy_spec)
+        assert lazy_req.name == "hindsight-client"
+        pinned_ops = list(lazy_req.specifier)
+        assert len(pinned_ops) == 1 and pinned_ops[0].operator == "=="
+        pinned = Version(pinned_ops[0].version)
+        assert pinned == Version(_MIN_CLIENT_VERSION)
+        assert pinned in Requirement(_CLIENT_PIP_SPEC).specifier
+        assert Version("0.6.1") not in lazy_req.specifier
+        assert Version("0.6.1") not in Requirement(_CLIENT_PIP_SPEC).specifier
+
+        extras = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
+        extra_specs = extras["project"]["optional-dependencies"]["hindsight"]
+        assert extra_specs == [lazy_spec]
+
+        manifest = yaml.safe_load((repo / "plugins" / "memory" / "hindsight" / "plugin.yaml").read_text(encoding="utf-8"))
+        plugin_req = Requirement(manifest["pip_dependencies"][0])
+        assert plugin_req.name == "hindsight-client"
+        assert pinned in plugin_req.specifier
+        assert Version("0.6.1") not in plugin_req.specifier
+        assert any(spec.operator == "<" for spec in plugin_req.specifier)
+
+        assert _setup_pip_specs("local_embedded") == [_EMBEDDED_RUNTIME_SPEC]
+        assert _setup_pip_specs("cloud") == [_CLIENT_PIP_SPEC]
+        assert _setup_pip_specs("local_external") == [_CLIENT_PIP_SPEC]
+        embedded_req = Requirement(_EMBEDDED_RUNTIME_SPEC)
+        assert embedded_req.name == "hindsight-all"
+        assert pinned in embedded_req.specifier
+
+        monkeypatch.setattr(lazy_deps, "_installed_version", lambda spec: str(pinned))
+        assert lazy_deps._is_satisfied(lazy_spec)
+        monkeypatch.setattr(lazy_deps, "_installed_version", lambda spec: "0.6.1")
+        assert not lazy_deps._is_satisfied(lazy_spec)
+
+        lock = tomllib.loads((repo / "uv.lock").read_text(encoding="utf-8"))
+        locked = {
+            pkg["version"]
+            for pkg in lock.get("package", [])
+            if pkg.get("name") == "hindsight-client"
+        }
+        assert locked == {str(pinned)}
+
+        monkeypatch.setattr("hermes_cli.memory_setup.get_hermes_home", lambda: tmp_path)
+        cfg_dir = tmp_path / "hindsight"
+        cfg_dir.mkdir()
+        (cfg_dir / "config.json").write_text(json.dumps({"mode": "local_embedded"}))
+        update_deps = _provider_pip_dependencies("hindsight", [_CLIENT_PIP_SPEC])
+        assert _CLIENT_PIP_SPEC in update_deps
+        assert _EMBEDDED_RUNTIME_SPEC in update_deps
+
+
+# ---------------------------------------------------------------------------
+# Pre-transmission safety (fail closed; never redact-and-store)
+# ---------------------------------------------------------------------------
+
+_FAKE_API_KEY = "sk-proj-" + ("A" * 40)
+_FAKE_CREDENTIAL_URL = "https://example.com/callback?access_token=opaque-token-456789"
+
+
+def _assert_secret_rejected(result, secret, client_method):
+    assert "error" in result
+    blob = json.dumps(result)
+    assert secret not in blob
+    assert "sensitive content" in result["error"].lower()
+    client_method.assert_not_called()
+
+
+class TestHindsightTransmissionSafety:
+    def test_retain_rejects_secret_content_before_client(self, provider, caplog):
+        with caplog.at_level(logging.DEBUG):
+            result = json.loads(provider.handle_tool_call(
+                "hindsight_retain", {"content": f"store {_FAKE_API_KEY}"},
+            ))
+        _assert_secret_rejected(result, _FAKE_API_KEY, provider._client.aretain_batch)
+        assert _FAKE_API_KEY not in caplog.text
+
+    def test_retain_rejects_secret_in_context_tags_and_occurred_at(self, provider):
+        for args in (
+            {"content": "ok", "context": f"ctx {_FAKE_API_KEY}"},
+            {"content": "ok", "tags": [_FAKE_API_KEY]},
+            {"content": "ok", "occurred_at": _FAKE_API_KEY},
+            {"content": f"see {_FAKE_CREDENTIAL_URL}"},
+        ):
+            provider._client.aretain_batch.reset_mock()
+            result = json.loads(provider.handle_tool_call("hindsight_retain", args))
+            secret = _FAKE_API_KEY if _FAKE_API_KEY in str(args) else _FAKE_CREDENTIAL_URL
+            _assert_secret_rejected(result, secret, provider._client.aretain_batch)
+
+    def test_recall_rejects_secret_query_before_client(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": f"find {_FAKE_API_KEY}"},
+        ))
+        _assert_secret_rejected(result, _FAKE_API_KEY, provider._client.arecall)
+
+    def test_reflect_rejects_secret_query_before_client(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": f"summarize {_FAKE_API_KEY}"},
+        ))
+        _assert_secret_rejected(result, _FAKE_API_KEY, provider._client.areflect)
+
+    def test_sync_turn_rejects_secret_before_client(self, provider):
+        provider.sync_turn(f"remember {_FAKE_API_KEY}", "acknowledged")
+        provider._retain_queue.join()
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_fail_closed_when_checker_errors(self, provider, monkeypatch, caplog):
+        def boom(text, **kwargs):
+            raise RuntimeError(f"checker exploded with {_FAKE_API_KEY}")
+
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.safety.redact_sensitive_text", boom,
+        )
+        with caplog.at_level(logging.WARNING):
+            result = json.loads(provider.handle_tool_call(
+                "hindsight_retain", {"content": "user likes dark mode"},
+            ))
+        assert "error" in result
+        assert _FAKE_API_KEY not in result["error"]
+        assert _FAKE_API_KEY not in caplog.text
+        provider._client.aretain_batch.assert_not_called()
+
+    def test_non_secret_retain_recall_reflect_unchanged(self, provider):
+        stored = json.loads(provider.handle_tool_call(
+            "hindsight_retain",
+            {"content": "user likes dark mode", "context": "pref", "tags": ["ui"]},
+        ))
+        assert stored["result"] == "Memory stored successfully."
+        provider._client.aretain_batch.assert_called_once()
+        recalled = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "dark mode"},
+        ))
+        assert "Memory 1" in recalled["result"]
+        reflected = json.loads(provider.handle_tool_call(
+            "hindsight_reflect", {"query": "summarize"},
+        ))
+        assert reflected["result"] == "Synthesized answer"
+
+
+# ---------------------------------------------------------------------------
+# recall_min_scores — native Hindsight floors
+# ---------------------------------------------------------------------------
+
+
+class TestRecallMinScores:
+    def test_normalize_absent_and_invalid_are_none(self):
+        assert _normalize_min_scores(None) is None
+        assert _normalize_min_scores("") is None
+        assert _normalize_min_scores({}) is None
+        assert _normalize_min_scores("not-json") is None
+        assert _normalize_min_scores(["final"]) is None
+        assert _normalize_min_scores({"final": "nope", "bogus": 1}) is None
+
+    def test_normalize_keeps_known_finite_floors(self):
+        assert _normalize_min_scores(
+            {"final": "0.25", "semantic": 0.1, "keyword": 0, "bogus": 9, "reranker": ""}
+        ) == {"semantic": 0.1, "keyword": 0.0, "final": 0.25}
+        assert _normalize_min_scores('{"final": 0.4}') == {"final": 0.4}
+
+    def test_absent_floors_omitted_from_arecall_kwargs(self, provider):
+        json.loads(provider.handle_tool_call("hindsight_recall", {"query": "dark mode"}))
+        kwargs = provider._client.arecall.call_args.kwargs
+        assert "min_scores" not in kwargs
+        assert kwargs["query"] == "dark mode"
+        assert kwargs["budget"] == "mid"
+
+    def test_configured_floors_passed_to_arecall(self, provider_with_config):
+        p = provider_with_config(recall_min_scores={"final": 0.25, "semantic": 0.1})
+        json.loads(p.handle_tool_call("hindsight_recall", {"query": "dark mode"}))
+        assert p._client.arecall.call_args.kwargs["min_scores"] == {
+            "final": 0.25, "semantic": 0.1,
+        }
+
+    def test_empty_filtered_results_are_no_relevant_memories(self, provider_with_config):
+        p = provider_with_config(recall_min_scores={"final": 0.9})
+        p._client.arecall = AsyncMock(return_value=SimpleNamespace(results=[]))
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "sky color"}))
+        assert result["result"] == "No relevant memories found."
+        assert p._client.arecall.call_args.kwargs["min_scores"] == {"final": 0.9}
+
+    def test_prefetch_empty_results_inject_no_context(self, provider_with_config):
+        p = provider_with_config(recall_sync=True, recall_min_scores={"final": 0.9})
+        p._client.arecall = AsyncMock(return_value=SimpleNamespace(results=[]))
+        assert p.prefetch("sky color") == ""
+        assert p._client.arecall.call_args.kwargs["min_scores"] == {"final": 0.9}

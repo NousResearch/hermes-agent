@@ -37,12 +37,14 @@ from .embedded import (
     _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_path,
     _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
 )
+from .safety import assert_retain_item_safe, assert_safe_for_hindsight
 from .settings import (
     _DEFAULT_API_URL, _DEFAULT_IDLE_TIMEOUT, _DEFAULT_LOCAL_URL, _DEFAULT_RETAIN_SOURCE,
-    _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
-    _PROVIDER_DEFAULT_MODELS, _VALID_BUDGETS, _daemon_llm_provider,
-    _normalize_observation_scopes, _normalize_retain_tags, _parse_int_setting,
-    _resolve_bank_id_template,
+    _DEFAULT_TIMEOUT, _HINDSIGHT_GLYPH, _CLIENT_PIP_SPEC,
+    _MIN_CLIENT_VERSION, _MIN_VERSION_FOR_UPDATE_MODE_APPEND,
+    _PROVIDER_DEFAULT_MODELS, _VALID_BUDGETS, _daemon_llm_provider, _uses_codex_oauth,
+    _normalize_min_scores, _normalize_observation_scopes, _normalize_retain_tags,
+    _parse_int_setting, _resolve_bank_id_template,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,18 +76,18 @@ def _maybe_upgrade_client() -> None:
         from packaging.version import Version
         installed = pkg_version("hindsight-client")
         if Version(installed) < Version(_MIN_CLIENT_VERSION):
-            logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
-                           installed, _MIN_CLIENT_VERSION)
+            logger.warning("hindsight-client %s is outdated (need %s), attempting upgrade...",
+                           installed, _CLIENT_PIP_SPEC)
             from tools.lazy_deps import install_specs
-            outcome = install_specs([f"hindsight-client>={_MIN_CLIENT_VERSION}"], timeout=120)
+            outcome = install_specs([_CLIENT_PIP_SPEC], timeout=120)
             if outcome.ok:
-                logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
+                logger.info("hindsight-client upgraded to %s", _CLIENT_PIP_SPEC)
             elif outcome.blocked:
-                logger.warning("Auto-upgrade unavailable: %s. Run: uv pip install 'hindsight-client>=%s'",
-                               outcome.reason, _MIN_CLIENT_VERSION)
+                logger.warning("Auto-upgrade unavailable: %s. Run: uv pip install '%s'",
+                               outcome.reason, _CLIENT_PIP_SPEC)
             else:
-                logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                               (outcome.stderr or "").strip() or "install error", _MIN_CLIENT_VERSION)
+                logger.warning("Auto-upgrade failed: %s. Run: uv pip install '%s'",
+                               (outcome.stderr or "").strip() or "install error", _CLIENT_PIP_SPEC)
     except Exception:
         pass  # packaging not available or other issue — proceed anyway
 
@@ -402,10 +404,9 @@ class HindsightMemoryProvider(MemoryProvider):
             # Local external mode
             {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
             {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
-            # Local embedded mode
-            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "openrouter", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
+            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": list(_PROVIDER_DEFAULT_MODELS), "when": {"mode": "local_embedded"}},
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
-            {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
+            {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible; unused for openai-codex — existing Codex/ChatGPT OAuth)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
             {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
@@ -433,6 +434,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "prefetch_retain_drain_timeout", "description": "Max seconds the background prefetch waits for the retain to become recall-visible (queue drain + server-side completion) before recalling anyway", "default": 10.0},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
+            {"key": "recall_min_scores", "description": "Optional per-stage recall score floors passed to Hindsight min_scores (object with any of: semantic, keyword, reranker, final). Absent or empty means no floor (existing behavior).", "default": None},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
@@ -455,14 +457,16 @@ class HindsightMemoryProvider(MemoryProvider):
         from hindsight import HindsightEmbedded
         HindsightEmbedded.__del__ = lambda self: None
         cfg = self._config
-        llm_provider = _daemon_llm_provider(cfg.get("llm_provider", ""))
+        raw_provider = cfg.get("llm_provider", "")
+        llm_provider = _daemon_llm_provider(raw_provider)
         logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
                      cfg.get("profile", "hermes"), llm_provider)
         self._idle_timeout = self._int_setting(
             "idle_timeout", "HINDSIGHT_IDLE_TIMEOUT", _DEFAULT_IDLE_TIMEOUT, env_default=self._idle_timeout,
         )
+        llm_api_key = "" if _uses_codex_oauth(raw_provider) else _embedded_llm_api_key(cfg)
         kwargs = dict(profile=cfg.get("profile", "hermes"), llm_provider=llm_provider,
-                      llm_api_key=_embedded_llm_api_key(cfg), llm_model=cfg.get("llm_model", ""),
+                      llm_api_key=llm_api_key, llm_model=cfg.get("llm_model", ""),
                       idle_timeout=self._idle_timeout)
         if self._llm_base_url:
             kwargs["llm_base_url"] = self._llm_base_url
@@ -777,6 +781,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._recall_types = list([] if configured_types is None else configured_types) or ["observation"]
         self._recall_prompt_preamble = cfg.get("recall_prompt_preamble", "")
         self._recall_indicator = bool(cfg.get("recall_indicator", True))
+        self._recall_min_scores = _normalize_min_scores(cfg.get("recall_min_scores"))
 
     def _start_embedded_daemon(self) -> None:
         """Start the embedded daemon on a background thread (Rich output -> log file)."""
@@ -842,15 +847,19 @@ class HindsightMemoryProvider(MemoryProvider):
         return why is not None
 
     def _recall(self, query: str) -> list:
+        assert_safe_for_hindsight(query, field="query")
         kwargs: dict = {"bank_id": self._bank_id, "query": query, "budget": self._budget, "max_tokens": self._recall_max_tokens}
         if self._recall_tags:
             kwargs.update(tags=self._recall_tags, tags_match=self._recall_tags_match)
         if self._recall_types:
             kwargs["types"] = self._recall_types
+        if self._recall_min_scores:
+            kwargs["min_scores"] = self._recall_min_scores
         resp = self._run_hindsight_operation(lambda client: client.arecall(**kwargs))
         return resp.results or []
 
     def _reflect(self, query: str) -> str | None:
+        assert_safe_for_hindsight(query, field="query")
         resp = self._run_hindsight_operation(
             lambda client: client.areflect(bank_id=self._bank_id, query=query, budget=self._budget)
         )
@@ -972,6 +981,7 @@ class HindsightMemoryProvider(MemoryProvider):
                       retain_async: bool | None = None):
         """Dispatch one item via aretain_batch (bank_id/document_id/retain_async are
         call-level args, never item keys)."""
+        assert_retain_item_safe(item)
         kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id, "retain_async": retain_async}
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))

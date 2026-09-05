@@ -36,6 +36,21 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _bridge_state_db(mcp_serve):
+    """The state.db path `_read_state_db_mtime` actually stats."""
+    path = mcp_serve._hermes_home() / "state.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text("placeholder")
+    return path
+
+
+def _bump_state_db_mtime(path):
+    """Open the real poll gate with a deterministic mtime increment."""
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns + 1_000_000_000, st.st_mtime_ns + 1_000_000_000))
+
+
 @pytest.fixture
 def sessions_dir(tmp_path):
     sdir = tmp_path / "sessions"
@@ -1340,8 +1355,7 @@ class TestEventBridgePollE2E:
         messages written after the baseline are delivered."""
         import mcp_serve
 
-        db_path = tmp_path / "state.db"
-        db_path.write_text("placeholder")
+        db_path = _bridge_state_db(mcp_serve)
         session_id = "20260329_150000_history"
         monkeypatch.setattr(
             mcp_serve, "_load_sessions_index",
@@ -1374,7 +1388,7 @@ class TestEventBridgePollE2E:
             "id": 2, "role": "assistant", "content": "arrived after start",
             "timestamp": "2026-03-29T15:05:00",
         })
-        os.utime(db_path, None)  # bump mtime so the poll gate opens
+        _bump_state_db_mtime(db_path)
         bridge._poll_once(DB())
         events = bridge.poll_events(after_cursor=0)["events"]
         assert len(events) == 1
@@ -1386,8 +1400,7 @@ class TestEventBridgePollE2E:
         baseline default to last_seen=0.0."""
         import mcp_serve
 
-        db_path = tmp_path / "state.db"
-        db_path.write_text("placeholder")
+        db_path = _bridge_state_db(mcp_serve)
         index: dict = {}
         messages: dict = {}
         monkeypatch.setattr(mcp_serve, "_load_sessions_index", lambda: dict(index))
@@ -1412,7 +1425,7 @@ class TestEventBridgePollE2E:
             "id": 1, "role": "user", "content": "hello after baseline",
             "timestamp": "2026-03-29T15:10:00",
         }]
-        os.utime(db_path, None)
+        _bump_state_db_mtime(db_path)
         bridge._poll_once(DB())
 
         events = bridge.poll_events(after_cursor=0)["events"]

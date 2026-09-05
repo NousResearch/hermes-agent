@@ -106,7 +106,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
+    "memory.hindsight": ("hindsight-client==0.9.2",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),

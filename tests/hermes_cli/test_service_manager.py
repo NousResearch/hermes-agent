@@ -7,6 +7,8 @@ implementation in this same file once that phase ships.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from hermes_cli.service_manager import (
@@ -20,6 +22,19 @@ from hermes_cli.service_manager import (
     get_service_manager,
     validate_profile_name,
 )
+
+
+@pytest.fixture(autouse=True)
+def _userns_chown(monkeypatch):
+    """User namespaces have no uid 10000; record the requested ownership instead."""
+    recorded: list[tuple[str, int, int]] = []
+
+    def _chown(path, uid, gid, *args, **kwargs):
+        recorded.append((str(path), int(uid), int(gid)))
+
+    monkeypatch.setattr(os, "chown", _chown)
+    monkeypatch.setattr("hermes_cli.service_manager.os.chown", _chown)
+    return recorded
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +207,7 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
-def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
+def test_seed_supervise_skeleton_creates_expected_layout(tmp_path, _userns_chown) -> None:
     """Verifies the dirs + FIFO the helper lays down."""
     import stat
 
@@ -223,10 +238,12 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
         "supervise/control must be a FIFO"
     )
     assert stat.S_IMODE(control.stat().st_mode) == 0o660
+    assert _userns_chown, "seed must request hermes ownership"
+    assert all(uid == 10000 and gid == 10000 for _, uid, gid in _userns_chown)
 
 
 @pytest.mark.linux_only
-def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
+def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path, _userns_chown) -> None:
     """The event dirs carry setgid so s6-supervise's EEXIST path leaves them alone.
 
     Linux-only because the assertion is about what ``chmod`` does, and that
@@ -248,6 +265,8 @@ def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
     for rel in ("event", "supervise/event"):
         mode = stat.S_IMODE((svc_dir / rel).stat().st_mode)
         assert mode == 0o3730, f"{rel}/ mode = {oct(mode)}, want 0o3730"
+    assert _userns_chown, "seed must request hermes ownership"
+    assert all(uid == 10000 and gid == 10000 for _, uid, gid in _userns_chown)
 
 
 

@@ -16,6 +16,7 @@ chosen ``user_peer_id`` can be asserted without touching the network.
 
 import hashlib
 import json
+import os
 from unittest.mock import MagicMock
 
 
@@ -525,6 +526,8 @@ class TestPinTransition:
         sig_pinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         cfg_path.write_text(json.dumps({"apiKey": "k", "peerName": "Igor", "pinPeerName": False}))
+        st = cfg_path.stat()
+        os.utime(cfg_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
         sig_unpinned = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
         assert sig_pinned["honcho.pin_peer_name"] != sig_unpinned["honcho.pin_peer_name"]

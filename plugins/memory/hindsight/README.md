@@ -5,7 +5,7 @@ Long-term memory with knowledge graph, entity resolution, and multi-strategy ret
 ## Requirements
 
 - **Cloud:** API key from [ui.hindsight.vectorize.io](https://ui.hindsight.vectorize.io)
-- **Local Embedded:** API key for a supported LLM provider (OpenAI, Anthropic, Gemini, Groq, OpenRouter, MiniMax, Ollama, or any OpenAI-compatible endpoint). Embeddings and reranking run locally — no additional API keys needed.
+- **Local Embedded:** API key for a supported LLM provider (OpenAI, Anthropic, Gemini, Groq, OpenRouter, MiniMax, Ollama, or any OpenAI-compatible endpoint), **or** existing Codex/ChatGPT OAuth via `openai-codex` (no LLM API key). Embeddings and reranking run locally — no additional API keys needed.
 - **Local External:** A running Hindsight instance (Docker or self-hosted) reachable over HTTP.
 
 ## Setup
@@ -28,7 +28,7 @@ Connects to the Hindsight Cloud API. Requires an API key from [ui.hindsight.vect
 
 ### Local Embedded
 
-Hermes spins up a local Hindsight daemon with built-in PostgreSQL. Requires an LLM API key for memory extraction and synthesis. The daemon starts automatically in the background on first use and stops after 5 minutes of inactivity.
+Hermes spins up a local Hindsight daemon with built-in PostgreSQL. Most LLM providers require an API key for memory extraction and synthesis. `openai-codex` uses existing Codex/ChatGPT OAuth instead — the wizard does not prompt for or write `HINDSIGHT_LLM_API_KEY`. The daemon starts automatically in the background on first use and stops after 5 minutes of inactivity.
 
 Supports any OpenAI-compatible LLM endpoint (llama.cpp, vLLM, LM Studio, etc.) — pick `openai_compatible` as the provider and enter the base URL.
 
@@ -71,6 +71,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `recall_prefetch_method` | `recall` | Auto-recall method: `recall` (raw facts) or `reflect` (LLM synthesis) |
 | `recall_max_tokens` | `4096` | Maximum tokens for recall results |
+| `recall_min_scores` | — | Optional per-stage score floors passed to Hindsight `min_scores`: `semantic`, `keyword`, `reranker`, `final`. Absent/empty preserves unfiltered recall. Example: `{"final": 0.12}`. |
 | `recall_max_input_chars` | `800` | Maximum input query length for auto-recall |
 | `recall_prompt_preamble` | — | Custom preamble for recalled memories in context |
 | `recall_tags` | — | Tags to filter when searching memories |
@@ -117,11 +118,17 @@ Config file: `~/.hermes/hindsight/config.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `llm_provider` | `openai` | `openai`, `anthropic`, `gemini`, `groq`, `openrouter`, `minimax`, `ollama`, `lmstudio`, `openai_compatible` |
-| `llm_model` | per-provider | Model name (e.g. `gpt-4o-mini`, `qwen/qwen3.5-9b`) |
+| `llm_provider` | `openai` | `openai`, `openai-codex`, `anthropic`, `gemini`, `groq`, `openrouter`, `minimax`, `ollama`, `lmstudio`, `openai_compatible` |
+| `llm_model` | per-provider | Model name (e.g. `gpt-4o-mini`, `gpt-5.4-mini`, `qwen/qwen3.5-9b`) |
 | `llm_base_url` | — | Endpoint URL for `openai_compatible` (e.g. `http://192.168.1.10:8080/v1`) |
 
-The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY`.
+The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY` for key-based providers. `openai-codex` does not use that variable; official Hindsight resolves Codex OAuth from its default/`CODEX_HOME` mechanism.
+
+## Transmission safety
+
+User-controlled text is checked with Hermes `redact_sensitive_text(force=True, redact_url_credentials=True)` **before** any Hindsight client/backend call (manual retain `content` / `context` / `tags` / `occurred_at`, automatic turn-retain payloads, recall queries, and reflect queries). If redaction would change the text, or if the checker errors, the entire operation is rejected — secrets are never redacted-and-stored. Error messages and warnings do not echo the original value.
+
+The same redactor also classifies private keys, vendor tokens, credential-bearing URLs, and E.164 phone numbers; those are rejected too.
 
 ## Tools
 
@@ -138,7 +145,7 @@ Available in `hybrid` and `tools` memory modes:
 | Variable | Description |
 |----------|-------------|
 | `HINDSIGHT_API_KEY` | API key for Hindsight Cloud |
-| `HINDSIGHT_LLM_API_KEY` | LLM API key for local mode |
+| `HINDSIGHT_LLM_API_KEY` | LLM API key for local mode (unused for `openai-codex`) |
 | `HINDSIGHT_API_LLM_BASE_URL` | LLM Base URL for local mode (e.g. OpenRouter) |
 | `HINDSIGHT_API_URL` | Override API endpoint |
 | `HINDSIGHT_BANK_ID` | Override bank name |
@@ -147,4 +154,4 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client >= 0.9.2,<0.11`. The plugin auto-upgrades on session start if an older version is detected.

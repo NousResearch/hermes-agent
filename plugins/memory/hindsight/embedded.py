@@ -13,7 +13,7 @@ from typing import Any
 
 from agent.secret_scope import get_secret
 
-from .settings import _DEFAULT_IDLE_TIMEOUT, _daemon_llm_provider, _parse_int_setting
+from .settings import _DEFAULT_IDLE_TIMEOUT, _daemon_llm_provider, _parse_int_setting, _uses_codex_oauth
 
 logger = logging.getLogger(__name__.rpartition(".")[0])
 
@@ -116,14 +116,15 @@ def _embedded_llm_api_key(config: dict[str, Any]) -> str:
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Build the profile-scoped env that standalone hindsight-embed consumes."""
-    if llm_api_key is None:
+    provider = str(config.get("llm_provider", "") or "")
+    oauth = _uses_codex_oauth(provider)
+    if llm_api_key is None and not oauth:
         llm_api_key = _embedded_llm_api_key(config)
-    env_values = {
-        "HINDSIGHT_API_LLM_PROVIDER": str(_daemon_llm_provider(config.get("llm_provider", ""))),
-        "HINDSIGHT_API_LLM_API_KEY": str(llm_api_key or ""),
-        "HINDSIGHT_API_LLM_MODEL": str(config.get("llm_model", "")),
-        "HINDSIGHT_API_LOG_LEVEL": "info",
-    }
+    env_values = {"HINDSIGHT_API_LLM_PROVIDER": str(_daemon_llm_provider(provider))}
+    if not oauth:
+        env_values["HINDSIGHT_API_LLM_API_KEY"] = str(llm_api_key or "")
+    env_values["HINDSIGHT_API_LLM_MODEL"] = str(config.get("llm_model", ""))
+    env_values["HINDSIGHT_API_LOG_LEVEL"] = "info"
     base_url = config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
     if base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url)

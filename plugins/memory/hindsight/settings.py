@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import math
 import re
 from typing import Any, List
 
@@ -14,7 +15,12 @@ logger = logging.getLogger(__name__.rpartition(".")[0])
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_CLIENT_VERSION = "0.6.1"
+# Floor is the live-proven openai-codex runtime (hindsight-all 0.9.2 ships
+# hindsight-client 0.9.2). Pre-1.0 ranges use <0.(minor+2).
+_MIN_CLIENT_VERSION = "0.9.2"
+_CLIENT_VERSION_UPPER = "0.11"
+_CLIENT_PIP_SPEC = f"hindsight-client>={_MIN_CLIENT_VERSION},<{_CLIENT_VERSION_UPPER}"
+_EMBEDDED_RUNTIME_SPEC = f"hindsight-all>={_MIN_CLIENT_VERSION},<{_CLIENT_VERSION_UPPER}"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # ``metadata.source`` on retained memories is OPT-IN (AGENTS.md forbids
@@ -30,6 +36,7 @@ _MIN_VERSION_FOR_UPDATE_MODE_APPEND = "0.5.0"
 _VALID_BUDGETS = {"low", "mid", "high"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
+    "openai-codex": "gpt-5.4-mini",
     "anthropic": "claude-haiku-4-5",
     "gemini": "gemini-3.6-flash",
     "groq": "openai/gpt-oss-120b",
@@ -42,6 +49,12 @@ _PROVIDER_DEFAULT_MODELS = {
 # The embedded daemon speaks OpenAI wire format for these providers.
 _OPENAI_WIRE_PROVIDERS = {"openai_compatible", "openrouter"}
 _OBSERVATION_SCOPE_KEYWORDS = {"per_tag", "combined", "all_combinations"}
+_MIN_SCORE_KEYS = ("semantic", "keyword", "reranker", "final")
+
+
+def _uses_codex_oauth(provider: str) -> bool:
+    """True when Hindsight authenticates via existing Codex/ChatGPT OAuth, not an LLM API key."""
+    return str(provider or "") == "openai-codex"
 
 
 def _parse_int_setting(value: Any, default: int) -> int:
@@ -104,6 +117,48 @@ def _normalize_observation_scopes(value: Any) -> Any:
         for entry in value
     ]
     return [s for s in scopes if s] or None
+
+
+def _normalize_min_scores(value: Any) -> dict[str, float] | None:
+    """Normalize Hindsight ``min_scores`` floors.
+
+    Absent/empty/invalid input -> ``None`` (existing no-floor behavior). A JSON
+    object or dict may set any of semantic/keyword/reranker/final. Unknown keys
+    and non-finite values are dropped so initialize never crashes on bad config.
+    """
+    if value is None or value == "" or value == {}:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = json.loads(text)
+        except Exception:
+            logger.warning("Invalid Hindsight recall_min_scores JSON; ignoring floors")
+            return None
+    if not isinstance(value, dict):
+        logger.warning("Invalid Hindsight recall_min_scores type %s; ignoring floors",
+                       type(value).__name__)
+        return None
+    unknown = [key for key in value if key not in _MIN_SCORE_KEYS]
+    if unknown:
+        logger.warning("Ignoring unknown Hindsight recall_min_scores keys: %s",
+                       sorted(str(k) for k in unknown))
+    out: dict[str, float] = {}
+    for key in _MIN_SCORE_KEYS:
+        if key not in value or value[key] is None or value[key] == "":
+            continue
+        try:
+            score = float(value[key])
+        except (TypeError, ValueError):
+            logger.warning("Ignoring non-numeric Hindsight recall_min_scores %s", key)
+            continue
+        if not math.isfinite(score):
+            logger.warning("Ignoring non-finite Hindsight recall_min_scores %s", key)
+            continue
+        out[key] = score
+    return out or None
 
 
 def _sanitize_bank_segment(value: str) -> str:

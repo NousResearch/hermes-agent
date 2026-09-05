@@ -67,6 +67,9 @@ def _install_modal_test_modules(
     sys.modules["hermes_cli.config"] = types.SimpleNamespace(
         get_hermes_home=lambda: hermes_home,
     )
+    subprocess_compat = types.ModuleType("hermes_cli._subprocess_compat")
+    subprocess_compat.windows_hide_flags = lambda: 0
+    sys.modules["hermes_cli._subprocess_compat"] = subprocess_compat
 
     tools_package = types.ModuleType("tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]

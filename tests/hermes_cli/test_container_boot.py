@@ -10,10 +10,10 @@ tests/docker/test_container_restart.py.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
-
 from hermes_cli.container_boot import (
     ReconcileAction,
     reconcile_profile_gateways,
@@ -46,6 +46,19 @@ def _hermetic_container_argv(monkeypatch: pytest.MonkeyPatch) -> None:
         "hermes_cli.container_boot._read_container_argv",
         lambda: (),
     )
+
+
+@pytest.fixture(autouse=True)
+def _userns_chown(monkeypatch):
+    """User namespaces have no uid 10000; record requested ownership."""
+    recorded: list[tuple[str, int, int]] = []
+
+    def _chown(path, uid, gid, *args, **kwargs):
+        recorded.append((str(path), int(uid), int(gid)))
+
+    monkeypatch.setattr(os, "chown", _chown)
+    monkeypatch.setattr("hermes_cli.service_manager.os.chown", _chown)
+    return recorded
 
 
 def _make_profile(

@@ -227,7 +227,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         # identities to peerName for single-user deployments (see _resolve_user_peer_id).
         # Determine peer IDs — no lock needed (read-only, no shared state mutation). See #14984.
         user_peer_id = user_peer_id or self._resolve_user_peer_id(key)
-        assistant_peer_id = self._sanitize_id(self._config.ai_peer if self._config else "hermes-assistant")
+        assistant_peer_id = self.assistant_peer_id()
 
         # All expensive I/O outside the lock — Honcho's persistence is source of truth.
         honcho_session_id = self._sanitize_id(key)
@@ -250,9 +250,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
     # ----- Writes -----
 
     def _author_peer_for_session(self, honcho_session: Any, honcho_session_id: str, author_peer_id: str) -> Any:
-        """Return the author's peer, joining it to the session on first sight. A shared session's
-        roster is open (people and agents arrive later), so peers join when they first write; joins
-        are remembered per session so this costs one API call per author."""
+        """The author's peer, joined to the session the first time it writes.
+
+        Joins are remembered per session, so this costs one API call per author."""
         peer = self._get_or_create_peer(author_peer_id)
         with self._cache_lock:
             if author_peer_id in self._joined_author_peers.setdefault(honcho_session_id, set()):
@@ -262,7 +262,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             config = SessionPeerConfig(observe_me=self._user_observe_me, observe_others=self._user_observe_others)
             honcho_session.add_peers([(peer, config)])
         except Exception as e:
-            # The write still lands under the right peer; only the membership (observe config) is missing.
+            # The write still lands under the right peer. Only the membership (observe config) is missing.
             logger.debug("Honcho author peer join failed for %s: %s", author_peer_id, e)
             return peer
         with self._cache_lock:

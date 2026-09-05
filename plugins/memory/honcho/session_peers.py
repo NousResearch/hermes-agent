@@ -104,11 +104,10 @@ class SessionPeersMixin:
         return target_peer_id, None
 
     def _peer_id_for_runtime_id(self, runtime_id: str) -> str:
-        """Map one gateway runtime identity onto its Honcho peer ID with the same alias-then-prefix
-        order ``_resolve_user_peer_id`` applies, so an aliased account lands on its peer on any turn.
-        A ``bot:<profile>`` author maps onto the profile name: a cloned profile's aiPeer defaults to
-        that name, so a sender in the same workspace lands on its existing AI peer. Prefixes never
-        apply to bot ids."""
+        """Honcho peer ID for one runtime identity: alias first, then prefix, as at session init.
+
+        A ``bot:<profile>`` author maps onto the bare profile name because a cloned profile's aiPeer
+        defaults to that name."""
         aliases = getattr(self._config, "user_peer_aliases", {}) if self._config else {}
         if isinstance(aliases, dict):
             alias = aliases.get(runtime_id)
@@ -121,16 +120,22 @@ class SessionPeersMixin:
         prefix = prefix.strip() if isinstance(prefix, str) else ""
         return self._generated_runtime_peer_id(prefix, runtime_id) if prefix else self._sanitize_id(runtime_id)
 
-    def resolve_author_peer_id(self, key: str, author_id: str | None, author_name: str | None = None) -> str | None:
-        """Peer ID for the turn's author, or None to keep the session's peer: no author named, the
-        author IS the session's peer, or ``pinPeerName`` collapsing the operator's accounts. Bot authors
-        are never collapsed: pinned or not, a bot's words go under the bot's peer.
-        ``author_name`` is a display name (attacker-influenceable), so it never becomes a peer ID."""
+    def assistant_peer_id(self) -> str:
+        """This agent's own peer ID, as the session builder derives it from ``aiPeer``."""
+        return self._sanitize_id(self._cfg("ai_peer") or "hermes-assistant")
+
+    def resolve_author_peer_id(
+        self, key: str, author_id: str | None, author_name: str | None = None, *, is_bot: bool = False,
+    ) -> str | None:
+        """Peer ID for the turn's author. None keeps the session's own peer.
+
+        A bot author (``is_bot`` or a ``bot:`` id) always gets its own peer: the pin only collapses the
+        operator's accounts. ``author_name`` never becomes a peer ID because display names are
+        attacker-influenceable."""
         runtime_id = str(author_id).strip() if author_id else ""
         if not runtime_id:
             return None
-        # The pin collapses the operator's own accounts onto one peer; a bot is never one of those.
-        if runtime_id.startswith(BOT_AUTHOR_PREFIX):
+        if is_bot or runtime_id.startswith(BOT_AUTHOR_PREFIX):
             return self._peer_id_for_runtime_id(runtime_id)
         if self._config is not None and bool(getattr(self._config, "peer_name", None)) \
                 and getattr(self._config, "pin_peer_name", False) is True:

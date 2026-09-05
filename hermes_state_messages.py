@@ -778,7 +778,11 @@ class SessionMessagesMixin:
         stamped ``_DB_PERSISTED_MARKER_KEY`` (born durable) so an identity-losing handoff never re-appends the
         transcript on flush. ``_row_id`` is opt-in (gateway reactions); reasoning restored on assistant rows
         only; ``api_content`` VERBATIM (no sanitize/strip) so replay keeps the provider prompt cache byte-stable."""
-        from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
+        from hermes_state import (
+            _answer_interrupted_tool_calls,
+            _strip_background_review_harness,
+            _strip_stale_tool_call_markers,
+        )
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
         for row in rows:
@@ -827,6 +831,9 @@ class SessionMessagesMixin:
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
         if repair_alternation and messages:
+            # Must run BEFORE repair_message_sequence, whose Pass 2 would
+            # otherwise prune the interrupted calls (#99869).
+            messages = _answer_interrupted_tool_calls(messages)
             from agent.agent_runtime_helpers import repair_message_sequence
             repaired = repair_message_sequence(None, messages)
             if repaired:

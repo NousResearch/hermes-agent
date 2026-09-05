@@ -4,6 +4,7 @@ import hashlib
 import re
 import socket
 from pathlib import Path
+from stat import S_ISREG
 
 from hermes_cli.foreign_sessions import _SOURCES, _SOURCE_LABELS, _SOURCE_DB_NAMES
 
@@ -30,14 +31,14 @@ def _candidates(source=None):
         if not root.is_dir():
             continue
         for path in root.rglob(pattern) if recursive else root.glob(pattern):
-            resolved = path.resolve()
-            if not resolved.is_relative_to(root):
-                continue
             try:
+                resolved = path.resolve()
+                if not resolved.is_relative_to(root):
+                    continue
                 stat = resolved.stat()
-            except FileNotFoundError:
-                continue  # A running source may rotate a log during discovery.
-            if not resolved.is_file():
+            except OSError:
+                continue  # One inaccessible or rotated log must not hide the rest.
+            if not S_ISREG(stat.st_mode):
                 continue
             handle = hashlib.sha256(f"{name}:{resolved}".encode()).hexdigest()
             rows.append((stat.st_mtime, handle, name, resolved, stat.st_size))

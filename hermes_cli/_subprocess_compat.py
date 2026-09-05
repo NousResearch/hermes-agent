@@ -395,6 +395,7 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
     env: "Mapping[str, str] | None" = None,
+    cwd: str | os.PathLike[str] | None = None,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
@@ -406,14 +407,15 @@ def bounded_probe_run(
     launcher shim, ``conhost.exe`` under wmic/powershell) holding duplicates of the captured stdout/stderr
     handles, so the pipes never reach EOF and the reader-thread join blocks forever. The wmic /
     ``Get-CimInstance Win32_Process`` gateway scan hit exactly this during ``hermes update`` on slow-WMI
-    machines (#87134); the git probes hit it first (#68609 / #66037).
+    machines (#87134); the git probes hit it first (#68609 / #66037). ``cwd`` is forwarded for
+    probes, such as workspace-scoped npm audits, that must run from a specific directory.
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     try:
         proc = subprocess.Popen(
             list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors=errors,
-            env=dict(env) if env is not None else None, **_popen_kwargs)
+            env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
         return None
     try:

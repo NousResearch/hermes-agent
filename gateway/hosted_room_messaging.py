@@ -849,6 +849,7 @@ class MessagingRoomBackend:
                 **status,
                 "blocked": bool(status.get("blocked") or peer_needs_attention),
                 "pending_actions": actions,
+                "needs_attention": bool(actions),
             }
         tasks = driver.list_tasks(self.db_path, room_id=room_id)
         counts: dict[str, int] = {}
@@ -862,18 +863,19 @@ class MessagingRoomBackend:
             )
         except Exception:
             peer_needs_attention = True
+        actions = [
+            {"kind": "retry", "task_id": task["identity"].task_id}
+            for task in tasks
+            if task.get("status") in {"deferred", "indeterminate"}
+        ] + approvals.list_pending_approvals(self.db_path, room_id=room_id)
         return {
             "working": any(
                 counts.get(status) for status in ("queued", "running", "stopping")
             ),
             "blocked": bool(counts.get("indeterminate") or peer_needs_attention),
             "counts": counts,
-            "pending_actions": [
-                {"kind": "retry", "task_id": task["identity"].task_id}
-                for task in tasks
-                if task.get("status") in {"deferred", "indeterminate"}
-            ]
-            + approvals.list_pending_approvals(self.db_path, room_id=room_id),
+            "pending_actions": actions,
+            "needs_attention": bool(actions),
         }
 
     def send(
@@ -1149,6 +1151,15 @@ def resolve_room(rooms: list[dict[str, Any]], query: str) -> dict[str, Any]:
     raise RoomControlError(f"No group chat matches “{_clean_line(query)}”.")
 
 
+def _status_needs_attention(status: Mapping[str, Any]) -> bool:
+    actions = status.get("pending_actions")
+    return bool(status.get("needs_attention")) or (
+        isinstance(actions, list)
+        and any(isinstance(action, Mapping) and action.get("kind") in {"retry", "approval"}
+                for action in actions)
+    )
+
+
 def _room_status(service: Any, room: Mapping[str, Any]) -> str:
     if room.get("_room_mode") == "desktop":
         command = room.get("desktop_command")
@@ -1168,6 +1179,8 @@ def _room_status(service: Any, room: Mapping[str, Any]) -> str:
         return "needs attention"
     if status.get("working"):
         return "work queued or running"
+    if _status_needs_attention(status):
+        return "needs attention"
     state = hosted_rooms.room_state(service.db_path, room_id=room_id)
     since = max(0, int(state.get("latest_seq") or 0) - 80)
     recent = hosted_rooms.read_events(
@@ -1395,6 +1408,8 @@ def format_room_detail(
                 status_text = "needs attention"
             elif remote_status.get("working"):
                 status_text = "work queued or running"
+            elif _status_needs_attention(remote_status):
+                status_text = "needs attention"
             else:
                 status_text = "idle"
     lines = [

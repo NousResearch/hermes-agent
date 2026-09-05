@@ -1740,6 +1740,33 @@ def test_group_detail_never_invents_a_missing_bot_handle(tmp_path):
     assert selected.startswith("🤖 **Review Bot**")
 
 
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("working", [False, True])
+def test_group_detail_deferred_attention_preserves_healthy_work(tmp_path, monkeypatch, remote, working):
+    db, release, _ = _seed_rooms(tmp_path)
+    service = _FakeService(db)
+    service.room_status = {
+        "working": working, "blocked": False,
+        "pending_actions": [{"kind": "retry", "task_id": "deferred-task"}],
+    }
+    room = release
+    if remote:
+        room = {**release, "_room_mode": "remote"}
+        monkeypatch.setattr(hosted_room_messaging, "_remote_summary", lambda *_: {
+            "room": release, "status": service.room_status, "events": [],
+        })
+    backend = MessagingRoomBackend(db_path=db, service=service)
+    assert backend.status(release["room_id"])["needs_attention"] is True
+    detail = format_room_detail(backend, room)
+    assert "Retry: `/group 1 retry`" in detail
+    assert ("needs attention" in detail) is not working
+    assert ("work queued or running" in detail) is working
+    assert ("Stop: `/group 1 stop`" in detail) is working
+    service.room_status = {"working": False, "blocked": False, "pending_actions": []}
+    assert backend.status(release["room_id"])["needs_attention"] is False
+    assert "needs attention" not in format_room_detail(backend, room)
+
+
 def test_group_detail_only_offers_actions_that_match_current_state(tmp_path):
     db, release, _ = _seed_rooms(tmp_path)
     service = _FakeService(db)

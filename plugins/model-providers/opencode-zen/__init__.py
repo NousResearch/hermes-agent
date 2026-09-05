@@ -30,10 +30,19 @@ def _is_deepseek_thinking_model(model: str | None) -> bool:
     return (m.startswith("deepseek-v") and not m.startswith("deepseek-v3")) or m == "deepseek-reasoner"
 
 
-def _is_glm_5_2_model(model: str | None) -> bool:
-    """GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
+def _glm_effort_spec(model: str | None) -> tuple | None:
+    """GLM effort vocabulary for a 5.2/5.3 alias: (efforts, overrides, floor).
+
+    Shared with the zai profile (agent.reasoning_effort). GLM-5.3 accepts
+    the graded low/medium/high/max knob; GLM-5.2 only high/max. Returns
+    None for non-GLM models.
+    """
     m = _flat_model_name(model)
-    return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+    if any(token in m for token in ("glm-5.3", "glm-5-3", "glm-5p3")):
+        return re_.GLM53_EFFORTS, re_.GLM53_OVERRIDES, "low"
+    if any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2")):
+        return re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES, "high"
+    return None
 
 
 def _requested_effort(reasoning_config: dict | None) -> str | None:
@@ -69,13 +78,18 @@ class OpenCodeGoProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if _is_glm_5_2_model(model):
-            # Native reasoning_effort knob (high/max); server default when unset/disabled.
+        glm_spec = _glm_effort_spec(model)
+        if glm_spec is not None:
+            # Native reasoning_effort knob (graded low/medium/high/max for
+            # GLM-5.3, high/max for GLM-5.2 — efforts declared in
+            # agent.reasoning_effort, shared with the zai profile); server
+            # default when unset/disabled.
             effort = _requested_effort(reasoning_config)
             if effort is None:
                 return {}, {}
-            clamped = re_.clamp_effort(effort, re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES)
-            return {}, {"reasoning_effort": clamped if clamped in re_.GLM52_EFFORTS else "high"}
+            efforts, overrides, floor = glm_spec
+            clamped = re_.clamp_effort(effort, efforts, overrides)
+            return {}, {"reasoning_effort": clamped if clamped in efforts else floor}
         if _flat_model_name(model).startswith("kimi-k2"):
             if not isinstance(reasoning_config, dict):
                 return {}, {}

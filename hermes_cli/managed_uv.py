@@ -865,8 +865,12 @@ def _repair_windows_preflight(
             "    Retrying `hermes update` from inside this venv cannot help: "
             "the mapped executable is released only when this process exits.",
             "    To complete the repair, run the updater from an interpreter "
-            "that lives outside this venv, e.g.:",
+            "that lives outside this venv. That interpreter has none of Hermes' "
+            # A bare system interpreter does not have Hermes' dependencies, so
+            # `hermes_cli.main` fails on the first third-party import (#103601).
+            "dependencies installed yet, so install them first, e.g.:",
             f"      cd {root}",
+            "      <system Python> -m pip install -e \".[all]\"",
             "      <system Python> -m hermes_cli.main update",
             "    Sessions stay protected meanwhile: Hermes keeps databases "
             "out of WAL mode on this SQLite build."):

@@ -15,7 +15,7 @@ Create meme PNGs from templates with Pillow text overlay.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/meme-generation` |
-| Path | `optional-skills/creative\meme-generation` |
+| Path | `optional-skills/creative/meme-generation` |
 | Version | `2.0.0` |
 | Author | adanaleycio |
 | License | MIT |

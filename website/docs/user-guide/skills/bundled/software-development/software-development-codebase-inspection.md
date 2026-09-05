@@ -15,7 +15,7 @@ Inspect codebases w/ pygount: LOC, languages, ratios.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\codebase-inspection` |
+| Path | `skills/software-development/codebase-inspection` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |

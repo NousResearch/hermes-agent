@@ -7,6 +7,7 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -2387,3 +2388,243 @@ class TestCanonicalCostExport:
         # explicit zeros are treated as authoritative by Langfuse and block
         # its own model-based estimation (#43129).
         assert response_cost == {}
+# Auxiliary-LLM tracking (config: plugins.entries.observability/langfuse.track_aux)
+# ---------------------------------------------------------------------------
+
+class TestAuxTracking:
+
+    def _fresh_plugin(self, monkeypatch, track_aux=False):
+        """Import the plugin module fresh; ``track_aux=True`` forces the
+        config.yaml flag via the module's resolver."""
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        mod = importlib.import_module(mod_name)
+        # Force the lazily-resolved flag to the desired value (bypasses
+        # reading the real config.yaml for unit isolation).
+        mod._TRACK_AUX = bool(track_aux)
+        return mod
+
+    def _fake_client(self):
+        from types import SimpleNamespace
+
+        gen = MagicMock()
+        root_span = MagicMock()
+        root_span.start_observation = MagicMock(return_value=gen)
+        root_ctx = MagicMock()
+        root_ctx.__enter__ = MagicMock(return_value=root_span)
+        root_ctx.__exit__ = MagicMock(return_value=None)
+        client = SimpleNamespace(
+            create_trace_id=MagicMock(return_value="trace-aux-1"),
+            start_as_current_observation=MagicMock(return_value=root_ctx),
+        )
+        return client, root_span, gen
+
+    def test_track_aux_off_by_default(self, monkeypatch):
+        mod = self._fresh_plugin(monkeypatch, False)
+        assert mod._track_aux_enabled() is False
+
+    def test_track_aux_on_registers_observer(self, monkeypatch):
+        mod = self._fresh_plugin(monkeypatch, True)
+        assert mod._track_aux_enabled() is True
+
+        from agent import auxiliary_client as aux
+        for obs in list(aux._AUX_LLM_OBSERVERS):
+            aux.unregister_aux_llm_observer(obs)
+
+        class FakeCtx:
+            def __init__(self):
+                self.hooks = []
+
+            def register_hook(self, *a):
+                self.hooks.append(a)
+
+        mod.register(FakeCtx())
+        assert mod._on_aux_llm_call in aux._AUX_LLM_OBSERVERS
+        aux.unregister_aux_llm_observer(mod._on_aux_llm_call)
+
+    def test_aux_trace_start_end_records_usage(self, monkeypatch):
+        from types import SimpleNamespace
+
+        mod = self._fresh_plugin(monkeypatch, True)
+        client, root_span, gen = self._fake_client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+
+        class FakeUsage:
+            prompt_tokens = 1000
+            completion_tokens = 200
+            prompt_cache_hit_tokens = 600
+            prompt_cache_miss_tokens = 400
+            completion_tokens_details = SimpleNamespace(reasoning_tokens=50)
+
+        class FakeResp:
+            model = "deepseek-v4-flash"
+            usage = FakeUsage()
+            choices = [SimpleNamespace(message=SimpleNamespace(content="摘要输出"))]
+
+        mod._on_aux_llm_call("start", {
+            "task": "compression", "model": "deepseek-v4-flash",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert client.create_trace_id.called
+        assert client.start_as_current_observation.called
+        assert root_span.start_observation.called
+
+        mod._on_aux_llm_call("end", {
+            "task": "compression", "model": "deepseek-v4-flash",
+            "response": FakeResp(),
+        })
+        # Token usage (incl. DeepSeek cache hit) lands on the generation span.
+        usage_calls = [c.kwargs for c in gen.update.call_args_list if "usage_details" in c.kwargs]
+        assert usage_calls, "no usage update recorded"
+        ud = usage_calls[0]["usage_details"]
+        assert ud["cache_read_input_tokens"] == 600
+        assert ud["input"] == 400          # DeepSeek cache-miss → input
+        assert ud["output"] == 200
+        gen.end.assert_called_once()
+
+    def test_aux_trace_error_marks_and_ends(self, monkeypatch):
+        mod = self._fresh_plugin(monkeypatch, True)
+        client, root_span, gen = self._fake_client()
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+
+        mod._on_aux_llm_call("start", {
+            "task": "vision", "messages": [{"role": "user", "content": "x"}],
+        })
+        mod._on_aux_llm_call("error", {
+            "task": "vision", "error": "provider timeout",
+        })
+        gen.end.assert_called_once()
+        # The chain is also closed.
+        assert root_span.end.called
+        # No dangling state.
+        assert mod._AUX_CALLS == {}
+
+
+# ---------------------------------------------------------------------------
+# Wiring: sync + async call_llm entry points emit observer events
+# ---------------------------------------------------------------------------
+
+class TestAuxObserversOnCallLlm:
+    """End-to-end wiring check: calling the real ``call_llm`` /
+    ``async_call_llm`` entry points must emit start/end/error observer events
+    (the ``_call_llm_impl`` / ``_async_call_llm_impl`` providers are mocked so
+    no network request is made, but the full notify path runs)."""
+
+    def _record_observer(self):
+        events = []
+
+        def observer(event, kwargs):
+            events.append((event, kwargs))
+
+        return events, observer
+
+    def _fake_response(self):
+        return SimpleNamespace(
+            model="mock-model",
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        )
+
+    def test_sync_call_llm_emits_start_and_end(self, monkeypatch):
+        from agent import auxiliary_client as aux
+
+        events, obs = self._record_observer()
+        aux.register_aux_llm_observer(obs)
+        try:
+            fake = self._fake_response()
+            monkeypatch.setattr(aux, "_call_llm_impl", lambda **kw: fake)
+            resp = aux.call_llm(
+                "wiring-test",
+                provider="mock-provider",
+                model="mock-model",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        finally:
+            aux.unregister_aux_llm_observer(obs)
+
+        assert resp is fake
+        assert [e[0] for e in events] == ["start", "end"]
+        start = events[0][1]
+        assert start["task"] == "wiring-test"
+        assert start["model"] == "mock-model"
+        assert start["messages"] == [{"role": "user", "content": "hi"}]
+        assert events[1][1]["response"] is fake
+
+    def test_sync_call_llm_emits_error_on_exception(self, monkeypatch):
+        from agent import auxiliary_client as aux
+
+        events, obs = self._record_observer()
+        aux.register_aux_llm_observer(obs)
+        try:
+            def boom(**kw):
+                raise RuntimeError("provider timeout")
+
+            monkeypatch.setattr(aux, "_call_llm_impl", boom)
+            with pytest.raises(RuntimeError, match="provider timeout"):
+                aux.call_llm(
+                    "wiring-test",
+                    provider="mock-provider",
+                    model="mock-model",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+        finally:
+            aux.unregister_aux_llm_observer(obs)
+
+        assert [e[0] for e in events] == ["start", "error"]
+        assert "provider timeout" in events[1][1]["error"]
+
+    def test_async_call_llm_emits_start_and_end(self, monkeypatch):
+        import asyncio
+
+        from agent import auxiliary_client as aux
+
+        events, obs = self._record_observer()
+        aux.register_aux_llm_observer(obs)
+        try:
+            fake = self._fake_response()
+
+            async def fake_impl(**kw):
+                return fake
+
+            monkeypatch.setattr(aux, "_async_call_llm_impl", fake_impl)
+            resp = asyncio.run(
+                aux.async_call_llm(
+                    "wiring-test",
+                    provider="mock-provider",
+                    model="mock-model",
+                    messages=[{"role": "user", "content": "hi"}],
+                )
+            )
+        finally:
+            aux.unregister_aux_llm_observer(obs)
+
+        assert resp is fake
+        assert [e[0] for e in events] == ["start", "end"]
+        assert events[0][1]["task"] == "wiring-test"
+        assert events[1][1]["response"] is fake
+
+    def test_async_call_llm_emits_error_on_exception(self, monkeypatch):
+        import asyncio
+
+        from agent import auxiliary_client as aux
+
+        events, obs = self._record_observer()
+        aux.register_aux_llm_observer(obs)
+        try:
+            async def boom(**kw):
+                raise RuntimeError("async provider timeout")
+
+            monkeypatch.setattr(aux, "_async_call_llm_impl", boom)
+            with pytest.raises(RuntimeError, match="async provider timeout"):
+                asyncio.run(
+                    aux.async_call_llm(
+                        "wiring-test",
+                        provider="mock-provider",
+                        model="mock-model",
+                        messages=[{"role": "user", "content": "hi"}],
+                    )
+                )
+        finally:
+            aux.unregister_aux_llm_observer(obs)
+
+        assert [e[0] for e in events] == ["start", "error"]
+        assert "async provider timeout" in events[1][1]["error"]

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import contextvars
+import itertools
 import json
 import logging
 import os
@@ -969,6 +971,114 @@ def on_subagent_stop(*, parent_turn_id: str = "", child_session_id: Any = None, 
     _end_observation(observation, output=_capture_content(child_summary), metadata=metadata)
 
 
+_TRACK_AUX: Optional[bool] = None
+_AUX_CALL_ID_CTX: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "langfuse_aux_call_id", default=None
+)
+_AUX_CALLS: Dict[str, Dict[str, Any]] = {}
+_AUX_CALLS_LOCK = threading.Lock()
+_AUX_CALL_COUNTER = itertools.count()
+
+
+def _track_aux_enabled() -> bool:
+    """Resolve the opt-in auxiliary tracing flag from config.yaml."""
+    global _TRACK_AUX
+    if _TRACK_AUX is None:
+        try:
+            from hermes_cli.config import cfg_get, load_config_readonly
+            cfg = load_config_readonly()
+            _TRACK_AUX = bool(cfg_get(
+                cfg, "plugins", "entries", "observability/langfuse", "track_aux", default=False
+            ))
+        except Exception:
+            _TRACK_AUX = False
+    return _TRACK_AUX
+
+
+def _aux_messages_preview(messages: Any) -> str:
+    if not isinstance(messages, list):
+        return ""
+    parts = []
+    for message in messages[-5:]:
+        if isinstance(message, dict):
+            role = message.get("role", "?")
+            content = message.get("content", "")
+        else:
+            role, content = "?", str(message)
+        parts.append(f"{role}: {content[:200] if isinstance(content, str) else '<non-text>'}")
+    return "\n".join(parts)
+
+
+def _on_aux_llm_call(event: str, kwargs: Dict[str, Any]) -> None:
+    if not _track_aux_enabled():
+        return
+    try:
+        if event == "start":
+            task = kwargs.get("task") or "aux"
+            client = _get_langfuse()
+            if client is None:
+                return
+            call_id = f"aux::{task}::{next(_AUX_CALL_COUNTER)}"
+            trace_id = client.create_trace_id(seed=call_id)
+            root_ctx = client.start_as_current_observation(
+                trace_context={"trace_id": trace_id, "session_id": f"aux:{task}"},
+                name=f"Hermes aux: {task}", as_type="chain",
+                input=_capture_content(_aux_messages_preview(kwargs.get("messages"))),
+                metadata={
+                    "source": "hermes", "kind": "aux", "task": task,
+                    "provider": kwargs.get("provider") or "",
+                    "model": kwargs.get("model") or "",
+                    "api_mode": kwargs.get("api_mode") or "",
+                }, end_on_exit=False,
+            )
+            root_span = root_ctx.__enter__()
+            generation = root_span.start_observation(
+                name="LLM call", as_type="generation",
+                input=_capture_content(_aux_messages_preview(kwargs.get("messages"))),
+                model=kwargs.get("model") or "",
+                metadata={"task": task, "aux": True},
+            )
+            with _AUX_CALLS_LOCK:
+                _AUX_CALLS[call_id] = {
+                    "root_ctx": root_ctx, "root_span": root_span,
+                    "generation": generation, "task": task,
+                }
+            _AUX_CALL_ID_CTX.set(call_id)
+            return
+
+        call_id = _AUX_CALL_ID_CTX.get()
+        if not call_id:
+            return
+        with _AUX_CALLS_LOCK:
+            entry = _AUX_CALLS.pop(call_id, None)
+        _AUX_CALL_ID_CTX.set(None)
+        if entry is None:
+            return
+        generation = entry["generation"]
+        if event == "end":
+            response = kwargs.get("response")
+            usage_details, cost_details = _usage_and_cost(
+                response, provider=kwargs.get("provider") or "",
+                api_mode=kwargs.get("api_mode") or "",
+                model=kwargs.get("model") or "", base_url="",
+            )
+            output = None
+            choices = getattr(response, "choices", None) if response is not None else None
+            if choices:
+                message = getattr(choices[0], "message", None)
+                content = getattr(message, "content", None)
+                output = _capture_content(content) if isinstance(content, str) else None
+            _end_observation(generation, output=output, usage_details=usage_details,
+                             cost_details=cost_details)
+        else:
+            _end_observation(generation, metadata={"error": kwargs.get("error") or "aux call failed"})
+        with _failsafe("end auxiliary trace"):
+            entry["root_span"].end()
+            entry["root_ctx"].__exit__(None, None, None)
+    except Exception as exc:
+        _debug(f"auxiliary trace failed: {exc}")
+
+
 def register(ctx) -> None:
     # Both hook-name variants so the plugin works across Hermes versions:
     # *_api_request fire per API call (preferred); *_llm_call once per turn.
@@ -982,3 +1092,9 @@ def register(ctx) -> None:
     )
     for name, fn in hooks:
         ctx.register_hook(name, fn)
+    if _track_aux_enabled():
+        try:
+            from agent.auxiliary_client import register_aux_llm_observer
+            register_aux_llm_observer(_on_aux_llm_call)
+        except Exception as exc:
+            logger.warning("Langfuse plugin: could not register auxiliary observer: %s", exc)

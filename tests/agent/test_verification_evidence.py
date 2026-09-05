@@ -10,6 +10,7 @@ from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
+    record_verify_run,
     verification_status,
 )
 
@@ -350,3 +351,104 @@ def test_windows_backslash_ad_hoc_script_path_is_matched(tmp_path, monkeypatch):
     assert result is not None, (
         "Windows backslash path should be matched via posix=False fallback"
     )
+
+
+def _verified_then_edited(tmp_path, session_id="conversation"):
+    """In-session green evidence, then an edit: the per-session ledger now reads
+    stale — the exact state the stop guard consults."""
+    record_terminal_result(
+        command="pnpm test", cwd=tmp_path, session_id=session_id, exit_code=0, output="green",
+    )
+    assert verification_status(session_id=session_id, cwd=tmp_path)["status"] == "passed"
+    mark_workspace_edited(
+        session_id=session_id, cwd=tmp_path, paths=[str(tmp_path / "src" / "app.ts")],
+    )
+    assert verification_status(session_id=session_id, cwd=tmp_path)["status"] == "stale"
+
+
+def test_shell_verify_pass_clears_stale_state_from_editing_session(tmp_path, monkeypatch):
+    """A shell-run `hermes verify` has no session to thread and records under
+    "default" (verify_cmd.py reads HERMES_SESSION_ID only), while edits are
+    keyed to the real session (#103271). A passing full verification of the
+    root is a property of the workspace, so it must clear the editing
+    session's staleness instead of leaving it permanently stale."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    _verified_then_edited(tmp_path)
+
+    record_verify_run(root=tmp_path, session_id=None, ok=True)
+
+    status = verification_status(session_id="conversation", cwd=tmp_path)
+    assert status["status"] == "passed"
+    assert status["evidence"]["canonical_command"] == "hermes verify"
+    assert status["evidence"]["scope"] == "full"
+
+
+def test_edit_after_cross_session_verify_stays_stale(tmp_path, monkeypatch):
+    """The workspace-level pass only clears evidence older than the session's
+    latest edit — freshness comparison stays per-edit, not per-eternity."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    _verified_then_edited(tmp_path)
+
+    record_verify_run(root=tmp_path, session_id=None, ok=True)
+    mark_workspace_edited(
+        session_id="conversation",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "src" / "app.ts")],
+    )
+
+    status = verification_status(session_id="conversation", cwd=tmp_path)
+    assert status["status"] == "stale"
+
+
+def test_cross_session_targeted_pass_does_not_clear_stale(tmp_path, monkeypatch):
+    """Only full-scope passes clear staleness across sessions; a targeted run
+    from another session never upgrades the workspace to green."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    _verified_then_edited(tmp_path)
+
+    record_terminal_result(
+        command="pnpm test -- tests/button.test.tsx",
+        cwd=tmp_path,
+        session_id="other-session",
+        exit_code=0,
+        output="green",
+    )
+
+    status = verification_status(session_id="conversation", cwd=tmp_path)
+    assert status["status"] == "stale"
+
+
+def test_cross_session_failed_verify_does_not_clear_stale(tmp_path, monkeypatch):
+    """A failed shell-run verify must not clear the editing session's staleness."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    _verified_then_edited(tmp_path)
+
+    record_verify_run(root=tmp_path, session_id=None, ok=False)
+
+    status = verification_status(session_id="conversation", cwd=tmp_path)
+    assert status["status"] == "stale"
+
+
+def test_cross_session_full_terminal_run_does_not_clear_stale(tmp_path, monkeypatch):
+    """Only verify-kind events clear staleness across sessions. Terminal runs
+    reach scope="full" via the _looks_like_target heuristic — a filtered run
+    like `pnpm test --filter=web` reads as full but covers a subset, so it
+    must not upgrade another session's ledger to green."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    _verified_then_edited(tmp_path)
+
+    record_terminal_result(
+        command="pnpm test --filter=web",
+        cwd=tmp_path,
+        session_id="other-session",
+        exit_code=0,
+        output="green",
+    )
+
+    status = verification_status(session_id="conversation", cwd=tmp_path)
+    assert status["status"] == "stale"

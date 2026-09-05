@@ -564,6 +564,21 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
         event = None
         if state["last_event_id"] is not None:
             event = conn.execute("SELECT * FROM verification_events WHERE id = ?", (state["last_event_id"],)).fetchone()
+        workspace_pass = None
+        if event is not None and state["last_edit_at"] and state["last_edit_at"] > event["created_at"]:
+            # Session-keyed evidence is stale, but a shell-run `hermes verify`
+            # records under session "default" (#103271) — the editing session's
+            # ledger never sees it. A passing full-scope `hermes verify` of this
+            # root after the edit proves the workspace green regardless of who
+            # ran it. Only verify-kind events qualify: terminal runs reach
+            # scope="full" through the `_looks_like_target` heuristic, so a
+            # filtered run like `pnpm test --filter=web` can read as full.
+            workspace_pass = conn.execute(
+                "SELECT * FROM verification_events"
+                " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full' AND created_at > ?"
+                " ORDER BY id DESC LIMIT 1",
+                (root, state["last_edit_at"]),
+            ).fetchone()
 
     result = {
         "evidence": None, "root": root, "session_id": sid, "changed_paths": _load_changed_paths(state["changed_paths_json"])
@@ -573,4 +588,7 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
 
     evidence = dict(event)
     stale = bool(state["last_edit_at"]) and state["last_edit_at"] > evidence["created_at"]
+    if stale and workspace_pass is not None:
+        evidence = dict(workspace_pass)
+        stale = False
     return {"status": "stale" if stale else evidence["status"], **result, "evidence": evidence}

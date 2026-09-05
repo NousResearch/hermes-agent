@@ -151,6 +151,36 @@ describe('PreviewPane console state', () => {
     expect(rendered.queryByRole('textbox', { name: 'Address' })).toBeNull()
   })
 
+  it('does not offer the URL-only pop-out action for a local HTML file', async () => {
+    vi.stubGlobal('window', {
+      ...window,
+      hermesDesktop: {
+        ...window.hermesDesktop,
+        openBrowserWindow: vi.fn(async () => ({ ok: true }))
+      }
+    })
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          tabId="file:/tmp/report.html"
+          target={{
+            kind: 'file',
+            label: 'report.html',
+            path: '/tmp/report.html',
+            previewKind: 'html',
+            source: '/tmp/report.html',
+            url: 'file:///tmp/report.html'
+          }}
+        />
+      )
+    })
+
+    expect(rendered.getByRole('textbox', { name: 'Address' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+  })
+
   it('drives the webview from the bar and tracks its history', async () => {
     let rendered!: ReturnType<typeof render>
     await act(async () => {

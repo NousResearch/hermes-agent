@@ -924,13 +924,23 @@ def _entry_ids(entries: Iterable[Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def write_credential_pool(
-    provider_id: str, entries: List[Dict[str, Any]], *, removed_ids: Optional[Iterable[str]] = None,
+    provider_id: str, entries: List[Dict[str, Any]], *,
+    removed_ids: Optional[Iterable[str]] = None,
+    status_cleared_ids: Optional[Iterable[str]] = None,
 ) -> Path:
     """Persist one provider's credential pool under auth.json.
 
     Final disk-boundary sanitizer for borrowed credentials (callers may pass raw dicts). Entries on
     disk but missing from *entries* (added concurrently) are merged back unless in *removed_ids*,
-    so a rotation/exhaustion rewrite never drops a concurrent credential."""
+    so a rotation/exhaustion rewrite never drops a concurrent credential.
+
+    Pass ``status_cleared_ids`` for entries whose status the caller intentionally
+    cleared — the same problem one step further in. The recency merge cannot tell
+    an operator's ``hermes auth reset`` from a stale snapshot: a clear sets
+    ``last_status_at`` to None, which compares as epoch 0 and so always loses to
+    the on-disk timestamp, and the cooldown was copied straight back. Declaring
+    the intent is what separates "I have not seen the newer status" from "I have
+    seen it and I am dropping it"."""
     removed = {rid for rid in (removed_ids or ()) if rid}
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -942,9 +952,15 @@ def write_credential_pool(
         existing_list = existing_list if isinstance(existing_list, list) else []
         existing_by_id = _entry_ids(existing_list)
         new_ids = set(_entry_ids(sanitized))
+        status_cleared = {cid for cid in (status_cleared_ids or ()) if cid}
         merged: List[Dict[str, Any]] = [
-            _merge_disk_cooldown_state(e, existing_by_id.get(e.get("id")), provider_id)
-            if isinstance(e, dict) else e
+            e
+            if isinstance(e, dict) and e.get("id") in status_cleared
+            else (
+                _merge_disk_cooldown_state(e, existing_by_id.get(e.get("id")), provider_id)
+                if isinstance(e, dict)
+                else e
+            )
             for e in sanitized]
         for disk_entry in existing_list:
             disk_id = disk_entry.get("id") if isinstance(disk_entry, dict) else None

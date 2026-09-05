@@ -791,7 +791,10 @@ def _borrowed_single_use_pool_root() -> Optional[Path]:
         return None
 
 
-def _update_root_pool_rows(provider: str, payloads: List[Dict[str, Any]], global_path: Path) -> None:
+def _update_root_pool_rows(
+    provider: str, payloads: List[Dict[str, Any]], global_path: Path,
+    *, status_cleared_ids: Optional[Iterable[str]] = None,
+) -> None:
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
     A borrower may refresh the root's rows (rotation, cooldown state) but
@@ -816,7 +819,13 @@ def _update_root_pool_rows(provider: str, payloads: List[Dict[str, Any]], global
             if incoming is None:
                 merged.append(disk_entry)
                 continue
-            updated = auth_mod._merge_disk_cooldown_state(incoming, disk_entry, provider)
+            cleared = {cid for cid in (status_cleared_ids or ()) if cid}
+            if did in cleared:
+                # The caller deliberately cleared this entry's status; do not
+                # let the disk recency merge restore the cooldown.
+                updated = incoming
+            else:
+                updated = auth_mod._merge_disk_cooldown_state(incoming, disk_entry, provider)
             if updated != disk_entry:
                 changed = True
             merged.append(updated)
@@ -830,6 +839,7 @@ def persist_pool_entries(
     payloads: List[Dict[str, Any]],
     *,
     removed_ids: Optional[Iterable[str]] = None,
+    status_cleared_ids: Optional[Iterable[str]] = None,
 ) -> None:
     """Persist a provider's pool rows to the store that OWNS them.
 
@@ -845,7 +855,10 @@ def persist_pool_entries(
         global_path = _borrowed_single_use_pool_root()
         if global_path is not None:
             try:
-                _update_root_pool_rows(provider, payloads, global_path)
+                _update_root_pool_rows(
+                    provider, payloads, global_path,
+                    status_cleared_ids=status_cleared_ids,
+                )
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
                 # writing a local copy (that IS the bug). The in-memory pool
@@ -856,7 +869,11 @@ def persist_pool_entries(
                     provider, exc,
                 )
             return
-    write_credential_pool(provider, payloads, removed_ids=removed_ids)
+    write_credential_pool(
+        provider, payloads,
+        removed_ids=removed_ids,
+        **({"status_cleared_ids": status_cleared_ids} if status_cleared_ids else {}),
+    )
 
 
 # --- Per-provider singleton refresh plumbing -------------------------------
@@ -1018,13 +1035,19 @@ class CredentialPool:
                     self._entries[idx] = new
                     return
 
-    def _persist(self, *, removed_ids: Optional[List[str]] = None) -> None:
+    def _persist(
+        self,
+        *,
+        removed_ids: Optional[List[str]] = None,
+        status_cleared_ids: Optional[List[str]] = None,
+    ) -> None:
         # Self-locking: snapshotting self._entries must not race a rotation.
         with self._lock:
             persist_pool_entries(
                 self.provider,
                 [entry.to_dict() for entry in self._entries],
                 removed_ids=removed_ids,
+                status_cleared_ids=status_cleared_ids,
             )
 
     def _adopt(self, entry: PooledCredential, *, persist: bool = True, **updates: Any) -> PooledCredential:
@@ -2139,15 +2162,63 @@ class CredentialPool:
         return refreshed
 
     def reset_statuses(self) -> int:
+        """Clear exhaustion state on every entry. Returns how many were cleared.
+
+        Two details are load-bearing, and both were missing:
+
+        ``failure_reason`` is cleared alongside the status fields. It lives in
+        ``extra`` rather than as a dataclass field, so ``replace()`` cannot reach
+        it and it survived every reset — leaving an entry with no status but
+        still classified ``billing``, a contradiction ``hermes auth list``
+        renders as if it were a finding.
+
+        The persist declares the clear as DELIBERATE. ``write_credential_pool``
+        merges on-disk status over the caller's snapshot whenever the disk copy
+        is more recent and still binding, so a process cannot resurrect a key
+        another one has just rate-limited. Clearing sets ``last_status_at`` to
+        None, which compares as epoch 0 — older than any real timestamp — so
+        that merge read an operator reset as exactly the stale snapshot it
+        exists to reject and copied the cooldown straight back. The command
+        reported success and changed nothing, and only while the cooldown was
+        still binding: once expired the merge bails out early and the reset
+        appeared to work. Broken precisely when it is needed.
+        """
         with self._lock:
-            stale = [e for e in self._entries if e.last_status or e.last_status_at or e.last_error_code]
-            if stale:
-                stale_ids = {e.id for e in stale}
-                self._entries = [
-                    replace(e, **_CLEAR_STATUS) if e.id in stale_ids else e for e in self._entries
-                ]
-                self._persist()
-            return len(stale)
+            count = 0
+            cleared_ids: List[str] = []
+            new_entries = []
+            for entry in self._entries:
+                if (
+                    entry.last_status
+                    or entry.last_status_at
+                    or entry.last_error_code
+                    or getattr(entry, "failure_reason", None)
+                ):
+                    extra = {
+                        key: value
+                        for key, value in (entry.extra or {}).items()
+                        if key != "failure_reason"
+                    }
+                    new_entries.append(
+                        replace(
+                            entry,
+                            last_status=None,
+                            last_status_at=None,
+                            last_error_code=None,
+                            last_error_reason=None,
+                            last_error_message=None,
+                            last_error_reset_at=None,
+                            extra=extra,
+                        )
+                    )
+                    cleared_ids.append(entry.id)
+                    count += 1
+                else:
+                    new_entries.append(entry)
+            if count:
+                self._entries = new_entries
+                self._persist(status_cleared_ids=cleared_ids)
+            return count
 
     def remove_index(self, index: int) -> Optional[PooledCredential]:
         with self._lock:

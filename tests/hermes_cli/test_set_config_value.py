@@ -902,3 +902,81 @@ class TestLiteralDotKeyEscaping:
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Numeric-index structural guard (#78370)
+# ---------------------------------------------------------------------------
+
+class TestNumericIndexGuard:
+    """`config set` with numeric path segments must honor _set_nested's
+    documented list semantics — never silently materialize a dict shaped like
+    a list index (#78370), and never escape as a raw traceback with exit 0."""
+
+    def _write(self, home, text):
+        (home / "config.yaml").write_text(text)
+
+    def test_missing_list_parent_refuses_instead_of_writing_dict(
+        self, _isolated_hermes_home, capsys
+    ):
+        """The reported bug: no custom_providers key at all → previously wrote
+        custom_providers: {'0': {...}} with a success message, which every
+        runtime consumer rejects by isinstance(list) check
+        (hermes_cli/providers.py:773) — the credential silently never existed."""
+        self._write(_isolated_hermes_home, "model:\n  default: x\n")
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("custom_providers.0.api_key", "sk-test")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "not an existing list" in err
+        # File untouched — no dict materialized, no partial write.
+        assert "custom_providers" not in _read_config(_isolated_hermes_home)
+
+    def test_existing_list_index_write_still_works(self, _isolated_hermes_home):
+        """#17876 semantics preserved: indexed writes into an existing list."""
+        self._write(
+            _isolated_hermes_home,
+            "custom_providers:\n  - name: a\n    api_key: old\n",
+        )
+        set_config_value("custom_providers.0.api_key", "sk-new")
+        import yaml as _yaml
+        data = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert isinstance(data["custom_providers"], list)
+        assert data["custom_providers"][0]["api_key"] == "sk-new"
+
+    def test_existing_numeric_keyed_dict_parent_still_works(
+        self, _isolated_hermes_home
+    ):
+        """Numeric keys in EXISTING dicts (channel_overrides chat ids) are
+        legal — the guard fires only when materializing a missing parent."""
+        self._write(
+            _isolated_hermes_home,
+            "telegram:\n  channel_overrides:\n    '123456':\n      model: old\n",
+        )
+        set_config_value("telegram.channel_overrides.123456.model", "new-model")
+        import yaml as _yaml
+        data = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert data["telegram"]["channel_overrides"]["123456"]["model"] == "new-model"
+
+    def test_non_numeric_segment_on_list_is_clean_error(
+        self, _isolated_hermes_home, capsys
+    ):
+        """Previously: raw ValueError traceback and exit code 0."""
+        self._write(
+            _isolated_hermes_home,
+            "custom_providers:\n  - name: a\n    api_key: k\n",
+        )
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("custom_providers.abc", "x")
+        assert exc.value.code == 1
+        assert "not a numeric list index" in capsys.readouterr().err
+
+    def test_out_of_range_index_is_clean_error(self, _isolated_hermes_home, capsys):
+        self._write(
+            _isolated_hermes_home,
+            "custom_providers:\n  - name: a\n    api_key: k\n",
+        )
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("custom_providers.5.api_key", "x")
+        assert exc.value.code == 1
+        assert "out of range" in capsys.readouterr().err

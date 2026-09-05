@@ -812,15 +812,32 @@ def _set_nested(config, dotted_key: str, value):
         at_leaf = len(remaining) == 1
         if isinstance(current, list):
             part = remaining[0]
-            if at_leaf:
-                current[int(part)] = value
-                return
             try:
-                current = current[int(part)]
+                idx = int(part)
             except (TypeError, ValueError):
+                if at_leaf:
+                    raise TypeError(
+                        f"Cannot set {dotted_key!r}: {part!r} is not a numeric list index"
+                    )
                 raise TypeError(
                     f"Cannot navigate into list at key {dotted_key!r}: "
                     f"segment {part!r} is not a numeric index")
+            if at_leaf:
+                try:
+                    current[idx] = value
+                except IndexError:
+                    raise TypeError(
+                        f"Cannot set {dotted_key!r}: list index {idx} is out of range "
+                        "(the referenced entry must already exist — indexes are never created implicitly)"
+                    )
+                return
+            try:
+                current = current[idx]
+            except IndexError:
+                raise TypeError(
+                    f"Cannot set {dotted_key!r}: list index {idx} is out of range "
+                    "(the referenced entry must already exist — indexes are never created implicitly)"
+                )
             i += 1
         elif isinstance(current, dict):
             match = _greedy_literal_match(current, remaining)
@@ -829,8 +846,19 @@ def _set_nested(config, dotted_key: str, value):
                 if i + consumed == len(parts):
                     current[key] = value
                     return
-                # Preserve dicts and lists; replace scalar with a fresh dict.
-                if not isinstance(current.get(key), (dict, list)):
+                existing = current.get(key)
+                # Do not create a dict in front of a numeric segment: that
+                # silently materializes a mapping shaped like a list (#78370).
+                if not isinstance(existing, (dict, list)):
+                    next_part = parts[i + consumed]
+                    if next_part.isdigit():
+                        parent = ".".join(parts[: i + consumed])
+                        raise TypeError(
+                            f"Cannot set {dotted_key!r}: {parent!r} is not an existing list, "
+                            f"and numeric index {next_part!r} would silently create a mapping "
+                            "instead of a list entry. Create the list in config.yaml first "
+                            "(indexes are never created implicitly)."
+                        )
                     current[key] = {}
                 current = current[key]
                 i += consumed
@@ -846,7 +874,17 @@ def _set_nested(config, dotted_key: str, value):
                     f"Refusing to create nested key {part!r} in {dotted_key!r}: the mapping "
                     f"already contains a literal key {shadowed!r} that contains a dot. If you "
                     f"meant that key, escape its dots with a backslash (e.g. {escaped}).")
-            current = current.setdefault(part, {})
+            next_part = remaining[1]
+            if next_part.isdigit():
+                parent = ".".join(parts[: i + 1])
+                raise TypeError(
+                    f"Cannot set {dotted_key!r}: {parent!r} is not an existing list, "
+                    f"and numeric index {next_part!r} would silently create a mapping instead "
+                    "of a list entry. Create the list in config.yaml first "
+                    "(indexes are never created implicitly)."
+                )
+            current[part] = {}
+            current = current[part]
             i += 1
         else:
             raise TypeError(f"Cannot navigate into {type(current).__name__} at key {dotted_key!r}")
@@ -3514,8 +3552,8 @@ def set_config_value(key: str, value: str, force: bool = False):
     key = _guard_section_overwrite(key, value, user_config, force)
     try:
         _set_nested(user_config, key, value)
-    except ValueError as e:
-        _exit_invalid(f"✗ {e}")
+    except (TypeError, ValueError) as exc:
+        _exit_invalid(f"✗ {exc}")
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config

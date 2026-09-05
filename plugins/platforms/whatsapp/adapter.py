@@ -170,7 +170,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, has_valid_whatsapp_creds
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
@@ -435,8 +435,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
              "whatsapp_node_missing", "Node.js is not installed — install Node.js and re-run `hermes gateway`."),
             (bridge_path.exists, ("[%s] Bridge script not found: %s", self.name, bridge_path),
              "whatsapp_bridge_missing", f"WhatsApp bridge script missing at {bridge_path}."),
-            (creds_path.exists, ("[%s] WhatsApp is enabled but not paired (no creds.json at %s). Pair from the dashboard or run "
-                                 "`hermes whatsapp`; remove WHATSAPP_ENABLED from your .env to disable.", self.name, creds_path),
+            (lambda: has_valid_whatsapp_creds(creds_path),
+             ("[%s] WhatsApp is enabled but not paired (no valid creds.json at %s — missing, empty, or truncated). "
+              "Pair from the dashboard or run `hermes whatsapp`; remove WHATSAPP_ENABLED from your .env to disable.",
+              self.name, creds_path),
              "whatsapp_not_paired", "WhatsApp enabled but not paired — pair from the dashboard or run `hermes whatsapp`."),
         )
         for ok, warn_args, code, message in checks:

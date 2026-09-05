@@ -328,3 +328,33 @@ def resolve_whatsapp_bridge_dir() -> Path:
         return hermes_home_bridge
     except Exception:
         return install_bridge
+
+
+def has_valid_whatsapp_creds(creds_path: Path) -> bool:
+    """Return True only when ``creds.json`` is real, usable pairing state.
+
+    Existence alone is not enough: in ``--pair-only`` mode the bridge writes
+    ``creds.json`` *after* emitting the ``connected`` event and then exits, so a
+    supervisor that kills the bridge on ``connected`` can leave a 0-byte (or
+    half-written) ``creds.json`` behind. That truncated file still passes
+    ``Path.exists()``, so a pairing that was actually lost is reported as paired
+    and the reader proceeds on unusable credentials — the gateway then rejects
+    them at connect time, producing the "enabled but not paired" restart loop.
+
+    Single source of truth for every reader of pairing state (the gateway
+    adapter and the CLI pairing wizard) so the wizard can never report a
+    truncated ``creds.json`` as paired that the gateway then rejects. Validate
+    that the file is non-empty, parses as JSON, and carries the Baileys identity
+    keys a genuine pairing always contains.
+    """
+    try:
+        if creds_path.stat().st_size == 0:
+            return False
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return bool(
+        isinstance(data, dict)
+        and data.get("noiseKey")
+        and data.get("signedIdentityKey")
+    )

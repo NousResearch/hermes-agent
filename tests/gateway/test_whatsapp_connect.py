@@ -13,6 +13,7 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
+import contextlib
 import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -92,6 +93,7 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
     }
     base = [
         patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
+        patch("plugins.platforms.whatsapp.adapter.has_valid_whatsapp_creds", return_value=True),
         patch.object(Path, "exists", return_value=True),
         patch.object(Path, "mkdir", return_value=None),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
@@ -157,9 +159,12 @@ class TestDataInitialized:
 
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8], \
-             patch.object(type(adapter), "_poll_messages", return_value=MagicMock()):
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.object(type(adapter), "_poll_messages", return_value=MagicMock())
+            )
             # Must NOT raise NameError
             result = await adapter.connect()
 
@@ -187,8 +192,9 @@ class TestFileHandleClosedOnError:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7]:
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             result = await adapter.connect()
 
         assert result is False
@@ -209,6 +215,7 @@ class TestConnectCleanup:
         install_result = MagicMock(returncode=1, stderr="install failed")
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("plugins.platforms.whatsapp.adapter.has_valid_whatsapp_creds", return_value=True), \
              patch.object(Path, "exists", autospec=True, side_effect=_path_exists), \
              patch("subprocess.run", return_value=install_result), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
@@ -299,8 +306,9 @@ class TestBridgeRuntimeFailure:
         mock_fh = MagicMock()
         patches = _connect_patches(mock_proc, mock_fh, mock_client_cls)
 
-        with patches[0], patches[1], patches[2], patches[3], patches[4], \
-             patches[5], patches[6], patches[7], patches[8]:
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             result = await adapter.connect()
 
         assert result is False
@@ -512,11 +520,14 @@ class TestNoCredsPreflight:
         adapter.config = MagicMock()
         adapter._bridge_port = 19877
         bridge = tmp_path / "bridge.js"
-        bridge.write_text("// stub")
+        bridge.write_text("// stub", encoding="utf-8")
         adapter._bridge_script = str(bridge)
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}")
+        (session_dir / "creds.json").write_text(
+            '{"noiseKey": {"private": "a"}, "signedIdentityKey": {"private": "b"}}',
+            encoding="utf-8",
+        )
         adapter._session_path = session_dir
         adapter._bridge_log_fh = None
         adapter._fatal_error_code = None

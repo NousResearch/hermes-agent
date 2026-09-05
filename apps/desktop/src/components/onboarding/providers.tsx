@@ -77,12 +77,15 @@ const PROVIDER_ROW_CLASS =
   'group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)'
 
 /** Quick-key row for API-key providers (Fireworks leads the expanded list after Nous, OpenRouter further down). */
-export function KeyProviderRow({ onClick, pitch, title }: { onClick: () => void; pitch: string; title: string }) {
+export function KeyProviderRow({ onClick, pitch, title, icon }: { onClick: () => void; pitch: string; title: string; icon?: string }) {
   return (
     <RowButton className={PROVIDER_ROW_CLASS} onClick={onClick}>
-      <div className="min-w-0">
-        <span className="text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{pitch}</p>
+      <div className="flex min-w-0 items-center gap-2">
+        {icon ? <img alt="" className="size-5 shrink-0 rounded" src={icon} /> : null}
+        <div className="min-w-0">
+          <span className="text-[length:var(--conversation-text-font-size)] font-semibold">{title}</span>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{pitch}</p>
+        </div>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </RowButton>
@@ -98,7 +101,7 @@ export function FireworksProviderRow({ onClick }: { onClick: () => void }) {
 export function BharatRouterProviderRow({ onClick }: { onClick: () => void }) {
   const { t } = useI18n()
 
-  return <KeyProviderRow onClick={onClick} pitch={t.onboarding.bharatRouterPitch} title="BharatRouter" />
+  return <KeyProviderRow icon={assetPath('bharatrouter.svg')} onClick={onClick} pitch={t.onboarding.bharatRouterPitch} title="BharatRouter" />
 }
 
 /** Onboarding row for the managed local runtime: no account, no key — the

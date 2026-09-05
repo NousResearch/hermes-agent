@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test, vi } from 'vitest'
 
+import { createRemoteConnectionGate } from './desktop-build-mode'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import {
   createPrimaryRemoteConnection,
@@ -172,4 +173,32 @@ test('reset rejects with a typed error and never enters either backend', async (
   await assert.rejects(pending, error => error instanceof FirstRunSetupResetError && error.firstRunSetupReset)
   assert.equal(options.connectRemote.mock.calls.length, 0)
   assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+})
+
+test('remote-only startup waits for remote setup without touching local startup seams', async () => {
+  const gate = createRemoteConnectionGate()
+  const savedRemote = { baseUrl: 'https://gateway.example.com/hermes' }
+  let configuredRemote: typeof savedRemote | null = null
+
+  const options = startupOptions({
+    resolveRemote: vi.fn(async () => configuredRemote),
+    remoteOnly: true,
+    waitForRemoteSetup: gate.wait
+  })
+
+  const pending = runPrimaryBackendStartup(options)
+
+  await vi.waitFor(() => assert.equal(gate.hasWaiter(), true))
+  configuredRemote = savedRemote
+  gate.resume()
+
+  assert.deepEqual(await pending, {
+    kind: 'remote',
+    connection: { baseUrl: savedRemote.baseUrl, mode: 'remote' }
+  })
+  assert.equal(options.waitForLocalStart.mock.calls.length, 0)
+  assert.equal(options.prepareLocalBackend.mock.calls.length, 0)
+  assert.equal(options.waitForDecision.mock.calls.length, 0)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+  assert.deepEqual(options.resolveRemote.mock.calls, [[], []])
 })

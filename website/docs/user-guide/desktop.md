@@ -32,6 +32,20 @@ hermes desktop
 
 That uses your current config, keys, sessions, and skills.
 
+### Standalone remote client
+
+Remote-only Desktop installers can be built for users who already run Hermes
+on a server or use Hermes Cloud. These bundles have a separate application
+identity and do not probe, install, update, or spawn a local Hermes runtime.
+They open the remote connection form on first launch, and a malformed saved
+URL or token can be repaired there without installing Hermes on the client.
+
+Build them from `apps/desktop` with `npm run dist:remote:mac`,
+`npm run dist:remote:win`, or `npm run dist:remote:linux` (DMG + zip, NSIS +
+MSI, and AppImage + Flatpak respectively). The artifacts are written to
+`apps/desktop/release/remote/`; the ordinary Desktop build and its local
+bootstrap flow are unchanged.
+
 ## What's in the app
 
 The desktop app is organized as a chat-first window with a left sidebar for navigation. It's built to allow managing multiple simultaneous agent conversations, configuring messaging providers, creating artifacts, browsing projects' folder structures, and working on multiple projects at once.
@@ -307,9 +321,18 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 
 The packaged app ships the Electron shell and a native React chat surface. On first launch it can install the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. Backend resolution first honours `HERMES_DESKTOP_HERMES_ROOT`, then a completed managed install, then a probed `hermes` on `PATH` (unless `--ignore-existing` / `HERMES_DESKTOP_IGNORE_EXISTING=1` is set), and finally an explicit `HERMES_DESKTOP_HERMES` command override for packagers such as Nix. The React renderer talks to a headless backend the app launches for you — a `hermes serve` process that serves the `tui_gateway` JSON-RPC/WebSocket API — and reuses the agent runtime rather than embedding `hermes --tui`. The desktop app is **self-contained**: it runs its own `hermes serve` backend and never opens or requires the [web dashboard](./features/web-dashboard.md). (Runtimes older than the `serve` command fall back to a headless `dashboard --no-open` automatically, so an app update never outruns its backend.) Install, backend-resolution, and self-update logic live in the Electron main process.
 
+The standalone remote flavor uses the same renderer and remote transport, but
+bakes its capability into the Electron bundle. Local connection saves and
+local backend spawning are rejected in the main process, the install stamp is
+omitted, and first launch waits for remote setup instead of entering the local
+bootstrap flow. Local Hermes runtime bootstrap/repair/update/uninstall and
+launching the local Hermes TUI in an external terminal are not offered by that
+flavor. The ordinary in-app local shell remains available and does not install
+Hermes.
+
 ## Connecting to a remote backend
 
-By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
+By default the full app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale. The standalone remote client opens this connection setup automatically and does not offer Local mode.
 
 Everything connection-related lives on one settings page: **Settings → Gateways**. (Older builds split this across separate **Gateway** and **Connections** pages — those are now unified, and old `?tab=connections` deep links redirect to the unified page.)
 
@@ -536,8 +559,16 @@ Build installers:
 npm run dist:mac     # DMG + zip
 npm run dist:win     # NSIS + MSI
 npm run dist:linux   # AppImage + deb + rpm
+npm run dist:remote:mac   # standalone DMG + zip
+npm run dist:remote:win   # standalone NSIS + MSI
+npm run dist:remote:linux # standalone AppImage + Flatpak
 npm run pack         # unpacked app under release/ (no installer)
 ```
+
+Standalone artifacts are written to `apps/desktop/release/remote/` when built
+locally. The remote-only build does not include the local install stamp and its Flatpak
+permissions are limited to the network and desktop integration needed by the
+client; agent files and tool calls remain on the connected Hermes host.
 
 macOS/Windows signing and notarization run automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 

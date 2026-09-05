@@ -21,7 +21,7 @@ function bootstrapState(overrides: Partial<DesktopBootstrapState> = {}): Desktop
   }
 }
 
-function installDesktopMock(state: DesktopBootstrapState) {
+function installDesktopMock(state: DesktopBootstrapState, overrides: Record<string, unknown> = {}) {
   const bootstrapListeners = new Set<(event: DesktopBootstrapEvent) => void>()
 
   const desktop = {
@@ -41,7 +41,8 @@ function installDesktopMock(state: DesktopBootstrapState) {
       for (const listener of bootstrapListeners) {
         listener(event)
       }
-    }
+    },
+    ...overrides
   }
 
   Object.defineProperty(window, 'hermesDesktop', {
@@ -104,6 +105,22 @@ describe('DesktopInstallOverlay first-run setup', () => {
     expect(screen.getByText('Install Hermes locally')).toBeTruthy()
     expect(screen.queryByText(/steps complete/i)).toBeNull()
     expect(screen.queryByText(/Fetching installer manifest/i)).toBeNull()
+  })
+
+  it('does not expose the local bootstrap choice in a remote-only build', async () => {
+    installDesktopMock(
+      bootstrapState({
+        setupChoice: { platform: 'win32', activeRoot: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent' }
+      }),
+      {
+        remoteOnlyBuild: true
+      }
+    )
+
+    render(<DesktopInstallOverlay />)
+
+    await waitFor(() => expect(screen.queryByText('Install Hermes locally')).toBeNull())
+    expect(screen.queryByText('Connect to existing Hermes')).toBeNull()
   })
 
   it('continues local bootstrap only when Install Hermes locally is selected', async () => {

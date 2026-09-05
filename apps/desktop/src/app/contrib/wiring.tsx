@@ -31,6 +31,7 @@ import {
 } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
+import { RemoteGatewaySetupOverlay } from '@/components/remote-gateway-setup-overlay'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -1217,6 +1218,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />
+      {!isAuxiliaryWindow() && <RemoteGatewaySetupOverlay />}
       <BootFailureOverlay />
       <CommandPalette />
       <PluginInstallModal />

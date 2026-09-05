@@ -99,6 +99,33 @@ function normalizeRemoteBaseUrl(rawUrl) {
   return parsed.toString().replace(/\/+$/, '')
 }
 
+/**
+ * Return the scope that owns remote credentials.  The normalized gateway URL
+ * includes a deployment path (a reverse-proxy prefix is part of the gateway
+ * identity), and the auth mode selects a different credential store/protocol.
+ * A missing or malformed URL never matches another scope, so callers cannot
+ * accidentally carry a token through a bad edit.
+ */
+function remoteCredentialScope(rawUrl, authMode) {
+  try {
+    const url = normalizeRemoteBaseUrl(rawUrl)
+
+    return `${url}\0${normAuthMode(authMode)}`
+  } catch {
+    return null
+  }
+}
+
+/** Saved remote credentials may be reused only for the same normalized
+ * gateway + authentication scope.  This is shared by the v1 settings config
+ * and the v2 named-connection registry save paths. */
+function remoteCredentialScopeMatches(previousUrl, nextUrl, previousAuthMode, nextAuthMode) {
+  const previous = remoteCredentialScope(previousUrl, previousAuthMode)
+  const next = remoteCredentialScope(nextUrl, nextAuthMode)
+
+  return previous !== null && previous === next
+}
+
 function buildGatewayWsUrl(baseUrl, token) {
   const parsed = new URL(baseUrl)
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
@@ -1042,6 +1069,8 @@ export {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  remoteCredentialScope,
+  remoteCredentialScopeMatches,
   remoteRequestMatchesBaseUrl,
   resolveAuthMode,
   resolveProfileApiRequest,

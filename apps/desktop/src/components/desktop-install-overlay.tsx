@@ -277,6 +277,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
   const [copied, setCopied] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [remoteOpen, setRemoteOpen] = useState(false)
+  // This immutable build property is authoritative synchronously. Dynamic
+  // gateway capabilities describe the connected backend and must not gate the
+  // local installer while they are resolving.
+  const remoteOnly = window.hermesDesktop?.remoteOnlyBuild === true
   const [now, setNow] = useState(() => Date.now())
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -369,6 +373,10 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       return false
     }
 
+    if (remoteOnly) {
+      return false
+    }
+
     if (state.active) {
       return true
     }
@@ -386,7 +394,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
     }
 
     return false
-  }, [enabled, state.active, state.error, state.setupChoice, state.unsupportedPlatform])
+  }, [enabled, remoteOnly, state.active, state.error, state.setupChoice, state.unsupportedPlatform])
 
   if (!shouldShow) {
     return null

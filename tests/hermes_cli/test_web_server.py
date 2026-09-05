@@ -5065,6 +5065,22 @@ class TestServeIndexMissingIndex:
         assert resp.status_code == 200
         assert "SPA-rebuilt" in resp.text
 
+    def test_index_uses_ssh_token_applied_after_spa_mount(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "before-mount")
+        client, _dist = self._client_with_dist(
+            tmp_path, monkeypatch, write_index=True
+        )
+
+        ws._apply_ssh_session_token("after-mount")
+        resp = client.get("/chat")
+
+        assert resp.status_code == 200
+        assert 'window.__HERMES_SESSION_TOKEN__="after-mount"' in resp.text
+
 
 class TestHeadlessServeTokenPage:
     """Headless `hermes serve` must serve the Desktop token handshake page

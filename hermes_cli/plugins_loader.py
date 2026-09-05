@@ -19,7 +19,7 @@ import types
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from registration_lifecycle import replacement_coordinator
@@ -35,6 +35,25 @@ logger = logging.getLogger("hermes_cli.plugins")
 _NS_PARENT = "hermes_plugins"
 _MODULE_NAMESPACE_LOCK = threading.RLock()
 _BARE_MODULE_SCOPE: Dict[str, str] = {}  # bare module name -> owning scope_key
+
+
+def _plugins_gate_flag(name: str) -> bool:
+    """Literal-boolean read of ``plugins.<name>`` (load-time policy flags).
+
+    Startup/discovery-time reads only — these keys have no mid-conversation effect, so a
+    plain config read is fine (no deferred-invalidation machinery needed). The gate is
+    deliberately literal-boolean: a YAML string (``"false"``/``"no"``/``"true"``) must NOT
+    open a fail-closed security gate, hence ``is True`` and never truthiness. Docs show
+    literal booleans; a quoted value leaves the gate closed (safe default).
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        section = (load_config_readonly() or {}).get("plugins")
+    except Exception:
+        return False
+    if not isinstance(section, dict):
+        return False
+    return section.get(name, False) is True
 
 
 def _evict_modules(module_name: str) -> None:
@@ -266,6 +285,121 @@ class PluginLoaderMixin:
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             self._load_plugin_scoped(manifest)
 
+    # ── load-time content-drift gate (HookPry G4-3) ────────────────────────────
+    # Before importing a manager-managed plugin, compare its CURRENT artifact identity
+    # (canonical git tree id for git checkouts / noise-excluded whole-tree sha256 for
+    # manual trees — the SAME identity the update transaction records in
+    # ``consent.artifact_id``) against that consent baseline. Drift means an out-of-band
+    # write — a git pull by any means, a reinstall --force, a same-user write from
+    # another profile — reached code that was never reviewed. Fail closed: skip the load
+    # with a loud warning. Runs ONLY at discovery/load (once per process) — never in
+    # invoke_hook or any per-turn path (per-turn hashing would cost tokens per turn and
+    # risk prompt-cache invalidation; see remediation design §4).
+    #
+    # Scope boundary (upstream-clean): directories with NO install-metadata record and no
+    # .git are hand-copied and outside the plugin manager's install/update model — they
+    # keep loading unchanged, with a one-time "no consent baseline" log advisory (olympus
+    # hand-copies omh, telemetry-hooks, verify_claims_hook; they must keep loading). The
+    # gate governs installable plugins — the actual HookPry marketplace channel.
+    #
+    # Identity residuals (deliberate, documented):
+    # * A git checkout's identity is its committed tree (``HEAD^{tree}``): an uncommitted
+    #   tracked edit does NOT move it (same semantics as the update owner's consent
+    #   match). The byte-level whole-tree hash of a manual tree covers every edit. A
+    #   dirty tracked tree is refused at the next update by the transaction's own guard.
+    # * Hash-then-import is not atomic: a writer between the hash and the import can slip
+    #   content past this process's gate (TOCTOU). Accepted: the window is a same-user
+    #   concurrent writer, the gate re-runs every process, and the update transaction
+    #   serializes its own commit under the per-plugin lock.
+    # * Whole-tree (manual) hashing excludes VCS/cache/env noise (venv, node_modules,
+    #   __pycache__, editor temps — mirror of plugin_guard.EXCLUDED_DIRS via
+    #   plugin_treehash), so a hand-installed tree with a build venv does not false-drift
+    #   on every load.
+
+    def _load_gate_once(self, plugin_key: str) -> set:
+        """Per-manager set of plugin keys already given one-time gate advisories."""
+        return self.__dict__.setdefault("_load_gate_once_warned", set())
+
+    def _consent_drift_check(self, manifest: PluginManifest) -> Tuple[Optional[str], Optional[str]]:
+        """``(block_error, advisory)`` for a manager-managed plugin at load time.
+
+        * block_error — the plugin must NOT be imported: its live artifact identity no
+          longer matches ``consent.artifact_id`` (drift) and ``plugins.auto_accept_drift``
+          is not a literal ``True``.
+        * advisory — the plugin MAY load, but the gate could not verify it (unreadable
+          install metadata, or an unhashable tree). Surfaced on the loaded record
+          (``hermes plugins list``) so a fail-open check is never invisible.
+        * ``(None, None)`` — verified clean, or no consent baseline exists (hand-copied /
+          pre-consent installs keep their unchanged load behavior; the one-time "no
+          baseline" advisory is logged once per plugin per process).
+        """
+        if manifest.source not in ("user", "project"):
+            return None, None
+        plugin_dir = Path(manifest.path) if manifest.path else None
+        if plugin_dir is None or not plugin_dir.is_dir():
+            return None, None
+        plugin_key = manifest_key(manifest)
+        try:
+            from hermes_cli.plugins_cmd import _read_install_metadata
+            record = _read_install_metadata().get(plugin_key) or {}
+        except Exception as exc:
+            once = self._load_gate_once(plugin_key)
+            if plugin_key not in once:
+                once.add(plugin_key)
+                logger.warning(
+                    "Plugin '%s': install metadata unreadable (%s); loading without a "
+                    "content-drift check (fail open, loud).", plugin_key, exc)
+            return None, (
+                "load-time content-drift gate could not read install metadata; "
+                "loaded without a drift check (fail open).")
+        consent = record.get("consent") if isinstance(record, dict) else None
+        baseline = consent.get("artifact_id") if isinstance(consent, dict) else None
+        if not isinstance(baseline, str) or not baseline:
+            once = self._load_gate_once(plugin_key)
+            if plugin_key not in once:
+                once.add(plugin_key)
+                logger.warning(
+                    "Plugin '%s': no content-consent baseline recorded (hand-copied or "
+                    "installed before content consent); loading WITHOUT a drift check. "
+                    "Record a baseline by reinstalling from git with an explicit --ref "
+                    "<SHA> (`hermes plugins install <source> --force --ref <SHA>`).",
+                    plugin_key)
+            return None, None
+        try:
+            # Same identity derivation the update transaction's consent match uses.
+            if not isinstance(consent, dict):
+                return None, None
+            from hermes_cli.plugin_update_txn import _consent_artifact_matches
+            matches = _consent_artifact_matches(plugin_dir, consent, git_exe=None)
+        except Exception as exc:
+            once = self._load_gate_once(plugin_key)
+            if plugin_key not in once:
+                once.add(plugin_key)
+                logger.warning(
+                    "Plugin '%s': could not verify its tree against the consent baseline "
+                    "(%s); loading without a content-drift check (fail open, loud).",
+                    plugin_key, exc)
+            return None, (
+                "load-time content-drift gate could not hash/verify the tree; "
+                "loaded without a drift check (fail open).")
+        if matches is not False:
+            return None, None  # True (verified) or None (baseline unusable) → load clean
+        if _plugins_gate_flag("auto_accept_drift"):
+            once = self._load_gate_once(plugin_key)
+            if plugin_key not in once:
+                once.add(plugin_key)
+                logger.warning(
+                    "Plugin '%s': content drifted from its consented artifact "
+                    "(consent %s… → current) and plugins.auto_accept_drift is TRUE — "
+                    "loading the changed content without re-consent (DANGEROUS).",
+                    plugin_key, baseline[:12])
+            return None, None
+        return (
+            f"content changed since the last consent (consent {baseline[:12]}…); refusing "
+            f"to load. Re-consent only through a reviewed `hermes plugins update "
+            f"{plugin_key}` (or `plugins install --force --ref <SHA>`), or set "
+            f"plugins.auto_accept_drift: true to auto-accept (dangerous)."), None
+
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
         """Load one plugin with the manager's home bound as current."""
         from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
@@ -287,6 +421,18 @@ class PluginLoaderMixin:
             logger.warning("Plugin '%s' not loaded: %s", manifest.name, reason)
             self._plugins[plugin_key] = loaded
             return
+        # Load-time content-drift gate (G4-3): a manager-managed plugin whose current
+        # artifact no longer matches its recorded consent.artifact_id is refused before
+        # import (fail closed); gate failures that must not block still surface on the
+        # record so `hermes plugins list` shows them (never an invisible fail-open).
+        drift_error, drift_advisory = self._consent_drift_check(manifest)
+        if drift_error:
+            loaded.error = drift_error
+            logger.warning("Plugin '%s' not loaded: %s", manifest.name, drift_error)
+            self._plugins[plugin_key] = loaded
+            return
+        if drift_advisory:
+            loaded.load_advisory = drift_advisory
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)
@@ -306,7 +452,7 @@ class PluginLoaderMixin:
             else:
                 register_fn(PluginContext(manifest, self))
                 self._attribute_registrations(loaded, plugin_key, registration_start)
-                loaded.enabled = True
+                loaded.enabled = self._enforce_declared_hooks(loaded, plugin_key)
         except Exception as exc:
             owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
             self._dispose_registrations(owned)
@@ -324,6 +470,45 @@ class PluginLoaderMixin:
         if not loaded.enabled:
             self._predeclared_tools.pop(plugin_key, None)
         self._plugins[plugin_key] = loaded
+
+    def _enforce_declared_hooks(self, loaded: LoadedPlugin, plugin_key: str) -> bool:
+        """Warn (default) or refuse (``plugins.strict_hooks: true``) an undeclared hook binding.
+
+        After ``register(ctx)`` returns, compare the hook events actually bound
+        (``LoadedPlugin.hooks_registered``) against the manifest's ``provides_hooks``
+        (HookPry G2-2a): a plugin that binds an event it never declared did something its
+        metadata did not authorize. Default = loud load-log warning + surfaced on
+        ``LoadedPlugin.undeclared_hooks`` (``hermes plugins list`` / ``/plugins``); with
+        ``plugins.strict_hooks: true`` (literal boolean) the plugin is refused at load
+        (fail closed) and its registrations are disposed. Returns False only when the
+        load must be refused.
+        """
+        declared = set(loaded.manifest.provides_hooks or ())
+        undeclared = sorted(set(loaded.hooks_registered) - declared)
+        if not undeclared:
+            return True
+        hook_list = ", ".join(undeclared)
+        loaded.undeclared_hooks = undeclared
+        if _plugins_gate_flag("strict_hooks"):
+            owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
+            self._dispose_registrations(owned)
+            self._forget_registrations(owned)
+            # register() may have subscribed before the refusal; nothing may stay reachable
+            # from later event dispatch.
+            self._remove_plugin_subscriptions(plugin_key)
+            loaded.error = (
+                f"registered hook(s) not declared in provides_hooks: {hook_list} "
+                f"(plugins.strict_hooks: true)")
+            logger.warning(
+                "Plugin '%s' refused: registered hook(s) not declared in its manifest "
+                "provides_hooks: %s", plugin_key, hook_list)
+            return False
+        logger.warning(
+            "Plugin '%s' registered hook(s) not declared in its manifest provides_hooks: "
+            "%s — declare them in plugin.yaml to silence this warning (or set "
+            "plugins.strict_hooks: true to refuse such plugins at load).",
+            plugin_key, hook_list)
+        return True
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""

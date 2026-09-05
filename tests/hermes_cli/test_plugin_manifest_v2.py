@@ -409,3 +409,45 @@ class TestCtxHasPlugin:
         finally:
             if hasattr(sys, "_m2_probe"):
                 del sys._m2_probe
+
+
+class TestLegacyHooksListNormalized:
+    """The legacy list-form ``hooks:`` key declares the same hook bindings as
+    ``provides_hooks``; the parsed manifest must expose both so declared-vs-registered
+    enforcement (G2-2a) and the install scanner see the real declaration."""
+
+    def test_hooks_list_is_normalized_into_provides_hooks(self, tmp_path):
+        from hermes_cli.plugins import parse_manifest_file
+
+        plugin = tmp_path / "p"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").write_text(yaml.safe_dump(
+            {"name": "p", "hooks": ["pre_tool_call", "on_session_end"]}))
+        manifest = parse_manifest_file(plugin / "plugin.yaml", plugin, "user", "")
+        assert manifest is not None
+        assert sorted(manifest.provides_hooks) == ["on_session_end", "pre_tool_call"]
+
+    def test_provides_hooks_and_hooks_list_union(self, tmp_path):
+        from hermes_cli.plugins import parse_manifest_file
+
+        plugin = tmp_path / "p"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").write_text(yaml.safe_dump(
+            {"name": "p", "provides_hooks": ["post_tool_call"],
+             "hooks": ["pre_tool_call"]}))
+        manifest = parse_manifest_file(plugin / "plugin.yaml", plugin, "user", "")
+        assert manifest is not None
+        assert sorted(manifest.provides_hooks) == ["post_tool_call", "pre_tool_call"]
+
+    def test_mapping_hooks_not_mistaken_for_list(self, tmp_path):
+        # A config-style mapping under hooks: (event -> descriptor) is NOT a declaration
+        # list; unknown fields stay ignored (forward compat), provides_hooks stays empty.
+        from hermes_cli.plugins import parse_manifest_file
+
+        plugin = tmp_path / "p"
+        plugin.mkdir()
+        (plugin / "plugin.yaml").write_text(yaml.safe_dump(
+            {"name": "p", "hooks": {"pre_tool_call": "bash check.sh"}}))
+        manifest = parse_manifest_file(plugin / "plugin.yaml", plugin, "user", "")
+        assert manifest is not None
+        assert manifest.provides_hooks == []

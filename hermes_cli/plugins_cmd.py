@@ -803,7 +803,7 @@ def cmd_install(
     console.print()
 
 
-def cmd_update(name: str, *, accept_update: bool = False) -> None:
+def cmd_update(name: str, *, accept_update: bool = False, accept_caution: bool = False) -> None:
     """Update an installed plugin through the staged candidate-tree transaction.
 
     The remote is fetched into a private quarantine tree; the live checkout is
@@ -811,12 +811,15 @@ def cmd_update(name: str, *, accept_update: bool = False) -> None:
     id drift — bytes, mode, path, type) is reviewed and requires an explicit
     accept (TTY ``y`` / ``--accept-update``); the candidate is then committed
     under the per-plugin lock with rollback. The security scan runs on the
-    exact staged candidate BEFORE promotion (dangerous → refused; the live
-    tree stays at the consented revision) and capability re-consent settles
-    through the same surface-neutral policy the Dashboard uses. Decline /
-    interrupt / non-TTY-without-flag leave the live tree at the last consented
-    revision. If the live tree already drifted from its recorded consent, the
-    drifted state is reviewed instead of silently laundered by a no-op update.
+    exact staged candidate BEFORE promotion: dangerous → refused (the live
+    tree stays at the consented revision), caution → adopted only with an
+    explicit keep-enabled decision (TTY ``y`` / ``--accept-caution``; non-TTY
+    without the flag fails closed — nothing is adopted). Capability
+    re-consent settles through the same surface-neutral policy the Dashboard
+    uses. Decline / interrupt / non-TTY-without-flag leave the live tree at
+    the last consented revision. If the live tree already drifted from its
+    recorded consent, the drifted state is reviewed instead of silently
+    laundered by a no-op update.
     """
     console = _console()
     target = _require_installed_plugin(name, _plugins_dir(), console)
@@ -836,7 +839,9 @@ def cmd_update(name: str, *, accept_update: bool = False) -> None:
                 f"[dim]Commit or stash the local changes inside {target}, then re-run "
                 f"`hermes plugins update {name}`. The live plugin was not modified.[/dim]")
             return
-        _review_live_drift(console, target, key, name, drift, accept_update=accept_update)
+        _review_live_drift(
+            console, target, key, name, drift,
+            accept_update=accept_update, accept_caution=accept_caution)
         return
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
@@ -852,7 +857,7 @@ def cmd_update(name: str, *, accept_update: bool = False) -> None:
     old_artifact_id = staged.get("old_artifact_id") or None
     new_manifest = staged["new_manifest"]
 
-    accepted = _run_plugin_update_diff_gate(
+    accepted, caution_accepted = _run_plugin_update_diff_gate(
         console,
         _plugin_update_root() / token,  # review runs against the staged candidate
         name,
@@ -862,21 +867,24 @@ def cmd_update(name: str, *, accept_update: bool = False) -> None:
         staged.get("old_manifest") or {},
         new_manifest,
         td_signature=staged.get("td_signature", False),
-        accept_update=accept_update)
+        accept_update=accept_update,
+        accept_caution=accept_caution)
     if not accepted:
         _decline_staged_update(console, key, name, token, old_revision)
         return
 
     try:
-        policy = _commit_staged_plugin_update(name, target, token, console=console)
+        policy = _commit_staged_plugin_update(
+            name, target, token, accept_caution=caution_accepted, console=console)
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
         return  # unreachable (_fail exits); satisfies the flow analyzer
 
     if not policy.committed:
-        # Scan-blocked refusal: render the SAME policy outcome the Dashboard
-        # returns — a dangerous candidate is never promoted and the live tree
-        # stays at the last consented revision.
+        # Refusal (scan-blocked dangerous, or caution without an explicit keep decision
+        # reaching commit): render the SAME policy outcome the Dashboard returns — a
+        # refused candidate is never promoted and the live tree stays at the last
+        # consented revision.
         console.print()
         console.print(f"[red bold]✗ Update refused.[/red bold] {policy.reason}")
         _render_scan_findings(console, policy)
@@ -885,9 +893,12 @@ def cmd_update(name: str, *, accept_update: bool = False) -> None:
             f"revision {old_revision or 'HEAD'} — no changes were adopted.[/dim]")
         return
 
-    # Caution findings are rendered (never blocking): the review-gate acceptance
-    # was the operator's confirmation, exactly as installs treat caution.
-    _render_scan_findings(console, policy)
+    # Caution findings were rendered by the update gate when a caution verdict resolved
+    # (--accept-caution / TTY y), so a committed-caution candidate does not print the
+    # report twice. Safe commits carry no findings; only a resolution path that did NOT
+    # pass through the gate's report (dashboard/race) would render here.
+    if not caution_accepted:
+        _render_scan_findings(console, policy)
 
     # Re-consent when the candidate declares capabilities the granted set lacks;
     # additions stay ungranted until the user says yes (fail closed). See #64228.
@@ -1414,6 +1425,25 @@ def cmd_list(args: Any | None = None) -> None:
     console.print()
     console.print(table)
     console.print()
+    # Load-derived warnings ride on the live manager (this process already ran discovery when a
+    # plugin is loaded here); manifest-only scans have no registration data to compare (G2-2a),
+    # and drift-gate fail-open advisories live only on the loaded record (G4-3).
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        loaded_info = {p["key"]: p for p in get_plugin_manager().list_plugins()}
+    except Exception:
+        loaded_info = {}
+    for name, _version, _description, _source, _dir, key in entries:
+        info = loaded_info.get(key) or loaded_info.get(name) or {}
+        undeclared = info.get("undeclared_hooks")
+        if undeclared:
+            console.print(
+                f"[yellow]⚠ plugin '{name}' registered undeclared hook(s): "
+                f"{', '.join(undeclared)} — declare them in the manifest's "
+                f"provides_hooks (see the load log).[/yellow]")
+        advisory = info.get("load_advisory")
+        if advisory:
+            console.print(f"[yellow]⚠ plugin '{name}': {advisory}[/yellow]")
     console.print("[dim]Compact view:[/dim] hermes plugins list --plain --no-bundled")
     console.print("[dim]Interactive toggle:[/dim] hermes plugins")
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
@@ -2050,7 +2080,10 @@ _PLUGIN_ACTIONS = {
         json_output=getattr(args, "json", False),
         capability=getattr(args, "capability", None),
         refresh=getattr(args, "refresh", False)),
-    "update": lambda args: cmd_update(args.name, accept_update=getattr(args, "accept_update", False)),
+    "update": lambda args: cmd_update(
+        args.name,
+        accept_update=getattr(args, "accept_update", False),
+        accept_caution=getattr(args, "accept_caution", False)),
     "remove": lambda args: cmd_remove(args.name),
     "rm": lambda args: cmd_remove(args.name),
     "uninstall": lambda args: cmd_remove(args.name),

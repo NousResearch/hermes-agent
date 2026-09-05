@@ -1545,3 +1545,129 @@ class TestUpdateCommitLock:
         # The loser's stage was discarded by its own refusal path.
         assert not (pc._plugin_update_root() / token2).exists()
         assert not (pc._plugin_update_root() / token3).exists()
+
+
+class TestPluginUpdateCautionParity:
+    """HookPry G4-2 (restacked onto the staged transaction): a caution verdict on an
+    update requires an explicit keep-enabled decision (TTY y / --accept-caution);
+    non-TTY without the flag fails closed. In the staged model the update is simply
+    NOT adopted — the live tree stays at the last consented revision and stays
+    enabled there, so no disable is needed (the caution tree never reaches the live
+    namespace). An unchanged update never re-scans or re-prompts."""
+
+    def _push_caution_v2(self, origin: Path) -> None:
+        (origin / "helper.py").write_text("result = eval('1 + 1')\n", encoding="utf-8")
+        _consent_git(origin, "add", "-A")
+        _consent_git(origin, "commit", "-qm", "v2 caution helper")
+
+    def test_caution_on_update_requires_keep_decision(self, tmp_path, capsys):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, target, name, origin = _consent_install(tmp_path)
+        pc._set_plugin_enabled(name, enable=True)
+        v1_rev = _txn_git_head(pc, target)
+
+        self._push_caution_v2(origin)
+        # Non-TTY: adopt the reviewed diff (--accept-update) but give NO keep-enabled
+        # decision for the caution verdict → fail closed: nothing is adopted.
+        pc.cmd_update(name, accept_update=True)
+
+        out = capsys.readouterr().out
+        assert "Security scan flagged the updated plugin" in out
+        assert "NOT adopted (fail closed)" in out
+        assert "--accept-caution" in out
+        # The live tree was never touched: still the consented revision, still enabled.
+        assert _txn_git_head(pc, target) == v1_rev
+        assert name not in pc._get_disabled_set()
+        assert name in pc._get_enabled_set()
+
+    def test_caution_on_update_accept_caution_adopts(self, tmp_path, capsys):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, target, name, origin = _consent_install(tmp_path)
+        pc._set_plugin_enabled(name, enable=True)
+        v1_rev = _txn_git_head(pc, target)
+
+        self._push_caution_v2(origin)
+        pc.cmd_update(name, accept_update=True, accept_caution=True)
+
+        out = capsys.readouterr().out
+        assert "--accept-caution given; keeping the plugin" in out
+        # Adopted: revision advanced, consent re-recorded, plugin stays enabled.
+        assert _txn_git_head(pc, target) != v1_rev
+        assert name not in pc._get_disabled_set()
+        assert name in pc._get_enabled_set()
+        record = pc._read_install_metadata()[name]
+        assert record["consent"]["artifact_id"]
+        assert record["consent"]["identity"] == "git_tree"
+
+    def test_caution_on_update_tt_y_adopts(self, tmp_path, capsys, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, target, name, origin = _consent_install(tmp_path)
+        pc._set_plugin_enabled(name, enable=True)
+        v1_rev = _txn_git_head(pc, target)
+
+        self._push_caution_v2(origin)
+        # TTY: content accept at the diff gate AND the caution keep prompt both say y.
+        monkeypatch.setattr(pc, "_is_tty", lambda: True)
+        monkeypatch.setattr(pc, "_ask_yes", lambda *a, **k: True)
+        pc.cmd_update(name)
+
+        out = capsys.readouterr().out
+        assert "Caution verdict accepted by user" in out
+        assert _txn_git_head(pc, target) != v1_rev  # adopted
+        assert name not in pc._get_disabled_set()
+        assert name in pc._get_enabled_set()
+
+    def test_caution_unchanged_update_does_not_disable_consented_plugin(self, tmp_path, capsys):
+        # The consent tree itself scans caution (accepted at install via the scan decision
+        # callback): an "already up to date" update must NOT re-scan, re-prompt, or
+        # disable — re-consent on unchanged bytes is spurious fatigue and would destroy
+        # the feature it secures.
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        import hermes_cli.plugins_cmd as pc
+        # Build an origin whose v1 ALREADY carries a caution-trip helper; the operator
+        # accepts it at install via the scan decision callback. The remote never moves.
+        origin = _consent_make_origin(tmp_path, _CONSENT_BENIGN_V1)
+        (origin / "helper.py").write_text("result = eval('1 + 1')\n", encoding="utf-8")
+        _consent_git(origin, "add", "-A")
+        _consent_git(origin, "commit", "-qm", "caution helper v1")
+        target, _manifest, name = pc._install_plugin_core(
+            f"file://{origin}", force=False, scan_decision_cb=lambda r: True)
+        pc._set_plugin_enabled(name, enable=True)
+        v1_rev = _txn_git_head(pc, target)
+
+        pc.cmd_update(name)  # remote unchanged → already up to date
+
+        out = capsys.readouterr().out
+        assert "already up to date" in out
+        assert "NOT adopted" not in out
+        assert name not in pc._get_disabled_set()
+        assert name in pc._get_enabled_set()
+        assert _txn_git_head(pc, target) == v1_rev
+
+    def test_dashboard_caution_candidate_refused_without_keep_decision(self, tmp_path):
+        # Surface parity: the Dashboard's accept carries no keep-enabled decision, so a
+        # caution candidate settles REFUSED at commit — never a silent adopt-and-keep
+        # (review-2 Blocking 2's "same candidate, same policy" requirement).
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        pc, target, name, origin = _consent_install(tmp_path)
+        pc._set_plugin_enabled(name, enable=True)
+        v1_rev = _txn_git_head(pc, target)
+
+        self._push_caution_v2(origin)
+        staged = pc.dashboard_update_user_plugin(name)
+        assert staged.get("review_required") is True
+        result = pc.dashboard_update_user_plugin(name, review_token=staged["review_token"])
+        assert result["ok"] is False
+        assert result["accepted"] is False
+        assert result["scan_verdict"] == "caution"
+        assert "explicit keep-enabled decision" in result["error"]
+        # Not adopted: live tree + consent unchanged, plugin still enabled.
+        assert _txn_git_head(pc, target) == v1_rev
+        record = pc._read_install_metadata()[name]
+        assert record["revision"] == v1_rev
+        assert name not in pc._get_disabled_set()

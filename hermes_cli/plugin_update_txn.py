@@ -710,15 +710,20 @@ def _run_plugin_update_diff_gate(
     *,
     td_signature: bool,
     accept_update: bool,
-) -> bool:
+    accept_caution: bool = False,
+) -> Tuple[bool, bool]:
     """Review-and-accept gate for a staged-but-unconsented plugin candidate.
 
     Prints the update diff (changed files, ``--stat``, commits, hook
     registrations) and the stable-version tripwire, then requires explicit
-    consent: TTY ``y``, or ``--accept-update`` anywhere. Returns True only when
-    the caller may adopt the new tree and record the consent baseline.
+    consent: TTY ``y``, or ``--accept-update`` anywhere. Returns
+    ``(accepted, caution_accepted)``: *accepted* True only when the caller may
+    adopt the new tree and record the consent baseline; *caution_accepted*
+    True only when the scan returned a caution verdict AND an explicit
+    keep-enabled decision resolved it (``--accept-caution`` or a TTY ``y``),
+    which the commit step re-checks under its lock.
     """
-    from hermes_cli.plugins_cmd import _ask_yes, _is_tty, _resolve_git_executable
+    from hermes_cli.plugins_cmd import _ask_yes, _is_tty, _resolve_git_executable, _scan_on_install_enabled
     from rich.markup import escape
 
     console.print()
@@ -775,14 +780,76 @@ def _run_plugin_update_diff_gate(
     console.print()
     if accept_update:
         console.print("[green]✓[/green] --accept-update given; adopting the reviewed update.")
-        return True
-    if not _is_tty():
+        content_accepted = True
+    elif not _is_tty():
         console.print(
             "[red]Non-interactive session: update NOT accepted (fail closed).[/red] "
             "Review the diff above, then re-run with "
             "`hermes plugins update <name> --accept-update` to adopt it.")
-        return False
-    return _ask_yes("\n  Accept this update and record consent for the new content? [y/N] ", console.input)
+        return False, False
+    else:
+        content_accepted = _ask_yes(
+            "\n  Accept this update and record consent for the new content? [y/N] ", console.input)
+    if not content_accepted:
+        return False, False
+
+    # ── Post-review security scan presentation (HookPry G4-2) ─────────────────
+    # The commit step re-scans the exact staged candidate under the per-plugin lock
+    # and refuses a dangerous verdict before promotion. This scan exists so the
+    # operator's acceptance is INFORMED by the verdict — the report is shown BEFORE
+    # the keep decision, mirroring the install path's scan_decision_cb. A caution
+    # verdict on content being adopted requires an explicit keep-enabled decision:
+    # `--accept-caution`, or a TTY `y` at the prompt below. Non-TTY without the flag
+    # fails closed (the update is declined and nothing is adopted — the live tree
+    # stays at the last consented revision, so no disable is needed; unlike the old
+    # pull-then-scan shape, the caution tree never reaches the live namespace).
+    if _scan_on_install_enabled():
+        from tools.plugin_guard import format_scan_report, scan_plugin
+        scan_result = scan_plugin(target, source=name)
+        if scan_result.verdict == "dangerous":
+            console.print()
+            console.print(
+                f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] "
+                f"{scan_result.summary}")
+            console.print(
+                "[red]The security scan returned a dangerous verdict: the commit step "
+                "refuses such candidates, so this update cannot be adopted.[/red]")
+            # Content stays accepted; the commit step refuses the candidate under its
+            # lock and renders the refusal + findings — the SAME surface-neutral
+            # outcome the Dashboard returns (parity test pins "Update refused").
+            return True, False
+        if scan_result.verdict == "caution":
+            console.print()
+            console.print(
+                f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] "
+                f"{scan_result.summary}")
+            console.print(format_scan_report(scan_result))
+            if accept_caution:
+                console.print(
+                    "[green]✓[/green] --accept-caution given; keeping the plugin "
+                    "enabled despite the caution findings.")
+                return True, True
+            if not _is_tty():
+                console.print(
+                    "[red bold]✗ Update NOT adopted (fail closed).[/red bold] "
+                    "The updated tree carries a caution verdict, which requires an "
+                    "explicit keep-enabled decision. Re-run with "
+                    f"`hermes plugins update {name} --accept-caution` after reviewing "
+                    "the findings above — nothing was changed on disk.")
+                return False, False
+            keep = _ask_yes(
+                "  Keep the plugin enabled despite the caution findings? "
+                "Only continue if you trust the source. [y/N] ", console.input)
+            if keep:
+                console.print(
+                    "[green]✓[/green] Caution verdict accepted by user; plugin stays enabled.")
+                return True, True
+            console.print(
+                "[yellow]✗ Update declined: the caution findings were not accepted.[/yellow] "
+                "The plugin stays on the previously consented revision — "
+                "no changes were adopted.")
+            return False, False
+    return True, False
 
 
 def _parse_yaml_text(text: str) -> dict:
@@ -794,7 +861,10 @@ def _parse_yaml_text(text: str) -> dict:
 # ── Drifted-live review / fail-closed decline ────────────────────────────────
 
 
-def _review_live_drift(console, target: Path, key: str, name: str, drift: PluginConsentDrift, *, accept_update: bool) -> None:
+def _review_live_drift(
+    console, target: Path, key: str, name: str, drift: PluginConsentDrift, *,
+    accept_update: bool, accept_caution: bool = False,
+) -> None:
     """Review a live tree that drifted from its recorded consent (out-of-band edit/commit).
 
     The staged transaction cannot review an update against a baseline the live
@@ -802,7 +872,9 @@ def _review_live_drift(console, target: Path, key: str, name: str, drift: Plugin
     diff since the consented revision is shown and an explicit accept re-consents
     the tree as it is. Decline restores the consented revision when the checkout
     is clean; otherwise the plugin is disabled (fail closed) — the unreviewed
-    live state is never left silently active under a stale consent.
+    live state is never left silently active under a stale consent. A caution
+    verdict on the drifted tree follows the same owner-side rule as updates
+    (G4-2): re-consenting requires an explicit keep decision.
     """
     from hermes_cli.plugins_cmd import (
         _git_head_revision, _native_manifest_file, _read_manifest, _resolve_git_executable)
@@ -830,11 +902,12 @@ def _review_live_drift(console, target: Path, key: str, name: str, drift: Plugin
                                  == (live_manifest.get("version") or None))
 
     td_signature = version_unchanged and _update_touched_code(target, git_exe, old_revision)
-    accepted = _run_plugin_update_diff_gate(
+    accepted, _caution_accepted = _run_plugin_update_diff_gate(
         console, target, name, old_revision,
         str(consent.get("artifact_id") or "") or None,
         live_artifact, old_manifest or {}, live_manifest,
-        td_signature=td_signature, accept_update=accept_update)
+        td_signature=td_signature, accept_update=accept_update,
+        accept_caution=accept_caution)
     if not accepted:
         _decline_drifted_live(
             console, target, key, old_record, old_revision, pre_drift_dirty,
@@ -1018,6 +1091,10 @@ def _post_commit_housekeeping(target: Path, stage_live_untracked: List[str], con
 
 
 # ── Post-accept policy (scan + capability settlement) ────────────────────────
+# (G4-2 caution-on-update: the scan verdict is carried into the commit decision;
+# dangerous → refused pre-promotion; caution → refused unless the caller's
+# accept carried an explicit keep decision. The CLI gate resolves that decision
+# with the report visible and passes it in; surfaces only render the policy.)
 
 
 def _scan_staged_candidate(staged: Path, name: str) -> Tuple[Optional[str], bool, str, List[dict]]:
@@ -1074,7 +1151,9 @@ def _refresh_capability_consent_hash(plugin_id: str, declared: List[str]) -> Non
 # ── Commit (activate/promote/settle) — the single mutation authority ─────────
 
 
-def _commit_staged_plugin_update(name: str, target: Path, review_token: str, *, console=None) -> PluginUpdatePolicy:
+def _commit_staged_plugin_update(
+    name: str, target: Path, review_token: str, *, accept_caution: bool = False, console=None,
+) -> PluginUpdatePolicy:
     """Promote one reviewed staged candidate under the per-plugin commit lock.
 
     Everything that mutates the plugin namespace for one update runs under the
@@ -1166,6 +1245,28 @@ def _commit_staged_plugin_update(name: str, target: Path, review_token: str, *, 
                 candidate_artifact=cand_artifact,
                 reason=f"Security scan blocked the plugin update: {scan_reason}",
                 scan_verdict=scan_verdict, scan_blocked=True,
+                scan_findings=scan_findings,
+                pending_capabilities=pending, capabilities_changed=caps_changed)
+        # Caution verdict on content being adopted (HookPry G4-2): promotion requires an
+        # explicit keep-enabled decision. The CLI gate resolves it (--accept-caution / TTY y)
+        # before calling commit and passes the outcome here; the Dashboard's accept carries no
+        # such decision, so a caution candidate settles refused — the same surface-neutral
+        # outcome the CLI's non-interactive path gets, never a silent adopt-and-keep. In the
+        # staged model "fail closed" means the candidate is NOT promoted (no disable is
+        # needed: unlike the old pull-then-scan shape, the caution tree never reached the
+        # live namespace, which stays at the last consented revision).
+        if scan_verdict == "caution" and not accept_caution:
+            _discard_staged_update(review_token)
+            return PluginUpdatePolicy(
+                outcome=_OUTCOME_REFUSED, committed=False,
+                candidate_revision=stage_meta.get("candidate_revision"),
+                candidate_artifact=cand_artifact,
+                reason=(
+                    "Security scan returned a caution verdict on the update; adopting it "
+                    "requires an explicit keep-enabled decision (--accept-caution). "
+                    "Nothing was adopted — the live tree stays at the last consented "
+                    "revision."),
+                scan_verdict=scan_verdict, scan_blocked=False,
                 scan_findings=scan_findings,
                 pending_capabilities=pending, capabilities_changed=caps_changed)
 

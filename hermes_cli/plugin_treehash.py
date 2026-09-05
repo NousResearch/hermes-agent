@@ -204,12 +204,58 @@ def _entry_payload(plugin_dir: Path, rel_posix: str) -> Optional[bytes]:
 RegistrationCall = Tuple[int, str, str]  # (lineno, method, label)
 
 
+def _first_string_literal(node: ast.Call) -> Optional[str]:
+    """The first string literal at the call site: positional args, then keyword values.
+
+    ``None`` when the binding name is computed (``register_hook(event_name, ...)``),
+    in which case the call is still counted but carries no literal label.
+    """
+    for arg in node.args:
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return arg.value
+    for kw in node.keywords:
+        if kw.arg is not None and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+            return kw.value.value
+    return None
+
+
+def registered_hook_event_names(source: str) -> Set[str]:
+    """String hook event names bound by ``X.register_hook(...)`` calls in *source*.
+
+    Static AST only — never imports the module under review. Recognizes any
+    receiver expression (``ctx.register_hook``, ``self.ctx.register_hook``,
+    ``foo.bar.register_hook``) and both positional and keyword forms
+    (``register_hook('pre_tool_call', cb)`` and
+    ``register_hook(event='pre_tool_call', handler=cb)``). Unreadable source
+    → empty set (never raises).
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    names: Set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "register_hook":
+            continue
+        name = _first_string_literal(node)
+        if name is not None:
+            names.add(name)
+    return names
+
+
 def scan_registration_calls(source: str) -> List[RegistrationCall]:
     """``(lineno, method, label)`` for every ``X.register_*`` call site in *source*.
 
-    Static AST only — never imports the module under review. *label* is the
-    first positional argument rendered literally (``''`` when not a literal),
-    enough to tell ``register_hook('pre_tool_call')`` from
+    Static AST only — never imports the module under review. The receiver may
+    be ANY expression (``ctx.register_hook``, ``self.ctx.register_hook``,
+    ``foo.bar.register_hook`` — attribute receivers are how real plugins bind
+    hooks from helper objects). *label* is the first string literal at the
+    call site (positional first, then keyword values — so
+    ``register_hook(event='on_session_end', handler=h)`` labels as
+    ``'on_session_end'``), rendered with quotes; ``''`` when the binding name
+    is computed. Enough to tell ``register_hook('pre_tool_call')`` from
     ``register_hook('on_session_start')`` in a review diff.
     """
     try:
@@ -222,13 +268,10 @@ def scan_registration_calls(source: str) -> List[RegistrationCall]:
             continue
         if node.func.attr not in _REGISTRATION_METHODS:
             continue
-        if not isinstance(node.func.value, ast.Name):  # ctx.register_* (any receiver)
-            continue
         label = ""
-        if node.args:
-            arg = node.args[0]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                label = repr(arg.value)
+        first_literal = _first_string_literal(node)
+        if first_literal is not None:
+            label = repr(first_literal)
         calls.add((node.lineno, node.func.attr, label))
     return sorted(calls)
 
@@ -286,6 +329,7 @@ __all__ = [
     "git_tree_id",
     "tree_sha256",
     "scan_registration_calls",
+    "registered_hook_event_names",
     "diff_registration_inventories",
     "diff_manifest_hook_declarations",
 ]

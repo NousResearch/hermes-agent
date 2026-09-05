@@ -347,6 +347,7 @@ hermes plugins install user/repo --enable    # install AND enable (no prompt)
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest; any content change is reviewed and re-consented
 hermes plugins update my-plugin --accept-update  # non-interactive: accept the reviewed change
+hermes plugins update my-plugin --accept-caution # non-interactive: also keep enabled despite a caution scan verdict
 hermes plugins remove my-plugin              # uninstall
 hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled
@@ -651,8 +652,29 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
 | **dangerous** | Blocked. `--force` does **not** override |
 
-On `hermes plugins update`, a dangerous verdict on the updated tree
-disables the plugin until you review the findings and re-enable it.
+On `hermes plugins update`:
+
+- a **dangerous** verdict on the staged candidate refuses the commit — the
+  update is not adopted and the live tree stays at the last consented
+  revision (nothing was ever promoted, so there is nothing to disable);
+- a **caution** verdict on adopted content requires an explicit
+  keep-enabled decision — a TTY `y` at the keep prompt, or
+  `--accept-caution` in a non-interactive session. Without it the update is
+  **not adopted (fail closed)**: the caution-verdict tree never reaches the
+  live namespace. An “already up to date” run never re-scans or re-prompts —
+  the tree is the one you already consented to.
+
+The env-read/HTTP exemption applies to **tool/provider code only**. Code
+that binds to a **hook** runs outside the LLM decision path with full host
+privileges, so it is scanned with the full pattern set: a file is treated as
+hook code when it is a shell script (`.sh`/`.bash`), lives under a `hooks/`
+directory, or statically registers a hook event the manifest declares in
+`provides_hooks`/`hooks:` (declared hook names are resolved to files — any
+receiver form (`ctx`, `self.ctx`, `foo.bar`) and the keyword
+`register_hook(event=...)` are recognized; nothing is guessed by path or
+imported). A shell hook that curls a secret env var or your `~/.hermes/.env`
+to a remote now trips `env_exfil_*` → caution / dangerous instead of
+scanning clean.
 
 ### Content-consent gate on updates
 
@@ -686,8 +708,12 @@ fresh checkout of the remote — local mutable state (untracked files,
   the same revision cannot both land.
 - **Scan before promotion** — the plugin security scan runs on the exact staged
   candidate before the commit decision: a `dangerous` verdict refuses the update
-  (CLI and Dashboard alike — there is no promote-without-scan path), while
-  `caution` findings are shown and the accepted update proceeds. On accept,
+  (CLI and Dashboard alike — there is no promote-without-scan path), and a
+  `caution` verdict on adopted content requires the explicit keep-enabled
+  decision above (TTY `y` or `--accept-caution`; the Dashboard's accept carries
+  no such decision, so a caution candidate settles refused there too — the same
+  surface-neutral outcome as the CLI's non-interactive path, never a silent
+  adopt-and-keep). On accept,
   `*.example`-derived untracked files (e.g. a `config.yaml` copied from
   `config.yaml.example`) are replayed from the live tree with their exact
   current bytes; a file deleted from untracked state after the review was staged
@@ -720,6 +746,60 @@ Scanning is on by default; disable it in `config.yaml`:
 plugins:
   scan_on_install: false
 ```
+
+### Load-time drift gate
+
+Content consent is also enforced **when the plugin loads**, closing the
+out-of-band gap (a `git pull` by any means, a `--force` reinstall, or a
+same-user write from another profile). At discovery/startup — once per
+process, never mid-conversation — a plugin-manager-installed plugin whose
+current artifact identity (the same git-tree id / whole-tree sha256 the
+consent recorded) differs from its `consent.artifact_id` is **skipped with a
+loud warning** instead of imported, until it is re-consented through a
+reviewed `hermes plugins update`. The check runs only at discovery/startup by
+design: it must never sit in the per-turn hook path, where hashing would cost
+tokens and risk prompt-cache invalidation.
+
+```yaml
+plugins:
+  auto_accept_drift: false   # DANGEROUS if true: silently loads drifted content
+```
+
+Scope boundary: directories with **no install-metadata record** (hand-copied
+plugin dirs, or installs that predate content consent) are outside the plugin
+manager's install/update model and keep loading unchanged — the loader logs a
+one-time “no consent baseline” advisory instead of inventing skip rules that
+would break hand-copied plugins. Reinstalling from git with an explicit
+`--ref <SHA>` records a baseline and brings them under the gate. When the
+gate cannot verify a manager-managed plugin (unreadable install metadata, an
+unhashable tree) it fails open with a loud warning **and** surfaces the
+advisory on the plugin record, so `hermes plugins list` shows it — a
+fail-open check is never invisible.
+
+Both gate flags are **literal booleans** — write `true`/`false` without
+quotes. A YAML string (`"true"`, `"false"`, `"no"`) does NOT open a gate;
+quoted values leave the gate closed (the safe default).
+
+### Declared vs. registered hooks
+
+A plugin's manifest should declare the lifecycle hooks its `register(ctx)`
+binds (`provides_hooks:` — the legacy list-form `hooks:` is normalized into
+the same field). After loading, Hermes compares what the plugin **actually
+registered** against that declaration:
+
+- an **undeclared** hook — the plugin bound an event its metadata never
+  authorized — logs a loud warning and is surfaced in `hermes plugins list`
+  and `/plugins`;
+- with `plugins.strict_hooks: true` (literal boolean), such a plugin is
+  **refused at load** (fail closed) and its registrations are disposed.
+
+```yaml
+plugins:
+  strict_hooks: false   # true = refuse plugins that bind undeclared hooks
+```
+
+Plugins whose authors never declared hooks keep loading and working under
+the default (warn) mode — nothing is refused until you opt into strict mode.
 
 ### Interactive UI
 

@@ -259,6 +259,14 @@ class CLILoopsMixin:
                 label = "" if state == "enabled" else f" [{state}]"
                 error = f" — {info['error']}" if info.get("error") else ""
                 print(f"  {glyph} {name}{ver}{label}{detail}{error}")
+                undeclared = info.get("undeclared_hooks")
+                if undeclared:
+                    print(
+                        f"    ⚠ registers undeclared hook(s): {', '.join(undeclared)} — "
+                        "declare them in the manifest's provides_hooks")
+                advisory = info.get("load_advisory")
+                if advisory:
+                    print(f"    ⚠ {advisory}")
             if bundled_count:
                 print(f"  (+{bundled_count} bundled — see: hermes plugins list)")
             print("  Enable/disable: hermes plugins enable/disable <name>")

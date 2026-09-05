@@ -77,7 +77,11 @@ def test_interrupted_session_end_helper_emits_observer_shape(mock_invoke_hook):
 
     cli_mod._emit_interrupted_session_end(cli, reason="keyboard_interrupt")
 
-    mock_agent.interrupt.assert_called_once_with("keyboard interrupt")
+    # SIGINT-driven interrupt now carries stop_kind="user_stop" so the
+    # turn finalizer can phrase the closing message as a deliberate stop.
+    mock_agent.interrupt.assert_called_once_with(
+        "keyboard interrupt", stop_kind="user_stop"
+    )
     assert cli.session_id == "agent-session-id"
     mock_invoke_hook.assert_called_once()
     call = mock_invoke_hook.call_args

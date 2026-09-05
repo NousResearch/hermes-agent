@@ -96,7 +96,13 @@ def test_finalize_turn_leaves_non_string_final_response_alone(monkeypatch):
         _should_review_memory=False,
         _turn_exit_reason="interrupted",
     )
-    assert result["final_response"] is None
+    # An interrupted empty turn (no streamed content, no client disconnect)
+    # now synthesizes a visible closing message instead of delivering a blank
+    # bubble (#84207). The surrogate chokepoint still guarantees it is valid
+    # Unicode, which is the property this test actually guards.
+    assert result["final_response"] is not None
+    result["final_response"].encode("utf-8")
+    result["final_response"].encode("utf-16-le")
 
 
 # ---------------------------------------------------------------------------

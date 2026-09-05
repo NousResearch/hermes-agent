@@ -1010,6 +1010,14 @@ def _commit_tool_result(
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
     tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    # Structured interrupt provenance (#84207): stamp the turn's stop_kind on the
+    # tool result so resume-time orphan recovery (strip_interrupted_tool_tails) can
+    # phrase the note precisely — "you stopped this" vs "the connection dropped" —
+    # even though the agent's interrupt flag is long cleared by resume.
+    if agent._interrupt_requested:
+        _stop_kind = getattr(agent, "_interrupt_stop_kind", None)
+        if _stop_kind:
+            tool_message["stop_kind"] = _stop_kind
     messages.append(tool_message)
     if not _flush_session_db_after_tool_progress(agent, messages, stage=f"tool result {function_name}"):
         return None

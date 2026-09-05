@@ -653,7 +653,7 @@ async def _abandon_agent_task(
     agent = agent_ref[0] if agent_ref else None
     if agent is not None:
         with suppress(Exception):
-            request_hard_interrupt(agent, reason)
+            request_hard_interrupt(agent, reason, stop_kind="client_disconnect")
         _reap_disconnected_agent_processes(agent, source=reap_source)
     if not agent_task.done():
         agent_task.cancel()

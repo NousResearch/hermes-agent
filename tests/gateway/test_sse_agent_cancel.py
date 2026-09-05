@@ -246,8 +246,11 @@ class TestSSEAgentCancelOnDisconnect:
                     stream_q, agent_task, agent_ref,
                 )
 
-            # agent.interrupt() must have been called
-            mock_agent.interrupt.assert_called_once_with("SSE client disconnected")
+            # agent.interrupt() must have been called with the structured
+            # provenance the SSE disconnect path now attaches (stop_kind).
+            mock_agent.interrupt.assert_called_once_with(
+                "SSE client disconnected", stop_kind="client_disconnect"
+            )
             # Clean up
             agent_done.set()
 

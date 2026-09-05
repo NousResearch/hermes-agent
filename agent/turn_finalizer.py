@@ -522,9 +522,31 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_turn_complete notification failed: %s", exc)
 
-    # Surrogate chokepoint: RAW SDK text with a lone UTF-16 surrogate crashes downstream
-    # consumers (stdout, Telegram ``utf16_len``, JSON); scrub once where it leaves the loop.
-    # Class-level surrogate chokepoint (#80366, #55143, #55309, #19819): ``final_response`` is often the RAW
+    # Interrupted turn with no user-facing content: synthesize a short
+    # closing message so gateways deliver a visible bubble instead of a
+    # blank response_len=0 turn (#84207 — a killed long-running tool leaves
+    # the user with zero feedback and the session looking dead).  This runs
+    # AFTER the loop's partial-stream/prior-content recovery, so it only
+    # fires when there is genuinely nothing else to show.  ``stop_kind``
+    # distinguishes a deliberate /stop from a dropped client connection.
+    if interrupted and failed is not True and not (
+        isinstance(final_response, str) and final_response.strip()
+    ):
+        if getattr(agent, "_interrupt_stop_kind", None) == "client_disconnect":
+            final_response = (
+                "⚠️ The turn was interrupted because the client disconnected. "
+                "Send any message to continue."
+            )
+        elif getattr(agent, "_interrupt_message", None):
+            # Redirect: an incoming user message interrupted the turn. The
+            # next turn answers that message, so synthesizing "stopped before
+            # a reply was generated" would be misleading (#84236 review).
+            # Leave final_response empty; the next turn handles it.
+            pass
+        else:
+            final_response = "⚡ Turn interrupted — stopped before a reply was generated."
+
+# Class-level surrogate chokepoint (#80366, #55143, #55309, #19819): ``final_response`` is often the RAW
     # SDK content (``assistant_message.content``), not the sanitized copy stored in history by
     # ``build_assistant_message``. Any lone UTF-16 surrogate (U+D800–U+DFFF) in it crashes downstream
     # consumers — oneshot stdout writes, Telegram's ``utf16_len`` length check, Signal formatting, JSON

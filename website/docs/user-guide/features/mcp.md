@@ -931,6 +931,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 ## Related docs
 
 - [Use MCP with Hermes](/guides/use-mcp-with-hermes)
+- [Revelata deepKPI](/integrations/revelata) — SEC-sourced KPIs, filings, and company summaries for US public companies
 - [CLI Commands](/reference/cli-commands)
 - [Slash Commands](/reference/slash-commands)
 - [FAQ](/reference/faq)

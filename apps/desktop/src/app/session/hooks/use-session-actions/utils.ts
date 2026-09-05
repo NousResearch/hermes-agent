@@ -44,6 +44,21 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, Session
 
 import type { ClientSessionState } from '../../../types'
 
+// Optimistic user ids embed the send time as `user-<Date.now() ms>-<random>`.
+// A stale cached copy and its committed row should land within the same submit
+// window, while a genuine later re-send of identical text must stay visible.
+const OPTIMISTIC_COMMIT_WINDOW_S = 60
+
+function optimisticUserSentSeconds(id: string): number | undefined {
+  if (!id.startsWith('user-')) {
+    return undefined
+  }
+
+  const milliseconds = Number(id.split('-')[1])
+
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds / 1000 : undefined
+}
+
 function withAppendedText(message: ChatMessage, suffix: string): ChatMessage {
   let appended = false
 
@@ -577,12 +592,34 @@ export function preserveLocalPendingTurnMessages(
   }
 
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+  let newestLocalUserIndex = -1
+
+  for (let index = previousMessages.length - 1; index >= 0; index -= 1) {
+    if (previousMessages[index].role === 'user' && !isGatewaySystemMarker(previousMessages[index])) {
+      newestLocalUserIndex = index
+
+      break
+    }
+  }
+
+  const newestLocalUser = newestLocalUserIndex >= 0 ? previousMessages[newestLocalUserIndex] : undefined
+
+  const latestNonMarkerAuthoritativeUser = [...nextMessages]
+    .reverse()
+    .find(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  const hasSettledAuthoritativeAssistantAfterLatestUser =
+    latestNonMarkerAuthoritativeUser !== undefined &&
+    nextMessages
+      .slice(nextMessages.lastIndexOf(latestNonMarkerAuthoritativeUser) + 1)
+      .some(message => message.role === 'assistant' && !isLiveTailRow(message))
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
 
-  for (const message of previousMessages) {
+  for (const [index, message] of previousMessages.entries()) {
     if (isGatewaySystemMarker(message)) {
       continue
     }
@@ -619,6 +656,33 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isOptimisticUser &&
+      message === newestOptimisticUser &&
+      previousMessages
+        .slice(index + 1)
+        .some(
+          candidate =>
+            candidate.role === 'user' && !candidate.id.startsWith('user-') && !isGatewaySystemMarker(candidate)
+        )
+    ) {
+      const optimisticSent = optimisticUserSentSeconds(message.id)
+
+      if (
+        optimisticSent !== undefined &&
+        nextMessages.some(
+          candidate =>
+            candidate.role === 'user' &&
+            typeof candidate.timestamp === 'number' &&
+            Math.abs(optimisticSent - candidate.timestamp) < OPTIMISTIC_COMMIT_WINDOW_S &&
+            textWithoutReferenceLines(chatMessageText(candidate)) ===
+              textWithoutReferenceLines(chatMessageText(message))
+        )
+      ) {
+        continue
+      }
+    }
+
+    if (
+      isOptimisticUser &&
       latestAuthoritativeUser &&
       textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
         textWithoutReferenceLines(chatMessageText(message))
@@ -642,6 +706,18 @@ export function preserveLocalPendingTurnMessages(
           candidate.role === 'assistant' &&
           textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
       )
+    ) {
+      continue
+    }
+
+    // Compression can leave settled stream rows without a live user anchor,
+    // or before the newest local turn. Such rows are history, not the sole
+    // renderer copy of a reply that is still awaiting gateway commit.
+    if (
+      isPendingAssistant &&
+      message.interim !== true &&
+      ((newestLocalUserIndex < 0 && message.pending !== true) ||
+        (newestLocalUserIndex >= 0 && index <= newestLocalUserIndex))
     ) {
       continue
     }
@@ -718,6 +794,22 @@ export function preserveLocalPendingTurnMessages(
 
         continue
       }
+    }
+
+    // Reconciliation must also converge when an earlier pass already appended
+    // stale stream rows after the authoritative turn. Once the newest local
+    // user is the current authoritative user and that turn has a settled
+    // authoritative assistant, an unmatched stream row is residue. A live
+    // projection shell is not proof that the richer local stream is obsolete.
+    if (
+      isPendingAssistant &&
+      newestLocalUser !== undefined &&
+      latestNonMarkerAuthoritativeUser !== undefined &&
+      textWithoutReferenceLines(chatMessageText(newestLocalUser)) ===
+        textWithoutReferenceLines(chatMessageText(latestNonMarkerAuthoritativeUser)) &&
+      hasSettledAuthoritativeAssistantAfterLatestUser
+    ) {
+      continue
     }
 
     preserved.push(message)

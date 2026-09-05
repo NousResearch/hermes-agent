@@ -1261,6 +1261,186 @@ describe('preserveLocalPendingTurnMessages', () => {
       'assistant-stream-live'
     ])
   })
+
+  it('does not append settled assistant-stream rows with no live user anchor after compression', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false }),
+      msg('assistant-stream-stale-3', 'assistant', 'compressed-away reply three', { pending: false })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache)).toEqual(authoritative)
+  })
+
+  it('does not append settled assistant-stream history before the newest local user after compression', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const pollutedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false }),
+      msg('user-inflight', 'user', 'the current prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, pollutedWarmCache)).toEqual(authoritative)
+  })
+
+  it('converges when stale settled streams were already appended after the authoritative turn', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const alreadyPolluted = [
+      ...authoritative,
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: false }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: false })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, alreadyPolluted)).toBe(authoritative)
+  })
+
+  it('drops still-pending streams after the authoritative turn supersedes them despite an ordinal shift', () => {
+    const authoritative = [
+      msg('1-user-stored', 'user', 'prompt one'),
+      msg('2-assistant-stored', 'assistant', 'reply one'),
+      msg('3-user-stored', 'user', 'prompt two'),
+      msg('4-assistant-stored', 'assistant', 'reply two')
+    ]
+
+    const disconnectedWarmCache = [
+      msg('1-user-stored', 'user', 'prompt one'),
+      msg('assistant-stream-stale', 'assistant', 'compressed-away reply', { pending: true }),
+      msg('2-assistant-stream', 'assistant', 'reply one', { pending: true }),
+      msg('3-user-stored', 'user', 'prompt two'),
+      msg('4-assistant-stream', 'assistant', 'reply two', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+  })
+
+  it('drops still-pending stream history before the newest local user after an ordinal shift', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('stored-assistant', 'assistant', 'the current reply')
+    ]
+
+    const disconnectedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: true }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: true }),
+      msg('user-inflight', 'user', 'the current prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache)).toBe(authoritative)
+  })
+
+  it('drops pending stream history before a newer local user even when that user differs from authority', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the committed prompt'),
+      msg('stored-assistant', 'assistant', 'the committed reply')
+    ]
+
+    const disconnectedWarmCache = [
+      msg('assistant-stream-stale-1', 'assistant', 'compressed-away reply one', { pending: true }),
+      msg('assistant-stream-stale-2', 'assistant', 'compressed-away reply two', { pending: true }),
+      msg('user-new', 'user', 'a genuinely newer prompt')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(authoritative, disconnectedWarmCache).map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-assistant',
+      'user-new'
+    ])
+  })
+
+  it('keeps a richer shifted local stream when authority only has a live shell', () => {
+    const authoritative = [
+      msg('stored-user', 'user', 'the current prompt'),
+      msg('assistant-stream-shell', 'assistant', '', { pending: true })
+    ]
+
+    const warmCache = [
+      msg('older-assistant', 'assistant', 'an older committed reply'),
+      msg('stored-user', 'user', 'the current prompt'),
+      streamingMsg('assistant-stream-local', 'the richer local reply')
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(authoritative, warmCache)
+
+    expect(preserved.map(message => message.id)).toContain('assistant-stream-local')
+    expect(chatMessageText(preserved.find(message => message.id === 'assistant-stream-local')!)).toBe(
+      'the richer local reply'
+    )
+  })
+
+  it('drops an already-committed optimistic user row after ordinal pairing shifts to a later user', () => {
+    const taskText = '任务：BM 设计卡批 2——D 卡'
+    const history = [msg('1-user-stored', 'user', 'earlier question')]
+    const committedTask = msg('2-user-stored', 'user', taskText, { timestamp: 1000 })
+    const laterUser = msg('3-user-stored', 'user', '[IMPORTANT: background process done]', { timestamp: 1010 })
+    const next = [...history, committedTask, laterUser]
+    const optimisticStale = msg('user-1000000-abc123', 'user', taskText)
+    const previous = [...history, committedTask, optimisticStale, laterUser]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).not.toContain('user-1000000-abc123')
+    expect(preserved.filter(message => chatMessageText(message).includes(taskText))).toHaveLength(1)
+  })
+
+  it('preserves a fresh re-send whose text matches an older committed prompt', () => {
+    const promptText = 'retry this prompt'
+    const committedFirst = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
+    const committedSecond = msg('2-user-stored', 'user', 'something else', { timestamp: 1100 })
+    const next = [committedFirst, committedSecond]
+    const optimisticResend = msg('user-1300000-abc123', 'user', promptText)
+    const previous = [committedFirst, committedSecond, optimisticResend]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toContain('user-1300000-abc123')
+    expect(preserved.filter(message => chatMessageText(message).includes(promptText))).toHaveLength(2)
+  })
+
+  it('preserves a quick same-text re-send after an intervening authoritative prompt', () => {
+    const promptText = 'retry this prompt'
+    const committedFirst = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
+    const committedSecond = msg('2-user-stored', 'user', 'something else', { timestamp: 1010 })
+    const next = [committedFirst, committedSecond]
+    const optimisticResend = msg('user-1030000-abc123', 'user', promptText)
+    const previous = [committedFirst, committedSecond, optimisticResend]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toContain('user-1030000-abc123')
+    expect(preserved.filter(message => chatMessageText(message).includes(promptText))).toHaveLength(2)
+  })
+
+  it('preserves a quick same-text re-send followed by an optimistic correction', () => {
+    const promptText = 'retry this prompt'
+    const committedFirst = msg('1-user-stored', 'user', promptText, { timestamp: 1000 })
+    const committedSecond = msg('2-user-stored', 'user', 'something else', { timestamp: 1010 })
+    const next = [committedFirst, committedSecond]
+    const optimisticResend = msg('user-1030000-abc123', 'user', promptText)
+    const optimisticCorrection = msg('user-1040000-def456', 'user', 'add one more constraint')
+    const previous = [committedFirst, committedSecond, optimisticResend, optimisticCorrection]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-user-stored',
+      'user-1030000-abc123',
+      'user-1040000-def456'
+    ])
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

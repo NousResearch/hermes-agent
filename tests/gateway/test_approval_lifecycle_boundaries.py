@@ -195,9 +195,25 @@ def test_ambiguous_text_ack_keeps_waiter_for_late_resolution(monkeypatch, backgr
         approval.unregister_gateway_notify("late-ack")
 
 
-def test_deadline_clock_import_survives_plugin_compat_removal():
-    import ast
-    from pathlib import Path
-    module = ast.parse(Path(approval.__file__).read_text())
-    assert any(isinstance(node, ast.Import) and any(alias.name == "time" for alias in node.names)
-               for node in module.body)
+def test_deadline_resolution_without_plugin_compatibility():
+    import subprocess
+    import sys
+    script = '''
+import sys
+import time
+sys.modules["hermes_cli.plugin_compat"] = None
+from tools import approval
+from tools.approval_gateway_wait import _await_gateway_decision
+
+def notify(data):
+    assert data["expires_at"] > time.monotonic()
+    assert approval.resolve_gateway_approval(
+        "no-compat", "deny", approval_id=data["approval_id"]) == 1
+
+result = _await_gateway_decision("no-compat", notify, {"command": "echo test"})
+assert result["choice"] == "deny", result
+assert not approval.has_blocking_approval("no-compat")
+'''
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                            text=True, timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr

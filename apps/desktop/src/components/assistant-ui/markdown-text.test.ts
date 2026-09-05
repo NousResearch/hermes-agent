@@ -390,4 +390,45 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('\\sqrt[3]{8}')
   })
+
+  it('does not parse a bare dollar pair spanning CJK prose as inline math (#103546)', () => {
+    const input = '...的经典嫌疑是 **$connection 被别的写者整包覆盖**（丢了 `isFullscreen` 字段）...搜 `$connection` 的所有写者：'
+
+    const output = preprocessMarkdown(input)
+
+    // The bare opening `$` is escaped so remark-math leaves it as literal text
+    // instead of pairing it with the later `$` and feeding the whole sentence
+    // to KaTeX. The backticked `$connection` is untouched.
+    expect(output).toBe(
+      '...的经典嫌疑是 **\\$connection 被别的写者整包覆盖**（丢了 `isFullscreen` 字段）...搜 `$connection` 的所有写者：'
+    )
+    expect(output).toContain('\\$connection 被别的写者整包覆盖')
+  })
+
+  it('escapes the opening dollar when both identifiers are bare in CJK prose', () => {
+    const output = preprocessMarkdown('搜 $connection 的所有写者，再搜 $connection 的读者')
+
+    expect(output).toContain('\\$connection 的所有写者')
+    expect(output).toContain('$connection 的读者')
+  })
+
+  it('leaves real inline math in CJK prose untouched', () => {
+    const output = preprocessMarkdown('代入 $x^2 + y^2$ 得到结果')
+
+    expect(output).toContain('$x^2 + y^2$')
+    expect(output).not.toContain('\\$x^2')
+  })
+
+  it('leaves real inline math adjacent to CJK untouched', () => {
+    const output = preprocessMarkdown('其中 $\\alpha = 1$，所以')
+
+    expect(output).toContain('$\\alpha = 1$')
+    expect(output).not.toContain('\\$\\alpha')
+  })
+
+  it('leaves display math in CJK prose untouched', () => {
+    const output = preprocessMarkdown('公式 $$E = mc^2$$ 成立')
+
+    expect(output).toContain('$$E = mc^2$$')
+  })
 })

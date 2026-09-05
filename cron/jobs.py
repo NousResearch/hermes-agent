@@ -1116,8 +1116,34 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     return None
 
 
-# --- Ticker heartbeat (liveness signal for `hermes cron status`) ---
+def _advance_recurring_run(job: Dict[str, Any], now: datetime) -> Optional[str]:
+    """Return the crash-safe next slot without adding scheduler observation drift.
 
+    Interval schedules keep their persisted ``next_run_at`` phase. If that slot
+    is due, advance by whole intervals to the first future slot; if an earlier
+    dispatch step already reserved a future slot, keep it unchanged. Cron
+    schedules retain their existing claim-time calculation.
+    """
+    schedule = job.get("schedule", {})
+    if schedule.get("kind") != "interval":
+        return compute_next_run(schedule, now.isoformat())
+
+    try:
+        interval = timedelta(minutes=float(schedule["minutes"]))
+        if interval.total_seconds() <= 0:
+            return None
+        scheduled = _ensure_aware(datetime.fromisoformat(job["next_run_at"]))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return compute_next_run(schedule, now.isoformat())
+
+    if scheduled > now:
+        return scheduled.isoformat()
+    elapsed = now - scheduled
+    periods = elapsed // interval + 1
+    return (scheduled + periods * interval).isoformat()
+
+
+# --- Ticker heartbeat (liveness signal for `hermes cron status`) ---
 def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
     """Atomic (never torn) best-effort marker write; failures swallowed so markers never break the
     tick."""
@@ -2201,7 +2227,23 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
             _complete_job_record(job)
             return
 
-    job["next_run_at"] = compute_next_run(job["schedule"], now)
+    # Interval jobs normally keep the future slot reserved before dispatch. This
+    # preserves their wall-clock phase instead of adding sub-second completion
+    # drift that a 60s ticker can turn into a full extra minute. A long run
+    # whose reserved slot has already passed still re-anchors from completion,
+    # preserving the no-immediate-catch-up completion contract.
+    reserved_next = job.get("next_run_at")
+    keep_reserved_interval = False
+    if kind == "interval" and reserved_next:
+        try:
+            keep_reserved_interval = (
+                _ensure_aware(datetime.fromisoformat(reserved_next))
+                > _ensure_aware(datetime.fromisoformat(now))
+            )
+        except (TypeError, ValueError):
+            pass
+    if not keep_reserved_interval:
+        job["next_run_at"] = compute_next_run(job["schedule"], now)
     if job["next_run_at"] is not None:
         if job.get("state") != "paused":
             job["state"] = "scheduled"
@@ -2435,7 +2477,7 @@ def advance_next_runs(job_ids) -> int:
         return 0
     with _jobs_lock():
         jobs = load_jobs()
-        now = _hermes_now().isoformat()
+        now = _hermes_now()
         advanced = 0
         for job in jobs:
             if (
@@ -2444,7 +2486,7 @@ def advance_next_runs(job_ids) -> int:
                 or job.get("schedule", {}).get("kind") not in {"cron", "interval"}
             ):
                 continue
-            new_next = compute_next_run(job["schedule"], now)
+            new_next = _advance_recurring_run(job, now)
             if new_next and new_next != job.get("next_run_at"):
                 job["next_run_at"] = new_next
                 advanced += 1
@@ -2477,6 +2519,7 @@ def _machine_id() -> str:
 
 def claim_job_for_fire(
     job_id: str, *, claim_ttl_seconds: int = 300, force: bool = False, return_job: bool = False,
+    advance_schedule: bool = True,
 ) -> Union[bool, Dict[str, Any]]:
     """Atomically claim a job for one external 'fire' (multi-machine at-most-once); True iff THIS
     caller won (``CronScheduler.fire_due``: exactly one of N replicas runs a job). Under the
@@ -2501,8 +2544,8 @@ def claim_job_for_fire(
         # Per-acquisition token: a process may legitimately reclaim its own stale lease, and the
         # previous runner must not heartbeat the new claim merely because hostname + PID match.
         job["fire_claim"] = {"at": now.isoformat(), "by": f"{_machine_id()}:{uuid.uuid4().hex}"}
-        if job.get("schedule", {}).get("kind") in {"cron", "interval"}:
-            nxt = compute_next_run(job["schedule"], now.isoformat())
+        if advance_schedule and job.get("schedule", {}).get("kind") in {"cron", "interval"}:
+            nxt = _advance_recurring_run(job, now)
             if nxt:
                 job["next_run_at"] = nxt
         save_jobs(jobs)
@@ -2518,7 +2561,6 @@ def heartbeat_fire_claim(job_id: str, *, expected_owner: str) -> bool:
         return _refresh_claim(jobs, job.get("fire_claim"), expected_owner)
 
     return _under_fire_fence(job_id, lambda: _with_job(job_id, apply, False))
-
 
 # Completed one-shots are retained in jobs.json (final status stays inspectable) and pruned by
 # _sweep_completed_oneshots once they age out.

@@ -481,6 +481,33 @@ class TestRunEvents:
                 tail = await asyncio.wait_for(second.content.read(), timeout=5.0)
                 assert b"stream closed" in tail
 
+    @pytest.mark.asyncio
+    async def test_events_stream_prepare_failure_removes_subscriber(self, adapter):
+        run_id = "run_prepare_failure"
+        pending = asyncio.Queue()
+        adapter._run_streams[run_id] = pending
+        adapter._set_run_status(run_id, "running")
+        _claim_run(adapter, run_id)
+        request = MagicMock()
+        request.headers = {}
+        request.match_info = {"run_id": run_id}
+        request.path = f"/v1/runs/{run_id}/events"
+        request.method = "GET"
+        response = MagicMock()
+        response.prepare = AsyncMock(
+            side_effect=ConnectionResetError("client disconnected")
+        )
+
+        with patch(
+            "gateway.platforms.api_server_runs.web.StreamResponse",
+            return_value=response,
+        ):
+            with pytest.raises(ConnectionResetError):
+                await adapter._handle_run_events(request)
+
+        assert run_id not in adapter._run_stream_subscribers
+        assert adapter._run_streams[run_id] is pending
+
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

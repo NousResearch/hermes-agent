@@ -412,7 +412,7 @@ import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-market
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
-import { createWindowOpenHandler } from './window-open-policy'
+import { createWindowOpenHandler, guardAuthSessionPermissions } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -7308,6 +7308,11 @@ function getOauthSession() {
 
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
+  // No permission is ever legitimate for completing sign-in; remote IDP/portal
+  // content must not be able to request notifications/geolocation/etc. from
+  // the auth windows (installMediaPermissions covers only defaultSession).
+  guardAuthSessionPermissions(oauthSession, 'oauth', rememberLog)
+
   return oauthSession
 }
 
@@ -7346,6 +7351,9 @@ function getOauthSessionForUrl(url) {
 
   if (!sess) {
     sess = session.fromPartition(partition)
+    // Per-connection OAuth jars get the same deny-all permission guard as
+    // the legacy shared partition — their windows are sign-in-only too.
+    guardAuthSessionPermissions(sess, `oauth:${partition}`, rememberLog)
     oauthSessionsByPartition.set(partition, sess)
   }
 

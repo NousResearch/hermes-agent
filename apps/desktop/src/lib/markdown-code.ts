@@ -361,6 +361,16 @@ export function isLikelyProseFence(info: string, body: string): boolean {
     return true
   }
 
+  // Any explicit, valid language tag is respected as code. sanitizeLanguageTag
+  // only returns non-empty for tags matching VALID_LANGUAGE_RE, so this covers
+  // text/plain/plaintext/md/markdown (in NON_CODE_FENCE_LANGUAGES) as well as
+  // gdscript/zsh and other non-COMMON tags the fallback below would otherwise
+  // prose-classify. Bare fences ('') skip this guard and fall through to the
+  // structured/prose heuristics so untagged paragraph fences still unwrap.
+  if (language !== '' && VALID_LANGUAGE_RE.test(language)) {
+    return false
+  }
+
   if (!NON_CODE_FENCE_LANGUAGES.has(language)) {
     return false
   }
@@ -386,16 +396,43 @@ export function isLikelyProseCodeBlock(language: string | undefined, code: strin
     return false
   }
 
+  // Any explicit, valid language tag is respected as code — even when the
+  // body is a bullet list (gdscript/zsh lists were prose-classified by the
+  // bullet heuristic below, which only exempts COMMON languages). Exception:
+  // Streamdown-mislabeled unknown tags like "heads" (bullet + inline
+  // markdown emphasis) stay prose per the upstream test locked in below.
+  if (
+    cleanLanguage !== '' &&
+    VALID_LANGUAGE_RE.test(cleanLanguage) &&
+    !(signals.bulletLines >= 1 && signals.hasMarkdown)
+  ) {
+    return false
+  }
+
   // A bullet list with markdown emphasis is prose even when it happens to be
   // structured; the config veto below is only meant to protect config/kv
-  // listings, so let the bullet-prose case win first.
-  if (signals.bulletLines >= 1 && (signals.hasMarkdown || signals.proseLines >= 2)) {
+  // listings, so let the bullet-prose case win first. Known code languages
+  // (yaml/markdown) are exempt: their lists are data, not prose.
+  if (
+    signals.bulletLines >= 1 &&
+    (signals.hasMarkdown || signals.proseLines >= 2) &&
+    !COMMON_CODE_LANGUAGES.has(cleanLanguage)
+  ) {
     return true
   }
 
   // Config / key-value / indented listings are code, not prose — never
   // unwrap them (SSH config, .env, INI, key/value tables).
   if (isLikelyStructuredText(code || '')) {
+    return false
+  }
+
+  // Any explicit, valid language tag is respected and rendered as code
+  // (covers gdscript/zsh and other non-COMMON languages, plus text/plain/
+  // plaintext/md/markdown). sanitizeLanguageTag returning non-empty means
+  // VALID_LANGUAGE_RE matched; only bare fences ('') and unknown tags fall
+  // through to the prose heuristic below.
+  if (cleanLanguage !== '' && VALID_LANGUAGE_RE.test(cleanLanguage)) {
     return false
   }
 

@@ -178,8 +178,15 @@ class CLIStatusBarMixin:
         if model_short == model_name:
             model_short = model_name.split("/")[-1] if "/" in model_name else model_name
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.
-            from hermes_cli.model_switch import format_model_for_display
+            from hermes_cli.model_switch import (
+                format_model_for_display,
+                strip_bedrock_profile_prefix_for_display,
+            )
             model_short = format_model_for_display(model_short)
+            # Status bar only: the geography token spends 3-7 of the 23 visible
+            # characters at the front, where the model identity is. Not applied in
+            # ``cli_model_switch_mixin``, where it would read "switched from X to X".
+            model_short = strip_bedrock_profile_prefix_for_display(model_short)
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
         if len(model_short) > 26:

@@ -1121,6 +1121,71 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertFalse(ok, reason)
 
+    def test_dkim_does_not_trust_visible_header_from(self):
+        """DKIM=pass whose only aligned identity is the visible From header
+        must not authenticate: header.from mirrors the attacker-controlled
+        From, not a signing identity (GHSA-rxqh-5572-8m77 residual)."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.from=example.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_dkim_properties_do_not_leak_across_methods(self):
+        """An ARC clause's header.d must not authenticate a separate dkim=pass
+        clause: properties are scoped to the method clause they follow."""
+        ok, reason = self._verify(
+            "user@example.com",
+            ["mx.example.net; dkim=pass header.d=evil.com; arc=pass header.d=example.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_netease_aliases_authenticate(self):
+        """NetEase/163 stamps SPF as smtp.mail and DKIM as header.i."""
+        ok, reason = self._verify(
+            "user@163.com",
+            ["163mx; spf=pass smtp.mail=user@163.com; dkim=pass header.i=@163.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_netease_alias_misaligned_rejected(self):
+        ok, reason = self._verify(
+            "stevenqin09@outlook.com",
+            ["163mx; spf=pass smtp.mail=fake@163.com; dkim=pass header.i=@163.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_return_path_alias_authenticates(self):
+        ok, reason = self._verify(
+            "u@example.com",
+            ["mx.example.net; spf=pass return-path=u@example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_header_i_alias_authenticates(self):
+        ok, reason = self._verify(
+            "a@gmail.com",
+            ["mx.google.com; dkim=pass header.i=@gmail.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_comment_text_is_not_parsed_as_properties(self):
+        """RFC 8601 comments carry no verdict data: a comment mentioning
+        ``header.d=example.com`` must not authenticate a dkim=pass whose
+        real identity is misaligned."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.d=evil.com (header.d=example.com checked)"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_mailfrom_alias_authenticates(self):
+        ok, reason = self._verify(
+            "u@example.com",
+            ["mx.example.net; spf=pass mailfrom=u@example.com"],
+        )
+        self.assertTrue(ok, reason)
+
 
 if __name__ == "__main__":
     unittest.main()

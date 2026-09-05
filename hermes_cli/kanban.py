@@ -564,8 +564,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
-    with kbc.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+    try:
+        with kbc.connect_closing() as conn:
+            ok = kb.assign_task(conn, args.task_id, profile)
+    except (ValueError, RuntimeError) as exc:
+        return _err(f"kanban: {exc}", 2)
     return _ok_or_err(ok, f"no such task: {args.task_id}",
                       f"Assigned {args.task_id} to {profile or '(unassigned)'}")
 
@@ -600,8 +603,14 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     reclaim = bool(getattr(args, "reclaim", False))
-    with kbc.connect_closing() as conn:
-        ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
+    try:
+        with kbc.connect_closing() as conn:
+            ok = kb.reassign_task(
+                conn, args.task_id, profile, reclaim_first=reclaim,
+                reason=getattr(args, "reason", None),
+            )
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
     return _ok_or_err(
         ok,
         f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)",
@@ -710,8 +719,18 @@ def _cmd_claim(args: argparse.Namespace) -> int:
             existing = kb.get_task(conn, args.task_id)
             if existing is None:
                 return _err(f"no such task: {args.task_id}")
+            reason_hint = ""
+            if existing.status == "blocked":
+                events = [
+                    event
+                    for event in kb.list_events(conn, args.task_id)
+                    if event.kind == "prerequisite_blocked"
+                ]
+                if events and events[-1].payload is not None:
+                    # Newest prerequisite_blocked carries the actionable cause.
+                    reason_hint = f" ({events[-1].payload['reason']})"
             return _err(f"cannot claim {args.task_id}: status={existing.status} "
-                        f"lock={existing.claim_lock or '(none)'}")
+                        f"lock={existing.claim_lock or '(none)'}{reason_hint}")
         workspace = kbw.resolve_workspace(task)
         kbw.set_workspace_path(conn, task.id, str(workspace))
     print(f"Claimed {task.id}\nWorkspace: {workspace}")
@@ -934,10 +953,19 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = _stripped_or_none(getattr(args, "reason", None))
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
-    with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+    try:
+        with kbc.connect_closing() as conn:
+            op = _commented(
+                conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid)
+            )
+            return _bulk_apply(
+                ids,
+                op,
+                lambda tid: f"Unblocked {tid}{suffix}",
+                lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)",
+            )
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:

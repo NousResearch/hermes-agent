@@ -81,6 +81,25 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_create_reports_every_unavailable_forced_skill_atomically(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        before = len(kb.list_tasks(conn))
+    result = json.loads(kt._handle_create({
+        "title": "invalid child",
+        "assignee": "test-worker",
+        "skills": ["missing-z", "missing-a"],
+    }))
+
+    assert "missing-a" in result["error"]
+    assert "missing-z" in result["error"]
+    with kbc.connect() as conn:
+        assert len(kb.list_tasks(conn)) == before
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

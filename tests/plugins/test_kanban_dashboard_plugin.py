@@ -117,6 +117,85 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_maps_prerequisite_refusal_to_bad_request(client):
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "unanchored", "workspace_kind": "worktree"},
+    )
+
+    assert response.status_code == 400
+    assert "workspace_kind=worktree requires" in response.json()["detail"]
+
+
+def test_reassign_maps_incompatible_forced_skills_to_conflict(client, kanban_home):
+    skill = kanban_home / "skills" / "review-skill" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: review-skill\ndescription: Test fixture.\n---\n\n# Review\n",
+        encoding="utf-8",
+    )
+    (kanban_home / "profiles" / "incompatible").mkdir(parents=True)
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "scoped",
+            "assignee": "default",
+            "skills": ["review-skill"],
+        },
+    )
+    assert created.status_code == 200, created.text
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{created.json()['task']['id']}",
+        json={"assignee": "incompatible"},
+    )
+
+    assert response.status_code == 409
+    assert "review-skill" in response.json()["detail"]
+
+
+def test_reopen_review_maps_incompatible_implementer_to_conflict(client, kanban_home):
+    skill_name = "implementation-review"
+    for profile in ("builder", "reviewer"):
+        skill = kanban_home / "profiles" / profile / "skills" / skill_name / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            f"---\nname: {skill_name}\ndescription: Test fixture.\n---\n\n# Review\n",
+            encoding="utf-8",
+        )
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="review return prerequisite",
+            assignee="builder",
+            skills=[skill_name],
+        )
+        implementation = kb.claim_task(conn, task_id, claimer="builder:test")
+        assert implementation is not None
+        assert kb.request_review(
+            conn,
+            task_id,
+            reviewer="reviewer",
+            expected_run_id=implementation.current_run_id,
+        )
+    (kanban_home / "profiles" / "builder" / "skills" / skill_name / "SKILL.md").unlink()
+
+    response = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}", json={"status": "ready"}
+    )
+
+    assert response.status_code == 409
+    assert skill_name in response.json()["detail"]
+    with kbc.connect() as conn:
+        unchanged = kb.get_task(conn, task_id)
+        assert unchanged is not None
+        assert unchanged.status == "review"
+        assert unchanged.assignee == "reviewer"
+        assert not any(
+            event.kind == "review_reopened" for event in kb.list_events(conn, task_id)
+        )
+
+
 def test_patch_board_sets_project_directory(client, tmp_path):
     """Board-level default_workdir must be editable after creation."""
     kb.create_board("late-config")

@@ -583,8 +583,9 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
     if s == "archived":
         ok = kanban_db.archive_task(conn, task_id)
     else:
-        with _map_errors(400, _StatusRejected):
-            ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
+        with _map_errors(409, ValueError):
+            with _map_errors(400, _StatusRejected):
+                ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
         if s == "review" and ok and review_assignee_deferred and not payload.assignee:
             ok = kanban_db.assign_task(conn, task_id, None)
     if ok:
@@ -626,7 +627,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         # current implementer before the task is routed to the reviewer.
         review_assignee_deferred = payload.status == "review" and payload.assignee is not None
         if payload.assignee is not None and not review_assignee_deferred:
-            with _map_errors(409, RuntimeError):
+            with _map_errors(409, RuntimeError, ValueError):
                 _require_ok(kanban_db.assign_task(conn, task_id, payload.assignee or None))
         if payload.status is not None:
             _patch_status(conn, task_id, payload, review_assignee_deferred)
@@ -760,15 +761,18 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
         entry.update(ok=False, error="archive refused")
     if payload.status is not None and not payload.archive:
         s = payload.status
-        if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
-            entry.update(ok=False, error=f"transition to {s!r} refused")
+        try:
+            if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
+                entry.update(ok=False, error=f"transition to {s!r} refused")
+        except ValueError as e:
+            entry.update(ok=False, error=str(e))
     if payload.assignee is not None:
         try:
             ok = (kanban_db.reassign_task(conn, tid, payload.assignee or None, reclaim_first=True) if payload.reclaim_first
                   else kanban_db.assign_task(conn, tid, payload.assignee or None))
             if not ok:
                 entry.update(ok=False, error="assign refused")
-        except RuntimeError as e:
+        except (RuntimeError, ValueError) as e:
             entry.update(ok=False, error=str(e))
     if payload.priority is not None:
         _set_priority(conn, tid, payload.priority, board)
@@ -966,7 +970,7 @@ class ReassignBody(BaseModel):
 def reassign_task_endpoint(task_id: str, payload: ReassignBody, board: Optional[str] = Query(None)):
     """Reassign to another profile, optionally reclaiming first
     (``hermes kanban reassign <task_id> <profile> [--reclaim]``)."""
-    with _board_conn(board) as (board, conn):
+    with _board_conn(board) as (board, conn), _map_errors(409, ValueError):
         ok = kanban_db.reassign_task(
             conn, task_id, payload.profile or None, reclaim_first=bool(payload.reclaim_first), reason=payload.reason)
         if not ok:

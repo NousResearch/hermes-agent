@@ -516,6 +516,66 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
         logger.warning("Skill security warning for '%s': %s", name, "; ".join(warnings))
 
 
+def skill_is_loadable(name: str, *, profile_only: bool = False) -> bool:
+    """Whether an explicit ``skill_view(name)`` can resolve without loading secrets.
+
+    This follows the same namespace, collision, platform and disabled-state gates as
+    :func:`skill_view`, but deliberately stops before readiness evaluation (which
+    reads ``.env`` and may invoke a secret-capture callback).  ``profile_only``
+    excludes project-local skills so a scheduler can check an assignee's durable
+    capability independently of its own current working directory.
+    """
+    try:
+        if _skill_lookup_path_error(name):
+            return False
+        local_category_name: str | None = None
+        if ":" in name:
+            from agent.skill_utils import is_valid_namespace, parse_qualified_name
+            from hermes_cli.plugins import (
+                _get_disabled_plugins, discover_plugins, get_plugin_manager,
+            )
+
+            namespace, bare = parse_qualified_name(name)
+            if not namespace or not is_valid_namespace(namespace) or not bare:
+                return False
+            discover_plugins()
+            if namespace in _get_disabled_plugins():
+                return False
+            manager = get_plugin_manager()
+            plugin_skill_md = manager.find_plugin_skill(name)
+            if plugin_skill_md is not None:
+                if not plugin_skill_md.exists() or _is_skill_disabled(name):
+                    return False
+                frontmatter = _safe_frontmatter(content=_read_skill_text(plugin_skill_md))
+                return bool(skill_matches_platform(frontmatter))
+            if manager.list_plugin_skills(namespace):
+                return False
+            local_category_name = f"{namespace}/{bare}"
+            if _skill_lookup_path_error(local_category_name):
+                return False
+
+        from agent.skill_utils import get_external_skills_dirs
+
+        active_skills_dir = _skills_dir()
+        project_dirs: list[Path] = []
+        if profile_only:
+            all_dirs = ([active_skills_dir] if active_skills_dir.exists() else [])
+            all_dirs += get_external_skills_dirs()
+        else:
+            project_dirs, all_dirs, active_skills_dir = _skill_search_dirs()
+        error, _skill_dir, skill_md = _locate_skill(
+            name, local_category_name, project_dirs, all_dirs,
+        )
+        if error is not None or skill_md is None:
+            return False
+        frontmatter = _safe_frontmatter(content=_read_skill_text(skill_md))
+        resolved_name = frontmatter.get("name", skill_md.parent.name)
+        return bool(skill_matches_platform(frontmatter)) and not _is_skill_disabled(resolved_name)
+    except Exception:
+        logger.debug("Could not resolve skill loadability for %r", name, exc_info=True)
+        return False
+
+
 def skill_view(
     name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name

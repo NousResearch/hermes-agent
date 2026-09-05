@@ -367,6 +367,7 @@ import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection }
 import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
+import { readOfficialSshCommitLog } from './update-commit-log'
 import {
   backgroundMaterialFor,
   defaultTranslucencyState,
@@ -3084,7 +3085,8 @@ async function checkUpdates() {
   const originUrl = await getOriginUrl(updateRoot)
 
   if (isOfficialSshRemote(originUrl)) {
-    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+    const run = args => runGit(args, { cwd: updateRoot })
+    const git = args => run(args).then(r => r.stdout.trim())
 
     const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
@@ -3121,6 +3123,14 @@ async function checkUpdates() {
 
     const upToDate = tipsEqual || sshBehind === 0
 
+    // Populate the real changelog over anonymous HTTPS (never `git fetch origin`,
+    // which would prompt for the SSH passkey touch). Empty on an up-to-date
+    // checkout or if the HTTPS fetch fails — the overlay then shows its generic
+    // summary instead of a wrong/empty one (#69081).
+    const commits = upToDate
+      ? []
+      : await readOfficialSshCommitLog(run, OFFICIAL_REPO_HTTPS_URL, branch, targetSha)
+
     return {
       supported: true,
       branch,
@@ -3129,7 +3139,7 @@ async function checkUpdates() {
       updateAvailable: !upToDate,
       currentSha,
       targetSha,
-      commits: [],
+      commits,
       dirty: dirtyStr.length > 0,
       hermesRoot: updateRoot,
       fetchedAt: Date.now()

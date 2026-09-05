@@ -69,3 +69,17 @@ def test_model_predicate_classifies_generations():
     assert not _model_keeps_all_thinking("claude-opus-4-1")
     assert not _model_keeps_all_thinking("claude-haiku-4-5")
     assert not _model_keeps_all_thinking("claude-3-5-sonnet")
+
+
+def test_estimator_counts_retained_thinking_on_the_anthropic_wire():
+    """Independent-review witness: with thinking retained, the wire carried ~285K tokens while
+    preflight estimated ~9K (its stale-thinking predicate only knew the reasoning-echo families), so
+    compression never fired. The single shared predicate must agree with the converter."""
+    from agent.message_sanitization import stale_thinking_reaches_wire
+    assert stale_thinking_reaches_wire("anthropic_messages", "nous", "anthropic/claude-fable-5.1", "") is True
+    assert stale_thinking_reaches_wire("anthropic_messages", "anthropic", "claude-opus-4-8", "") is True
+    # last-turn-only generations: the API drops older blocks, so they never reach the wire
+    assert stale_thinking_reaches_wire("anthropic_messages", "anthropic", "claude-haiku-4-5", "") is False
+    # codex sidecar and non-Anthropic chat wires are unchanged
+    assert stale_thinking_reaches_wire("codex_responses", "openai-codex", "gpt-5.6", "") is False
+    assert stale_thinking_reaches_wire("chat_completions", "openrouter", "anthropic/claude-fable-5.1", "") is False

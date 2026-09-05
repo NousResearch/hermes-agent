@@ -110,3 +110,41 @@ def test_removed_or_replaced_relabels_by_target():
 
     assert "User profile updated" in actions
     assert "Memory updated" in actions
+
+
+def _skill_manage_call(call_id, action, **extra):
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "skill_manage",
+                    "arguments": json.dumps({"action": action, "name": "deploy", **extra}),
+                },
+            }
+        ],
+    }
+
+
+def test_patch_and_write_file_results_surface_and_classify_as_skill():
+    """Issue #103235: the non-verbose fast path passes skill_manage's patch and
+    write_file messages through verbatim ("Patched ...", "File '...' written to skill ..."),
+    and write_file must enter the action list at all — otherwise a review that
+    patched a skill or added support files logs result=none."""
+    from agent.background_review import _classify_review_result
+
+    review_messages = [
+        _skill_manage_call("c1", "patch", old_string="a", new_string="b"),
+        _tool_msg("c1", {"success": True, "message": "Patched SKILL.md in skill 'deploy' (3 replacements)."}),
+        _skill_manage_call("c2", "write_file", file_path="references/api.md", file_content="x"),
+        _tool_msg("c2", {"success": True, "message": "File 'references/api.md' written to skill 'deploy'."}),
+    ]
+
+    actions = _summarize(review_messages, prior_snapshot=[])
+
+    assert "Patched SKILL.md in skill 'deploy' (3 replacements)." in actions
+    assert "File 'references/api.md' written to skill 'deploy'." in actions
+    assert _classify_review_result(actions) == "skill"

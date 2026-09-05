@@ -616,7 +616,10 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     target = data.get("target", "") or detail.get("target", "")
     is_skill = detail.get("tool") == "skill_manage"
     lower = message.lower()
-    if not verbose and ("created" in lower or "updated" in lower or (is_skill and "patched" in lower)):
+    if not verbose and (
+        "created" in lower or "updated" in lower
+        or (is_skill and ("patched" in lower or "written to skill" in lower))
+    ):
         return [message]
     if not is_skill and not target:
         return []
@@ -720,10 +723,12 @@ def _record_review_usage_to_parent(parent_agent: Any, usage: Dict[str, Any]) -> 
 def _classify_review_result(actions: List[str]) -> str:
     """Map a review action summary to ``none`` / ``skill`` / ``memory`` / ``skill+memory``.
     Prefix-based on the formats :func:`summarize_background_review_actions` emits (``Skill …``,
-    ``📝 Skill …``, ``Memory …``, ``User profile …``), so a free-text line like ``Skipped: no
-    skill worth saving`` stays ``none``."""
+    ``📝 Skill …``, ``Memory …``, ``User profile …``), plus the raw ``skill_manage`` messages the
+    non-verbose fast path passes through verbatim — ``Patched …`` (patch) and ``File '…' written
+    to skill …`` (write_file) — so a free-text line like ``Skipped: no skill worth saving`` stays
+    ``none``."""
     lowers = [str(action).lstrip().removeprefix("📝").lstrip().lower() for action in actions or []]
-    has_skill = any(t.startswith("skill") for t in lowers)
+    has_skill = any(t.startswith(("skill", "patched ", "file '")) for t in lowers)
     has_memory = any(t.startswith(("memory", "user profile")) for t in lowers)
     return "+".join(kind for kind, hit in (("skill", has_skill), ("memory", has_memory)) if hit) or "none"
 

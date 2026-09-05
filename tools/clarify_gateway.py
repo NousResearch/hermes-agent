@@ -48,9 +48,15 @@ def _session_key_variants(session_key):
     the linked-device LID). ``expand_whatsapp_aliases`` deterministically returns
     both, so indexing and looking up under every variant guarantees the owner's
     vote matches the pending clarify regardless of which shape each side used.
-    For group/other keys the variant list degrades to just the original."""
+    WhatsApp group keys end with the PARTICIPANT id
+    (``...group:<jid>@g.us:<participant>`` when per-user group sessions are
+    enabled) — the participant suffers the same phone/LID flip as a DM
+    chat_id, so group keys are expanded too. This is safe: ``rpartition``
+    touches only the trailing segment, and ``expand_whatsapp_aliases`` on a
+    group JID tail (``...@g.us``) returns just that id unchanged. For any
+    other key the variant list degrades to just the original."""
     raw = str(session_key)
-    if ":whatsapp:" in raw and ":dm:" in raw:
+    if ":whatsapp:" in raw:
         try:
             from gateway.whatsapp_identity import expand_whatsapp_aliases
             prefix, _, tail = raw.rpartition(":")

@@ -180,6 +180,93 @@ Email access is stricter by default than chat-style platforms:
 
 ---
 
+## Review-First Outbound Policy
+
+By default every accepted sender gets an automatic reply. For a business
+mailbox you can flip the adapter into **review-first** mode: only
+authenticated mail from an explicit allowlist is answered automatically —
+every other proposed reply is stored in the IMAP **Drafts** folder for you
+to review and send yourself, and it never touches SMTP.
+
+```yaml
+platforms:
+  email:
+    outbound_policy: review_first    # absent/direct (default) | review_first
+    auto_send_authenticated_senders:
+      - operator@example.com         # exact addresses, case-insensitive
+    authserv_id: example-mx.com      # REQUIRED under review_first: the
+                                     # authserv-id your receiving server
+                                     # stamps in Authentication-Results
+    drafts_mailbox: Drafts           # where proposed replies are stored
+    sent_mailbox: Sent               # archival copy of transmitted mail
+    save_sent: true                  # IMAP APPEND after each SMTP send
+    agent_initiated_sends: draft     # draft (default) | send — agent-composed
+                                     # outbound mail
+    untrusted_draft_limit_per_sender_hour: 4   # abuse limits for stranger drafts
+    untrusted_draft_limit_global_hour: 20
+```
+
+These are behavior settings and live in `config.yaml` only — there are no
+environment-variable equivalents (`.env` stays credentials-only).
+
+Under `review_first`:
+
+- **Every email-triggered model turn runs with zero callable tools** —
+  authenticated allowlisted senders included. Email content can never
+  trigger tools, resolver errors fail closed to zero tools, and a
+  zero-tool turn is never delegated to a remote proxy agent. The legacy
+  `untrusted_sender_toolsets` key is ignored with a warning.
+- **Automatic sending requires all three of**: an exact (case-insensitive)
+  match in `auto_send_authenticated_senders`, a passing
+  `Authentication-Results` verdict (DMARC, or aligned SPF/DKIM) on the
+  specific inbound message being replied to, and a configured
+  `authserv_id` pin. Evaluation is pinned to that authserv-id with EXACT
+  equality (pin the literal token your server stamps) and is
+  position-verified: only an `Authentication-Results` header above the
+  message's first transport `Received:` header — the region only the
+  receiving server can write — counts, so a forged header traveling
+  inside an attacker's message can never authenticate it. A missing pin,
+  a header from any other authserv-id, a pinned header below the
+  `Received:` chain, or ambiguous duplicates all fail closed. A matching
+  `From:` header with failed or missing authentication is drafted, never
+  sent.
+- **Everything else drafts.** An empty or malformed allowlist fails closed:
+  every reply is drafted. A missing trust record (for example after a
+  gateway restart) also drafts — send authority is never inferred from the
+  recipient address alone.
+- **Untrusted senders are additionally segregated**: their turns run in a
+  session keyed apart from the trusted sender's conversation, so forged
+  mail can never poison trusted history.
+- **Gateway notifications still work — for allowlisted recipients.** Cron
+  deliveries and restart/startup notifications are gateway-composed and
+  carry internal provenance, but they transmit only to addresses on
+  `auto_send_authenticated_senders`. `EMAIL_HOME_ADDRESS` is a
+  notification destination, never send authority: a home address that is
+  not allowlisted receives drafts.
+- **Agent-initiated mail drafts by default.** Out-of-process sends (the
+  send-message tool, CLI one-shots, cron fallback) carry no gateway
+  provenance and always draft unless `agent_initiated_sends: send` is
+  explicitly configured — the recipient address grants nothing. The
+  toggle applies ONLY to those out-of-process sends: anchor-less
+  in-process sends without gateway provenance (e.g. redelivered replies
+  after a restart) draft unconditionally regardless of the toggle.
+- **Sent mail is archived** to `sent_mailbox` via IMAP APPEND after each
+  successful SMTP send (no Bcc-to-self). An archival failure is logged and
+  never causes the message to be re-sent.
+- **Abuse limits** cap stranger draft generation per sender and globally
+  per hour, drop duplicate inbound `Message-ID`s, and truncate oversized
+  bodies — all before any model work, with clear log lines.
+- **Who gets drafts**: access control runs first. With
+  `EMAIL_ALLOW_ALL_USERS=true`, every non-automated sender reaches
+  tool-free draft generation (subject to the abuse limits); senders
+  rejected by the access-control layer (`EMAIL_ALLOWED_USERS` etc.) are
+  dropped before any draft is generated.
+- Unknown `outbound_policy` values fail closed into `review_first`.
+  Existing installations without the key keep today's always-send
+  behavior.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |

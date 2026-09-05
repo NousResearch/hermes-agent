@@ -1,4 +1,5 @@
 import base64
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -89,3 +90,43 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_read_text_decodes_double_encoded_non_ascii_path(client, tmp_path):
+    target = tmp_path / "半导体行业运营分享会纪要.md"
+    target.write_text("hello")
+
+    # One percent-encoding on top of HTTP's own query decoding: the server
+    # receives the literal "%E5%8D%8A..." string (issue #103425).
+    double_encoded = urllib.parse.quote(str(target))
+
+    response = client.get("/api/fs/read-text", params={"path": double_encoded})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == str(target)
+    assert body["text"] == "hello"
+
+
+def test_fs_read_text_keeps_literal_percent_filename_verbatim(client, tmp_path):
+    target = tmp_path / "50%25off.md"
+    target.write_text("literal percent name")
+
+    response = client.get("/api/fs/read-text", params={"path": str(target)})
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "literal percent name"
+
+
+def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
+    sibling = tmp_path / "report v2.md"
+    sibling.write_text("existing")
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(tmp_path / "report%20v2.md"), "content": "new"},
+    )
+
+    assert response.status_code == 200
+    assert sibling.read_text() == "existing"
+    assert (tmp_path / "report%20v2.md").read_text() == "new"

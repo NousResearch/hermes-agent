@@ -654,7 +654,7 @@ async def fs_write_text(payload: FsWriteText):
     temp file and ``os.replace``-d so a crash can't truncate the original.
     Stale-on-disk detection is the client's job (re-read before save).
     """
-    target = _fs_path(payload.path)
+    target = _fs_path(payload.path, decode_fallback=False)
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")

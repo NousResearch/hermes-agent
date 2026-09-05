@@ -31,6 +31,12 @@ def _pseudonym(kind: str, value: str) -> str:
 
 
 class TestTurnCorrelationState:
+    def test_feedback_hooks_are_declared_plugin_surfaces(self):
+        from hermes_cli.plugins import VALID_HOOKS
+
+        assert "gateway_outbound_response" in VALID_HOOKS
+        assert "gateway_platform_event" in VALID_HOOKS
+
     def test_publish_take_is_one_shot_and_thread_safe(self):
         from hermes_cli import lifecycle
 

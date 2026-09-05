@@ -20,6 +20,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
+import { $doubleEnterContinue } from '@/store/double-enter-continue'
 import { $hudMode } from '@/store/hud'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
@@ -30,6 +31,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { isDoubleEnter } from './composer-utils'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -223,6 +225,8 @@ export function ChatBar({
   const gatewayState = useStore($gatewayState)
   const reconnecting = gatewayState !== 'open'
   const inputDisabled = shouldDisableComposerInput(disabled, gatewayState)
+  const doubleEnterContinue = useStore($doubleEnterContinue)
+  const lastEmptyEnterAtRef = useRef<number | null>(null)
 
   // The draft engine — detached source of truth (DOM + draftRef + edge
   // selectors); typing never re-renders the chrome. ChatBar owns `queueEditRef`
@@ -901,15 +905,51 @@ export function ChatBar({
       // DOM payload (not the render-lagged composer state) so a message typed
       // fast / via IME while busy still reaches submitDraft() and gets queued
       // instead of being mistaken for an empty Enter.
-      if (busy && !hasLivePayload) {
-        const head = queuedPrompts.find(entry => entry.id !== queueEdit?.entryId)
+      if (!hasLivePayload) {
+        const head = busy ? queuedPrompts.find(entry => entry.id !== queueEdit?.entryId) : undefined
 
         if (head) {
           sendQueuedNow(head.id)
+
+          return
         }
+
+        // Double-Enter "Continue" (opt-in, display.double_enter_continue): a
+        // second empty Enter within the window — the first being the send
+        // itself or a previous empty tap — loads the filler and routes it
+        // through submitDraft() like any message: steering the live turn while
+        // busy, sending fresh when idle. Held-down Enter (key repeats) and
+        // turns parked on the user (clarify / approval / sudo) never fire it;
+        // with the setting off, the empty-Enter no-op is unchanged.
+        const continueFire =
+          doubleEnterContinue &&
+          !queueEdit &&
+          !compacting &&
+          !awaitingInput &&
+          !event.repeat &&
+          isDoubleEnter(lastEmptyEnterAtRef.current, Date.now())
+
+        if (continueFire) {
+          lastEmptyEnterAtRef.current = null
+          loadIntoComposer(t.composer.continueNudge, [])
+
+          // Fall through: busy → steer, idle → send.
+        } else {
+          lastEmptyEnterAtRef.current = Date.now()
+
+          if (busy) {
+            return
+          }
+        }
+
+        submitDraft()
 
         return
       }
+
+      // A send (or queued follow-up) arms the tracker: the next empty Enter
+      // within the window completes the double-Enter gesture.
+      lastEmptyEnterAtRef.current = Date.now()
 
       submitDraft()
 

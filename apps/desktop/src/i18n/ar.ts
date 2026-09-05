@@ -1845,6 +1845,7 @@ export const ar = defineLocale({
     openDirective: 'فتح',
     queueMessage: 'إضافة الرسالة للطابور',
     steer: 'توجيه',
+    continueNudge: 'متابعة',
     stop: 'إيقاف',
     send: 'إرسال',
     speaking: 'يتحدث',

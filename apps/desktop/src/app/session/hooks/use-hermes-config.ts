@@ -5,6 +5,7 @@ import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
 import { setDisplayTimestampsFromConfig } from '@/store/display-timestamps'
+import { setDoubleEnterContinueFromConfig } from '@/store/double-enter-continue'
 import {
   getComposerSelectionGeneration,
   getCurrentModelSource,
@@ -138,6 +139,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         }
 
         setDisplayTimestampsFromConfig(config.display?.timestamps)
+        setDoubleEnterContinueFromConfig(config.display?.double_enter_continue)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
 
         if (!canPublish()) {

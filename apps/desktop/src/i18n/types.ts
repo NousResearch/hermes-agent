@@ -2139,6 +2139,7 @@ export interface Translations {
     startVoice: string
     openDirective: string
     queueMessage: string
+    continueNudge: string
     steer: string
     stop: string
     send: string

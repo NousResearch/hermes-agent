@@ -1326,6 +1326,17 @@ def _apply_agent_section(agent, _agent_cfg):
         "environment_probe", "bot_mode_protocol",
     ):
         setattr(agent, f"_{_key}", bool(_agent_section.get(_key, True)))
+
+    # Degenerate-continuation fallback roll (agent/turn_final_response.py): after N
+    # consecutive no-progress continuations (echo of prior prose / a stall phrase),
+    # roll to the next fallback provider with a compacted handoff. Int, default 3;
+    # 0 disables.
+    try:
+        agent._degenerate_continuation_threshold = int(
+            _agent_section.get("degenerate_continuation_threshold", 3)
+        )
+    except (TypeError, ValueError):
+        agent._degenerate_continuation_threshold = 3
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.
     if agent._environment_probe:
         with suppress(Exception):

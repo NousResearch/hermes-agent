@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Dict, Optional
+import re
+from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
 from agent.turn_empty_response import recover_empty_response
@@ -20,8 +21,122 @@ logger = logging.getLogger("agent.conversation_loop")
 # Ephemeral retry scaffolding rows popped before the final answer becomes durable.
 _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill", "_empty_recovery_synthetic", "_empty_terminal_sentinel",
-    "_dropped_toolcall_nudge",
+    "_dropped_toolcall_nudge", "_degenerate_roll_handoff",
 )
+
+
+# ── Mid-work fallback: degenerate-continuation detection ────────────────
+# A turn "dies" in two invisible ways the classic empty-response guard
+# misses: (1) truly empty responses (already handled above via the
+# empty-retry + fallback path), and (2) NON-EMPTY but DEGENERATE
+# continuations — the loop lives, the model returns well-formed text, yet
+# makes zero progress (echoes its own prior prose, repeats a stall phrase,
+# or simply re-emits the same no-op turn N times). Those slip past every
+# layer and end the session at exit 0 with no deliverable. This hook makes
+# them visible: when N consecutive degenerate continuations accumulate, it
+# triggers the SAME fallback provider walk the empty path uses, and injects
+# a compacted handoff so the next model starts from the task state, not the
+# poisoned history.
+_DEGENERATE_STALL_PHRASES = (
+    "i cannot",
+    "i can't",
+    "i am unable",
+    "i'm unable",
+    "as an ai",
+    "i apologize",
+    "i am sorry",
+    "let me reconsider",
+    "here is a summary of what we",
+)
+
+
+def _is_degenerate_continuation(agent: Any, final_response: str, prior_text: str) -> bool:
+    """Return True when ``final_response`` is a hollow continuation.
+
+    A continuation is degenerate when it is non-empty yet carries no new
+    signal: it echoes the immediately-prior assistant prose, or it is a
+    short stall/refusal/placeholder that produces no forward progress.
+    Fails OPEN: an empty or clearly substantial reply is never flagged.
+    """
+    text = (agent._strip_think_blocks(final_response) or "").strip()
+    if not text:
+        return False
+    # Substantial replies are not degenerate (require real content).
+    if len(text) > 600:
+        return False
+    low = text.lower()
+    if any(phrase in low for phrase in _DEGENERATE_STALL_PHRASES):
+        return True
+    # Echo of the prior assistant turn: normalize whitespace and compare.
+    if prior_text:
+        prior_norm = re.sub(r"\s+", " ", prior_text.lower()).strip()
+        cur_norm = re.sub(r"\s+", " ", low).strip()
+        # Echo when >=70% of the new text overlaps the prior turn.
+        if prior_norm and len(cur_norm) >= 0.7 * len(prior_norm) and cur_norm in prior_norm:
+            return True
+        if prior_norm and len(prior_norm) >= 0.7 * len(cur_norm) and prior_norm in cur_norm:
+            return True
+    return False
+
+
+def _inject_compacted_handoff(
+    agent: Any, messages: List[Dict[str, Any]], original_user_message: Any, *,
+    assistant_message: Any, finish_reason: Any, degenerate_text: str,
+) -> None:
+    """Append an ephemeral assistant + user-handoff pair so a fallback model does NOT inherit poison.
+
+    The handoff carries the ORIGINAL goal verbatim (never the cliffed
+    mid-work chatter) plus a short tail of the most recent tool/assistant
+    activity, so the replacement model resumes from task state rather than
+    replaying the degenerate history. The full poisoned transcript stays
+    in ``messages`` for context but the new user-facing instruction is the
+    clean handoff.
+
+    Strict role alternation matters here: never land ``user`` directly after
+    a ``tool`` result or another ``user``. We therefore append the assistant's
+    degenerate reply FIRST (mirroring ``_empty_recovery_synthetic`` /
+    ``_dropped_toolcall_nudge``, which always synthesize an assistant +
+    user pair), then the user handoff. Both halves carry the
+    ``_degenerate_roll_handoff`` ephemeral flag so finalization pops them if
+    the rollover model never answers.
+    """
+    assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
+    assistant_msg["content"] = degenerate_text or "(stalled)"
+    assistant_msg["_degenerate_roll_handoff"] = True
+    append_message(messages, assistant_msg)
+
+    goal = original_user_message
+    if isinstance(goal, list):
+        try:
+            goal = "".join(
+                part.get("text", "") for part in goal if isinstance(part, dict)
+            ).strip()
+        except Exception:
+            goal = str(goal)
+    if not isinstance(goal, str):
+        goal = str(goal)
+    tail_lines: List[str] = []
+    for m in messages[-8:]:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        content = m.get("content")
+        if isinstance(content, str) and content.strip():
+            snippet = content.strip().replace("\n", " ")[:240]
+            tail_lines.append(f"[{role}] {snippet}")
+    handoff = (
+        "HANDOFF — previous model stalled mid-task (degenerate/no-progress "
+        "continuations). Continue the ORIGINAL task below with fresh effort. "
+        "Do not repeat prior stalling; produce the deliverable.\n"
+        f"ORIGINAL GOAL: {goal}\n"
+        "RECENT ACTIVITY (compacted):\n"
+        + ("\n".join(tail_lines) if tail_lines else "(no prior activity)")
+    )
+    append_message(messages, {"role": "user", "content": handoff, "_degenerate_roll_handoff": True})
+    try:
+        agent._degenerate_streak = 0
+    except Exception:
+        pass
 
 
 @dataclass
@@ -165,6 +280,72 @@ def finish_text_response(
                 _frag.pop("_length_continuation_nudge", None)
 
     final_response = agent._strip_think_blocks(final_response).strip()
+
+    # ── Mid-work fallback: degenerate-continuation detection ──
+    # A non-empty but hollow response (echo of prior prose, stall
+    # phrase, no-op) is invisible to the empty-response guard yet
+    # still ends the session with no deliverable. Track a streak of
+    # consecutive degenerate continuations; once it reaches the
+    # threshold (agent.degenerate_continuation_threshold, default 3,
+    # 0 disables), roll to the next fallback provider WITH a compacted
+    # handoff (never replay the poisoned history) and continue the
+    # same task on the new model. Bounded by the chain length; the
+    # fallback walker already refuses to re-select the same backend.
+    _threshold = getattr(agent, "_degenerate_continuation_threshold", 3)
+    if not getattr(agent, "_degenerate_streak", None):
+        agent._degenerate_streak = 0
+    _prior_assistant_text = ""
+    for _m in reversed(messages):
+        if isinstance(_m, dict) and _m.get("role") == "assistant":
+            _c = _m.get("content")
+            if isinstance(_c, str) and _c.strip():
+                _prior_assistant_text = _c
+                break
+    if _is_degenerate_continuation(agent, final_response, _prior_assistant_text):
+        agent._degenerate_streak += 1
+        logger.warning(
+            "Degenerate continuation detected (%d/%d, model=%s provider=%s): %r",
+            agent._degenerate_streak, _threshold, agent.model, agent.provider,
+            final_response[:120],
+        )
+        agent._buffer_status(
+            f"⚠️ Model returned a no-progress continuation "
+            f"({agent._degenerate_streak}/{_threshold}) — watching for stall"
+        )
+        if (
+            _threshold > 0
+            and agent._degenerate_streak >= _threshold
+            and agent._has_pending_fallback()
+        ):
+            agent._buffer_status(
+                f"⚠️ Stall confirmed after "
+                f"{agent._degenerate_streak} degenerate continuations "
+                "— rolling to next fallback provider with handoff..."
+            )
+            if agent._try_activate_fallback():
+                from agent.conversation_loop import _sync_failover_system_message
+                _sync_failover_system_message(agent, api_messages, active_system_prompt)
+                agent._empty_content_retries = 0
+                agent._degenerate_streak = 0
+                _inject_compacted_handoff(
+                    agent, messages, user_message,
+                    assistant_message=assistant_message, finish_reason=finish_reason,
+                    degenerate_text=final_response,
+                )
+                agent._buffer_status(
+                    f"↻ Switched to fallback: {agent.model} ({agent.provider})"
+                )
+                logger.info(
+                    "Fallback activated after degenerate continuations: "
+                    "now using %s on %s",
+                    agent.model, agent.provider,
+                )
+                # Non-final: the degenerate reply must not suppress iteration-limit
+                # summarization if the rollover continuation exhausts budget.
+                final_response = None
+                return _verdict("continue")
+    else:
+        agent._degenerate_streak = 0
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

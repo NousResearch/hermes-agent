@@ -1637,9 +1637,21 @@ export function mergeTreeZones(groupIds: string[], paneId: string | readonly str
 export function activateTreePane(groupId: string, paneId: string) {
   const tree = $layoutTree.get()
 
-  if (tree) {
-    commit(setActivePaneOp(tree, groupId, paneId))
+  if (!tree) {
+    return
   }
+
+  // A collapse-marked tool pane (terminal/logs) mounts its workspace ONLY
+  // while its owning toggle store is open (PersistentTerminal). Fronting such
+  // a tab without the store leaves an empty surface — no shell, no PTY — and
+  // the next toggle press then reads the fronted pane as "on screen" and folds
+  // the zone instead of opening it. A tab click on a tool pane is a reveal:
+  // open its store with the front (the opener is a no-op when already open).
+  if (isCollapsePane(paneId)) {
+    paneOpeners[paneId]?.()
+  }
+
+  commit(setActivePaneOp(tree, groupId, paneId))
 }
 
 /** Reorder a tab block (multi-tab selection, or a single tab) within its
@@ -1703,7 +1715,18 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
           activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
         }
       } else {
-        setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
+        // A shared zone with NO uncloseable member folds as a unit only when
+        // every member is a tool pane ([terminal, logs]). A tool pane active
+        // among hide-style panes (the terminal dragged into the sessions
+        // column) must hand the slot to a non-tool sibling instead — folding
+        // the group would collapse the sessions list along with the terminal.
+        const peer = group.panes.find(id => id !== paneId && !isCollapsePane(id))
+
+        if (peer) {
+          activateTreePane(group.id, peer)
+        } else {
+          setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
+        }
       }
     } else if (!collapsed) {
       revealTreePane(paneId)

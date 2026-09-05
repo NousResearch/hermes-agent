@@ -18220,7 +18220,7 @@ def test_busy_tui_poller_cannot_hide_inject_from_tool_boundary(monkeypatch):
 
     import agent.delegation_inject as inject_mod
     import tools.async_delegation as delegation_mod
-    import tools.process_registry as registry_mod
+    import tools.process_registry_notifications as registry_mod
     from tools.process_registry import process_registry
 
     dequeued = threading.Event()
@@ -18256,7 +18256,7 @@ def test_busy_tui_poller_cannot_hide_inject_from_tool_boundary(monkeypatch):
         _active_turn_id=turn_id,
         _iteration_calls_made=0,
         max_iterations=1,
-        session_id="",
+        session_id="parent-tui-inject",
     )
     sess = _session(
         agent=agent,
@@ -18269,6 +18269,7 @@ def test_busy_tui_poller_cannot_hide_inject_from_tool_boundary(monkeypatch):
         "delivery_event_key": "task:0",
         "result_delivery": "inject",
         "parent_turn_id": turn_id,
+        "parent_session_id": "parent-tui-inject",
         "origin_ui_session_id": sid,
         "session_key": "session-tui-inject",
     }

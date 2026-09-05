@@ -176,7 +176,8 @@ def _completed_tool_batch_size(messages: list) -> int:
     if not messages or not isinstance(messages[-1], dict):
         return 0
     tail = messages[-1]
-    if tail.get("role") != "tool" or tail.get("_external_input_boundary_checked"):
+    if (tail.get("role") != "tool" or tail.get("_external_input_boundary_checked")
+            or tail.get("_db_persisted") is True):
         return 0
 
     start = len(messages) - 1
@@ -200,7 +201,7 @@ def _completed_tool_batch_size(messages: list) -> int:
     ]
     if not expected_ids or len(actual_ids) != len(expected_ids):
         return 0
-    if set(actual_ids) != set(expected_ids):
+    if len(set(expected_ids)) != len(expected_ids) or set(actual_ids) != set(expected_ids):
         return 0
     return len(actual_ids)
 
@@ -220,7 +221,14 @@ def _flush_session_db_after_tool_progress(
     is enriched before the batch's first durable commit, so history remains
     append-only and every provider sees the ordinary assistant/tool role shape.
     """
-    completed_batch_size = _completed_tool_batch_size(messages)
+    # A known no-op persistence path cannot accept a durable carrier. Do not
+    # acquire/release its claim at every tool batch: that would exhaust the
+    # delivery-attempt cap without ever offering the after-turn fallback.
+    persistence_unavailable = (
+        getattr(agent, "_persist_disabled", False) is True
+        or getattr(agent, "_session_db", True) is None
+    )
+    completed_batch_size = 0 if persistence_unavailable else _completed_tool_batch_size(messages)
     if completed_batch_size:
         messages[-1]["_external_input_boundary_checked"] = True
         try:
@@ -255,7 +263,8 @@ def _flush_session_db_after_tool_progress(
             )
 
     try:
-        persisted = agent._flush_messages_to_session_db(messages) is not False
+        flush_result = agent._flush_messages_to_session_db(messages)
+        persisted = flush_result is not False
         if not persisted:
             agent._incremental_persistence_failed = True
             # The flush caught its own exception and returned False; the
@@ -263,6 +272,12 @@ def _flush_session_db_after_tool_progress(
             # fall back to 'unknown' when nothing more specific is recorded.
             if getattr(agent, "_last_persistence_error_cause", None) is None:
                 agent._last_persistence_error_cause = "unknown"
+            _release_unpersisted_carrier()
+        elif completed_batch_size and (
+            flush_result is not True or messages[-1].get("_db_persisted") is not True
+        ):
+            # None is the established non-fatal return for a disabled/no-DB
+            # flush. Keep that contract, but do not consume durable evidence.
             _release_unpersisted_carrier()
         elif completed_batch_size:
             from agent.delegation_inject import acknowledge_pending_injects

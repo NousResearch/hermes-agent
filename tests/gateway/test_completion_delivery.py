@@ -142,7 +142,7 @@ def test_gateway_busy_route_is_atomic_with_tool_boundary_carrier(
 
     import agent.delegation_inject as inject_mod
     import tools.async_delegation as delegation_mod
-    import tools.process_registry as registry_mod
+    import tools.process_registry_notifications as registry_mod
 
     isolated = queue.Queue()
     monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
@@ -174,13 +174,14 @@ def test_gateway_busy_route_is_atomic_with_tool_boundary_carrier(
         _active_turn_id=turn_id,
         _iteration_calls_made=0,
         max_iterations=1,
-        session_id="",
+        session_id="parent-gateway-inject",
     )
     event = {
         **_async_event("deleg_gateway_inject_race"),
         "delivery_event_key": "task:0",
         "result_delivery": "inject",
         "parent_turn_id": turn_id,
+        "parent_session_id": "parent-gateway-inject",
         "session_key": session_key,
     }
     isolated.put(event)

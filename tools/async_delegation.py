@@ -1281,6 +1281,62 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
         return cur.rowcount == 1
 
 
+def _reconcile_persisted_tool_carrier(evt: Dict[str, Any]) -> bool:
+    """Close the crash window between transcript commit and ledger acknowledgement.
+
+    The transcript and this ledger share profile-local state.db. A tool-boundary
+    receipt proves acceptance even if the process died before clearing its lease.
+    Scope by parent session and exact event identity; unrelated metadata must not
+    suppress another session's delivery. Legacy databases without transcript
+    metadata keep the ordinary claim path.
+    """
+    if evt.get("result_delivery") != "inject" or not evt.get("parent_session_id"):
+        return False
+    delegation_id = str(evt.get("delegation_id") or "")
+    keys = _event_delivery_keys(evt)
+    identities = {f"{delegation_id}:{key}" for key in keys} if keys else {f"{delegation_id}:aggregate"}
+    with _DB_LOCK, _transaction() as conn:
+        try:
+            rows = conn.execute(
+                "SELECT display_metadata FROM messages WHERE session_id=? AND role='tool' "
+                "AND display_metadata IS NOT NULL AND instr(display_metadata, ?) > 0",
+                (evt["parent_session_id"], delegation_id),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc) or "no such column" in str(exc):
+                return False
+            raise
+        receipts = set()
+        for (raw,) in rows:
+            try:
+                metadata = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(metadata, dict) and metadata.get("delegation_delivery") == "tool_boundary":
+                values = metadata.get("delegation_event_ids")
+                if isinstance(values, list):
+                    receipts.update(value for value in values if isinstance(value, str))
+        if not identities.issubset(receipts):
+            return False
+        now = time.time()
+        if keys:
+            for key in keys:
+                conn.execute(
+                    "UPDATE async_delegation_events SET delivery_state='delivered', delivered_at=?, "
+                    "updated_at=?, delivery_claim=NULL, delivery_claimed_at=NULL "
+                    "WHERE delegation_id=? AND event_key=? AND delivery_state='pending'",
+                    (now, now, delegation_id, key),
+                )
+        else:
+            conn.execute(
+                "UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, "
+                "updated_at=?, delivery_claim=NULL, delivery_claimed_at=NULL "
+                "WHERE delegation_id=? AND delivery_state='pending'",
+                (now, now, delegation_id),
+            )
+    return True
+
+
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     """Claim a durable delegation event; non-durable events need no token."""
     if evt.get("type") != "async_delegation":
@@ -1288,6 +1344,8 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     delegation_id = str(evt.get("delegation_id") or "")
     if not delegation_id:
         return ""
+    if _reconcile_persisted_tool_carrier(evt):
+        return None
     claim_id = f"{consumer}:{os.getpid()}:{uuid.uuid4().hex}"
     event_keys = _event_delivery_keys(evt)
     if "delivery_event_keys" in evt:

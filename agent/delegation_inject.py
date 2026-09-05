@@ -197,8 +197,10 @@ def ensure_pending_inject_heartbeat(agent: Any) -> bool:
                         exc_info=True,
                     )
 
+    from tools.thread_context import propagate_context_to_thread
+
     thread = threading.Thread(
-        target=_heartbeat,
+        target=propagate_context_to_thread(_heartbeat),
         daemon=True,
         name="delegation-inject-claim-heartbeat",
     )
@@ -220,7 +222,17 @@ def acknowledge_pending_injects(agent: Any, *, turn_id: str | None = None) -> in
         if turn_id is not None and str(entry.get("turn_id") or "") != str(turn_id):
             keep.append(entry)
             continue
-        if complete_event_delivery(entry["event"], entry["claim_id"]):
+        message = entry.get("message")
+        # A successful no-op flush (persistence-disabled agents) is NOT a receipt.
+        if not isinstance(message, dict) or message.get("_db_persisted") is not True:
+            keep.append(entry)
+            continue
+        try:
+            committed = complete_event_delivery(entry["event"], entry["claim_id"])
+        except Exception:
+            logger.warning("Could not acknowledge persisted delegation carrier", exc_info=True)
+            committed = False
+        if committed:
             acknowledged += 1
             message = entry.get("message")
             if isinstance(message, dict):
@@ -348,26 +360,28 @@ def attach_ready_injects_to_tool_results(
     if getattr(agent, _PENDING_CLAIMS_ATTR, None):
         return 0
 
-    target: dict[str, Any] | None = None
-    tail_start = max(0, len(messages) - num_tool_msgs)
-    for message in reversed(messages[tail_start:]):
-        if isinstance(message, dict) and message.get("role") == "tool":
-            target = message
-            break
-    if target is None:
+    # Only the newest result is eligible. Never search backwards past an already
+    # committed tail or mutate a replayed tool result after a process restart.
+    target = messages[-1]
+    if (not isinstance(target, dict) or target.get("role") != "tool"
+            or target.get("_db_persisted") is True):
         return 0
+    tail_start = max(0, len(messages) - num_tool_msgs)
 
     carrier_capacity: int | None = None
     if budget_config is not None:
-        carrier_limit = min(
-            int(budget_config.default_result_size),
-            int(budget_config.turn_budget),
+        target_size = _content_text_size(target.get("content", ""))
+        batch_size = sum(
+            _content_text_size(message.get("content", ""))
+            for message in messages[tail_start:] if isinstance(message, dict)
         )
-        carrier_capacity = (
-            carrier_limit
-            - _content_text_size(target.get("content", ""))
-            - len(_CARRIER_MARKER)
-        )
+        # The executor enforces the aggregate budget after per-result flushes.
+        # Reserve space for ALL siblings so it cannot later truncate a carrier
+        # whose durable event has already been acknowledged.
+        carrier_capacity = min(
+            int(budget_config.default_result_size) - target_size,
+            int(budget_config.turn_budget) - batch_size,
+        ) - len(_CARRIER_MARKER)
         if carrier_capacity <= 0:
             return 0
 
@@ -381,6 +395,16 @@ def attach_ready_injects_to_tool_results(
 
     accepted: list[tuple[dict[str, Any], str, str, str]] = []
     completion_queue = process_registry.completion_queue
+
+    def requeue(event):
+        try:
+            with process_registry.completion_routing_lock:
+                completion_queue.put(event)
+        except Exception:
+            # Preserve a pending row's RAM delivery path on transient queue failure.
+            process_registry.defer_unclaimed_delivery(event)
+
+    candidates = []
     with process_registry.completion_routing_lock:
         try:
             scan_count = completion_queue.qsize()
@@ -398,47 +422,43 @@ def attach_ready_injects_to_tool_results(
                 event.get("type") != "async_delegation"
                 or delivery != "inject"
                 or str(event.get("parent_turn_id") or "") != active_turn_id
+                or str(event.get("parent_session_id") or "") != str(getattr(agent, "session_id", "") or "")
+                or not event.get("parent_session_id")
             ):
-                completion_queue.put(event)
+                requeue(event)
                 continue
-            parent_session_id = str(event.get("parent_session_id") or "")
-            agent_session_id = str(getattr(agent, "session_id", "") or "")
-            if parent_session_id and parent_session_id != agent_session_id:
-                completion_queue.put(event)
-                continue
-            try:
-                text = _format_async_delegation(event)
-            except Exception:
-                logger.debug("Failed to format tool-boundary delegation event", exc_info=True)
-                completion_queue.put(event)
-                continue
+            candidates.append(event)
+
+    # Formatting / sandbox I/O must never hold the shared routing reservation.
+    # Dequeue gives this consumer the RAM item; the durable claim arbitrates a
+    # concurrently restored copy before any transcript mutation.
+    for event in candidates:
+        try:
+            text = _format_async_delegation(event)
             if not text:
-                completion_queue.put(event)
+                requeue(event)
                 continue
             event_id = _event_identity(event)
             separator_size = 2 if accepted else 0
-            available = (
-                None
-                if carrier_capacity is None
-                else carrier_capacity - separator_size
-            )
+            available = None if carrier_capacity is None else carrier_capacity - separator_size
             bounded_text = _bounded_carrier_text(
-                text,
-                max_chars=available,
-                event_id=event_id,
-                storage_env=storage_env,
-                budget_config=budget_config,
+                text, max_chars=available, event_id=event_id,
+                storage_env=storage_env, budget_config=budget_config,
             )
             if bounded_text is None:
-                completion_queue.put(event)
+                requeue(event)
                 continue
             claim_id = claim_event_delivery(event, f"tool-boundary:{os.getpid()}")
-            if claim_id is None:
-                process_registry.defer_unclaimed_delivery(event)
-                continue
-            accepted.append((event, claim_id, bounded_text, event_id))
-            if carrier_capacity is not None:
-                carrier_capacity -= separator_size + len(bounded_text)
+        except Exception:
+            logger.warning("Failed to prepare tool-boundary delegation event", exc_info=True)
+            requeue(event)
+            continue
+        if claim_id is None:
+            process_registry.defer_unclaimed_delivery(event)
+            continue
+        accepted.append((event, claim_id, bounded_text, event_id))
+        if carrier_capacity is not None:
+            carrier_capacity -= separator_size + len(bounded_text)
 
     if not accepted:
         return 0

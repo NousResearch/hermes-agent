@@ -155,9 +155,9 @@ def _make_loop_agent(tmp_path: Path) -> AIAgent:
     ]
     with (
         contextlib.redirect_stdout(io.StringIO()),
-        patch("run_agent.get_tool_definitions", return_value=tool_defs),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -284,6 +284,7 @@ def test_consumed_tool_boundary_inject_acknowledges_without_removing_carrier():
     agent._session_messages = messages
 
     assert attach_ready_injects_to_tool_results(agent, messages, num_tool_msgs=1) == 1
+    messages[-1]["_db_persisted"] = True
     assert acknowledge_pending_injects(agent, turn_id="turn-current") == 1
 
     assert "accepted audit" in messages[0]["content"]
@@ -720,6 +721,7 @@ def test_child_timeout_error_is_injectable_and_durable():
     assert "timeout" in messages[-1]["content"]
     assert "child exceeded 10s" in messages[-1]["content"]
     assert _event_state(delegation_id, "task:0") == ("pending", 1)
+    messages[-1]["_db_persisted"] = True
     assert acknowledge_pending_injects(agent, turn_id="turn-current") == 1
     assert _event_state(delegation_id, "task:0") == ("delivered", 1)
 
@@ -735,6 +737,7 @@ def test_failed_ack_keeps_ram_claim_for_later_reconciliation(monkeypatch):
         agent, messages, num_tool_msgs=1, turn_id="turn-current"
     ) == 1
 
+    messages[-1]["_db_persisted"] = True
     monkeypatch.setattr(ad, "complete_event_delivery", lambda *_args: False)
     assert acknowledge_pending_injects(agent, turn_id="turn-current") == 0
     assert len(agent._pending_delegation_inject_claims) == 1
@@ -783,6 +786,7 @@ def test_pending_claim_heartbeat_renews_until_ack(monkeypatch):
     ) == 1
     assert inject.ensure_pending_inject_heartbeat(agent) is True
     assert renewed.wait(timeout=1), "pending inject claim was not renewed"
+    messages[-1]["_db_persisted"] = True
     assert acknowledge_pending_injects(agent, turn_id="turn-current") == 1
     heartbeat = agent._delegation_inject_claim_heartbeat
     heartbeat["thread"].join(timeout=1)
@@ -821,7 +825,7 @@ def test_run_conversation_inject_transport_normalize_and_ack(monkeypatch, tmp_pa
         return "tool boundary complete"
 
     with (
-        patch("run_agent.handle_function_call", side_effect=handle_tool),
+        patch("model_tools.handle_function_call", side_effect=handle_tool),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
@@ -898,7 +902,7 @@ def test_run_conversation_persists_tool_carrier_before_provider_error(
             assert "COPY_THEN_RELEASE" in str(messages)
 
     with (
-        patch("run_agent.handle_function_call", side_effect=handle_tool),
+        patch("model_tools.handle_function_call", side_effect=handle_tool),
         patch.object(agent, "_compress_context", side_effect=copy_compress),
         patch.object(
             agent,
@@ -1065,7 +1069,7 @@ def test_formatter_failure_does_not_consume_delivery_attempts(monkeypatch):
         raise ValueError("broken spill")
 
     monkeypatch.setattr(
-        "tools.process_registry._format_async_delegation", broken_formatter
+        "tools.process_registry_notifications._format_async_delegation", broken_formatter
     )
     messages = [{"role": "tool", "tool_call_id": "tc", "content": "done"}]
     for _ in range(ad._MAX_DELIVERY_ATTEMPTS + 2):
@@ -1096,6 +1100,14 @@ def test_quick_restart_requeues_after_live_delivery_lease_expires(
         delegation_id, 0, _child(0, "restored after lease")
     )
     original = process_registry.completion_queue.get_nowait()
+    # The lease is live, not the parent execution. Complete the parent through
+    # production finalization; a genuinely live partial batch is not restart work.
+    with ad._records_lock:
+        record = dict(ad._records[delegation_id])
+    ad._persist_batch_child_finalization(
+        record, {**record, "type": "async_delegation", "status": "completed", "completed_at": time.time()},
+        {"results": [_child(0, "restored after lease")]}, "completed",
+    )
     old_claim = ad.claim_event_delivery(original, "old-process")
     assert old_claim
 
@@ -1198,3 +1210,275 @@ def test_model_schema_defaults_after_turn_and_dispatch_forwards_explicit_mode(mo
     assert result == "ok"
     assert captured["background"] is True
     assert captured["result_delivery"] == "inject"
+
+
+@pytest.mark.parametrize("flush_result", [None, True])
+def test_flush_without_durable_marker_does_not_acknowledge(flush_result):
+    from agent.tool_executor import _flush_session_db_after_tool_progress
+
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "must remain pending"))
+    agent = _tool_boundary_agent()
+    agent._flush_messages_to_session_db = lambda _messages: flush_result
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "tc"}]},
+        {"role": "tool", "tool_call_id": "tc", "content": "original"},
+    ]
+    assert _flush_session_db_after_tool_progress(agent, messages, stage="no durable receipt")
+    assert messages[-1]["content"] == "original"
+    assert _event_state(delegation_id, "task:0") == ("pending", 1)
+    assert not agent._pending_delegation_inject_claims
+    assert len(_queue_contents()) == 1
+
+
+def test_ack_requires_actual_transcript_marker():
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "not persisted"))
+    agent = _tool_boundary_agent()
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "original"}]
+    assert attach_ready_injects_to_tool_results(agent, messages, 1) == 1
+    assert acknowledge_pending_injects(agent) == 0
+    assert _event_state(delegation_id, "task:0") == ("pending", 1)
+    assert release_pending_injects(agent, messages) == 1
+
+
+def test_persisted_or_invalid_tool_tail_is_never_a_carrier():
+    from agent.tool_executor import _completed_tool_batch_size
+
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "new evidence"))
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "tc"}]},
+        {"role": "tool", "tool_call_id": "tc", "content": "historical", "_db_persisted": True},
+    ]
+    before = deepcopy(messages)
+    assert _completed_tool_batch_size(messages) == 0
+    assert attach_ready_injects_to_tool_results(_tool_boundary_agent(), messages, 1) == 0
+    assert messages == before
+    assert _event_state(delegation_id, "task:0") == ("pending", 0)
+    malformed = [
+        {"role": "assistant", "tool_calls": [{"id": "tc"}, {"id": "tc"}]},
+        {"role": "tool", "tool_call_id": "tc", "content": "first"},
+        {"role": "tool", "tool_call_id": "tc", "content": "duplicate"},
+    ]
+    assert _completed_tool_batch_size(malformed) == 0
+
+
+def test_batch_siblings_leave_no_space_so_carrier_is_deferred():
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "report " * 300))
+    messages = [
+        {"role": "tool", "tool_call_id": "first", "content": "s" * 4_900},
+        {"role": "tool", "tool_call_id": "last", "content": "last"},
+    ]
+    before = deepcopy(messages)
+    budget = BudgetConfig(default_result_size=6_000, turn_budget=6_000)
+    assert attach_ready_injects_to_tool_results(
+        _tool_boundary_agent(), messages, 2, budget_config=budget,
+    ) == 0
+    assert messages == before
+    assert _event_state(delegation_id, "task:0") == ("pending", 0)
+    assert len(_queue_contents()) == 1
+
+
+def test_spilled_carrier_survives_subsequent_aggregate_budgeting():
+    from agent.tool_executor import _finalize_tool_batch
+
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "report " * 50_000))
+    agent = _tool_boundary_agent()
+    agent._apply_pending_steer_to_tool_results = lambda *_args: None
+    messages = [
+        {"role": "tool", "tool_call_id": "first", "content": "s" * 9_000},
+        {"role": "tool", "tool_call_id": "last", "content": "last"},
+    ]
+    budget = BudgetConfig(default_result_size=10_000, turn_budget=10_000, preview_size=512)
+    env = MagicMock()
+    env.execute.return_value = {"output": "", "returncode": 0}
+    env.get_temp_dir.return_value = ""
+    assert attach_ready_injects_to_tool_results(agent, messages, 2, storage_env=env, budget_config=budget) == 1
+    assert sum(len(m["content"]) for m in messages) <= budget.turn_budget
+    before = deepcopy(messages)
+    with patch("agent.tool_executor.get_active_env", return_value=env):
+        _finalize_tool_batch(agent, messages, "test", 2, budget)
+    assert messages == before
+    assert PERSISTED_OUTPUT_TAG in messages[-1]["content"]
+    assert release_pending_injects(agent, messages) == 1
+
+
+def test_spill_exception_requeues_unclaimed_event(monkeypatch):
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "spill failure"))
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "original"}]
+
+    def broken_spill(*_args, **_kwargs):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(inject, "_bounded_carrier_text", broken_spill)
+    assert attach_ready_injects_to_tool_results(_tool_boundary_agent(), messages, 1) == 0
+    assert messages[-1]["content"] == "original"
+    assert _event_state(delegation_id, "task:0") == ("pending", 0)
+    assert len(_queue_contents()) == 1
+
+
+def test_formatter_runs_outside_shared_routing_reservation(monkeypatch):
+    from tools.process_registry_notifications import _format_async_delegation
+
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "format outside lock"))
+    unlocked = []
+
+    def formatter(event):
+        def probe():
+            acquired = process_registry.completion_routing_lock.acquire(blocking=False)
+            unlocked.append(acquired)
+            if acquired:
+                process_registry.completion_routing_lock.release()
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join(timeout=1)
+        return _format_async_delegation(event)
+
+    monkeypatch.setattr("tools.process_registry_notifications._format_async_delegation", formatter)
+    agent = _tool_boundary_agent()
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "original"}]
+    assert attach_ready_injects_to_tool_results(agent, messages, 1) == 1
+    assert unlocked == [True]
+    assert release_pending_injects(agent, messages) == 1
+
+
+def test_heartbeat_preserves_parent_context(monkeypatch):
+    from contextvars import ContextVar
+
+    profile = ContextVar("inject_test_profile", default="wrong-profile")
+    profile.set("active-profile")
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "profile-scoped lease"))
+    seen = []
+    renewed = threading.Event()
+
+    def renew(*_args):
+        seen.append(profile.get())
+        renewed.set()
+        return True
+
+    monkeypatch.setattr(ad, "renew_event_delivery", renew)
+    monkeypatch.setattr(inject, "_CLAIM_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    agent = _tool_boundary_agent()
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "original"}]
+    assert attach_ready_injects_to_tool_results(agent, messages, 1) == 1
+    assert renewed.wait(timeout=1)
+    assert seen and set(seen) == {"active-profile"}
+    assert release_pending_injects(agent, messages) == 1
+    agent._delegation_inject_claim_heartbeat["thread"].join(timeout=1)
+
+
+def test_ack_exception_does_not_reclassify_successful_transcript_flush(monkeypatch):
+    from agent.tool_executor import _flush_session_db_after_tool_progress
+
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "durably stored"))
+    agent = _tool_boundary_agent()
+    agent._incremental_persistence_failed = False
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "tc"}]},
+        {"role": "tool", "tool_call_id": "tc", "content": "original"},
+    ]
+
+    def flush(messages):
+        for message in messages:
+            message["_db_persisted"] = True
+        return True
+
+    agent._flush_messages_to_session_db = flush
+    with patch.object(ad, "complete_event_delivery", side_effect=OSError("ack temporarily unavailable")):
+        assert _flush_session_db_after_tool_progress(agent, messages, stage="ack retry")
+    assert not agent._incremental_persistence_failed
+    assert "durably stored" in messages[-1]["content"]
+    assert len(agent._pending_delegation_inject_claims) == 1
+    assert acknowledge_pending_injects(agent) == 1
+
+
+def test_restart_does_not_redeliver_committed_carrier_without_ack(tmp_path, monkeypatch):
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "receipt.db")
+    db = SessionDB(db_path=tmp_path / "receipt.db")
+    db.create_session("parent-session", source="cli", model="test")
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "receipt survives crash"))
+    agent = _tool_boundary_agent()
+    messages = [{"role": "tool", "tool_call_id": "tc", "tool_name": "terminal", "content": "original"}]
+    assert attach_ready_injects_to_tool_results(agent, messages, 1) == 1
+    event = agent._pending_delegation_inject_claims[0]["event"]
+    db.append_message("parent-session", "tool", messages[0]["content"], tool_call_id="tc",
+                      tool_name="terminal", display_metadata=messages[0]["display_metadata"])
+    # Simulate a hard exit after the transcript transaction but BEFORE ack.
+    agent._delegation_inject_claim_heartbeat["stop"].set()
+    agent._delegation_inject_claim_heartbeat["thread"].join(timeout=1)
+    agent._pending_delegation_inject_claims = []
+    ad._reset_for_tests()
+    assert _event_state(delegation_id, "task:0") == ("pending", 1)
+    assert ad.claim_event_delivery(event, "restarted-after-turn") is None
+    assert _event_state(delegation_id, "task:0") == ("delivered", 1)
+    assert process_registry.defer_unclaimed_delivery(event) is False
+    db.close()
+
+
+@pytest.mark.parametrize("wrong_field", ["session", "role", "identity", "kind", "malformed"])
+def test_unrelated_transcript_metadata_cannot_suppress_delivery(tmp_path, monkeypatch, wrong_field):
+    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "receipt.db")
+    db = SessionDB(db_path=tmp_path / "receipt.db")
+    db.create_session("parent-session", source="cli", model="test")
+    db.create_session("different-session", source="cli", model="test")
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "must deliver"))
+    event = process_registry.completion_queue.get_nowait()
+    metadata = {"delegation_delivery": "tool_boundary", "delegation_event_ids": [f"{delegation_id}:task:0"]}
+    if wrong_field == "identity":
+        metadata["delegation_event_ids"] = [f"{delegation_id}:task:1"]
+    elif wrong_field == "kind":
+        metadata["delegation_delivery"] = "not_a_receipt"
+    sid = "different-session" if wrong_field == "session" else "parent-session"
+    role = "assistant" if wrong_field == "role" else "tool"
+    db.append_message(sid, role, "unrelated row", display_metadata=metadata)
+    if wrong_field == "malformed":
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute("UPDATE messages SET display_metadata=?", (f"broken metadata {delegation_id}",))
+    claim = ad.claim_event_delivery(event, "actual-consumer")
+    assert claim
+    assert _event_state(delegation_id, "task:0") == ("pending", 1)
+    assert ad.complete_event_delivery(event, claim)
+    db.close()
+
+
+@pytest.mark.parametrize("parent_id", ["", "different-parent"])
+def test_inject_requires_positive_parent_session_ownership(parent_id):
+    delegation_id = _record(parent_session_id=parent_id)
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "not for this session"))
+    messages = [{"role": "tool", "tool_call_id": "tc", "content": "original"}]
+    assert attach_ready_injects_to_tool_results(_tool_boundary_agent(), messages, 1) == 0
+    assert messages[-1]["content"] == "original"
+    assert _event_state(delegation_id, "task:0") == ("pending", 0)
+    assert len(_queue_contents()) == 1
+
+
+@pytest.mark.parametrize("disabled_state", ["explicit", "missing_db"])
+def test_disabled_persistence_never_burns_delivery_attempts(disabled_state):
+    from agent.tool_executor import _flush_session_db_after_tool_progress
+
+    delegation_id = _record()
+    assert ad.publish_batch_child_completion(delegation_id, 0, _child(0, "after-turn fallback"))
+    agent = _tool_boundary_agent()
+    if disabled_state == "explicit":
+        agent._persist_disabled = True
+    else:
+        agent._session_db = None
+    agent._flush_messages_to_session_db = lambda _messages: None
+    for index in range(ad._MAX_DELIVERY_ATTEMPTS + 2):
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": f"tc-{index}"}]},
+            {"role": "tool", "tool_call_id": f"tc-{index}", "content": "original"},
+        ]
+        assert _flush_session_db_after_tool_progress(agent, messages, stage="persistence disabled")
+        assert messages[-1]["content"] == "original"
+    assert _event_state(delegation_id, "task:0") == ("pending", 0)
+    assert len(_queue_contents()) == 1

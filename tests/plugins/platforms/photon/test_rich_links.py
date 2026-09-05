@@ -227,7 +227,10 @@ async def test_exhausted_partial_bubble_failure_is_not_replayed_from_start(
     assert adapter._sidecar_send.await_count == 3
     assert result.raw_response["partial_bubble_delivery"] is True
     assert result.raw_response["message_ids"] == ["m-1"]
+    assert result.raw_response["delivered_prefix"] == "First."
+    assert result.raw_response["last_message_id"] == "m-1"
     assert result.raw_response["undelivered_content"] == "Second."
+    assert result.message_id == "m-1"
 
 
 @pytest.mark.asyncio
@@ -262,6 +265,8 @@ async def test_null_message_id_still_counts_as_partial_delivery(
     assert result.success is False
     assert result.raw_response["partial_bubble_delivery"] is True
     assert result.raw_response["delivered_bubbles"] == 1
+    assert result.raw_response["delivered_prefix"] == "First."
+    assert result.raw_response["last_message_id"] is None
     assert result.raw_response["undelivered_content"] == "Second."
 
 

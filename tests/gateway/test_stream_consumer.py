@@ -559,25 +559,18 @@ class TestFinalResponseDeliveryGuard:
 
     @pytest.mark.asyncio
     async def test_first_send_partial_bubbles_falls_back_to_missing_tail(self):
-        adapter = MagicMock()
-        adapter.send = AsyncMock(side_effect=[
-            SimpleNamespace(
-                success=False,
-                error="second bubble failed",
-                message_id="m1",
-                continuation_message_ids=(),
-                raw_response={
-                    "partial_bubble_delivery": True,
-                    "delivered_prefix": "First.",
-                    "undelivered_content": "Second.",
-                    "last_message_id": "m1",
-                },
-            ),
-            SimpleNamespace(success=True, message_id="m2"),
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import SendResult
+        from plugins.platforms.photon.adapter import PhotonAdapter
+
+        adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={}))
+        adapter._sidecar_send = AsyncMock(side_effect=[
+            SendResult(success=True, message_id="m1"),
+            SendResult(success=False, error="second bubble failed"),
+            SendResult(success=True, message_id="m2"),
         ])
+        adapter.send = AsyncMock(wraps=adapter.send)
         adapter.edit_message = AsyncMock()
-        adapter.MAX_MESSAGE_LENGTH = 4096
-        adapter.platform = SimpleNamespace(value="photon")
 
         consumer = GatewayStreamConsumer(
             adapter,
@@ -591,6 +584,11 @@ class TestFinalResponseDeliveryGuard:
 
         assert [call.kwargs["content"] for call in adapter.send.await_args_list] == [
             "First.\n\nSecond.",
+            "Second.",
+        ]
+        assert [call.args[1] for call in adapter._sidecar_send.await_args_list] == [
+            "First.",
+            "Second.",
             "Second.",
         ]
         assert consumer.final_response_sent

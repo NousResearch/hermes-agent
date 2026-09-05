@@ -1427,7 +1427,8 @@ DEFAULT_CONFIG = {
         # Max bytes per cached attachment (held in memory while written); 0 = no cap. Env:
         # DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
-        # Mention allowed users on approval prompts so owners notice them in shared channels. Env:
+        # Mention numeric allowed users on blocking prompts (command approvals, slash confirmations,
+        # clarify questions, update prompts) so owners notice them in shared channels. Env:
         # DISCORD_APPROVAL_MENTIONS.
         "approval_mentions": False,
         # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.

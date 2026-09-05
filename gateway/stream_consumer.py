@@ -747,9 +747,18 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # platform-limit check (_len_fn is for overflow).  It must not
             # override an active flood backoff: while a refusal is being
             # waited out, only the (server-requested) interval may fire an edit.
+            # It also must not fire faster than platforms' per-chat edit rate
+            # limits: a fixed 1s floor, not min()/max() against
+            # _current_edit_interval — for a long configured interval (e.g.
+            # 10s, to pace gently) this still lets a big buffer flush early at
+            # the 1s mark instead of waiting the full interval (see
+            # TestBufferThresholdFloor), while for a short interval (e.g.
+            # 0.1s) it actually floors at 1s instead of collapsing straight
+            # back to `interval`, which let a sub-second interval blow
+            # straight through the stated one-second protection.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
                                or (len(self._accumulated) >= self.cfg.buffer_threshold
-                                   and not self._flood_strikes))
+                                   and not self._flood_strikes and elapsed >= 1.0))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"); got_done always resolves the buffer.
         return should_edit and not _is_partial_silence_marker(

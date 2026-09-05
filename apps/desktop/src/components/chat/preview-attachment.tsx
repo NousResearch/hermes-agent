@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { useI18n } from '@/i18n'
 import { Download, MonitorPlay } from '@/lib/icons'
+import { existingLocalDirectoryPath } from '@/lib/local-directory'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { downloadGatewayMediaFile } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
@@ -19,6 +20,7 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
   const [opening, setOpening] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [downloaded, setDownloaded] = useState(false)
+  const [directoryPath, setDirectoryPath] = useState<string | null>(null)
   const cwdRef = useRef(cwd)
   const mountedRef = useRef(false)
   const requestTokenRef = useRef(0)
@@ -39,6 +41,23 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     }
   }, [])
 
+  // Probe only the Electron-local filesystem. Existing directories get a native
+  // folder action instead of being misclassified as extensionless text files.
+  useEffect(() => {
+    let current = true
+    setDirectoryPath(null)
+
+    void existingLocalDirectoryPath(target, cwd || undefined).then(path => {
+      if (current) {
+        setDirectoryPath(path)
+      }
+    })
+
+    return () => {
+      current = false
+    }
+  }, [cwd, target])
+
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     requestTokenRef.current += 1
@@ -47,6 +66,28 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
 
   async function togglePreview() {
     if (opening) {
+      return
+    }
+
+    if (directoryPath) {
+      setOpening(true)
+
+      try {
+        const result = await window.hermesDesktop?.openDir?.(directoryPath)
+
+        if (!result?.ok) {
+          throw new Error(result?.error || `Could not open directory: ${directoryPath}`)
+        }
+      } catch (error) {
+        if (mountedRef.current) {
+          notifyError(error, t.preview.unavailable)
+        }
+      } finally {
+        if (mountedRef.current) {
+          setOpening(false)
+        }
+      }
+
       return
     }
 
@@ -133,24 +174,34 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
       <span className="min-w-0 flex-1 truncate text-[0.78rem] font-medium text-foreground/90" title={target}>
         {name}
       </span>
-      <button
-        aria-label={t.fileMenu.download}
-        className="flex shrink-0 items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
-        disabled={downloading}
-        onClick={() => void downloadFile()}
-        title={t.fileMenu.download}
-        type="button"
-      >
-        <Download className="size-3" />
-        {downloaded ? t.fileMenu.downloadSaved : t.fileMenu.download}
-      </button>
+      {!directoryPath && (
+        <button
+          aria-label={t.fileMenu.download}
+          className="flex shrink-0 items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
+          disabled={downloading}
+          onClick={() => void downloadFile()}
+          title={t.fileMenu.download}
+          type="button"
+        >
+          <Download className="size-3" />
+          {downloaded ? t.fileMenu.downloadSaved : t.fileMenu.download}
+        </button>
+      )}
       <button
         className="shrink-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/40 px-2 py-1 text-[0.7rem] font-medium text-muted-foreground transition-colors hover:bg-accent/55 hover:text-foreground disabled:opacity-50"
         disabled={opening}
         onClick={() => void togglePreview()}
         type="button"
       >
-        {opening ? t.preview.opening : isActive ? t.preview.hide : t.preview.openPreview}
+        {directoryPath
+          ? opening
+            ? t.preview.opening
+            : t.fileMenu.revealFileManager
+          : opening
+            ? t.preview.opening
+            : isActive
+              ? t.preview.hide
+              : t.preview.openPreview}
       </button>
     </div>
   )

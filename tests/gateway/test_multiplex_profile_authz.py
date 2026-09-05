@@ -147,10 +147,13 @@ def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
 
+    from hermes_constants import get_hermes_home_override
+
     captured: dict = {}
 
     def fake_is_user_authorized(source):
         captured["profile"] = source.profile
+        captured["home_override"] = get_hermes_home_override()
         return True
 
     runner._is_user_authorized = fake_is_user_authorized
@@ -158,6 +161,7 @@ def test_adapter_auth_check_stamps_secondary_profile(monkeypatch):
     check = runner._make_adapter_auth_check(Platform.WECOM, profile_name="coder")
     assert check("some-user", "dm", "dm-chat") is True
     assert captured["profile"] == "coder"
+    assert captured["home_override"] is None
 
 
 def test_startup_guard_gateway_allow_all_reads_scope_not_environ(monkeypatch):

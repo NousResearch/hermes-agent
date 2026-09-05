@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from gateway.config import Platform, _dict_slot, _normalize_choice
+from gateway.config import Platform, _coerce_bool, _dict_slot, _normalize_choice
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -231,6 +231,10 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict) -> dict:
             bridged[key] = _dm_behavior_choice(platform_cfg[key], gw_data.get("unauthorized_dm_behavior", "pair"))
         else:
             bridged[key] = transform(platform_cfg[key]) if transform else platform_cfg[key]
+    if plat == Platform.SIGNAL and "send_read_receipts" in platform_cfg:
+        bridged["send_read_receipts"] = _coerce_bool(
+            platform_cfg["send_read_receipts"], False
+        )
     for key in _PORT_BRIDGE_KEYS.get(plat, ()):
         if key in platform_cfg and key not in platform_cfg.get("extra", {}):
             bridged[key] = platform_cfg[key]

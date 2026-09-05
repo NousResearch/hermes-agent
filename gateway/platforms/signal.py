@@ -36,7 +36,7 @@ from gateway.platforms.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from gateway.platforms._shared import get_scoped_secret as _sig_secret
-from utils import TRUTHY_STRINGS
+from utils import TRUTHY_STRINGS, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +184,10 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        # Opt in explicitly: read receipts reveal message-consumption state.
+        self.send_read_receipts = is_truthy_value(
+            extra.get("send_read_receipts"), default=False
+        )
         # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
         # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
         # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
@@ -477,7 +481,13 @@ class SignalAdapter(BasePlatformAdapter):
         msg_type = MessageType.TEXT if not media_types else next(
             (mt for prefix, mt in _MEDIA_TYPE_BY_MIME_PREFIX if any(m.startswith(prefix) for m in media_types)),
             MessageType.DOCUMENT)
-        ts_ms = envelope_data.get("timestamp", 0)  # milliseconds since epoch
+        # Receipt/reaction RPCs target the data-message timestamp. Older
+        # signal-cli envelopes may only carry the outer timestamp.
+        raw_ts_ms = data_message.get("timestamp") or envelope_data.get("timestamp", 0)
+        try:
+            ts_ms = int(raw_ts_ms) if raw_ts_ms and not isinstance(raw_ts_ms, bool) else 0
+        except (TypeError, ValueError):
+            ts_ms = 0
         timestamp = datetime.now(tz=timezone.utc)
         if ts_ms:
             with suppress(ValueError, OSError):
@@ -486,13 +496,20 @@ class SignalAdapter(BasePlatformAdapter):
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp,
-            raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
+            raw_message={
+                "sender": sender,
+                "sender_uuid": sender_uuid or None,
+                "timestamp_ms": ts_ms,
+                "is_note_to_self": is_note_to_self,
+                "quote": quote_data if quote_data else None,
+            },
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,
             reply_to_author_name=quote_data.get("authorName") or quote_data.get("authorProfileName"),
             reply_to_is_own_message=self._quote_references_own_message(reply_to_id, reply_to_author),
         )
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
+        self._schedule_read_receipt(event)
         await self.handle_message(event)
 
     def _group_allowed(self, group_id: str) -> bool:
@@ -528,6 +545,62 @@ class SignalAdapter(BasePlatformAdapter):
         # Cached number↔UUID mappings are only ever stored with truthy keys and values.
         return bool(acct) and (author == acct or author == self._recipient_uuid_by_number.get(acct)
                                or self._recipient_number_by_uuid.get(author) == acct)
+
+    async def send_read_receipt(self, recipient: str, target_timestamp: int) -> None:
+        """Best-effort Signal read receipt for one inbound message."""
+        try:
+            await self._rpc(
+                "sendReceipt",
+                {
+                    "account": self.account,
+                    "recipient": recipient,
+                    "type": "read",
+                    "targetTimestamps": [target_timestamp],
+                },
+                log_failures=False,
+            )
+        except Exception:
+            logger.debug(
+                "Signal: failed to send read receipt to %s",
+                redact_phone(recipient),
+                exc_info=True,
+            )
+
+    def _read_receipt_target(self, event: MessageEvent) -> Optional[Tuple[str, int]]:
+        """Return an authorized ``(recipient, timestamp)`` receipt target."""
+        if not self.send_read_receipts:
+            return None
+        raw = event.raw_message
+        if not isinstance(raw, dict) or raw.get("is_note_to_self"):
+            return None
+        source = event.source
+        if source is None or getattr(source, "profile_route_rejected", False) is True:
+            return None
+        if self._is_sender_authorized(
+            source.user_id, source.chat_type, source.chat_id
+        ) is not True:
+            return None
+        recipient = raw.get("sender_uuid") or raw.get("sender")
+        timestamp = raw.get("timestamp_ms")
+        if not recipient or timestamp is None or isinstance(timestamp, bool):
+            return None
+        try:
+            timestamp = int(timestamp)
+        except (TypeError, ValueError):
+            return None
+        recipient = str(recipient).strip()
+        if timestamp <= 0 or not recipient or recipient == self._account_normalized:
+            return None
+        return recipient, timestamp
+
+    def _schedule_read_receipt(self, event: MessageEvent) -> None:
+        """Schedule a lifecycle-managed receipt without delaying processing."""
+        target = self._read_receipt_target(event)
+        if target is None:
+            return
+        task = asyncio.create_task(self.send_read_receipt(*target))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _remember_sent_message_timestamp(self, timestamp: Any) -> None:
         """Keep a bounded cache of outbound Signal timestamps for quote matching."""

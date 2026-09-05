@@ -1471,7 +1471,16 @@ class GatewayAdapterLifecycleMixin:
         (#86296), because the adapter's callback source was never route-stamped.
         """
         from gateway.run import get_hermes_home
-        transport_home = Path(get_hermes_home()) if self._multiplex_on() and profile_name is None else None
+        multiplex = self._multiplex_on()
+        transport_home = Path(get_hermes_home()) if multiplex and profile_name is None else None
+        signal_profile_home = (
+            self._profile_home_or_none(profile_name)
+            if platform == Platform.SIGNAL and multiplex and profile_name is not None
+            else None
+        )
+        requires_signal_profile_scope = (
+            platform == Platform.SIGNAL and multiplex and profile_name is not None
+        )
 
         def check(
             user_id: str, chat_type: Optional[str] = None, chat_id: Optional[str] = None, *,
@@ -1491,6 +1500,11 @@ class GatewayAdapterLifecycleMixin:
             adapter = registry.get(platform)
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
+            if requires_signal_profile_scope:
+                if signal_profile_home is None:
+                    return False
+                source._authorization_profile_home = signal_profile_home
+                return self._is_user_authorized_for_source(source)
             if transport_home is None:
                 return self._is_user_authorized(source)
             source._authorization_profile_home = transport_home

@@ -20,7 +20,7 @@ from gateway.hosted_rooms_common import DbPath, compact_json, fenced_update
 
 MAX_ACTIVE_POLICY_EVENTS = 64
 MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 2
+_TRANSCRIPT_SCHEMA_VERSION = 3
 MAX_TRANSCRIPT_POLICY_EVENTS = MAX_THREAD_TRANSCRIPT_EVENTS * (MAX_ACTIVE_POLICY_EVENTS + 2)
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 
@@ -56,6 +56,8 @@ _SCHEMA_DDL = (
     """CREATE INDEX IF NOT EXISTS idx_hosted_room_user_thread
        ON hosted_room_events(room_id, json_extract(payload_json, '$.thread_id'), seq)
        WHERE kind='message.user'""",
+    """CREATE INDEX IF NOT EXISTS idx_hosted_room_discussion_events
+       ON hosted_room_events(room_id, json_extract(payload_json, '$.discussion_event_id'), seq)""",
 )
 
 _ROOM_EVENT_COLUMNS = hosted_rooms._EVENT_COLUMNS
@@ -189,6 +191,8 @@ class HostedRoomPolicyCheckpoint:
         source = conn.execute(
             "SELECT seq FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? ORDER BY seq LIMIT 1",
             (room_id, discussion_event_id)).fetchone()
+        if source is None and kind == "turn.settled" and payload.get("message_event_id"):
+            source = self._restore_retry_discussion(conn, event, payload)
         if source is None:
             return
         self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
@@ -219,6 +223,47 @@ class HostedRoomPolicyCheckpoint:
                    ON CONFLICT(room_id, thread_id, member_id) DO UPDATE SET
                        seen_through_seq=MAX(hosted_room_policy_watermarks.seen_through_seq, excluded.seen_through_seq)""",
                 (room_id, thread_id, member_id, seen_through_seq))
+
+    def _restore_retry_discussion(
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]
+    ) -> sqlite3.Row | None:
+        """Reopen compacted silence only after a late visible result is committed."""
+        room_id, seq = str(event["room_id"]), int(event["seq"])
+        thread_id, discussion_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
+        source = conn.execute("""SELECT * FROM hosted_room_events
+            WHERE room_id=? AND kind='message.user' AND json_extract(payload_json, '$.thread_id')=? AND seq<=?
+            ORDER BY seq DESC LIMIT 1""", (room_id, thread_id, seq)).fetchone()
+        if source is None or source["event_id"] != discussion_id:
+            return None
+        cursor = conn.execute("SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?",
+                              (room_id,)).fetchone()
+        if int(source["seq"]) <= int(cursor["stopped_through_seq"]):
+            return None
+        # Repeated explicit retries may leave many obsolete deferrals. Retain
+        # the latest receipt per task and completion per status, not their history.
+        rows = conn.execute("""WITH history AS (
+            SELECT * FROM hosted_room_events
+            WHERE room_id=? AND json_extract(payload_json, '$.discussion_event_id')=? AND seq<=?),
+            receipts AS (
+                SELECT MAX(seq) AS seq FROM history
+                WHERE kind IN ('turn.settled', 'turn.failed', 'turn.cancelled', 'turn.deferred')
+                GROUP BY json_extract(payload_json, '$.task_id')),
+            activities AS (
+                SELECT MAX(seq) AS seq FROM history WHERE kind='room.activity'
+                GROUP BY json_extract(payload_json, '$.status'))
+            SELECT * FROM history WHERE kind='message.member'
+                OR seq IN (SELECT seq FROM receipts) OR seq IN (SELECT seq FROM activities)
+            ORDER BY seq LIMIT ?""", (room_id, discussion_id, seq, MAX_ACTIVE_POLICY_EVENTS)).fetchall()
+        events = [_event_from_room_row(row) for row in rows]
+        activities = [item for item in events if item["kind"] == "room.activity"]
+        if not activities or any(item["payload"]["status"] == "bounded" for item in activities):
+            return None
+        if len(rows) >= MAX_ACTIVE_POLICY_EVENTS:
+            raise RuntimeError("retried room policy projection exceeded its bound")
+        self._apply_user_message(conn, _event_from_room_row(source), json.loads(source["payload_json"]))
+        for item in events:
+            self._store_active_event(conn, event=item, thread_id=thread_id, discussion_event_id=discussion_id)
+        return source
 
     def _apply_room_activity(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -255,7 +300,7 @@ class HostedRoomPolicyCheckpoint:
         transcript_state = conn.execute(
             "SELECT schema_version FROM hosted_room_policy_transcript_state WHERE room_id=?", (room_id,)).fetchone()
         if transcript_state is None or int(transcript_state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
-            # Replay corrected partial-batch watermarks without rewriting admissions or the room log.
+            # Rebuild retry continuations and watermarks without rewriting admissions or the room log.
             for table in ("hosted_room_policy_events", "hosted_room_policy_threads",
                           "hosted_room_policy_watermarks", "hosted_room_policy_transcript"):
                 conn.execute(f"DELETE FROM {table} WHERE room_id=?", (room_id,))

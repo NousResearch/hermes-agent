@@ -2215,6 +2215,33 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     if setup.blocked is not None:
         return setup
 
+    # Shared provider-health preflight.  This runs before runtime/client/session
+    # construction, so a provider with a declared reset consumes no model call.
+    from cron.provider_health_circuit import resolve_cron_route
+    from hermes_constants import get_hermes_home
+
+    route = resolve_cron_route(job, _cfg, hermes_home=get_hermes_home())
+    if route.job is None:
+        reset = route.deferred_until.isoformat() if route.deferred_until else "unknown"
+        reason = (
+            f"quota unavailable; all allowed provider routes deferred until {reset}: "
+            f"{route.reason or 'provider circuit open'}"
+        )
+        setup.blocked = (
+            False,
+            _run_doc_header(job, f"{job_name} (DEFERRED)", job_id, job.get("prompt") or "")
+            + f"## Deferred\n\n{reason}\n",
+            "",
+            reason,
+        )
+        return setup
+    job.clear()
+    job.update(route.job)
+    setup.model = str(job.get("model") or setup.model)
+    jc.model = setup.model
+    if route.reasoning_effort and job.get("reasoning_effort") is None:
+        job["reasoning_effort"] = route.reasoning_effort
+
     primary_model_for_drift = setup.model
     setup.runtime, setup.model, primary_provider_for_drift = _resolve_job_runtime(job, job_id, jc)
     setup.reasoning_config = _resolve_job_reasoning_config(
@@ -2222,7 +2249,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     )
     _check_model_drift(
         job, job_id, _cfg, setup.runtime, primary_provider_for_drift, primary_model_for_drift)
-    setup.fallback_model = get_fallback_chain(_cfg) or None
+    setup.fallback_model = route.fallback_chain or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)
@@ -2309,6 +2336,9 @@ def run_job(
     ``extra_prompt``: optional per-run context from ``cronjob(action='run', prompt=...)`` (#57331). Appended
     to the stored prompt for this fire only — never persisted to the job definition.
     """
+    # Route overrides selected for one fire must never mutate the scheduler's
+    # durable in-memory job definition and suppress a post-reset primary probe.
+    job = dict(job)
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
@@ -2355,6 +2385,14 @@ def run_job(
         output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
+        try:
+            from cron.provider_health_circuit import record_cron_route_outcome
+
+            record_cron_route_outcome(
+                job, success=True, error=None, hermes_home=_get_hermes_home(), now=_hermes_now()
+            )
+        except Exception:
+            logger.warning("Job '%s': provider-health bookkeeping failed", job_id, exc_info=True)
         return True, output, final_response, None
 
     except Exception as e:
@@ -2363,6 +2401,15 @@ def run_job(
         # No audit row when we failed before the agent existed; the audit write must never raise.
         if _audit is not None:
             _audit.write({}, error_msg)
+        try:
+            from cron.provider_health_circuit import record_cron_route_outcome
+
+            record_cron_route_outcome(
+                job, success=False, error=error_msg,
+                hermes_home=_get_hermes_home(), now=_hermes_now(),
+            )
+        except Exception:
+            logger.warning("Job '%s': provider-health bookkeeping failed", job_id, exc_info=True)
         output = (
             _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
             + f"## Error\n\n```\n{error_msg}\n```\n"

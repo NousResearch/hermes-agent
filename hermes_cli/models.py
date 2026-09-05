@@ -1285,9 +1285,21 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     return _merge_unique(primary, secondary, key=_model_dedup_key)
 
 
-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+def provider_model_ids(
+    provider: Optional[str],
+    *,
+    force_refresh: bool = False,
+    _provenance: Optional[dict] = None,
+) -> list[str]:
     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
-    fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
+    fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers).
+
+    ``_provenance`` is an optional out-dict for the disk-cache layer. When a provider's only offline
+    source is the static curated stub and live discovery failed (currently only Bedrock — expired AWS
+    SSO, throttle, no creds yet), it sets ``_provenance["fallback"] = True`` so
+    :func:`cached_provider_model_ids` serves the stub in-memory only rather than pinning it to disk for
+    the full TTL after credentials recover (#74151). Callers that don't pass it are unaffected.
+    """
     requested = str(provider or "").strip().lower()
     if requested == "ollama":
         return _ollama_local_catalog(force_refresh)
@@ -1298,6 +1310,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         models = fetcher(normalized, force_refresh)
         if models is not None:
             return models
+        # Live discovery ran but yielded nothing for a provider whose sole offline source is the
+        # static curated stub. Flag the fall-through so the cache layer serves it in-memory only and
+        # retries live on the next open, instead of freezing the offline list for an hour (#74151).
+        if _provenance is not None and normalized == "bedrock":
+            _provenance["fallback"] = True
     try:
         models = _profile_live_catalog(normalized)
     except Exception:
@@ -1539,9 +1556,15 @@ def cached_provider_model_ids(
             _spawn_swr_refresh(normalized)
             return list(entry["models"])
 
-    live = provider_model_ids(normalized, force_refresh=force_refresh)
+    provenance: dict = {}
+    live = provider_model_ids(normalized, force_refresh=force_refresh, _provenance=provenance)
     if live:
-        _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
+        # Persist only genuine results. An emergency fallback (bedrock live discovery failed, curated
+        # stub returned) is served in-memory but never pinned to disk — its fingerprint is unchanged
+        # by an out-of-$HERMES_HOME SSO refresh, so a persisted stub would cap the picker for the full
+        # TTL even after creds recover (#74151).
+        if not provenance.get("fallback"):
+            _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
         return list(live)
 
     if is_ollama:

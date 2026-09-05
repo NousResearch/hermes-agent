@@ -99,7 +99,11 @@ class TestProviderModelsSWR:
             out = mod.cached_provider_model_ids("openrouter", force_refresh=True)
         assert out == ["live"]
         spawn.assert_not_called()
-        live.assert_called_once_with("openrouter", force_refresh=True)
+        # force_refresh flows through to the live fetch (an internal _provenance out-dict
+        # for the fallback-cache guard may ride along; don't pin it here).
+        live.assert_called_once()
+        assert live.call_args.args == ("openrouter",)
+        assert live.call_args.kwargs.get("force_refresh") is True
 
     def test_swr_refresh_dedupes_inflight(self):
         import hermes_cli.models as mod

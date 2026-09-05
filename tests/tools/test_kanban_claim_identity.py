@@ -32,6 +32,7 @@ def claimed_board(monkeypatch, tmp_path):
     current_run_id set), the way ``claim_task`` leaves it. Returns the task id
     and pins the board DB via HERMES_KANBAN_DB."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -40,7 +41,7 @@ def claimed_board(monkeypatch, tmp_path):
     kb._INITIALIZED_PATHS.clear()
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="claimed", assignee="forge")
         kb.claim_task(conn, tid)
@@ -114,6 +115,7 @@ def test_claim_still_alive_after_fork_attempts(claimed_board, monkeypatch):
     """After every refused fork call, the claimant's run must still be the
     active run — the fork must not have perturbed the task at all."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = claimed_board
     _caller_env(monkeypatch)
@@ -122,7 +124,7 @@ def test_claim_still_alive_after_fork_attempts(claimed_board, monkeypatch):
     kt._handle_block({"task_id": tid, "kind": "needs_input", "reason": "x"})
     kt._handle_complete({"task_id": tid, "summary": "x"})
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         row = conn.execute(
             "SELECT status, current_run_id FROM tasks WHERE id = ?",
@@ -141,10 +143,11 @@ def test_claimant_with_own_run_id_still_succeeds(claimed_board, monkeypatch):
     """The worker holding the claim passes its run id (env) and proceeds
     normally — the CAS stays the exact identity check."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = claimed_board
     _caller_env(monkeypatch)
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         run_id = int(conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ?",
@@ -181,11 +184,12 @@ def test_unclaimed_task_stays_orchestral(claimed_board, monkeypatch):
     """With no active run, an orchestrator-shaped caller (no run env) may
     still mutate the task — legit routing must keep working."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = claimed_board
     # Release the claim so current_run_id is NULL (task stays running-shaped
     # via _retry_status_for_run; force the row as orchestrators find it).
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         conn.execute(
             "UPDATE tasks SET current_run_id = NULL, status = 'ready' "
@@ -217,6 +221,7 @@ def test_interleave_probe_read_then_second_claim_survives_complete(
     caller proceeds, and ``expected_run_id=None`` compiles to a predicate-free
     UPDATE that transitions the freshly claimed task."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = claimed_board
     _caller_env(monkeypatch)
@@ -224,7 +229,7 @@ def test_interleave_probe_read_then_second_claim_survives_complete(
 
     # Start from the UNCLAIMED board the guard's NULL read requires (release
     # the fixture's claim; the dispatcher claim lands later, in the window).
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         conn.execute(
             "UPDATE tasks SET current_run_id = NULL, status = 'ready', "
@@ -239,7 +244,9 @@ def test_interleave_probe_read_then_second_claim_survives_complete(
     def _claim_on_second_connection(task_id, kb_mod, conn):
         """Runs inside the guard, after the no-run read, before the mutation:
         the dispatcher claims the task on its own connection."""
-        c2 = kb_mod.connect()
+        # connect() via the defining module: the kanban_db pointer is a
+        # plugin-compat shim, removed 2026-09-14 (see COMPAT_MANIFEST.md).
+        c2 = kbc.connect()
         try:
             claimed = kb_mod.claim_task(c2, task_id)
             assert claimed is not None, "interleave setup: second claim failed"
@@ -256,14 +263,14 @@ def test_interleave_probe_read_then_second_claim_survives_complete(
     assert json.loads(out).get("ok") is not True, (
         f"no-run caller's complete_task transitioned the newly claimed task: {out}")
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         row = conn.execute(
             "SELECT status, current_run_id FROM tasks WHERE id = ?", (tid,)).fetchone()
     finally:
         conn.close()
     # The dispatcher's claim is intact: still running under ITS run.
-    c2 = kb.connect()
+    c2 = kbc.connect()
     try:
         claim_row = c2.execute(
             "SELECT id FROM task_runs WHERE task_id = ? AND ended_at IS NULL "
@@ -281,9 +288,10 @@ def test_sink_no_run_id_requires_unclaimed_row_at_the_write(claimed_board):
     lifecycle mutation may only land while current_run_id IS NULL — the
     claimant's row must not be writable by the None caller."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = claimed_board
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         run_id = int(conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ?",
@@ -305,9 +313,10 @@ def test_sink_no_run_id_still_allows_genuinely_unclaimed_writes(claimed_board):
     """The None caller is not locked out: an UNCLAIMED task (the orchestrator
     routing shape) still mutates — None means IS NULL, not 'never'."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = claimed_board
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         # Drop the claim exactly as the reclaim invariant would.
         conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (tid,))
@@ -321,9 +330,10 @@ def test_claimant_run_id_still_binds_the_write_exactly(claimed_board):
     """With an expected run id the CAS is unchanged: right id lands, a wrong
     id refuses (identity check stays exact)."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     tid = claimed_board
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         run_id = int(conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ?",

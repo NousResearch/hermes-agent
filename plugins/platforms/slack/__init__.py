@@ -1,3 +1,3 @@
-from .adapter import register
+from .native_stop import register
 
 __all__ = ["register"]

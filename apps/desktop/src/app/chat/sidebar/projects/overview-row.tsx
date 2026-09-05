@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useRef } from 'react'
 
@@ -6,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $sessionListDensity } from '@/store/session-list-density'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
@@ -20,9 +22,9 @@ import {
   SidebarRowShell
 } from '../chrome'
 
-import { latestProjectSessions, PROJECT_PREVIEW_COUNT, useWorkspaceNodeOpen } from './model'
+import { latestProjectSessions, PROJECT_PREVIEW_COUNT, usePreviewWindowHeight, useWorkspaceNodeOpen } from './model'
 import { ProjectContextMenu, ProjectMenu } from './project-menu'
-import type { SidebarProjectTree } from './workspace-groups'
+import { PROJECT_PREVIEW_LOADED, type SidebarProjectTree } from './workspace-groups'
 import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
@@ -94,13 +96,20 @@ export function ProjectOverviewRow({
 }: ProjectOverviewRowProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const density = useStore($sessionListDensity)
   const isActive = project.id === activeProjectId
   const [open, toggleOpen] = useWorkspaceNodeOpen(project.id)
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
-  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
-  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
+  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_LOADED)
+  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_LOADED)) : []
+  // Past three rows the preview stops growing and starts scrolling: the glance
+  // keeps its height, and the rest of the project's recent chats are a wheel
+  // away instead of behind a drill-in.
+  const previewScrolls = preview.length > PROJECT_PREVIEW_COUNT
+  // Sized from the row that actually rendered, not from the estimate alone.
+  const [previewRef, previewMaxHeight] = usePreviewWindowHeight(density, preview.length)
 
   const lead = reorderable ? (
     <SidebarRowGrab
@@ -201,7 +210,24 @@ export function ProjectOverviewRow({
           {shell}
         </ProjectContextMenu>
       )}
-      {open && preview.length > 0 && <SidebarRowNest>{renderRows?.(preview)}</SidebarRowNest>}
+      {open && preview.length > 0 && (
+        <SidebarRowNest
+          // The window is defined in ROWS, so its height is measured from the
+          // active density rather than hardcoded. Only scrolls once there is
+          // something past the third row — a two-chat project renders exactly
+          // as it always did, no scroller, no reserved gutter.
+          //
+          // NO `overscroll-contain` here: this scroller is nested inside the
+          // sidebar's own (index.tsx SCROLL_Y). Containing overscroll swallows
+          // the wheel at this list's ends instead of chaining it out to the
+          // sidebar — the same dead-zone the virtualized list hit in #84964.
+          className={cn(previewScrolls && 'scrollbar-fade overflow-y-auto overflow-x-hidden')}
+          ref={previewRef}
+          style={previewScrolls ? { maxHeight: previewMaxHeight } : undefined}
+        >
+          {renderRows?.(preview)}
+        </SidebarRowNest>
+      )}
     </div>
   )
 }

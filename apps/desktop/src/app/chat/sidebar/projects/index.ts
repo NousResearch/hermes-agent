@@ -15,6 +15,7 @@ export {
   liveSessionProjectId,
   overlayLiveLanes,
   overlayLivePreviews,
+  PROJECT_PREVIEW_LOADED,
   reconcileEnteredProjectSessions,
   sessionRecency,
   type SidebarProjectTree,

@@ -1,7 +1,11 @@
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import {
+  NO_PROJECT_ID,
+  PROJECT_PREVIEW_LOADED,
+  type SidebarProjectTree
+} from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
@@ -153,7 +157,13 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'coder' })
-    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'coder' })
+    // The preview depth is pinned to the SHARED constant, not to a literal:
+    // the fetch depth and the sidebar's render depth are one number now
+    // (workspace-groups.ts), and this is what keeps them that way.
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', {
+      preview_limit: PROJECT_PREVIEW_LOADED,
+      profile: 'coder'
+    })
     expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
       profile: 'coder',
       project_id: 'p_123'

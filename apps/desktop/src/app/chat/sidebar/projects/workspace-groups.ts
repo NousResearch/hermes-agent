@@ -11,6 +11,19 @@ import { rankSessions } from '../order'
 // pure helpers and the VISUAL-ONLY worktree enhancer that injects empty lanes
 // from `git worktree list`. It never decides session membership.
 
+// How many recent sessions a project's overview preview HOLDS — one number for
+// both ends of the contract: the depth `projects.tree` is asked for
+// (`preview_limit`, store/projects.ts) and the depth the preview renders and
+// scrolls (overview-row.tsx). The sidebar SHOWS `PROJECT_PREVIEW_COUNT` of them
+// and scrolls the rest in place, so this is the little scroller's depth, not the
+// number of rows on screen.
+//
+// It lives here, next to `overlayLivePreviews` (the trim it bounds) and the
+// `previewSessions` payload it describes, because this module is the leaf both
+// the store and the sidebar already depend on. Defining it in either of those
+// would make the other import it back.
+export const PROJECT_PREVIEW_LOADED = 10
+
 export interface SidebarSessionGroup {
   id: string
   label: string

@@ -2016,11 +2016,15 @@ def load_config() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=True)
 
 
-def load_config_readonly() -> Dict[str, Any]:
+def load_config_readonly(*, strict: bool = False) -> Dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
-    every subsequent caller** — only for code paths that never write to the result."""
-    return _load_config_impl(want_deepcopy=False)
+    every subsequent caller** — only for code paths that never write to the result.
+    ``strict=True`` reads and validates the current user file without reusing cached or
+    last-known-good policy. Read, parse, and normalization failures propagate instead of
+    falling back to defaults. Strict reads do not write the configuration or its caches.
+    """
+    return _load_config_impl(want_deepcopy=False, strict=strict)
 
 
 def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
@@ -2196,16 +2200,19 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
     return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
 
 
-def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+def _load_config_impl(*, want_deepcopy: bool, strict: bool = False) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
+        # Parse once under the owner lock: strict consumers MUST use the validated
+        # mapping, not a second read or a permissive cached fallback.
+        strict_user_config = require_readable_config_before_write(config_path) if strict else {}
 
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:4] == cache_sig:
+        if not strict and cached is not None and cache_sig is not None and cached[:4] == cache_sig:
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
@@ -2217,10 +2224,13 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
-        if user_sig is not None:
+        if strict or user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = fast_safe_load(f) or {}
+                if strict:
+                    user_config = strict_user_config
+                else:
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = fast_safe_load(f) or {}
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -2231,12 +2241,16 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
                 config = _deep_merge(config, user_config)
             except Exception as e:
+                if strict:
+                    raise ValueError("Cannot normalize configuration for strict policy read") from e
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        if strict:
+            return expanded
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while

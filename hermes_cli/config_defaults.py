@@ -1489,6 +1489,16 @@ DEFAULT_CONFIG = {
         "require_mention": True,  # require @mention to respond in rooms
         "free_response_rooms": "",  # comma-separated room IDs answered without mention
         "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
+        # Native Matrix tools (tools/matrix_tool.py). Prefer these keys over env.
+        "tools": {
+            "allow_cross_room": False,
+            "allow_cross_room_destructive": False,
+            "allow_redaction": False,
+            "allow_invites": False,
+            "allow_room_create": False,
+            "allow_public_rooms": False,
+            "allowed_rooms": "",       # Optional tool target whitelist (room IDs)
+        },
     },
     # Approvals for dangerous commands.
     # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)

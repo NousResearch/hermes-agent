@@ -735,6 +735,15 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
+def _matrix_allow_public_rooms() -> bool:
+    from plugins.platforms.matrix.tool_policy import gate
+
+    try:
+        return gate("allow_public_rooms", "MATRIX_ALLOW_PUBLIC_ROOMS")
+    except (ValueError, UnscopedSecretError):
+        return False
+
+
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -2463,6 +2472,25 @@ class MatrixAdapter(BasePlatformAdapter):
             getattr(logger, level)(err_msg, exc)
             return False
 
+    async def fetch_history(self, room_id: str, limit: int = 20, from_token: str = "") -> dict:
+        """Return a bounded page of server events and the next backward cursor.
+
+        Reuse the gateway client. Encrypted events remain encrypted here; this
+        does not start a second sync or attempt historical key recovery.
+        """
+        from mautrix.types import PaginationDirection, SyncToken
+
+        if not self._client:
+            raise RuntimeError("Matrix client is not connected")
+        response = await self._client.get_messages(
+            RoomID(room_id), direction=PaginationDirection.BACKWARD,
+            from_token=SyncToken(from_token) if from_token else None,
+            limit=max(1, min(int(limit), 100)))
+        return {
+            "events": [event.serialize() for event in response.events],
+            "end_token": str(response.end) if response.end is not None else "",
+        }
+
     async def redact_message(self, room_id: str, event_id: str, reason: str = "") -> bool:
         return await self._client_op(
             lambda: self._client.redact(RoomID(room_id), EventID(event_id), reason=reason or None),
@@ -2473,8 +2501,11 @@ class MatrixAdapter(BasePlatformAdapter):
         preset: str = "private_chat") -> Optional[str]:
         if not self._client:
             return None
-        if preset == "public_chat" and not _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS"):
-            logger.warning("Matrix: refusing to create public room without MATRIX_ALLOW_PUBLIC_ROOMS=true")
+        if preset == "public_chat" and not _matrix_allow_public_rooms():
+            logger.warning(
+                "Matrix: refusing to create public room without "
+                "matrix.tools.allow_public_rooms / MATRIX_ALLOW_PUBLIC_ROOMS"
+            )
             return None
         try:
             preset_enum = {

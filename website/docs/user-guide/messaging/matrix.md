@@ -408,17 +408,39 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
+Both Matrix toolsets are off by default and available only on the Matrix platform. Select them in the Matrix checklist in `hermes tools`, or enable each explicitly:
 
-- `matrix_send_reaction`
-- `matrix_redact_message`
-- `matrix_create_room`
-- `matrix_invite_user`
-- `matrix_fetch_history`
-- `matrix_set_presence`
+```bash
+hermes tools enable matrix --platform matrix
+hermes tools enable matrix_admin --platform matrix
+```
 
-These tools are scoped to Matrix contexts and are not available in non-Matrix toolsets. Admin-style tools are disabled by default: redaction requires `MATRIX_TOOLS_ALLOW_REDACTION=true`, invites require `MATRIX_TOOLS_ALLOW_INVITES=true`, and room creation requires `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`. Public room creation also requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
-If `MATRIX_ALLOWED_ROOMS` is set, Matrix tools may only target those rooms.
+The `--platform matrix` flag is required: the command defaults to CLI, where these toolsets are rejected. Enabling a toolset does not open its action-policy gates. Credential availability is checked independently of session platform; every invocation still requires a live Matrix conversation and its connected profile adapter:
+
+| Tool | Actions |
+|------|---------|
+| `matrix` | `send_reaction`, `fetch_history`, `set_presence` |
+| `matrix_admin` | `redact_message`, `invite_user`, `create_room` |
+
+History returns server events in reverse chronological order and an `end_token`; pass that token as `from_token` for the next page. The page limit is capped at 100. Encrypted history events remain encrypted; this does not perform historical key recovery. Presence changes the bot account's status, not an individual room.
+
+Set non-secret policy in `config.yaml`:
+
+```yaml
+matrix:
+  tools:
+    allow_cross_room: false
+    allow_cross_room_destructive: false
+    allow_redaction: false
+    allow_invites: false
+    allow_room_create: false
+    allow_public_rooms: false
+    allowed_rooms: []  # optional target-room allowlist
+```
+
+Room actions default to the current room. Explicit cross-room targets (including a missing current-room stamp) require `allow_cross_room`; redaction and invitations also require `allow_cross_room_destructive`. A non-empty `allowed_rooms` list restricts all targeted room actions, including the current room. Room creation has no existing target room and uses its separate creation gate; invitations included in `create_room` still require `allow_invites`. Public rooms additionally require `allow_public_rooms`.
+
+Explicit YAML keys take precedence over legacy `MATRIX_TOOLS_ALLOW_*` gates, `MATRIX_ALLOW_PUBLIC_ROOMS`, and `MATRIX_ALLOWED_ROOMS` (the fallback for the tool allowlist). Under multiplexing, legacy settings come only from the active profile's scope, never another bot's environment. Missing profile adapters, unavailable gateway loops, and invalid tool policy fail closed. A dispatch timeout requests cancellation but does not prove a server-side action was rolled back; verify before retrying a write.
 
 Reaction controls use:
 

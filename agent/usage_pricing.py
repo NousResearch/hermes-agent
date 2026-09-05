@@ -250,6 +250,27 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
 )
+
+# Bedrock Kimi K2.5 has regional SKUs, so it cannot safely share a generic
+# provider/model row. Keep only AWS-published prices and leave a supported
+# region without a snapshot unknown rather than borrowing another region's rate.
+_BEDROCK_REGIONAL_PRICING: Dict[tuple[str, str], PricingEntry] = {
+    **{
+        (region, "moonshotai.kimi-k2.5"): _snap(
+            "0.60", "3.00", url=_BEDROCK_URL, version="bedrock-moonshot-pricing-2026-08",
+        )
+        for region in ("us-east-1", "us-east-2", "us-west-2")
+    },
+    **{
+        (region, "moonshotai.kimi-k2.5"): _snap(
+            "0.72", "3.60", url=_BEDROCK_URL, version="bedrock-moonshot-pricing-2026-08",
+        )
+        for region in ("ap-northeast-1", "ap-south-1", "ap-southeast-3", "eu-north-1", "sa-east-1")
+    },
+    ("ap-southeast-2", "moonshotai.kimi-k2.5"): _snap(
+        "0.6180", "3.0900", url=_BEDROCK_URL, version="bedrock-moonshot-pricing-2026-08",
+    ),
+}
 del _BEDROCK_URL, _ANTHROPIC_URL, _GOOGLE_URL, _OPUS, _SONNET
 
 # GPT-5.6 "-pro" high-effort variants bill at the base tier's per-token rates
@@ -303,6 +324,11 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
 
 
+def _is_bedrock_mantle_endpoint(base_url: str) -> bool:
+    """Return whether ``base_url`` is an AWS Bedrock Mantle endpoint."""
+    return bool(re.fullmatch(r"bedrock-mantle\.[a-z0-9-]+\.api\.aws", base_url_hostname(base_url)))
+
+
 def resolve_billing_route(
     model_name: str, provider: Optional[str] = None, base_url: Optional[str] = None
 ) -> BillingRoute:
@@ -329,6 +355,8 @@ def resolve_billing_route(
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):
         return BillingRoute(provider="nous", model=model, base_url=base_url or _NOUS_DEFAULT_BASE_URL, billing_mode="official_models_api")
+    if provider_name == "bedrock" or _is_bedrock_mantle_endpoint(url):
+        return BillingRoute(provider="bedrock", model=model, base_url=url, billing_mode="official_docs_snapshot")
     snapshot_provider = _SNAPSHOT_PROVIDER_ALIASES.get(provider_name)
     if snapshot_provider is None:
         if (
@@ -370,6 +398,15 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return re.sub(r"(\d+)\.(\d+)", r"\1-\2", _strip_prefix(model.lower().strip(), ("anthropic/",)))
 
 
+def _bedrock_region_from_base_url(base_url: str) -> Optional[str]:
+    """Extract the region from a Bedrock Runtime or Mantle endpoint."""
+    match = re.search(
+        r"(?:^|\.)bedrock-(?:runtime(?:-fips)?|mantle)\.([a-z0-9-]+)\.",
+        base_url_hostname(base_url),
+    )
+    return match.group(1) if match else None
+
+
 # Anthropic dot-notation (opus-4.7) and Bedrock region-prefixed ids need
 # normalizing before a second lookup.
 _MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _normalize_bedrock_model_name}
@@ -377,6 +414,12 @@ _MODEL_NORMALIZERS = {"anthropic": _normalize_anthropic_model_name, "bedrock": _
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
+    if route.provider == "bedrock":
+        region = _bedrock_region_from_base_url(route.base_url)
+        if region:
+            entry = _BEDROCK_REGIONAL_PRICING.get((region, model))
+            if entry:
+                return entry
     entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
     if entry:
         return entry

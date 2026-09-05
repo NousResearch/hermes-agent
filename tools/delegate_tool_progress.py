@@ -152,10 +152,17 @@ def _build_child_system_prompt(
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
-    can't confabulate nesting."""
-    parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
-    if context and context.strip():
-        parts.append(f"\nCONTEXT:\n{context}")
+    can't confabulate nesting.
+
+    Byte-stable scaffold first, per-child variance LAST (#103481): ``goal``/``context`` differ per
+    child, so they are appended after every shared block (intro, workspace + context files,
+    completion instructions, role block). In a delegate_task batch (delegation.max_concurrent_children
+    > 1) every child's system prompt is then byte-identical up to the ``YOUR TASK`` marker, so
+    providers with automatic prefix caching (DeepSeek automatic prefix cache, Anthropic prompt
+    caching, ...) bill the shared scaffold as one cache-creation instead of N; only the trailing
+    task bytes are a per-child miss. The task text still reaches the model right before its first
+    user turn (run_conversation re-sends the goal as the initial user message)."""
+    parts = ["You are a focused subagent working on a specific delegated task.", ""]
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -182,6 +189,11 @@ def _build_child_system_prompt(
             + f"NOTE: You are at depth {child_depth}. The delegation tree is capped at max_spawn_depth={max_spawn_depth}. "
             + child_note
         )
+    # Per-child variance LAST so the shared scaffold prefix above stays byte-identical across a
+    # batch (#103481): every provider prefix-cache hit on the scaffold is reused by the siblings.
+    parts.append(f"\nYOUR TASK:\n{goal}")
+    if context and context.strip():
+        parts.append(f"\nCONTEXT:\n{context}")
     return "\n".join(parts)
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:

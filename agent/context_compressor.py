@@ -2260,6 +2260,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        hygiene_hard_message_limit: int = 0,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2298,6 +2299,11 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         # non-numeric, <=0) means "no reservation" so the threshold arithmetic never sees a non-int (e.g. a
         # test MagicMock).
         self.abort_on_summary_failure = abort_on_summary_failure
+        # Hard message-count safety valve: force compression when the number
+        # of messages exceeds this limit, regardless of token estimates.
+        # Mirrors the gateway hygiene hard limit (gateway/run_turn, #2153/#4750).
+        # 0 = disabled (only token-based compression triggers apply).
+        self.hygiene_hard_message_limit = max(0, int(hygiene_hard_message_limit or 0))
 
         # Micro-compaction is OFF by default: each pass breaks the prompt-cache prefix every turn.
         self._micro_compact_enabled = False
@@ -2437,18 +2443,22 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         # No baseline ratchet here: advancing rough without a matching real reading would defer on stale data.
         return self.last_real_prompt_tokens + max(0, rough_tokens - baseline) < self.threshold_tokens
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
-        """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
-        return self.should_compress_info(prompt_tokens)[0]
+    def should_compress(self, prompt_tokens: int = None, force: bool = False) -> bool:
+        """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason).
+        ``force`` bypasses the anti-thrash gate (hard message-count safety valve)."""
+        return self.should_compress_info(prompt_tokens, force=force)[0]
 
-    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int = None, force: bool = False) -> "tuple[bool, str | None]":
         """Return ``(should_compress, reason)``.
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
-        ``"ineffective"``. Callers should surface a warning when it is non-None."""
+        ``"ineffective"``. Callers should surface a warning when it is non-None.
+        When *force* is True (e.g. the hard message-count safety valve triggered), the
+        anti-thrashing check is bypassed — the session is too large to leave
+        uncompressed regardless of recent effectiveness."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False, None
-        if self._automatic_compression_blocked():
+        if self._automatic_compression_blocked(force=force):
             return False, self._compression_block_reason() or "blocked"
         return True, None
 
@@ -2478,15 +2488,16 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             except Exception as exc:
                 logger.debug("compression %s refresh failed: %s", label, exc)
 
-    def _automatic_compression_blocked(self, *, ignore_cooldown: bool = False) -> bool:
-        """Whether auto-compaction is in cooldown or tripped; ``ignore_cooldown`` skips only the summary-failure cooldown."""
-        if not self._automatic_compression_blocked_locally(ignore_cooldown=ignore_cooldown):
+    def _automatic_compression_blocked(self, *, ignore_cooldown: bool = False, force: bool = False) -> bool:
+        """Whether auto-compaction is in cooldown or tripped; ``ignore_cooldown`` skips only the summary-failure cooldown;
+        ``force`` additionally bypasses the anti-thrash breaker (hard message-count safety valve)."""
+        if not self._automatic_compression_blocked_locally(ignore_cooldown=ignore_cooldown, force=force):
             return False
         # Blocked locally: durable rows may have been cleared by another agent, so refresh before honouring.
         self._refresh_durable_guards()
-        return self._automatic_compression_blocked_locally(ignore_cooldown=ignore_cooldown)
+        return self._automatic_compression_blocked_locally(ignore_cooldown=ignore_cooldown, force=force)
 
-    def _automatic_compression_blocked_locally(self, *, ignore_cooldown: bool = False) -> bool:
+    def _automatic_compression_blocked_locally(self, *, ignore_cooldown: bool = False, force: bool = False) -> bool:
         """Evaluate the automatic-compaction gate on in-memory state only."""
         # Summary-LLM cooldown: without this every turn re-fires and re-inserts the fallback marker (#11529).
         # Manual /compress passes force=True, which clears the cooldown first. Structural no-op backoff is
@@ -2502,7 +2513,9 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
                 return True
         # Anti-thrash back-off must not be permanent: after _ANTI_THRASH_RECOVERY_SECONDS blocked, allow ONE
         # probe by dropping counters to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
-        if self._tripped():
+        # force (hard message-count safety valve) bypasses the breaker entirely: the session
+        # is too large to leave uncompressed regardless of recent effectiveness.
+        if not force and self._tripped():
             # Wall clock: the deadline is persisted so a rebuilt compressor resumes the SAME window.
             # Wall clock, not monotonic: the deadline is persisted on the session row (#100185) so a fresh
             # compressor bound to the same session — the gateway rebuilds the AIAgent on every cache

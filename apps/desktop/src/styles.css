@@ -1893,6 +1893,20 @@ body.guest-pointer-lock :is(webview, iframe) {
   padding: 0 !important;
 }
 
+/* Transcript output wraps. Nested overflow-x:auto on fences/tables made the
+   reply unreadable (#101311 / #70451). Shiki's default `white-space: pre`
+   would still grow a horizontal bar; force wrap on the highlighted path. */
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki,
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki pre,
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki code,
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki .line {
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table {
   border-spacing: 0;
 }

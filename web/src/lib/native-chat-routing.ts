@@ -34,7 +34,11 @@ export function nativeChatSessionCreateParams(
   selection: NativeRoutingSelection,
 ): Record<string, unknown> {
   const params: Record<string, unknown> = {
-    close_on_disconnect: true,
+    // A dashboard/browser is a resumable viewer. Losing its WebSocket (mobile
+    // sleep, screen lock, navigation, or a network flap) must not end a
+    // server-owned turn. Explicit Stop still uses session.interrupt.
+    close_on_disconnect: false,
+    continue_on_disconnect: true,
     source: "dashboard",
     ...(profile ? { profile } : {}),
   };

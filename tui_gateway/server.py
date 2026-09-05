@@ -177,9 +177,11 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 # ``session.create`` (new sid + a fresh _SlashWorker via _deferred_build) and
 # never reattaches the OLD sid, so the old session's slash-worker subprocess
 # lingers forever — one leaked python process per refresh (#38591 fallout).
-# After this grace window, an orphaned WS session is interrupted if it is still
-# running, then reaped once the normal turn-finalization path settles.
-# Set to 0 to disable (park forever, pre-fix behaviour).
+# After this grace window, a detached session is reaped when it is quiescent.
+# Sessions explicitly marked ``continue_on_disconnect`` keep a running turn
+# server-owned: a lost viewer must not become an implicit ``session.interrupt``.
+# Other clients retain the historical interrupt-after-grace cleanup contract.
+# Set to 0 to disable reaping.
 def _resolve_ws_orphan_reap_grace() -> float:
     """Resolve the WS-orphan reap grace window (seconds).
 
@@ -1384,11 +1386,14 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
 
 
 def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
-    """After a grace window, reap session ``sid`` iff it's still orphaned.
+    """After a grace window, reap session ``sid`` iff it's still quiescent.
 
     Called from the WS-disconnect path. The grace window lets a transient
     reconnect (or a ``session.resume`` that reattaches the transport) cancel
-    the reap by re-binding a live transport. Disabled when the grace is 0.
+    the reap by re-binding a live transport. Sessions marked
+    ``continue_on_disconnect`` keep running turns and pending input server-owned;
+    active delegation deferral remains unchanged. Other running sessions retain
+    the legacy interrupt-after-grace behavior. Disabled when the grace is 0.
     """
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
@@ -1417,19 +1422,23 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
             if current is None or not _ws_session_is_detached(current):
                 return
             if _session_has_active_delegations(sid, current):
+                # Existing delegation deferral remains unchanged.
+                reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
+            elif current.get("continue_on_disconnect") and (
+                current.get("running") or _session_pending_kind(sid)
+            ):
+                # Native dashboard chat opts into server-owned turns and
+                # pending interactions. Do not call _interrupt_session_turn
+                # here: only an explicit Stop (or a deliberate gateway
+                # shutdown) may cancel the turn.
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif current.get("running"):
-                # Mid-turn detached sessions must never drop the single
-                # Timer (#85578): after the reconnect grace the turn is
-                # interrupted once, then the reap keeps polling until the
-                # normal turn-finalization path settles.
+                # Preserve the legacy cleanup contract for clients that did not
+                # opt into background continuation. Interrupt once, then keep
+                # polling until the normal turn-finalization path settles.
                 polls = int(current.get("_client_gone_interrupt_polls") or 0) + 1
                 current["_client_gone_interrupt_polls"] = polls
                 if polls > _WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS:
-                    # The interrupted turn never settled inside the budget —
-                    # force-reap rather than parking the session + a timer
-                    # chain forever. Loud by design: this only fires when a
-                    # turn is genuinely stuck past interrupt.
                     logger.error(
                         "client_gone sid=%s: turn did not settle after %d "
                         "interrupt polls (%.0fs) — force-reaping detached "
@@ -1469,9 +1478,7 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
         if reschedule_delay is not None:
             _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay)
             return
-        if session is not None and session.get(
-            "_client_gone_interrupt_requested"
-        ):
+        if session is not None:
             logger.info("client_gone sid=%s action=reap", sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
@@ -9002,6 +9009,7 @@ def _init_session(
     session_db=None,
     source: str | None = None,
     profile_home: str | None = None,
+    continue_on_disconnect: bool = False,
 ):
     now = time.time()
     with _sessions_lock:
@@ -9022,6 +9030,7 @@ def _init_session(
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
             "source": _resolve_session_source(source),
+            "continue_on_disconnect": continue_on_disconnect,
             "tool_progress_mode": _load_tool_progress_mode(),
             "edit_snapshots": {},
             "tool_started_at": {},
@@ -10417,6 +10426,7 @@ def _deferred_session_record(
     lease,
     source: str = "tui",
     close_on_disconnect: bool = False,
+    continue_on_disconnect: bool = False,
     display_history_prefix: list | None = None,
     profile_home: Path | None = None,
     lazy: bool = False,
@@ -10433,6 +10443,7 @@ def _deferred_session_record(
         "agent_ready": threading.Event(),
         "attached_images": [],
         "close_on_disconnect": close_on_disconnect,
+        "continue_on_disconnect": continue_on_disconnect,
         "active_session_lease": lease,
         "cols": cols,
         "created_at": now,

@@ -626,7 +626,7 @@ describe("NativeChatPage", () => {
     await act(async () => gateway.instance?.stateHandler?.("open"));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(gateway.instance?.requests.map(({ method }) => method)).toContain("session.activate");
-    expect(gateway.instance?.requests.find(({ method }) => method === "session.activate")?.params).toEqual({ session_id: "session-1", omit_messages: false });
+    expect(gateway.instance?.requests.find(({ method }) => method === "session.activate")?.params).toEqual({ session_id: "session-1", omit_messages: false, continue_on_disconnect: true });
   });
   it("does not duplicate a live assistant transcript when reconnect snapshot catches up", async () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
@@ -676,7 +676,7 @@ describe("NativeChatPage", () => {
     await act(async () => root.render(createElement(MemoryRouter, null, createElement(NativeChatPage))));
     expect(gateway.instance?.requests[0]).toEqual({
       method: "session.create",
-      params: { close_on_disconnect: true, source: "dashboard", profile: "thai-profile" },
+      params: { close_on_disconnect: false, continue_on_disconnect: true, source: "dashboard", profile: "thai-profile" },
     });
     await act(async () => {
       gateway.instance?.emit("message.start");
@@ -733,7 +733,7 @@ describe("NativeChatPage", () => {
   it("resumes the durable URL session and displays its transcript snapshot", async () => {
     await act(async () => root.render(createElement(MemoryRouter, { initialEntries: ["/chat?resume=durable-1"] }, createElement(NativeChatPage))));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(gateway.instance?.requests[0]).toMatchObject({ method: "session.activate", params: { session_id: "durable-1", profile: "thai-profile" } });
+    expect(gateway.instance?.requests[0]).toMatchObject({ method: "session.activate", params: { session_id: "durable-1", continue_on_disconnect: true, profile: "thai-profile" } });
     expect(host.textContent).toContain("previous prompt");
     expect(host.textContent).toContain("previous answer");
   });
@@ -791,14 +791,14 @@ describe("NativeChatPage", () => {
 
   it("builds Adaptive payloads without model/provider/reasoning overrides", () => {
     expect(nativeChatSessionCreateParams("thai-profile", { reasoning: "auto" })).toEqual({
-      close_on_disconnect: true, source: "dashboard", profile: "thai-profile",
+      close_on_disconnect: false, continue_on_disconnect: true, source: "dashboard", profile: "thai-profile",
     });
   });
 
   it("builds explicit model and reasoning payloads", () => {
     const choices = nativeChatModelChoices({ providers: [{ slug: "openai-codex", models: ["gpt-5.6-luna"] }] });
     expect(nativeChatSessionCreateParams(undefined, { model: choices[0], reasoning: "high" })).toEqual({
-      close_on_disconnect: true, source: "dashboard", model: "gpt-5.6-luna", provider: "openai-codex", reasoning_effort: "high",
+      close_on_disconnect: false, continue_on_disconnect: true, source: "dashboard", model: "gpt-5.6-luna", provider: "openai-codex", reasoning_effort: "high",
     });
   });
 

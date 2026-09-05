@@ -81,6 +81,7 @@ def _(rid, params: dict) -> dict:
             "agent_ready": ready,
             "attached_images": [],
             "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
+            "continue_on_disconnect": is_truthy_value(params.get("continue_on_disconnect", False)),
             "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
@@ -469,6 +470,10 @@ def _(rid, params: dict) -> dict:
                         with live.setdefault("history_lock", threading.Lock()):
                             live["transport"] = transport
                             live.setdefault("viewers", {})[transport] = time.time()
+                    if is_truthy_value(params.get("continue_on_disconnect", False)):
+                        with _sessions_lock:
+                            if _sessions.get(live_sid) is live:
+                                live["continue_on_disconnect"] = True
                     _cancel_ws_orphan_reap(live_sid)
                     history = live.get("history") or []
                     return _ok(
@@ -637,6 +642,8 @@ def _(rid, params: dict) -> dict:
                     return _err(rid, 4007, "session no longer live; retry resume")
                 if session.get("_client_gone_interrupt_requested"):
                     return _err(rid, 4009, "session disconnect interrupt settling")
+                if is_truthy_value(params.get("continue_on_disconnect", False)):
+                    session["continue_on_disconnect"] = True
                 # This resume reattaches the live record: cancel any pending
                 # ws-orphan reap timer armed while the client was detached
                 # (storm killer — _live_session_payload's rebind also cancels,
@@ -686,6 +693,7 @@ def _(rid, params: dict) -> dict:
                 lease=lease,
                 source=source,
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                 profile_home=profile_home,
                 lazy=True,
                 todo_state=_todo_state_from_history(history),
@@ -757,6 +765,7 @@ def _(rid, params: dict) -> dict:
                 lease=lease,
                 source=source,
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
@@ -855,6 +864,7 @@ def _(rid, params: dict) -> dict:
                 lease=lease,
                 source=source,
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
+                continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                 display_history_prefix=prefix,
                 profile_home=profile_home,
                 model_override=overrides.get("model_override"),
@@ -994,6 +1004,7 @@ def _(rid, params: dict) -> dict:
                         cwd=profile_resume_cwd,
                         session_db=db,
                         source=source,
+                        continue_on_disconnect=is_truthy_value(params.get("continue_on_disconnect", False)),
                     )
                     # Ownership TRANSFER — the registered session's agent now
                     # holds this handle for its whole life, and _init_session
@@ -1244,6 +1255,11 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     assert session is not None
+
+    if is_truthy_value(params.get("continue_on_disconnect", False)):
+        with _sessions_lock:
+            if _sessions.get(sid) is session:
+                session["continue_on_disconnect"] = True
 
     return _ok(
         rid,

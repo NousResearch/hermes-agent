@@ -619,9 +619,9 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         try {
           let snapshot: ResumeResponse;
           try {
-            snapshot = await gateway.request<ResumeResponse>("session.activate", { session_id: sid, omit_messages: false });
+            snapshot = await gateway.request<ResumeResponse>("session.activate", { session_id: sid, omit_messages: false, continue_on_disconnect: true });
           } catch {
-            snapshot = await gateway.request<ResumeResponse>("session.resume", { session_id: durableSessionIdRef.current ?? sid, omit_messages: false, ...(profile ? { profile } : {}) });
+            snapshot = await gateway.request<ResumeResponse>("session.resume", { session_id: durableSessionIdRef.current ?? sid, omit_messages: false, continue_on_disconnect: true, ...(profile ? { profile } : {}) });
           }
           applySessionSnapshot(snapshot);
         } catch (reason: unknown) {
@@ -738,9 +738,9 @@ export default function NativeChatPage({ onOpenNavigation }: NativeChatPageProps
         let response: ResumeResponse;
         if (resumeParam) {
           try {
-            response = await gateway.request<ResumeResponse>("session.activate", { session_id: resumeParam, ...(profile ? { profile } : {}) });
+            response = await gateway.request<ResumeResponse>("session.activate", { session_id: resumeParam, continue_on_disconnect: true, ...(profile ? { profile } : {}) });
           } catch {
-            response = await gateway.request<ResumeResponse>("session.resume", { session_id: resumeParam, ...(profile ? { profile } : {}) });
+            response = await gateway.request<ResumeResponse>("session.resume", { session_id: resumeParam, continue_on_disconnect: true, ...(profile ? { profile } : {}) });
           }
         } else {
           response = await gateway.request<ResumeResponse>("session.create", {

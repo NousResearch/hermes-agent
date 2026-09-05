@@ -291,7 +291,26 @@ class AIAgent(
         try:
             from hermes_state_registry import acquire
 
-            self._session_db = acquire()
+            # Bind the EXPLICIT default-root store handle here, at the earliest
+            # open site -- NOT the lazy no-path default (acquire() -> _default_db_path()),
+            # which resolves against the context-local HERMES_HOME at first open. On
+            # a reused compute-host executor a residual foreign home override
+            # would otherwise bind this DEFAULT session's store (cached on the
+            # agent below) to another profile's state.db while its label stays
+            # 'default'. Pinning the default root makes store and label one
+            # fact. Named-profile agents receive their handle via session_db=
+            # at construction, so self._session_db is already set and we never
+            # reach here for them.
+            try:
+                from hermes_state import default_root_db_path
+
+                default_db_path = default_root_db_path()
+            except Exception:
+                # No resolvable default root (hermes_state stubbed in tests) -> plain
+                # acquire(), the pre-#102146 behavior. Keeps recall usable instead of
+                # aborting to None just because the root path couldn't be derived.
+                default_db_path = None
+            self._session_db = acquire(default_db_path)
             self._owns_session_db = True  # we opened it, so close() must release it
             return self._session_db
         except Exception:
@@ -323,8 +342,25 @@ class AIAgent(
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
             try:
-                from hermes_cli.profiles import get_active_profile_name
-                profile_for_session = get_active_profile_name()
+                # Derive the label from the BOUND store handle first, not the
+                # ambient process. _own_profile_name() reads the store's db_path,
+                # so for an in-tree store the label and the store are ONE fact
+                # and cannot diverge: a DEFAULT session bound to <root>/state.db
+                # stamps 'default'; a named-profile store stamps its own owner.
+                # This is the label side of the #99222/#102146 fix — the old
+                # get_active_profile_name() resolved independently of the store
+                # handle (at a possibly-clean instant while the store had
+                # followed a residual foreign home).
+                #
+                # An OUT-OF-TREE store (explicit db_path in tests, degraded
+                # JSONL fallback) has no derivable owner and returns None; fall
+                # back to the ambient profile so a gateway-routed session still
+                # records its routing identity (the degraded-db lazy create is
+                # the ONLY durable write of that identity — see #102146 CI).
+                profile_for_session = getattr(self._session_db, "_own_profile_name", lambda: None)()
+                if not profile_for_session:
+                    from hermes_cli.profiles import get_active_profile_name
+                    profile_for_session = get_active_profile_name()
             except Exception:
                 # Persist the profile name EXPLICITLY, including "default". NULL used to stand in for the
                 # default profile, but the #94724 legacy-owner backfill already stamps literal "default"

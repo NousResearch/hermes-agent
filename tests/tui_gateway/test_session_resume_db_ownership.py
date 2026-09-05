@@ -121,17 +121,25 @@ def test_resume_closes_profile_db_when_session_not_found(profile_dbs):
 
     The stranded-session adoption fallback (#93296 follow-up) may lazily
     construct the SHARED launch handle via ``_get_db()`` while probing the
-    default store for a donor row; that handle carries ``db_path=None`` and
-    is never closed by design (see module docstring). Only the dedicated
-    profile-scoped open (``db_path=<profile>/state.db``) is the caller's to
-    close, so the leak assertion filters to path-scoped opens.
+    default store for a donor row; that handle is bound to the default-root
+    ``state.db`` and is never closed by design (see module docstring). Only the
+    dedicated profile-scoped open (``db_path=<profile>/state.db``) is the
+    caller's to close, so the leak assertion filters to the work-profile open.
     """
     resp = _resume(session_id="missing", profile="work")
 
     assert resp["error"]["code"] == 4007
-    scoped = [db for db in profile_dbs if db.db_path is not None]
+    scoped = [
+        db
+        for db in profile_dbs
+        if db.db_path is not None and str(db.db_path).endswith("work/state.db")
+    ]
     assert len(scoped) == 1
     assert scoped[0].closed == 1
+    # The shared launch/default-root handle (if opened) is never closed.
+    for db in profile_dbs:
+        if db not in scoped:
+            assert db.closed == 0
 
 
 def test_deferred_desktop_resume_keeps_stored_workspace_provenance(

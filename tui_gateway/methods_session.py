@@ -1905,7 +1905,17 @@ def _(rid, params: dict, session: dict) -> dict:
             title = params.get("name", "") or _branch_title(db, old_key)
             home = session.get("profile_home")
             _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
-                            profile_name=Path(home).name if home else _current_profile_name(),
+                            # The branch stays on its parent's profile. Derive the label from
+                            # the bound store handle (db is the parent's profile-scoped
+                            # state.db, default-root-pinned for the launch profile) so the
+                            # label is the SAME fact as the store and cannot diverge from it
+                            # on a reused compute-host executor under a residual foreign home
+                            # (the fifth profile seam). Explicit stamp (not just the
+                            # parent-backfill) so it holds even when the parent row predates
+                            # the profile_name column; launch-profile branches are stamped
+                            # 'default' too, since NULL rows drop out of profile-keyed sidebar
+                            # matching and deep-link resolution (#99222).
+                            profile_name=db._own_profile_name(),
                             copy_fields=_BRANCH_COPY_FIELDS)
         except Exception as e:
             return _err(rid, 5008, f"branch failed: {e}")

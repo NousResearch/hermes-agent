@@ -375,8 +375,16 @@ def _get_db():
     global _db, _db_error
     if _db is None:
         from hermes_state_registry import acquire
+        from hermes_state import default_root_db_path
         try:
-            _db, _db_error = acquire(), None
+            # Bind the EXPLICIT default-root state.db, NOT the lazy no-path
+            # acquire() which resolves against the context-local HERMES_HOME at
+            # first call. This process-global memo is reused by every default
+            # build/persist site (_ensure_session_db_row, _init_session), so a
+            # first call under a residual foreign home used to poison the memo
+            # -- pinning it to the default root closes that cross-profile
+            # read/write vector.
+            _db, _db_error = acquire(default_root_db_path()), None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning("TUI session store unavailable — continuing without state.db features: %s", exc)

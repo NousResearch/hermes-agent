@@ -168,6 +168,24 @@ _READ_OPEN_RETRY_SECONDS = 60.0
 _READ_ONLY_IOERR_RETRY_ATTEMPTS, _READ_ONLY_IOERR_RETRY_BACKOFF_S = 3, 0.05
 
 
+def default_root_db_path() -> Path:
+    """The DEFAULT profile's ``state.db``, pinned to the platform default root.
+
+    ``get_default_hermes_root()`` reads ``HERMES_HOME`` / the native home
+    directly (``hermes_constants.py:183``) rather than the context-local
+    ``_HERMES_HOME_OVERRIDE`` ContextVar, so this resolves to the SAME
+    ``<root>/state.db`` regardless of any residual per-turn home override
+    active on a reused executor. Default build/persist sites bind THIS explicit
+    handle instead of the lazy no-path :func:`_default_db_path`, so a DEFAULT
+    session's store can no longer follow an ambient foreign home. Written once
+    and reused at every default build site (never duplicate the expression);
+    import-safe (stdlib + ``hermes_constants`` only).
+    """
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "state.db"
+
+
 def _default_db_path() -> Path:
     """Default state DB path at CALL time: a re-pointed ``DEFAULT_DB_PATH`` wins, else
     ``get_hermes_home()`` is resolved fresh (a runtime HERMES_HOME redirect works regardless of import)."""

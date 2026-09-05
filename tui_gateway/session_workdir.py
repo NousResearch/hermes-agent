@@ -271,11 +271,16 @@ def _ensure_session_db_row(session: dict) -> bool:
                 parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
                 # Self-describing rows: aggregators merging several profile DBs can't rely on which file a row came
                 # from; a NULL is only repaired by the one-shot backfill.
-                # Stamp the launch profile explicitly instead of leaving NULL — NULL is exactly what the
-                # #94724 legacy-owner backfill exists to repair, and rows minted AFTER that one-shot
-                # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
-                # and deep links can't resolve them (#99222).
-                profile_name=Path(profile_home).name if profile_home else _current_profile_name())
+                # Stamp the store's OWN profile (derived from its db_path) rather than _current_profile_name() (the
+                # serving process's launch profile), so store and label are one fact and cannot diverge -- a
+                # default-root store stamps 'default', a profile store stamps its own name. An out-of-tree store
+                # (explicit db_path / degraded fallback / test FakeDB) has no derivable owner and returns None;
+                # fall back to the serving profile so the row still carries a routing label. NULL is exactly what
+                # the #94724 legacy-owner backfill exists to repair, and rows minted AFTER that one-shot backfill
+                # ran stayed NULL forever: profile-keyed matching then drops them from the sidebar and deep links
+                # can't resolve them (#99222).
+                profile_name=(getattr(db, "_own_profile_name", lambda: None)()
+                              or (Path(profile_home).name if profile_home else _current_profile_name())))
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:

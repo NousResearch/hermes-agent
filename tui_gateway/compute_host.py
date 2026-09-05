@@ -282,13 +282,21 @@ class ComputeHost:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
-                from hermes_state_registry import acquire
                 home_token = set_hermes_home_override(profile_home)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-                # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
-                # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
-                session_db = acquire(Path(profile_home) / "state.db")
-                owns_db = True
+            # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
+            # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
+            # BOTH branches flow through this single owns_db/_transfer/finally bracket,
+            # differing only in the path arg: a named profile binds <profile_home>/state.db,
+            # a DEFAULT session binds the EXPLICIT default-root state.db (never the lazy
+            # no-path open that would follow this reused worker's residual ambient home).
+            # Lifting the open out of the if-guard keeps the refcount/close accounting single
+            # and avoids the leak/double-close a second bracket would cause.
+            from hermes_state_registry import acquire
+            from hermes_state import default_root_db_path
+            db_path = Path(profile_home) / "state.db" if profile_home else default_root_db_path()
+            session_db = acquire(db_path)
+            owns_db = True
             agent = server._make_agent(
                 sid, key, session_id=key, model_override=frame.get("model_override"),
                 reasoning_config_override=frame.get("reasoning_config_override"),

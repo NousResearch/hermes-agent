@@ -269,6 +269,33 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('hatch')
   },
   {
+    name: '/reload-mcp',
+    description: 'Reload MCP servers in the live session [now|always]',
+    aliases: ['/reload_mcp'],
+    surface: rpc(
+      'reload.mcp',
+      ctx => {
+        // Mirror the TUI handler (ui-tui ops.ts): `now`/`always` skip the
+        // confirmation gate; `always` also persists the opt-out.
+        const a = ctx.arg.trim().toLowerCase()
+        const params: Record<string, unknown> = { session_id: ctx.sessionId || null }
+
+        if (a === 'now' || a === 'approve' || a === 'once' || a === 'yes') {
+          params.confirm = true
+        } else if (a === 'always') {
+          params.confirm = true
+          params.always = true
+        }
+
+        return params
+      },
+      // A full reload reconnects every MCP server; the default 30s gateway
+      // timeout is too tight for a cold stdio fleet.
+      120_000
+    ),
+    argumentMode: 'options'
+  },
+  {
     name: '/save',
     description: 'Save the current transcript to JSON',
     surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId }))
@@ -324,8 +351,6 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
     '/insights',
     '/kanban',
     '/reasoning',
-    '/reload-mcp',
-    '/reload_mcp',
     '/reload-skills',
     '/reload_skills'
   ],

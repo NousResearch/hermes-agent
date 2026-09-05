@@ -1,3 +1,4 @@
+import type { Translations } from '@/i18n'
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
 export interface CommandsCatalogSection {
@@ -45,6 +46,12 @@ export interface DesktopThemeCommandOption {
   label: string
   name: string
 }
+
+type DesktopSlashCatalogCopy = Pick<Translations['desktop']['slashCommands'], 'categories' | 'descriptions' | 'usage'>
+
+type DesktopSlashThemeCopy = Pick<Translations['desktop']['slashCommands'], 'current' | 'skinList' | 'skinNext'>
+
+type DesktopSlashLabelCopy = Pick<Translations['desktop']['slashCommands'], 'categories' | 'groups'>
 
 /**
  * Local client action a command resolves to. Each id maps to exactly one
@@ -585,8 +592,27 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
   return null
 }
 
-export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+export function desktopSlashDescription(command: string, fallback = '', copy?: DesktopSlashCatalogCopy): string {
+  const canonical = canonicalDesktopSlashCommand(command)
+  const desktopDescription = SPEC_BY_NAME.get(canonical)?.description
+  const raw = desktopDescription || fallback
+  const translated = copy?.descriptions[canonical]
+
+  // The backend owns usage syntax. Always read it from the backend fallback,
+  // even when Desktop supplies different human-facing prose for the command.
+  // This keeps flags, placeholders, command names, paths, and $EDITOR exact.
+  const usage = fallback.match(/\s+\(usage:\s+(.+)\)$/s)?.[1]
+
+  if (!translated) {
+    return usage && desktopDescription ? `${raw} (usage: ${usage})` : raw
+  }
+
+  return usage ? `${translated}${copy.usage(usage)}` : translated
+}
+
+/** Resolve a raw backend category/completion-group id at the render boundary. */
+export function desktopSlashGroupLabel(group: string, copy?: DesktopSlashLabelCopy): string {
+  return copy?.groups[group] ?? copy?.categories[group] ?? group
 }
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {
@@ -596,7 +622,8 @@ export function desktopSlashCommandArgumentMode(command: string): DesktopSlashAr
 export function desktopSkinSlashCompletions(
   themes: DesktopThemeCommandOption[],
   activeThemeName: string,
-  argPrefix: string
+  argPrefix: string,
+  copy?: DesktopSlashThemeCopy
 ): DesktopSlashCompletion[] {
   const prefix = argPrefix.trim().toLowerCase()
 
@@ -604,17 +631,17 @@ export function desktopSkinSlashCompletions(
     {
       text: '/skin list',
       display: '/skin list',
-      meta: 'Show available desktop themes'
+      meta: copy?.skinList ?? 'Show available desktop themes'
     },
     {
       text: '/skin next',
       display: '/skin next',
-      meta: 'Cycle to the next desktop theme'
+      meta: copy?.skinNext ?? 'Cycle to the next desktop theme'
     },
     ...themes.map(theme => ({
       text: `/skin ${theme.name}`,
       display: `/skin ${theme.name}`,
-      meta: `${theme.label}${theme.name === activeThemeName ? ' (current)' : ''} - ${theme.description}`
+      meta: `${theme.label}${theme.name === activeThemeName ? ` (${copy?.current ?? 'current'})` : ''} - ${theme.description}`
     }))
   ]
 
@@ -662,7 +689,10 @@ export function rankSkillCommands<T extends { text: string }>(
   return kept.sort((a, b) => usageOf(b) - usageOf(a) || a.text.localeCompare(b.text))
 }
 
-export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): CommandsCatalogLike {
+export function filterDesktopCommandsCatalog(
+  catalog: CommandsCatalogLike,
+  copy?: DesktopSlashCatalogCopy
+): CommandsCatalogLike {
   rememberDesktopCommandsCatalog(catalog)
 
   const categories = catalog.categories
@@ -670,13 +700,15 @@ export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): Comm
       ...section,
       pairs: section.pairs
         .filter(([command]) => isDesktopSlashSuggestion(command))
-        .map(([command, description]) => [command, desktopSlashDescription(command, description)] as [string, string])
+        .map(
+          ([command, description]) => [command, desktopSlashDescription(command, description, copy)] as [string, string]
+        )
     }))
     .filter(section => section.pairs.length > 0)
 
   const pairs = catalog.pairs
     ?.filter(([command]) => isDesktopSlashSuggestion(command))
-    .map(([command, description]) => [command, desktopSlashDescription(command, description)] as [string, string])
+    .map(([command, description]) => [command, desktopSlashDescription(command, description, copy)] as [string, string])
 
   // Recount skill commands from the filtered output so /help's footer reflects
   // what the user actually sees. Backend's skill_count includes commands the

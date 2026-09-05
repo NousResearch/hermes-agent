@@ -3089,6 +3089,20 @@ export interface Translations {
     desktopCommands: string
     skillCommandsAvailable: (count: number) => string
     warningLine: (message: string) => string
+    slashCommands: {
+      /** Backend category ids to localized display labels. Unknown ids pass through unchanged. */
+      categories: Record<string, string>
+      /** Built-in command token to localized prose. Extension descriptions are never read from this map. */
+      descriptions: Record<string, string>
+      /** Internal completion-group ids to localized display labels. */
+      groups: Record<string, string>
+      usage: (syntax: string) => string
+      noCommands: string
+      browseAllSessions: string
+      skinList: string
+      skinNext: string
+      current: string
+    }
     yoloArmed: string
     yoloOff: string
     yoloSystem: (active: boolean) => string

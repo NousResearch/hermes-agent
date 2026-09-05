@@ -3586,6 +3586,23 @@ export const en: Translations = {
     desktopCommands: 'Desktop commands',
     skillCommandsAvailable: count => `${count} skill commands available.`,
     warningLine: message => `warning: ${message}`,
+    slashCommands: {
+      categories: {},
+      descriptions: {},
+      groups: {
+        Commands: 'Commands',
+        Skills: 'Skills',
+        Options: 'Options',
+        Themes: 'Themes',
+        Sessions: 'Sessions'
+      },
+      usage: syntax => ` (usage: ${syntax})`,
+      noCommands: 'No desktop commands available.',
+      browseAllSessions: 'Browse all sessions…',
+      skinList: 'Show available desktop themes',
+      skinNext: 'Cycle to the next desktop theme',
+      current: 'current'
+    },
     yoloArmed: 'YOLO armed for this chat',
     yoloOff: 'YOLO off',
     yoloSystem: active => `YOLO ${active ? 'on' : 'off'} for this session`,

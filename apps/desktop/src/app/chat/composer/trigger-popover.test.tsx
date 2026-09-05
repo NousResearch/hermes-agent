@@ -25,12 +25,12 @@ function renderPopover(kind: '@' | '/', loading = false) {
   return { ...rendered, onHover, onPick }
 }
 
-function slashItem(command: string) {
+function slashItem(command: string, group = 'Skills', meta = '') {
   return {
     id: command,
     type: 'slash',
     label: command.slice(1),
-    metadata: { command, display: command, group: 'Skills', meta: '', rawText: command }
+    metadata: { command, display: command, group, meta, rawText: command }
   }
 }
 
@@ -86,6 +86,74 @@ describe('ComposerTriggerPopover i18n', () => {
 
     expect(screen.getByText('没有匹配项。')).toBeTruthy()
     expect(container.textContent).toContain('/help')
+  })
+
+  it('translates slash group headings without changing their internal ids', () => {
+    const item = slashItem('/work')
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh-hant">
+        <ComposerTriggerPopover
+          activeIndex={0}
+          items={[item]}
+          kind="/"
+          loading={false}
+          onHover={vi.fn()}
+          onPick={vi.fn()}
+        />
+      </I18nProvider>
+    )
+
+    expect(screen.getByText('技能')).toBeTruthy()
+    expect(item.metadata.group).toBe('Skills')
+  })
+
+  it('translates built-in prose at render time and preserves extension copy', () => {
+    const builtIn = slashItem('/new', 'Session', 'Start a new desktop chat')
+    const extension = slashItem('/work', 'Skills', 'Kick off a task in a fresh worktree')
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh-hant">
+        <ComposerTriggerPopover
+          activeIndex={0}
+          items={[builtIn, extension]}
+          kind="/"
+          loading={false}
+          onHover={vi.fn()}
+          onPick={vi.fn()}
+        />
+      </I18nProvider>
+    )
+
+    expect(screen.getByText('工作階段')).toBeTruthy()
+    expect(screen.getByText('開始新的桌面聊天')).toBeTruthy()
+    expect(screen.getByText('技能')).toBeTruthy()
+    expect(screen.getByText('Kick off a task in a fresh worktree')).toBeTruthy()
+    expect(builtIn.metadata).toMatchObject({ group: 'Session', meta: 'Start a new desktop chat' })
+  })
+
+  it('translates built-in prose once while preserving exact usage syntax', () => {
+    const item = slashItem(
+      '/save',
+      'Commands',
+      'Save the current transcript to JSON (usage: /save <json|md|html> [filename] [redact])'
+    )
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh-hant">
+        <ComposerTriggerPopover
+          activeIndex={0}
+          items={[item]}
+          kind="/"
+          loading={false}
+          onHover={vi.fn()}
+          onPick={vi.fn()}
+        />
+      </I18nProvider>
+    )
+
+    expect(screen.getByText('將目前對話記錄儲存為 JSON（用法：/save <json|md|html> [filename] [redact]）')).toBeTruthy()
+    expect(item.metadata.meta).toContain('(usage: /save <json|md|html> [filename] [redact])')
   })
 })
 

@@ -87,6 +87,7 @@ def test_fallback_entry_context_length_overrides_model_metadata(mock_ctx_len, mo
         "context_length": 131_072,
     }
     agent._fallback_chain = [agent._fallback_model]
+    agent._config_context_length = 240_000  # primary-only override; must not leak to fallback/UI state
 
     fb_client = MagicMock()
     fb_client.base_url = "http://127.0.0.1:8092/v1"
@@ -98,6 +99,8 @@ def test_fallback_entry_context_length_overrides_model_metadata(mock_ctx_len, mo
 
     assert agent._try_activate_fallback() is True
 
-    assert agent._config_context_length == 131_072
+    # The deployment override is compressor-local; it must not leak into
+    # cross-turn UI preflight state.
+    assert agent._config_context_length is None
     assert agent.context_compressor.context_length == 131_072
     assert mock_ctx_len.call_args.kwargs["config_context_length"] == 131_072

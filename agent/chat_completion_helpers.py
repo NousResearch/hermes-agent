@@ -2085,11 +2085,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
 
-        # The primary's config override must never follow a fallback. A fallback
-        # can instead carry its own deployment-specific context window (for
-        # example, a locally hosted model started below its native maximum).
+        # The primary's config override must never follow a fallback. Keep the
+        # fallback-only deployment window local to the compressor update below:
+        # this attribute is also read by UI preflight paths between turns.
         fallback_context_length = _fallback_context_length(fb)
-        agent._config_context_length = fallback_context_length
+        agent._config_context_length = None
         agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
         agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
         # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.

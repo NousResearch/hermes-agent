@@ -13,6 +13,7 @@ grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
 from gateway import status
+from hermes_cli.config import DEFAULT_CONFIG
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -1684,6 +1685,60 @@ class TestProfileArg:
             "run",
             "--external-supervisor",
         ]
+
+    def test_launchd_plist_includes_configured_service_wrapper(self, tmp_path, monkeypatch):
+        """Configured wrappers should prefix launchd ProgramArguments."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        wrapper = tmp_path / "bin" / "gateway-wrapper"
+        wrapper.parent.mkdir()
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": str(wrapper)}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+        program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
+
+        # The configured preflight remains the outer executable while upstream's timestamping
+        # and external-supervisor contract stays intact inside it.
+        assert program_args[0] == str(wrapper)
+        assert program_args[1:4] == [
+            gateway_cli.get_python_path(),
+            "-m",
+            "hermes_cli.stderr_timestamp",
+        ]
+        assert "gateway" in program_args
+        assert "run" in program_args
+        assert "--external-supervisor" in program_args
+        assert "--replace" not in program_args
+
+    def test_launchd_service_wrapper_survives_staleness_comparison(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        wrapper = tmp_path / "gateway-wrapper"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": str(wrapper)}},
+        )
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+    def test_gateway_service_wrapper_has_a_registered_default(self):
+        assert DEFAULT_CONFIG["gateway"]["service_wrapper"] == ""
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

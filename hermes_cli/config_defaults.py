@@ -1860,6 +1860,10 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+        # Optional absolute executable used to wrap launchd's supervised gateway command. The
+        # wrapper receives the normal command as argv and should finish with ``exec "$@"``.
+        # Invalid, relative, or non-executable paths are ignored when generating the plist.
+        "service_wrapper": "",
         # Named-profile allowlist for multiplex mode. None = serve all; [] = default only.
         "multiplex_profile_allowlist": None,
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database

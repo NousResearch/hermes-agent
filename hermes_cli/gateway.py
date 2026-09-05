@@ -19,6 +19,8 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
+
 from hermes_cli import setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
@@ -1973,6 +1975,25 @@ def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None
     return f"--profile {name}" if name else ""
 
 
+def _configured_gateway_service_wrapper() -> str:
+    """Return the executable configured to wrap supervised gateway commands."""
+    try:
+        cfg = read_raw_config() or {}
+    except Exception:
+        return ""
+    gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else {}
+    raw = gateway_cfg.get("service_wrapper") if isinstance(gateway_cfg, dict) else ""
+    if not isinstance(raw, str):
+        return ""
+    wrapper = raw.strip()
+    if not wrapper or any(char in wrapper for char in ("\x00", "\n", "\r")):
+        return ""
+    path = Path(wrapper).expanduser()
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        return ""
+    return str(path)
+
+
 def get_service_name() -> str:
     """Systemd service name: ``hermes-gateway`` for default HERMES_HOME, ``hermes-gateway-<profile>``
     or ``-<hash>`` otherwise."""
@@ -3643,11 +3664,15 @@ def generate_launchd_plist() -> str:
     _append_node_dir_for_service(priority_dirs)
     sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
 
-    # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping stderr.
-    prog_args_xml = "\n        ".join(
-        f"<string>{part}</string>"
-        for part in _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
+    # ProgramArguments retain the upstream timestamping/external-supervisor command.  Prefix a
+    # configured wrapper so it can preflight and exec that full supervised command unchanged.
+    program_args = _timestamped_stderr_gateway_command(
+        log_dir / "gateway.error.log", external_supervisor=True
     )
+    service_wrapper = _configured_gateway_service_wrapper()
+    if service_wrapper:
+        program_args.insert(0, service_wrapper)
+    prog_args_xml = "\n        ".join(f"<string>{xml_escape(part)}</string>" for part in program_args)
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.

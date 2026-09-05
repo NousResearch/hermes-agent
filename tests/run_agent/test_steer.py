@@ -44,10 +44,155 @@ def _bare_agent() -> AIAgent:
 
 
 class TestSteerAcceptance:
-    def test_accepts_non_empty_text(self):
+    def test_rejects_text_without_a_live_delivery_window(self):
+        from tui_gateway import server
+
         agent = _bare_agent()
-        assert agent.steer("go ahead and check the logs") is True
-        assert agent._pending_steer == "go ahead and check the logs"
+
+        assert agent.steer("go ahead and check the logs") is False
+        assert agent._pending_steer is None
+        server._sessions["idle-steer"] = {"agent": agent}
+        try:
+            response = server.handle_request(
+                {
+                    "id": "request-1",
+                    "method": "command.dispatch",
+                    "params": {
+                        "name": "steer",
+                        "arg": "go ahead and check the logs",
+                        "session_id": "idle-steer",
+                    },
+                }
+            )
+        finally:
+            server._sessions.pop("idle-steer", None)
+        assert response["result"] == {
+            "type": "send",
+            "message": "go ahead and check the logs",
+        }
+        assert agent._pending_steer is None
+
+    def test_accepts_text_during_live_model_and_tool_windows(self):
+        for phase in ("model", "tools"):
+            agent = _bare_agent()
+            if phase == "model":
+                agent._model_request_active.set()
+            else:
+                agent._executing_tools = True
+
+            assert agent.steer("go ahead and check the logs") is True
+            assert agent._pending_steer == "go ahead and check the logs"
+
+    def test_tool_window_closure_wins_before_pending_commit(self):
+        agent = _bare_agent()
+        attempted = threading.Event()
+        release = threading.Event()
+        tool_started = threading.Event()
+        finish_tools = threading.Event()
+        real_lock = threading.Lock()
+
+        class GateLock:
+            def __enter__(self):
+                if threading.current_thread().name == "late-steer":
+                    attempted.set()
+                    assert release.wait(timeout=1)
+                real_lock.acquire()
+                return self
+
+            def __exit__(self, *exc_info):
+                real_lock.release()
+
+        agent._pending_steer_lock = GateLock()
+        outcome = {}
+
+        def execute_tools(*_args):
+            tool_started.set()
+            assert finish_tools.wait(timeout=1)
+            outcome["drained"] = agent._drain_pending_steer()
+
+        agent._execute_tool_calls_sequential = execute_tools
+        assistant_message = type("AssistantMessage", (), {"tool_calls": [object()]})()
+        tool_worker = threading.Thread(
+            target=lambda: agent._execute_tool_calls(assistant_message, [], "task-id")
+        )
+        tool_worker.start()
+        assert tool_started.wait(timeout=1)
+
+        steer_worker = threading.Thread(
+            name="late-steer",
+            target=lambda: outcome.setdefault("accepted", agent.steer("preserve this correction")),
+        )
+        steer_worker.start()
+        assert attempted.wait(timeout=1)
+
+        finish_tools.set()
+        tool_worker.join(timeout=1)
+        assert tool_worker.is_alive() is False
+        assert outcome["drained"] is None
+        release.set()
+        steer_worker.join(timeout=1)
+
+        assert steer_worker.is_alive() is False
+        assert outcome["accepted"] is False
+        assert agent._pending_steer is None
+
+    def test_pending_commit_before_tool_window_closure_is_delivered(self):
+        agent = _bare_agent()
+        closure_attempted = threading.Event()
+        release_closure = threading.Event()
+        inner_drained = threading.Event()
+        real_lock = threading.Lock()
+        closure_gated = False
+
+        class GateLock:
+            def __enter__(self):
+                nonlocal closure_gated
+                if (
+                    threading.current_thread().name == "tool-worker"
+                    and inner_drained.is_set()
+                    and not closure_gated
+                ):
+                    closure_gated = True
+                    closure_attempted.set()
+                    assert release_closure.wait(timeout=1)
+                real_lock.acquire()
+                return self
+
+            def __exit__(self, *exc_info):
+                real_lock.release()
+
+        agent._pending_steer_lock = GateLock()
+        messages = []
+        outcome = {}
+
+        def execute_tools(*_args):
+            messages.append(
+                {"role": "tool", "content": "tool output", "tool_call_id": "call-1"}
+            )
+            outcome["inner_drained"] = agent._drain_pending_steer()
+            inner_drained.set()
+
+        agent._execute_tool_calls_sequential = execute_tools
+        assistant_message = type("AssistantMessage", (), {"tool_calls": [object()]})()
+        tool_worker = threading.Thread(
+            name="tool-worker",
+            target=lambda: agent._execute_tool_calls(
+                assistant_message, messages, "task-id"
+            ),
+        )
+        tool_worker.start()
+        assert closure_attempted.wait(timeout=1)
+
+        outcome["accepted"] = agent.steer("late correction")
+        release_closure.set()
+        tool_worker.join(timeout=1)
+
+        assert tool_worker.is_alive() is False
+        assert outcome == {"inner_drained": None, "accepted": True}
+        assert messages[-1]["content"] == (
+            "tool output" + format_steer_marker("late correction")
+        )
+        assert agent._pending_steer is None
 
 
 
@@ -58,6 +203,7 @@ class TestSteerAcceptance:
 class TestSteerDrain:
     def test_drain_returns_and_clears(self):
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("hello")
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
@@ -488,6 +634,7 @@ class TestEmptyHiddenAssistantRehealRegression:
 class TestSteerInjection:
     def test_appends_to_last_tool_result(self):
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("please also check auth.log")
         messages = [
             {"role": "user", "content": "what's in /var/log?"},
@@ -522,6 +669,7 @@ class TestSteerInjection:
         rewrites existing tool content, never the message-role sequence.
         """
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("stop after next step")
         messages = [{"role": "tool", "content": "x", "tool_call_id": "1"}]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
@@ -533,6 +681,7 @@ class TestSteerInjection:
         """Anthropic-style list content should be preserved, with the steer
         appended as a text block."""
         agent = _bare_agent()
+        agent._executing_tools = True
         agent.steer("extra note")
         original_blocks = [{"type": "text", "text": "existing output"}]
         messages = [
@@ -551,6 +700,7 @@ class TestSteerInjection:
 class TestSteerThreadSafety:
     def test_concurrent_steer_calls_preserve_all_text(self):
         agent = _bare_agent()
+        agent._executing_tools = True
         N = 200
 
         def worker(idx: int) -> None:
@@ -584,6 +734,7 @@ class TestSteerClearedOnInterrupt:
         agent._tool_worker_threads = None
         agent._tool_worker_threads_lock = None
 
+        agent._executing_tools = True
         agent.steer("will be dropped")
         agent._pending_redirect = "also drop this"
         assert agent._pending_steer == "will be dropped"
@@ -613,6 +764,7 @@ class TestPreApiCallSteerDrain:
             {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
         ]
         # Steer arrives during API call (set after tool execution)
+        agent._model_request_active.set()
         agent.steer("focus on error handling")
         # Simulate what the pre-API-call drain does:
         _pre_api_steer = agent._drain_pending_steer()
@@ -633,6 +785,7 @@ class TestPreApiCallSteerDrain:
         messages = [
             {"role": "user", "content": "hello"},
         ]
+        agent._model_request_active.set()
         agent.steer("early steer")
         _pre_api_steer = agent._drain_pending_steer()
         assert _pre_api_steer == "early steer"

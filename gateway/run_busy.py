@@ -880,7 +880,7 @@ class GatewayBusySessionMixin:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return f"⚠️ Steer failed: {exc}"
         if not accepted:
-            return "Steer rejected (empty payload)."
+            return _queue_fallback("No live delivery window; /steer queued for the next turn.")
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
 

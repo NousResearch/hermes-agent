@@ -454,17 +454,30 @@ def _safe_text(text) -> str:
     return text if text.strip() else _EMPTY_TEXT_PLACEHOLDER
 
 
-def _image_block_from_data_url(url: str) -> Dict:
-    """``data:<mime>;base64,...`` → Converse image block with RAW bytes (boto3 base64-encodes on the
-    wire; passing the string through double-encodes and Bedrock rejects it)."""
-    header, _, data = url.partition(",")
-    media_type = (header[5:].split(";")[0] if header.startswith("data:") else "") or "image/jpeg"
+def _converse_image_block(media_type, data: str) -> Dict:
+    """``(media_type, base64 payload)`` → Converse image block with RAW bytes (boto3
+    base64-encodes on the wire; passing the string through double-encodes and Bedrock
+    rejects it). Shared by the ``data:`` URL form and the Anthropic-native source block."""
+    if not isinstance(media_type, str) or not media_type:
+        media_type = "image/jpeg"
     try:
         # Ref: #33317.
         raw_bytes = base64.b64decode(data)
     except Exception:
         raw_bytes = data.encode("utf-8")
     return {"image": {"format": media_type.split("/")[-1] if "/" in media_type else "jpeg", "source": {"bytes": raw_bytes}}}
+
+
+def _image_block_from_data_url(url: str) -> Dict:
+    """``data:<mime>;base64,...`` → Converse image block."""
+    header, _, data = url.partition(",")
+    return _converse_image_block(header[5:].split(";")[0] if header.startswith("data:") else "", data)
+
+
+def _image_part_url(part: dict):
+    """``image_url`` from a content part: the ``{"url": ...}`` dict form or a bare string."""
+    image_url = part.get("image_url")
+    return image_url.get("url") if isinstance(image_url, dict) else image_url
 
 
 def _convert_content_to_converse(content) -> List[Dict]:
@@ -481,6 +494,28 @@ def _convert_content_to_converse(content) -> List[Dict]:
             image_url = part.get("image_url", {})
             url = image_url.get("url", "") if isinstance(image_url, dict) else ""
             blocks.append(_image_block_from_data_url(url) if url.startswith("data:") else {"text": f"[Image: {url}]"})
+        elif isinstance(part, dict) and part.get("type", "") == "input_image":
+            # OpenAI Responses shape: ``image_url`` is a bare URL string (or, defensively,
+            # the {"url": ...} dict form). The Anthropic converter accepts it, and Bedrock
+            # frequently serves Claude models, so this converter sees it too. Without a
+            # branch the part was dropped and the model was asked about an invisible image.
+            url = _image_part_url(part)
+            if isinstance(url, str) and url.startswith("data:"):
+                blocks.append(_image_block_from_data_url(url))
+            elif isinstance(url, str) and url:
+                blocks.append({"text": f"[Image: {url}]"})
+        elif isinstance(part, dict) and part.get("type", "") == "image":
+            # Anthropic-native block: {"source": {"type": "base64", "media_type", "data"}},
+            # or a url source. Same reasoning as input_image above.
+            source = part.get("source")
+            if isinstance(source, dict):
+                data = source.get("data")
+                if source.get("type") == "base64" and isinstance(data, str) and data:
+                    blocks.append(_converse_image_block(source.get("media_type"), data))
+                else:
+                    src_url = source.get("url")
+                    if isinstance(src_url, str) and src_url:
+                        blocks.append({"text": f"[Image: {src_url}]"})
     return blocks or [dict(_PLACEHOLDER_BLOCK)]
 
 

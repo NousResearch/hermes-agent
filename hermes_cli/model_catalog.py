@@ -8,6 +8,7 @@ whose callers fall back to the in-repo lists on ``None``.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
@@ -189,7 +190,10 @@ def _spawn_catalog_swr_refresh(url: str) -> None:
             with _catalog_swr_lock:
                 _catalog_swr_inflight = False
 
-    threading.Thread(target=_refresh, daemon=True, name="model-catalog-swr").start()
+    # The picker may be serving a profile scoped by ContextVar, not process HERMES_HOME.
+    context = contextvars.copy_context()
+    threading.Thread(target=lambda: context.run(_refresh),
+                     daemon=True, name="model-catalog-swr").start()
 
 
 def _remember(data: dict[str, Any], mtime: float) -> dict[str, Any]:

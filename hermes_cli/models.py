@@ -8,6 +8,7 @@ Origin module; cohesive clusters live in siblings and are re-imported here so
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import json
 import logging
@@ -1380,7 +1381,10 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
             with _swr_refresh_lock:
                 _swr_refresh_inflight.discard(cache_key)
 
-    threading.Thread(target=_refresh, daemon=True, name=f"model-cache-swr-{cache_key}").start()
+    # Both provider resolution and the cache destination belong to the requesting profile.
+    context = contextvars.copy_context()
+    threading.Thread(target=lambda: context.run(_refresh),
+                     daemon=True, name=f"model-cache-swr-{cache_key}").start()
 
 
 def _provider_models_cache_path() -> Path:

@@ -213,6 +213,11 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     provider = _normalize_provider_alias(target_provider)
 
     if provider in _AGGREGATOR_PROVIDERS:
+        name = _strip_matching_provider_prefix(name, provider)
+        # If the input had a provider prefix (e.g. openrouter/moonshotai/kimi-k2.5),
+        # strip it first so only the vendor/model slug reaches the aggregator.
+        # Without this, _prepend_vendor sees a slash and returns the full string
+        # including the provider prefix, which aggregator APIs reject.
         return _prepend_vendor(name)
 
     # OpenCode Zen / Go are flat-namespace resellers: /v1/models returns bare IDs and inference 401s

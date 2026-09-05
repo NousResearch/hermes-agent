@@ -750,6 +750,10 @@ async function runGroupChatMemberTurnLeased(
       }
     }
 
+    if (!leaseLive()) {
+      return null
+    }
+
     if (!img || typeof img.data !== 'string' || !img.data) {
       continue
     }
@@ -792,7 +796,15 @@ async function runGroupChatMemberTurnLeased(
     ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
     : prompt
 
-  const classicTurn = await beginClassicTurn(group, member, String(stored || runtime), thread)
+  if (!leaseLive()) {
+    return null
+  }
+
+  const classicTurn: ClassicTurn | null = await beginClassicTurn(group, member, String(stored || runtime), thread)
+
+  if (!leaseLive()) {
+    return null
+  }
 
   if (classicTurn) {
     if (
@@ -805,6 +817,11 @@ async function runGroupChatMemberTurnLeased(
 
     turnText +=
       '\n\nFiles are private until you explicitly call share_group_file. Use it to share output; a pathname is not a shared file.'
+
+    if (fence) {
+      classicTurn.mailboxCommandId = fence.commandId
+    }
+
     updateGroupChat(group, r => ({
       ...r,
       stranded: {
@@ -817,16 +834,16 @@ async function runGroupChatMemberTurnLeased(
   // #93602: one-shot recovery when the runtime session was reaped between
   // minting and submitting. Tracks the runtime id the submit landed on so
   // the poll fallback below targets a live session.
-  if (!leaseLive()) {
-    return null
-  }
-
   let liveRuntime: string
 
   try {
+    if (!leaseLive()) {
+      return null
+    }
+
     liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, classicTurn, fence)
   } catch (error: any) {
-    if (error?.notAdmitted) {
+    if (error?.notAdmitted && leaseLive()) {
       updateGroupChat(group, r => {
         const stranded = { ...(r.stranded || {}) }
         delete stranded[memberKey]
@@ -902,6 +919,10 @@ async function runGroupChatMemberTurnLeased(
           throw error instanceof GroupFileDeliveryError
             ? error
             : new GroupFileDeliveryError('Export recovery is pending. Reconnect before retrying.')
+        }
+
+        if (!leaseLive()) {
+          return null
         }
 
         if (reply === null) {
@@ -983,7 +1004,7 @@ async function runGroupChatMemberTurnLeased(
 /** Post a timed-out member's finished reply into the room, if it landed
  *  after we stopped waiting. Called at the member's next turn boundary and
  *  on user sends, so long-running work is delivered late rather than lost. */
-export async function harvestStrandedGroupReply(group: string, member: GroupMember) {
+export async function harvestStrandedGroupReply(group: string, member: GroupMember, fence?: GroupCommandFence) {
   if ($groupChats.get()[group]?.stranded?.[groupMemberKey(member)] === undefined) {
     return
   }
@@ -991,21 +1012,28 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   const release = await retainGroupTurnRoute(member)
 
   try {
-    await harvestStrandedGroupReplyLeased(group, member)
+    await harvestStrandedGroupReplyLeased(group, member, fence)
   } finally {
     release()
   }
 }
 
-async function harvestStrandedGroupReplyLeased(group: string, member: GroupMember) {
+async function harvestStrandedGroupReplyLeased(group: string, member: GroupMember, fence?: GroupCommandFence) {
   const memberKey = groupMemberKey(member)
   const room = $groupChats.get()[group] || {}
   const marker = room.stranded?.[memberKey]
+  const mailboxCommandId = typeof marker === 'object' ? marker?.classicTurn?.mailboxCommandId : undefined
+
+  if (mailboxCommandId && mailboxCommandId !== fence?.commandId) {
+    return
+  }
+
   // Markers were a bare number before threads; normalize both shapes.
   const strandedBefore = typeof marker === 'number' ? marker : marker?.before
   const strandedThread = (typeof marker === 'object' && marker?.thread) || 'legacy'
+  const canCommit = () => groupCommandFenceMatches(fence, desktopRoomIdentity(group, $groupChats.get()[group]), strandedThread)
 
-  if (typeof strandedBefore !== 'number') {
+  if (typeof strandedBefore !== 'number' || !canCommit()) {
     return
   }
 
@@ -1019,6 +1047,10 @@ async function harvestStrandedGroupReplyLeased(group: string, member: GroupMembe
     })) as GroupSessionSnapshot
   } catch {
     return // source unreachable — leave the marker for the next boundary
+  }
+
+  if (!canCommit()) {
+    return
   }
 
   if (state?.inflight || state?.running) {
@@ -1078,7 +1110,7 @@ async function harvestStrandedGroupReplyLeased(group: string, member: GroupMembe
       return
     }
 
-    if (!exported) {
+    if (!exported || !canCommit()) {
       return
     }
   }
@@ -1131,7 +1163,7 @@ async function harvestStrandedGroupReplyLeased(group: string, member: GroupMembe
         if (anchor >= 0) {
           r.watermarks[`${strandedThread}::${memberKey}`] = Math.max(
             r.watermarks[`${strandedThread}::${memberKey}`] || 0,
-            anchor + 1
+            r.log[anchor + 1]?.id === exported?.entryId ? anchor + 2 : anchor + 1
           )
         }
       } else {

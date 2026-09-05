@@ -673,7 +673,7 @@ export async function runGroupChatRounds(
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
   // passed with nothing pending); 'capped' means a round/message/continuation
   // cap forced the exit — the activity feed must tell those apart.
-  let exitKind: 'capped' | 'settled' = 'settled'
+  let exitKind: 'capped' | 'failed' | 'settled' = 'settled'
 
   try {
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
@@ -691,7 +691,46 @@ export async function runGroupChatRounds(
           return
         }
 
-        await harvestStrandedGroupReply(group, member)
+        const memberKey = groupMemberKey(member)
+        const marker = $groupChats.get()[group]?.stranded?.[memberKey]
+        const commandId = typeof marker === 'object' ? marker?.classicTurn?.mailboxCommandId : undefined
+
+        if (commandId && commandId !== fence?.commandId) {
+          // A new input retires unresolved output owned by an older command.
+          updateGroupChat(group, current => ({
+            ...current,
+            desktopCommandSettled: settleDesktopCommand(group, current, commandId, 'send', {
+              room_name: group, stopped: true
+            })
+          }))
+
+          try {
+            // Persist retirement before a newer Bot turn can perform work.
+            await persistGroupChatRoomsRequired()
+          } catch {
+            exitKind = 'failed'
+
+            if (fence) {
+              fence.persistenceFailed = true
+              cancelGroupThreadForLeaseLoss(group, members, fence)
+            }
+
+            return
+          }
+
+          if (!isCurrent()) {
+            return
+          }
+
+          updateGroupChat(group, current => {
+            const stranded = { ...(current.stranded || {}) }
+            delete stranded[memberKey]
+
+            return { ...current, stranded }
+          })
+        }
+
+        await harvestStrandedGroupReply(group, member, fence)
       }
 
       const roomLog = (($groupChats.get()[group] || {}).log || []).filter(
@@ -1098,8 +1137,12 @@ export async function runGroupChatRounds(
       .map(entry => String(entry.id))
 
     if (isCurrent()) {
+      const pendingCommands = new Set(Object.values($groupChats.get()[group]?.stranded || {})
+        .map(marker => typeof marker === 'object' ? marker?.classicTurn?.mailboxCommandId : undefined)
+        .filter(Boolean))
+
       recordGroupActivity(group, {
-        kind: exitKind,
+        kind: pendingCommands.has(fence?.commandId) ? 'failed' : exitKind,
         member: null,
         thread
       })
@@ -1108,7 +1151,9 @@ export async function runGroupChatRounds(
         r.turn = null
 
         for (const id of externalIds) {
-          r.desktopCommandSettled = settleDesktopCommand(group, r, id, 'send', { room_name: group, thread_id: thread })
+          if (exitKind !== 'failed' && !pendingCommands.has(id)) {
+            r.desktopCommandSettled = settleDesktopCommand(group, r, id, 'send', { room_name: group, thread_id: thread })
+          }
         }
 
         return r
@@ -1121,7 +1166,7 @@ export async function runGroupChatRounds(
       // (window feature-detect: the engine also runs under node in tests.)
       const strandedLeft = Object.keys(($groupChats.get()[group] || {}).stranded || {})
 
-      if (strandedLeft.length && typeof window !== 'undefined') {
+      if (!fence && strandedLeft.length && typeof window !== 'undefined') {
         void harvestStrandedUntilSettled(group, members, thread)
       }
     }

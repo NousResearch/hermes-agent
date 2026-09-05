@@ -19,6 +19,7 @@ export interface ClassicTurn {
   epoch: number
   anchor?: string
   exportId?: string
+  mailboxCommandId?: string
 }
 export interface ClassicFileRef {
   group: string

@@ -1518,7 +1518,7 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
 
 def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
     """Astra names cannot confer API/OAuth entitlement through picker state."""
-    return _normalized_cache_slug(provider) in {"openai", "openai-codex"} and str(model or "").strip().lower().rsplit("/", 1)[-1] in {
+    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and str(model or "").strip().lower().rsplit("/", 1)[-1] in {
         "gpt-6-astra", "gpt-6-astra-900k",
     }
 

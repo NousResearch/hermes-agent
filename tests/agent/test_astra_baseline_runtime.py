@@ -81,7 +81,7 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
 
 
 @pytest.mark.parametrize("provider,model", [
-    ("openai-codex", "gpt-6-astra"), ("openai-codex", "gpt-6-astra-900k"), ("openai", "gpt-6-astra"),
+    ("openai-codex", "gpt-6-astra"), ("openai-codex", "gpt-6-astra-900k"), ("openai-api", "gpt-6-astra"),
 ])
 def test_picker_revalidates_cached_astra_and_never_injects_saved_entitlement(monkeypatch, tmp_path, provider, model):
     from hermes_cli import models

@@ -165,11 +165,11 @@ def test_text_response_surfaces_fields_additively():
     # Bare transport success still requires fresh verification, without None noise.
     r2 = ActionResult(ok=True, action="click")
     payload2 = json.loads(_text_response(r2))
-    assert payload2 == {
-        "ok": True,
-        "action": "click",
-        "verdict": {"decision": "verify_fresh_state"},
-    }
+    assert payload2["ok"] is True
+    assert payload2["action"] == "click"
+    # Verdict routes to fresh verification; a human hint may accompany the
+    # decision (contract is the decision, not the exact dict shape).
+    assert payload2["verdict"]["decision"] == "verify_fresh_state"
     for k in ("effect", "escalation", "code", "verified", "path", "degraded", "delivery_mode"):
         assert k not in payload2
 
@@ -319,7 +319,7 @@ def test_lifecycle_finally_resets_started_for_reentry():
     """After the lifecycle coro exits (MCP drop / crash), _started must be
     False so _require_started() no longer passes into a dead/None session.
     We drive the finally block directly via the coro's cleanup semantics."""
-    from tools.computer_use.cua_backend import _CuaDriverSession
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
 
     sess = _CuaDriverSession.__new__(_CuaDriverSession)
     sess._session = object()
@@ -336,7 +336,7 @@ def test_lifecycle_finally_resets_started_for_reentry():
 def test_call_tool_restarts_a_dead_session(monkeypatch):
     """call_tool on a session whose lifecycle died (_started False) must
     call start() to rebuild it, not raise 'not started' or hang."""
-    from tools.computer_use.cua_backend import _CuaDriverSession
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
 
     sess = _CuaDriverSession.__new__(_CuaDriverSession)
     sess._started = False           # dead session

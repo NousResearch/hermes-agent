@@ -161,6 +161,7 @@ The `x_search` toolset auto-enables whenever xAI credentials (a SuperGrok / X Pr
 | Chat | `grok-4.20-0309-non-reasoning` | Non-reasoning variant |
 | Chat | `grok-4.20-multi-agent-0309` | Multi-agent variant |
 | Image | `grok-imagine-image` | Default; ~5–10 s |
+| Image | `grok-imagine-image-2.0` | Typography/layout-aware; strongest quality; ~10–20 s |
 | Image | `grok-imagine-image-quality` | Higher fidelity; ~10–20 s |
 | Video | `grok-imagine-video` | Text-to-video |
 | Video | `grok-imagine-video-1.5-preview` | Image-to-video; dated alias `grok-imagine-video-1.5-2026-05-30` |

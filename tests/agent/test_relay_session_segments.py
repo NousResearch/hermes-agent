@@ -259,7 +259,10 @@ class TestCompactionRotation:
         assert len(fake.scope.pops) == 1, (
             "rotating compaction must close the old session scope"
         )
-        assert fake.subscribers.flushed >= 1
+        # Subscriber flushing is process-wide and happens once at final plugin
+        # teardown, after all sessions have drained. Flushing on this per-session
+        # close can block an active asyncio loop owned by another session.
+        assert fake.subscribers.flushed == 0
 
     def test_rotating_compaction_mid_turn_defers_close_to_end_turn(
         self, coordinator, monkeypatch

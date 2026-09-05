@@ -112,6 +112,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Register an image-generation backend | `ctx.register_image_gen_provider(provider)` — see [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
 | Register a video-generation backend | `ctx.register_video_gen_provider(provider)` — see [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
 | Register a context-compression engine | `ctx.register_context_engine(engine)` — see [Context Engine Plugins](/developer-guide/context-engine-plugin) |
+| Register a terminal execution backend (cloud sandbox) | `ctx.register_terminal_environment_provider(provider)` — see [Terminal Environment Plugins](/developer-guide/terminal-environment-plugin) |
 | Route human approval prompts | `ctx.register_approval_transport(name, present_fn)` — see [Approval transports](#approval-transports) |
 | Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (uses a separate discovery system) |
 | Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](/developer-guide/plugin-llm-access) |
@@ -156,6 +157,13 @@ plugins:
     - disk-cleanup
   disabled:       # optional deny-list — always wins if a name appears in both
     - noisy-plugin
+  # Optional: wall-clock cap (seconds) for timeout-bounded in-process Python
+  # plugin hook callbacks (hot-path observers + pre_tool_call). Default 30;
+  # set 0 to disable; values above 600 are clamped. Timed-out pre_tool_call
+  # callbacks fail closed (block the tool). Caller-thread hooks such as
+  # subagent_stop are never moved onto a timeout worker.
+  # Shell hooks keep their own per-entry timeout under the top-level hooks: key.
+  hook_callback_timeout: 30
 ```
 
 Three ways to flip state:
@@ -343,6 +351,41 @@ hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
 ```
+
+### One-click install links (Desktop)
+
+Hermes Desktop registers the `hermes://` URL scheme, so a website, README, or
+chat message can link straight to a plugin install:
+
+```
+hermes://plugin/install?repo=owner/repo            # main install link
+hermes://plugin/install?repo=owner/repo&enable=1   # enable the agent plugin after install
+hermes://plugin/install?repo=owner/repo&force=1    # replace an existing install
+```
+
+Clicking one opens Hermes and shows a **confirmation dialog** — the repo id,
+a "Before you install" note, and GitHub browse + clone links — then
+shallow-clones the repo to detect what it ships (an **agent plugin** —
+backend Python, a **desktop plugin** — app UI, or both). You pick the
+components with checkboxes and confirm. Nothing is installed until you do;
+deep links never auto-install, and agent-plugin installs go through the same
+[install-time security scanning](#install-time-security-scanning) as
+`hermes plugins install`.
+
+Hybrid repos (agent + desktop halves in one repo) use one link and one
+dialog. The same modal is reachable without a link via **Settings → Plugins →
+Install from Git**. Legacy `hermes://plugin-agent/…` and
+`hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
+(`npm run dev`) the scheme is `hermes-dev://`.
+
+Websites need no SDK — a normal anchor works:
+
+```html
+<a href="hermes://plugin/install?repo=owner/repo&enable=1">Install in Hermes</a>
+```
+
+MCP servers have the equivalent link form — see
+[Add to Hermes link](/reference/mcp-config-reference#add-to-hermes-link).
 
 ### Plugin capabilities and consent
 
@@ -586,6 +629,36 @@ listed as warning comments in the emitted YAML, not as installable entries.
 The `skills:` list is parsed and displayed at install time but not yet
 auto-installed — install those manually for now (`hermes skills`). Wiring
 skill-hub ids into pack install is a documented follow-up seam.
+
+### Install-time security scanning
+
+Every `hermes plugins install` and `hermes plugins update` runs a static
+security scan over the plugin tree before it is activated (inspired by
+Claude Cowork's skill & plugin security scanning). The scanner reuses the
+same threat-pattern engine as the [Skills Hub guard](/user-guide/features/skills)
+— exfiltration of credential stores, reverse shells, destructive commands,
+persistence mechanisms, obfuscated execution, and prompt injection in
+documentation files — with plugin-aware exemptions: a provider plugin
+reading its **own** API key from the environment (the documented
+`requires_env` pattern) is not flagged.
+
+Three verdicts, matching Cowork's pass/warn/fail:
+
+| Verdict | Behavior |
+|---|---|
+| **safe** | Installs normally, no extra output |
+| **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
+| **dangerous** | Blocked. `--force` does **not** override |
+
+On `hermes plugins update`, a dangerous verdict on the updated tree
+disables the plugin until you review the findings and re-enable it.
+
+Scanning is on by default; disable it in `config.yaml`:
+
+```yaml
+plugins:
+  scan_on_install: false
+```
 
 ### Interactive UI
 

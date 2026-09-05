@@ -87,7 +87,7 @@ class _FakeGateway:
     async def _cancel_secondary_profile_reconnect_tasks(self):
         pass
 
-    async def _drain_active_agents(self, timeout):
+    async def _drain_active_agents(self, timeout, cron_timeout=None):
         return {}, False
 
     async def _finalize_shutdown_agents(self, agents):

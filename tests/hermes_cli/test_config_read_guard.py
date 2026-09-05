@@ -24,6 +24,7 @@ file to the allowlist without a reason of the same class.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -35,6 +36,9 @@ ALLOWLIST = {
     # Canonical loader owners.
     "hermes_cli/config.py",
     "gateway/config.py",
+    # load_gateway_config()'s config.yaml phase lives here (extracted from
+    # gateway/config.py); same owner, same managed-overlay contract.
+    "gateway/config_loader.py",
     # _load_gateway_config()'s fallback path for tests that monkeypatch
     # gateway.run._hermes_home (delegates to read_raw_config otherwise).
     "gateway/run.py",
@@ -49,6 +53,9 @@ ALLOWLIST = {
 EXCLUDED_DIR_PARTS = {
     "tests", ".venv", ".git", ".worktrees", "node_modules", "website",
     "docs", "scripts", "examples", "apps",
+    # Compiled bytecode is not source. Sibling test processes also create
+    # and delete these directories while this scan walks the tree.
+    "__pycache__",
 }
 
 # A safe_load within this many lines of a config.yaml reference is treated
@@ -60,11 +67,27 @@ CONFIG_YAML_RE = re.compile(r"""["']config\.yaml["']""")
 
 
 def _iter_source_files():
-    for path in REPO_ROOT.rglob("*.py"):
-        rel = path.relative_to(REPO_ROOT)
-        if any(part in EXCLUDED_DIR_PARTS for part in rel.parts):
-            continue
-        yield rel, path
+    # This uses os.walk with a pruned dirnames, and not rglob. rglob descends
+    # into every directory and filters after that, so it calls scandir() on
+    # __pycache__ trees that this guard never inspects. Sibling test processes
+    # create and delete those entries during the run.
+    #
+    # A directory that disappears in the middle of a walk raises
+    # FileNotFoundError out of rglob. The test then fails for a reason that it
+    # does not assert.
+    #
+    # The prune skips those trees. The onerror callback ignores a directory
+    # that disappears anyway.
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT, onerror=lambda _e: None):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIR_PARTS]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            path = Path(dirpath) / name
+            rel = path.relative_to(REPO_ROOT)
+            if any(part in EXCLUDED_DIR_PARTS for part in rel.parts):
+                continue
+            yield rel, path
 
 
 def test_no_raw_config_yaml_reads_outside_owner_modules():

@@ -598,6 +598,7 @@ compression:
   enabled: true                                     # 开启/关闭压缩
   threshold: 0.50                                   # 在上下文限制的此百分比时压缩
   target_ratio: 0.20                                # 保留为最近尾部的阈值分数
+  tail_mode: legacy                                 # 尾部保留策略："legacy"（0.20×窗口的逐字尾部）或 "lean"（截取 2.5% 窗口、10K-25K 上下限的精简尾部，摘要中附带分块摘录、锚点索引与 session_search 恢复指引 — 压缩后保留 token 约减少 3 倍）
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
   hygiene_hard_message_limit: 5000                  # Gateway 安全阀 —— 见下文
   context_timeout_seconds: 120                      # Agent 侧 compress_context 无进展超时（秒）—— 见下文
@@ -786,7 +787,7 @@ Qwen Cloud（阿里巴巴 DashScope）上游将缓存 TTL 限制为 5 分钟，�
 
 ## 辅助模型
 
-Hermes 使用"辅助"模型处理图像分析、网页摘要、浏览器截图分析、会话标题生成和上下文压缩等附带任务。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将每个辅助任务路由到您的**主聊天模型** —— 与您在 `hermes model` 中选择的相同 provider/模型。您无需配置任何内容即可开始，但请注意，在昂贵的推理模型（Opus、MiniMax M2.7 等）上，辅助任务会增加显著成本。如果您希望无论主模型如何都使用便宜且快速的附带任务，请显式设置 `auxiliary.<task>.provider` 和 `auxiliary.<task>.model`（例如，在 OpenRouter 上使用 Gemini Flash 进行视觉和网页提取）。
+Hermes 使用"辅助"模型处理图像分析、浏览器截图分析、会话标题生成和上下文压缩等附带任务。默认情况下（`auxiliary.*.provider: "auto"`），Hermes 将每个辅助任务路由到您的**主聊天模型** —— 与您在 `hermes model` 中选择的相同 provider/模型。您无需配置任何内容即可开始，但请注意，在昂贵的推理模型（Opus、MiniMax M2.7 等）上，辅助任务会增加显著成本。如果您希望无论主模型如何都使用便宜且快速的附带任务，请显式设置 `auxiliary.<task>.provider` 和 `auxiliary.<task>.model`（例如，在 OpenRouter 上使用 Gemini Flash 进行视觉分析）。（网页提取不是辅助任务：`web_extract` 和浏览器快照会确定性截断长内容，并将完整文本存储供 `read_file` 分页读取 —— 不涉及 LLM。）
 
 :::note 为什么 "auto" 使用您的主模型
 早期版本将聚合器用户（OpenRouter、Nous Portal）分流到便宜的 provider 端默认值。这令人惊讶 —— 付费购买聚合器订阅的用户会看到不同的模型处理其辅助流量。`auto` 现在对所有人使用主模型，`config.yaml` 中的每任务覆盖仍然优先（见下方[完整辅助配置参考](#full-auxiliary-config-reference)）。
@@ -801,7 +802,6 @@ $ hermes model
 → Configure auxiliary models
 
 [ ] vision               currently: auto / main model
-[ ] web_extract          currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
@@ -863,14 +863,6 @@ auxiliary:
     timeout: 120               # 秒 —— LLM API 调用超时；视觉负载需要宽裕的超时
     download_timeout: 30       # 秒 —— 图像 HTTP 下载；慢速连接请增加
 
-  # 网页摘要 + 浏览器页面文本提取
-  web_extract:
-    provider: "auto"
-    model: ""                  # 例如 "google/gemini-2.5-flash"
-    base_url: ""
-    api_key: ""
-    timeout: 360               # 秒（6 分钟）—— 每次尝试的 LLM 摘要
-
   # 危险命令审批分类器
   approval:
     provider: "auto"
@@ -920,7 +912,7 @@ auxiliary:
 ```
 
 :::tip
-每个辅助任务都有可配置的 `timeout`（秒）。默认值：vision 120s、web_extract 360s、approval 30s、compression 120s。如果您为辅助任务使用慢速本地模型，请增加这些值。Vision 还有单独的 `download_timeout`（默认 30s）用于 HTTP 图像下载 —— 对于慢速连接或自托管图像服务器，请增加此值。
+每个辅助任务都有可配置的 `timeout`（秒）。默认值：vision 120s、approval 30s、compression 120s。如果您为辅助任务使用慢速本地模型，请增加这些值。Vision 还有单独的 `download_timeout`（默认 30s）用于 HTTP 图像下载 —— 对于慢速连接或自托管图像服务器，请增加此值。
 :::
 
 :::info
@@ -953,7 +945,7 @@ auxiliary:
 | `model` | 该 provider 的模型名称 |
 | `base_url` | （可选）自定义 OpenAI 兼容端点 |
 
-`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`web_extract`、`approval`、`skills_hub`、`mcp` 等。
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`approval`、`skills_hub`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
@@ -1096,12 +1088,8 @@ auxiliary:
 | Vision 模型 | `AUXILIARY_VISION_MODEL` |
 | Vision 端点 | `AUXILIARY_VISION_BASE_URL` |
 | Vision API 密钥 | `AUXILIARY_VISION_API_KEY` |
-| Web 提取 provider | `AUXILIARY_WEB_EXTRACT_PROVIDER` |
-| Web 提取模型 | `AUXILIARY_WEB_EXTRACT_MODEL` |
-| Web 提取端点 | `AUXILIARY_WEB_EXTRACT_BASE_URL` |
-| Web 提取 API 密钥 | `AUXILIARY_WEB_EXTRACT_API_KEY` |
 
-压缩和回退模型设置仅限 config.yaml。
+压缩和回退模型设置仅限 config.yaml。（`AUXILIARY_WEB_EXTRACT_*` 变量已废弃 —— 网页提取不再使用辅助 LLM。）
 
 :::tip
 运行 `hermes config` 查看您当前的辅助模型设置。覆盖仅在与默认值不同时显示。

@@ -216,14 +216,17 @@ pytest tests/ -v
 
 ```
 hermes-agent/
-├── run_agent.py              # AIAgent class — core conversation loop, tool dispatch, session persistence
-├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
+├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
+├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles
+├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
+│   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)
+│   ├── tool_executor.py          # Tool dispatch (inline agent-level tools, delegate, registry)
+│   ├── session_persistence.py    # Session/trajectory saving
 │   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
 │   ├── context_compressor.py     # Auto-summarization when approaching context limits
 │   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
@@ -233,16 +236,19 @@ hermes-agent/
 │
 ├── hermes_cli/               # CLI command implementations
 │   ├── main.py                   # Entry point, argument parsing, command dispatch
+│   ├── cli_*_mixin.py            # HermesCLI mixins (slash commands, display, session, ...)
 │   ├── config.py                 # Config management, migration, env var definitions
 │   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal
+│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal (facade + auth_*.py siblings)
 │   ├── models.py                 # OpenRouter model selection lists
 │   ├── banner.py                 # Welcome banner, ASCII art
 │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
 │   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
 │   ├── doctor.py                 # Diagnostics
 │   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
-│   └── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   ├── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   ├── web_server.py             # Dashboard server (facade + web_server_*.py siblings)
+│   └── web_routers/              # Dashboard FastAPI routers (one file per surface)
 │
 ├── tools/                    # Tool implementations (self-registering)
 │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
@@ -252,7 +258,9 @@ hermes-agent/
 │   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
 │   ├── vision_tools.py           # Image analysis via multimodal models
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
-│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
+│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
+│   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
+│   ├── browser_tool.py           # Browser automation (facade + browser_tool_*.py siblings)
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
 │   ├── skill_tools.py            # Skill search, load, manage
@@ -261,9 +269,10 @@ hermes-agent/
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │
 ├── gateway/                  # Messaging gateway
-│   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
+│   ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
+│   ├── slash_commands_*.py       # Gateway slash command handler mixins
 │   ├── config.py                 # Platform configuration resolution
-│   ├── session.py                # Session store, context prompts, reset policies
+│   ├── session.py                # Session store, context prompts, reset policies (+ session_*.py siblings)
 │   └── platforms/                # Platform adapters
 │       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
@@ -973,7 +982,7 @@ test(tools): add unit tests for file_operations
 ## Reporting Issues
 
 - Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Include: OS, Python version, Hermes version (`hermes version`), full error traceback
+- Include: OS, Python version, Hermes version (`hermes --version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
 - For security vulnerabilities, please report privately

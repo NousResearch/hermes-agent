@@ -149,10 +149,32 @@ class TestValidateSignature:
             "X-Hub-Signature-256",
             "X-Gitlab-Token",
             "X-Webhook-Signature",
+            "linear-signature",
         ):
             req = _mock_request(headers={header: hostile})
             # Must return False, never raise.
             assert adapter._validate_signature(req, body, secret) is False
+
+    def test_linear_signature_valid_accepts(self):
+        """Linear signs the raw body (hex HMAC-SHA256) in linear-signature."""
+        adapter = _make_adapter()
+        body = b'{"type": "Issue", "data": {"id": "abc"}}'
+        secret = "linear-webhook-key"
+        sig = _generic_signature(body, secret)  # same math as linear-signature
+
+        req = _mock_request(headers={"linear-signature": sig})
+
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_linear_signature_mismatch_rejects(self):
+        """A well-formed linear-signature computed with the wrong key fails closed."""
+        adapter = _make_adapter()
+        body = b'{"type": "Issue"}'
+        sig = _generic_signature(body, "attacker-controlled-key")
+
+        req = _mock_request(headers={"linear-signature": sig})
+
+        assert adapter._validate_signature(req, body, "real-secret") is False
 
 
     def test_non_ascii_svix_signature_rejected(self):
@@ -988,6 +1010,63 @@ class TestMultiplexProfileWebhookAuthentication:
                 headers=headers,
             )
             assert default_profile.status == 404
+
+    @pytest.mark.asyncio
+    async def test_routed_profile_skills_resolve_under_that_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """A /p/<profile>/ route's ``skills:`` must load from that profile's
+        skills/ dir (#67277). Before the fix the lookup ran with no profile
+        scope, so it scanned the launch profile and logged "Skill not found".
+        """
+        import agent.skill_commands as sc_mod
+
+        worker = tmp_path / "profiles" / "worker"
+        skill_dir = worker / "skills" / "worker-only"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: worker-only\ndescription: w\n---\n\nBody of worker-only.\n"
+        )
+        (worker / "config.yaml").write_text("{}\n")
+        (worker / ".env").write_text("")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir", lambda name: tmp_path / "profiles" / name
+        )
+        route_secret = "worker-route-secret-abc123"
+        adapter = _make_adapter(
+            routes={
+                "gh": {
+                    "profile": "worker",
+                    "secret": route_secret,
+                    "prompt": "PR: {action}",
+                    "skills": ["worker-only"],
+                }
+            },
+            host="127.0.0.1",
+        )
+        self._configure_profiles(adapter, tmp_path, monkeypatch)
+        seen = []
+
+        async def _capture(event):
+            seen.append(event)
+
+        adapter.handle_message = _capture
+        body = b'{"action":"opened"}'
+        headers = {
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": _github_signature(body, route_secret),
+        }
+        with (
+            patch.object(sc_mod, "_skill_commands", {}),
+            patch.object(sc_mod, "_skill_commands_home", None),
+        ):
+            async with TestClient(TestServer(self._app(adapter))) as cli:
+                resp = await cli.post("/p/worker/webhooks/gh", data=body, headers=headers)
+                assert resp.status == 202
+                await asyncio.sleep(0.05)
+        assert len(seen) == 1
+        assert seen[0].source.profile == "worker"
+        assert "Body of worker-only." in seen[0].text
 
 
 def test_route_profile_validation_fails_closed():

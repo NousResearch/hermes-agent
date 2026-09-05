@@ -8,7 +8,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
-import { openExternalLink } from '@/lib/external-link'
+import { openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
@@ -488,7 +488,7 @@ export const DIRECTIVE_ACTIONS: Record<string, DirectiveAction> = {
   url: {
     icon: 'link-external',
     label: t => t.composer.openDirective,
-    run: openExternalLink
+    run: openLink
   }
 }
 

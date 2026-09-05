@@ -65,3 +65,12 @@ class TestInstallPs1:
         text = INSTALL_PS1.read_text()
         assert "Computer Use driver install timed out" in text
         assert "hermes computer-use install" in text
+
+    def test_install_rechecks_runtime_contract_before_success(self) -> None:
+        text = INSTALL_PS1.read_text()
+        assert "$installedCuaDriver = Get-Command cua-driver" in text
+        assert (
+            "Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source"
+            in text
+        )
+        assert "did not produce a compatible runtime" in text

@@ -3,11 +3,26 @@ import { atom, computed } from 'nanostores'
 import { $gateway } from './gateway'
 import { $activeSessionId } from './session'
 
+export interface ClarifyQuestion {
+  /** Server-generated wire id (q0..qN) — clarify.respond keys answers by it. */
+  qid: string
+  question: string
+  choices: string[] | null
+  multiSelect: boolean
+}
+
 export interface ClarifyRequest {
   requestId: string
   question: string
   choices: string[] | null
+  multiSelect: boolean
+  /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
+  receivedAt?: number
   sessionId: string | null
+  /** Batch (multi-question) clarify: present instead of question/choices. */
+  questions?: ClarifyQuestion[]
+  /** Answers already locked server-side (reconnect replay): qid → answer. */
+  lockedAnswers?: Record<string, string>
 }
 
 /**
@@ -49,6 +64,48 @@ export function warnDroppedChoices(source: 'gateway' | 'tool_args', question: st
     question_length: question.length,
     source
   })
+}
+
+/**
+ * Validate and normalize a batch clarify payload's `questions` array.
+ *
+ * Keeps entries with a non-blank string `qid` and `question`; per-question
+ * choices go through `normalizeChoices` (all-blank → open-ended) and
+ * multi_select is only honored alongside surviving choices. Returns an empty
+ * array when nothing usable remains — the caller treats that as "not a
+ * batch" instead of rendering an unanswerable form.
+ */
+export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
+  if (!Array.isArray(questions)) {
+    return []
+  }
+
+  const normalized: ClarifyQuestion[] = []
+
+  for (const entry of questions) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue
+    }
+
+    const row = entry as Record<string, unknown>
+    const qid = typeof row.qid === 'string' ? row.qid.trim() : ''
+    const question = typeof row.question === 'string' ? row.question.trim() : ''
+
+    if (!qid || !question) {
+      continue
+    }
+
+    const choices = normalizeChoices(row.choices)
+
+    normalized.push({
+      choices: choices.length > 0 ? choices : null,
+      multiSelect: row.multi_select === true && choices.length > 0,
+      qid,
+      question
+    })
+  }
+
+  return normalized
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.

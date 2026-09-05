@@ -186,8 +186,10 @@ class TestEAGAINCreateExecutionLeak:
         monkeypatch.setattr(S, "create_execution", boom)
 
         with mock.patch("cron.jobs.load_jobs", return_value=[job]):
-            with pytest.raises(OSError):
-                S.tick(verbose=False, sync=True)
+            # The failure is contained per-job (#86482 follow-up): the tick
+            # logs an ERROR, skips this fire, and moves on to the remaining
+            # due jobs instead of aborting the whole dispatch loop.
+            S.tick(verbose=False, sync=True)
 
         # The claim must be released (not leaked) so the NEXT tick can retry.
         assert job_id not in S.get_running_job_ids(), (

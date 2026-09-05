@@ -79,6 +79,7 @@ export type CommandDispatchResponse =
 export interface ConfigDisplayConfig {
   battery?: boolean
   bell_on_complete?: boolean
+  bell_on_prompt?: boolean
   busy_input_mode?: string
   details_mode?: string
   /** Focus view (/focus) — display-only reduced-output mode. */
@@ -88,8 +89,15 @@ export interface ConfigDisplayConfig {
   sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
+  /** CLI/TUI status-bar field visibility filter (shared with the classic
+   *  CLI bar — see display.status_bar.fields in configuration docs).
+   *  Raw YAML: callers must runtime-validate entries. */
+  status_bar?: { fields?: unknown }
   streaming?: boolean
   thinking_mode?: string
+  /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
+   *  honors on its user/assistant labels (#41531). */
+  timestamps?: boolean
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a
    * turn starts delegating, via a one-time transient activity hint.  Opens
@@ -119,8 +127,14 @@ export interface ConfigVoiceConfig {
   submit_mode?: unknown
 }
 
+export interface ConfigApprovalsConfig {
+  // Raw config value: only the explicit boolean false disables the safety gate.
+  destructive_slash_confirm?: unknown
+}
+
 export interface ConfigFullResponse {
   config?: {
+    approvals?: ConfigApprovalsConfig
     display?: ConfigDisplayConfig
     voice?: ConfigVoiceConfig
     paste_collapse_threshold?: number
@@ -261,6 +275,9 @@ export interface SessionUndoResponse {
 
 export interface SessionUsageResponse {
   active_subagents?: number
+  avg_latency_s?: number
+  avg_tps?: number
+  cache_hit_pct?: number
   cache_read?: number
   cache_write?: number
   calls?: number
@@ -527,6 +544,9 @@ export interface RollbackRestoreResponse {
 export interface SubagentEventPayload {
   api_calls?: number
   cost_usd?: number
+  /** Batch (delegation) id this subagent belongs to — distinguishes
+   *  interleaved `[n/N]` progress from concurrent or nested fan-outs. */
+  delegation_id?: string
   depth?: number
   duration_seconds?: number
   files_read?: string[]
@@ -602,7 +622,7 @@ export interface SpawnTreeLoadResponse {
 }
 
 export type GatewayEvent =
-  | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
+  | { payload?: { heartbeat?: boolean; skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
@@ -640,6 +660,7 @@ export type GatewayEvent =
     }
   | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
+  | { payload?: { attempt?: number; delay_ms?: number }; session_id?: string; type: 'gateway.reconnecting' }
   | {
       payload?: { level?: 'info' | 'warn' | 'error'; message?: string }
       session_id?: string
@@ -694,7 +715,13 @@ export type GatewayEvent =
       type: 'tool.complete'
     }
   | {
-      payload: { choices: string[] | null; question: string; request_id: string }
+      payload: {
+        answers?: Record<string, string>
+        choices?: string[] | null
+        question?: string
+        questions?: { choices?: string[] | null; multi_select?: boolean; qid: string; question: string }[]
+        request_id: string
+      }
       session_id?: string
       type: 'clarify.request'
     }
@@ -713,6 +740,7 @@ export type GatewayEvent =
   | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
   | { payload: { request_id: string }; session_id?: string; type: 'secret.expire' | 'sudo.expire' }
   | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
+  | { payload: { question?: string; task_id: string; text: string }; session_id?: string; type: 'btw.complete' }
   | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }
@@ -739,4 +767,5 @@ export type GatewayEvent =
       session_id?: string
       type: 'message.complete'
     }
+  | { payload?: { usage?: Usage }; session_id?: string; type: 'session.usage' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }

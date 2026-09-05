@@ -63,6 +63,19 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "pstack",
+      "description": "pstack - rigorous, quality-first agent workflows you can parallelize with confidence. 45 skills: the poteto-mode router with 23 playbooks, 21 engineering principles, hermesbot (gateway-webhook bot-UI builder), verification-skill generation, decision trails, and a portable model-role config. Adapted for Hermes Agent from Lauren Tan's Cursor plugin (MIT).",
+      "author": "iap",
+      "tags": ["workflow", "principles", "verification", "review", "planning"],
+      "repo": "iap/pstack-hermes",
+      "subdir": "pstack",
+      "ref": "fca043c4dca3ea13de326926c691032ecfca2cde",
+      "homepage": "https://github.com/iap/pstack-hermes",
+      "capabilities": ["commands"],
+      "api_version": 1,
+      "added_at": "2026-09-03"
     }
   ]
 }

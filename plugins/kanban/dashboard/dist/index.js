@@ -629,12 +629,25 @@
     const [configApplied, setConfigApplied] = useState(false);
 
     const [selectedTaskId, setSelectedTaskId] = useState(null);
+    const drawerOpenerRef = useRef(null);
     const [selectedIds, setSelectedIds] = useState(() => new Set());
     const [lastSelectedId, setLastSelectedId] = useState(null);
     const [failedIds, setFailedIds] = useState(() => new Set());
     const [draggingTaskId, setDraggingTaskId] = useState(null);
     const handleDragStart = useCallback(function (taskId) { setDraggingTaskId(taskId); }, []);
     const handleDragEnd = useCallback(function () { setDraggingTaskId(null); }, []);
+    const openTaskDrawer = useCallback(function (taskId) {
+      drawerOpenerRef.current = document.activeElement;
+      setSelectedTaskId(taskId);
+    }, []);
+    const closeTaskDrawer = useCallback(function () {
+      const opener = drawerOpenerRef.current;
+      setSelectedTaskId(null);
+      drawerOpenerRef.current = null;
+      if (opener && opener.isConnected && typeof opener.focus === "function") {
+        requestAnimationFrame(function () { opener.focus(); });
+      }
+    }, []);
     // Per-task event counter incremented whenever the WS stream reports
     // a new event for that task id. TaskDrawer useEffect-depends on its
     // own task's counter so it reloads itself on live events instead of
@@ -1283,7 +1296,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTaskDrawer,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1328,15 +1341,15 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTaskDrawer,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
           boardSlug: board,
-          onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          onClose: closeTaskDrawer,
+          onOpenTask: openTaskDrawer,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -2418,8 +2431,8 @@
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
     const assignees = (props.board && props.board.assignees) || [];
-    return h("div", { className: "flex flex-wrap items-end gap-3" },
-      h("div", { className: "flex flex-col gap-1",
+    return h("div", { className: "hermes-kanban-toolbar flex flex-wrap items-end gap-3" },
+      h("div", { className: "hermes-kanban-toolbar-search flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "search", "Search")),
         h(Input, {
@@ -2429,7 +2442,7 @@
           className: "w-56 h-8",
         }),
       ),
-      h("div", { className: "flex flex-col gap-1",
+      h("div", { className: "hermes-kanban-toolbar-filter flex flex-col gap-1",
                  title: "Tenants are free-form tags on a task (e.g. customer, project, team). Set them via the task drawer or kanban_create." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "tenant", "Tenant")),
         h(Select, Object.assign({
@@ -2442,7 +2455,7 @@
           }),
         ),
       ),
-      h("div", { className: "flex flex-col gap-1",
+      h("div", { className: "hermes-kanban-toolbar-filter flex flex-col gap-1",
                  title: "Filter by assigned Hermes profile. Profiles are the named agent identities that claim and work on tasks." },
         h(Label, { className: "text-xs text-muted-foreground" }, tx(t, "assignee", "Assignee")),
         h(Select, Object.assign({
@@ -2455,7 +2468,7 @@
           }),
         ),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs",
+      h("label", { className: "hermes-kanban-toolbar-toggle flex items-center gap-2 text-xs",
                    title: "Include archived tasks in the board view. Archived tasks are hidden by default." },
         h(Checkbox, {
           checked: props.includeArchived,
@@ -2463,7 +2476,7 @@
         }),
         tx(t, "showArchived", "Show archived"),
       ),
-      h("label", { className: "flex items-center gap-2 text-xs",
+      h("label", { className: "hermes-kanban-toolbar-toggle flex items-center gap-2 text-xs",
                    title: "Group the Running column by assigned profile" },
         h(Checkbox, {
           checked: props.laneByProfile,
@@ -2691,6 +2704,42 @@
     const panRef = useRef({ isPanning: false, startX: 0, scrollLeft: 0 });
     const [isPanning, setIsPanning] = useState(false);
     const [isScrollable, setIsScrollable] = useState(false);
+    const [activeColumn, setActiveColumn] = useState(
+      props.board.columns.length ? props.board.columns[0].name : "",
+    );
+
+    useEffect(function () {
+      if (!props.board.columns.some(function (col) { return col.name === activeColumn; })) {
+        setActiveColumn(props.board.columns.length ? props.board.columns[0].name : "");
+      }
+    }, [props.board.columns, activeColumn]);
+
+    const showColumn = useCallback(function (columnName) {
+      const rail = columnsRef.current;
+      if (!rail) return;
+      const column = rail.querySelector(`[data-kanban-column="${columnName}"]`);
+      if (!column) return;
+      setActiveColumn(columnName);
+      if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) return;
+      const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      rail.scrollTo({ left: column.offsetLeft, behavior: reduceMotion ? "auto" : "smooth" });
+      column.focus({ preventScroll: true });
+    }, []);
+
+    const syncActiveColumn = useCallback(function () {
+      const rail = columnsRef.current;
+      if (!rail) return;
+      let nearest = null;
+      let distance = Infinity;
+      for (const column of rail.querySelectorAll("[data-kanban-column]")) {
+        const nextDistance = Math.abs(column.offsetLeft - rail.scrollLeft);
+        if (nextDistance < distance) {
+          distance = nextDistance;
+          nearest = column;
+        }
+      }
+      if (nearest) setActiveColumn(nearest.getAttribute("data-kanban-column"));
+    }, []);
 
     const checkScrollable = useCallback(function () {
       const el = columnsRef.current;
@@ -2783,21 +2832,40 @@
     const handleDragEnd = useCallback(function () {
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
-    return h("div", {
-      ref: columnsRef,
-      className: cn(
-        "hermes-kanban-columns",
-        isScrollable ? "hermes-kanban-columns--scrollable" : "",
-        isPanning ? "hermes-kanban-columns--panning" : "",
-      ),
-      onDragStart: handleDragStart,
-      onDragEnd: handleDragEnd,
-      onMouseDown: handleMouseDown,
-    },
-      props.board.columns.map(function (col) {
+    return h(React.Fragment, null,
+      h("nav", {
+        className: "hermes-kanban-column-nav",
+        "aria-label": "Kanban lanes",
+      }, props.board.columns.map(function (col) {
+        const selected = col.name === activeColumn;
+        return h("button", {
+          key: col.name,
+          type: "button",
+          className: cn("hermes-kanban-column-nav-item", selected ? "hermes-kanban-column-nav-item--active" : ""),
+          "aria-controls": `kanban-column-${col.name}`,
+          "aria-current": selected ? "true" : undefined,
+          onClick: function () { showColumn(col.name); },
+        },
+          h("span", null, getColumnLabel(null, col.name)),
+          h("span", { className: "hermes-kanban-column-nav-count" }, col.tasks.length),
+        );
+      })),
+      h("div", {
+        ref: columnsRef,
+        className: cn(
+          "hermes-kanban-columns",
+          isScrollable ? "hermes-kanban-columns--scrollable" : "",
+          isPanning ? "hermes-kanban-columns--panning" : "",
+        ),
+        onDragStart: handleDragStart,
+        onDragEnd: handleDragEnd,
+        onMouseDown: handleMouseDown,
+        onScroll: syncActiveColumn,
+      }, props.board.columns.map(function (col) {
         return h(Column, {
           key: col.name,
           column: col,
+          active: col.name === activeColumn,
           boardMeta: props.boardMeta,
           laneByProfile: props.laneByProfile,
           selectedIds: props.selectedIds,
@@ -2812,13 +2880,12 @@
           onCreate: props.onCreate,
           allTasks: props.allTasks,
         });
-      }),
-      h(TrashDropZone, {
+      }), h(TrashDropZone, {
         draggingTaskId: props.draggingTaskId,
         selectedIds: props.selectedIds,
         onDelete: props.onDelete,
         onDeleteSelected: props.onDeleteSelected,
-      }),
+      })),
     );
   }
 
@@ -2881,9 +2948,12 @@
 
     return h("div", {
       ref: colRef,
+      id: `kanban-column-${props.column.name}`,
+      tabIndex: -1,
       "data-kanban-column": props.column.name,
       className: cn(
         "hermes-kanban-column",
+        props.active ? "hermes-kanban-column--active" : "",
         dragOver ? "hermes-kanban-column--drop" : "",
       ),
       onDragOver: handleDragOver,

@@ -1317,17 +1317,9 @@ class MatrixAdapter(BasePlatformAdapter):
         for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
 
-            # Matrix clients render m.in_reply_to as a quoted fallback. On a
-            # multi-part response, repeating that fallback on every chunk makes
-            # the original user message appear again mid-answer. Keep later
-            # chunks in the Matrix thread when present, and attach reply
-            # fallback only on the first chunk (threaded or plain reply).
+            # Quote the parent once, not mid-answer; tails still belong to the thread.
             self._apply_relation_metadata(
-                msg_content,
-                reply_to=reply_to if i == 0 else None,
-                metadata=metadata,
-                include_reply_fallback=i == 0,
-            )
+                msg_content, reply_to=reply_to, metadata=metadata, include_reply_fallback=i == 0)
 
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
@@ -2662,31 +2654,21 @@ class MatrixAdapter(BasePlatformAdapter):
         return msg_content
 
     def _apply_relation_metadata(
-        self,
-        msg_content: Dict[str, Any],
-        *,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        include_reply_fallback: bool = True,
-    ) -> None:
+        self, msg_content: Dict[str, Any], *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None, include_reply_fallback: bool = True) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         thread_id = str((metadata or {}).get("thread_id") or "")
-        if reply_to:
+        if reply_to and include_reply_fallback:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            relates_to["is_falling_back"] = True
-            # Matrix clients that do not render threads still use reply
-            # fallback. If no explicit reply target is available, fall back
-            # to the thread root. Subsequent chunks of a split message omit
-            # the fallback so the original prompt is not re-quoted mid-answer.
+            # Non-thread clients get context on the first chunk. Tails use a
+            # bare m.thread relation: is_falling_back denotes a reply fallback.
             if include_reply_fallback:
-                relates_to.setdefault(
-                    "m.in_reply_to",
-                    {"event_id": reply_to or thread_id},
-                )
+                relates_to["is_falling_back"] = True
+                relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

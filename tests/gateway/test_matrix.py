@@ -673,6 +673,62 @@ class TestMatrixRenderingPayloads:
                 assert "m.in_reply_to" not in content["m.relates_to"]
             assert content["body"].count("```") % 2 == 0
 
+    @pytest.mark.parametrize("thread_id", [None, "$root"])
+    def test_include_reply_fallback_false_suppresses_explicit_reply(self, thread_id):
+        payload = {"body": "tail"}
+        self.adapter._apply_relation_metadata(
+            payload, reply_to="$parent", metadata={"thread_id": thread_id},
+            include_reply_fallback=False,
+        )
+        relation = payload.get("m.relates_to", {})
+        assert "m.in_reply_to" not in relation
+        assert "is_falling_back" not in relation
+        if thread_id:
+            assert relation["rel_type"] == "m.thread"
+            assert relation["event_id"] == thread_id
+        else:
+            assert "m.relates_to" not in payload
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retry_chunk", [0, 1])
+    async def test_split_reply_key_share_retry_preserves_chunk_relation(self, retry_chunk):
+        self.adapter._encryption = True
+        self.adapter._client.crypto = types.SimpleNamespace(share_keys=AsyncMock())
+        metadata = {"thread_id": "$root"}
+        attempts = []
+        failed = False
+
+        async def send_chunk(room_id, payload):
+            nonlocal failed
+            attempts.append(payload.copy())
+            if len(attempts) == retry_chunk + 1 and not failed:
+                failed = True
+                raise RuntimeError("share keys first")
+            return f"$sent-{len(attempts)}"
+
+        # Use deterministic split boundaries; exercise send's real retry path.
+        with patch.object(self.adapter, "truncate_message", return_value=["first", "tail"]), \
+             patch.object(self.adapter, "_send_room_message", side_effect=send_chunk):
+            result = await self.adapter.send(
+                "!room:example.org", "answer", reply_to="$parent", metadata=metadata)
+
+        assert result.success
+        assert result.message_id == "$sent-3"
+        assert len(attempts) == 3
+        assert attempts[retry_chunk] == attempts[retry_chunk + 1]
+        self.adapter._client.crypto.share_keys.assert_awaited_once()
+        for payload in attempts:
+            relation = payload["m.relates_to"]
+            assert relation["rel_type"] == "m.thread"
+            assert relation["event_id"] == "$root"
+            if payload["body"] == "first":
+                assert relation["m.in_reply_to"] == {"event_id": "$parent"}
+                assert relation["is_falling_back"] is True
+            else:
+                assert "m.in_reply_to" not in relation
+                assert "is_falling_back" not in relation
+        assert metadata == {"thread_id": "$root"}
+
     @pytest.mark.asyncio
     async def test_long_response_split_replies_only_on_first_chunk(self):
         # Exceed configurable outbound chunk size (default 16k since #53026).

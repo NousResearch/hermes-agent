@@ -448,6 +448,11 @@ def _chat_messages_to_responses_input(
     Hermes' local history is never truncated by native compaction, so the full conversation is still on the
     wire.
     """
+    from agent.tool_argument_integrity import (
+        neutralize_completed_incomplete_tool_calls,
+    )
+
+    messages = neutralize_completed_incomplete_tool_calls(messages)
     items: List[Dict[str, Any]] = []
     # Parallel to ``items``: source chat message per item. Pruning reads a summary
     # carrier's provenance from the source; the converted item may be a lossy shape.

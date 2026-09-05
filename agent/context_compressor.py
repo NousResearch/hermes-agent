@@ -5,6 +5,7 @@ import contextlib
 import contextvars
 import copy
 import hashlib
+from agent.tool_argument_integrity import completed_tool_call_pairs
 import json
 import logging
 import sqlite3
@@ -1257,25 +1258,43 @@ def evict_stale_outbound_tool_images(
     return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+def _truncate_tool_call_args_json(args: str) -> str:
+    """Externalize a large historical tool-call argument object safely.
+
+    ``function.arguments`` must remain valid JSON for strict providers, but a
+    shortened command, patch, file body, or code string is not a safe summary:
+    a later model can mistake it for a complete operation and replay it. Once
+    an already-executed call reaches context pruning, replace the complete
+    argument object with non-replayable provenance instead of preserving any
+    executable field.
+
+    The original call remains in the persisted transcript. The compressed API
+    copy carries its exact character count and SHA-256 so diagnostics can prove
+    which payload was omitted without exposing or partially reconstructing it.
+    Invalid provider-specific non-JSON arguments are left unchanged because
+    replacing them could break the provider's own format.
+
+    """
+    if len(args) <= 500:
+        return args
     try:
-        parsed = json.loads(args)
+        json.loads(args)
     except (ValueError, TypeError):
         return args
 
-    def _shrink(obj: Any) -> Any:
-        if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
-        if isinstance(obj, dict):
-            return {k: _shrink(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_shrink(v) for v in obj]
-        return obj
-
-    shrunken = _shrink(parsed)
-    # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    return json.dumps(shrunken, ensure_ascii=False)
+    provenance = {
+        "__hermes_incomplete_tool_arguments__": {
+            "version": 1,
+            "reason": "context_compression",
+            "arguments_omitted": True,
+            "replayable": False,
+            "original_chars": len(args),
+            "sha256": hashlib.sha256(
+                args.encode("utf-8", errors="surrogatepass")
+            ).hexdigest(),
+        }
+    }
+    return json.dumps(provenance, ensure_ascii=False)
 
 
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
@@ -2610,15 +2629,15 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         return pruned
 
     @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
+    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int, completed_calls: set[tuple[int, int]]) -> bool:
         """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
         new_tcs = []
-        for tc in msg["tool_calls"]:
+        for call_index, tc in enumerate(msg["tool_calls"]):
             args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
+            new_args = _truncate_tool_call_args_json(args) if (idx, call_index) in completed_calls and isinstance(args, str) and len(args) > 500 else args
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:
@@ -2659,6 +2678,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
+        completed_calls: set[tuple[int, int]],
     ) -> int:
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
@@ -2678,7 +2698,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
+            if self._truncate_tool_call_args_at(result, i, completed_calls):
                 pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
@@ -2715,6 +2735,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         if not messages:
             return messages, 0
         result = [m.copy() for m in messages]
+        completed_calls = set(completed_tool_call_pairs(result))
         call_id_to_tool = _tool_calls_by_id(result)
         prune_boundary = self._prune_boundary(result, protect_tail_count, protect_tail_tokens)
         pruned = self._dedupe_tool_results(result)
@@ -2729,14 +2750,14 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             for i in range(max(0, prune_boundary))
         )
         for i in range(max(0, prune_boundary)):
-            self._truncate_tool_call_args_at(result, i)
+            self._truncate_tool_call_args_at(result, i, completed_calls)
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.
         pruned += _retire_stale_tool_result_images(result)
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
-                result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars,
+                result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars, completed_calls,
             )
         return result, pruned
 

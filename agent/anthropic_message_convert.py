@@ -685,6 +685,9 @@ def convert_messages_to_anthropic(
     ``base_url``/``model`` drive thinking-signature policy — third-party endpoints strip signatures
     (proprietary, they 400 on them); Kimi-family endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
+    from agent.tool_argument_integrity import neutralize_completed_incomplete_tool_calls
+    messages = neutralize_completed_incomplete_tool_calls(messages)
+
     system = None
     result: List[Dict[str, Any]] = []
     for m in messages:

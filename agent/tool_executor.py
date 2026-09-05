@@ -15,6 +15,13 @@ from pathlib import Path
 import logging
 import os
 import random
+import re
+from agent.tool_argument_integrity import (
+    INCOMPLETE_TOOL_ARGUMENTS_KEY,
+    incomplete_tool_arguments_after_schema_decode as _incomplete_after_schema_decode,
+    incomplete_tool_arguments_error_result as _incomplete_tool_arguments_error_result,
+    is_incomplete_tool_arguments_error_result as _is_incomplete_tool_arguments_error_result,
+)
 import threading
 import time
 from dataclasses import dataclass
@@ -55,6 +62,77 @@ from tools.tool_result_storage import (
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 
 logger = logging.getLogger(__name__)
+
+
+_INCOMPLETE_KEY_ESCAPE_RE = re.compile(
+    "".join(
+        rf"(?:{re.escape(char)}|\\+u00{ord(char):02x})"
+        for char in INCOMPLETE_TOOL_ARGUMENTS_KEY
+    ),
+    re.IGNORECASE,
+)
+
+def _schema_decoded_integrity_result(
+    function_name: str, function_args: dict[str, Any]
+) -> Optional[str]:
+    """Purely preview schema container decoding before execution lifecycle."""
+    from tools.registry import registry
+
+    schema = registry.get_schema(function_name)
+    parameters = schema.get("parameters") if isinstance(schema, dict) else None
+    if not isinstance(parameters, dict):
+        return None
+    preview_args = function_args
+    try:
+        from tools.schema_sanitizer import unrename_tool_args
+
+        preview_args = unrename_tool_args(parameters, dict(function_args))
+    except Exception:
+        pass
+    return _incomplete_after_schema_decode(preview_args, parameters)
+
+
+def _may_contain_incomplete_provenance(value: Any) -> bool:
+    """Cheap gate for literal or JSON-escaped reserved provenance keys."""
+    if isinstance(value, str):
+        serialized = value
+    else:
+        try:
+            serialized = json.dumps(value, ensure_ascii=True)
+        except (TypeError, ValueError):
+            return False
+    return _INCOMPLETE_KEY_ESCAPE_RE.search(serialized) is not None
+
+
+def _integrity_preflight(function_name: str, raw_arguments: Any) -> Optional[str]:
+    """Return an integrity rejection before interrupt or lifecycle handling."""
+    function_args, parse_result = _parse_tool_arguments(raw_arguments)
+    if _is_incomplete_tool_arguments_error_result(parse_result):
+        return parse_result
+    if parse_result is not None:
+        return None
+    if not _may_contain_incomplete_provenance(raw_arguments):
+        return None
+
+    try:
+        from tools import tool_search as _ts
+
+        if function_name == _ts.TOOL_CALL_NAME:
+            underlying, underlying_args, error = _ts.resolve_underlying_call(
+                function_args
+            )
+            if not error and underlying:
+                direct_result = _incomplete_tool_arguments_error_result(
+                    underlying_args
+                )
+                if direct_result:
+                    return direct_result
+                return _schema_decoded_integrity_result(
+                    underlying, underlying_args
+                )
+    except Exception:
+        pass
+    return _schema_decoded_integrity_result(function_name, function_args)
 
 
 _pairing_tool_call_id = coalesce_tool_call_id  # canonical id used by the persisted assistant message
@@ -145,15 +223,23 @@ class _BatchAbandoned(BaseException):
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
-    """Parse model-emitted arguments without repairing or coercing them."""
+    """Parse model-emitted arguments and reject lossy historical previews."""
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError):
         arguments = None
+    incomplete_result = _incomplete_tool_arguments_error_result(arguments)
+    if isinstance(arguments, dict) and incomplete_result:
+        return {}, incomplete_result
     if isinstance(arguments, dict):
         return arguments, None
     return {}, json.dumps(
-        {"error": "Invalid tool arguments", "message": "Tool arguments must be a valid JSON object; tool was not executed."},
+        {
+            "error": "Invalid tool arguments",
+            "message": (
+                "Tool arguments must be a valid JSON object; tool was not executed."
+            ),
+        },
         ensure_ascii=False,
     )
 
@@ -307,6 +393,11 @@ def _append_skipped_tool_results(
     append and returns False on the first failed flush when ``stop_on_flush_failure``."""
     for tc in tool_calls:
         name = _tc_name(tc)
+        integrity_result = _integrity_preflight(name, tc.function.arguments)
+        if integrity_result is not None:
+            if not _append_integrity_rejection(agent, messages, name, _pairing_tool_call_id(tc), integrity_result):
+                return False
+            continue
         result = content.format(name=name)
         messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
         if hook_error_type is not None:
@@ -420,6 +511,9 @@ class _ParsedCall:
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
     name = _canonical_tool_name(tool_call.function.name)
+    integrity_result = _integrity_preflight(name, tool_call.function.arguments)
+    if integrity_result is not None:
+        return _ParsedCall(tool_call, name, {}, [], integrity_result, None)
     args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
     scope_block = None
     if parse_error is None:
@@ -1343,10 +1437,20 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
     return function_result, tool_duration, effect_disposition
 
 
+def _append_integrity_rejection(agent, messages, name, call_id, result) -> bool:
+    """Only durable protocol pairing is allowed for a non-replayable call."""
+    messages.append(make_tool_result_message(name, result, call_id, effect_disposition="none"))
+    return _flush_session_db_after_tool_progress(agent, messages, stage=f"rejected incomplete tool arguments {name}")
+
+
 def _append_batch_results(agent, messages: list, effective_task_id: str, batch: _ConcurrentBatch, budget: BudgetConfig) -> bool:
     """Append every slot's result in original call order; returns False at the first
     failed flush (the caller must stop the batch)."""
     for i, pc in enumerate(batch.parsed_calls):
+        if _is_incomplete_tool_arguments_error_result(pc.parse_error):
+            if not _append_integrity_rejection(agent, messages, pc.name, _pairing_tool_call_id(pc.tool_call), pc.parse_error):
+                return False
+            continue
         r = batch.results[i]
         # A worker may finish between the deadline snapshot and this loop;
         # prefer its real result over a fabricated timeout.
@@ -1408,16 +1512,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # Resolved before the batch is built so the start-order gate can clamp under the deadline.
     timeout_s = _resolve_concurrent_tool_timeout()
     batch = _ConcurrentBatch(agent, messages, effective_task_id, parsed_calls, timeout_s)
-    agent._current_tool = tool_names_str
-    agent._touch_activity(f"executing {num_tools} tools concurrently: {tool_names_str}")
+    runnable = [pc for pc in parsed_calls if pc.parse_error is None]
+    if runnable:
+        runnable_names = ", ".join(pc.name for pc in runnable)
+        agent._current_tool = runnable_names
+        agent._touch_activity(f"executing {len(runnable)} tools concurrently: {runnable_names}")
 
-    spinner = _start_quiet_tool_spinner(agent, "", {}, label=f"⚡ running {num_tools} tools concurrently")
+    spinner = _start_quiet_tool_spinner(agent, "", {}, label=f"⚡ running {len(runnable)} tools concurrently") if runnable else None
     try:
         batch.run()
     finally:
         if spinner:
-            finished = [r for r in batch.results if r is not None]
-            spinner.stop(f"⚡ {len(finished)}/{num_tools} tools completed in {sum(r.duration for r in finished):.1f}s total")
+            finished = [r for pc, r in zip(parsed_calls, batch.results) if pc.parse_error is None and r is not None]
+            spinner.stop(f"⚡ {len(finished)}/{len(runnable)} tools completed in {sum(r.duration for r in finished):.1f}s total")
 
     if not _append_batch_results(agent, messages, effective_task_id, batch, _tool_budget):
         return
@@ -1663,6 +1770,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         pc = _parse_tool_call(agent, tool_call, flatten_probe=True)
         ref = pc.ref(effective_task_id)
+        if _is_incomplete_tool_arguments_error_result(pc.parse_error):
+            if not _append_integrity_rejection(agent, messages, ref.name, ref.call_id, pc.parse_error):
+                return
+            continue
         if pc.parse_error is not None:
             if not _append_invalid_arguments_result(agent, messages, ref, pc.parse_error):
                 return

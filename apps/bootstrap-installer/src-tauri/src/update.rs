@@ -948,8 +948,13 @@ async fn run_streamed(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    for (key, value) in envs {
-        cmd.env(key, value);
+    #[cfg(target_os = "windows")]
+    crate::powershell::apply_windows_child_env(&mut cmd, envs);
+    #[cfg(not(target_os = "windows"))]
+    {
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -1056,7 +1061,11 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
         hermes_home.join("node").join("bin"),
         venv_bin_dir(install_root),
     ]) {
-        envs.push(("PATH".to_string(), path));
+        // Windows CreateProcess env blocks can carry both Path and PATH as
+        // distinct entries. Prefer the canonical `Path` key so collapse in
+        // apply_windows_child_env keeps the prepended value (#96112).
+        let key = if cfg!(windows) { "Path" } else { "PATH" };
+        envs.push((key.to_string(), path));
     }
     envs
 }

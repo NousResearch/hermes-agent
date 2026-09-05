@@ -33,6 +33,15 @@ import {
 import { classifyActiveRuntime } from './active-runtime-state'
 import { destroyKeepaliveAgents, downloadAgentFor, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon } from './app-icon'
+import {
+  decideIdleReap,
+  DEFAULT_BUSY_GRACE_MS,
+  formatSparedBusyBackendLog,
+  formatSparedBusyEvictionLog,
+  formatSparedRecentlyBusyLog,
+  probeBackendActivity,
+  withinBusyGrace
+} from './backend-activity'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import {
   type BackendOutputTail,
@@ -1506,7 +1515,7 @@ function setPoolLimits(raw) {
   poolLimits = clampPoolLimits(raw)
   persistPoolLimits(poolLimits)
   localBackendSpawnCoordinator.setLimit(poolLimits.maxBackends)
-  evictLruPoolBackends(poolMaxBackends())
+  void evictLruPoolBackends(poolMaxBackends())
   startPoolIdleReaper()
 
   return { ...poolLimits }
@@ -1539,6 +1548,16 @@ const POOL_KEEPALIVE_FRESH_MS = Math.max(
 )
 
 let poolIdleReaper = null
+// One reaper tick may be waiting on activity probes (≤ POOL_ACTIVITY_PROBE_TIMEOUT_MS)
+// when the next fires; the interval must not overlap itself.
+let poolIdleReapInFlight = false
+// Before killing a pooled backend the reaper / LRU cap ask it `GET /api/activity`.
+// Short timeout: a wedged process must still be reclaimed, so "no answer"
+// degrades to the legacy reap-on-idle path rather than sparing it forever.
+const POOL_ACTIVITY_PROBE_TIMEOUT_MS = 3_000
+// A backend seen busy within this window is spared even if a later probe
+// blips (two idle-reaper ticks).
+const POOL_BUSY_GRACE_MS = DEFAULT_BUSY_GRACE_MS
 let backendOrphanReapPromise = null
 // Auto-reload budget for renderer crashes, shared by EVERY window (primary,
 // secondary session, instance) so a crash loop anywhere is suppressed after
@@ -5364,7 +5383,7 @@ function fetchJson(url, token, options: any = {}) {
 
         req.end()
       }),
-    { method: options.method || 'GET' }
+    { method: options.method || 'GET', maxRetries: options.maxRetries }
   )
 }
 
@@ -11408,7 +11427,7 @@ async function ensureBackend(profile) {
     return connection
   }
 
-  evictLruPoolBackends(poolMaxBackends() - 1)
+  void evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -11416,6 +11435,7 @@ async function ensureBackend(profile) {
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
+    lastBusyAt: null,
     remoteBaseUrl: null,
     releaseLocalBackendSlot: null,
     localBackendSlotKey: null,
@@ -11574,7 +11594,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       return existingLocal.connectionPromise
     }
 
-    evictLruPoolBackends(poolMaxBackends() - 1)
+    void evictLruPoolBackends(poolMaxBackends() - 1)
 
     const localEntry = {
       process: null,
@@ -11582,6 +11602,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       token: null,
       connectionPromise: null,
       lastActiveAt: Date.now(),
+      lastBusyAt: null,
       remoteBaseUrl: null,
       releaseLocalBackendSlot: null,
       localBackendSlotKey: null,
@@ -11645,7 +11666,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
     )
   }
 
-  evictLruPoolBackends(poolMaxBackends() - 1)
+  void evictLruPoolBackends(poolMaxBackends() - 1)
 
   const entry = {
     process: null,
@@ -11653,6 +11674,7 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
+    lastBusyAt: null,
     remoteBaseUrl: null
   }
 
@@ -11787,6 +11809,7 @@ async function ensureManagedSshBackendAtKey(source, profile, key, correlationId,
     token: null,
     connectionPromise: null,
     lastActiveAt: Date.now(),
+    lastBusyAt: null,
     remoteBaseUrl: null
   }
 
@@ -12286,23 +12309,125 @@ function touchPoolBackend(profile) {
   }
 }
 
+// Ask a spawned local backend whether it is doing work (GET /api/activity).
+// Resolves null (unknown) for descriptor entries, older runtimes (404), and
+// wedged processes (timeout); a busy answer stamps `entry.lastBusyAt`.
+async function probePoolBackendActivity(entry: any) {
+  const activity = await probeBackendActivity(
+    (url, token, options) => fetchJson(url, token, { ...options, maxRetries: 0 }),
+    entry,
+    POOL_ACTIVITY_PROBE_TIMEOUT_MS
+  )
+
+  if (activity?.busy) {
+    entry.lastBusyAt = Date.now()
+  }
+
+  return activity
+}
+
 // Evict least-recently-used SPAWNED pool backends until at most `keep` remain —
 // but only ever evict backends without a live renderer socket (stale beyond the
-// keepalive window). When every backend is actively kept alive we let the pool
-// exceed the soft cap rather than kill a running session. Process-less
-// descriptor entries (remote/cloud registry sources, per-profile remote
-// overrides — `entry.process === null`) are excluded from the cap entirely:
-// they hold no local process, so counting them used to let a roster refresh
-// across N registered remote connections LRU-evict a REAL local backend that
-// was merely idle past the keepalive window. Descriptors are still reclaimed
-// by the idle reaper.
-function evictLruPoolBackends(keep) {
-  const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), Date.now(), POOL_KEEPALIVE_FRESH_MS)
+// keepalive window) that are not doing work. When every backend is actively
+// kept alive or busy we let the pool exceed the soft cap rather than kill a
+// running agent turn. Process-less descriptor entries (remote/cloud registry
+// sources, per-profile remote overrides — `entry.process === null`) are
+// excluded from the cap entirely: they hold no local process, so counting them
+// used to let a roster refresh across N registered remote connections
+// LRU-evict a REAL local backend that was merely idle past the keepalive
+// window. Descriptors are still reclaimed by the idle reaper.
+//
+// The keepalive only proves a renderer socket is open; a backend running turns
+// or an in-process delegate_task subagent for a profile the user switched away
+// from looks "stale" to it. Each LRU candidate is therefore probed for
+// activity before it is stopped. Callers do not await this (the stop itself was
+// already fire-and-forget): sparing a busy backend means the spawn coordinator
+// may hold the incoming spawn until a slot frees or its wait times out — the
+// deliberate trade-off, since the alternative is aborting an hour of agent work.
+async function evictLruPoolBackends(keep) {
+  const now = Date.now()
+  const evictions = selectPoolEvictions(backendPool.entries(), Math.max(0, keep), now, POOL_KEEPALIVE_FRESH_MS)
 
-  for (const profile of evictions) {
-    rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
-    stopPoolBackend(profile)
-  }
+  await Promise.all(
+    evictions.map(async profile => {
+      const entry = backendPool.get(profile)
+
+      if (!entry) {
+        return
+      }
+
+      if (withinBusyGrace(entry.lastBusyAt, now, POOL_BUSY_GRACE_MS)) {
+        rememberLog(formatSparedRecentlyBusyLog(profile, entry.lastBusyAt, now, POOL_BUSY_GRACE_MS))
+
+        return
+      }
+
+      const activity = await probePoolBackendActivity(entry)
+
+      if (activity?.busy) {
+        rememberLog(formatSparedBusyEvictionLog(profile, activity, poolMaxBackends()))
+
+        return
+      }
+
+      // The entry may have been stopped or replaced while the probe ran.
+      if (backendPool.get(profile) !== entry) {
+        return
+      }
+
+      rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${poolMaxBackends()})`)
+      await stopPoolBackend(profile)
+    })
+  )
+}
+
+// One idle-reaper tick: every entry past the idle window is probed for activity
+// (concurrently) and only provably-idle or unknown backends are stopped. A
+// backend still running turns / subagents / background processes is spared and
+// its busy stamp refreshed so a later probe blip cannot reap it either.
+async function reapIdlePoolBackends() {
+  const now = Date.now()
+  const idleLimitMs = poolIdleMs()
+
+  await Promise.all(
+    [...backendPool.entries()].map(async ([profile, entry]) => {
+      const idleMs = now - (entry.lastActiveAt || 0)
+
+      if (idleMs <= idleLimitMs) {
+        return
+      }
+
+      const activity = entry.process ? await probePoolBackendActivity(entry) : null
+
+      const decision = decideIdleReap({
+        idleMs,
+        idleLimitMs,
+        activity,
+        busyGraceMs: POOL_BUSY_GRACE_MS,
+        now,
+        lastBusyAt: entry.lastBusyAt
+      })
+
+      if (decision.reason === 'busy' && activity) {
+        rememberLog(formatSparedBusyBackendLog(profile, activity))
+
+        return
+      }
+
+      if (decision.reason === 'busy-grace') {
+        rememberLog(formatSparedRecentlyBusyLog(profile, entry.lastBusyAt, now, POOL_BUSY_GRACE_MS))
+
+        return
+      }
+
+      if (!decision.reap || backendPool.get(profile) !== entry) {
+        return
+      }
+
+      rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(idleLimitMs / 1000)}s)`)
+      await stopPoolBackend(profile)
+    })
+  )
 }
 
 function startPoolIdleReaper() {
@@ -12311,19 +12436,24 @@ function startPoolIdleReaper() {
   }
 
   poolIdleReaper = setInterval(() => {
-    const now = Date.now()
-
-    for (const [profile, entry] of [...backendPool.entries()]) {
-      if (now - (entry.lastActiveAt || 0) > poolIdleMs()) {
-        rememberLog(`Reaping idle profile backend "${profile}" (idle > ${Math.round(poolIdleMs() / 1000)}s)`)
-        stopPoolBackend(profile)
-      }
+    if (poolIdleReapInFlight) {
+      return
     }
 
-    if (backendPool.size === 0 && poolIdleReaper) {
-      clearInterval(poolIdleReaper)
-      poolIdleReaper = null
-    }
+    poolIdleReapInFlight = true
+
+    void reapIdlePoolBackends()
+      .catch(error => {
+        rememberLog(`Pool idle reaper tick failed: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      .finally(() => {
+        poolIdleReapInFlight = false
+
+        if (backendPool.size === 0 && poolIdleReaper) {
+          clearInterval(poolIdleReaper)
+          poolIdleReaper = null
+        }
+      })
   }, 60_000)
 
   if (typeof poolIdleReaper.unref === 'function') {

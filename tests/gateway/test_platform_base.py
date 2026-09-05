@@ -839,6 +839,7 @@ class TestMediaDeliveryDefaultMode:
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_ROOT", hermes_root
         )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
 
         assert (
             BasePlatformAdapter.validate_media_delivery_path(str(image))

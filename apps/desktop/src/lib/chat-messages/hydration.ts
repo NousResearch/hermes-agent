@@ -196,13 +196,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const rawDisplayContent = transcriptContent(
       message.display_kind,
-      timelineDisplayContent(message, displayContentForMessage(message.role, content))
+      timelineDisplayContent(
+        message,
+        displayContentForMessage(message.display_kind === 'internal_notification' ? 'system' : message.role, content)
+      )
     )
 
     const displayRole =
       message.display_kind === 'model_switch' ||
       message.display_kind === 'async_delegation_complete' ||
       message.display_kind === 'auto_continue' ||
+      message.display_kind === 'internal_notification' ||
       message.display_kind === 'personality_switch'
         ? 'system'
         : message.role

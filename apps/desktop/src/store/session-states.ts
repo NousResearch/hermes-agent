@@ -829,6 +829,7 @@ function parseTileList(value: unknown): StoredTile[] {
 function loadTilesByProfile(): Record<string, StoredTile[]> {
   const byProfile: Record<string, StoredTile[]> = {}
   const parsed = readJson<unknown>(TILES_KEY)
+  let recoveredOwnerRoute = false
 
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     for (const [profile, list] of Object.entries(parsed as Record<string, unknown>)) {
@@ -866,6 +867,30 @@ function loadTilesByProfile(): Record<string, StoredTile[]> {
     byProfile[BOTS_TILE_BUCKET] = [
       ...new Map(byProfile[BOTS_TILE_BUCKET].map(tile => [tile.storedSessionId, tile])).values()
     ]
+  }
+
+  // Persist a proven unique hint before its bounded cache can evict it. Never
+  // infer a route from the bucket: profile names repeat across connections.
+  for (const [profile, tiles] of Object.entries(byProfile)) {
+    byProfile[profile] = tiles.map(tile => {
+      if (tile.ownerRoute) {
+        return tile
+      }
+
+      const ownerRoute = getSessionOwnerHint(tile.storedSessionId)
+
+      if (!ownerRoute) {
+        return tile
+      }
+
+      recoveredOwnerRoute = true
+
+      return { ...tile, ownerRoute }
+    })
+  }
+
+  if (recoveredOwnerRoute && !isSecondaryWindow() && !isBrowserWindow()) {
+    writeJson(TILES_KEY, byProfile)
   }
 
   writeJson(LEGACY_TILES_KEY, null)
@@ -935,8 +960,14 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
 }
 
+function resolvedTileOwnerRoute(tile: Pick<SessionTile, 'ownerRoute' | 'storedSessionId'>): SessionOwnerRoute | undefined {
+  return tile.ownerRoute ?? getSessionOwnerHint(tile.storedSessionId)
+}
+
 export function sessionTileOwnerRoute(storedSessionId: string): SessionOwnerRoute | undefined {
-  return $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.ownerRoute
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+
+  return tile ? resolvedTileOwnerRoute(tile) : undefined
 }
 
 /**
@@ -952,7 +983,7 @@ export function openTileGatewayScopes(): Set<string> {
   const scopes = new Set<string>()
 
   for (const tile of $sessionTiles.get()) {
-    const route = tile.ownerRoute
+    const route = resolvedTileOwnerRoute(tile)
 
     if (!route) {
       continue

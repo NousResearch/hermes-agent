@@ -231,6 +231,66 @@ class TestContinuationCeilingWedge:
         assert "and the rest." in result2["final_response"]
 
 
+@pytest.mark.parametrize("fragment", ["", "Earlier commentary fragment."])
+def test_completed_tool_round_settles_length_continuation(loop_agent, fragment):
+    """Replay length -> completed tools -> length without a task-global ceiling.
+
+    The empty-text variant models reasoning-only truncations observed between
+    completed tool batches; visible fragments must not leak into the final answer.
+    """
+    from tests.run_agent.test_run_agent import _mock_response, _mock_tool_call
+
+    loop_agent.valid_tool_names = {"web_search"}
+    responses = []
+    for index in range(4):
+        responses.extend([
+            _mock_response(content=fragment, finish_reason="length"),
+            _mock_response(content="Checking.", finish_reason="tool_calls", tool_calls=[
+                _mock_tool_call(call_id=f"call_recovered_{index}"),
+            ]),
+        ])
+    responses.append(_mock_response(content="Verified answer.", finish_reason="stop"))
+    loop_agent.client.chat.completions.create.side_effect = responses
+    with patch("model_tools.handle_function_call", return_value='{"result": "ok"}') as tool:
+        result = _run(loop_agent, "Check four independent facts")
+
+    assert result["completed"] is True, result.get("error")
+    assert tool.call_count == 4
+    assert result["final_response"] == "Verified answer."
+    assert len([m for m in result["messages"] if m.get("role") == "tool"]) == 4
+
+
+@pytest.mark.parametrize("interrupted_tools", [False, True])
+def test_unresolved_continuation_keeps_ceiling_after_recovered_round(loop_agent, interrupted_tools):
+    """Incomplete tool responses cannot reset the ceiling or erase settled history."""
+    from tests.run_agent.test_run_agent import _mock_response, _mock_tool_call
+
+    loop_agent.valid_tool_names = {"web_search"}
+    responses = [
+        _mock_response(content="Settled commentary.", finish_reason="length"),
+        _mock_response(content="Checking.", finish_reason="tool_calls", tool_calls=[
+            _mock_tool_call(call_id="call_settled"),
+        ]),
+    ]
+    for index in range(4):
+        responses.append(_mock_response(content=f"Unresolved part {index}.", finish_reason="length"))
+        if interrupted_tools and index < 3:
+            responses.append(_mock_response(content="", finish_reason="length", tool_calls=[
+                _mock_tool_call(arguments='{"query":', call_id=f"call_incomplete_{index}"),
+            ]))
+    loop_agent.client.chat.completions.create.side_effect = responses
+    with patch("model_tools.handle_function_call", return_value='{"result": "ok"}') as tool:
+        result = _run(loop_agent, "Check then explain")
+
+    assert result["completed"] is False
+    assert "truncated after 4 continuation attempts" in result["error"]
+    assert tool.call_count == 1
+    assert "Settled commentary." not in result["final_response"]
+    assert "Unresolved part 3." in result["final_response"]
+    assert any(m.get("content") == "Settled commentary." for m in result["messages"])
+    assert loop_agent.client.chat.completions.create.call_count == len(responses)
+
+
 class TestTruncatedPartJoining:
     """#78577 — parts joined with no separator glued text together."""
 

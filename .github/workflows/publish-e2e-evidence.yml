@@ -32,10 +32,17 @@ jobs:
           persist-credentials: false
 
       # v1.2.0 resolves to 44f4b93ecbbe22de6c45fa2f62f519aee564ca8c.
+      # Binary extensions require the release tag for gh --pin, so enforce the
+      # immutable linux-amd64 binary digest before any gh-image use.
       - name: Install gh-image
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh extension install drogers0/gh-image --pin v1.2.0
+        run: |
+          set -euo pipefail
+          gh extension install drogers0/gh-image --pin v1.2.0
+          GH_IMAGE_BIN="${XDG_DATA_HOME:-$HOME/.local/share}/gh/extensions/gh-image/gh-image"
+          echo "0505f8c46d63bd603a445fdbfdd6be45e75a80778d97f1edf3580697fa6b7919  $GH_IMAGE_BIN" \
+            | sha256sum --check -
 
       - name: Download and attach evidence
         env:

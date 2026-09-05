@@ -74,6 +74,7 @@ def test_lazy_installable_extras_excluded_from_all():
         "honcho", "hindsight",
         "supermemory", "mem0",
         "mistral",  # mistralai — Voxtral STT/TTS, lazy-installed (stt.mistral / tts.mistral)
+        "doc-extract",  # firecrawl-anydoc — read_file converter, lazy-installed (tool.doc_extract)
     }
     all_extra_specs = optional_dependencies["all"]
     for extra in lazy_covered_extras:

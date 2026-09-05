@@ -965,10 +965,10 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    # Document formats are stated unconditionally: firecrawl-anydoc is a
-    # core dependency (bundled), so its absence is a broken install, not a
-    # configuration — the teaching error in read_extract handles that rare
-    # case with the pip-install fix. The ONE dynamic word: "PDF (text
+    # Document formats are stated unconditionally: firecrawl-anydoc is an
+    # opt-in extra (lazy-installed at first use), so its absence just means
+    # the teaching error in read_extract handles it with the pip-install
+    # fix. The ONE dynamic word: "PDF (text
     # layer)" upgrades to "PDF (scanned or text)" when hosted OCR has a
     # route we trust (_read_file_schema_overrides). Scanned-page coverage
     # teaching lives in the response-time NEEDS-OCR warning

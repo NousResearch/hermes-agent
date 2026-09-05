@@ -497,6 +497,7 @@ export function StatusRule({
   modelFast,
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
+  mcpFailedCount = 0,
   notice,
   usage,
   bgCount,
@@ -646,6 +647,14 @@ export function StatusRule({
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
+
+  // MCP failure badge. Pinned rather than tail-budgeted: a server that failed
+  // to connect silently removes its tools, and a user who cannot see that will
+  // read the missing capability as the agent refusing to work. It must survive
+  // a narrow terminal, so it is exempt from the width budget above. Renders
+  // only when something is actually broken.
+  const mcpFailedText = mcpFailedCount > 0 ? `⚠ mcp×${mcpFailedCount}` : ''
+  const showMcpFailed = !!mcpFailedText
 
   // Focus-view badge. Pinned (not tail-budgeted) on purpose: the whole point of
   // the indicator is that the user can never be in reduced-output mode without
@@ -816,6 +825,13 @@ export function StatusRule({
             {devCreditsText}
           </Text>
         ) : null}
+        {/* Pinned, not tail-budgeted — see mcpFailedText above. */}
+        {showMcpFailed ? (
+          <Text color={t.color.error} wrap="truncate-end">
+            {' │ '}
+            {mcpFailedText}
+          </Text>
+        ) : null}
         {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it
             renders last — any overflow truncates the HUD itself rather than the
             budgeted segments before it. It self-hides when no delegation runs. */}
@@ -937,6 +953,8 @@ interface StatusRuleProps {
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number
+  // Number of MCP servers whose connection failed. 0 hides the badge.
+  mcpFailedCount?: number
   busy: boolean
   // Context compaction in progress — FaceTicker freezes on "compacting".
   compacting?: boolean

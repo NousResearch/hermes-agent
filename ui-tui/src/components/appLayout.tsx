@@ -482,6 +482,10 @@ const StatusRulePane = memo(function StatusRulePane({
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
   const ui = useStore($uiState)
 
+  // Only 'failed' counts. 'connecting' and 'configured' are in-progress states
+  // and a disabled server is an intentional user choice, so neither is a fault.
+  const mcpFailedCount = (ui.info?.mcp_servers ?? []).filter(s => s.status === 'failed').length
+
   if (ui.statusBar !== at) {
     return null
   }
@@ -499,6 +503,7 @@ const StatusRulePane = memo(function StatusRulePane({
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
+        mcpFailedCount={mcpFailedCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}

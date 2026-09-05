@@ -462,6 +462,30 @@ async def test_credential_session_replacement_after_preflight_is_fenced(
     assert deleting_db.get_session(session_id)["credential_owner"] == owner
 
 
+def test_gateway_peer_refresh_never_transfers_credential_ownership(tmp_path):
+    from hermes_state import SessionDB
+    from hermes_state_errors import SessionTurnLeaseLostError
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("root", "api_server", credential_owner="owner-a")
+    db.end_session("root", "compression")
+    db.create_session(
+        "tip", "api_server", parent_session_id="root", credential_owner="owner-b"
+    )
+
+    with pytest.raises(SessionTurnLeaseLostError, match="credential ownership changed"):
+        db.record_gateway_session_peer(
+            "tip",
+            source="api_server",
+            session_key="declared-key",
+            credential_owner="owner-a",
+            include_compression_ancestors=True,
+        )
+
+    assert db.get_session("root")["credential_owner"] == "owner-a"
+    assert db.get_session("tip")["credential_owner"] == "owner-b"
+
+
 @pytest.mark.asyncio
 async def test_cancelled_run_holds_session_lease_until_executor_worker_exits(
     tmp_path, monkeypatch
@@ -540,6 +564,54 @@ async def test_cancelled_run_holds_session_lease_until_executor_worker_exits(
         if contender_acquired:
             contender.release_session_turn_lease(session_id, "contender")
         contender.close()
+
+
+@pytest.mark.asyncio
+async def test_credential_run_cancelled_before_coroutine_start_releases_admission(
+    tmp_path, monkeypatch
+):
+    from hermes_state import SessionDB
+
+    principal = _principal(APIServerOperation.RUNS_CREATE)
+    adapter = _adapter(Authorizer(lambda _request: principal))
+    adapter._session_db = SessionDB(tmp_path / "state.db")
+    session_id = _create_owned_session(adapter, principal)
+    started = False
+
+    async def never_started(*_args, **_kwargs):
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(api_server_runs_module, "_execute_run", never_started)
+    real_create_task = asyncio.create_task
+
+    def cancel_run_task(coro):
+        task = real_create_task(coro)
+        if getattr(coro, "cr_code", None) is never_started.__code__:
+            task.cancel()
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", cancel_run_task)
+
+    async with TestClient(TestServer(_credential_app(adapter))) as client:
+        response = await client.post(
+            "/v1/runs",
+            json={"input": "hello", "session_id": session_id},
+            headers={"Authorization": "Bearer credential"},
+        )
+        body = await response.json()
+        await asyncio.sleep(0)
+
+    run_id = body["run_id"]
+    assert response.status == 202
+    assert started is False
+    assert adapter._run_statuses[run_id]["status"] == "cancelled"
+    assert run_id not in adapter._active_run_tasks
+    assert adapter._session_db.try_acquire_session_turn_lease(
+        session_id,
+        f"pid={os.getpid()}:replacement",
+        expected_credential_owner=adapter._credential_owner_key(principal),
+    )
 
 
 @pytest.mark.asyncio

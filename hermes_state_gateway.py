@@ -229,11 +229,27 @@ class SessionGatewayMixin:
         ancestors = include_compression_ancestors
         query_params = [session_id, *identity] if ancestors else [*identity, session_id]
         def _do(conn):
+            if credential_owner is not None:
+                from hermes_state_errors import SessionTurnLeaseLostError
+
+                owner_rows = conn.execute(
+                    f"""{_COMPRESSION_LINEAGE_CTE if ancestors else ""}
+                        SELECT id, credential_owner FROM sessions
+                        {"WHERE id IN (SELECT id FROM compression_lineage)" if ancestors else "WHERE id = ?"}""",
+                    (session_id,),
+                ).fetchall()
+                if any(
+                    row["credential_owner"] not in (None, credential_owner)
+                    for row in owner_rows
+                ):
+                    raise SessionTurnLeaseLostError(
+                        f"Session credential ownership changed; refusing gateway peer refresh for {session_id!r}"
+                    )
             conn.execute(
                 f"""{_COMPRESSION_LINEAGE_CTE if ancestors else ""}
                     UPDATE sessions
                     SET session_key = ?, source = ?, user_id = ?,
-                        credential_owner = COALESCE(?, credential_owner), chat_id = ?,
+                        credential_owner = COALESCE(credential_owner, ?), chat_id = ?,
                         chat_type = ?, thread_id = ?,
                         display_name = COALESCE(?, display_name),
                         origin_json = COALESCE(?, origin_json)

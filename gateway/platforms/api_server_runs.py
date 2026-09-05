@@ -341,6 +341,8 @@ class _RunLaunch:
     session_db: Any = None
     credential_session_lease_holder: Optional[str] = None
     credential_session_lease_refresh_handle: Any = None
+    execution_started: bool = False
+    admission_retired: bool = False
 
     @property
     def approval_session_key(self) -> str:
@@ -687,6 +689,19 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
         task.add_done_callback(self._background_tasks.discard)
+
+        def _retire_unstarted(done_task) -> None:
+            if not done_task.cancelled() or launch.execution_started or launch.admission_retired:
+                return
+            launch.admission_retired = True
+            self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
+            with suppress(Exception):
+                launch.put_event(_run_event(run_id, "run.cancelled"))
+                launch.put_event(None)
+            _release_credential_run_lease(launch)
+            _retire_live_run(self, run_id)
+
+        task.add_done_callback(_retire_unstarted)
     if idempotency_key:
         try:
             outcome, record = self._run_idempotency_store.reserve(
@@ -694,6 +709,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
                 retention_until=_room_retention_until(request))
         except BaseException:
+            launch.admission_retired = True
             task.cancel()
             _forget_run(
                 self, run_id, self._active_run_tasks, self._run_streams,
@@ -702,6 +718,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             _release_allocations(delete_implicit=True)
             raise
         if outcome != "created":
+            launch.admission_retired = True
             task.cancel()
             _forget_run(
                 self, run_id, self._active_run_tasks, self._run_streams,
@@ -846,6 +863,7 @@ def _run_agent_sync_with_lease(self, run: _RunLaunch, agent, approval_notify, *,
 
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
+    run.execution_started = True
     _redact_api_error_text = _api_server._redact_api_error_text
     run_id, loop = run.run_id, asyncio.get_running_loop()
     executor_owns_lease = False

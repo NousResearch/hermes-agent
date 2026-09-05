@@ -13,6 +13,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return {
     ...base,
     Button: (props: React.ComponentProps<'button'>) => <button type="button" {...props} />,
+    // The group settings dialog renders a member picker; this mock lists its
+    // SDK surface explicitly, so a new control has to be declared here too.
+    Checkbox: (props: React.ComponentProps<'input'>) => <input type="checkbox" {...props} />,
     cn: (...values: unknown[]) => values.filter(Boolean).join(' '),
     Codicon: ({ name }: { name: string }) => <span aria-hidden data-icon={name} />,
     ConfirmDialog: () => null,

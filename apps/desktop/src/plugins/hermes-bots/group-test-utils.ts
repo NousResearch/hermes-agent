@@ -90,6 +90,12 @@ export interface GatewayOptions {
    *  `profiles.configure`, then reject it as a CAS conflict — the race the
    *  sync worker's pull-merge-retry exists for. */
   conflictOnce?: { key: string; value: unknown }
+  /** Per profile: answer `profiles.configure` with `applied.ui_meta === false`
+   *  so the write EXPLICITLY fails for that profile alone. Note a rejected
+   *  configure reads as `unsupported` (the old-gateway fallback), not
+   *  `failed` — only a contract-speaking refusal exercises a writer's
+   *  rollback, which is what whole-room member replacement needs. */
+  failConfigureFor?: Record<string, true>
   /** Reject every prompt.submit with this — a fatal, non-recoverable failure. */
   failEverySubmitWith?: unknown
   /** Reject only the FIRST prompt.submit — the 4001 reap the retry recovers. */
@@ -170,6 +176,10 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     }
 
     if (method === 'profiles.configure') {
+      if (options.failConfigureFor?.[String(params.name ?? params.profile ?? '')]) {
+        return { applied: { ui_meta: false, ui_meta_revisions: { ...uiMetaRevisions } } }
+      }
+
       if (options.conflictOnce && !conflicted) {
         conflicted = true
         const { key, value } = options.conflictOnce

@@ -4,8 +4,9 @@
  * the roster UI both read.
  */
 
-import { $botMeta, botFriendlyNames, botMetaKey, botRosterKey } from './data'
-import { $groupChats, groupChatRoomKey } from './group-chat'
+import { $botMeta, $lastRoster, botFriendlyNames, botMetaKey, botRosterKey, persistBotMetaSnapshot, saveBotMeta } from './data'
+import { $groupChats, GROUP_CHAT_MAX_MEMBERS, groupChatRoomKey, updateGroupChat } from './group-chat'
+import { displayName } from './labels'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
 import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
 
@@ -202,6 +203,15 @@ export function groupLastActivity(room?: GroupChat | null) {
   return log.length ? log[log.length - 1].at || 0 : 0
 }
 
+/** A member's seat key, or '' when the descriptor carries no name. botRosterKey
+ *  synthesizes `legacy::default` for a nameless row, which would seat one
+ *  malformed descriptor and then silently swallow every later one as a
+ *  duplicate. Callers that write membership must skip these rather than
+ *  persist a bot that does not exist. */
+function memberSeatKey(bot: Partial<RosterRow> | null | undefined): string {
+  return String(bot?.name || '').trim() ? botRosterKey(bot) : ''
+}
+
 /** Seat a group's member roster: local bots whose meta names the group, plus
  *  the room record's stored descriptors (remote members can't ride bot-meta).
  *  Prefers the LIVE roster row for a stored descriptor when present. */
@@ -210,8 +220,34 @@ export function groupChatMemberBots(
   roster: RosterRow[],
   metaByName: Record<string, BotMeta>
 ): RosterRow[] {
+  const room = $groupChats.get()[group] || {}
+  const storedMembers = room.members || []
+
+  // A roomId-backed room persists every source-qualified member, so its
+  // non-empty stored roster is AUTHORITATIVE. Falling through to the legacy
+  // union below would re-seat a bot that was just removed, because that bot's
+  // own ui_meta still names the group until its write lands.
+  if (storedMembers.length && room.roomId) {
+    const seatedKeys = new Set<string>()
+    const members: RosterRow[] = []
+
+    for (const descriptor of storedMembers) {
+      const resolved = resolveLegacyMemberDescriptor(descriptor, roster)
+      const key = memberSeatKey(resolved)
+
+      if (!key || seatedKeys.has(key)) {
+        continue
+      }
+
+      seatedKeys.add(key)
+      members.push((roster || []).find(bot => !bot?.ghost && botRosterKey(bot) === key) || resolved)
+    }
+
+    return members
+  }
+
   const local = (roster || []).filter(bot => botGroups(botRosterMeta(bot, metaByName)).includes(group))
-  const stored = ($groupChats.get()[group] || {}).members || []
+  const stored = storedMembers
   const seated = new Set(local.map(botRosterKey))
   const remote: RosterRow[] = []
 
@@ -226,9 +262,9 @@ export function groupChatMemberBots(
     // pass (durableGroupChatMembers writes from the seated roster) rewrites
     // the stored descriptor to the slug, so the repair is self-healing.
     const resolved = resolveLegacyMemberDescriptor(descriptor, roster)
-    const key = botRosterKey(resolved)
+    const key = memberSeatKey(resolved)
 
-    if (seated.has(key)) {
+    if (!key || seated.has(key)) {
       continue
     }
 
@@ -300,7 +336,7 @@ function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[
  *  source's row may become remote after a connection switch, so retaining it
  *  here is what keeps the same room intact across machines. */
 export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
-  return (bots || []).map(bot => {
+  return (bots || []).filter(bot => memberSeatKey(bot)).map(bot => {
     // Persistence pass over the whole seated roster: an orphaned member
     // (connection deleted) keeps its identity and simply persists with no
     // route — the same degraded shape the hydrate annotate produces. The
@@ -348,6 +384,142 @@ export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
       sourceScoped: Boolean(route)
     }
   })
+}
+
+/** Replace an existing room's COMPLETE member set. The durable room roster is
+ *  authoritative; local profile metadata is updated as a compatibility and
+ *  discovery projection, including removal from profiles no longer seated.
+ *
+ *  Metadata is keyed by botMetaKey (a source route key for scoped rows, the
+ *  bare name otherwise), so profiles are matched on that — not on `name`,
+ *  which collides across connections. */
+export async function replaceGroupChatMembers(group: string, bots: RosterRow[]): Promise<RosterRow[]> {
+  const unique: RosterRow[] = []
+  const seen = new Set<string>()
+
+  for (const bot of bots || []) {
+    const key = memberSeatKey(bot)
+
+    if (!key || seen.has(key)) {
+      continue
+    }
+
+    seen.add(key)
+    unique.push(bot)
+  }
+
+  if (!unique.length || unique.length > GROUP_CHAT_MAX_MEMBERS) {
+    throw new Error(`Group chats require 1–${GROUP_CHAT_MAX_MEMBERS} bots`)
+  }
+
+  const metaSnapshot = $botMeta.get()
+  const nextLocal = new Map<string, RosterRow>()
+
+  for (const bot of unique) {
+    if (bot.remoteSource) {
+      continue
+    }
+
+    const key = botMetaKey(bot)
+
+    if (key) {
+      nextLocal.set(key, bot)
+    }
+  }
+
+  // Every profile whose metadata must change: the new local members, plus any
+  // profile still claiming this group so a removal actually un-seats it.
+  const owners = new Map<string, RosterRow | string>(nextLocal)
+
+  for (const [key, meta] of Object.entries(metaSnapshot || {})) {
+    if (owners.has(key) || !botGroups(meta).includes(group)) {
+      continue
+    }
+
+    // Prefer the live row: saveBotMeta routes a source-scoped write through
+    // its connection, which a bare key string cannot describe.
+    owners.set(key, ($lastRoster.get() || []).find(candidate => botMetaKey(candidate) === key) || key)
+  }
+
+  const entries = [...owners.entries()]
+
+  const writes = await Promise.allSettled(
+    entries.map(([key, owner]) => saveBotMeta(owner, groupMembershipPatch(metaSnapshot[key], group, nextLocal.has(key))))
+  )
+
+  const labelFor = (index: number): string => {
+    const [key, owner] = entries[index]
+
+    return typeof owner === 'string' ? key : displayName(owner, metaSnapshot[key])
+  }
+
+  const failed = writes
+    .map((result, index) => ({ index, result }))
+    .filter(({ result }) => result.status === 'rejected' || result.value?.serverOutcome === 'failed')
+
+  if (failed.length) {
+    // Only profiles whose new metadata was CONFIRMED remotely need a remote
+    // rollback. A profile that explicitly rejected the write is already at the
+    // old remote value; "restoring" it would make a failed rollback look like
+    // a remote inconsistency this operation did not create.
+    const rollbackIndexes = writes
+      .map((result, index) => ({ index, result }))
+      .filter(({ result }) => result.status === 'fulfilled' && result.value?.serverOutcome === 'persisted')
+      .map(({ index }) => index)
+
+    const rollbackResults = await Promise.allSettled(
+      rollbackIndexes.map(index => {
+        const [key, owner] = entries[index]
+        const prior = metaSnapshot[key] || {}
+
+        return saveBotMeta(owner, {
+          group: prior.group || null,
+          groups: Array.isArray(prior.groups) ? prior.groups : []
+        })
+      })
+    )
+
+    const rollbackFailures = rollbackResults
+      .map((result, position) => ({ index: rollbackIndexes[position], result }))
+      .filter(({ result }) => result.status === 'rejected' || result.value?.serverOutcome !== 'persisted')
+
+    // saveBotMeta MERGES for normal edits. Restore the exact snapshot locally
+    // as the final reconciliation step, so profiles that had no explicit group
+    // fields are not left carrying synthetic empty projections.
+    $botMeta.set(metaSnapshot)
+    void persistBotMetaSnapshot(
+      metaSnapshot,
+      unique.some(bot => bot.sourceScoped)
+    )
+
+    const details = failed.map(({ index, result }) =>
+      result.status === 'rejected'
+        ? `${labelFor(index)}: ${result.reason?.message || 'write failed'}`
+        : `${labelFor(index)}: server rejected the write`
+    )
+
+    if (rollbackFailures.length) {
+      const rollbackDetails = rollbackFailures.map(({ index, result }) =>
+        result.status === 'rejected'
+          ? `${labelFor(index)}: ${result.reason?.message || 'rollback failed'}`
+          : `${labelFor(index)}: rollback was not confirmed by the server`
+      )
+
+      throw new Error(
+        `Could not save group members (${details.join(', ')}); rollback could not be confirmed (${rollbackDetails.join(', ')}), remote metadata may be inconsistent`
+      )
+    }
+
+    throw new Error(`Could not save group members (${details.join(', ')}); changes were rolled back`)
+  }
+
+  updateGroupChat(group, room => {
+    room.members = durableGroupChatMembers(unique)
+
+    return room
+  })
+
+  return unique
 }
 
 /** Existing group names, alphabetical — feeds the Manage-groups dialog. */

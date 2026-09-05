@@ -43,17 +43,19 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
-import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
+import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
+import { $groupChats, GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
 import {
   botGroups,
   durableGroupChatMembers,
+  groupChatMemberBots,
   groupMembershipPatch,
   knownGroups,
-  liveGroupChatNames
+  liveGroupChatNames,
+  replaceGroupChatMembers
 } from './group-membership'
 import { useBots } from './i18n'
 import { displayName, slugify } from './labels'
@@ -1030,14 +1032,38 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const current = botGroups(botRosterMeta(bot, meta))
   const groups = knownGroups(meta)
 
-  const setMembership = (group: string, enabled: boolean) => {
-    void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
-    host.notify({
-      kind: 'info',
-      message: enabled
-        ? `${displayName(bot, botRosterMeta(bot, meta))} added to “${group}”`
-        : `${displayName(bot, botRosterMeta(bot, meta))} removed from “${group}”`
-    })
+  const setMembership = async (group: string, enabled: boolean) => {
+    // One snapshot per edit: the computed member list and the notification
+    // text must describe the same moment, and both are read across awaits.
+    const metaSnapshot = $botMeta.get()
+    const label = displayName(bot, botRosterMeta(bot, metaSnapshot))
+
+    try {
+      const room = $groupChats.get()[group]
+
+      // A room with a persisted roster owns its membership: writing only this
+      // bot's ui_meta would leave the durable member list stale, and the
+      // roomId-backed seating reads that list, not the meta.
+      if (Array.isArray(room?.members) && room.members.length) {
+        const currentMembers = groupChatMemberBots(group, $lastRoster.get(), metaSnapshot)
+        const botKey = botRosterKey(bot)
+
+        const nextMembers = enabled
+          ? [...currentMembers.filter(member => botRosterKey(member) !== botKey), bot]
+          : currentMembers.filter(member => botRosterKey(member) !== botKey)
+
+        await replaceGroupChatMembers(group, nextMembers)
+      } else {
+        await saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, metaSnapshot), group, enabled))
+      }
+
+      host.notify({
+        kind: 'info',
+        message: enabled ? `${label} added to “${group}”` : `${label} removed from “${group}”`
+      })
+    } catch (error) {
+      host.notifyError(error, `Could not update “${group}” members`)
+    }
   }
 
   return (
@@ -1064,7 +1090,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
                   className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-(--chrome-action-hover)"
                   key={group}
                 >
-                  <Checkbox checked={enabled} onCheckedChange={checked => setMembership(group, checked === true)} />
+                  <Checkbox checked={enabled} onCheckedChange={checked => void setMembership(group, checked === true)} />
                   <span>{group}</span>
                 </label>
               )
@@ -1078,7 +1104,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
             const trimmed = name.trim()
 
             if (trimmed) {
-              setMembership(trimmed, true)
+              void setMembership(trimmed, true)
               setName('')
             }
           }}

@@ -4,7 +4,7 @@ import type * as groupChat from './group-chat'
 import type * as groupRounds from './group-rounds'
 import { createGroupGateway, deferTimers, drain, runTimersInline, scriptedStorage } from './group-test-utils'
 import type { GatewayOptions, ScriptedGateway } from './group-test-utils'
-import type { GroupChat, GroupMessage } from './types'
+import type { GroupChat, GroupMember, GroupMessage } from './types'
 
 // The room store: the atom every group surface reads, the durable projection
 // written to plugin storage, and the bounded mirror published to the gateway's
@@ -160,6 +160,51 @@ describe('speaker labels', () => {
     data.$lastRoster.set([{ display_name: 'HomelabBot', name: 'default', remoteSource: true }])
 
     expect(chat.groupSpeakerLabel('default')).toBe('Hermes')
+  })
+
+  it('uses the exact source-scoped Bot Meta v2 identity for a working label', async () => {
+    let release!: (reply: string) => void
+
+    const pending = new Promise<string>(resolve => {
+      release = resolve
+    })
+
+    const { chat, rounds } = await loadRoom({ turn: () => pending })
+    const data = await import('./data')
+
+    const local = {
+      connectionId: 'local',
+      connectionKind: 'local',
+      name: 'default',
+      route: { connectionId: 'local', mode: 'local', profile: 'default', targetProfile: 'default' },
+      sourceScoped: true
+    } as GroupMember
+
+    const cloud = {
+      connectionId: 'cloud',
+      connectionKind: 'cloud',
+      name: 'default',
+      remoteSource: true,
+      route: { connectionId: 'cloud', mode: 'remote', profile: 'default', targetProfile: 'default' },
+      sourceScoped: true
+    } as GroupMember
+
+    data.$botMeta.set({ 'cloud::default': { title: 'Mira' }, 'local::default': { title: 'Atlas' } })
+    data.$lastRoster.set([local, cloud])
+
+    rounds.sendToGroupChat('Scoped', [local], 'identify yourself')
+    await drain(() => !chat.$groupChats.get().Scoped?.turn)
+
+    expect(chat.$groupChats.get().Scoped?.turn).toBe('local::default')
+    expect(chat.groupSpeakerLabel(chat.$groupChats.get().Scoped?.turn)).toBe('Atlas')
+
+    data.$botMeta.set({})
+
+    expect(chat.groupSpeakerLabel(chat.$groupChats.get().Scoped?.turn)).toBe('Hermes')
+    expect(chat.groupSpeakerLabel('default')).toBe('Hermes')
+
+    release('(pass)')
+    await drain(() => Boolean(chat.$groupChats.get().Scoped?.running))
   })
 })
 

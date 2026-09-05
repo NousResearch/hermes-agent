@@ -157,6 +157,63 @@ def test_oneshot_subprocess_exits_without_teardown_abort():
     assert b"Traceback" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    "terminal_result",
+    [
+        {"final_response": "busy", "failed": True, "completed": False},
+        {"final_response": "stopped", "interrupted": True, "completed": False},
+    ],
+)
+def test_oneshot_returns_nonzero_when_turn_was_not_processed(
+    monkeypatch, capsys, terminal_result
+):
+    import hermes_cli.oneshot as oneshot
+
+    monkeypatch.setattr(
+        oneshot,
+        "_run_agent",
+        lambda *_args, **_kwargs: (terminal_result["final_response"], terminal_result),
+    )
+
+    assert oneshot.run_oneshot("continue") == 2
+    assert capsys.readouterr().out == f"{terminal_result['final_response']}\n"
+
+
+def test_oneshot_does_not_finalize_session_when_turn_admission_failed(monkeypatch):
+    import hermes_cli.oneshot as oneshot
+
+    events = []
+
+    class FakeDB:
+        def close(self):
+            events.append("db_close")
+
+    class FakeAgent:
+        session_id = "busy-session"
+        _last_turn_admitted = False
+        _end_session_on_close = True
+        _session_messages = []
+
+        def shutdown_memory_provider(self, *_args):
+            events.append("memory_close")
+
+        def close(self):
+            if self._end_session_on_close:
+                events.append("session_end")
+            events.append("agent_close")
+
+    monkeypatch.setattr(oneshot, "_linger_for_background_completions", lambda: None)
+    monkeypatch.setattr(
+        oneshot, "_flush_oneshot_session_store", lambda _agent: events.append("session_flush")
+    )
+
+    agent = FakeAgent()
+    oneshot._close_agent(agent, FakeDB())
+
+    assert events == ["memory_close", "agent_close", "db_close"]
+    assert agent._end_session_on_close is False
+
+
 
 
 

@@ -254,6 +254,9 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
+    if result.get("failed") or result.get("interrupted"):
+        return 2
+
     if not (response or "").strip():
         if result.get("failed") or result.get("partial"):
             return 2
@@ -518,11 +521,18 @@ def _close_agent(agent, session_db) -> None:
     """Teardown mirroring gateway/run.py:_cleanup_agent_resources (NOT cli.py:_run_cleanup):
     oneshot has no _active_agent_ref and the hard-exit path skips finalizers."""
     if agent is not None:
+        turn_admitted = getattr(agent, "_last_turn_admitted", True)
+        if not turn_admitted:
+            # A lease timeout/abort did not own this session. Resource teardown is still
+            # required, but neither the explicit flush nor agent.close() may end the row
+            # another process is actively using.
+            agent._end_session_on_close = False
         # Linger (bounded) for notify_on_complete background processes BEFORE agent.close():
         # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
         # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).
         _quietly("background completion wait", _linger_for_background_completions)
-        _quietly("session store flush", lambda: _flush_oneshot_session_store(agent))
+        if turn_admitted:
+            _quietly("session store flush", lambda: _flush_oneshot_session_store(agent))
         session_messages = getattr(agent, "_session_messages", None)
         memory_args = (session_messages,) if isinstance(session_messages, list) else ()
         _quietly("memory/context cleanup", lambda: agent.shutdown_memory_provider(*memory_args))

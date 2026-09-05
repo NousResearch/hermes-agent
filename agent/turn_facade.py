@@ -71,6 +71,9 @@ class TurnFacadeMixin:
         token = affinity_token = acct_token = None
         task_started = task_finished = False
         relay_outcome = "failed"
+        # Teardown callers must distinguish an admitted turn from a lease wait that returned
+        # without running the conversation. Reset per call so cached agents cannot inherit it.
+        self._last_turn_admitted = False
 
         try:
             # First statement of the try so the finally's note_turn_finished balances every exit.
@@ -85,6 +88,7 @@ class TurnFacadeMixin:
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )
                 return admission.early_result
+            self._last_turn_admitted = True
             lease = admission.lease
             conversation_history = admission.conversation_history
 

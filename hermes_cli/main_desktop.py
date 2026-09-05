@@ -19,7 +19,7 @@ import time as _time_mod
 
 from pathlib import Path
 from typing import Optional
-from hermes_cli.main_tui_launch import _npm_lifecycle_env
+from hermes_cli.main_tui_launch import _npm_lifecycle_env, _tui_node_bin
 from hermes_cli.main_web_build import (
     _hash_source_tree, _nixos_build_env, _stamp_is_current, _write_build_stamp)
 
@@ -1263,8 +1263,15 @@ def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
               "the Electron fetch itself.")
 
 
+# Mirrors the `builder` script in apps/desktop/package.json (cross-env
+# NODE_OPTIONS=--) so the direct electron-builder invocation keeps the same
+# heap headroom npm's lifecycle used to provide.
+_BUILDER_NODE_OPTIONS = "--max-old-space-size=16384"
+
+
 def _run_desktop_pack_with_recovery(
-    desktop_dir: Path, build_cmd: list[str], npm_build_env: dict, env: dict, staging_dir: Optional[Path]
+    desktop_dir: Path, build_cmd: list[str], builder_steps: Optional[list[list[str]]], npm_build_env: dict,
+    env: dict, staging_dir: Optional[Path]
 ) -> subprocess.CompletedProcess:
     """Run the desktop build; a packaged build with NO staged exe retries after an Electron re-download, then via mirror.
 
@@ -1277,7 +1284,15 @@ def _run_desktop_pack_with_recovery(
         return _desktop_packaged_executable_in(staging_dir) if staging_dir else None
 
     def _pack(run_env: dict) -> subprocess.CompletedProcess:
-        return subprocess.run(build_cmd, cwd=desktop_dir, env=run_env, check=False)
+        result = subprocess.run(build_cmd, cwd=desktop_dir, env=run_env, check=False)
+        if result.returncode != 0 or not builder_steps:
+            return result
+        builder_env = {**run_env, "NODE_OPTIONS": _BUILDER_NODE_OPTIONS}
+        for step in builder_steps:
+            result = subprocess.run(step, cwd=desktop_dir, env=builder_env, check=False)
+            if result.returncode != 0:
+                return result
+        return result
 
     build_result = _pack(npm_build_env)
     if build_result.returncode != 0 and staging_dir is not None and _staged_exe() is None:
@@ -1361,17 +1376,36 @@ def _build_desktop_app(desktop_dir: Path, *, source_mode: bool, npm: str, env: d
     # only replaced — by rename — after the staged result verifies.
     # See #86443.
     staging_dir: Optional[Path] = None
-    build_cmd = [npm, "run", build_script]
+    # The packaged flow splits `npm run pack` (= `build && builder -- --dir
+    # --publish never`) into its two phases: the vite build below, then the
+    # direct electron-builder invocation in *builder_steps*. `build_script`
+    # stays "pack" only for the manual-retry hint above.
+    build_cmd = [npm, "run", "build"]
+    builder_steps: Optional[list[list[str]]] = None
     if not source_mode:
         staging_dir = _desktop_staging_dir(desktop_dir)
-        build_cmd += ["--", f"-c.directories.output={staging_dir}"]
+        # npm run pack -- -c.directories.output=<path> forwards the override
+        # through npm's cmd.exe script chain (pack is a `&&` composite), where
+        # Windows profile-path characters such as the apostrophe in
+        # C:\Users\r'y'z get stripped and electron-builder then fails on the
+        # mangled path (#103010). Keep `npm run build` argument-free and hand
+        # electron-builder its override directly: the wrapper script's argv
+        # never crosses a shell, so the staging path arrives verbatim.
+        node = _tui_node_bin("node")
+        builder_steps = [
+            # npm's `prebuilder` hook (no-op off darwin; idempotent on it).
+            [node, str(desktop_dir / "scripts" / "patch-electron-builder-mac-binary.mjs")],
+            [node, str(desktop_dir / "scripts" / "run-electron-builder.mjs"),
+             "--dir", f"-c.directories.output={staging_dir}"],
+        ]
         # A running desktop instance holds Hermes.exe locked on Windows, so the
         # pack can't replace it ("Access is denied"). Stop it first.
         stopped = _stop_desktop_processes_locking_build(desktop_dir)
         if stopped:
             print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
 
-    build_result = _run_desktop_pack_with_recovery(desktop_dir, build_cmd, npm_build_env, env, staging_dir)
+    build_result = _run_desktop_pack_with_recovery(
+        desktop_dir, build_cmd, builder_steps, npm_build_env, env, staging_dir)
     if build_result.returncode != 0:
         print("✗ Desktop GUI build failed")
         if staging_dir is not None:

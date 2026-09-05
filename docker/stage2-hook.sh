@@ -85,12 +85,17 @@ fi
 # is a no-op if the dir already exists. (#18482, salvages #18488)
 mkdir -p "$HERMES_HOME"
 
-# Numeric UID/GID validation: must be digits only, non-root, 1-65534.
-# NAS hosts such as Unraid commonly use low non-root IDs (99:100).
+# Numeric UID/GID validation: must be digits only, non-root, 1-4294967294.
+# The Linux kernel and shadow-utils accept 32-bit IDs up to 2^32-2
+# (4294967294); 65535 is reserved for "nobody" in many distributions and
+# 4294967295 is the sentinel (-1) value. NAS hosts such as Unraid commonly
+# use low non-root IDs (99:100), while Synology DSM 7 assigns custom groups
+# GIDs above 65534 (e.g. 65536+), so a tighter cap silently skipped the
+# remap for those hosts. See #75143.
 validate_uid_gid() {
     case "$1" in
         ''|*[!0-9]*) return 1 ;;
-        *) [ "$1" -ge 1 ] && [ "$1" -le 65534 ] ;;
+        *) [ "$1" -ge 1 ] && [ "$1" -le 4294967294 ] ;;
     esac
 }
 

@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 from agent.message_content import flatten_message_text
+from tools.thread_context import propagate_context_to_thread
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +439,7 @@ def maybe_auto_title(
         return
     apply_instant_title(session_db, session_id, user_message, title_callback)
     threading.Thread(
-        target=auto_title_session,
+        target=propagate_context_to_thread(auto_title_session),
         args=(session_db, session_id, user_message),
         kwargs=dict(failure_callback=failure_callback, main_runtime=main_runtime, title_callback=title_callback, runtime_validator=runtime_validator),
         daemon=True,

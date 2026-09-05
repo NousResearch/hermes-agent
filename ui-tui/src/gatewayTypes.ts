@@ -97,6 +97,7 @@ export interface ConfigDisplayConfig {
   thinking_mode?: string
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
    *  honors on its user/assistant labels (#41531). */
+  terminal_title?: boolean
   timestamps?: boolean
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a

@@ -311,7 +311,8 @@ export const applyDisplay = (
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.
-    timestamps: d.timestamps === true
+    timestamps: d.timestamps === true,
+    terminalTitle: d.terminal_title !== false
   })
 }
 

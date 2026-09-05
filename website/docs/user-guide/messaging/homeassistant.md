@@ -7,7 +7,7 @@ sidebar_position: 5
 
 # Home Assistant Integration
 
-Hermes Agent integrates with [Home Assistant](https://www.home-assistant.io/) in two ways:
+Hermes Agent's built-in [Home Assistant](https://www.home-assistant.io/) support has two parts:
 
 1. **Gateway platform** — subscribes to real-time state changes via WebSocket and responds to events
 2. **Smart home tools** — four LLM-callable tools for querying and controlling devices via the REST API
@@ -45,6 +45,15 @@ hermes gateway
 ```
 
 Home Assistant will appear as a connected platform alongside any other messaging platforms (Telegram, Discord, etc.).
+
+## Community Add-on and Assist Integration
+
+The setup above assumes Hermes is already running and configures its built-in Home Assistant platform and tools. Home Assistant users who want a Home Assistant-native install path or Assist voice pipeline can also use these community-maintained projects:
+
+- **[Hermes Agent Home Assistant add-on](https://github.com/WolframRavenwolf/hermes-ha-addon)** - packages Hermes Agent as a Home Assistant add-on/app with sidebar access, persistent storage, dashboard, web terminal, and optional OpenAI-compatible API server.
+- **[Hermes Agent Home Assistant integration](https://github.com/WolframRavenwolf/hermes-ha-integration)** - adds Hermes Agent as a Home Assistant Assist conversation agent for voice assistants and the conversation panel. It talks to Hermes through the OpenAI-compatible API and can point at either the add-on or a standalone Hermes instance.
+
+Use the built-in integration documented on this page when Hermes should observe or control Home Assistant devices directly. Use the add-on when Home Assistant should host Hermes. Use the custom integration when Home Assistant Assist should use Hermes as its conversation backend.
 
 ## Available Tools
 

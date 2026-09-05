@@ -155,6 +155,37 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
     assert "full disk" not in lower
 
 
+def test_explanation_persistence_fts_index_and_unconfirmed_never_advise_recovery():
+    """#97794: an FTS-scoped failure, or a corruption report the canonical-table probe
+    could not confirm, must never send the user down the recover / restore-backup path
+    on a healthy file — and must not claim the transcript was lost."""
+    for cause in ("fts_index", "corrupt_unconfirmed"):
+        out = AIAgent._format_turn_completion_explanation(
+            "session_persistence_failed", cause
+        )
+        lower = out.lower()
+        assert out.strip() != ""
+        assert "sessions recover" not in lower
+        assert ".recover" not in lower
+        # Negative advice ("do not ... restore a backup") is fine; instructions are not.
+        assert "recovery options" not in lower
+        assert "restore from a backup" not in lower and "backups/" not in lower
+        assert "would have been lost" not in lower
+        assert "free" not in lower  # never disk-space advice
+        assert "hermes doctor" in lower
+    fts = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "fts_index"
+    ).lower()
+    assert "search index" in fts and "not damaged" in fts
+    assert "send your message again" in fts  # the handle stays live
+    unconfirmed = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "corrupt_unconfirmed"
+    ).lower()
+    assert "intact" in unconfirmed
+    assert "restart" in unconfirmed  # the handle is quarantined: retrying cannot help
+    assert "diverted" in unconfirmed
+
+
 def test_explanation_persistence_replaced_cause_forbids_inplace_repair():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "replaced"
@@ -317,6 +348,7 @@ def test_persistence_error_causes_tuple_matches_classifier():
         "Session 'abc' is being compressed by another writer",
         "Session turn lease lost; refusing transcript write for 'abc'",
         "database disk image is malformed",
+        'fts5: corrupt structure record for table "messages_fts"',
         "FATAL: state.db was replaced underneath the gateway",
         "database or disk is full",
         "something else entirely",
@@ -324,6 +356,113 @@ def test_persistence_error_causes_tuple_matches_classifier():
     )
     for probe in probes:
         assert classify_persistence_error(probe) in PERSISTENCE_ERROR_CAUSES
+
+
+def test_classify_persistence_error_fts_provenance_order():
+    """Result code first, prose only without one — the #96038 rule the write-repair gate
+    already enforces, now shared with the classifier so there is one definition of
+    "provably FTS-only" (#97794 review)."""
+    import sqlite3
+
+    from hermes_state import SessionDB, classify_persistence_error
+    from hermes_state_errors import SQLITE_CORRUPT_VTAB, is_fts_scoped_corruption_error
+
+    def _err(text, code=None, cls=sqlite3.DatabaseError):
+        exc = cls(text)
+        if code is not None:
+            exc.sqlite_errorcode = code
+        return exc
+
+    # Tier 1 — a known result code decides. SQLITE_CORRUPT_VTAB is FTS-scoped even with the
+    # generic text older SQLite builds emit; bare SQLITE_CORRUPT / SQLITE_NOTADB are unscoped.
+    vtab = _err("database disk image is malformed", SQLITE_CORRUPT_VTAB)
+    assert classify_persistence_error(vtab) == "fts_index"
+    assert SessionDB._is_fts_write_corruption_error(vtab)  # same verdict as the write gate
+    assert classify_persistence_error(
+        _err("database disk image is malformed", sqlite3.SQLITE_CORRUPT)
+    ) == "corrupt"
+    assert classify_persistence_error(
+        _err("file is not a database", sqlite3.SQLITE_NOTADB)
+    ) == "corrupt"
+    # A contradictory known code outranks FTS-looking prose (the #96038 regression shape).
+    contradictory = _err(
+        'fts5: corrupt structure record for table "messages_fts"',
+        sqlite3.SQLITE_CONSTRAINT_TRIGGER,
+        sqlite3.IntegrityError,
+    )
+    assert not is_fts_scoped_corruption_error(contradictory)
+    assert classify_persistence_error(contradictory) != "fts_index"
+    assert not SessionDB._is_fts_write_corruption_error(contradictory)
+
+    # Tier 2 — no code (Python < 3.11, RPC-wrapped strings): the report must name a
+    # messages_fts* object. Both shapes from #97794's evidence logs qualify.
+    assert classify_persistence_error(
+        _err('fts5: corrupt structure record for table "messages_fts"')
+    ) == "fts_index"
+    assert classify_persistence_error(
+        'fts5: corruption found reading blob 2061584302081 from table "messages_fts"'
+    ) == "fts_index"
+    assert classify_persistence_error(
+        'fts5: corrupt structure record for table "messages_fts_trigram"'
+    ) == "fts_index"
+    assert classify_persistence_error(
+        "malformed inverted index for FTS5 table main.messages_fts"
+    ) == "fts_index"
+    # Generic markers without provenance stay conservative; fts5 text without corruption,
+    # or an FTS name without a corruption marker, is not corruption at all.
+    assert classify_persistence_error("database disk image is malformed") == "corrupt"
+    assert classify_persistence_error('fts5: syntax error near "x"') == "unknown"
+    assert classify_persistence_error("no such table: messages_fts") == "unknown"
+
+
+def test_classify_persistence_error_quarantine_verified_healthy_is_unconfirmed(
+    tmp_path, monkeypatch
+):
+    """Tier 3 — the canonical-table probe. A quarantine error carrying the store's db_path,
+    an unscoped code, and a clean read-only quick_check classifies as
+    ``corrupt_unconfirmed``; a scoped/contradictory code, a missing path, or an unreadable
+    file keeps ``corrupt``. The probe runs once per error object."""
+    import sqlite3
+
+    import hermes_state_errors
+    from hermes_state import SessionDB, StateDbCorruptError, classify_persistence_error
+
+    db_path = tmp_path / "state.db"
+    SessionDB(db_path=db_path).close()
+
+    calls = []
+    real_probe = hermes_state_errors.verify_canonical_tables_healthy
+
+    def _counting_probe(path):
+        calls.append(path)
+        return real_probe(path)
+
+    monkeypatch.setattr(hermes_state_errors, "verify_canonical_tables_healthy", _counting_probe)
+
+    err = StateDbCorruptError("database disk image is malformed (quarantined)")
+    err.db_path = str(db_path)
+    err.sqlite_errorcode = sqlite3.SQLITE_NOTADB
+    assert classify_persistence_error(err) == "corrupt_unconfirmed"
+    assert classify_persistence_error(err) == "corrupt_unconfirmed"
+    assert len(calls) == 1  # memoised on the error object
+
+    # No code at all (a fail-fast re-raise on the quarantined handle) still verifies.
+    bare = StateDbCorruptError("quarantined")
+    bare.db_path = str(db_path)
+    assert classify_persistence_error(bare) == "corrupt_unconfirmed"
+
+    # A contradictory known code never probes.
+    contradictory = StateDbCorruptError("quarantined")
+    contradictory.db_path = str(db_path)
+    contradictory.sqlite_errorcode = sqlite3.SQLITE_CONSTRAINT_TRIGGER
+    assert classify_persistence_error(contradictory) == "corrupt"
+
+    # Missing path / unreadable file: conservative.
+    assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"
+    missing = StateDbCorruptError("quarantined")
+    missing.db_path = str(tmp_path / "missing.db")
+    assert classify_persistence_error(missing) == "corrupt"
+    assert len(calls) == 3  # first err, bare, missing — never the contradictory one
 
 
 # --------------------------------------------------------------------------

@@ -1017,17 +1017,24 @@ class SessionDB(
     @classmethod
     def _is_structural_corruption_error(cls, exc: BaseException) -> bool:
         """Bare SQLITE_CORRUPT/NOTADB with no FTS provenance: canonical B-tree/schema/freelist damage,
-        never repairable from the live write path."""
+        never repairable from the live write path. The raw error carries no ``db_path``, so the
+        classifier never runs its canonical-table probe here: quarantine is decided on the
+        result code alone, exactly as before (#97940); the probe only refines the user-facing
+        cause of the quarantine error afterwards (#97794)."""
         return (
             isinstance(exc, sqlite3.DatabaseError)
             and not isinstance(exc, StateDbCorruptError)
             and not cls._is_fts_write_corruption_error(exc)
-            and classify_persistence_error(exc) == "corrupt"
+            and classify_persistence_error(exc) in ("corrupt", "corrupt_unconfirmed")
         )
 
     def _corrupt_error(self, prefix: str = "") -> "StateDbCorruptError":
-        """Build the quarantine error for this handle (message assembled once)."""
-        return StateDbCorruptError(f"{prefix}{_STATE_DB_CORRUPT_MSG} (cause: {self._db_corrupt_reason})")
+        """Build the quarantine error for this handle (message assembled once). ``db_path`` lets
+        ``classify_persistence_error`` verify the report against the file before it renders
+        whole-file recovery advice (#97794)."""
+        err = StateDbCorruptError(f"{prefix}{_STATE_DB_CORRUPT_MSG} (cause: {self._db_corrupt_reason})")
+        err.db_path = str(self.db_path)
+        return err
 
     def _halt_db_corrupt(self, exc: BaseException) -> None:
         """Quarantine this handle and raise; never run in-file repair here."""

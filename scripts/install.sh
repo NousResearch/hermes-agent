@@ -567,7 +567,7 @@ install_uv() {
 
     if [ -x "$_managed_uv" ]; then
         UV_CMD="$_managed_uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_VERSION=$("$UV_CMD" --version 2>/dev/null)
         log_success "Managed uv found ($UV_VERSION)"
         return 0
     fi
@@ -603,7 +603,7 @@ install_uv() {
             exit 1
         fi
         rm -f "$_uv_install_log"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_VERSION=$("$UV_CMD" --version 2>/dev/null)
         log_success "Managed uv installed ($UV_VERSION)"
     else
         log_error "Failed to install uv"
@@ -1736,7 +1736,7 @@ setup_venv() {
     fi
 
     # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    "$UV_CMD" venv venv --python "$PYTHON_VERSION"
 
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
@@ -1769,7 +1769,7 @@ run_locked_uv_sync() {
         unset UV_NO_CONFIG UV_CONFIG_FILE
         export XDG_CONFIG_HOME="$isolated_uv_config"
         export XDG_CONFIG_DIRS="$isolated_uv_config"
-        UV_PROJECT_ENVIRONMENT="$project_env" $UV_CMD sync --extra all --locked
+        UV_PROJECT_ENVIRONMENT="$project_env" "$UV_CMD" sync --extra all --locked
     )
     sync_rc=$?
     rmdir "$isolated_uv_config" 2>/dev/null || true
@@ -2008,7 +2008,7 @@ PY
     install_tier() {
         local name="$1"; local spec="$2"
         log_info "Trying tier: $name ..."
-        if $UV_CMD pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
+        if "$UV_CMD" pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
             log_success "Main package installed ($name)"
             _installed=true
             _tier_name="$name"
@@ -2035,7 +2035,7 @@ PY
     if [ "$_tier_name" != "all" ]; then
         log_warn "Note: installed via fallback tier ($_tier_name)."
         log_info "Some optional features may be missing. After resolving any"
-        log_info "PyPI/network issue, re-run: $UV_CMD pip install -e '.[all]'"
+        log_info "PyPI/network issue, re-run: \"$UV_CMD\" pip install -e '.[all]'"
     fi
 
     log_success "Main package installed"
@@ -2844,7 +2844,7 @@ install_browser_use_cli() {
         log_success "Browser Use CLI installed"
     else
         log_warn "Browser Use CLI install failed — browser automation falls back to built-in tools."
-        log_info "Install later with: $UV_CMD tool install browser-use  (or via 'hermes tools')"
+        log_info "Install later with: \"$UV_CMD\" tool install browser-use  (or via 'hermes tools')"
     fi
 }
 
@@ -2999,7 +2999,7 @@ maybe_start_gateway() {
             echo ""
             if prompt_yes_no "Pair WhatsApp now?" "yes"; then
                 HERMES_CMD="$(get_hermes_command_path)"
-                $HERMES_CMD whatsapp || true
+                "$HERMES_CMD" whatsapp || true
             fi
         else
             log_info "WhatsApp pairing skipped (non-interactive). Run 'hermes whatsapp' to pair."
@@ -3031,9 +3031,9 @@ maybe_start_gateway() {
 
         if [ "$DISTRO" != "termux" ] && command -v systemctl &> /dev/null; then
             log_info "Installing systemd service..."
-            if $HERMES_CMD gateway install 2>/dev/null; then
+            if "$HERMES_CMD" gateway install 2>/dev/null; then
                 log_success "Gateway service installed"
-                if $HERMES_CMD gateway start 2>/dev/null; then
+                if "$HERMES_CMD" gateway start 2>/dev/null; then
                     log_success "Gateway started! Your bot is now online."
                 else
                     log_warn "Service installed but failed to start. Try: hermes gateway start"
@@ -3047,7 +3047,7 @@ maybe_start_gateway() {
             else
                 log_info "systemd not available — starting gateway in background..."
             fi
-            nohup $HERMES_CMD gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
+            nohup "$HERMES_CMD" gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
             GATEWAY_PID=$!
             log_success "Gateway started (PID $GATEWAY_PID). Logs: ~/.hermes/logs/gateway.log"
             log_info "To stop: kill $GATEWAY_PID"
@@ -3451,7 +3451,7 @@ install_desktop_voice_deps() {
         return 0
     fi
     log_info "Installing voice + wake-word dependencies (onnxruntime, faster-whisper — 1-3min)..."
-    if (cd "$INSTALL_DIR" && $UV_CMD pip install -e ".[wake,voice]") ; then
+    if (cd "$INSTALL_DIR" && "$UV_CMD" pip install -e ".[wake,voice]") ; then
         log_success "Voice + wake-word dependencies installed"
     else
         log_warn "Voice/wake dependency install failed — they will lazy-install at first use"

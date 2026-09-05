@@ -1681,6 +1681,61 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     $queuedPromptsBySession.set({})
   })
 
+  it.each([false, true])('expands an attached skill and preserves its payload (busy=%s)', async busy => {
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, { ...createClientSessionState(RUNTIME_SESSION_ID), busy })
+    const attachment: ComposerAttachment = { id: 'notes', kind: 'file', label: 'notes.txt', refText: '@file:notes.txt' }
+
+    const requestGateway = vi.fn(
+      async (method: string) =>
+        (method === 'slash.exec'
+          ? { type: 'skill', name: 'work', message: 'Expanded skill instructions', display: '/work inspect' }
+          : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={{ current: busy }}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await handle!.submitText('/work inspect', { attachments: [attachment] })
+    expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'work inspect' }))
+
+    if (busy) {
+      expect(getQueuedPrompts(RUNTIME_SESSION_ID)).toEqual([
+        expect.objectContaining({
+          text: 'Expanded skill instructions',
+          attachments: [attachment],
+          displayText: '/work inspect'
+        })
+      ])
+      expect(requestGateway.mock.calls.map(([method]) => method)).not.toContain('prompt.submit')
+    } else {
+      expect(requestGateway).toHaveBeenCalledWith(
+        'prompt.submit',
+        expect.objectContaining({
+          text: expect.stringContaining('Expanded skill instructions')
+        }),
+        expect.any(Number)
+      )
+    }
+
+    if (!busy) {
+      expect(requestGateway).toHaveBeenCalledWith(
+        'prompt.submit',
+        expect.objectContaining({ text: expect.stringContaining('@file:notes.txt') }),
+        expect.any(Number)
+      )
+    }
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
   it('renders a skill turn as its invocation — the expanded body never reaches a bubble', async () => {
     // A `/skill` dispatch's `message` is the whole skill body (model-facing
     // scaffolding). The agent must receive it verbatim; every UI surface —

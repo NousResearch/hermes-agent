@@ -2,6 +2,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { isDesktopSlashExtensionCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
@@ -198,10 +199,10 @@ export function useComposerSubmit({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+      if (SLASH_COMMAND_RE.test(text.trim()) && (!attachments.length || isDesktopSlashExtensionCommand(text))) {
         triggerHaptic('submit')
         clearDraft()
-        dispatchSubmit(text)
+        dispatchSubmit(text, attachments.length ? attachments : undefined)
       } else if (!compacting && !blockingPrompt && !attachments.length && text.trim()) {
         // Cursor-style stop-and-correct: interrupt the live turn and redirect
         // it with this text. redirect() preserves the shown reasoning/work; if

@@ -65,7 +65,13 @@ _USER_TEMPLATE = """Task id: {task_id}
 Current title: {title}
 Current body:
 {body}
+{context}
 """
+
+# Cap for the context digest (recent comments + attachment manifest) appended
+# to the specifier prompt. Mirrors the body cap (4000) so per-card context
+# never grows the prompt past the size of the spec body it accompanies.
+_CONTEXT_MAX_CHARS = 4000
 
 
 @dataclass
@@ -84,6 +90,38 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
+
+
+def _build_context(task_id: str) -> str:
+    """Recent comment thread + attachment manifest for the specifier prompt.
+
+    Per-card context (thread comments, attachments) currently reaches only the
+    dispatched worker, never the triage call (proposal Option C). Appending a
+    bounded digest here lets the specifier weigh operator notes and attached
+    files when it tightens a triage idea. Returns '' when the task has neither,
+    so the prompt is unchanged for the common case.
+    """
+    with kbc.connect_closing() as conn:
+        comments = kb.list_comments(conn, task_id)
+        attachments = kb.list_attachments(conn, task_id)
+    if not comments and not attachments:
+        return ""
+    parts: list[str] = []
+    if comments:
+        # Newest first so the most recent notes sit at the top; the head-
+        # keeping truncate below then preserves the most relevant comments.
+        thread = "\n".join(
+            f"- [{c.author or '?'}] {c.body.strip()}"
+            for c in reversed(comments[-10:])
+        )
+        parts.append("Recent comments on this task:\n" + thread)
+    if attachments:
+        manifest = "\n".join(
+            f"- {a.filename} ({a.size} bytes)"
+            for a in attachments
+        )
+        parts.append("Attachments on this task:\n" + manifest)
+    return _truncate("\n\n".join(parts), _CONTEXT_MAX_CHARS)
 
 
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
@@ -135,11 +173,12 @@ def _load_triage_task(task_id: str) -> tuple[Optional[kb.Task], str]:
 
 
 def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
-    """Bounded ``task_id``/``title``/``body`` for the user prompt templates."""
+    """Bounded ``task_id``/``title``/``body``/``context`` for the user prompt templates."""
     return {
         "task_id": task.id,
         "title": _truncate(task.title or "", 400),
         "body": _truncate(task.body or "(no body)", 4000),
+        "context": _build_context(task.id),
     }
 
 

@@ -162,3 +162,16 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+def test_decompose_system_prompt_honors_routing_class():
+    """Acceptance (b): the decomposer is told to honor an explicit ROUTING-CLASS.
+
+    Prompt-level fixture: the system prompt must instruct the decomposer to
+    prefer an explicit ROUTING-CLASS tag in the body over description matching
+    (proposal §5c), and must note CONTEXT-SOURCES handling.
+    """
+    prompt = decomp._SYSTEM_PROMPT
+    assert "ROUTING-CLASS" in prompt
+    assert "PREFER it over description" in prompt
+    assert "CONTEXT-SOURCES" in prompt
+
+

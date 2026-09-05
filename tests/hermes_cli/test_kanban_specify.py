@@ -97,6 +97,38 @@ def test_specify_task_happy_path(kanban_home):
 
 
 
+def test_specify_task_receives_comment_thread_and_attachments(kanban_home):
+    """Acceptance (a): per-card context reaches the triage call.
+
+    A triage task carrying a comment thread and attachments must have that
+    context forwarded in the specifier's user message — not just to the
+    dispatched worker (proposal Option C).
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+        kb.add_comment(conn, tid, "operator", "ROUTING-CLASS: build — check Discord facts first")
+        kb.add_comment(conn, tid, "operator", "Second note.")
+        kb.add_attachment(
+            conn, tid,
+            filename="spec.pdf", stored_path="/nonexistent/spec.pdf",
+            size=1234, uploaded_by="operator",
+        )
+
+    content = jsonlib.dumps({"title": "Refined", "body": "**Goal**\nok"})
+    p, mock_fn = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+    assert outcome.ok is True
+
+    call = mock_fn.call_args
+    user_msg = call.kwargs["messages"][1]["content"]
+    assert "Recent comments on this task:" in user_msg
+    assert "ROUTING-CLASS: build — check Discord facts first" in user_msg
+    assert "Second note." in user_msg
+    assert "Attachments on this task:" in user_msg
+    assert "spec.pdf (1234 bytes)" in user_msg
+
+
 # ---------------------------------------------------------------------------
 # CLI wiring — argparse + _cmd_specify
 # ---------------------------------------------------------------------------

@@ -1,0 +1,412 @@
+"""Tool-timer animation state machine for native stream bubbles.
+
+Extracted from ``stream_consumer.py`` for bounded ownership.  The
+``ToolTimerMixin`` provides the per-tool elapsed-time spinner that ticks
+every second in the WeCom native stream bubble, plus the completion
+history overlay.
+
+Public symbols re-exported for callers:
+- ``_TIMER_TICK`` sentinel
+- ``_SPINNER_CHARS``
+- ``_TOOL_NAME_RE``, ``_parse_tool_name``
+
+Host requirements (must be present on ``self``):
+- ``_use_native_streaming: bool``
+- ``_native_stream_opened: bool``
+- ``_queue: queue.Queue``  (stdlib thread-safe queue)
+- ``_tool_progress_lines: list[str]``
+- ``_tool_progress_active: bool``
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import threading
+import time
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+# Sentinel for the tool-timer tick — a no-op wake-up for the drain loop.
+# The tick callback already updated ``_tool_progress_lines`` and set
+# ``_tool_progress_active``; this just unblocks the loop so it pushes a frame.
+_TIMER_TICK = object()
+
+# Braille-dot spinner characters for the tool timer animation.
+_SPINNER_CHARS = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# Pattern to extract a tool name from progress lines emitted by run.py.
+# Examples: "🔧 Running terminal..." → "terminal"
+#           "⚙️ Calling web_search..." → "web_search"
+#           "🔍 Searching..." → "Searching"  (fallback: first word after emoji)
+_TOOL_NAME_RE = re.compile(
+    r"^[^\w]*"              # leading emoji / punctuation
+    r"(?:Running|Calling|Using)?\s*"  # optional verb
+    r"(\w+)",               # capture the tool name
+    re.UNICODE,
+)
+
+
+def _parse_tool_name(line: str) -> str:
+    """Extract a tool name from a progress line like '🔧 Running terminal...'."""
+    m = _TOOL_NAME_RE.search(line)
+    return m.group(1) if m else "tool"
+
+
+class ToolTimerMixin:
+    """Mixin providing tool-timer animation for native stream bubbles.
+
+    Initialise timer state by calling ``_init_tool_timer()`` from the host
+    ``__init__``.  The host must also provide the attributes listed in the
+    module docstring.
+    """
+
+    def _init_tool_timer(self) -> None:
+        """Initialise tool-timer mutable state.  Call from host ``__init__``."""
+        self._tool_timer_handle: Optional[asyncio.TimerHandle] = None
+        self._tool_timer_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._tool_start_times: dict[str, float] = {}  # key -> monotonic start
+        self._tool_timer_labels: dict[str, str] = {}  # key -> original progress line
+        self._tool_timer_tick_count: int = 0  # for spinner rotation
+        self._timer_lock = threading.Lock()  # guards ALL timer mutable state
+        self._tool_completed_lines: list[str] = []  # completed tool history (max 5)
+
+    # ── Public API ───────────────────────────────────────────────────────
+
+    def on_tool_progress(self, line: str, tool_call_id: str | None = None) -> None:
+        """Inject a tool-progress status line into the native stream bubble.
+
+        Thread-safe (called from agent worker thread via queue.Queue). Only
+        effective when native streaming is active for this consumer.
+
+        The line is displayed as an overlay until the next text delta arrives,
+        at which point real content overwrites the tool-progress lines.
+
+        Also starts the tool-timer animation (1s ticks with spinner + elapsed)
+        if not already running.
+
+        ``tool_call_id``, when provided, is used as the dict key instead of
+        the parsed tool name.  This allows two concurrent calls to the same
+        tool (e.g. two ``terminal`` invocations) to track independently.
+        """
+        from gateway.stream_consumer import _TOOL_PROGRESS
+        if line:
+            self._queue.put((_TOOL_PROGRESS, line))
+            # The base in-bubble progress overlay above is available to every
+            # native-streaming user.  The animated spinner/elapsed *timer* is a
+            # separate opt-in (``supports_tool_timer``): only start it when the
+            # user enabled it, so default-config native users get the static
+            # progress line without the ticking animation.
+            if not getattr(self, "supports_tool_timer", False):
+                return
+            # Start/join the timer for this tool.  Use the full progress line
+            # as the timer label so the user sees what the tool is doing
+            # (e.g. "⚙️ terminal: "git status"") instead of just "terminal".
+            # The line is already display-safe — it was built by the gateway
+            # progress_callback with truncation and preview formatting.
+            tool_name = _parse_tool_name(line)
+            key = tool_call_id if tool_call_id is not None else tool_name
+            # Don't clear other running tools — they may be parallel.
+            # on_tool_completed() handles moving finished tools to
+            # _tool_completed_lines when tool.completed fires.
+            with self._timer_lock:
+                self._tool_timer_labels[key] = line.strip()
+            self._start_tool_timer(key)
+
+    def on_tool_started(self, tool_name: str, tool_call_id: str | None = None) -> None:
+        """Start the tool timer from a lifecycle event, no overlay line.
+
+        Timer-only entry point used by ``run.py`` when ``display.tool_progress``
+        is off but ``extra.tool_timer_enabled`` is on: the detailed progress
+        line is never built, yet the animated timer must still arm.  Unlike
+        ``on_tool_progress`` this pushes nothing to ``_queue`` — the periodic
+        tick supplies the frames.
+
+        No-op unless the timer is opted in.  *tool_name* is used verbatim as
+        the sanitized label (callers pass the bare tool name).
+        """
+        if not getattr(self, "supports_tool_timer", False):
+            return
+        if not tool_name:
+            tool_name = "tool"
+        key = tool_call_id if tool_call_id is not None else tool_name
+        with self._timer_lock:
+            self._tool_timer_labels[key] = tool_name
+        self._start_tool_timer(key)
+
+    def on_tool_completed(self, tool_name: str, duration: float, tool_call_id: str | None = None) -> None:
+        """Record a completed tool in the history overlay.
+
+        Thread-safe: called from the agent worker thread.
+
+        ``tool_call_id``, when provided, is used as the dict key for looking
+        up the matching timer entry.  Falls back to *tool_name* when absent.
+        """
+        # Completion history is part of the timer animation; when the timer is
+        # not enabled no start was recorded, so there is nothing to close out
+        # and no overlay to update.
+        if not getattr(self, "supports_tool_timer", False):
+            return
+        key = tool_call_id if tool_call_id is not None else tool_name
+        with self._timer_lock:
+            label = self._tool_timer_labels.pop(key, tool_name)
+            self._tool_start_times.pop(key, None)
+            completion_line = f"✓ {label} ({int(duration)}s)"
+            self._tool_completed_lines.append(completion_line)
+            # Keep max 5 entries
+            if len(self._tool_completed_lines) > 5:
+                self._tool_completed_lines = self._tool_completed_lines[-5:]
+        self._tool_progress_active = True
+        self._queue.put(_TIMER_TICK)
+
+    def on_llm_thinking(self, label: "str | None" = None) -> None:
+        """Signal that an LLM API call has started — show thinking animation.
+
+        Thread-safe: called from the agent worker thread.  Only activates
+        when the native stream is already open (the bubble is visible).
+
+        ``label`` (e.g. "claude-4.6-opus (API call #3)") is accepted for
+        call-site compatibility but is intentionally NOT displayed: the model
+        identity and API-call count must not cross the WeCom transport
+        (privacy: #96942).  The tick shows a generic "💭 Thinking (Ns)".
+        """
+        if not self._use_native_streaming:
+            return
+        # Pure timer-animation feature — skip entirely unless the timer is
+        # opted in.  (run.py also gates its call site on ``supports_tool_timer``;
+        # this is defense-in-depth for any other caller.)  Keep this BEFORE the
+        # pre-seed latch so a non-timer platform never sets _pending_thinking.
+        if not getattr(self, "supports_tool_timer", False):
+            return
+        # First-call race: the signal can arrive before run() has finished the
+        # seed round-trip, so the bubble is not open yet (or the timer loop is
+        # not captured).  Latch it instead of dropping — run() consumes the
+        # latch right after seeding so the first call still arms thinking.
+        if not self._native_stream_opened or self._tool_timer_loop is None:
+            self._pending_thinking = True
+            logger.info("[TIMING] on_llm_thinking: latched (pre-seed, opened=%s)", self._native_stream_opened)
+            return
+        logger.info("[TIMING] on_llm_thinking: arming now (stream open)")
+        # LLM thinking means all tools are done — move remaining tool entries
+        # to completed history, then start the thinking timer.
+        with self._timer_lock:
+            stale = [k for k in self._tool_start_times if k != "_thinking"]
+            now = time.monotonic()
+            for k in stale:
+                start = self._tool_start_times.pop(k)
+                tool_label = self._tool_timer_labels.pop(k, k)
+                elapsed = int(now - start)
+                completion_line = f"✓ {tool_label} ({elapsed}s)"
+                self._tool_completed_lines.append(completion_line)
+            # Trim to max 5 completed entries
+            if len(self._tool_completed_lines) > 5:
+                self._tool_completed_lines = self._tool_completed_lines[-5:]
+            thinking_was_new = "_thinking" not in self._tool_start_times
+            if thinking_was_new:
+                self._tool_start_times["_thinking"] = time.monotonic()
+            # Deliberately do NOT store *label* — it may carry model identity
+            # / API-call count that must not be rendered over the transport.
+        # Arm the timer if not already running.
+        with self._timer_lock:
+            handle_present = self._tool_timer_handle is not None
+            loop_present = self._tool_timer_loop is not None
+        if loop_present:
+            if not handle_present:
+                # No live tick loop — arm normally (fires the synchronous first
+                # tick that renders "💭 Thinking (0s)" without a 1s delay).
+                self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+            elif thinking_was_new:
+                # Zombie handle: on_tool_completed pops the finished tool's
+                # _tool_start_times entry but never cancels _tool_timer_handle,
+                # so a periodic handle armed for the just-finished tool survives
+                # the tool boundary.  On the FIRST thinking of a continuation
+                # round the normal need_arm check (handle is None) is False, so
+                # _arm_tool_timer — the only place the synchronous first tick
+                # fires — would be skipped and the 💭 Thinking frame would stall
+                # until the next call_later(1.0) tick.  ``thinking_was_new``
+                # proves no live thinking loop owns the handle (a live one keeps
+                # _thinking in _tool_start_times), so the handle must be a stale
+                # tool handle: cancel it and re-arm so the continuation gets the
+                # same immediate first frame the first call gets.
+                self._tool_timer_loop.call_soon_threadsafe(self._rearm_after_tool)
+
+    def _consume_pending_thinking(self) -> None:
+        """Honour a pre-seed first-call thinking latch, if one is pending.
+
+        Called from ``run()`` right after the seed opens the native bubble and
+        the timer loop is captured — the point at which a first-call signal
+        that raced the seed (and set ``_pending_thinking``) can finally arm.
+        Only fires when the timer is still opted in and no model content has
+        streamed yet: content wins over the thinking animation.
+        """
+        if not self._pending_thinking:
+            return
+        self._pending_thinking = False
+        if not getattr(self, "supports_tool_timer", False):
+            return
+        if self._accumulated:
+            return
+        # Stream is open and the loop is captured now, so on_llm_thinking takes
+        # the arm path instead of re-latching.
+        self.on_llm_thinking()
+
+    # ── Frame composition helper ─────────────────────────────────────────
+
+    def _compose_tool_overlay(self) -> list[str]:
+        """Return tool-progress lines including completed history.
+
+        Called by the host's ``_compose_frame_content`` to build the tool
+        overlay section of the stream frame.
+        """
+        tool_lines = self._tool_progress_lines
+        if not tool_lines:
+            with self._timer_lock:
+                if self._tool_completed_lines:
+                    tool_lines = list(self._tool_completed_lines)
+        return tool_lines
+
+    # ── Internal timer machinery ─────────────────────────────────────────
+
+    def _start_tool_timer(self, tool_name: str) -> None:
+        """Start (or join) the 1-second tool-timer animation.
+
+        Records *tool_name*'s start time and arms the periodic tick if not
+        already running.  Only arms when ``_use_native_streaming`` is True
+        (non-native platforms don't benefit from sub-second bubble updates).
+
+        Thread-safe: called from the agent worker thread.  Uses
+        call_soon_threadsafe to schedule the first tick on the event loop.
+        """
+        if not self._use_native_streaming:
+            return
+        with self._timer_lock:
+            if tool_name not in self._tool_start_times:
+                self._tool_start_times[tool_name] = time.monotonic()
+            # Arm the periodic tick if not already running.
+            # Use call_soon_threadsafe because this method is called from the
+            # agent worker thread, not the event loop thread.
+            need_arm = self._tool_timer_handle is None and self._tool_timer_loop is not None
+        if need_arm:
+            self._tool_timer_loop.call_soon_threadsafe(self._arm_tool_timer)
+
+    def _arm_tool_timer(self) -> None:
+        """Arm the periodic tick.  Must run on the event loop thread.
+
+        The FIRST tick fires immediately (synchronously here), not after a 1s
+        ``call_later`` delay: ``on_llm_thinking`` (unlike ``on_tool_progress``,
+        which synchronously enqueues a ``_TOOL_PROGRESS`` frame) pushes nothing
+        of its own, so without an immediate tick the "💭 Thinking (0s)" line
+        would not reach the bubble until a full second after the stream opened —
+        exactly the seconds-long typing gap this feature exists to close.  The
+        tick re-arms itself (``call_later`` at its tail) on the normal 1s
+        cadence and sets ``_tool_timer_handle`` there.
+        """
+        with self._timer_lock:
+            # Nothing to display (e.g. a deferred arm scheduled by
+            # on_llm_thinking got overtaken by a stop that cleared the state
+            # in the fast-first-call race) — don't arm a zombie handle.
+            if not self._tool_start_times:
+                return
+            # Already armed (running tick loop) — don't start a second one.
+            if self._tool_timer_handle is not None:
+                return
+        # Fire the first tick synchronously (we are on the event loop thread).
+        # NOT under _timer_lock: _tool_timer_tick acquires it itself, so calling
+        # it inside the lock would deadlock.  The tick emits the "Thinking (0s)"
+        # frame now and schedules the next tick via call_later, which populates
+        # _tool_timer_handle for the 1s cadence and the idempotency guard above.
+        logger.debug("[timer] armed (immediate first tick)")
+        self._tool_timer_tick()
+
+    def _rearm_after_tool(self) -> None:
+        """Cancel a stale post-tool handle, then arm.  Runs on the loop thread.
+
+        ``on_tool_completed`` pops the finished tool's ``_tool_start_times``
+        entry but never cancels ``_tool_timer_handle``, so a periodic handle
+        armed for that tool can outlive it (a "zombie" handle).  When the first
+        ``on_llm_thinking`` of a continuation round finds that zombie set, the
+        normal arm path is skipped (``need_arm = handle is None`` is False) and
+        the synchronous first tick in ``_arm_tool_timer`` never fires — the
+        ``💭 Thinking`` frame then waits for the next ``call_later(1.0)`` tick.
+
+        Cancel the zombie (killing its pending ``call_later`` so no second tick
+        loop is created) and clear the handle so ``_arm_tool_timer``'s
+        idempotency guard passes, then arm — delivering the immediate first
+        frame the first call also gets.  Scheduled via ``call_soon_threadsafe``
+        by ``on_llm_thinking``, so it runs on the event-loop thread where the
+        handle is owned; cancel/clear stay under ``_timer_lock`` for symmetry
+        with ``_stop_tool_timer``.
+        """
+        with self._timer_lock:
+            if self._tool_timer_handle is not None:
+                self._tool_timer_handle.cancel()
+                self._tool_timer_handle = None
+        self._arm_tool_timer()
+
+    def _stop_tool_timer(self) -> None:
+        """Cancel the tool-timer animation and clear associated state."""
+        with self._timer_lock:
+            was_running = self._tool_timer_handle is not None
+            if self._tool_timer_handle is not None:
+                self._tool_timer_handle.cancel()
+                self._tool_timer_handle = None
+            self._tool_start_times.clear()
+            self._tool_timer_labels.clear()
+            self._tool_completed_lines.clear()
+            self._tool_timer_tick_count = 0
+        # Drop any un-consumed first-call thinking latch too, so got_done (which
+        # stops the timer) leaves nothing pending for a later reseed to arm.
+        self._pending_thinking = False
+        logger.debug("[timer] stopped (was_running=%s)", was_running)
+
+    def _tool_timer_tick(self) -> None:
+        """Periodic tick: rebuild tool-progress lines with spinner + elapsed.
+
+        Runs on the asyncio event loop thread (via ``call_later``).
+        """
+        with self._timer_lock:
+            if not self._tool_start_times:
+                # All tools cleared — don't re-arm
+                self._tool_timer_handle = None
+                return
+
+            self._tool_timer_tick_count += 1
+            if self._tool_timer_tick_count == 1:
+                logger.info("[TIMING] first tick pushing frame (thinking/tool visible now)")
+            logger.debug("[timer] tick #%d, entries=%d", self._tool_timer_tick_count, len(self._tool_start_times))
+            now = time.monotonic()
+            lines: list[str] = list(self._tool_completed_lines)  # completed history first
+            for tool_name, start in self._tool_start_times.items():
+                elapsed = int(now - start)
+                spinner = _SPINNER_CHARS[self._tool_timer_tick_count % len(_SPINNER_CHARS)]
+                if tool_name == "_thinking":
+                    # Generic status only — the model identity / API-call
+                    # count that may be passed to on_llm_thinking must never
+                    # cross the transport (privacy: #96942).
+                    lines.append(f"{spinner} 💭 Thinking ({elapsed}s)")
+                else:
+                    # The stored label is either the full progress line from
+                    # on_tool_progress (e.g. "⚙️ terminal: \"git status\"")
+                    # or a bare tool name from on_tool_started (when
+                    # display.tool_progress is off).  Full lines already
+                    # carry their own emoji; bare names get the default 🔧.
+                    label = self._tool_timer_labels.get(tool_name, tool_name)
+                    if any(label.startswith(ch) for ch in "⚙️🔧🔍💻📦🌐✏️📄🖼"):
+                        # Full progress line — already has emoji prefix
+                        lines.append(f"{spinner} {label} ({elapsed}s)")
+                    else:
+                        # Bare tool name from on_tool_started
+                        lines.append(f"{spinner} 🔧 {label} ({elapsed}s)")
+
+            self._tool_progress_lines = lines
+        self._tool_progress_active = True
+        # Wake the drain loop so it pushes a frame
+        self._queue.put(_TIMER_TICK)
+
+        # Re-arm for the next tick
+        with self._timer_lock:
+            if self._tool_timer_loop is not None:
+                self._tool_timer_handle = self._tool_timer_loop.call_later(
+                    1.0, self._tool_timer_tick,
+                )

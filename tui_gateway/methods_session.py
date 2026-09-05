@@ -519,18 +519,21 @@ def _find_live_unpersisted(needle: str, home) -> str:
 
 def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     """Reattach a LIVE lazy session with no state.db row yet (every fresh Bot Chat; a 404 here killed messaging
-    for never-spoken bots). Rebind the transport and cancel the armed orphan-reap Timer (a WS drop may have
+    for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
     sentinel-parked the record) or it fires against this client."""
     if ctx.owns_db:
         _release_db(ctx.db)
     live["last_active"] = time.time()
     if (transport := current_transport()) is not None:
         # This resume reattaches the live record. A lazy session (no state.db row yet — every fresh Bot
-        # Chat) that was sentinel-parked by a WS drop MUST be rebound here, or it keeps the drop sentinel
+        # Chat) that was sentinel-parked by a WS drop MUST be reattached here, or it keeps the drop sentinel
         # and the armed orphan-reap Timer fires against a client that is attached right now — the
         # unpersisted sibling of the storm-killer paths (#91276).
         with live.setdefault("history_lock", threading.Lock()):
-            live["transport"] = transport
+            # Attach additively so a second client resuming this live record does not steal the stream
+            # from the one already attached; attaching a live transport also un-parks a sentinel slot,
+            # which is what #91276 needed here.
+            _attach_session_transport(live, transport)
             live.setdefault("viewers", {})[transport] = time.time()
     _cancel_ws_orphan_reap(live_sid)
     history = live.get("history") or []
@@ -629,7 +632,8 @@ def _resume_guard(ctx: _Resume) -> dict | None:
 
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reattach an already-live session under the resume lock (held across the client-gone check,
-    transport rebind and reap cancel so grace expiry is atomic)."""
+    transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
+    caller alongside the client(s) already streaming instead of taking the slot from them."""
     with _session_resume_lock:
         if _sessions.get(sid) is not session:
             return _err(ctx.rid, 4007, "session no longer live; retry resume")
@@ -889,7 +893,10 @@ def _(rid, params: dict) -> dict:
 
 @_session_method("session.activate")
 def _(rid, params: dict, session: dict) -> dict:
-    """Attach the frontend to a live TUI session without closing the previously focused one."""
+    """Attach the frontend to a live TUI session without closing the previously focused one.
+
+    _live_session_payload ATTACHES this caller to the session rather than rebinding it, so activating a
+    session someone else is already streaming mirrors it instead of stealing it."""
     return _ok(rid, _live_session_payload(
         str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
         omit_messages=is_truthy_value(params.get("omit_messages", False))))

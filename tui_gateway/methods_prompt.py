@@ -572,10 +572,12 @@ def _(rid, params: dict) -> dict:
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
+    # Attach the current transport: streaming must stay on the active websocket even if a
+    # disconnect/fallback moved the session to stdio — and, since it attaches rather than rebinds,
+    # a second client submitting a prompt no longer cuts the first client out of the session it is
+    # watching.
     if (t := current_transport()) is not None:
-        session["transport"] = t
+        _attach_session_transport(session, t)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn

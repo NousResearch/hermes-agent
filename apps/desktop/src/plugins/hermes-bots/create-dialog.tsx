@@ -1371,10 +1371,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
         return room
       })
 
-      // The room record is the creation commit point. Bot metadata is a
-      // secondary cross-client membership projection: a failure here must not
-      // leave a real hosted/local room behind a retry prompt, which would mint
-      // a suffixed duplicate on the next attempt.
+      // Updating the room record makes the Group Chat visible and usable. Bot
+      // metadata is a secondary cross-client projection: a failure here must
+      // not show a retry prompt that would mint a suffixed duplicate.
       let metadataSyncFailed = false
 
       for (const owner of metadataOwners) {
@@ -1392,7 +1391,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       host.notify({
         kind: metadataSyncFailed ? 'warning' : 'info',
         message: metadataSyncFailed
-          ? `${b.group.created(groupName, selected.length)} Some Bot memberships could not sync; the room remains available.`
+          ? `${b.group.created(groupName, selected.length)}. ${b.group.detailsSyncPending}`
           : b.group.created(groupName, selected.length)
       })
       onClose()

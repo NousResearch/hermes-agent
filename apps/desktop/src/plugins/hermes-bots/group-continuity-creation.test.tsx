@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   probeHostedRoomMembers: vi.fn(),
   saveBotMeta: vi.fn(async (_owner: unknown, _patch: unknown) => ({
-    serverOutcome: 'persisted' as const,
+    serverOutcome: 'persisted',
     serverPersisted: true
   }))
 }))
@@ -418,11 +418,12 @@ describe('automatic Group Chat continuity', () => {
     )
   })
 
-  it('finishes a created room when a later Bot membership sync fails', async () => {
-    const onCreated = vi.fn()
+  it.each(['rejects', 'reports failure'] as const)(
+    'finishes a created room when a later Bot details sync %s',
+    async failure => {
+      const onCreated = vi.fn()
 
-    mocks.saveBotMeta
-      .mockImplementationOnce(async (_owner, patch) => {
+      mocks.saveBotMeta.mockImplementationOnce(async (_owner, patch) => {
         const { $botMeta } = await import('./data')
 
         $botMeta.set({
@@ -430,43 +431,50 @@ describe('automatic Group Chat continuity', () => {
         })
 
         return {
-          serverOutcome: 'persisted' as const,
+          serverOutcome: 'persisted',
           serverPersisted: true
         }
       })
-      .mockRejectedValueOnce(new Error('VPS restarted during profiles.configure'))
 
-    const create = await renderSelectedGroup(roster, onCreated)
+      if (failure === 'rejects') {
+        mocks.saveBotMeta.mockRejectedValueOnce(new Error('VPS restarted during profiles.configure'))
+      } else {
+        mocks.saveBotMeta.mockResolvedValueOnce({
+          serverOutcome: 'failed',
+          serverPersisted: false
+        })
+      }
 
-    fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), {
-      target: { value: 'Workshop handoff' }
-    })
-    await waitFor(() => expect(create.disabled).toBe(false))
-    await act(async () => {
-      fireEvent.click(create)
-    })
+      const create = await renderSelectedGroup(roster, onCreated)
 
-    const { $botMeta } = await import('./data')
-    const { $groupChats } = await import('./group-chat')
-
-    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('Workshop handoff'))
-    expect($botMeta.get()['host-a::research']?.groups).toContain('Workshop handoff')
-    expect($groupChats.get()['Workshop handoff']).toMatchObject({
-      continuityMode: 'gateway',
-      hosted: 'install:studio',
-      members: expect.arrayContaining([
-        expect.objectContaining({ name: 'research' }),
-        expect.objectContaining({ name: 'builder' })
-      ])
-    })
-    expect(screen.queryByText('Could not create the Group Chat. Try again.')).toBeNull()
-    expect(mocks.notify).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'warning',
-        message: expect.stringContaining('could not sync')
+      fireEvent.change(screen.getByRole('textbox', { name: 'Group name' }), {
+        target: { value: 'Workshop handoff' }
       })
-    )
-  })
+      await waitFor(() => expect(create.disabled).toBe(false))
+      await act(async () => {
+        fireEvent.click(create)
+      })
+
+      const { $botMeta } = await import('./data')
+      const { $groupChats } = await import('./group-chat')
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledWith('Workshop handoff'))
+      expect($botMeta.get()['host-a::research']?.groups).toContain('Workshop handoff')
+      expect($groupChats.get()['Workshop handoff']).toMatchObject({
+        continuityMode: 'gateway',
+        hosted: 'install:studio',
+        members: expect.arrayContaining([
+          expect.objectContaining({ name: 'research' }),
+          expect.objectContaining({ name: 'builder' })
+        ])
+      })
+      expect(screen.queryByText('Could not create the Group Chat. Try again.')).toBeNull()
+      expect(mocks.notify).toHaveBeenCalledWith({
+        kind: 'warning',
+        message: '“Workshop handoff” created with 2 bots. Some Bot details haven’t synced to your other devices.'
+      })
+    }
+  )
 
   it('does not create a competing Desktop room while remote cleanup is uncertain', async () => {
     mocks.createAutonomousHostedGroupChat.mockRejectedValue(

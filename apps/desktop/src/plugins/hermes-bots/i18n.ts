@@ -215,6 +215,7 @@ type BotsMessages = {
     pictureGenerationFailed: string
     createAction: (count: number) => string
     created: (name: string, count: number) => string
+    detailsSyncPending: string
     createFailed: string
     creating: string
     pickAtLeastTwo: string
@@ -524,6 +525,7 @@ const en: BotsMessages = {
     pictureGenerationFailed: 'Group picture generation failed',
     createAction: count => `Create Group${count ? ` (${count})` : ''}`,
     created: (name, count) => `“${name}” created with ${count} bots`,
+    detailsSyncPending: 'Some Bot details haven’t synced to your other devices.',
     createFailed: 'Could not create the Group Chat. Try again.',
     creating: 'Creating…',
     pickAtLeastTwo: 'Pick at least 2 bots',
@@ -828,6 +830,7 @@ const ja: BotsMessages = {
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     createAction: count => `グループを作成${count ? ` (${count})` : ''}`,
     created: (name, count) => `「${name}」を${count}体のボットで作成しました`,
+    detailsSyncPending: '一部のボット情報が他のデバイスにまだ同期されていません。',
     createFailed: 'グループチャットを作成できませんでした。もう一度お試しください。',
     creating: '作成中…',
     pickAtLeastTwo: '2体以上のボットを選択してください',
@@ -1128,6 +1131,7 @@ const zh: BotsMessages = {
     pictureGenerationFailed: '群组图片生成失败',
     createAction: count => `创建群聊${count ? ` (${count})` : ''}`,
     created: (name, count) => `已创建“${name}”，包含 ${count} 个机器人`,
+    detailsSyncPending: '部分机器人详情尚未同步到您的其他设备。',
     createFailed: '无法创建群聊。请重试。',
     creating: '正在创建…',
     pickAtLeastTwo: '请至少选择 2 个机器人',
@@ -1427,6 +1431,7 @@ const zhHant: BotsMessages = {
     pictureGenerationFailed: '群組圖片產生失敗',
     createAction: count => `建立群組聊天${count ? ` (${count})` : ''}`,
     created: (name, count) => `已建立「${name}」，包含 ${count} 個機器人`,
+    detailsSyncPending: '部分機器人詳細資料尚未同步到您的其他裝置。',
     createFailed: '無法建立群組聊天。請再試一次。',
     creating: '正在建立…',
     pickAtLeastTwo: '請至少選擇 2 個機器人',

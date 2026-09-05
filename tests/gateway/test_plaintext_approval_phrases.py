@@ -70,6 +70,15 @@ class TestAffirmatives:
         assert m(reply) == ("approve", "always")
 
 
+class TestAgentControlWordsAreNotApprovalAnswers:
+    """A bare "stop"/"abort" while an approval blocks means stop the AGENT (busy-path
+    interrupt/steer), not "deny this one command and keep going"."""
+
+    @pytest.mark.parametrize("reply", ["stop", "Stop!", "abort", "hold on"])
+    def test_falls_through_to_busy_handling(self, reply):
+        assert m(reply) is None
+
+
 class TestAmbiguousFallsThrough:
     """None = leave the approval pending. A conditional, a question, or a real
     sentence is not an answer and must not resolve anything."""

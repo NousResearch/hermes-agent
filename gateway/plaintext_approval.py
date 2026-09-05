@@ -79,13 +79,17 @@ _PHRASES: Dict[str, Tuple[str, str]] = {
     # -- refusal -------------------------------------------------------------
     **dict.fromkeys(
         (
+            # "stop" / "abort" / "hold on" are deliberately absent: while an approval
+            # blocks they most likely mean "stop the agent", which the busy path already
+            # handles (interrupt / steer); denying just this one command would leave
+            # the turn running.
             "deny", "denied", "no", "n", "nope", "nah", "negative",
-            "reject", "cancel", "cancel that", "cancel it", "abort", "stop",
+            "reject", "cancel", "cancel that", "cancel it",
             "dont", "do not", "dont do it", "do not do it", "dont do that",
             "do not do that", "dont run it", "do not run it", "no dont",
             "no do not", "no dont do it", "no do not do it", "no dont do that",
             "no do not do that", "no thanks", "no thank you", "not now",
-            "hold off", "hold on", "skip it", "skip that", "leave it",
+            "hold off", "skip it", "skip that", "leave it",
             "never mind", "nevermind", "forget it", "dont bother",
             "do not bother", "no way", "denied for now", "not this time",
             "no go", "dont approve", "do not approve",

@@ -3435,25 +3435,36 @@ export const ru = defineLocale({
       lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.'
     },
     mcpSetup: {
-      installTitle: server => `Добавить MCP-сервер ${server}?`,
-      enableTitle: server => `Включить MCP-сервер ${server}?`,
-      authorizeTitle: server => `Авторизовать MCP-сервер ${server}?`,
-      installAction: 'Установить',
-      enableAction: 'Включить',
-      authorizeAction: 'Авторизовать',
+      lookingUp: connectors => `Поиск ${connectors}…`,
+      connectAction: 'Подключить',
+      retryAction: 'Повторить',
+      grantAction: 'Предоставить доступ',
+      phase: {
+        adding: 'Добавление…',
+        enabling: 'Включение…',
+        installing: 'Установка…',
+        probing: 'Проверка…',
+        signing_in: 'Вход…'
+      },
       decline: 'Не сейчас',
-      declined: 'Отклонено',
-      installed: server => `${server} установлен`,
-      enabled: server => `${server} включён`,
-      authorized: server => `${server} авторизован`,
-      failed: server => `Настройка не удалась для ${server}`,
-      unanswered: 'Нет ответа',
+      dismiss: 'Скрыть',
       toolCount: count => `${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
-      notInCatalog: server => `«${server}» нет в MCP-каталоге`,
-      catalogSource: 'Из каталога, одобренного Nous',
+      notFound: connectors => `Не удалось найти ${connectors}`,
+      stateConnected: 'Подключено',
+      stateDeclined: 'Пропущено',
+      stateFailed: 'Ошибка',
+      stateDisabled: 'сейчас отключён',
+      stateNeedsAuth: 'выполнен выход',
+      trustVerified: publisher => `подтверждено · ${publisher}`,
+      trustVerifiedTip: publisher =>
+        `Издатель подтвердил, что владеет доменом ${publisher}, обслуживающим эту конечную точку. Это проверка личности, а не одобрение.`,
+      trustCommunity: 'без проверки',
+      trustCommunityTip: host =>
+        `Никто не проверил, кто управляет ${host || 'этой конечной точкой'} — имя издателя в реестре не совпадает с доменом, к которому он подключается.`,
       envRequired: 'Сначала заполните обязательные учётные данные',
-      sendFailed: 'Не удалось отправить ответ на настройку MCP',
-      reloadFailed: 'Сервер сохранён, но перезагрузка MCP-инструментов не удалась — они загрузятся в следующем сеансе',
+      sendFailed: 'Не удалось отправить ответ на настройку коннектора',
+      reloadFailed:
+        'Коннектор сохранён, но перезагрузка его инструментов не удалась — они загрузятся в следующем сеансе',
       gatewayDisconnected: 'Шлюз Hermes не подключён'
     },
     tool: {

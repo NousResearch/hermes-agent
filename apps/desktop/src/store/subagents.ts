@@ -212,6 +212,24 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
   }
 }
 
+/** Dismiss a single subagent row by id (drop from display). */
+export function dismissSubagent(sid: string, id: string) {
+  const map = $subagentsBySession.get()
+  const list = map[sid]
+
+  if (!list?.length) {
+    return
+  }
+
+  const next = list.filter(item => item.id !== id)
+
+  if (next.length === list.length) {
+    return
+  }
+
+  $subagentsBySession.set({ ...map, [sid]: next })
+}
+
 export function clearSessionSubagents(sid: string) {
   const map = $subagentsBySession.get()
 

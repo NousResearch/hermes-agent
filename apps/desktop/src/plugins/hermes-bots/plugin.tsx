@@ -60,6 +60,7 @@ import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
 import { $activityToasts } from './roster-actions'
+import { loadRosterOrder } from './roster-order'
 import {
   botChatOwnsWorkspace,
   BotsPane,
@@ -96,9 +97,10 @@ export default {
     'Bot Mode — a one-chat-per-agent roster with avatars, routines, group chats, and bot-to-bot messaging. Ships with the app; disable here if unwanted.',
   register(ctx: PluginContext) {
     setPluginCtx(ctx)
-    // The user's own roster sections. Read once at register; every mutation
+    // The user's own roster sections and custom order. Read once at register; every mutation
     // writes through.
     loadBotSections()
+    loadRosterOrder()
     const disposeLocales = ctx.i18n.register(BOTS_LOCALES)
     setGroupChatSyncDisposed(false)
     startFaceClock()

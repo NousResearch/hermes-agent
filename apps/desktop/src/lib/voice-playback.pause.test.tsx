@@ -101,13 +101,15 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'hermesDesktop')
 })
 
-it.each(['direct', 'relay', 'fallback'])(
-  'pauses %s playback without completing or losing position',
+it.each(['direct', 'relay', 'fallback', 'relay-no-clock'])(
+  'preserves %s playback lifetime across pause controls',
   async transport => {
-    if (transport === 'direct') {mocks.direct.mockResolvedValue({ provider: 'test' })}
+    if (transport === 'direct') {
+      mocks.direct.mockResolvedValue({ provider: 'test' })
+    }
 
-    if (transport === 'relay')
-      {Object.defineProperty(window, 'hermesDesktop', {
+    if (transport.startsWith('relay')) {
+      Object.defineProperty(window, 'hermesDesktop', {
         configurable: true,
         value: {
           getConnection: async () => ({
@@ -117,7 +119,8 @@ it.each(['direct', 'relay', 'fallback'])(
           }),
           getGatewayWsUrl: async () => ({ ok: true, wsUrl: 'ws://localhost/api/ws?token=test' })
         }
-      })}
+      })
+    }
 
     let completed = false
 
@@ -129,7 +132,7 @@ it.each(['direct', 'relay', 'fallback'])(
 
     await vi.advanceTimersByTimeAsync(0)
 
-    if (transport === 'relay') {
+    if (transport.startsWith('relay')) {
       const ws = SocketFixture.instances[0]!
       ws.onmessage!({ data: JSON.stringify({ type: 'start', sample_rate: 24000 }) })
       ws.onmessage!({ data: new ArrayBuffer(48000) })
@@ -137,6 +140,17 @@ it.each(['direct', 'relay', 'fallback'])(
     }
 
     expect($voicePlayback.get().status).toBe('speaking')
+
+    if (transport === 'relay-no-clock') {
+      // Device suspension is not an intentional user pause: keep the bounded
+      // completion behavior even when AudioContext.currentTime stops advancing.
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(completed).toBe(true)
+      expect($voicePlayback.get().status).toBe('idle')
+
+      return
+    }
+
     const originalSequence = $voicePlayback.get().sequence
     await toggleVoicePlaybackPaused()
     expect($voicePlayback.get().status).toBe('paused')
@@ -144,8 +158,9 @@ it.each(['direct', 'relay', 'fallback'])(
     expect(completed).toBe(false)
     expect($voicePlayback.get().sequence).toBe(originalSequence)
 
-    if (transport === 'relay') {expect(ContextFixture.instances[0]!.state).toBe('suspended')}
-    else {
+    if (transport.startsWith('relay')) {
+      expect(ContextFixture.instances[0]!.state).toBe('suspended')
+    } else {
       expect(AudioFixture.instances[0]!.paused).toBe(true)
       expect(AudioFixture.instances[0]!.currentTime).toBe(7)
     }
@@ -153,10 +168,12 @@ it.each(['direct', 'relay', 'fallback'])(
     await toggleVoicePlaybackPaused()
     expect($voicePlayback.get().status).toBe('speaking')
 
-    if (transport === 'relay') {
+    if (transport.startsWith('relay')) {
       ContextFixture.instances[0]!.currentTime = 2
       await vi.advanceTimersByTimeAsync(1500)
-    } else {AudioFixture.instances[0]!.dispatchEvent(new Event('ended'))}
+    } else {
+      AudioFixture.instances[0]!.dispatchEvent(new Event('ended'))
+    }
 
     expect(await playing).toBe(true)
     expect($voicePlayback.get().status).toBe('idle')

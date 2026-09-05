@@ -459,13 +459,13 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
     const remainingMs = context ? Math.max(0, nextStartAt - context.currentTime) * 1_000 : 0
 
-    if (remainingMs <= 0) {
-      settle('done')
-
-      return
-    }
-
-    drainTimer = window.setTimeout(finishWhenDrained, remainingMs + 100)
+    // Keep completion bounded if the device clock stops for reasons other
+    // than our pause button. Resume explicitly re-arms from the audio clock.
+    drainTimer = window.setTimeout(() => {
+      if (!paused) {
+        settle('done')
+      }
+    }, remainingMs + 100)
   }
 
   pauseControls = {
@@ -476,6 +476,11 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
         await context?.suspend()
       } catch (error) {
         paused = false
+
+        if (draining) {
+          finishWhenDrained()
+        }
+
         throw error
       }
     },

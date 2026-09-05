@@ -156,6 +156,54 @@ def _looks_like_e164_number(value: str) -> bool:
     return bool(value) and value.startswith("+") and value[1:].isdigit() and 7 <= len(value) - 1 <= 15
 
 
+def _parse_signal_timestamp(value: Any) -> Optional[int]:
+    """Parse a positive JSON-safe Signal timestamp."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        timestamp = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw or not raw.isascii() or not raw.isdigit():
+            return None
+        timestamp = int(raw)
+    else:
+        return None
+    return timestamp if 0 < timestamp <= 9_223_372_036_854_775_807 else None
+
+
+def _is_valid_signal_quote_author(value: Any) -> bool:
+    """Whether signal-cli can parse *value* as one quoted sender."""
+    if not isinstance(value, str):
+        return False
+    author = value.strip()
+    if _looks_like_e164_number(author):
+        return True
+    if author.startswith("PNI:"):
+        author = author[4:]
+    elif author.startswith("u:"):
+        return bool(author[2:].strip())
+    with suppress(ValueError, AttributeError, TypeError):
+        uuid.UUID(author)
+        return True
+    return False
+
+
+def _signal_quote_params(
+    reply_to: Any, metadata: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Build an atomic native quote, or no quote when either half is invalid."""
+    if not isinstance(metadata, dict):
+        return {}
+    timestamp = _parse_signal_timestamp(
+        reply_to if reply_to is not None else metadata.get("signal_quote_timestamp")
+    )
+    author = metadata.get("signal_quote_author")
+    if timestamp is None or not _is_valid_signal_quote_author(author):
+        return {}
+    return {"quoteTimestamp": timestamp, "quoteAuthor": author.strip()}
+
+
 def check_signal_requirements() -> bool:
     """Check if Signal runtime dependencies are available."""
     return True
@@ -434,9 +482,12 @@ class SignalAdapter(BasePlatformAdapter):
             return
         if self.ignore_stories and envelope_data.get("storyMessage"):
             return
-        # Edited messages carry their updated dataMessage inside editMessage
-        data_message = (envelope_data.get("dataMessage")
-                        or (envelope_data.get("editMessage") or {}).get("dataMessage"))
+        # Edited messages carry their updated dataMessage inside editMessage.
+        edit_message: Dict[str, Any] = {}
+        data_message = envelope_data.get("dataMessage")
+        if not data_message:
+            edit_message = envelope_data.get("editMessage") or {}
+            data_message = edit_message.get("dataMessage")
         if not data_message:
             return
         group_info = data_message.get("groupInfo")
@@ -477,16 +528,31 @@ class SignalAdapter(BasePlatformAdapter):
         msg_type = MessageType.TEXT if not media_types else next(
             (mt for prefix, mt in _MEDIA_TYPE_BY_MIME_PREFIX if any(m.startswith(prefix) for m in media_types)),
             MessageType.DOCUMENT)
-        ts_ms = envelope_data.get("timestamp", 0)  # milliseconds since epoch
+        # Edits have a fresh event timestamp while targetSentTimestamp remains
+        # the native quote/reaction anchor of the displayed message.
+        event_ts_ms = (
+            _parse_signal_timestamp(data_message.get("timestamp"))
+            or _parse_signal_timestamp(envelope_data.get("timestamp"))
+            or 0
+        )
+        native_anchor_ts_ms = (
+            _parse_signal_timestamp(edit_message.get("targetSentTimestamp"))
+            or event_ts_ms
+        )
         timestamp = datetime.now(tz=timezone.utc)
-        if ts_ms:
+        if event_ts_ms:
             with suppress(ValueError, OSError):
-                timestamp = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+                timestamp = datetime.fromtimestamp(event_ts_ms / 1000, tz=timezone.utc)
         # raw_message keeps sender + timestamp_ms so processing hooks can build sendReaction targets.
         event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
             media_types=media_types, timestamp=timestamp,
-            raw_message={"sender": sender, "timestamp_ms": ts_ms, "quote": quote_data if quote_data else None},
+            message_id=str(event_ts_ms) if event_ts_ms else None,
+            raw_message={
+                "sender": sender,
+                "timestamp_ms": native_anchor_ts_ms,
+                "quote": quote_data if quote_data else None,
+            },
             reply_to_message_id=reply_to_id, reply_to_text=quote_data.get("text"),
             reply_to_author_id=reply_to_author,
             reply_to_author_name=quote_data.get("authorName") or quote_data.get("authorProfileName"),
@@ -711,6 +777,7 @@ class SignalAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         base_params = await self._with_target({"account": self.account}, chat_id)
+        quote_params = _signal_quote_params(reply_to, metadata)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
@@ -719,6 +786,8 @@ class SignalAdapter(BasePlatformAdapter):
                 params["textStyle"] = text_styles[0]
             elif text_styles:
                 params["textStyles"] = text_styles
+            if idx == 1:
+                params.update(quote_params)
             logger.info("[Signal] Sending response chunk %d/%d (%d chars) to %s", idx, len(chunks), len(plain_text),
                         chat_id)
             last_result, err = await self._rpc_send(params, "RPC send failed")
@@ -803,6 +872,7 @@ class SignalAdapter(BasePlatformAdapter):
             return
         logger.info("Signal send_multiple_images: %d/%d images valid, sending in chunks", len(attachments), len(images))
         base_params = await self._with_target({"account": self.account, "message": ""}, chat_id)
+        base_params.update(_signal_quote_params(None, metadata))
         per = SIGNAL_MAX_ATTACHMENTS_PER_MSG
         att_batches = [attachments[i:i + per] for i in range(0, len(attachments), per)]
         n_batches = len(att_batches)
@@ -857,7 +927,11 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal: failed to send pacing notice: %s", e)
 
-    async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, **kwargs) -> SendResult:
+    async def send_image(
+        self, chat_id: str, image_url: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
         """Send an image. Supports http(s):// and file:// URLs."""
         await self._stop_typing_indicator(chat_id)
         file_path, reason, detail = await self._resolve_image_path(image_url)
@@ -867,17 +941,25 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=False, error={
                 "download": str(detail), "missing": "Image file not found",
                 "oversize": f"Image too large ({detail} bytes)"}[reason])
-        return await self._send_file(chat_id, file_path, caption, "RPC send with attachment failed")
+        return await self._send_file(
+            chat_id, file_path, caption, "RPC send with attachment failed",
+            reply_to=reply_to, metadata=metadata,
+        )
 
-    async def _send_file(self, chat_id: str, file_path: str, caption: Optional[str], fail_error: str) -> SendResult:
+    async def _send_file(
+        self, chat_id: str, file_path: str, caption: Optional[str], fail_error: str,
+        *, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         """Send one local file as a Signal attachment via the ``send`` RPC."""
         params = await self._with_target(
             {"account": self.account, "message": caption or "", "attachments": [file_path]}, chat_id)
+        params.update(_signal_quote_params(reply_to, metadata))
         _, err = await self._rpc_send(params, fail_error)
         return err or SendResult(success=True)
 
     async def _send_attachment(self, chat_id: str, file_path: str, media_label: str,
-                               caption: Optional[str] = None) -> SendResult:
+                               caption: Optional[str] = None, reply_to: Optional[str] = None,
+                               metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send any local file as a Signal attachment (shared by send_document/image_file/voice/video)."""
         await self._stop_typing_indicator(chat_id)
         try:
@@ -886,21 +968,41 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"{media_label} file not found: {file_path}")
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"{media_label} too large ({file_size} bytes)")
-        return await self._send_file(chat_id, file_path, caption, f"RPC send {media_label.lower()} failed")
+        return await self._send_file(
+            chat_id, file_path, caption, f"RPC send {media_label.lower()} failed",
+            reply_to=reply_to, metadata=metadata,
+        )
 
-    async def send_document(self, chat_id, file_path, caption=None, filename=None, **kwargs) -> SendResult:
-        return await self._send_attachment(chat_id, file_path, "File", caption)
+    async def send_document(
+        self, chat_id, file_path, caption=None, filename=None, reply_to=None,
+        metadata=None, **kwargs,
+    ) -> SendResult:
+        return await self._send_attachment(
+            chat_id, file_path, "File", caption, reply_to, metadata
+        )
 
-    async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kwargs) -> SendResult:
+    async def send_image_file(
+        self, chat_id, image_path, caption=None, reply_to=None, metadata=None, **kwargs,
+    ) -> SendResult:
         """Native Signal attachment for the gateway MEDIA: delivery path."""
-        return await self._send_attachment(chat_id, image_path, "Image", caption)
+        return await self._send_attachment(
+            chat_id, image_path, "Image", caption, reply_to, metadata
+        )
 
-    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kwargs) -> SendResult:
+    async def send_voice(
+        self, chat_id, audio_path, caption=None, reply_to=None, metadata=None, **kwargs,
+    ) -> SendResult:
         """Audio attachment — Signal has no distinct voice-message API."""
-        return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+        return await self._send_attachment(
+            chat_id, audio_path, "Audio", caption, reply_to, metadata
+        )
 
-    async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kwargs) -> SendResult:
-        return await self._send_attachment(chat_id, video_path, "Video", caption)
+    async def send_video(
+        self, chat_id, video_path, caption=None, reply_to=None, metadata=None, **kwargs,
+    ) -> SendResult:
+        return await self._send_attachment(
+            chat_id, video_path, "Video", caption, reply_to, metadata
+        )
 
     async def _stop_typing_indicator(self, chat_id: str) -> None:
         """Stop a typing indicator loop for a chat."""

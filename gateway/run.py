@@ -2040,6 +2040,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    _signal_quote_author_for_source,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
@@ -3995,10 +3996,11 @@ class GatewayRunner(
     def _thread_metadata_for_source(
         self, source, reply_to_message_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Build the metadata dict platforms need for thread-aware replies."""
+        reply_anchor = reply_to_message_id or getattr(source, "message_id", None)
         metadata = self._thread_metadata_for_target(
             getattr(source, "platform", None), getattr(source, "chat_id", None),
             getattr(source, "thread_id", None), chat_type=getattr(source, "chat_type", None),
-            reply_to_message_id=reply_to_message_id or getattr(source, "message_id", None))
+            reply_to_message_id=reply_anchor)
         if getattr(source, "platform", None) == Platform.SLACK:
             # Per-turn egress identity: Slack chat.startStream needs recipient_user_id/team_id; the relay
             # adapter's _with_scope fallback reads per-chat caches a CONCURRENT turn overwrites.
@@ -4019,6 +4021,11 @@ class GatewayRunner(
                     metadata.setdefault("scope_id", str(team_id))
                 if user_id:
                     metadata.setdefault("user_id", str(user_id))
+        signal_quote_author = _signal_quote_author_for_source(source, reply_anchor)
+        if signal_quote_author is not None:
+            metadata = dict(metadata or {})
+            metadata["signal_quote_timestamp"] = str(reply_anchor)
+            metadata["signal_quote_author"] = signal_quote_author
         # Routed profile for shared state.db namespaces: under profile_routes the transport adapter's
         # stamp is not the profile that wrote the binding (Telegram prune path needs it).
         # See #76423.

@@ -85,6 +85,22 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+def _signal_quote_author_for_source(
+    source, reply_to_message_id: str | None
+) -> str | None:
+    """Original Signal sender required alongside a native quote timestamp."""
+    if (
+        reply_to_message_id is None
+        or _platform_name(getattr(source, "platform", None)) != "signal"
+    ):
+        return None
+    for attr in ("user_id_alt", "user_id"):
+        value = getattr(source, attr, None)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
 def _or_default(thunk, default, exc=(TypeError, ValueError)):
     """``thunk()``, or ``default`` when it raises one of ``exc`` (numeric config/env coercion)."""
     try:
@@ -110,6 +126,12 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     scope_id = getattr(source, "scope_id", None) if platform == "slack" else None
     if scope_id:
         metadata["slack_team_id"] = str(scope_id)
+    signal_quote_author = _signal_quote_author_for_source(
+        source, reply_to_message_id
+    )
+    if signal_quote_author is not None:
+        metadata["signal_quote_timestamp"] = str(reply_to_message_id)
+        metadata["signal_quote_author"] = signal_quote_author
     if not metadata:
         return None
     if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
@@ -145,6 +167,20 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
+    if platform == "signal" and isinstance(raw_message, dict):
+        signal_anchor = raw_message.get("timestamp_ms")
+        if (
+            isinstance(signal_anchor, int)
+            and not isinstance(signal_anchor, bool)
+            and signal_anchor > 0
+        ):
+            return str(signal_anchor)
+        if (
+            isinstance(signal_anchor, str)
+            and signal_anchor.isdigit()
+            and int(signal_anchor) > 0
+        ):
+            return str(int(signal_anchor))
     if (platform == "slack" and isinstance(raw_message, dict)
             and raw_message.get("_hermes_no_thread_response")):
         # Slack reaction handoff = new top-level message; a message_id anchor would make
@@ -1742,6 +1778,16 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            incoming_source = getattr(event, "source", None)
+            if (
+                _platform_name(getattr(incoming_source, "platform", None)) == "signal"
+                and isinstance(getattr(event, "raw_message", None), dict)
+            ):
+                if event.message_id is not None:
+                    existing.message_id = str(event.message_id)
+                existing.raw_message = event.raw_message
+                if event.reply_to_message_id is not None:
+                    existing.reply_to_message_id = str(event.reply_to_message_id)
             return
     pending_messages[session_key] = event
 
@@ -3300,6 +3346,12 @@ class BasePlatformAdapter(ABC):
             latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
             if latest_message_id is not None:
                 state.event.message_id = str(latest_message_id)
+            event_source = getattr(event, "source", None)
+            if (
+                _platform_name(getattr(event_source, "platform", None)) == "signal"
+                and isinstance(getattr(event, "raw_message", None), dict)
+            ):
+                state.event.raw_message = event.raw_message
             if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
                 state.event.reply_to_message_id = str(latest_anchor)
             state.last_ts = now

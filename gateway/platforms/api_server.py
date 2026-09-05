@@ -619,8 +619,7 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
 
 
 def _request_turn_author(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Normalized body ``author`` or None when absent or null. Raises ValueError when it is not an object.
-    The value is a claim by an API-key holder: it only labels the turn for memory attribution."""
+    """Normalized body ``author``, None when absent or null, ValueError when not an object. It only labels memory."""
     raw = body.get("author")
     if raw is None:
         return None
@@ -628,14 +627,6 @@ def _request_turn_author(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         raise ValueError("author must be an object")
     from agent.turn_author import parse_turn_author
     return parse_turn_author(raw)
-
-
-def _session_chat_author(body: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], Optional["web.Response"]]:
-    """``_request_turn_author`` with the session-chat 400 envelope (code ``invalid_author``)."""
-    try:
-        return _request_turn_author(body), None
-    except ValueError as exc:
-        return None, _error_response(str(exc), 400, code="invalid_author")
 
 
 _USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
@@ -3006,9 +2997,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         user_message, err = _session_chat_user_message(body)
         if err is not None:
             return None, err
-        turn_author, err = _session_chat_author(body)
-        if err is not None:
-            return None, err
+        try:
+            turn_author = _request_turn_author(body)
+        except ValueError as exc:
+            return None, _error_response(str(exc), 400, code="invalid_author")
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return None, _error_response("system_message must be a string", 400, code="invalid_system_message")
@@ -3657,7 +3649,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``session_history_delivery`` declares #98619 session-id provenance and default-denies: only audited
         producers whose client can address the id again pass "1" (see
         ``_bind_api_server_session``).
-        ``turn_author`` only labels the turn for memory attribution; it grants nothing."""
+        ``turn_author`` only labels the turn for memory attribution. It grants nothing."""
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()

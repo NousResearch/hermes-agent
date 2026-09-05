@@ -98,13 +98,12 @@ class GatewayAgentCacheMixin:
             out[f"memory.{key}"] = value
         return out
 
-    # Uninitialized provider instances by name, kept for the process lifetime: loading one imports
-    # its plugin module, and identity_signature() runs on every inbound message.
+    # Kept for the process lifetime: loading a provider imports its plugin module, and this runs on every inbound message.
     _MEMORY_IDENTITY_PROVIDER_MEMO: dict[str, Any] = {}
 
     @classmethod
     def _memory_provider_identity_signature(cls, provider_name: Any) -> dict[str, Any]:
-        """The active memory provider's ``identity_signature()``; ``{}`` when there is no provider,
+        """The active memory provider's ``identity_signature()``. ``{}`` when there is no provider,
         it fails to load, or the hook raises."""
         if not isinstance(provider_name, str) or not provider_name.strip():
             return {}

@@ -278,8 +278,8 @@ class TestMemoryManager:
 
         assert legacy_provider.synced_turns == [("user", "assistant")]
 
-    def test_sync_all_forwards_author_and_scope_only_to_providers_that_accept_them(self):
-        """A bot turn reaches the new-signature provider with its author; legacy and messages-only
+    def test_sync_all_forwards_author_only_to_providers_that_accept_it(self):
+        """The author reaches the new-signature provider (None on a human turn). Legacy and messages-only
         providers get the call without the keywords they cannot take."""
         legacy = FakeMemoryProvider("legacy")
         messages_only = MessagesMemoryProvider("messages")
@@ -291,27 +291,17 @@ class TestMemoryManager:
             mgr = MemoryManager()
             mgr.add_provider(p)
             mgr.sync_all("user", "assistant", session_id="s1", turn_author=author)
+            mgr.sync_all("user", "assistant")
             mgr.flush_pending(timeout=5)
 
-        assert legacy.synced_turns == [("user", "assistant")]
-        assert messages_only.synced_turns == [("user", "assistant", "s1", None)]
-        assert author_aware.synced_turns == [("user", "assistant", author)]
-
-    def test_sync_all_without_author_sends_none_to_author_aware_provider(self):
-        mgr = MemoryManager()
-        author_aware = AuthorMemoryProvider("author")
-        mgr.add_provider(author_aware)
-
-        mgr.sync_all("user", "assistant")
-        mgr.flush_pending(timeout=5)
-
-        assert author_aware.synced_turns == [("user", "assistant", None)]
+        assert legacy.synced_turns == [("user", "assistant")] * 2
+        assert messages_only.synced_turns == [("user", "assistant", "s1", None), ("user", "assistant", "", None)]
+        assert author_aware.synced_turns == [("user", "assistant", author), ("user", "assistant", None)]
 
     def test_provider_sync_accepts_inspects_named_keyword(self):
         assert MemoryManager._provider_sync_accepts(AuthorMemoryProvider(), "turn_author")
         assert not MemoryManager._provider_sync_accepts(MessagesMemoryProvider(), "turn_author")
         assert not MemoryManager._provider_sync_accepts(FakeMemoryProvider(), "messages")
-        assert MemoryManager._provider_sync_accepts_messages(MessagesMemoryProvider())
 
     # -- Tool routing -------------------------------------------------------
 

@@ -870,8 +870,7 @@ def build_turn_context(
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
-    # Reset first: a cached gateway agent must never carry the previous turn's bot author into a
-    # human turn. The end-of-turn memory sync reads these back.
+    # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
     turn_author = parse_turn_author(turn_author)
     agent._turn_author = turn_author
 

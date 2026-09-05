@@ -320,3 +320,58 @@ class TestRunJobTerminalCwd:
         assert observed["terminal_cwd_during_run"] == baseline
         assert os.environ["TERMINAL_CWD"] == baseline
         assert get_session_cwd(observed["task_id"]) is None
+
+
+# ---------------------------------------------------------------------------
+# scheduler.run_job: agent-path wake-gate script honours workdir
+# ---------------------------------------------------------------------------
+
+class TestAgentPathWakeGateWorkdir:
+    """The pre-run wake-gate script on the agent path must run with the job's
+    workdir as its cwd, exactly as the no_agent path already does.
+
+    Scripts receive no arguments, so cwd is the only per-job context a gate
+    script gets. Launched without the workdir it runs from the scripts dir,
+    cannot find the data it was written against, and fails open.
+    """
+
+    def test_wake_gate_script_runs_in_job_workdir(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from unittest.mock import patch
+        import cron.scheduler as sched
+        from hermes_cli import env_loader
+
+        monkeypatch.setattr(sched, "_get_hermes_home", lambda: tmp_path)
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        workdir = tmp_path / "job-data"
+        workdir.mkdir()
+        seen_cwd = tmp_path / "seen-cwd"
+        (scripts_dir / "gate.py").write_text(
+            "import json, os\n"
+            f"open({str(seen_cwd)!r}, 'w').write(os.getcwd())\n"
+            "print(json.dumps({'wakeAgent': False}))\n",
+            encoding="utf-8",
+        )
+
+        job = {
+            "id": "gate-workdir",
+            "name": "gate-workdir",
+            "prompt": "hello",
+            "schedule": "*/5 * * * *",
+            "script": "gate.py",
+            "workdir": str(workdir),
+        }
+
+        with patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch.object(env_loader, "load_hermes_dotenv"), \
+             patch.object(env_loader, "reset_secret_source_cache"), \
+             patch("run_agent.AIAgent") as agent_cls:
+            success, _doc, final, err = sched.run_job(job)
+
+        assert success is True
+        assert err is None
+        assert final == sched.SILENT_MARKER
+        agent_cls.assert_not_called()
+        assert seen_cwd.exists(), "gate script did not run"
+        assert Path(seen_cwd.read_text()).resolve() == workdir.resolve()

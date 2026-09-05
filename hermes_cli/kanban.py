@@ -1061,6 +1061,11 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    # argparse only enforces presence; an explicitly empty --chat-id (e.g. an unset
+    # shell variable expanding to "") can never deliver — the notifier retries the
+    # deterministic adapter failure and then silently drops the subscription.
+    if not (args.chat_id or "").strip():
+        return _err("--chat-id must be a non-empty chat identifier")
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")

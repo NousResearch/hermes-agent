@@ -2740,6 +2740,7 @@ export const zhHant = defineLocale({
       sentMessage: count => `已將 ${count} 條記錄新增至輸入框`
     },
     web: {
+      embeddedPreviewHint: '部分網站不允許嵌入式預覽。請在瀏覽器分頁中開啟原始頁面。',
       appFailedToBoot: '預覽應用程式啟動失敗',
       serverNotFound: '找不到伺服器',
       remoteLoopback:

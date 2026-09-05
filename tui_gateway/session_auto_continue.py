@@ -331,6 +331,11 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not (user or assistant or streaming or error):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
+    # Legacy in-memory turns omit provenance; newer snapshots match history's classification.
+    if isinstance(turn.get("user_originated"), bool):
+        snapshot["user_originated"] = turn["user_originated"]
+    if turn.get("display_kind"):
+        snapshot["display_kind"] = turn["display_kind"]
     raw_offsets = turn.get("correction_offsets") or []
     correction_pairs = [(str(c), raw_offsets[i] if i < len(raw_offsets) else None)
                         for i, c in enumerate(turn.get("corrections") or []) if str(c).strip()]

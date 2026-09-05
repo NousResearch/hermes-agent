@@ -330,7 +330,13 @@ class TestDeleteProfile:
         class FakeProc:
             def __init__(self, pid, cmdline, username="me"):
                 self.pid = pid
-                self.info = {"pid": pid, "name": "python", "username": username, "cmdline": cmdline}
+                self.info = {
+                    "pid": pid,
+                    "name": "python",
+                    "username": username,
+                    "cmdline": cmdline,
+                    "create_time": float(pid),
+                }
 
             def parent(self):
                 return None
@@ -345,13 +351,25 @@ class TestDeleteProfile:
         procs = [
             # Backend bound to coder → matched.
             FakeProc(101, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
+            # Browser-hosted Desktop is the same profile-bound backend class.
+            FakeProc(104, ["python", "-m", "hermes_cli.main", "--profile", "coder", "webapp"]),
             # Interactive chat for coder → NOT a backend subcommand, skipped.
             FakeProc(102, ["python", "-m", "hermes_cli.main", "--profile", "coder", "chat"]),
+            # Prompt text containing backend words is still interactive and
+            # has no positive ledger identity — never kill it.
+            FakeProc(105, ["python", "-m", "hermes_cli.main", "--profile", "coder", "chat",
+                           "-q", "please debug the webapp serve command"]),
             # Backend for a different profile → skipped.
             FakeProc(103, ["python", "-m", "hermes_cli.main", "--profile", "other", "serve"]),
+            # PID was reused after the ledger entry — skipped despite backend argv.
+            FakeProc(106, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
+            # Ledger identity without create_time is insufficient — skipped.
+            FakeProc(107, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
             # This very process → skipped even if it matched.
             FakeProc(self_pid, ["python", "-m", "hermes_cli.main", "--profile", "coder", "serve"]),
         ]
+        for proc in procs:
+            proc.info["create_time"] = float(proc.pid)
 
         fake_psutil = types.SimpleNamespace(
             process_iter=lambda attrs=None: iter(procs),
@@ -362,17 +380,23 @@ class TestDeleteProfile:
         )
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
+        monkeypatch.setattr(
+            "hermes_cli.process_identity.ledger_entries",
+            lambda: [
+                {"pid": 101, "purpose": "serve", "create_time": 101.0},
+                {"pid": 102, "purpose": "chat", "create_time": 102.0},
+                {"pid": 103, "purpose": "serve", "create_time": 103.0},
+                {"pid": 104, "purpose": "serve", "create_time": 104.0},
+                {"pid": 105, "purpose": "chat", "create_time": 105.0},
+                {"pid": 106, "purpose": "serve", "create_time": 1.0},
+                {"pid": 107, "purpose": "serve", "create_time": None},
+            ],
+        )
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert pids == [101]
+        assert pids == [(101, 101.0), (104, 104.0)]
 
-    def test_backend_scan_matches_shebang_exec_of_hermes_shim(self, profile_env, monkeypatch):
-        """A `hermes` console-script shim spawned directly (e.g. Electron's
-        findOnPath('hermes') resolution) reports argv[0] as the interpreter
-        (python3) and argv[1] as the shim's path -- not "hermes" -- because
-        the OS execs the shebang. The scanner must still recognize it so
-        profile delete doesn't leave a zombie Desktop-spawned backend behind
-        (issue: deleting a Desktop profile kept reappearing after relaunch).
-        """
+    def test_backend_scan_uses_ledger_for_shebang_exec_shape(self, profile_env, monkeypatch):
+        """A ledger-identified backend remains matchable across shim argv shapes."""
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")
 
@@ -401,6 +425,8 @@ class TestDeleteProfile:
             # Non-hermes script run by python3 → skipped.
             FakeProc(203, ["/usr/bin/python3", "/Users/x/some_script.py", "--profile", "coder", "serve"]),
         ]
+        for proc in procs:
+            proc.info["create_time"] = float(proc.pid)
 
         fake_psutil = types.SimpleNamespace(
             process_iter=lambda attrs=None: iter(procs),
@@ -411,8 +437,15 @@ class TestDeleteProfile:
         )
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
+        monkeypatch.setattr(
+            "hermes_cli.process_identity.ledger_entries",
+            lambda: [
+                {"pid": 201, "purpose": "serve", "create_time": 201.0},
+                {"pid": 202, "purpose": "serve", "create_time": 202.0},
+            ],
+        )
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert pids == [201]
+        assert pids == [(201, 201.0)]
 
     def test_backend_scan_rejects_unrelated_hermes_prefixed_script(self, profile_env, monkeypatch):
         """A user's own script that happens to start with "hermes" (e.g.
@@ -447,6 +480,8 @@ class TestDeleteProfile:
             FakeProc(302, ["/usr/bin/python3", "/Users/x/scripts/hermes-unrelated-tool",
                             "--profile", "coder", "serve"]),
         ]
+        for proc in procs:
+            proc.info["create_time"] = float(proc.pid)
 
         fake_psutil = types.SimpleNamespace(
             process_iter=lambda attrs=None: iter(procs),
@@ -457,15 +492,12 @@ class TestDeleteProfile:
         )
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
+        monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda: [])
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
         assert pids == []
 
-    def test_backend_scan_matches_all_known_console_script_shims(self, profile_env, monkeypatch):
-        """The other two real console-script entry points (hermes-agent,
-        hermes-acp -- see pyproject.toml [project.scripts]) must also be
-        recognized via the shebang-exec path, not just the primary "hermes"
-        shim.
-        """
+    def test_backend_scan_matches_ledger_identified_backend_shapes(self, profile_env, monkeypatch):
+        """Once the ledger proves backend identity, argv shim shape is irrelevant."""
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")
 
@@ -490,6 +522,8 @@ class TestDeleteProfile:
             FakeProc(402, ["/usr/bin/python3", "/Users/x/.local/bin/hermes-acp",
                             "--profile", "coder", "serve"]),
         ]
+        for proc in procs:
+            proc.info["create_time"] = float(proc.pid)
 
         fake_psutil = types.SimpleNamespace(
             process_iter=lambda attrs=None: iter(procs),
@@ -500,8 +534,56 @@ class TestDeleteProfile:
         )
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
+        monkeypatch.setattr(
+            "hermes_cli.process_identity.ledger_entries",
+            lambda: [
+                {"pid": 401, "purpose": "serve", "create_time": 401.0},
+                {"pid": 402, "purpose": "dashboard", "create_time": 402.0},
+            ],
+        )
         pids = profiles._profile_bound_backend_pids("coder", profile_dir)
-        assert set(pids) == {401, 402}
+        assert set(pids) == {(401, 401.0), (402, 402.0)}
+
+    def test_backend_stop_never_force_kills_reused_pid(self, profile_env, monkeypatch):
+        profile_dir = create_profile("coder")
+        create_time_calls = 0
+
+        class Process:
+            def __init__(self, _pid):
+                pass
+
+            def create_time(self):
+                nonlocal create_time_calls
+                create_time_calls += 1
+                return 10.0 if create_time_calls == 1 else 11.0
+
+        class NoSuchProcess(Exception):
+            pass
+
+        fake_psutil = types.SimpleNamespace(
+            Process=Process,
+            NoSuchProcess=NoSuchProcess,
+            AccessDenied=PermissionError,
+            ZombieProcess=ProcessLookupError,
+        )
+        monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
+        monkeypatch.setattr(
+            profiles,
+            "_profile_bound_backend_pids",
+            lambda _canon, _home: [(4242, 10.0)],
+        )
+        from gateway import status
+
+        signals: list[tuple[int, bool]] = []
+        monkeypatch.setattr(
+            status,
+            "terminate_pid",
+            lambda pid, *, force=False: signals.append((pid, force)),
+        )
+
+        profiles._stop_profile_backends("coder", profile_dir)
+
+        assert signals == [(4242, False)]
 
 
 # ===================================================================

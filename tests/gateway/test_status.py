@@ -97,6 +97,32 @@ class TestGatewayPidState:
         assert status.get_running_pid_cached(ttl_seconds=60) == 2222
         assert calls["lock_active"] == 2
 
+    def test_explicit_pid_path_uses_its_profile_home(self, tmp_path, monkeypatch):
+        process_home = tmp_path / "default"
+        profile_home = tmp_path / "profiles" / "ops"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+        record = {
+            "pid": 111,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+            "hermes_home": str(profile_home),
+        }
+        pid_path = profile_home / "gateway.pid"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        (profile_home / "gateway.lock").write_text(
+            json.dumps(record), encoding="utf-8"
+        )
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: None)
+
+        assert status.get_running_pid(pid_path, cleanup_stale=False) == 111
+
 
     def test_get_running_pid_falls_back_to_live_lock_record(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

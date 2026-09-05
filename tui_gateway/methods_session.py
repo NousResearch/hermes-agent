@@ -91,11 +91,12 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
         _clear_session_context(tokens)
 
 
-def _profile_session_db(profile_home):
+def _profile_session_db(profile_home, expected_profile_incarnation=None):
     """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
     if profile_home:
         from hermes_state_registry import acquire
-        return acquire(Path(profile_home) / "state.db"), True
+        return acquire(Path(profile_home) / "state.db",
+                       expected_profile_incarnation=expected_profile_incarnation), True
     return _get_db(), False
 
 
@@ -307,9 +308,15 @@ def _(rid, params: dict) -> dict:
     _enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
+    profile_incarnation = _capture_profile_incarnation(profile_home)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:
+        if _profile_home_rejected(profile_home, profile_incarnation):
+            raise FileNotFoundError(
+                "Profile incarnation is stale or home is missing or being deleted: "
+                f"{profile_home or _hermes_home}"
+            )
         _sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
@@ -325,6 +332,7 @@ def _(rid, params: dict) -> dict:
             "pending_hidden": _flag(params, "hidden"), "room_plumbing": _flag(params, "room_plumbing"),
             "follow_profile_config": _flag(params, "follow_profile_config"),
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "profile_incarnation": profile_incarnation,
             "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport}
@@ -453,6 +461,7 @@ class _Resume:
         # ``profile`` (app-global remote mode): resume from another local profile's state.db.
         self.profile = (params.get("profile") or "").strip() or None
         self.profile_home = _profile_home(self.profile)
+        self.profile_incarnation = _capture_profile_incarnation(self.profile_home)
         self.lazy, self.defer_history = _flag(params, "lazy"), _flag(params, "defer_history")
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = _flag(params, "omit_messages"), _flag(params, "eager_build")
@@ -508,12 +517,11 @@ class _Resume:
         return [] if self.omit_messages else self.db.get_ancestor_display_prefix(self.target)
 
 
-def _find_live_unpersisted(needle: str, home) -> str:
+def _find_live_unpersisted(needle: str, home, profile_incarnation) -> str:
     """Runtime sid of a live, not-yet-persisted session matched by stored key or pending title."""
-    want_home = str(home) if home is not None else None
     return next((
         live_sid for live_sid, record in list(_sessions.items())
-        if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
+        if isinstance(record, dict) and _session_profile_identity_matches(record, home, profile_incarnation)
         and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
 
 
@@ -523,16 +531,6 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     sentinel-parked the record) or it fires against this client."""
     if ctx.owns_db:
         _release_db(ctx.db)
-    live["last_active"] = time.time()
-    if (transport := current_transport()) is not None:
-        # This resume reattaches the live record. A lazy session (no state.db row yet — every fresh Bot
-        # Chat) that was sentinel-parked by a WS drop MUST be rebound here, or it keeps the drop sentinel
-        # and the armed orphan-reap Timer fires against a client that is attached right now — the
-        # unpersisted sibling of the storm-killer paths (#91276).
-        with live.setdefault("history_lock", threading.Lock()):
-            live["transport"] = transport
-            live.setdefault("viewers", {})[transport] = time.time()
-    _cancel_ws_orphan_reap(live_sid)
     history = live.get("history") or []
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
@@ -583,8 +581,23 @@ def _resume_locate(ctx: _Resume) -> dict | None:
         # with empty history — the live mirror streams the turn and the row exists by upgrade time.
         ctx.found = {}
         return None
-    live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home)
-    if (live := _sessions.get(live_sid) if live_sid else None) is not None:
+    with _session_resume_lock:
+        live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home, ctx.profile_incarnation)
+        live = _sessions.get(live_sid) if live_sid else None
+        if live is not None:
+            if live.get("_client_gone_interrupt_requested"):
+                return _err(ctx.rid, 4009, "session disconnect interrupt settling")
+            live["last_active"] = time.time()
+            if (transport := current_transport()) is not None:
+                # This resume reattaches the live record. A lazy session (no state.db row yet — every fresh Bot
+                # Chat) that was sentinel-parked by a WS drop MUST be rebound here, or it keeps the drop sentinel
+                # and the armed orphan-reap Timer fires against a client that is attached right now — the
+                # unpersisted sibling of the storm-killer paths (#91276).
+                with live.setdefault("history_lock", threading.Lock()):
+                    live["transport"] = transport
+                    live.setdefault("viewers", {})[transport] = time.time()
+            _cancel_ws_orphan_reap(live_sid)
+    if live is not None:
         return _resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
         _resume_adopt_stranded(ctx)
@@ -627,25 +640,29 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     return None
 
 
+def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
+    """Reattach while the caller holds the resume lock."""
+    if _sessions.get(sid) is not session:
+        return _err(ctx.rid, 4007, "session no longer live; retry resume")
+    if session.get("_client_gone_interrupt_requested"):
+        return _err(ctx.rid, 4009, "session disconnect interrupt settling")
+    _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+    payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
+                                    transport=current_transport() or _stdio_transport)
+    payload["resumed"] = ctx.target
+    if ctx.defer_history:
+        payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
+                       message_count=int(session.get("resume_message_count") or payload["message_count"]))
+    # A lazy watch session never owns a run loop — overlay the child-run registry.
+    if session.get("agent") is None and _child_run_active(ctx.target):
+        payload.update(running=True, status="streaming")
+    return _ok(ctx.rid, payload)
+
+
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Reattach an already-live session under the resume lock (held across the client-gone check,
-    transport rebind and reap cancel so grace expiry is atomic)."""
+    """Keep grace expiry atomic with the client-gone check, transport rebind and reap cancel."""
     with _session_resume_lock:
-        if _sessions.get(sid) is not session:
-            return _err(ctx.rid, 4007, "session no longer live; retry resume")
-        if session.get("_client_gone_interrupt_requested"):
-            return _err(ctx.rid, 4009, "session disconnect interrupt settling")
-        _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
-        payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                        transport=current_transport() or _stdio_transport)
-        payload["resumed"] = ctx.target
-        if ctx.defer_history:
-            payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
-                           message_count=int(session.get("resume_message_count") or payload["message_count"]))
-        # A lazy watch session never owns a run loop — overlay the child-run registry.
-        if session.get("agent") is None and _child_run_active(ctx.target):
-            payload.update(running=True, status="streaming")
-        return _ok(ctx.rid, payload)
+        return _resume_reuse_live_locked(ctx, sid, session)
 
 
 def _resume_response(
@@ -747,15 +764,17 @@ def _resume_eager(ctx: _Resume) -> dict:
         except Exception as e:
             return _err(ctx.rid, 5000, f"resume failed: {e}")
     with _session_resume_lock:
-        live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+        live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
-            return _resume_reuse_live(ctx, *live)
+            return _resume_reuse_live_locked(ctx, *live)
         try:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
-                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd),
+                              profile_home=str(ctx.profile_home) if ctx.profile_home is not None else None,
+                              profile_incarnation=ctx.profile_incarnation)
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
@@ -790,7 +809,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4006, "session_id required")
     ctx = _Resume(rid, params, target)
     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
-    ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+    ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home, ctx.profile_incarnation)
     try:
         if ctx.db is None:
             return _db_unavailable_error(rid, code=5000)
@@ -802,7 +821,7 @@ def _(rid, params: dict) -> dict:
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
-            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+            live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
         if ctx.lazy:
@@ -887,12 +906,34 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"sessions": rows})
 
 
-@_session_method("session.activate")
-def _(rid, params: dict, session: dict) -> dict:
-    """Attach the frontend to a live TUI session without closing the previously focused one."""
-    return _ok(rid, _live_session_payload(
-        str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
-        omit_messages=is_truthy_value(params.get("omit_messages", False))))
+@method("session.activate")
+def _(rid, params: dict) -> dict:
+    """Attach the frontend to an already-live TUI session.
+
+    This intentionally does not close the previously focused session; it merely
+    returns enough state for Ink to redraw around another live session id.
+    """
+    sid = str(params.get("session_id") or "")
+    # Match session.resume's ownership boundary: once the disconnect reaper
+    # claims an interrupt, activation cannot revive the settling record.
+    with _session_resume_lock:
+        session, err = _sess_nowait({"session_id": sid}, rid)
+        if err:
+            return err
+        assert session is not None
+        if session.get("_client_gone_interrupt_requested"):
+            return _err(rid, 4009, "session disconnect interrupt settling")
+
+        return _ok(
+            rid,
+            _live_session_payload(
+                sid,
+                session,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+                omit_messages=is_truthy_value(params.get("omit_messages", False)),
+            ),
+        )
 
 
 @method("session.delete")
@@ -1844,14 +1885,17 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     """Build + register the branched agent in the parent's profile; the DEDICATED db handle is ours until
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
-    branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
+    parent_incarnation = session.get("profile_incarnation")
+    if _profile_home_rejected(parent_home, parent_incarnation):
+        raise FileNotFoundError("Parent session belongs to a stale profile incarnation")
+    branch_db, branch_owns_db = _profile_session_db(parent_home, parent_incarnation) if parent_home else (None, False)
     try:
         with _profile_build_scope(parent_home):
             agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
                                            context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session))
             _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
                           cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
-                          explicit_cwd=bool(session.get("explicit_cwd")))
+                          explicit_cwd=bool(session.get("explicit_cwd")), profile_incarnation=parent_incarnation)
             _transfer_db_to_agent(agent, branch_db)
             branch_owns_db = False
         if new_sid in _sessions:

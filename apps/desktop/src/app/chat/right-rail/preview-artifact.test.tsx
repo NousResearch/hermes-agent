@@ -1,5 +1,5 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $artifactRegistry, $artifactVersionSelection, artifactPreviewTarget, upsertArtifact } from '@/store/artifacts'
 
@@ -28,6 +28,7 @@ describe('ArtifactPreview', () => {
     cleanup()
     $artifactRegistry.set({})
     $artifactVersionSelection.set({})
+    Reflect.deleteProperty(window, 'hermesDesktop')
   })
 
   it('renders html in a scripts-only sandboxed frame the parent app is unreachable from', async () => {
@@ -40,6 +41,23 @@ describe('ArtifactPreview', () => {
     expect(frame.srcdoc).toContain('<h1>Hi</h1>')
     // No allow-same-origin: scripts inside cannot reach the renderer's origin.
     expect(frame.getAttribute('sandbox')).not.toContain('same-origin')
+  })
+
+  it('opens a browser-hosted HTML blob without corrupting it as a file URL', async () => {
+    const openPreviewInBrowser = vi.fn().mockResolvedValue(undefined)
+    window.hermesDesktop = {
+      openExternal: vi.fn().mockResolvedValue(undefined),
+      openPreviewInBrowser,
+      saveImageBuffer: vi.fn().mockResolvedValue('blob:http://localhost/artifact')
+    } as never
+    const { artifactId } = register('Dashboard', 'html', '<h1>Hi</h1>')
+    await renderArtifact(artifactId)
+
+    fireEvent.click(screen.getByRole('button', { name: /open in browser/i }))
+
+    await waitFor(() => {
+      expect(openPreviewInBrowser).toHaveBeenCalledWith('blob:http://localhost/artifact')
+    })
   })
 
   it('strips scripts out of svg before it renders inline', async () => {

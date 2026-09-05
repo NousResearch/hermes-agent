@@ -342,7 +342,11 @@ def _workdir_owner_db(session: dict, fail_log: str):
     if profile_home := session.get("profile_home"):
         try:
             from hermes_state_registry import acquire
-            db, close_db = acquire(Path(profile_home) / "state.db"), True
+            if _profile_home_rejected(profile_home, session.get("profile_incarnation")):
+                raise FileNotFoundError(f"Profile incarnation is stale or home is unavailable: {profile_home}")
+            db, close_db = acquire(
+                Path(profile_home) / "state.db",
+                expected_profile_incarnation=session.get("profile_incarnation")), True
         except Exception:
             logger.debug(fail_log, exc_info=True)
             db = _WORKDIR_DB_OPEN_FAILED
@@ -479,7 +483,8 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
     if not session_key or not cwd or not _workdir_valid_generation(generation):
         return
     # Snapshot routing fields; the live session dict may be gone when the thread runs.
-    db_session = {"session_key": session_key, "profile_home": session.get("profile_home")}
+    db_session = {"session_key": session_key, "profile_home": session.get("profile_home"),
+                  "profile_incarnation": session.get("profile_incarnation")}
 
     def _run() -> None:
         try:

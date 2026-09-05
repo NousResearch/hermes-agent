@@ -20,3 +20,8 @@ export const isWindowsPlatform = (): boolean =>
 
 export const isLinuxPlatform = (): boolean =>
   typeof navigator !== 'undefined' && /linux/i.test(navigator.platform || navigator.userAgent || '')
+
+/** Renderer host, independent of the OS or the gateway's connection mode. */
+export function isBrowserHostedDesktop() {
+  return typeof document !== 'undefined' && document.documentElement.dataset.hermesDesktopHost === 'browser'
+}

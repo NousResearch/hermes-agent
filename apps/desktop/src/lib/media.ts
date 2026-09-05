@@ -94,15 +94,24 @@ export async function resolveMediaDisplaySrc(path: string): Promise<string> {
 }
 
 // Audio/video need a seekable source instead of a whole-file data URL. Keep
-// remote URLs untouched and route filesystem paths through the Electron media
-// protocol. Its main-process handler reads local files directly or proxies a
-// remote gateway with the connection's bearer/cookie/token authentication.
+// remote URLs untouched. The Webapp supplies an authenticated HTTP source;
+// Electron's media protocol reads local files or proxies remote gateways.
 export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
   if (isInlineMediaSrc(path)) {
     return path
   }
 
   if (window.hermesDesktop && ['audio', 'video'].includes(mediaKind(path))) {
+    if (window.hermesDesktop.getGatewayFileStreamUrl) {
+      const conn = $connection.get()
+
+      return window.hermesDesktop.getGatewayFileStreamUrl({
+        connectionId: conn?.connectionId,
+        path: filePathFromMediaPath(path),
+        profile: conn?.profile
+      })
+    }
+
     return isRemoteGateway() ? mediaGatewayStreamUrl(path) : mediaStreamUrl(path)
   }
 
@@ -199,10 +208,9 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 }
 
 // Remote-mode replacement for opening gateway-local file paths with file://.
-// The file lives on the gateway, so ask the Electron main process to fetch the
-// bytes through the authenticated backend connection and save them locally. This
-// avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
-// used by preview endpoints.
+// The host bridge handles authentication and saving: Electron uses its native
+// save dialog, while the Webapp uses the browser's download manager. Neither
+// path loads the file through the capped data-URL preview endpoint.
 export async function downloadGatewayMediaFile(
   path: string
 ): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {

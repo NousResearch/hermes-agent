@@ -322,6 +322,42 @@ describe('useComposerActions native image drops', () => {
       })
     )
   })
+
+  it('stages a browser-dropped non-image before attaching its host path', async () => {
+    const file = new File(['notes'], 'notes.txt', { type: 'text/plain' })
+    const stagedPath = '/srv/hermes/uploads/notes.txt'
+    const stageFileForAttach = vi.fn(async () => stagedPath)
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { getPathForFile: () => '', stageFileForAttach }
+    })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/srv/hermes',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test-composer',
+          update: vi.fn(() => true),
+          updateIfCurrent: vi.fn(() => true)
+        }
+      })
+    )
+
+    let attached = false
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([{ file, path: '' }])
+    })
+
+    expect(attached).toBe(true)
+    expect(stageFileForAttach).toHaveBeenCalledWith(file)
+    expect(add).toHaveBeenCalledWith(expect.objectContaining({ kind: 'file', path: stagedPath }))
+  })
 })
 
 describe('attachImagePath thumbnail separation', () => {

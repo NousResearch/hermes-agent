@@ -108,6 +108,18 @@ def test_download_authenticates_via_query_token(forced_files_client):
     assert ok.content == b"hello"
     assert ok.headers["content-disposition"].startswith("attachment;")
 
+    head = client.head(
+        "/api/files/download",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+    )
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == str(len(ok.content))
+    assert client.head(
+        "/api/files/download",
+        params={"path": str(root / "missing.pdf"), "token": web_server._SESSION_TOKEN},
+    ).status_code == 404
+
     playback = client.get(
         "/api/files/download",
         params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
@@ -133,13 +145,11 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
-def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
+def test_stream_authenticates_native_and_browser_players_and_supports_ranges(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root, name="out/demo.mp4")
 
-    # Electron's main-process proxy supplies the connection credential as a
-    # header. Unlike browser-visible download links, the stream endpoint must
-    # not accept credentials in its URL.
+    # Electron supplies a header; browser media elements cannot set one.
     params = {"path": str(file_path)}
 
     full = client.get("/api/files/stream", params=params)
@@ -168,9 +178,19 @@ def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     assert head.headers["x-content-type-options"] == "nosniff"
 
     del client.headers[web_server._SESSION_HEADER_NAME]
-    assert client.get(
+    playback = client.get(
         "/api/files/stream",
         params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+        headers={"Range": "bytes=1-3"},
+    )
+    assert playback.status_code == partial.status_code
+    assert playback.content == partial.content
+    assert playback.headers["content-range"] == partial.headers["content-range"]
+    assert playback.headers["content-type"] == partial.headers["content-type"]
+    assert playback.headers["content-disposition"].startswith("inline;")
+    assert client.get(
+        "/api/files/stream",
+        params={"path": str(file_path), "token": "wrong-token"},
     ).status_code == 401
     assert client.get("/api/files/stream", params=params).status_code == 401
 
@@ -191,7 +211,7 @@ def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
 
     del client.headers[web_server._SESSION_HEADER_NAME]
 
-    # The query-token escape hatch is scoped to downloads only; it must not
+    # The query-token escape hatch is scoped to downloads and playback; it must not
     # unlock the rest of the API surface.
     leaked = client.get(
         "/api/files/read",
@@ -374,5 +394,4 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     # is filtered because the parent component is a credential dir.
     mcp_listing = client.get("/api/files", params={"path": str(mcp_dir)})
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
-
 

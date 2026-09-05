@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__
+from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import load_config
 
 try:
@@ -390,9 +391,10 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
 
 
-# Routes that may also authenticate via ``?token=`` (download links opened by
-# the OS shell / a new tab, where no header can be set). Kept narrow.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
+# Routes that may also authenticate via ``?token=`` (browser downloads and
+# audio/video elements cannot set headers). The OAuth gate still requires its
+# session cookie; query tokens are only accepted by the loopback token gate.
+_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download", "/api/files/stream"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
@@ -795,7 +797,7 @@ elif _GATEWAY_HEALTH_TIMEOUT > _GATEWAY_HEALTH_TIMEOUT_MAX:
 
 
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
-_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+_FS_DATA_URL_MAX_BYTES = WEBAPP_ATTACHMENT_MAX_BYTES
 # Multipart uploads stream to a temp file in fixed chunks and rename into
 # place: constant memory, no base64 inflation, no proxy body-size 502s (NS-501).
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -936,7 +938,10 @@ from hermes_cli.web_routers import (  # noqa: E402
     dashboard_ui as _dashboard_ui_routes,
 )
 
+import hermes_cli.web_routers.uploads as _upload_routes
+
 app.include_router(_files_routes.router)
+app.include_router(_upload_routes.router)
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
@@ -1219,7 +1224,7 @@ def _on_server_started(
         from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
 
         register_self(
-            "serve" if headless else "dashboard",
+            "serve" if headless else "webapp" if getattr(app.state, "ui_surface", "dashboard") == "webapp" else "dashboard",
             detail={"host": host, "port": actual_port, "profile": initial_profile or ""},
         )
         attach_self_to_kill_on_close_job()
@@ -1336,6 +1341,7 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ui_surface: str = "dashboard",
 ):
     """Start the web UI server.
 
@@ -1350,6 +1356,9 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    if ui_surface not in {"dashboard", "webapp", "serve"}:
+        raise ValueError(f"unsupported web UI surface: {ui_surface}")
+    app.state.ui_surface = "serve" if headless else ui_surface
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).

@@ -547,7 +547,7 @@ _MANUAL_GATEWAY_SKIP_REASON = (
     "manual gateway has no supervisor relaunch authority; left running for explicit operator restart"
 )
 _DESKTOP_SERVE_SKIP_REASON = (
-    "desktop app owns and respawns this serve backend;"
+    "desktop app owns and respawns this control-plane backend;"
     " the recovery pass must not restart it out from under its supervisor"
 )
 # NOT a claim that no supervisor exists: a systemd-launched serve sets neither HERMES_SPAWN
@@ -588,8 +588,16 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
                     candidates.setdefault(profile, str(supervisor))
                     continue
                 reason = _MANUAL_GATEWAY_SKIP_REASON
-            elif kind in ("serve", "dashboard"):
-                reason = _DESKTOP_SERVE_SKIP_REASON if supervisor == "desktop" else _SERVE_SKIP_REASON
+            elif kind in ("serve", "dashboard", "webapp"):
+                if supervisor == "desktop":
+                    reason = _DESKTOP_SERVE_SKIP_REASON
+                elif kind == "webapp":
+                    reason = (
+                        "manually launched web server has no relaunch authority; "
+                        "left running for explicit operator restart"
+                    )
+                else:
+                    reason = _SERVE_SKIP_REASON
             else:
                 continue
             skipped.append({"profile": profile, "kind": str(kind), "supervisor": str(supervisor), "reason": reason})

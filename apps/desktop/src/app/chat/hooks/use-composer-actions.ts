@@ -91,6 +91,25 @@ export interface DroppedFile {
   lineEnd?: number
 }
 
+/** Resolve a native drop to a host-visible path, staging browser File bytes
+ * when the shell cannot expose a native filesystem path. Shared by both the
+ * main composer and message-edit composer so neither silently drops files. */
+export async function stageDroppedFilePath(candidate: DroppedFile): Promise<string> {
+  if (candidate.path) {
+    return candidate.path
+  }
+
+  if (!candidate.file || !window.hermesDesktop?.stageFileForAttach) {
+    return ''
+  }
+
+  try {
+    return await window.hermesDesktop.stageFileForAttach(candidate.file)
+  } catch {
+    return ''
+  }
+}
+
 /** MIME emitted by in-app drag sources (project tree, gutter line numbers).
  * Payload is JSON `{ path; isDirectory?; line?; lineEnd? }[]`. */
 export const HERMES_PATHS_MIME = 'application/x-hermes-paths'
@@ -307,7 +326,11 @@ export function useComposerActions({
    *  attach paths funnel through here. */
   const attachToMain = useCallback(
     (attachment: ComposerAttachment) => {
-      scope.add(attachment)
+      const stagedUpload = attachment.kind === 'file' && attachment.path
+        ? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path)
+        : undefined
+
+      scope.add(stagedUpload ? { ...attachment, stagedUpload } : attachment)
       requestComposerFocus(scope.target)
     },
     [scope]
@@ -663,7 +686,7 @@ export function useComposerActions({
         const fallbackPath =
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
-        const filePath = knownPath || fallbackPath || ''
+        let filePath = knownPath || fallbackPath || ''
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
@@ -683,6 +706,10 @@ export function useComposerActions({
           lastFailure = `Could not attach ${file.name || 'image'}`
 
           continue
+        }
+
+        if (!filePath) {
+          filePath = await stageDroppedFilePath(candidate)
         }
 
         if (filePath && attachContextFilePath(filePath)) {

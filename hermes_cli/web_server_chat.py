@@ -134,6 +134,46 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+_HOST_TERMINAL_META_PREFIX = "\0HERMES_TERMINAL_META:"
+
+
+def _host_terminal_request_allowed() -> bool:
+    from hermes_cli import web_host_terminal
+    from hermes_cli.web_server import app
+
+    return web_host_terminal.request_allowed(
+        ui_surface=getattr(app.state, "ui_surface", "dashboard"),
+        auth_required=bool(getattr(app.state, "auth_required", False)),
+        bound_host=getattr(app.state, "bound_host", "") or "",
+        loopback_hosts=_LOOPBACK_HOSTS,
+    )
+
+
+
+
+
+
+
+
+def _resolve_host_terminal_argv(
+    profile: Optional[str] = None,
+    requested_cwd: Optional[str] = None,
+) -> tuple[list[str], str, dict, str]:
+    from hermes_cli import __version__, web_host_terminal
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+
+    return web_host_terminal.resolve_argv(
+        profile=profile,
+        requested_cwd=requested_cwd,
+        resolve_profile_dir=_resolve_profile_dir,
+        resolve_shell_spec=web_host_terminal.shell_spec,
+        resolve_cwd=web_host_terminal.safe_cwd,
+        version=__version__,
+    )
+
+
+
+
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     """Return a rejection reason token for the peer IP, or None when allowed.
 
@@ -217,7 +257,7 @@ def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
     return (ticket, "ok") if ticket else ("", "invalid")
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+def _ws_auth_reason(ws: "WebSocket", *, allow_internal: bool = False) -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
     ``reason`` is None when accepted, else a short token (``no_credential``,
@@ -255,6 +295,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 
         internal = ws.query_params.get("internal", "")
         if internal:
+            if not allow_internal:
+                _reject("internal: endpoint not allowed")
+                return "internal_not_allowed", "internal"
             try:
                 _stamp_identity(consume_internal_credential(internal))
                 return None, "internal"
@@ -290,9 +333,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     return "token_mismatch", "token"
 
 
-def _ws_auth_ok(ws: "WebSocket") -> bool:
+def _ws_auth_ok(ws: "WebSocket", *, allow_internal: bool = False) -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
-    return _ws_auth_reason(ws)[0] is None
+    return _ws_auth_reason(ws, allow_internal=allow_internal)[0] is None
 
 
 def _resolve_chat_argv(

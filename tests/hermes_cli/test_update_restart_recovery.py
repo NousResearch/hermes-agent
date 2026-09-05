@@ -216,8 +216,8 @@ def test_abort_recovery_does_not_restart_manual_only_fleet(monkeypatch):
     assert calls == []
 
 
-def test_abort_recovery_records_serve_runtimes_as_skipped_with_reason(monkeypatch):
-    """Serve/dashboard ledger entries must not vanish from the recovery pass."""
+def test_abort_recovery_records_web_server_runtimes_as_skipped_with_reason(monkeypatch):
+    """Web-server ledger entries must not vanish from the recovery pass."""
     monkeypatch.setattr(
         update_cmd.subprocess,
         "run",
@@ -228,15 +228,18 @@ def test_abort_recovery_records_serve_runtimes_as_skipped_with_reason(monkeypatc
             _runtime("default", "systemd"),
             _runtime("default", "desktop", kind="serve"),
             _runtime("ops", "manual-serve", kind="dashboard"),
+            _runtime("browser", "manual-serve", kind="webapp"),
         ]
     )
 
     result = update_cmd._recover_gateway_restart_after_abort(plan, gateway_mode=False)
     by_kind = {entry["kind"]: entry for entry in result["skipped"]}
-    assert set(by_kind) == {"serve", "dashboard"}
+    assert set(by_kind) == {"serve", "dashboard", "webapp"}
     assert "desktop app" in by_kind["serve"]["reason"]
     assert by_kind["dashboard"]["profile"] == "ops"
     assert "relaunch" in by_kind["dashboard"]["reason"]
+    assert by_kind["webapp"]["profile"] == "browser"
+    assert "relaunch authority" in by_kind["webapp"]["reason"]
 
 
 def test_service_matching_is_exact_for_overlapping_profile_names():

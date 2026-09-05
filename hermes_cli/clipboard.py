@@ -53,9 +53,10 @@ def _linux_backends():
         (True, _xclip_has_image, _xclip_save))
 
 
-def save_clipboard_image(dest: Path) -> bool:
+def save_clipboard_image(dest: Path, *, create_parent: bool = True) -> bool:
     """Save the clipboard image to *dest* as PNG; True when an image was found and written."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        dest.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
         # pngpaste first (fast, handles more formats); osascript is the always-present fallback.
         return _macos_pngpaste(dest) or _macos_osascript(dest)

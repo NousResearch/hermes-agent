@@ -71,9 +71,9 @@ def _resolve_profile(rid, params):
     name = str(params.get("name") or "").strip()
     if not name:
         return name, None, _err(rid, 4063, "name required")
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_cli.profiles import get_profile_dir, profile_home_is_tombstoned
     profile_dir = Path(get_profile_dir(name))
-    if not profile_dir.is_dir():
+    if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
     return name, profile_dir, None
 
@@ -208,9 +208,11 @@ def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
-    db_path = Path(profile_path) / "state.db"
+    from hermes_constants import named_profile_home_is_unavailable
+    profile_dir = Path(profile_path)
+    db_path = profile_dir / "state.db"
     db = None
-    if _try(db_path.exists, False):
+    if not named_profile_home_is_unavailable(profile_dir) and _try(db_path.exists, False):
         db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
     try:
         row["last_session"], row["worker_session"] = _latest_profile_session_rows(db)
@@ -472,7 +474,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 existing.pop("ui_meta", None)
             existing["_ui_meta_revisions"] = revisions
             from utils import atomic_yaml_write
-            atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
+            atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False, create_parent=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}
     except Exception:
@@ -622,7 +624,10 @@ def _(rid, params: dict) -> dict:
     ext = next((e for e, magic in _ASSET_MAGIC.items() if all(blob[a:b] == m for a, b, m in magic)), None)
     if ext is None:
         return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
-    assets_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_cli.profiles import profile_home_is_tombstoned
+    if profile_home_is_tombstoned(profile_dir):
+        return _err(rid, 4064, f"profile '{_name}' not found")
+    assets_dir.mkdir(parents=False, exist_ok=True)
     _unlink_asset_files(assets_dir, asset)  # one canonical file per asset
     tmp = assets_dir / f"{asset}.{ext}.tmp"
     tmp.write_bytes(blob)

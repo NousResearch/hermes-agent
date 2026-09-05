@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, named_profile_home_is_unavailable, profile_deletion_marker_path
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _acquire_db_flock, _clear_lock_holder_record, _describe_lock_holder, _read_lock_holder_record,
@@ -104,10 +104,17 @@ def _claim_repair_attempt(db_path: Path) -> bool:
 def _open_lock_file(db_path: Path, suffix: str, what: str, tail: str):
     """Open ``<db>.<suffix>`` for locking; on failure warn and return None."""
     lock_path = db_path.with_name(db_path.name + suffix)
+    named_marker = profile_deletion_marker_path(db_path.parent)
+    if named_marker is not None and named_profile_home_is_unavailable(db_path.parent):
+        raise FileNotFoundError(f"Named profile home is missing or being deleted: {db_path.parent}")
     try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if named_marker is None:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
         return lock_path, lock_path.open("a+b")
     except OSError as exc:
+        if named_marker is not None:
+            raise FileNotFoundError(
+                f"Named profile home is missing or being deleted: {db_path.parent}") from exc
         logger.warning(f"Could not open state.db {what} lock %s (%s) — {tail}", lock_path, exc)
         return lock_path, None
 
@@ -194,6 +201,8 @@ def _cross_process_repair_lock(db_path: Path):
                            "surgery in this process to avoid racing the repairer. Recorded holder: %s.",
                            lock_path, _REPAIR_LOCK_TIMEOUT_SECONDS,
                            _describe_lock_holder(None if _IS_WINDOWS else _read_lock_holder_record(handle)))
+        if named_profile_home_is_unavailable(db_path.parent):
+            raise FileNotFoundError(f"Named profile home is missing or being deleted: {db_path.parent}")
         yield acquired
     finally:
         if acquired:

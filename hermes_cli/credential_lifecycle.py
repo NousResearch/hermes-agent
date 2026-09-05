@@ -139,7 +139,14 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
 
     if touched:
         require_readable_config_before_write(config_path)
-        atomic_yaml_write(config_path, user_config, sort_keys=False)
+        # The file existed when this transaction started. Never recreate its
+        # lifecycle-owned named-profile parent if DELETE wins before commit.
+        atomic_yaml_write(
+            config_path,
+            user_config,
+            sort_keys=False,
+            create_parent=False,
+        )
     return touched
 
 

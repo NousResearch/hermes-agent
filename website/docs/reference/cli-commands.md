@@ -93,6 +93,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes import-agent` | Import a Claude Code (`~/.claude`) or Codex CLI (`~/.codex`) setup. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
+| `hermes webapp` | Launch the Desktop workspace in a normal browser against this host. |
 | `hermes serve` | Start the Hermes backend server (headless; powers the desktop app and remote backends). |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
@@ -1664,6 +1665,37 @@ Import a **Claude Code** (`~/.claude`) or **OpenAI Codex CLI** (`~/.codex`) setu
 | `--yes`, `-y` | Skip confirmation prompts. |
 
 See the **[import guide](../user-guide/import-from-other-agents.md)** for the full mapping tables.
+
+## `hermes webapp`
+
+```bash
+hermes webapp [options]
+```
+
+Build and launch the current Hermes Desktop workspace in a normal browser. It
+uses the same hardened FastAPI server and authentication gate as
+`hermes dashboard`, but serves the Desktop renderer instead of the dashboard
+admin UI. See [Desktop App → Use the Desktop workspace from a browser](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port` | `9119` | Port to run the web server on (`0` asks the OS to assign one) |
+| `--host` | `127.0.0.1` | Bind address; non-loopback binds always require an auth provider |
+| `--no-open` | — | Don't open a browser automatically |
+| `--skip-build` | off | Reuse `apps/desktop/dist-webapp` without building |
+| `--force-build` | off | Rebuild even when the Desktop content stamp matches |
+| `--build-only` | off | Build the renderer but do not start the server |
+| `--isolated` | off | Keep a named-profile launch scoped to that profile instead of routing to the machine server |
+| `--stop` | — | Stop browser-hosted Desktop Webapp processes and exit (native Desktop `serve` backends are not touched) |
+| `--status` | — | List browser-hosted Desktop Webapp processes and exit |
+
+```bash
+# Local browser
+hermes webapp
+
+# Reach it through a trusted LAN/VPN; auth is mandatory
+hermes webapp --host 0.0.0.0 --no-open
+```
 
 ## `hermes serve`
 

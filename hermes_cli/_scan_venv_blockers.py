@@ -20,7 +20,6 @@ _SENSITIVE_LONG_FLAGS: list[str] = [
 ]
 
 _PYTHON_PROCESS_NAMES = {"python.exe", "pythonw.exe", "python", "pythonw"}
-_UPDATER_STOPPABLE_PURPOSES = ("serve", "dashboard")
 
 
 def _probe_fail_json(diagnostic: str = "probe failed") -> str:
@@ -186,12 +185,15 @@ def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
     See #98350.
     """
     try:
-        from hermes_cli.update_cmd import _hermes_holder_subcommand  # noqa: PLC0415
+        from hermes_cli.update_cmd_windows import (  # noqa: PLC0415
+            _WEB_SERVER_PURPOSES,
+            _hermes_holder_subcommand,
+        )
 
         purpose = _hermes_holder_subcommand(cmdline)
     except Exception:
         return None
-    if purpose not in _UPDATER_STOPPABLE_PURPOSES:
+    if purpose not in _WEB_SERVER_PURPOSES:
         return None
     try:
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead  # noqa: PLC0415
@@ -202,7 +204,7 @@ def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
     for entry in entries:
         if entry.get("pid") != pid:
             continue
-        if entry.get("purpose") not in _UPDATER_STOPPABLE_PURPOSES:
+        if entry.get("purpose") != purpose:
             return None
         # Spawner dead, unrecorded, or unprovable-but-registered: the updater's ledger rungs own
         # this holder (reap or stop+relaunch).

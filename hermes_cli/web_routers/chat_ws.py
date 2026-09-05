@@ -134,13 +134,13 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
     return peer, mode, cred
 
 
-async def _close_unless_sidecar_allowed(ws: WebSocket) -> bool:
+async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool = False) -> bool:
     """Pre-accept gates for the /api/ws, /api/pub and /api/events sidecars:
     4403 when chat is disabled or the request isn't allowed, 4401 on bad auth."""
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         await ws.close(code=4403)
         return False
-    if not _ws_auth_ok(ws):
+    if not _ws_auth_ok(ws, allow_internal=allow_internal):
         await ws.close(code=4401)
         return False
     if not _ws_request_is_allowed(ws):
@@ -404,63 +404,80 @@ async def _pty_fail(ws: WebSocket, text: str) -> None:
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
+    from hermes_cli.web_server_chat import (
+        _HOST_TERMINAL_META_PREFIX, _host_terminal_request_allowed,
+        _resolve_host_terminal_argv)
+    from hermes_cli.web_host_terminal import query_dimension as _pty_query_dimension
+    host_terminal = (ws.query_params.get("mode") or "").strip().lower() == "shell"
+    label = "Terminal" if host_terminal else "Chat"
     gate = await _ws_gate(ws, "pty")
     if gate is None:
         return
     peer, mode, cred = gate
+    if host_terminal and not _host_terminal_request_allowed():
+        await ws.close(code=4403, reason="host terminal requires authenticated Webapp")
+        return
+    if host_terminal and ws.query_params.get("attach") is not None:
+        await ws.close(code=4403, reason="host terminal does not support reattach")
+        return
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
-        await ws.close(code=1011)
+        await _pty_fail(ws, f"{label} unavailable: pseudo-terminal support is not installed on this host.")
         return
 
-    raw_resume = ws.query_params.get("resume") or None
-    resume = raw_resume
     profile = ws.query_params.get("profile") or None
-    channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
-    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+    raw_resume = resume = None
     active_session_file: Optional[Path] = None
+    shell_name = ""
+    if host_terminal:
+        try:
+            argv, cwd, env, shell_name = await asyncio.to_thread(
+                _resolve_host_terminal_argv, profile=profile,
+                requested_cwd=ws.query_params.get("cwd") or None)
+        except HTTPException as exc:
+            await _pty_fail(ws, f"Terminal unavailable: {exc.detail}")
+            return
+    else:
+        raw_resume = ws.query_params.get("resume") or None
+        resume = raw_resume
+        channel = _channel_or_close_code(ws)
+        sidecar_url = _build_sidecar_url(channel) if channel else None
+        force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-    if channel:
-        active_session_file = _active_session_file_for_channel(ws.app, channel)
-        if force_fresh:
-            resume = None
-            try:
-                active_session_file.unlink(missing_ok=True)
-            except OSError:
-                pass
-        elif not resume:
-            resume = _read_active_session_file(active_session_file)
-            if resume:
-                # The client only pins the viewport to the bottom when it asked
-                # for `?resume=`; announce the implicit active-session replay so
-                # it gets the same follow-scroll treatment.
-                # See #93518.
-                await ws.send_json({"type": "resume", "id": resume})
+        if channel:
+            active_session_file = _active_session_file_for_channel(ws.app, channel)
+            if force_fresh:
+                resume = None
+                try:
+                    active_session_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            elif not resume:
+                resume = _read_active_session_file(active_session_file)
+                if resume:
+                    # The client only pins the viewport to the bottom when it asked
+                    # for `?resume=`; announce the implicit active-session replay so
+                    # it gets the same follow-scroll treatment.
+                    # See #93518.
+                    await ws.send_json({"type": "resume", "id": resume})
 
-    resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
-    if active_session_file is not None:
-        resolve_kwargs["active_session_file"] = str(active_session_file)
+        resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
+        if active_session_file is not None:
+            resolve_kwargs["active_session_file"] = str(active_session_file)
 
-    try:
-        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
-    except HTTPException as exc:  # unknown/invalid profile
-        await _pty_fail(ws, f"Chat unavailable: {exc.detail}")
-        return
-    except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
-        await _pty_fail(ws, f"Chat unavailable: {exc}")
-        return
+        try:
+            argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
+        except HTTPException as exc:  # unknown/invalid profile
+            await _pty_fail(ws, f"Chat unavailable: {exc.detail}")
+            return
+        except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
+            await _pty_fail(ws, f"{label} unavailable: {exc}")
+            return
 
-    attach_token = ws.query_params.get("attach") or None
+    attach_token = None if host_terminal else (ws.query_params.get("attach") or None)
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
@@ -469,6 +486,11 @@ async def pty_ws(ws: WebSocket) -> None:
         attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
 
     def _spawn():
+        if host_terminal:
+            return PtyBridge.spawn(
+                argv, cwd=cwd, env=env,
+                cols=_pty_query_dimension(ws.query_params.get("cols"), 80, 2000),
+                rows=_pty_query_dimension(ws.query_params.get("rows"), 24, 1000))
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
 
     if attach_token is None:
@@ -476,11 +498,18 @@ async def pty_ws(ws: WebSocket) -> None:
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
-            await _pty_fail(ws, f"Chat unavailable: {exc}")
+            await _pty_fail(ws, f"{label} unavailable: {exc}")
             return
         except (FileNotFoundError, OSError) as exc:
-            await _pty_fail(ws, f"Chat failed to start: {exc}")
+            await _pty_fail(ws, f"{label} failed to start: {exc}")
             return
+        if host_terminal:
+            try:
+                await ws.send_text(
+                    _HOST_TERMINAL_META_PREFIX + json.dumps({"shell": shell_name}, separators=(",", ":")))
+            except Exception:
+                await asyncio.to_thread(bridge.close)
+                return
         await _legacy_pump(ws, bridge)
         return
 
@@ -488,7 +517,7 @@ async def pty_ws(ws: WebSocket) -> None:
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
-        await _pty_fail(ws, f"Chat unavailable: {exc}")
+        await _pty_fail(ws, f"{label} unavailable: {exc}")
         return
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
@@ -540,7 +569,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @router.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
-    if not await _close_unless_sidecar_allowed(ws):
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=True):
         return
     from tui_gateway.ws import handle_ws
 
@@ -561,8 +590,8 @@ async def gateway_ws(ws: WebSocket) -> None:
 # child's stdio handshake with Ink.
 
 
-async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
-    if not await _close_unless_sidecar_allowed(ws):
+async def _accept_channel_ws(ws: WebSocket, *, allow_internal: bool = False) -> Optional[str]:
+    if not await _close_unless_sidecar_allowed(ws, allow_internal=allow_internal):
         return None
     channel = _channel_or_close_code(ws)
     if not channel:
@@ -574,7 +603,7 @@ async def _accept_channel_ws(ws: WebSocket) -> Optional[str]:
 
 @router.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
-    channel = await _accept_channel_ws(ws)
+    channel = await _accept_channel_ws(ws, allow_internal=True)
     if channel is None:
         return
     try:

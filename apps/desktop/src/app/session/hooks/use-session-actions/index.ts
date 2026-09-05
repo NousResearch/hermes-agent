@@ -254,7 +254,7 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 function reconcileAuthoritativeChatMessages(
   authoritativeMessages: ChatMessage[],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'>
 ): ChatMessage[] {
   const withLiveProjection = liveProjection
     ? appendLiveSessionProjection(authoritativeMessages, liveProjection)
@@ -269,7 +269,7 @@ function reconcileAuthoritativeChatMessages(
 function reconcileAuthoritativeMessages(
   authoritativeMessages: SessionResumeResponse['messages'],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'>
 ): ChatMessage[] {
   return reconcileAuthoritativeChatMessages(toChatMessages(authoritativeMessages), previousMessages, liveProjection)
 }
@@ -1337,7 +1337,8 @@ export function useSessionActions({
                   const liveProjection = dedupeInflightUserAgainstTranscript(
                     persistedMessages,
                     runtimeMessages,
-                    activated
+                    activated,
+                    cachedViewState.messages
                   )
 
                   activatedMessages = reconcileAuthoritativeChatMessages(
@@ -1637,16 +1638,16 @@ export function useSessionActions({
               const runtimeMessages = toChatMessages(resumed.messages)
               const previousMessages = removeRepresentedLocalLiveProjection(currentMessages, resumed)
 
-              // Omitted-messages resumes stay safe here: `resumed.messages`
-              // is empty, so `runtimeMessages` has no anchor and the dedupe
-              // helper returns the projection unchanged, while the REST
-              // prefetch below remains the authoritative transcript — the
-              // same "graft, don't rebuild" outcome the pre-restructure
-              // messages_omitted branch produced.
+              // Omitted-messages resumes stay safe here: when runtime history
+              // is empty, the dedupe helper can prove the current turn from an
+              // exact local optimistic-user + stream pair and anchor the
+              // remaining committed prefix in the REST transcript. Without
+              // either proof it leaves the projection unchanged.
               const liveProjection = dedupeInflightUserAgainstTranscript(
                 prefetchedTranscriptMessages,
                 runtimeMessages,
-                resumed
+                resumed,
+                currentMessages
               )
 
               const resumedMessages = reconcileAuthoritativeChatMessages(

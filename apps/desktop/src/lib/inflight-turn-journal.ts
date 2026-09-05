@@ -150,6 +150,9 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
         (message.timestamp === undefined ||
           (typeof message.timestamp === 'number' && Number.isFinite(message.timestamp))) &&
         (message.pending === undefined || typeof message.pending === 'boolean') &&
+        (message.userOriginated === undefined || typeof message.userOriginated === 'boolean') &&
+        (message.runtimeTurnStartedAt === undefined ||
+          (typeof message.runtimeTurnStartedAt === 'number' && Number.isFinite(message.runtimeTurnStartedAt))) &&
         (message.error === undefined || typeof message.error === 'string') &&
         (message.branchGroupId === undefined || typeof message.branchGroupId === 'string') &&
         (message.hidden === undefined || typeof message.hidden === 'boolean') &&
@@ -353,8 +356,11 @@ function boundedMessages(messages: ChatMessage[]): ChatMessage[] | null {
   return bounded.map(message => ({
     id: boundedString(message.id, MAX_METADATA_CHARS),
     role: message.role,
+    ...(message.userOriginated === undefined ? {} : { userOriginated: message.userOriginated }),
+    ...(message.runtimeTurnStartedAt === undefined ? {} : { runtimeTurnStartedAt: message.runtimeTurnStartedAt }),
     parts: message.parts.map(boundedPart).filter((part): part is ChatMessagePart => part !== null),
     ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+    ...(message.rowId === undefined ? {} : { rowId: message.rowId }),
     ...(message.pending === undefined ? {} : { pending: message.pending }),
     ...(message.error === undefined ? {} : { error: boundedString(message.error, MAX_METADATA_CHARS) }),
     ...(message.branchGroupId === undefined
@@ -528,6 +534,7 @@ function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
   return (
     left.role === 'user' &&
     right.role === 'user' &&
+    (left.userOriginated === undefined || right.userOriginated === undefined || left.userOriginated === right.userOriginated) &&
     normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
     attachmentSignature(left) === attachmentSignature(right)
   )
@@ -583,6 +590,48 @@ function recoverableTail(messages: ChatMessage[], streamId: null | string): Chat
 
   if (assistantIndex < 0) {
     return []
+  }
+
+  // Only explicitly marked runtime projections use this boundary. Human and
+  // legacy turns keep their existing user-run scan below. A later stream row
+  // may follow a still-pending hydrated runtime reply without carrying its
+  // metadata yet; walk over that open assistant tail, never a completed reply.
+  let runtimeStartedAt = visible[assistantIndex].runtimeTurnStartedAt
+
+  for (let index = assistantIndex - 1; runtimeStartedAt === undefined && index >= 0; index -= 1) {
+    const row = visible[index]
+
+    if (row.role === 'assistant' && row.pending !== true && row.interim !== true) {
+      break
+    }
+
+    runtimeStartedAt = row.runtimeTurnStartedAt
+
+    if (row.role === 'user') {
+      break
+    }
+  }
+
+  if (runtimeStartedAt !== undefined) {
+    const start = visible.findIndex(message => message.runtimeTurnStartedAt === runtimeStartedAt)
+
+    const tail = visible.slice(start).map(message => message.role === 'assistant' && message.runtimeTurnStartedAt === undefined
+      ? { ...message, runtimeTurnStartedAt: runtimeStartedAt }
+      : message)
+
+    // One preceding durable row is an optional catch-up anchor. It stays
+    // unmarked, is never recovered as runtime content, and lets an idle REST
+    // transcript prove the suffix without comparing clocks or all-history text.
+    const anchor = visible[start - 1]
+
+    if (anchor && (anchor.rowId !== undefined || anchor.timestamp !== undefined)) {
+      const durableAnchor = { ...anchor }
+      delete durableAnchor.runtimeTurnStartedAt
+
+      return [durableAnchor, ...tail]
+    }
+
+    return tail
   }
 
   let start = assistantIndex
@@ -719,6 +768,178 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
   })
 }
 
+function sameRuntimeAnchor(left: ChatMessage, right: ChatMessage): boolean {
+  if (left.role !== right.role) {
+    return false
+  }
+
+  if (left.rowId !== undefined && right.rowId !== undefined) {
+    return left.rowId === right.rowId
+  }
+
+  return left.timestamp !== undefined && left.timestamp === right.timestamp &&
+    normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right))
+}
+
+/** Runtime projections have no guaranteed user row. Their backend identity
+ * provides the recovery boundary, including across reused stream ids. */
+function mergeRuntimeTurn(
+  baseMessages: ChatMessage[],
+  journal: ChatMessage[],
+  startedAt: number,
+  keepPending: boolean
+): InFlightRecoveryResult {
+  const boundary = journal.findIndex(message => message.runtimeTurnStartedAt === startedAt)
+  const anchor = journal[boundary - 1]
+  const tail = journal.slice(boundary)
+  const first = baseMessages.findIndex(message => message.runtimeTurnStartedAt === startedAt)
+  const last = baseMessages.findLastIndex(message => message.runtimeTurnStartedAt === startedAt)
+  const anchorIndex = anchor ? baseMessages.findLastIndex(message => sameRuntimeAnchor(message, anchor)) : -1
+  const baseTurn = first < 0 ? [] : baseMessages.slice(first, last + 1)
+
+  const currentRuntimeAssistant = baseMessages.findLastIndex(message =>
+    message.role === 'assistant' && message.pending === true && message.runtimeTurnStartedAt === startedAt
+  )
+
+  const otherLiveAssistant = baseMessages.findLast((message, index) =>
+    message.role === 'assistant' && message.pending === true && message.runtimeTurnStartedAt !== startedAt &&
+    (currentRuntimeAssistant < 0 || index > currentRuntimeAssistant)
+  )
+
+  // Raw persisted history does not have renderer runtime markers. Only an
+  // exact durable predecessor can prove its suffix; a later human turn or a
+  // different marked runtime ends that suffix. Known corrections remain human
+  // rows and are consumed in order. Without either identity proof, retain the
+  // journal rather than guessing that a global same-text reply committed it.
+  let committedCandidates = baseTurn
+
+  if (first < 0 && anchorIndex >= 0) {
+    committedCandidates = []
+    const corrections = tail.filter(message => message.role === 'user' && message.userOriginated !== false)
+    let correction = 0
+
+    for (const message of baseMessages.slice(anchorIndex + 1)) {
+      if (message.runtimeTurnStartedAt !== undefined && message.runtimeTurnStartedAt !== startedAt) {
+        break
+      }
+
+      if (message.role === 'user' && message.userOriginated !== false) {
+        if (!corrections[correction] || !userMessagesMatch(message, corrections[correction])) {
+          break
+        }
+
+        correction += 1
+      }
+
+      committedCandidates.push(message)
+    }
+  }
+
+  const committed = committedCandidates.filter(message => message.role === 'assistant' &&
+    message.pending !== true && !message.interim && (!isLiveProjectionRow(message) || message.completedAt !== undefined))
+
+  const committedParts = committed.flatMap(message => message.parts)
+
+  const structureCommitted = tail.every(message => message.parts.every(part => {
+    if (part.type === 'tool-call') {
+      return part.toolCallId !== undefined && committedParts.some(candidate =>
+        candidate.type === 'tool-call' && candidate.toolCallId === part.toolCallId)
+    }
+
+    return part.type !== 'reasoning' || committedParts.some(candidate =>
+      candidate.type === 'reasoning' && candidate.text.startsWith(part.text))
+  }))
+
+  const contentCommitted = tail.filter(assistantHasRecoverableContent).every(message => {
+    const text = normalizedText(chatMessageText(message))
+
+    if (message.error) {
+      return committed.some(candidate => candidate.error === message.error &&
+        (!text || normalizedText(chatMessageText(candidate)).startsWith(text)))
+    }
+
+    // A persisted final answer may extend the last throttled partial. Empty
+    // text needs explicit structural coverage; an unrelated body proves none.
+    return text ? committed.some(candidate => normalizedText(chatMessageText(candidate)).startsWith(text))
+      : message.parts.some(part => part.type === 'tool-call' || part.type === 'reasoning') && structureCommitted
+  })
+
+  if (contentCommitted && structureCommitted) {
+    return { applied: false, caughtUp: true, messages: baseMessages, streamId: null, turnStartedAt: null }
+  }
+
+  const lastJournalAssistant = tail.findLast(assistantHasRecoverableContent)
+
+  const lastLiveAssistant = baseTurn.findLastIndex(message => message.role === 'assistant' &&
+    message.runtimeTurnStartedAt === startedAt && (message.pending === true || Boolean(message.error)))
+
+  const keepRuntimePending = keepPending && !otherLiveAssistant
+  const usedIds = new Set(baseMessages.map(message => message.id))
+  const merged: ChatMessage[] = []
+  let cursor = 0
+
+  for (const [tailIndex, row] of tail.entries()) {
+    const match = row === lastJournalAssistant && lastLiveAssistant >= cursor
+      ? lastLiveAssistant
+      : baseTurn.findIndex((candidate, index) =>
+          index >= cursor && candidate.runtimeTurnStartedAt === startedAt && candidate.role === row.role &&
+          (candidate.id === row.id ||
+            (row.role === 'user' ? userMessagesMatch(candidate, row)
+              : normalizedText(chatMessageText(candidate)) === normalizedText(chatMessageText(row))))
+        )
+
+    if (match >= 0) {
+      merged.push(...baseTurn.slice(cursor, match))
+      const candidate = baseTurn[match]
+      merged.push(row.role === 'assistant' ? overlayProjectionRow(candidate, row) : candidate)
+      cursor = match + 1
+
+      continue
+    }
+
+    // The accepted next-turn queue is outside this runtime boundary. Keep its
+    // existing projection when the same queue envelope is already represented.
+    if (row.id.startsWith('user-queued-') && baseMessages.some(candidate =>
+      candidate.id.startsWith('user-queued-') && userMessagesMatch(candidate, row))) {
+      continue
+    }
+
+    // An old runtime tail may collide with a later human turn's reused stream
+    // id. Preserve it under a stable recovery id instead of attaching its tools
+    // to that human reply or dropping it in withoutBaseIds.
+    let id = row.id
+    let collision = 0
+
+    while (usedIds.has(id)) {
+      id = `runtime-recovery-${startedAt}-${tailIndex}-${collision++}-${row.id}`
+    }
+
+    usedIds.add(id)
+    merged.push({ ...row, id, pending: row.role === 'assistant' && keepRuntimePending && row.pending === true })
+  }
+
+  merged.push(...baseTurn.slice(cursor))
+
+  const runtimeMessages = keepRuntimePending ? merged : merged.map(message =>
+    message.role === 'assistant' && message.runtimeTurnStartedAt === startedAt && message.pending === true
+      ? { ...message, pending: false }
+      : message)
+
+  const messages = first < 0
+    ? [...baseMessages, ...runtimeMessages]
+    : [...baseMessages.slice(0, first), ...runtimeMessages, ...baseMessages.slice(last + 1)]
+
+  const runtimeAssistant = runtimeMessages.findLast(assistantHasRecoverableContent)
+
+  return {
+    applied: true,
+    caughtUp: false,
+    messages,
+    streamId: keepPending ? (otherLiveAssistant?.id ?? runtimeAssistant?.id ?? null) : null,
+    turnStartedAt: null
+  }
+}
+
 export function mergeInFlightMessages(
   baseMessages: ChatMessage[],
   tailMessages: ChatMessage[],
@@ -736,6 +957,12 @@ export function mergeInFlightMessages(
 
   if (!tail.some(assistantHasRecoverableContent)) {
     return noop
+  }
+
+  const runtimeStartedAt = tail.find(message => message.runtimeTurnStartedAt !== undefined)?.runtimeTurnStartedAt
+
+  if (runtimeStartedAt !== undefined) {
+    return mergeRuntimeTurn(baseMessages, tail, runtimeStartedAt, Boolean(options.keepPending))
   }
 
   const tailUserIndex = tail.findIndex(message => message.role === 'user')
@@ -979,6 +1206,11 @@ export function recoverInFlightTurnJournal(
   }
 
   const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, options)
+  const runtimeStartedAt = snapshot.messages.find(message => message.runtimeTurnStartedAt !== undefined)?.runtimeTurnStartedAt
+
+  const recoveredRuntimeIsActive = runtimeStartedAt !== undefined && recovered.messages.some(message =>
+    message.id === recovered.streamId && message.runtimeTurnStartedAt === runtimeStartedAt
+  )
 
   if (recovered.caughtUp) {
     clearInFlightTurnJournal(storedSessionId)
@@ -990,8 +1222,12 @@ export function recoverInFlightTurnJournal(
     // keepPending=false the session is not running, so the recovered rows are
     // settled history and the journal must clear on the next state update —
     // otherwise the same stale tail is folded again on every open.
-    streamId: recovered.applied ? (recovered.streamId ?? (options.keepPending ? snapshot.streamId : null)) : null,
-    turnStartedAt: recovered.applied ? snapshot.turnStartedAt : null
+    streamId: recovered.applied
+      ? (runtimeStartedAt !== undefined ? recovered.streamId : recovered.streamId ?? (options.keepPending ? snapshot.streamId : null))
+      : null,
+    turnStartedAt: recovered.applied && (runtimeStartedAt === undefined || recoveredRuntimeIsActive)
+      ? snapshot.turnStartedAt
+      : null
   }
 }
 

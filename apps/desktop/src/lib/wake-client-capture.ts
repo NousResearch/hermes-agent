@@ -7,6 +7,8 @@
  * runs server-side without requiring a server sound device.
  */
 
+import { bytesToBase64 } from './base64'
+
 const TARGET_RATE = 16_000
 const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 
@@ -64,18 +66,6 @@ function floatToInt16LE(input: Float32Array): ArrayBuffer {
   }
 
   return buf
-}
-
-function bytesToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf)
-  let binary = ''
-  const chunk = 0x8000
-
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-  }
-
-  return btoa(binary)
 }
 
 /**

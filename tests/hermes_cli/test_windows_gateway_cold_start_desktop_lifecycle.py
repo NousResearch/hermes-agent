@@ -20,11 +20,11 @@ from hermes_cli import update_cmd
 import hermes_cli.update_cmd_windows as update_cmd_windows
 
 
-def _live_serve_ledger_entry() -> dict:
+def _live_serve_ledger_entry(*, purpose: str = "serve") -> dict:
     return {
         "pid": 111,
         "create_time": 1.0,
-        "purpose": "serve",
+        "purpose": purpose,
         "install": "abc",
         "spawner_pid": 99,
         "spawner_create": 0.5,
@@ -35,10 +35,13 @@ def test_control_plane_argv_is_not_a_gateway():
     from gateway.status import looks_like_gateway_command_line
 
     serve = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main serve --host 127.0.0.1"
+    webapp = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main webapp --host 127.0.0.1"
     run = "C:\\Hermes\\.venv\\Scripts\\python.exe -m hermes_cli.main gateway run"
 
     assert update_cmd._looks_like_desktop_control_plane(serve) is True
+    assert update_cmd._looks_like_desktop_control_plane(webapp) is True
     assert looks_like_gateway_command_line(serve) is False
+    assert looks_like_gateway_command_line(webapp) is False
     assert update_cmd._looks_like_desktop_control_plane(run) is False
     assert looks_like_gateway_command_line(run) is True
 
@@ -62,6 +65,8 @@ def test_control_plane_classifier_is_token_based_not_substring():
     )
     # dashboard as the real subcommand
     assert update_cmd._looks_like_desktop_control_plane(f"{py} dashboard") is True
+    # Webapp is the browser-hosted Desktop control plane.
+    assert update_cmd._looks_like_desktop_control_plane(f"{py} webapp") is True
     # undeterminable subcommand → NOT a control plane (never guess ownership)
     assert update_cmd._looks_like_desktop_control_plane("python.exe -c import time") is False
 
@@ -69,6 +74,18 @@ def test_control_plane_classifier_is_token_based_not_substring():
 def test_ledger_live_serve_with_live_spawner_owns_lifecycle(monkeypatch):
     monkeypatch.setattr(
         process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]
+    )
+    monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: False)
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+
+    assert update_cmd._desktop_owns_gateway_lifecycle() is True
+
+
+def test_ledger_live_webapp_with_live_spawner_owns_lifecycle(monkeypatch):
+    monkeypatch.setattr(
+        process_identity,
+        "ledger_entries",
+        lambda **_k: [_live_serve_ledger_entry(purpose="webapp")],
     )
     monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: False)
     monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])

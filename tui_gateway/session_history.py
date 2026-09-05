@@ -210,6 +210,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
+        if "user_originated" in m:
+            msg["user_originated"] = m["user_originated"]
         # Authoring time (Unix seconds) for display.timestamps; display-only.
         # Display-only: never fed back into model context. See #41531.
         ts = m.get("timestamp")
@@ -249,9 +251,23 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(
+    session: dict, text: Any, *, display_kind: str | None = None,
+) -> None:
     now = time.time()
-    session["inflight_turn"] = {"assistant": "", "started_at": now, "streaming": True, "updated_at": now, "user": _inflight_text(text)}
+    display = project_compaction_message_for_display({
+        "role": "user", "content": text, "display_kind": display_kind,
+    })
+    session["inflight_turn"] = {
+        "assistant": "",
+        "started_at": now,
+        "streaming": True,
+        "updated_at": now,
+        "user": _inflight_text(text),
+        "user_originated": display is not None and display["user_originated"],
+        **({"display_kind": display_kind} if display_kind else {}),
+        **({"display_kind": "hidden"} if display is None else {}),
+    }
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:

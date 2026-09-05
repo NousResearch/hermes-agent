@@ -3244,6 +3244,7 @@ export const ru = defineLocale({
         `${count} ${RU_NOUN(count, 'запись лога', 'записи лога', 'записей лога')} добавлено в композер`
     },
     web: {
+      embeddedPreviewHint: 'Некоторые сайты блокируют встроенный предпросмотр. Откройте исходную страницу во вкладке браузера.',
       appFailedToBoot: 'Приложение предпросмотра не запустилось',
       serverNotFound: 'Сервер не найден',
       remoteLoopback:

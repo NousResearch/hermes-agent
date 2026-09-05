@@ -17,6 +17,12 @@ export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[numb
 export type ChatMessage = {
   id: string
   role: SessionMessage['role']
+  /** Authoritative backend provenance. Missing means use the legacy fallback;
+   * false marks a visible runtime notice, without changing its display role. */
+  userOriginated?: boolean
+  /** Runtime-turn identity from the backend, in seconds. Compare only for
+   * equality with another runtime identity, never with the renderer clock. */
+  runtimeTurnStartedAt?: number
   parts: ChatMessagePart[]
   timestamp?: number
   completedAt?: number

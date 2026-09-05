@@ -21,6 +21,12 @@ _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar("_HERMES_HOME_OVERR
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
+# Browser-hosted attachments are staged on the Hermes host and then read back
+# as a base64 data URL for the normal remote attachment RPC. Keep the upload
+# and read-back boundaries identical so a successful picker/drop can always be
+# attached afterward.
+WEBAPP_ATTACHMENT_MAX_BYTES: int = 16 * 1024 * 1024
+
 
 def set_hermes_home_override(path: str | Path | None) -> Token:
     """Set a context-local Hermes home override and return its reset token.
@@ -240,6 +246,22 @@ def mkdir_under_hermes_home(path: str | Path) -> Path:
     assert_named_profile_home_live(target)
     target.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def profile_deletion_marker_path(profile_home: Path | str) -> Path | None:
+    """Return the canonical deletion marker for a named profile home."""
+    home = Path(profile_home)
+    named_home = named_profile_home(home)
+    if named_home is None or named_home != home:
+        return None
+    return profile_tombstone_path(named_home)
+
+
+def named_profile_home_is_unavailable(profile_home: Path | str) -> bool:
+    """True when a named profile is absent or durably marked for deletion."""
+    home = Path(profile_home)
+    marker = profile_deletion_marker_path(home)
+    return marker is not None and (not home.is_dir() or marker.is_file())
 
 
 def _packaged_dir(env_var: str, default: Path | None, subdir: str) -> Path:

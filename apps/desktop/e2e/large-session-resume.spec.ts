@@ -243,6 +243,15 @@ test.describe('large session resume', () => {
         { timeout: 60_000 },
       )
       await fixture.page.waitForTimeout(300)
+      const viewportText =
+        (await fixture.page.locator('[data-slot="aui_thread-viewport"]').textContent()) ?? ''
+      const promptOffset = viewportText.lastIndexOf(BACKGROUND_PROMPT)
+      const replyOffset = viewportText.lastIndexOf(MOCK_REPLY)
+
+      expect(promptOffset, 'the running user prompt should remain in the transcript').toBeGreaterThanOrEqual(0)
+      expect(replyOffset, 'the completed reply should remain after its user prompt').toBeGreaterThan(promptOffset)
+
+      await fixture.page.getByText(BACKGROUND_PROMPT, { exact: true }).last().scrollIntoViewIfNeeded()
       await fixture.page.screenshot({ path: testInfo.outputPath(`${resumeKind}-background-inference-resume.png`), fullPage: false })
 
       expect(await textNodeOccurrences(fixture.page, BACKGROUND_PROMPT), 'the running user prompt should appear once').toBe(1)

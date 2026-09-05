@@ -3378,6 +3378,7 @@ export const zh: Translations = {
       sentMessage: count => `已将 ${count} 条日志添加到输入框`
     },
     web: {
+      embeddedPreviewHint: '部分网站不允许嵌入式预览。请在浏览器标签页中打开原始页面。',
       appFailedToBoot: '预览应用启动失败',
       serverNotFound: '未找到服务器',
       remoteLoopback:

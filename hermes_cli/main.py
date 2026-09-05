@@ -628,7 +628,7 @@ try:
         mode=(
             "gui"
             if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
-            in {"dashboard", "serve", "gui", "desktop"}
+            in {"dashboard", "webapp", "serve", "gui", "desktop"}
             else "cli"
         )
     )
@@ -2311,7 +2311,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     _SUBCOMMANDS = {
         "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
-        "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
+        "sessions", "insights", "update", "uninstall", "profile", "dashboard", "webapp", "serve",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
         "memory", "dump", "debug", "backup", "import", "completion", "logs",
     }
@@ -2353,7 +2353,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
         sys.exit(0)  # status is informational, always 0
     if getattr(args, "stop", False):
         if not _find_stale_dashboard_pids():
-            print("No hermes dashboard processes running.")
+            print("No Hermes web server processes running.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`;
         # it prints outcomes itself. Exit 1 only if every pid was unkillable.
@@ -2497,6 +2497,11 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     return mcp_discovery_after_bind
 
 
+def cmd_webapp(args):
+    from hermes_cli.main_dashboard import cmd_webapp as run
+    return run(args)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -2544,6 +2549,13 @@ def cmd_dashboard(args):
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
+        ui_surface=(
+            "serve"
+            if _headless_backend
+            else "webapp"
+            if getattr(args, "webapp_surface", False)
+            else "dashboard"
+        ),
     )
 
 
@@ -2594,7 +2606,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
+        "config", "console", "cron", "curator", "dashboard", "webapp", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
@@ -3250,6 +3262,7 @@ def _build_cli_parser():
         subparsers,
         cmd_dashboard=cmd_dashboard,
         cmd_dashboard_register=cmd_dashboard_register,
+        cmd_webapp=cmd_webapp,
     )
     # "desktop" is canonical (Hermes-Setup.exe tells users to run it, so it
     # must be the name --help shows); "gui" is a deprecated alias.

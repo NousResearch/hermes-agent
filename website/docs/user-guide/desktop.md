@@ -14,6 +14,7 @@ It runs on **macOS, Windows, and Linux**.
 Hermes has several front ends that all talk to the same agent:
 
 - **Desktop App** (this page) — a native application with a purpose-built UI for chat, configuration, and management.
+- **Desktop Webapp** (`hermes webapp`) — the same Desktop workspace rendered in a normal browser against the host running Hermes.
 - **CLI** (`hermes`) and **[TUI](./tui.md)** (`hermes --tui`) — terminal interfaces.
 - **[Web Dashboard](./features/web-dashboard.md)** (`hermes dashboard`) — a browser admin panel; its optional **Chat** tab embeds the TUI through a pseudo-terminal.
 
@@ -31,6 +32,64 @@ hermes desktop
 ```
 
 That uses your current config, keys, sessions, and skills.
+
+## Use the Desktop workspace from a browser
+
+`hermes webapp` builds the current Desktop renderer and serves it through the
+existing authenticated Hermes web server. This is **not the Web Dashboard**:
+the page is the chat-first Desktop workspace, including sessions, profiles,
+Capabilities, Messaging, Artifacts, scheduled jobs, the host file tree, Git
+review, previews, and the terminal rail.
+
+```bash
+# This host only
+hermes webapp
+
+# Reachable from your LAN/VPN; does not open a browser on the server
+hermes webapp --host 0.0.0.0 --port 9119 --no-open
+```
+
+The default loopback URL is `http://127.0.0.1:9119`. Any non-loopback bind
+engages the same fail-closed [dashboard authentication gate](./features/web-dashboard.md#authentication-gated-mode):
+configure username/password for a trusted LAN or VPN, or OAuth/OIDC for an
+internet-facing deployment. `--insecure` is a deprecated no-op and cannot
+disable that gate. HTTPS is strongly recommended remotely and is required by
+browsers for some microphone and clipboard APIs.
+
+:::warning Treat Webapp access like access to Hermes on the host
+An authenticated Webapp user can execute arbitrary commands as the OS account
+running Hermes, run agent tools, use host-scoped file and Git operations, and
+access that account's environment and credentials. Do not expose it without
+authentication. Prefer an SSH tunnel, Tailscale, or another trusted VPN; use
+OAuth/OIDC for direct internet exposure.
+:::
+
+Browser-selected files are staged under the active profile before they enter
+the normal attachment flow. Browser attachments are capped at **16 MiB**, the
+same limit used when the staged bytes enter that flow. The terminal rail opens
+the host's interactive shell through the existing authenticated `/api/pty`
+transport; Dashboard's Chat
+tab continues to use the Hermes TUI mode on that same endpoint. Host-shell mode
+is available on loopback and authenticated remote Webapp binds, and is refused
+for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
+always-on-top overlays, OS-window inspection, external-terminal launch, and the
+native updater—remain available only in Electron. Website links open in a
+separate browser tab by default in Webapp. Explicit URL previews use a
+capability-minimal sandboxed iframe, with an **Open in browser** action for
+sites that reject embedding. Electron-only DevTools and trusted-input preview
+automation are not exposed through that iframe.
+
+Host files download through your browser's download manager. Supported audio
+and video play inline with seeking, using the server's existing file-access
+rules and size limit.
+
+Useful build/lifecycle flags:
+
+- `--skip-build` reuses `apps/desktop/dist-webapp`.
+- `--force-build` rebuilds even when the content stamp matches.
+- `--build-only` prepares the renderer without starting a server.
+- `--status` and `--stop` inspect or stop Webapp processes only; they do not
+  stop the native Desktop app's headless `hermes serve` backend.
 
 ## What's in the app
 

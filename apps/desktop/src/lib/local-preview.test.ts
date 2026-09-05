@@ -114,6 +114,17 @@ describe('remote HTML previews', () => {
     expect(openPreviewInBrowser).toHaveBeenCalledWith('file:///tmp/report%20%231%3F.html')
   })
 
+  it('passes browser blob staging URLs through unchanged', async () => {
+    const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
+    const saveImageBuffer = vi.fn(async () => 'blob:http://127.0.0.1:9119/preview')
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+    window.hermesDesktop = { openPreviewInBrowser, saveImageBuffer } as never
+
+    await openPreviewTargetInBrowser({ ...remoteTarget, dataUrl })
+
+    expect(openPreviewInBrowser).toHaveBeenCalledWith('blob:http://127.0.0.1:9119/preview')
+  })
+
   it('serializes UNC staging paths as file URLs', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
     const saveImageBuffer = vi.fn(async () => '\\\\server\\share\\report #1.html')

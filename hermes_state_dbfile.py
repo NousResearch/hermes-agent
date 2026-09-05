@@ -198,8 +198,14 @@ def is_zeroed_state_db(path: Path, *, probe_bytes: int = 100, force: bool = Fals
 def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
     """Acquire the cross-process lock for path.quarantine.lock."""
     import platform
+    from hermes_constants import named_profile_home_is_unavailable, profile_deletion_marker_path
     lock_path = path.with_name(path.name + ".quarantine.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    named_marker = profile_deletion_marker_path(path.parent)
+    if named_marker is not None:
+        if named_profile_home_is_unavailable(path.parent):
+            raise FileNotFoundError(f"Named profile home is missing or being deleted: {path.parent}")
+    else:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
     acquired = False
     try:
@@ -224,6 +230,8 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.020)
+        if acquired and named_marker is not None and named_profile_home_is_unavailable(path.parent):
+            raise FileNotFoundError(f"Named profile home is missing or being deleted: {path.parent}")
         yield acquired
     finally:
         try:

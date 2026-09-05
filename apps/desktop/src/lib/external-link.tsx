@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 
 import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
@@ -227,10 +228,12 @@ export function hudForcesNativeLinks(search = typeof window === 'undefined' ? ''
 /**
  * Where a link the user clicked should open.
  *
- * A web page opens in the in-app browser — that pane exists so reading a doc
+ * In Electron, a web page opens in the in-app browser — that pane exists so reading a doc
  * doesn't cost a context switch out of Hermes, and it is the surface the agent
  * can see. ⌘/Ctrl-click (or middle-click) escapes to the real browser, which is
  * where you go for anything needing your logged-in session or a password.
+ * Webapp links open in a browser tab by default because sites often reject
+ * embedded pages. Keep that handoff synchronous so it retains the click gesture.
  *
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
  * no business in the webview and always hands off to the OS. The HUD has no
@@ -243,7 +246,12 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  if (options.native || hudForcesNativeLinks() || !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')) {
+  if (
+    options.native ||
+    isBrowserHostedDesktop() ||
+    hudForcesNativeLinks() ||
+    !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')
+  ) {
     openExternalLink(target)
 
     return

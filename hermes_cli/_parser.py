@@ -96,6 +96,7 @@ Examples:
     hermes console                Open the safe Hermes command console
     hermes update                 Update to latest version
     hermes dashboard              Start web UI dashboard (port 9119)
+    hermes webapp                Start the Desktop workspace in a browser
     hermes dashboard --stop       Stop running dashboard processes
     hermes dashboard --status     List running dashboard processes
 

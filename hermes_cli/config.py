@@ -636,12 +636,19 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Home paths whose directory skeleton was created this process. Only successful passes are
-# recorded, so a raised managed-mode/missing-profile error keeps re-checking on later loads.
-_HERMES_HOME_ENSURED: set = set()
+# Named homes include ctime to distinguish rapid delete/recreate cycles that reuse an inode.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, int]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
+
+
+def _hermes_home_identity(home: Path, *, include_ctime: bool) -> tuple[int, int, int] | None:
+    try:
+        value = home.stat()
+    except OSError:
+        return None
+    return (value.st_dev, value.st_ino, value.st_ctime_ns if include_ctime else 0)
 
 
 def ensure_hermes_home():
@@ -653,10 +660,19 @@ def ensure_hermes_home():
 
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_live
-    assert_named_profile_home_live(home)
-    if key in _HERMES_HOME_ENSURED and home.is_dir():
+    from hermes_constants import named_profile_home_is_unavailable, profile_deletion_marker_path
+    named_profile = profile_deletion_marker_path(home) is not None
+    if named_profile_home_is_unavailable(home):
+        raise FileNotFoundError(
+            f"Named profile home does not exist because it is missing or being deleted: {home}. "
+            "Create the profile explicitly before using it.")
+    current_identity = _hermes_home_identity(home, include_ctime=named_profile)
+    if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
         return
+    # Named profiles must be created explicitly (e.g. ``hermes profile create``).
+    # If a stale process keeps running after the profile was renamed/deleted,
+    # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton
+    # and make the deleted profile reappear in Desktop/profile lists.
     if is_managed():
         # Activation creates the dirs; verify, then seed SOUL.md. logs/curator may be unknown to
         # the activation script (inside an already-secured logs/). umask(0o007) => SOUL.md is 0660.
@@ -667,20 +683,30 @@ def ensure_hermes_home():
             for subdir in ("cron", "sessions", "logs", "memories"):
                 if not (home / subdir).is_dir():
                     raise RuntimeError(f"{home / subdir} does not exist.")
-            (home / "logs" / "curator").mkdir(parents=True, exist_ok=True)
+            if named_profile and named_profile_home_is_unavailable(home):
+                raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+            (home / "logs" / "curator").mkdir(parents=not named_profile, exist_ok=True)
             _ensure_default_soul_md(home)
         finally:
             os.umask(old_umask)
     else:
-        home.mkdir(parents=True, exist_ok=True)
+        if named_profile:
+            if not home.is_dir():
+                raise FileNotFoundError(f"Named profile home disappeared during initialization: {home}")
+        else:
+            home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
         for subdir in _HERMES_HOME_SUBDIRS:
+            if named_profile and named_profile_home_is_unavailable(home):
+                raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
             d = home / subdir
-            d.mkdir(parents=True, exist_ok=True)
+            d.mkdir(parents=not named_profile, exist_ok=True)
             _secure_dir(d)
         _ensure_default_soul_md(home)
 
-    _HERMES_HOME_ENSURED.add(key)
+    ensured_identity = _hermes_home_identity(home, include_ctime=named_profile)
+    if ensured_identity is not None:
+        _HERMES_HOME_ENSURED[key] = ensured_identity
 
 
 # ---- Config loading/saving ----
@@ -2005,7 +2031,12 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
 
 def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first)."""
+    from hermes_constants import profile_deletion_marker_path
     require_readable_config_before_write(config_path)
+    kwargs.setdefault(
+        "create_parent",
+        profile_deletion_marker_path(config_path.parent) is None,
+    )
     atomic_yaml_write(config_path, data, **kwargs)
 
 
@@ -2361,7 +2392,7 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+        atomic_config_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
@@ -3448,7 +3479,7 @@ def _exit_invalid(msg: str) -> None:
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_config_write(config_path, user_config, sort_keys=False)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

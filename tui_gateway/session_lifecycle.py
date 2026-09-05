@@ -321,22 +321,134 @@ def _pop_session_by_id(sid: str) -> dict | None:
     return session
 
 
-def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_close") -> bool:
+def _teardown_popped_session(
+    session: dict | None, *, end_reason: str = "tui_close"
+) -> bool:
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
-    run_thread = session.get("_run_thread")
-    if end_reason != "tui_shutdown" and run_thread is not None and run_thread is not threading.current_thread():
+    settled = True
+    seen_threads: set[int] = set()
+    for label, thread in (
+        ("turn", session.get("_run_thread")),
+        ("agent build", session.get("_agent_build_thread")),
+    ):
+        if (
+            end_reason == "tui_shutdown"
+            or thread is None
+            or thread is threading.current_thread()
+            or id(thread) in seen_threads
+        ):
+            continue
+        seen_threads.add(id(thread))
         try:
-            if run_thread.is_alive():
-                run_thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
-            if run_thread.is_alive():
+            if thread.is_alive():
+                thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+            if thread.is_alive():
                 logger.warning(
-                    "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+                    "session %s thread still alive after %.1fs teardown grace",
+                    label,
+                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
+                )
+                settled = False
         except Exception:
-            logger.debug("failed waiting for session turn thread", exc_info=True)
+            logger.debug("failed waiting for session %s thread", label, exc_info=True)
+            settled = False
     _teardown_session(session, end_reason=end_reason)
-    return True
+    return settled
+
+
+_PROFILE_INCARNATION_UNSET = object()
+
+
+def _profile_home_rejected(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None | object = _PROFILE_INCARNATION_UNSET,
+) -> bool:
+    effective_home = profile_home or _hermes_home
+    incarnation_required = profile_incarnation is not _PROFILE_INCARNATION_UNSET
+    expected_incarnation = (
+        profile_incarnation if isinstance(profile_incarnation, str) else None
+    )
+    return _profile_lifecycle.rejected(
+        effective_home,
+        expected_incarnation,
+        require_incarnation=incarnation_required,
+    )
+
+
+def allow_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> None:
+    """Admit sessions for a profile that was explicitly created/recreated."""
+    with _sessions_lock:
+        _profile_lifecycle.allow(profile_home, profile_incarnation)
+
+
+def retire_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> int:
+    """Tear down every in-process session retaining ``profile_home``.
+
+    Profile DELETE marks the home unavailable before calling this function, so
+    finalization attempts fail closed instead of reopening state.db. The
+    registry pop prevents later title/history/cwd activity from using stale
+    session dictionaries after the directory is removed.
+    """
+    def _close_launch_db() -> int:
+        global _db
+
+        db, _db = _db, None
+        if db is None:
+            return 0
+        try:
+            db.close()
+            return 1
+        except Exception:
+            logger.debug("failed closing launch profile SessionDB", exc_info=True)
+            return 0
+
+    return _profile_lifecycle.retire_sessions(
+        profile_home,
+        profile_incarnation,
+        launch_home=_hermes_home,
+        sessions=_sessions,
+        sessions_lock=_sessions_lock,
+        close_session=lambda sid: _close_session_by_id(
+            sid,
+            end_reason="profile_deleted",
+        ),
+        close_launch_db=_close_launch_db,
+    )
+
+
+def _capture_profile_incarnation(profile_home: Path | str | None) -> str | None:
+    return _profile_lifecycle.capture(profile_home or _hermes_home)
+
+
+def _session_profile_identity_matches(
+    session: dict,
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+) -> bool:
+    expected_home = str(profile_home) if profile_home is not None else None
+    return (
+        (session.get("profile_home") or None) == expected_home
+        and (session.get("profile_incarnation") or None) == profile_incarnation
+    )
+
+
+@contextlib.contextmanager
+def _profile_home_lease(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+):
+    """Hold generation identity stable while binding a profile pathname."""
+    effective_home = profile_home or _hermes_home
+    with _profile_lifecycle.lease(effective_home, profile_incarnation) as home:
+        yield home
 
 
 def _close_session_by_id(
@@ -438,6 +550,9 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
     transport; closes the fired-but-not-run Timer race and stops dead Timers accumulating on flappy clients."""
     with _sessions_lock:
         timer = _pending_ws_reaps.pop(sid, None)
+        session = _sessions.get(sid)
+        if session is not None:
+            session.pop("_client_gone_reap_token", None)
     if timer is not None:
         with contextlib.suppress(Exception):
             timer.cancel()
@@ -463,24 +578,45 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
         return False
 
 
-def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
+def _schedule_ws_orphan_reap(
+    sid: str, *, delay_s: float | None = None, _detachment_token: object | None = None,
+) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned. Called from the WS-disconnect path; a
     reconnect or ``session.resume`` cancels the reap by re-binding a live transport. Disabled when grace is 0."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
+
+    with _sessions_lock:
+        current = _sessions.get(sid)
+        if current is None or not _ws_session_is_detached(current):
+            return
+        if _detachment_token is None:
+            detachment_token = current.get("_client_gone_reap_token")
+            if detachment_token is None:
+                detachment_token = object()
+                current["_client_gone_reap_token"] = detachment_token
+        else:
+            if current.get("_client_gone_reap_token") is not _detachment_token:
+                return
+            detachment_token = _detachment_token
 
     def _reap() -> None:
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
         reschedule_delay = interrupt_session = session = None
         with _session_resume_lock:
-            # Drop this Timer's registration so a concurrent _cancel_ws_orphan_reap can't cancel a dead Timer while a
-            # rescheduled one (registered below) is the owner.
+            # A dispatched callback survives Timer.cancel(); only this timer in
+            # this detachment generation may mutate the registration.
             with _sessions_lock:
+                current = _sessions.get(sid)
+                if _pending_ws_reaps.get(sid) is not timer:
+                    return
                 _pending_ws_reaps.pop(sid, None)
-            current = _sessions.get(sid)
-            if current is None or not _ws_session_is_detached(current):
-                return
+                if current is None or current.get("_client_gone_reap_token") is not detachment_token:
+                    return
+                if not _ws_session_is_detached(current):
+                    current.pop("_client_gone_reap_token", None)
+                    return
             if _session_has_active_delegations(sid, current):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
@@ -516,7 +652,7 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
                     if _sessions.get(sid) is interrupt_session:
                         interrupt_session.pop("_client_gone_interrupt_requested", None)
         if reschedule_delay is not None:
-            _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay)
+            _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay, _detachment_token=detachment_token)
             return
         if session is not None and session.get("_client_gone_interrupt_requested"):
             logger.info("client_gone sid=%s action=reap", sid)
@@ -525,6 +661,10 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s), _reap)
     timer.daemon = True
     with _sessions_lock:
+        current = _sessions.get(sid)
+        if (current is None or not _ws_session_is_detached(current)
+                or current.get("_client_gone_reap_token") is not detachment_token):
+            return
         prior = _pending_ws_reaps.pop(sid, None)
         _pending_ws_reaps[sid] = timer
     if prior is not None:
@@ -568,6 +708,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 else:
                     current["transport"] = _detached_ws_transport
                     current.pop("_client_gone_interrupt_requested", None)
+                    current.pop("_client_gone_reap_token", None)
                     should_schedule_reap = True
         if claimed_for_teardown is not None:
             reaped += _teardown_popped_session(claimed_for_teardown, end_reason=end_reason)

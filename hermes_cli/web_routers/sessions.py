@@ -507,10 +507,10 @@ def _project_for_display(messages: list) -> list:
 
     projected_messages = []
     for message in messages:
-        if not is_compaction_summary_message(message):
-            projected_messages.append(message)
-            continue
         display_view = project_compaction_message_for_display(message)
+        if not is_compaction_summary_message(message):
+            projected_messages.append(display_view)
+            continue
         projected = message.copy()
         if display_view is None:
             if not projected.get("display_kind"):
@@ -521,6 +521,8 @@ def _project_for_display(messages: list) -> list:
             # wrapper must not hide a successfully recovered live ask.
             projected["display_content"] = display_view.get("content")
             projected.pop("display_kind", None)
+            if "user_originated" in display_view:
+                projected["user_originated"] = display_view["user_originated"]
         projected_messages.append(projected)
     return projected_messages
 

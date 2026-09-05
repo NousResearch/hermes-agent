@@ -441,13 +441,16 @@ def _get_code_identity_fields() -> dict[str, Any]:
         return {}
 
 
-def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> bool:
+def _pid_record_belongs_to_current_profile(
+    record: Optional[dict[str, Any]], *, expected_home: Optional[Path | str] = None
+) -> bool:
     """True when the record's ``hermes_home`` matches the current process (legacy records: True);
     another HERMES_HOME's record must be ignored or the default gateway assumes its identity."""
     if not isinstance(record, dict):
         return False
     record_home = record.get("hermes_home")
-    return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
+    target_home = expected_home if expected_home is not None else _get_process_hermes_home()
+    return not record_home or _same_hermes_home(record_home, target_home)
 
 
 def _build_runtime_status_record() -> dict[str, Any]:
@@ -1446,6 +1449,7 @@ def get_running_pid(
 ) -> Optional[int]:
     """PID of a running gateway (lock + PID file verified against the live process), or None."""
     resolved_pid_path = pid_path or _get_pid_path()
+    expected_home = resolved_pid_path.parent if pid_path is not None else None
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
         records = (
@@ -1453,7 +1457,7 @@ def get_running_pid(
         )
         for record in records:
             pid = _live_pid_from_record(record)
-            if pid is None or not _pid_record_belongs_to_current_profile(record):
+            if pid is None or not _pid_record_belongs_to_current_profile(record, expected_home=expected_home):
                 continue
             if _record_matches_live_gateway_pid(record, pid):
                 return pid

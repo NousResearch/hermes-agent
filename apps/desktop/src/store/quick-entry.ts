@@ -64,12 +64,14 @@ export function canUseQuickEntry(): boolean {
 
 /** Read the live registration state into the store (Settings mount). */
 export async function loadQuickEntrySettings(): Promise<void> {
-  if (!canUseQuickEntry()) {
+  const api = window.hermesDesktop?.quickEntry
+
+  if (!api?.getSettings) {
     return
   }
 
   try {
-    applyStatus(await window.hermesDesktop.quickEntry.getSettings())
+    applyStatus(await api.getSettings())
   } catch {
     // A failed read leaves the store as-is; the row keeps its last known copy.
   }
@@ -81,7 +83,9 @@ export async function loadQuickEntrySettings(): Promise<void> {
  * instead of a silently-lost setting.
  */
 export async function saveQuickEntrySettings(patch: { enabled?: boolean; shortcut?: string }): Promise<void> {
-  if (!canUseQuickEntry()) {
+  const api = window.hermesDesktop?.quickEntry
+
+  if (!api?.setSettings) {
     return
   }
 
@@ -91,7 +95,7 @@ export async function saveQuickEntrySettings(patch: { enabled?: boolean; shortcu
   $quickEntry.set({ ...previous, ...patch, registered: previous.registered })
 
   try {
-    applyStatus(await window.hermesDesktop.quickEntry.setSettings(patch))
+    applyStatus(await api.setSettings(patch))
   } catch {
     $quickEntry.set(previous)
   }

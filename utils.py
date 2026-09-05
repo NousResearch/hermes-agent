@@ -174,7 +174,8 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
-def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None, preserve_owner: bool = True) -> None:
+def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
+                  preserve_owner: bool = True, create_parent: bool = True) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open text handle. *mode* is fchmod'd onto the temp fd
@@ -182,7 +183,8 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     the post-replace chmod is the sole path on Windows). The temp file is removed on any failure —
     ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
     original_owner = _preserve_file_owner(path) if preserve_owner else None
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     try:
@@ -260,7 +262,8 @@ class IndentDumper(yaml.SafeDumper):
 
 
 def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
-                      extra_content: str | None = None, create_mode: "int | None" = None) -> None:
+                      extra_content: str | None = None, create_mode: "int | None" = None,
+                      create_parent: bool = True) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
@@ -272,7 +275,8 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
         if extra_content:
             f.write(extra_content)
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
+    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode),
+                  create_parent=create_parent)
 
 
 def _roundtrip_load(path: Path):

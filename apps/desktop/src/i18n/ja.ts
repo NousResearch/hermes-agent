@@ -2842,6 +2842,7 @@ export const ja = defineLocale({
       sentMessage: count => `${count} 件のログエントリーがコンポーザーに追加されました`
     },
     web: {
+      embeddedPreviewHint: '埋め込みプレビューを許可しないサイトもあります。元のページをブラウザーのタブで開いてください。',
       appFailedToBoot: 'プレビューアプリの起動に失敗しました',
       serverNotFound: 'サーバーが見つかりません',
       remoteLoopback:

@@ -26,13 +26,13 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None) -> list[
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
-    mode = None
-    for candidate in ("dashboard", "serve"):
-        patterns = (f"hermes {candidate}", f"hermes_cli.main {candidate}", f"hermes_cli/main.py {candidate}")
-        if any(pattern in command for pattern in patterns):
-            mode = candidate
-            break
-    if mode is None:
+    try:
+        from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+
+        mode = _hermes_holder_subcommand(command)
+    except Exception:
+        mode = None
+    if mode not in {"dashboard", "webapp", "serve"}:
         return None
 
     port = 9119
@@ -378,32 +378,41 @@ def _finalize_update_output(state):
             log_file.close()
 
 
-def _report_dashboard_status() -> int:
-    """Print live listening dashboard/serve processes and return the count.
+def _report_dashboard_status(*, modes: set[str] | None = None) -> int:
+    """Print live listening Hermes web-server processes and return the count.
 
-    Serve-mode backends are INCLUDED: ``--stop`` kills them, so hiding them from
-    ``--status`` let an operator kill what they couldn't see.
-
-    Ledger-registered serves (profiled launches the argv scan can't match) surface via the spawn-ledger
-    augmentation in _scan_dashboard_processes. See #81564.
+    The default includes every mode ``dashboard --stop`` can affect. In
+    particular, serve-mode backends stay visible (#81564), while surface-
+    specific callers such as ``webapp --status`` can narrow the report.
+    Ledger-registered launches (including profiled commands the argv scan
+    cannot match) surface through ``_scan_dashboard_processes``.
     """
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
     from gateway.status import _pid_exists
+    from hermes_cli.dashboard_procs import _scan_dashboard_processes
+
+    accepted_modes = {"dashboard", "serve", "webapp"} if modes is None else modes
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if port <= 0 or not _pid_exists(pid) or not _dashboard_listening(host, port):
+        if mode not in accepted_modes:
+            continue
+        if port < 0 or not _pid_exists(pid):
+            continue
+        # `--port 0` asks the OS for an ephemeral port, which is not present in
+        # argv. Positive process identity is the only status signal available;
+        # fixed ports additionally prove readiness with a TCP probe.
+        if port > 0 and not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))
 
     if not live:
-        print("No hermes dashboard or serve processes running.")
+        print("No Hermes web server processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard/serve process(es) running:")
+    print(f"{len(live)} Hermes web server process(es) running:")
     for pid, command, mode in live:
         print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
@@ -422,6 +431,52 @@ def _dashboard_listening(host: str, port: int) -> bool:
 def _cancel(message: str = "  Cancelled.") -> NoReturn:
     print(message)
     sys.exit(1)
+
+
+def _dashboard_surface_at(host: str, port: int) -> str | None:
+    """Verified Hermes UI surface at ``host:port``, or ``None``.
+
+    The public status endpoint works in both loopback-token and gated-cookie
+    modes, so named-profile routing can distinguish Dashboard from Webapp
+    without possessing a session or attaching to an arbitrary TCP listener.
+    """
+    import json
+    from urllib.request import Request, urlopen
+
+    probe_host = _dashboard_probe_host(host)
+    authority = f"[{probe_host}]" if ":" in probe_host else probe_host
+    request = Request(
+        f"http://{authority}:{port}/api/status",
+        headers={"Accept": "application/json", "User-Agent": "hermes-surface-probe"},
+    )
+    try:
+        with urlopen(request, timeout=3.0) as response:  # nosec B310 -- local operator-selected listener
+            if getattr(response, "status", 200) != 200:
+                return None
+            raw = response.read(65_537)
+    except (OSError, ValueError):
+        return None
+    if len(raw) > 65_536:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    surface = payload.get("ui_surface")
+    if surface in {"dashboard", "webapp", "serve"}:
+        return surface
+    # Status payloads from Hermes versions predating ``ui_surface`` are always
+    # Dashboard: Webapp did not exist yet. Require a non-empty Hermes version
+    # and only fall back when the surface key is absent, never when it is invalid.
+    if (
+        "ui_surface" not in payload
+        and isinstance(payload.get("version"), str)
+        and payload["version"].strip()
+    ):
+        return "dashboard"
+    return None
 
 
 def _maybe_setup_dashboard_auth_interactively(args) -> None:
@@ -634,6 +689,64 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def cmd_webapp(args):
+    """Build the Desktop browser bundle, then hand off to the web server."""
+    from hermes_cli.main import PROJECT_ROOT, cmd_dashboard
+    from hermes_cli.dashboard_procs import _scan_dashboard_processes, _kill_stale_dashboard_processes
+
+    # Lifecycle probes are positive-identity-only and scoped to THIS Webapp
+    # surface. They must never stop a native Desktop `serve` backend merely
+    # because both share the same HTTP implementation.
+    if getattr(args, "status", False):
+        _report_dashboard_status(modes={"webapp"})
+        raise SystemExit(0)
+    if getattr(args, "stop", False):
+        webapp_pids = {
+            pid
+            for pid, command in _scan_dashboard_processes()
+            if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
+        }
+        if not webapp_pids:
+            print("No Hermes Webapp processes running.")
+            raise SystemExit(0)
+        _kill_stale_dashboard_processes(
+            reason="requested via webapp --stop",
+            include_pids=webapp_pids,
+        )
+        remaining = {
+            pid
+            for pid, command in _scan_dashboard_processes()
+            if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
+        }
+        raise SystemExit(1 if remaining else 0)
+
+    from hermes_cli.webapp import (
+        WebappBuildError,
+        activate_webapp_dist,
+        prepare_webapp_renderer,
+    )
+
+    try:
+        dist = prepare_webapp_renderer(
+            PROJECT_ROOT,
+            force=getattr(args, "force_build", False),
+            skip_build=getattr(args, "skip_build", False),
+        )
+    except WebappBuildError as exc:
+        print(f"✗ {exc}")
+        print("  Retry without --skip-build, or build manually:")
+        print("    npm run --workspace apps/desktop build:webapp")
+        raise SystemExit(1) from exc
+
+    if getattr(args, "build_only", False):
+        print("✓ Hermes Webapp renderer ready (--build-only)")
+        return None
+
+    activate_webapp_dist(dist)
+    args.skip_build = True
+    return cmd_dashboard(args)
+
+
 def _route_named_profile_dashboard(
     args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
@@ -658,15 +771,25 @@ def _route_named_profile_dashboard(
     ):
         return
 
+    expected_surface = "webapp" if getattr(args, "webapp_surface", False) else "dashboard"
     url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
-    if _dashboard_listening(args.host, args.port):
-        print(f"Machine dashboard already running on port {args.port}.")
+    listening_surface = _dashboard_surface_at(args.host, args.port)
+    if listening_surface == expected_surface:
+        print(f"Machine {expected_surface} already running on port {args.port}.")
         print(f"  Managing profile '{_launch_profile}': {url}")
         if not args.no_open:
             with contextlib.suppress(Exception):
                 import webbrowser
                 webbrowser.open(url)
         sys.exit(0)
+
+    if listening_surface is not None or _dashboard_listening(args.host, args.port):
+        found = listening_surface or "unverified listener"
+        print(
+            f"Port {args.port} is already owned by {found}; refusing to open it "
+            f"as Hermes {expected_surface}.")
+        print("  Stop that listener or choose a different --port.")
+        sys.exit(1)
 
     print(
         f"Routing to the machine dashboard (profile '{_launch_profile}' "
@@ -677,7 +800,7 @@ def _route_named_profile_dashboard(
         "-p", "default",
         # Preserve the lean serve path so a named-profile `serve` doesn't
         # silently rebuild the UI as `dashboard`.
-        "serve" if _headless_backend else "dashboard",
+        "serve" if _headless_backend else expected_surface,
         "--port", str(args.port),
         "--host", args.host,
         "--open-profile", _launch_profile]

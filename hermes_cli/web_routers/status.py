@@ -418,6 +418,7 @@ async def get_status(profile: Optional[str] = None):
 
         status = {
             "version": __version__, "release_date": __release_date__,
+            "ui_surface": getattr(app.state, "ui_surface", "dashboard"),
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,

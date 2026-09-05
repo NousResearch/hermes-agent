@@ -151,6 +151,27 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     input = ''
   }
 
+  // Kitty keyboard / xterm modifyOtherKeys report a shifted letter as its
+  // LOWERCASE key name plus a shift flag — keycodeToName() lowercases so that
+  // keybinding identity is case-stable (ctrl+a === ctrl+A). But the special-
+  // sequence branches above reuse that name as the literal typed text, which
+  // drops the capital: Shift+A types "a" (notably Ghostty over SSH, where we
+  // push modifyOtherKeys). Restore the uppercase form for text input. Only for
+  // bare Shift — ctrl/meta/super are chords, not text, and must not inject a
+  // letter into the prompt.
+  if (
+    processedAsSpecialSequence &&
+    keypress.shift &&
+    !keypress.ctrl &&
+    !keypress.meta &&
+    !keypress.super &&
+    input.length === 1 &&
+    input >= 'a' &&
+    input <= 'z'
+  ) {
+    input = input.toUpperCase()
+  }
+
   // Set shift=true for uppercase letters (A-Z)
   // Must check it's actually a letter, not just any char unchanged by toUpperCase
   if (input.length === 1 && typeof input[0] === 'string' && input[0] >= 'A' && input[0] <= 'Z') {

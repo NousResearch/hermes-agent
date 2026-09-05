@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseMultipleKeypresses } from '../parse-keypress.js'
+import { type ParsedKey, parseMultipleKeypresses } from '../parse-keypress.js'
 
 import { InputEvent } from './input-event.js'
 
-function parseOne(sequence: string) {
+function parseOne(sequence: string): ParsedKey {
   const [keys] = parseMultipleKeypresses({ incomplete: '', mode: 'NORMAL' }, sequence)
   expect(keys).toHaveLength(1)
 
-  return keys[0]!
+  const key = keys[0]!
+  expect(key.kind).toBe('key')
+
+  return key as ParsedKey
 }
 
 describe('enhanced keyboard modifier parsing', () => {
@@ -61,5 +64,47 @@ describe('enhanced keyboard modifier parsing', () => {
 
     expect(right.key.rightArrow).toBe(true)
     expect(right.key.super).toBe(true)
+  })
+})
+
+describe('shifted-letter text input under enhanced keyboard protocols', () => {
+  // keycodeToName() lowercases the letter for case-stable keybinding identity,
+  // and the CSI-u / modifyOtherKeys branches reuse that name as typed text. The
+  // uppercase must be restored for input, or Shift+A types "a" (regressed on
+  // Ghostty over SSH, where modifyOtherKeys is pushed).
+  it('types uppercase for Shift+letter via kitty CSI-u', () => {
+    const shiftA = new InputEvent(parseOne('\u001b[65;2u'))
+
+    expect(shiftA.input).toBe('A')
+    expect(shiftA.key.shift).toBe(true)
+  })
+
+  it('types uppercase for Shift+letter via modifyOtherKeys', () => {
+    const shiftA = new InputEvent(parseOne('\u001b[27;2;65~'))
+    const shiftZ = new InputEvent(parseOne('\u001b[27;2;90~'))
+
+    expect(shiftA.input).toBe('A')
+    expect(shiftA.key.shift).toBe(true)
+    expect(shiftZ.input).toBe('Z')
+  })
+
+  it('leaves lowercase letters and shifted symbols unchanged', () => {
+    const a = new InputEvent(parseOne('\u001b[97u'))
+    const at = new InputEvent(parseOne('\u001b[27;2;64~')) // Shift+2 -> @
+    const question = new InputEvent(parseOne('\u001b[27;2;63~')) // Shift+/ -> ?
+
+    expect(a.input).toBe('a')
+    expect(at.input).toBe('@')
+    expect(question.input).toBe('?')
+  })
+
+  it('does not inject a letter for ctrl/meta chords', () => {
+    const ctrlA = new InputEvent(parseOne('\u001b[27;5;97~'))
+    const metaA = new InputEvent(parseOne('\u001b[27;3;97~'))
+
+    expect(ctrlA.key.ctrl).toBe(true)
+    expect(ctrlA.input).not.toBe('A')
+    expect(metaA.key.meta).toBe(true)
+    expect(metaA.input).not.toBe('A')
   })
 })

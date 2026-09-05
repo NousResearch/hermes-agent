@@ -11,6 +11,7 @@ import sqlite3
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Any
 
 from gateway.hosted_rooms import (
@@ -50,10 +51,19 @@ def _catalog_snapshot(store):
         timeout=2.0,
     )
     conn.row_factory = sqlite3.Row
+
+    @lru_cache(maxsize=256)
+    def cached_fold(value):
+        return fold_catalog_text(value)
+
+    def catalog_fold(value):
+        text = str(value or "")
+        return cached_fold(text) if len(text) <= 512 else fold_catalog_text(text)
+
     conn.create_function(
         "catalog_fold",
         1,
-        lambda value: fold_catalog_text(str(value or "")),
+        catalog_fold,
         deterministic=True,
     )
     deadline = time.monotonic() + 2.0

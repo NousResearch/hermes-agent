@@ -27,6 +27,17 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
   setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  // Remote WS bridge: main-process `ws`-package dials (private-CA trust; see
+  // electron/ws-bridge.ts). Events stream back over 'hermes:ws-bridge:event'.
+  wsBridgeOpen: url => ipcRenderer.invoke('hermes:ws-bridge:open', url),
+  wsBridgeSend: (id, data, binary) => ipcRenderer.invoke('hermes:ws-bridge:send', id, data, binary),
+  wsBridgeClose: (id, code, reason) => ipcRenderer.invoke('hermes:ws-bridge:close', id, code, reason),
+  onWsBridgeEvent: callback => {
+    const listener = (_event, id, payload) => callback(id, payload)
+    ipcRenderer.on('hermes:ws-bridge:event', listener)
+
+    return () => ipcRenderer.removeListener('hermes:ws-bridge:event', listener)
+  },
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.
   getGatewayWsUrlFor: payload => ipcRenderer.invoke('hermes:gateway:ws-url-for', payload),

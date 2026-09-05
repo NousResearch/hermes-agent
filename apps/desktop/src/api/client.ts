@@ -2,6 +2,8 @@ import { JsonRpcGatewayClient } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 
+import { gatewaySocketFactory } from '@/api/ws-bridge-socket'
+
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
 // profile-heavy or remote install these can each take tens of seconds — e.g.
@@ -32,7 +34,8 @@ export class HermesGateway extends JsonRpcGatewayClient {
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
       notConnectedErrorMessage: 'Hermes gateway is not connected',
-      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      socketFactory: gatewaySocketFactory
     })
   }
 }

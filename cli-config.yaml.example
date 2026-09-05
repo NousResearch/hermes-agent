@@ -665,7 +665,8 @@ compression:
 
   # Native OpenAI Responses server-side compaction (default: false). When true,
   # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
-  # Codex subscription compact server-side: OpenAI prunes older context into an
+  # Codex subscription, plus exact gpt-6-astra on official Codex OAuth, compact
+  # server-side: OpenAI prunes older context into an
   # encrypted checkpoint that Hermes replays on later turns. No other provider,
   # route, or model is affected. Hermes' local compression stays armed as the
   # fallback and still handles every non-eligible session.

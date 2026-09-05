@@ -104,3 +104,49 @@ def test_fast_version_reports_install_method_stamp(tmp_path):
     result = _run_version({"HERMES_HOME": str(home), "TERMUX_VERSION": ""})
     assert result.returncode == 0, result.stderr
     assert "Install method: git" in result.stdout
+
+
+def test_ensure_project_root_tolerates_unresolvable_sys_path_entries(monkeypatch):
+    """Relative/cwd-derived sys.path entries must not crash when realpath fails.
+
+    Cron bot-chat delivery can spawn into a deleted worker cwd; realpath then
+    raises FileNotFoundError via getcwd() (#102941).
+    """
+    import hermes_cli._startup_fast as startup_fast
+
+    real_realpath = os.path.realpath
+    boom = FileNotFoundError(2, "Unable to get the current working directory")
+
+    def fake_realpath(path):
+        if path in (".", "relative-entry"):
+            raise boom
+        return real_realpath(path)
+
+    monkeypatch.setattr(os.path, "realpath", fake_realpath)
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [".", "relative-entry", startup_fast.project_root_str(), "/unrelated"],
+        raising=False,
+    )
+
+    startup_fast.ensure_project_root_on_path()
+
+    assert sys.path[0] == startup_fast.project_root_str()
+    assert "." in sys.path
+    assert "relative-entry" in sys.path
+    assert "/unrelated" in sys.path
+    # The absolute project-root duplicate was dropped once.
+    assert sys.path.count(startup_fast.project_root_str()) == 1
+
+
+def test_sys_path_entry_match_treats_oserror_as_non_match(monkeypatch):
+    from hermes_cli._startup_fast import _sys_path_entry_matches_root
+
+    assert _sys_path_entry_matches_root("", "/any") is False
+
+    def boom(_path):
+        raise FileNotFoundError(2, "Unable to get the current working directory")
+
+    monkeypatch.setattr(os.path, "realpath", boom)
+    assert _sys_path_entry_matches_root(".", "/root") is False

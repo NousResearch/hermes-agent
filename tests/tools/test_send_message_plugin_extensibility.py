@@ -270,3 +270,31 @@ print(json.dumps({"host_send": host_send, "cron": cron,
     assert payload["host_send"]["chat_id"] == "@alice@example.com"
     assert payload["cron"]["chat_id"] == "@alice@example.com"
     assert payload["model_registered"] is False
+
+
+def test_registry_standalone_send_forwards_subject_kwarg():
+    """_registry_standalone_send forwards extras (subject) to senders that declare them (#102884)."""
+    from tools.send_message_tool import _registry_standalone_send
+
+    seen: dict = {}
+
+    async def fake_sender(pconfig, chat_id, message, thread_id=None, subject=None):
+        seen["subject"] = subject
+        return {"success": True}
+
+    entry = PlatformEntry(
+        name="fmsg-subject-test",
+        label="Fixture Subject",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        standalone_sender_fn=fake_sender,
+    )
+    platform_registry.register(entry)
+    try:
+        out = asyncio.run(
+            _registry_standalone_send("fmsg-subject-test", SimpleNamespace(), "a@b.c", "hi", subject="S")
+        )
+    finally:
+        platform_registry.unregister("fmsg-subject-test")
+    assert out == {"success": True}
+    assert seen == {"subject": "S"}

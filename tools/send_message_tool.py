@@ -244,6 +244,10 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "subject": {
+                "type": "string",
+                "description": "For action='send' to email targets: the email Subject header. Omit to keep the thread-context subject (replies) or the default. Ignored by non-email platforms."
             }
         },
         "required": []
@@ -372,6 +376,9 @@ def _handle_send(args):
     message = args.get("message", "")
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
+    # Email Subject header override (meaningful for email targets only;
+    # carried through metadata so other platforms ignore it).
+    subject = (args.get("subject") or "").strip() or None
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
@@ -494,6 +501,10 @@ def _handle_send(args):
             "media_files": media_files,
             "force_document": force_document_attachments,
         }
+        # Only present when the caller supplied one: keeps the built-in
+        # call contract (and its exact-call assertions) untouched otherwise.
+        if subject is not None:
+            send_kwargs["subject"] = subject
         # Preserve the exact built-in call contract; only custom handlers need
         # the complete typed request.
         if entry is not None and entry.send_message_handler is not None:
@@ -1109,7 +1120,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None, subject=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1489,7 +1500,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
-            result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id)
+            result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id, subject=subject)
         elif platform == Platform.SMS:
             result = await _registry_standalone_send("sms", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.DINGTALK:
@@ -1880,12 +1891,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 # (plugins/platforms/slack/adapter.py), wired via standalone_sender_fn. #41112.
 
 
-async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
+async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None, **kwargs):
     """Dispatch a one-shot send through a migrated platform plugin's
     standalone_sender_fn (registry hook).  Used for platforms whose adapter
     moved out of gateway/platforms/ into plugins/platforms/<name>/ (#41112):
     the legacy inline ``_send_<platform>`` helper now lives in the plugin as
     ``_standalone_send`` and is reached via the platform registry.
+
+    Extra keyword arguments (e.g. ``subject`` for email) forward only to
+    standalone senders that declare them — callers pass extras solely on
+    the branches of platforms whose sender accepts them.
     """
     from gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
@@ -1893,7 +1908,7 @@ async def _registry_standalone_send(platform_name, pconfig, chat_id, message, th
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:
         return {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
-    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id)
+    return await entry.standalone_sender_fn(pconfig, chat_id, message, thread_id=thread_id, **kwargs)
 
 
 # _send_whatsapp moved to plugins/platforms/whatsapp/adapter.py::_standalone_send,

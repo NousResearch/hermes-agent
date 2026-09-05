@@ -2421,6 +2421,11 @@ web:
   search_backend: "searxng"
   extract_backend: "firecrawl"
 
+  # Optional request-level secondary. Capability-specific values override it:
+  fallback_backend: "tavily"
+  # search_fallback_backend: "tavily"
+  # extract_fallback_backend: "tavily"
+
   # Keyless free-tier fallback (default: true). With no backend configured
   # and no API keys present, web tools rotate across the Exa/Parallel/
   # Firecrawl/Keenable free tiers. Set false to disable.
@@ -2449,6 +2454,8 @@ web:
 | **Exa** | `EXA_API_KEY` (optional — keyless free tier) | ✔ | ✔ |
 
 **Backend selection:** The runtime always uses the stored `web.backend` selection (set via `hermes tools`; `nous` routes through the managed Tool Gateway). Only if no web backend has ever been selected is one auto-detected from available API keys: if only `SEARXNG_URL` is set, SearXNG is used; if only `EXA_API_KEY` is set, Exa; if only `TAVILY_API_KEY` is set, Tavily; if only `PERPLEXITY_API_KEY` is set, Perplexity; if only `PARALLEL_API_KEY` is set, Parallel; if only `KEENABLE_API_KEY` is set, Keenable. With **no selection and no credentials at all**, requests rotate round-robin across the keyless free-tier ring (Exa / Parallel / Firecrawl / Keenable) with automatic next-in-line failover on rate limits — see the [Web Search guide](/user-guide/features/web-search) for details. Once a selection exists, adding a key to `.env` does not change the route. Selecting Tavily, Firecrawl, or Keenable in `hermes tools` also works without a key.
+
+**Request-level fallback:** `web.fallback_backend` retries a failed search or whole-batch extract once with a configured secondary provider before the keyless rescue runs. `web.search_fallback_backend` and `web.extract_fallback_backend` override the shared fallback per capability. The secondary must be available in its configured mode; ring providers pinned to their free tier skip this dedicated retry and remain part of the normal keyless rescue. This retry is non-sticky: every new call starts with the primary backend. Policy-blocked URLs and partial extract failures are not sent to the secondary.
 
 **SearXNG** is a free, self-hosted, privacy-respecting metasearch engine that queries 70+ search engines. No API key needed — just set `SEARXNG_URL` to your instance (e.g., `http://localhost:8080`). SearXNG is search-only; `web_extract` requires a separate extract provider (set `web.extract_backend`). See the [Web Search setup guide](/user-guide/features/web-search) for Docker setup instructions.
 

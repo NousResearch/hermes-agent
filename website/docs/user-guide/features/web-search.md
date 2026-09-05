@@ -396,6 +396,10 @@ Use different providers for search vs extract. This lets you combine free search
 web:
   search_backend: "searxng"     # used by web_search
   extract_backend: "firecrawl"  # used by web_extract
+
+  # Optional request-level secondary for both capabilities. You can instead
+  # set search_fallback_backend / extract_fallback_backend independently.
+  fallback_backend: "tavily"
 ```
 
 When per-capability keys are empty, both fall through to `web.backend`. Only when no web selection has ever been written is the backend auto-detected from whichever API key/URL is present — once a selection exists, the runtime always uses it, and adding a key to `.env` does not reroute web traffic.
@@ -424,6 +428,15 @@ If no backend has **ever** been selected (no `web.backend` / per-capability key 
 **Keyless free-tier ring:** when *no* credential above is present, requests rotate across the ring vendors' public free tiers (Exa, Parallel, Firecrawl, Keenable) so web tools work on a fresh install with zero setup — and a rate-limited request fails over to the next vendor in the ring automatically. Pin one vendor in `hermes tools` to stop the rotation (the ring is then only used as failover succession on throttles). All free tiers are vendor-rate-limited under burst load; sustained normal usage goes through fine. Set `web.keyless_fallback: false` to turn the tier off — with it off and no credentials, web tools are unavailable until a provider is configured.
 
 **One-shot keyless rescue for keyed backends:** when your chosen/keyed backend fails a call (bad key, outage, upstream 5xx), that single call automatically retries on the keyless free-tier ring instead of erroring — the result notes which vendor served it and why (`rescued_from` / `backend_error`). The failover is never sticky: the very next `web_search`/`web_extract` call attempts your chosen backend again. Disable with `web.keyless_rescue: false` (also off whenever `keyless_fallback` is off).
+
+**Configured secondary backend:** set `web.fallback_backend` to retry a failed search or whole-batch extract with another configured provider before using the keyless ring. Use `web.search_fallback_backend` or `web.extract_fallback_backend` when the secondary should differ by capability; these capability-specific values override the shared fallback. The secondary must be available in its configured mode; ring providers pinned to their free tier skip this dedicated retry and remain part of the normal keyless rescue. It is request-level and non-sticky: the next call starts with the primary again. A secondary extract provider is never used to bypass website-policy blocks, and partial extract failures are not retried because they usually indicate page-specific problems.
+
+```yaml
+web:
+  search_backend: "exa"
+  extract_backend: "exa"
+  fallback_backend: "tavily"
+```
 
 xAI Web Search is **not** in the auto-detection chain — having `XAI_API_KEY` set (or being signed in via xAI Grok OAuth) does not automatically route web traffic through xAI, since those credentials are also used for inference / TTS / image gen and the user may want a different backend for web. Opt in explicitly with `web.backend: "xai"`.
 

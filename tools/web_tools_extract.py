@@ -77,10 +77,12 @@ def _merge_in_order(
 ) -> List[dict]:
     """Rebuild a ``total``-long result list: *fixed* entries by position, fetched *results* at
     *fetch_positions* (a short provider list yields ``_NO_RESULT_ERROR`` entries for the rest)."""
+    from tools.web_tools_rescue import _map_extract_rows_by_url
+    mapped = _map_extract_rows_by_url(fetch_urls, list(range(len(fetch_urls))), results)
     merged = dict(fixed)
     for pos, position in enumerate(fetch_positions):
         missing = _result_entry(fetch_urls[pos], _NO_RESULT_ERROR)
-        merged[position] = results[pos] if pos < len(results) else missing
+        merged[position] = mapped.get(pos, missing)
     return [merged[i] for i in range(total)]
 
 
@@ -140,32 +142,45 @@ def _resolve_extract_provider(backend: str):
 
 
 async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
-    """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
+    """Try the configured secondary before rescue on whole-batch failure only.
 
-    Rescue fires on a raised exception or when the WHOLE batch failed (backend outage, not per-page
-    problems). Rescued batches are never cached.
+    Neither secondary nor rescue responses belong in the primary cache.
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
+    from tools.web_tools_rescue import (
+        _fallback_extract_needs_rescue, _map_extract_rows_by_url, _try_fallback_extract,
+    )
+    primary_exception = None
     try:
         if inspect.iscoroutinefunction(provider.extract):
             results = await provider.extract(fetch_urls, format=format)
-        else:  # sync extract() runs in a thread so network I/O never blocks the loop
+        else:
             results = await asyncio.to_thread(provider.extract, fetch_urls, format=format)
-    except Exception as exc:  # noqa: BLE001 — candidate for rescue
-        if not _rescue_eligible(provider):
-            raise
-        failed = [_result_entry(u, str(exc)) for u in fetch_urls]
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
-    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
-        return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
+    except Exception as exc:  # noqa: BLE001 — fallback/rescue candidate
+        primary_exception = exc
+        results = [_result_entry(u, str(exc)) for u in fetch_urls]
 
-    # Cache each successful fetch's full clean text (best-effort; oversized skipped).
-    for url, fetched in zip(fetch_urls, results):
-        _content = fetched.get("raw_content", "") or fetched.get("content", "")
-        if _content and not fetched.get("error"):
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
-    return results
+    rows = results if isinstance(results, list) else []
+    if not rows or all(not isinstance(r, dict) or r.get("error") for r in rows):
+        failures = rows or [_result_entry(u, "Extract backend returned no results") for u in fetch_urls]
+        fallback, _ = await _try_fallback_extract(provider.name, fetch_urls, failures, format=format)
+        if fallback is not None:
+            if _rescue_eligible(provider) and _fallback_extract_needs_rescue(fetch_urls, fallback):
+                return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, fallback)
+            return fallback
+        if _rescue_eligible(provider):
+            return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failures)
+        if primary_exception is not None:
+            raise primary_exception
+        return failures
+
+    # Cache by exact returned URL, never positional association of untrusted rows.
+    for index, fetched in _map_extract_rows_by_url(fetch_urls, list(range(len(fetch_urls))), rows).items():
+        content = fetched.get("raw_content", "") or fetched.get("content", "")
+        if content and not fetched.get("error") and not fetched.get("blocked_by_policy"):
+            extract_cache_put(fetch_urls[index], content, fetched.get("title", ""), format=format, provider=provider.name)
+    return rows
 
 
 async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str]) -> List[dict]:
@@ -173,7 +188,7 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
-    control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
+    control; policy-blocked URLs are terminal results and reach no provider. Keys include provider and format, so switching either
     within the TTL never serves the other's content."""
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
@@ -183,7 +198,13 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
             _policy_block = _check_site(url)
         except Exception:  # noqa: BLE001 — policy errors fail open like dispatch
             _policy_block = None
-        hit = extract_cache_get(url, format=format, provider=provider.name) if _policy_block is None else None
+        if _policy_block is not None:
+            cached_results[position] = {
+                **_result_entry(url, _policy_block.get("message", "Blocked by website policy")),
+                "blocked_by_policy": True,
+            }
+            continue
+        hit = extract_cache_get(url, format=format, provider=provider.name)
         if hit is not None:
             cached_results[position] = hit
         else:

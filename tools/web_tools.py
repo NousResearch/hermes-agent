@@ -320,14 +320,28 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
 
     def _paid_search() -> tuple[dict, bool]:
         fetch_limit = bucket_limit(limit)
+        from tools.web_tools_rescue import _get_fallback_backend, _try_fallback_search
+        primary_exception = None
         try:
             resp = provider.search(query, fetch_limit)
-        except Exception as exc:  # noqa: BLE001 — candidate for rescue
-            if not _rescue_eligible(provider):
-                raise
-            return _rescue_search(provider.name, str(exc), query, fetch_limit), True
-        if not resp.get("success") and _rescue_eligible(provider):
-            return _rescue_search(provider.name, str(resp.get("error", "")), query, fetch_limit), True
+        except Exception as exc:  # noqa: BLE001 — fallback/rescue candidate
+            primary_exception = exc
+            resp = {"success": False, "error": str(exc)}
+        if resp.get("success"):
+            return resp, False
+        original_error = str(resp.get("error", ""))
+        fallback, fallback_error = _try_fallback_search(provider.name, original_error, query, fetch_limit)
+        if fallback is not None:
+            return fallback, True
+        if _rescue_eligible(provider):
+            if fallback_error:
+                original_error += (
+                    f"; configured fallback '{_get_fallback_backend('search')}' also failed "
+                    f"({fallback_error[:200]})"
+                )
+            return _rescue_search(provider.name, original_error, query, fetch_limit), True
+        if primary_exception is not None:
+            raise primary_exception
         return resp, False
 
     response_data = search_memo.lookup(provider.name, query, limit)

@@ -12428,6 +12428,17 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
     }
   }
 
+  // Guard BEFORE the slot wait, update gate and runtime resolve: a profile
+  // that only exists on a remote backend (remote-primary desktop asked for a
+  // forced-local child) rejects here without occupying a pool slot or paying
+  // the ~250 ms runtime resolve per profile (a remote-primary desktop probes
+  // every remote-only name at boot). Logging "Starting" first left an orphaned
+  // line with no READY and no exit — the exact undiagnosable burst signature
+  // in remote-gateway user bundles (Aug 2026, Dash's report).
+  assertLocalProfileCanStart(profile, profileDeletionGate, key =>
+    directoryExists(path.join(HERMES_HOME, 'profiles', key))
+  )
+
   // Bound the slot wait BELOW the renderer's backend-boot budget (45s): once
   // the renderer has given up on this spawn, a ticket still queued for the
   // pool-idle window (10 min) would hold the pool key hostage and every
@@ -12486,14 +12497,6 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
-  // Guard BEFORE the "Starting" line: a profile that only exists on a remote
-  // backend (remote-primary desktop asked for a forced-local child) rejects
-  // here, and logging "Starting" first left an orphaned line with no READY
-  // and no exit — the exact undiagnosable burst signature in remote-gateway
-  // user bundles (Aug 2026, Dash's report).
-  assertLocalProfileCanStart(profile, profileDeletionGate, key =>
-    directoryExists(path.join(HERMES_HOME, 'profiles', key))
-  )
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
   const parentStartMarker = await desktopParentStartMarker()

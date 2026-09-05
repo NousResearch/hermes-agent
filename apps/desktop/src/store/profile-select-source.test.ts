@@ -31,7 +31,10 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, newSessionInProfile, selectProfile } = await import('./profile')
+import { $profileRemoteOverrides } from '@/store/profile-remote-override'
+
+const { $activeGatewayProfile, newSessionInProfile, resolveNewChatOwnerRoute, selectProfile } =
+  await import('./profile')
 
 beforeEach(() => {
   ensureGatewayForProfile.mockClear()
@@ -40,6 +43,7 @@ beforeEach(() => {
   activeGatewayConnectionId.mockReturnValue(null)
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $profileRemoteOverrides.set({})
   // resolveConnectionForAgent is best-effort; without a bridge it resolves
   // null and the previous descriptor stays, which is fine here.
   ;(globalThis as { window?: unknown }).window = {}
@@ -64,13 +68,24 @@ describe('selectProfile', () => {
     expect(ensureGatewayForAgent).not.toHaveBeenCalled()
   })
 
-  it('keeps the legacy profile-only path when the explicit local source is live', async () => {
+  it('keeps the legacy profile-only path when the explicit local source is live and the profile has a remote override', async () => {
     activeGatewayConnectionId.mockReturnValue('local')
+    $profileRemoteOverrides.set({ 'override-profile': { host: 'vps.example', url: 'https://vps.example' } })
 
     selectProfile('override-profile')
 
     await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('override-profile'))
     expect(ensureGatewayForAgent).not.toHaveBeenCalled()
+  })
+
+  it('activates the registry route for a named pick without a remote override on the explicit local source', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+    $profileRemoteOverrides.set({})
+
+    selectProfile('omar')
+
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'omar'))
+    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
 
   it('keeps Default on the explicit local source instead of the window primary', async () => {
@@ -93,13 +108,23 @@ describe('newSessionInProfile', () => {
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
   })
 
-  it('keeps the legacy profile-only path for a new chat on the explicit local source', async () => {
+  it('keeps the legacy profile-only path for a new chat on the explicit local source when the profile has a remote override', async () => {
     activeGatewayConnectionId.mockReturnValue('local')
+    $profileRemoteOverrides.set({ 'override-profile': { host: 'vps.example', url: 'https://vps.example' } })
 
     newSessionInProfile('override-profile')
 
     await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('override-profile'))
     expect(ensureGatewayForAgent).not.toHaveBeenCalled()
+  })
+
+  it('resolves the registry owner route for a new chat on the explicit local source when the profile has no remote override', () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+    $profileRemoteOverrides.set({})
+
+    newSessionInProfile('omar')
+
+    expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: 'local', profile: 'omar' })
   })
 
   it('opens a Default new chat on the explicit local source, not the window primary', async () => {

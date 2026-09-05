@@ -52,6 +52,14 @@ if _DEBUG_INTERRUPT:
 _activity_callback_local = threading.local()
 
 
+class FileFetchError(RuntimeError):
+    """A file could not be extracted from the backend filesystem."""
+
+
+# Pulling a large artifact over a slow exec channel can outlast the per-command terminal timeout.
+_FETCH_TIMEOUT_SECONDS = 300
+
+
 class EnvironmentConnectionError(RuntimeError):
     """Infrastructure/connection-class failure of a terminal backend (SSH host down, Docker
     daemon not running, remote sync on a dead link) — never a command that merely exited
@@ -182,6 +190,44 @@ class BaseEnvironment(ABC):
     def cleanup(self):
         """Release backend resources (container, instance, connection)."""
         ...
+
+    # --- File extraction (backend -> host) ---
+    def fetch_file(self, remote_path: str, local_dest: Path, *, max_bytes: int) -> None:
+        """Copy a regular file out of the backend filesystem to ``local_dest`` on the host.
+
+        One transport for every backend: base64 over the exec channel, bounded INSIDE the sandbox
+        (``head -c max+1`` so /dev/zero can't stream unbounded data into host memory — the same
+        shape ``tools.image_source`` uses to read sandbox images). The payload is fenced between
+        unique markers so login-shell noise in the merged stdout/stderr can't corrupt the decode.
+        Raises :class:`FileFetchError` on a missing/unreadable/oversized file.
+        """
+        import base64
+        import binascii
+        marker = f"__HERMES_FETCH_{uuid.uuid4().hex[:12]}__"
+        quoted = shlex.quote(remote_path)
+        # ``[ -f ]`` follows symlinks, so a link to a denied host file is judged by the CALLER on
+        # ``readlink -f`` output before any bytes move.
+        result = self.execute(
+            f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
+            timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
+        output = result.get("output") or ""
+        first, last = output.find(marker), output.rfind(marker)
+        if int(result.get("returncode") or 0) != 0 or first == -1 or last <= first:
+            raise FileFetchError(f"could not read {remote_path!r} in the sandbox (missing, not a regular file, or unreadable)")
+        try:
+            data = base64.b64decode("".join(output[first + len(marker):last].split()), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise FileFetchError(f"transfer of {remote_path!r} was corrupted in transit: {exc}") from exc
+        if len(data) > max_bytes:
+            raise FileFetchError(f"{remote_path!r} exceeds the {max_bytes // (1024 * 1024)} MB delivery limit")
+        Path(local_dest).write_bytes(data)
+
+    def fetch_realpath(self, remote_path: str) -> str | None:
+        """``readlink -f`` inside the backend, or None when it cannot be resolved."""
+        result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null", rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            return None
+        return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
 
     # --- Session snapshot (init_session) ---
     def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:

@@ -8,6 +8,9 @@ from unittest.mock import ANY, patch
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli import main_web_build
+from hermes_cli import main_install_repair
+from hermes_cli import update_cmd
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -67,7 +70,11 @@ def _patch_managed_uv(request):
 
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
+         patch(
+             "hermes_cli.update_cmd._post_update_sqlite_runtime_status",
+             return_value=(True, None),
+         ):
         yield
 
 
@@ -103,11 +110,11 @@ class TestCmdUpdateNpmLockfileCache:
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
         (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
 
-        hm._record_npm_lockfile_hash(tmp_path)
+        update_cmd._record_npm_lockfile_hash(tmp_path)
 
         assert (
             self._cache_file(tmp_path, tmp_path).read_text()
-            == hm._npm_manifests_digest()
+            == update_cmd._npm_manifests_digest()
         )
 
     def test_package_json_only_edit_defeats_skip(self, tmp_path, monkeypatch):
@@ -120,7 +127,7 @@ class TestCmdUpdateNpmLockfileCache:
         (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
         (tmp_path / "package.json").write_text('{"dependencies": {}}')
         (tmp_path / "node_modules").mkdir()
-        hm._record_npm_lockfile_hash(tmp_path)
+        update_cmd._record_npm_lockfile_hash(tmp_path)
         assert hm._npm_lockfile_changed(tmp_path) is False
 
         (tmp_path / "package.json").write_text(
@@ -161,10 +168,10 @@ class TestCmdUpdateNpmLockfileCache:
             side_effect=lambda root: cache_roots.append(root) or False,
         ):
             monkeypatch.setenv("HERMES_HOME", str(shared_root))
-            hm._update_node_dependencies()
+            update_cmd._update_node_dependencies()
 
             monkeypatch.setenv("HERMES_HOME", str(named_profile))
-            hm._update_node_dependencies()
+            update_cmd._update_node_dependencies()
 
         assert cache_roots == [shared_root, shared_root]
 
@@ -182,7 +189,7 @@ class TestCmdUpdateTermuxUvBootstrap:
         mock_run.return_value = subprocess.CompletedProcess([], 1, stdout="", stderr="")
         monkeypatch.setattr(hm, "_is_termux_env", lambda env=None: True)
 
-        uv_bin = hm._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
+        uv_bin = update_cmd._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
 
         assert uv_bin is None
         assert mock_run.call_count == 1
@@ -210,7 +217,7 @@ class TestCmdUpdateTermuxUvBootstrap:
         monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: None)
         monkeypatch.setattr("shutil.which", lambda name: pkg_uv if name == "uv" else None)
 
-        uv_bin = hm._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
+        uv_bin = update_cmd._ensure_uv_for_termux(["/termux/python", "-m", "pip"])
 
         assert uv_bin == pkg_uv
         mock_run.assert_not_called()
@@ -349,6 +356,108 @@ class TestCmdUpdateBranchFallback:
         assert "official repo not checked" in captured.out
         assert "Already up to date!" not in captured.out
 
+    @pytest.mark.parametrize(
+        ("health_after_repair", "runtime_status", "expected_runtime_checks"),
+        [
+            (True, (False, SimpleNamespace(sqlite_version_string="3.46.1")), 1),
+            (False, (True, None), 0),
+        ],
+    )
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_python_repair_failure_is_durable(
+        self,
+        mock_run,
+        _mock_which,
+        mock_args,
+        health_after_repair,
+        runtime_status,
+        expected_runtime_checks,
+    ):
+        """Python repair must not bypass runtime and durable outcome checks."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_venv_core_imports_healthy",
+            side_effect=[
+                (False, "broken before repair"),
+                (health_after_repair, "broken after repair"),
+            ],
+        ), patch.object(
+            hm, "_install_python_dependencies_with_optional_fallback"
+        ), patch.object(
+            hm, "_refresh_active_lazy_features"
+        ), patch.object(
+            hm, "_restore_active_tool_dependencies"
+        ), patch.object(
+            update_cmd, "_write_update_incomplete_marker"
+        ), patch.object(
+            hm, "_clear_update_incomplete_marker"
+        ), patch.object(
+            update_cmd,
+            "_post_update_sqlite_runtime_status",
+            return_value=runtime_status,
+        ) as runtime_check, patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        assert runtime_check.call_count == expected_runtime_checks
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_current_checkout_node_repair_verification_failure_is_durable(
+        self, mock_run, _mock_which, mock_args
+    ):
+        """A failed Node-path runtime check must fail durable outcomes."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_args.gateway = True
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(hm, "_sync_with_upstream_if_needed"), patch.object(
+            update_cmd,
+            "_repair_node_deps_on_current_checkout",
+            return_value=False,
+        ), patch.object(
+            update_cmd, "_write_gateway_update_exit_code"
+        ) as write_gateway_exit, patch(
+            "hermes_cli.update_receipt.finalize_update_receipt"
+        ) as finalize_receipt, patch(
+            "hermes_cli.update_receipt.finalize_pending_update_receipt"
+        ):
+            with pytest.raises(SystemExit) as exit_info:
+                cmd_update(mock_args)
+
+        assert exit_info.value.code == 1
+        write_gateway_exit.assert_called_once_with(False)
+        finalize_receipt.assert_called_once_with("partial")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
@@ -905,7 +1014,7 @@ class TestCmdUpdateZipBranchRefusal:
     """
 
     def test_zip_fallback_refuses_non_main_branch(self, capsys):
-        from hermes_cli.main import _update_via_zip
+        from hermes_cli.update_cmd import _update_via_zip
 
         args = SimpleNamespace(branch="bb/gui")
         with pytest.raises(SystemExit) as exc_info:
@@ -944,8 +1053,8 @@ termux = ["rich>=14"]
     )
     monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
 
-    assert hm._load_installable_optional_extras(group="all") == ["mcp"]
-    assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+    assert main_install_repair._load_installable_optional_extras(group="all") == ["mcp"]
+    assert main_install_repair._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
 
 
 class TestNodeRuntimeNpmResolution:
@@ -972,9 +1081,9 @@ class TestNodeRuntimeNpmResolution:
         )
 
         with patch(
-            "tools.browser_tool.warm_agent_browser_npx_cache", return_value=True
+            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
         ):
-            failed = hm._update_node_dependencies()
+            failed = update_cmd._update_node_dependencies()
         assert failed == ["ui-tui, web workspaces"]
         out = capsys.readouterr().out
         assert "mixed state" in out
@@ -1000,11 +1109,11 @@ class TestNodeRuntimeNpmResolution:
         monkeypatch.setenv("PATH", "/mnt/c/Program Files/nodejs")
 
         with patch("subprocess.run") as mock_run, \
-             patch.object(hm, "_web_ui_build_needed", return_value=True), \
+             patch.object(main_web_build, "_web_ui_build_needed", return_value=True), \
              patch.object(hm, "_desktop_packaged_executable", return_value=None), \
              patch.object(hm, "_desktop_dist_exists", return_value=True), \
              patch.object(hm, "_run_npm_install_deterministic") as mock_npm_install, \
-             patch.object(hm, "_run_with_idle_timeout") as mock_idle_build, \
+             patch.object(main_web_build, "_run_with_idle_timeout") as mock_idle_build, \
              patch.object(hm, "_run_logged_subprocess") as mock_desktop_build:
             mock_run.side_effect = _make_run_side_effect(
                 branch="main", verify_ok=True, commit_count="1"
@@ -1174,7 +1283,7 @@ class TestUpdateNodeDependencies:
         """The npx cache warm-up is covered by its own dedicated test below;
         stub it out everywhere else so it doesn't add a spurious npm/npx
         call to the workspace-install assertions in this class."""
-        with patch("tools.browser_tool.warm_agent_browser_npx_cache", return_value=True):
+        with patch("tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True):
             yield
 
     def _npm_calls(self, mock_run):
@@ -1226,7 +1335,7 @@ class TestUpdateNodeDependencies:
         popen_calls = []
         mock_popen.side_effect = self._make_popen(popen_calls)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         calls = self._popen_npm_calls(popen_calls)
         assert len(calls) == 1, f"expected exactly 1 npm call, got: {calls}"
@@ -1263,7 +1372,7 @@ class TestUpdateNodeDependencies:
         popen_calls = []
         mock_popen.side_effect = self._make_popen(popen_calls)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         calls = self._popen_npm_calls(popen_calls)
         assert len(calls) == 1
@@ -1284,7 +1393,7 @@ class TestUpdateNodeDependencies:
         popen_calls = []
         mock_popen.side_effect = self._make_popen(popen_calls)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         calls = self._popen_npm_calls(popen_calls)
         assert len(calls) == 1
@@ -1303,7 +1412,7 @@ class TestUpdateNodeDependencies:
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: False)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         assert not self._npm_calls(mock_run), (
             "npm must not run when _npm_lockfile_changed reports no change"
@@ -1322,7 +1431,7 @@ class TestUpdateNodeDependencies:
         popen_calls = []
         mock_popen.side_effect = self._make_popen(popen_calls)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         calls = self._popen_npm_calls(popen_calls)
         assert len(calls) == 1, f"expected npm to run when lockfile changed; got: {calls}"
@@ -1339,10 +1448,13 @@ class TestUpdateNodeDependencies:
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
         recorded = []
-        monkeypatch.setattr(hm, "_record_npm_lockfile_hash", lambda root: recorded.append(root))
+        # _update_node_dependencies lives in update_cmd_deps and calls its own module-level
+        # _record_npm_lockfile_hash, so that binding is the real seam (update_cmd's is dead).
+        from hermes_cli import update_cmd_deps
+        monkeypatch.setattr(update_cmd_deps, "_record_npm_lockfile_hash", lambda root: recorded.append(root))
         mock_popen.side_effect = self._make_popen([], returncode=1, stderr_lines=["npm ERR!\n"])
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         assert not recorded, "lockfile hash must not be recorded when npm install fails"
 
@@ -1362,9 +1474,9 @@ class TestUpdateNodeDependencies:
         mock_popen.side_effect = self._make_popen([], returncode=1, stderr_lines=["npm ERR!\n"])
 
         with patch(
-            "tools.browser_tool.warm_agent_browser_npx_cache", return_value=True
+            "tools.browser_tool_install.warm_agent_browser_npx_cache", return_value=True
         ) as mock_warm:
-            hm._update_node_dependencies()
+            update_cmd._update_node_dependencies()
 
         mock_warm.assert_called_once()
 
@@ -1377,7 +1489,7 @@ class TestUpdateNodeDependencies:
         (tmp_path / "package.json").write_text("{}")
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         mock_run.assert_not_called()
 
@@ -1389,7 +1501,7 @@ class TestUpdateNodeDependencies:
 
         monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         mock_run.assert_not_called()
 
@@ -1406,7 +1518,7 @@ class TestUpdateNodeDependencies:
         popen_calls = []
         mock_popen.side_effect = self._make_popen(popen_calls)
 
-        hm._update_node_dependencies()
+        update_cmd._update_node_dependencies()
 
         cwd_calls = [
             c["kwargs"].get("cwd")
@@ -1416,3 +1528,117 @@ class TestUpdateNodeDependencies:
         assert cwd_calls, "expected at least one npm call"
         for cwd in cwd_calls:
             assert cwd == tmp_path, f"npm must run from PROJECT_ROOT; got cwd={cwd}"
+
+
+class TestGitTrampolineSelfHeal:
+    """Proactive Git-for-Windows trampoline self-heal (#87876).
+
+    A broken bin\\git.exe / cmd\\git.exe shim (~46KB) refuses every git call
+    with a "BUG (fork bomb)" guard instead of re-execing the real git-core
+    binary. _ensure_non_trampoline_git detects this up front and swaps in a
+    real git binary when one can be located, so the normal git update path
+    survives instead of degrading to the ZIP fallback.
+    """
+
+    @staticmethod
+    def _fake_run_healthy(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command, 0, stdout="git version 2.50.0.windows.1\n", stderr=""
+        )
+
+    @staticmethod
+    def _fake_run_trampoline(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="BUG (fork bomb): tried to spawn itself, check your PATH\n",
+        )
+
+    def test_healthy_git_command_unchanged(self):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_healthy,
+            ),
+            patch("hermes_cli.update_cmd._locate_real_git") as locate,
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        locate.assert_not_called()
+
+    def test_trampoline_swaps_to_real_git(self, capsys):
+        from pathlib import Path
+
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        real = Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe")
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_trampoline,
+            ),
+            patch(
+                "hermes_cli.update_cmd._locate_real_git", return_value=real
+            ),
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == [str(real), "-c", "windows.appendAtomically=false"]
+        out = capsys.readouterr().out
+        assert "switching to real git" in out
+
+    def test_trampoline_no_real_git_keeps_command(self, capsys):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+        with (
+            patch("sys.platform", "win32"),
+            patch(
+                "hermes_cli.update_cmd.subprocess.run",
+                side_effect=self._fake_run_trampoline,
+            ),
+            patch("hermes_cli.update_cmd._locate_real_git", return_value=None),
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        out = capsys.readouterr().out
+        assert "ZIP path" in out
+
+    def test_off_windows_noop(self):
+        from hermes_cli import update_cmd
+
+        git_cmd = ["git"]
+        with (
+            patch("sys.platform", "linux"),
+            patch("hermes_cli.update_cmd.subprocess.run") as run,
+        ):
+            result = update_cmd._ensure_non_trampoline_git(git_cmd)
+        assert result == git_cmd
+        run.assert_not_called()
+
+    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch):
+        # Profile-scoped layout: HERMES_HOME = <root>/profiles/foo, but the
+        # PortableGit tree lives under the SHARED root (monerostar review on
+        # #88136). The candidate list must check get_default_hermes_root()
+        # before the profile home.
+        from hermes_cli import update_cmd
+
+        root = tmp_path / "root"
+        profile_home = root / "profiles" / "foo"
+
+        monkeypatch.setattr(update_cmd, "get_default_hermes_root", lambda: root)
+        monkeypatch.setattr(update_cmd, "get_hermes_home", lambda: profile_home)
+
+        candidates = update_cmd._portable_git_candidates()
+        assert candidates[0] == (
+            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )
+        assert candidates[1] == (
+            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
+        )

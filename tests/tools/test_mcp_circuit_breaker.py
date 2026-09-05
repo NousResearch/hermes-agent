@@ -18,6 +18,7 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
+from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +110,7 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     call_count = {"n": 0}
 
@@ -124,7 +125,7 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
         return result
 
     _install_stub_server(mcp_tool, "srv", _call_tool_success)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     try:
         # Trip the breaker by setting the count at/above threshold and
@@ -177,7 +178,7 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     call_count = {"n": 0}
 
@@ -186,7 +187,7 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         raise RuntimeError("still broken")
 
     _install_stub_server(mcp_tool, "srv", _call_tool_fails)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     try:
         mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
@@ -234,7 +235,7 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     server = _install_stub_server(mcp_tool, "srv", None)
     # Simulate a dead/parked transport: no live session.
@@ -275,7 +276,7 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     async def _call_tool_success(*a, **kw):
         result = MagicMock()
@@ -289,7 +290,7 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     server = _install_stub_server(mcp_tool, "srv", _call_tool_success)
     server.session = None  # transport down at first
     monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     try:
         mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
@@ -336,6 +337,8 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
+    from tools import mcp_tool_handlers as _mcp_handlers
+    from tools import mcp_tool_loop as _mcp_loop
     from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
     from mcp.client.auth import OAuthFlowError
 
@@ -345,7 +348,7 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         raise AssertionError("session.call_tool should not be reached in this test")
 
     _install_stub_server(mcp_tool, "srv", _call_tool_unused)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     # Open the breaker well above threshold, with a recent open-time so
     # it would short-circuit everything without a reset.
@@ -371,7 +374,7 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         def _retry_call():
             raise OAuthFlowError("still failing post-reconnect")
 
-        result = mcp_tool._handle_auth_error_and_retry(
+        result = _mcp_handlers._handle_auth_error_and_retry(
             "srv",
             OAuthFlowError("initial"),
             _retry_call,

@@ -290,6 +290,41 @@ describe('Hermes REST helpers', () => {
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
   })
 
+  it('keeps per-slice errors on the legacy fallback so a cron failure does not taint recents', async () => {
+    resetSidebarBatchCapability()
+    const row = (id: string) => ({ id, title: id, profile: 'default' })
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({
+          ...emptySessionsResponse,
+          sessions: [],
+          errors: [{ profile: 'default', error: 'disk I/O error' }]
+        })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: [row('recent-1')] })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
+    expect(result.recents.errors).toBeUndefined()
+    expect(result.cron.errors).toEqual([{ profile: 'default', error: 'disk I/O error' }])
+    expect(result.errors).toBeUndefined()
+  })
+
   it('remembers endpoint-missing and skips re-probing the batched route on later refreshes', async () => {
     api.mockImplementation(({ path }: { path: string }) =>
       path.startsWith('/api/profiles/sessions/sidebar')

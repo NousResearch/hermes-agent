@@ -3,6 +3,7 @@
 import sys
 import threading
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -118,8 +119,8 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
     runner._service_tier = "priority"
     runtime_kwargs = {
         "api_key": "***",
-        "base_url": "https://openrouter.ai/api/v1",
-        "provider": "openrouter",
+        "base_url": "https://api.openai.com/v1",
+        "provider": "openai",
         "api_mode": "chat_completions",
         "command": None,
         "args": [],
@@ -128,9 +129,14 @@ def test_turn_route_injects_priority_processing_without_changing_runtime():
 
     route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
 
-    assert route["runtime"]["provider"] == "openrouter"
+    assert route["runtime"]["provider"] == "openai"
     assert route["runtime"]["api_mode"] == "chat_completions"
     assert route["request_overrides"] == {"service_tier": "priority"}
+
+    # Proxied routes never receive the param (OpenRouter strips it / others 400).
+    runtime_kwargs.update(base_url="https://openrouter.ai/api/v1", provider="openrouter")
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(runner, "hi", "gpt-5.4", runtime_kwargs)
+    assert route["request_overrides"] == {}
 
 
 @pytest.mark.asyncio
@@ -154,6 +160,7 @@ async def test_handle_fast_command_global_flag_persists_config(monkeypatch, tmp_
 
 @pytest.mark.asyncio
 async def test_typed_fast_global_persists_to_originating_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     default_home = tmp_path / "default"
     named_home = tmp_path / "profiles" / "work"
     default_home.mkdir(parents=True)
@@ -191,12 +198,15 @@ async def test_typed_fast_global_persists_to_originating_profile(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("choice", ["fast", "normal", "auto", "cold"])
+@pytest.mark.parametrize("persist,save_succeeds", [(True, True), (True, False), (False, True)])
 async def test_fast_global_picker_persists_to_originating_profile(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, choice, persist, save_succeeds
 ):
     """A delayed picker tap must not fall back to the default profile."""
     from agent.secret_scope import set_multiplex_active
 
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     default_home = tmp_path / "default"
     named_home = tmp_path / "profiles" / "work"
     default_home.mkdir(parents=True)
@@ -215,7 +225,7 @@ async def test_fast_global_picker_persists_to_originating_profile(
     runner._adapter_for_source = lambda _source: adapter
     runner._thread_metadata_for_source = lambda _source, anchor=None: {}
     runner._reply_anchor_for_event = lambda _event: None
-    event = _make_event("/fast --global")
+    event = _make_event("/fast --global" if persist else "/fast")
     event.source.profile = "work"
     session_key = runner._session_key_for_source(event.source)
 
@@ -224,6 +234,11 @@ async def test_fast_global_picker_persists_to_originating_profile(
     monkeypatch.setattr(
         gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4"
     )
+    if not save_succeeds:
+        def fail_write(*args, **kwargs):
+            raise OSError("config is read-only")
+
+        monkeypatch.setattr("gateway.slash_commands_model.atomic_config_write", fail_write)
 
     set_multiplex_active(True)
     try:
@@ -231,9 +246,14 @@ async def test_fast_global_picker_persists_to_originating_profile(
             runner._set_session_service_tier_override(session_key, None)
             await runner._handle_fast_command(event)
         on_choice = adapter.calls[0]["on_choice_selected"]
-        reply = await on_choice(event.source.chat_id, "fast")
+        reply = await on_choice(event.source.chat_id, choice)
+        assert gateway_run._gateway_config_home() == default_home
         with gateway_run._profile_runtime_scope(named_home):
-            assert session_key not in runner._session_service_tier_overrides
+            if persist and save_succeeds:
+                assert session_key not in runner._session_service_tier_overrides
+            else:
+                expected_tier = {"fast": "priority", "normal": None}.get(choice, choice)
+                assert runner._session_service_tier_overrides[session_key] == expected_tier
     finally:
         set_multiplex_active(False)
 
@@ -244,8 +264,10 @@ async def test_fast_global_picker_persists_to_originating_profile(
         (named_home / "config.yaml").read_text(encoding="utf-8")
     )
     assert default_config["agent"]["service_tier"] == "normal"
-    assert named_config["agent"]["service_tier"] == "fast"
-    assert "saved" in reply.lower()
+    assert named_config["agent"]["service_tier"] == (
+        choice if persist and save_succeeds else "normal"
+    )
+    assert ("saved" in reply.lower()) == (persist and save_succeeds)
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
-from run_agent import _looks_like_image_content_rejection, _strip_images_from_messages
+from agent.message_sanitization import _looks_like_image_content_rejection, _strip_images_from_messages
 
 
 class TestStripImagesPreservesAlternation:

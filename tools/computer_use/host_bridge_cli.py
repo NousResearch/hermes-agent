@@ -25,7 +25,10 @@ _CUA_BYPASS_APPROVALS_ENV = "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"
 # the env var is the explicit "I accept the risk" acknowledgement.
 _BRIDGE_ALLOW_PLAINTEXT_ENV = "HERMES_CUA_BRIDGE_ALLOW_PLAINTEXT"
 _LOOPBACK_BINDS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
-_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 300
+# MCP recommendation for interactive sessions: long model turns must not be
+# reaped mid-call (screenshots, UI waits). Matches create_host_bridge_app's
+# default so the bridge behaves the same however it is launched.
+_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 1800
 
 
 def _validate_standard_permission_environment() -> None:

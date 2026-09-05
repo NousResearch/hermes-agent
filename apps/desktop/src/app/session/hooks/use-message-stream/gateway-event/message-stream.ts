@@ -7,7 +7,7 @@ import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
 import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
-import { clearClarifyRequest } from '@/store/clarify'
+import { clarifyStillBlocking, clearClarifyRequest, sessionClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { notify } from '@/store/notifications'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
@@ -321,7 +321,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // session so a background turn finishing can't wipe the active chat's
     // prompt, and vice versa.
     clearAllPrompts(sessionId)
-    clearClarifyRequest(undefined, sessionId)
+
+    if (!clarifyStillBlocking(sessionClarifyRequest(sessionId).get())) {
+      clearClarifyRequest(undefined, sessionId)
+    }
+
     // Turn ended without a final `todo` update — drop a still-unfinished
     // list so "Tasks N/M" doesn't stay pinned above the composer with the
     // last item stuck pending/in_progress. Finished lists keep their linger.

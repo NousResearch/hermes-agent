@@ -78,8 +78,8 @@ describe('cron jobs request fencing', () => {
       schedule: {
         kind: 'cron',
         expr: '0 9 * * *',
-        display: 'At 09:00 AM',
-      },
+        display: 'At 09:00 AM'
+      }
     }
 
     setCronJobs([initialJob])
@@ -92,8 +92,8 @@ describe('cron jobs request fencing', () => {
       schedule: {
         kind: 'cron',
         expr: '0 10 * * *',
-        display: 'At 09:00 AM',
-      },
+        display: 'At 09:00 AM'
+      }
     }
 
     const req = beginCronJobsRequest('all')
@@ -108,8 +108,8 @@ describe('cron jobs request fencing', () => {
       schedule: {
         kind: 'cron',
         expr: '0 10 * * *',
-        display: 'At 10:00 AM',
-      },
+        display: 'At 10:00 AM'
+      }
     }
 
     const req2 = beginCronJobsRequest('all')
@@ -124,8 +124,8 @@ describe('cron jobs request fencing', () => {
       schedule: {
         kind: 'interval',
         expr: '0 10 * * *',
-        display: 'At 10:00 AM',
-      },
+        display: 'At 10:00 AM'
+      }
     }
 
     const req3 = beginCronJobsRequest('all')
@@ -233,21 +233,28 @@ describe('CronJob structural comparator', () => {
     expect(sameCronJob(fullJob, { ...fullJob, schedule: { ...fullJob.schedule } })).toBe(true)
   })
 
-  it('detects changes in any CronJob interface field', () => {
-    expect(sameCronJob(fullJob, { ...fullJob, id: 'job-2' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, name: 'Other' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, enabled: false })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, state: 'running' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, next_run_at: '2026-09-03T00:00:00Z' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, last_run_at: '2026-09-02T00:00:00Z' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, last_error: 'Failed' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, schedule_display: 'Changed display' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, prompt: 'New prompt' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, model: 'claude-3' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, provider: 'anthropic' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, deliver: 'email' })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, no_agent: true })).toBe(false)
-    expect(sameCronJob(fullJob, { ...fullJob, script: 'other.sh' })).toBe(false)
+  it('detects changes in every CronJob interface field', () => {
+    const changedByField = {
+      deliver: { ...fullJob, deliver: 'email' },
+      enabled: { ...fullJob, enabled: false },
+      id: { ...fullJob, id: 'job-2' },
+      last_error: { ...fullJob, last_error: 'Failed' },
+      last_run_at: { ...fullJob, last_run_at: '2026-09-02T00:00:00Z' },
+      model: { ...fullJob, model: 'claude-3' },
+      name: { ...fullJob, name: 'Other' },
+      next_run_at: { ...fullJob, next_run_at: '2026-09-03T00:00:00Z' },
+      no_agent: { ...fullJob, no_agent: true },
+      prompt: { ...fullJob, prompt: 'New prompt' },
+      provider: { ...fullJob, provider: 'anthropic' },
+      schedule: { ...fullJob, schedule: undefined },
+      schedule_display: { ...fullJob, schedule_display: 'Changed display' },
+      script: { ...fullJob, script: 'other.sh' },
+      state: { ...fullJob, state: 'running' }
+    } satisfies Record<keyof CronJob, CronJob>
+
+    for (const [field, changedJob] of Object.entries(changedByField)) {
+      expect(sameCronJob(fullJob, changedJob), field).toBe(false)
+    }
   })
 
   it('detects changes in nested schedule fields', () => {

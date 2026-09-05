@@ -446,16 +446,20 @@ def _estimate_chunk_bytes(chunk: Any) -> int:
 
 
 def _codex_wait_notice_recovery(*, stale_timeout: float, ttfb_enabled: bool, ttfb_timeout: float,
-    last_event_ts: Optional[float], call_start: float, idle_enabled: bool, idle_timeout: float,
-    elapsed: float) -> str:
+    last_event_ts: Optional[float], last_progress_ts: Optional[float],
+    retry_started_ts: Optional[float], call_start: float, idle_enabled: bool,
+    idle_timeout: float, idle_requires_progress: bool, elapsed: float) -> str:
     """Describe the earliest enabled Codex watchdog on the call timeline."""
     deadlines: list[float] = []
     if math.isfinite(stale_timeout):
         deadlines.append(stale_timeout)
-    if last_event_ts is None:
+    if retry_started_ts is not None:
+        if ttfb_enabled and math.isfinite(ttfb_timeout):
+            deadlines.append(max(0.0, retry_started_ts - call_start) + ttfb_timeout)
+    elif last_event_ts is None:
         if ttfb_enabled and math.isfinite(ttfb_timeout):
             deadlines.append(ttfb_timeout)
-    elif idle_enabled and math.isfinite(idle_timeout):
+    elif (not idle_requires_progress or last_progress_ts is not None) and idle_enabled and math.isfinite(idle_timeout):
         deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
     if not deadlines or min(deadlines) <= elapsed:
         return ""
@@ -1012,6 +1016,7 @@ class _NonStreamWatchdogs:
     ttfb_timeout: float
     idle_enabled: bool
     idle_timeout: float
+    idle_requires_progress: bool
 
 
 def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs:
@@ -1019,9 +1024,12 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
 
     The stale detector kills a hung provider early so the retry loop can rotate
     credentials / fall back. Codex adds two failure modes: accepting the connection
-    but never emitting an event (no-byte TTFB cutoff; a reconnect succeeds in ~2s)
-    and stalling after the opening SSE frame (event-idle gap; any SSE event is
-    activity). Tunables: HERMES_CODEX_TTFB_TIMEOUT_SECONDS,
+    but never emitting an event (no-event TTFB cutoff; a reconnect succeeds in ~2s)
+    and stalling after substantive model progress begins (event-idle gap; any parsed SSE
+    event remains transport activity). Only the implicit official OpenAI Codex policy
+    for large contexts defers arming until progress; small requests, compatible backends,
+    and explicit overrides retain the legacy first-event semantics. Tunables:
+    HERMES_CODEX_TTFB_TIMEOUT_SECONDS,
     HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS (0 disables each),
     HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS / HERMES_CODEX_TTFB_STRICT,
     HERMES_CODEX_TTFB_MAX_SECONDS, HERMES_CODEX_HARD_TIMEOUT_SECONDS.
@@ -1030,13 +1038,14 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     codex = agent.api_mode == "codex_responses"
     openai_codex_backend = _is_openai_codex_backend(agent)
     est_tokens = estimate_request_context_tokens(api_kwargs)
+    codex_floor = 0.0
     if codex and openai_codex_backend:
         # Raise the stale floor for large payloads so healthy gateway-scale
         # requests aren't aborted mid-prefill.
         codex_floor = openai_codex_stale_timeout_floor(est_tokens)
         if codex_floor:
             stale_timeout = max(stale_timeout, codex_floor)
-        # Flat hard ceiling (#64507) for a request that emits SOME bytes then wedges.
+        # Flat hard ceiling (#64507) for a request that emits SOME events then wedges.
         # Default sits ABOVE the max floor (1200s) — a backstop, never tighter. 0 disables.
         hard_timeout = env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
         if hard_timeout > 0:
@@ -1046,7 +1055,7 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),
         12.0)
 
-    # No-byte TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
+    # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
     # and a tight 12s killed subscription-backed requests mid-prefill.
     ttfb_enabled = codex
     ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
@@ -1058,22 +1067,32 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
         disable_above = env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
         if not strict and disable_above > 0 and est_tokens >= disable_above and ttfb_timeout < idle_default:
-            logger.info("Scaling openai-codex no-byte TTFB watchdog from %.0fs to %.0fs "
+            logger.info("Scaling openai-codex no-event TTFB watchdog from %.0fs to %.0fs "
                 "for large request (context=~%s tokens >= %.0f). "
                 "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
                 f"{est_tokens:,}", disable_above)
             ttfb_timeout = idle_default
         ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
         if ttfb_cap > 0 and ttfb_timeout > ttfb_cap:
-            logger.info("Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
+            logger.info("Capping openai-codex no-event TTFB timeout from %.0fs to %.0fs "
                 "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
 
+    idle_raw = os.getenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "").strip()
+    try:
+        float(idle_raw)
+    except ValueError:
+        idle_explicit = False
+    else:
+        idle_explicit = True
     idle_timeout = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_default)
     return _NonStreamWatchdogs(stale_timeout=stale_timeout, codex=codex, est_tokens=est_tokens,
         ttfb_enabled=ttfb_enabled, ttfb_timeout=ttfb_timeout, idle_enabled=codex and idle_timeout > 0,
-        idle_timeout=idle_timeout)
+        idle_timeout=idle_timeout,
+        idle_requires_progress=(
+            codex and openai_codex_backend and codex_floor > 0 and not idle_explicit
+        ))
 
 
 def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
@@ -1107,6 +1126,18 @@ class _NonStreamRequest:
         self.codex_token = object() if agent.api_mode == "codex_responses" else None
         self.codex_retired = False
         self.wd = _resolve_nonstream_watchdogs(agent, api_kwargs)
+        self.codex_watchdog_state = (
+            SimpleNamespace(
+                token=self.codex_token,
+                lock=threading.Lock(),
+                last_event_ts=None,
+                last_progress_ts=None,
+                retry_started_ts=None,
+                phase_aware=self.wd.idle_requires_progress,
+            )
+            if self.codex_token is not None
+            else None
+        )
         self.call_start = time.time()
         self.thread = None
 
@@ -1131,8 +1162,14 @@ class _NonStreamRequest:
         return self.clients.set_client(client, kind=kind)
 
     def _call(self):
+        watchdog_state_var = watchdog_context_token = None
         try:
             self._install_codex_request_token()
+            if self.codex_watchdog_state is not None:
+                from agent.codex_runtime import _codex_watchdog_state_var
+
+                watchdog_state_var = _codex_watchdog_state_var
+                watchdog_context_token = watchdog_state_var.set(self.codex_watchdog_state)
             self.result["response"] = _dispatch_nonstreaming_api_request(
                 self.agent, self.api_kwargs, make_client=self._make_client)
         except Exception as e:
@@ -1151,6 +1188,8 @@ class _NonStreamRequest:
                 return
             self.result["error"] = e
         finally:
+            if watchdog_state_var is not None:
+                watchdog_state_var.reset(watchdog_context_token)
             # Retire first: close_once can raise, and a leaked token would let
             # a later worker mistake itself for the owning attempt.
             self._retire_codex_request_token()
@@ -1163,9 +1202,11 @@ class _NonStreamRequest:
         """Watchdog/interrupt kill: abort the request client (kind-aware, #67142)
         and retire the codex token; the worker sees its own forced close via
         the cancel flags."""
+        # Retire before closing the socket: close can wake the worker immediately,
+        # and a retired worker must not open a new physical retry.
+        self._retire_codex_request_token()
         with contextlib.suppress(Exception):
             self.clients.close_once(reason)
-        self._retire_codex_request_token()
 
     def _await_worker_after_kill(self, timeout_message: str) -> None:
         # Wait briefly for the worker to notice the closed connection.
@@ -1176,13 +1217,27 @@ class _NonStreamRequest:
     def _model(self) -> str:
         return self.api_kwargs.get("model", "unknown")
 
+    def _codex_watchdog_snapshot(self):
+        state = self.codex_watchdog_state
+        if state is None:
+            return (
+                getattr(self.agent, "_codex_stream_last_event_ts", None),
+                getattr(self.agent, "_codex_stream_last_progress_ts", None),
+                None,
+            )
+        with state.lock:
+            return state.last_event_ts, state.last_progress_ts, state.retry_started_ts
+
     def _emit_wait_notice(self, elapsed: float) -> None:
         wd = self.wd
         try:
+            last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
             recovery = _codex_wait_notice_recovery(stale_timeout=wd.stale_timeout,
                 ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=wd.ttfb_timeout,
-                last_event_ts=getattr(self.agent, "_codex_stream_last_event_ts", None),
+                last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
+                retry_started_ts=retry_started_ts,
                 call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
+                idle_requires_progress=wd.idle_requires_progress,
                 elapsed=elapsed)
             self.agent._emit_wait_notice(
                 f"⏳ waiting on {self.api_kwargs.get('model', 'the provider')} — "
@@ -1191,40 +1246,46 @@ class _NonStreamRequest:
             logger.debug("wait-notice construction failed", exc_info=True)
 
     def _ttfb_kill(self, elapsed: float) -> None:
-        """No Codex event past the first-byte cutoff — kill so the retry loop
+        """No parsed Codex event past the first-event cutoff — kill so the retry loop
         reconnects instead of waiting out the stale timeout."""
         agent, wd = self.agent, self.wd
         silent_hint = _codex_silent_hang_hint(agent, self.api_kwargs)
-        logger.warning("Codex stream produced no bytes within TTFB cutoff "
+        logger.warning("Codex stream produced no parsed stream event within TTFB cutoff "
             "(%.0fs > %.0fs, model=%s). Backend accepted the connection "
             "but sent no stream events. Killing connection so the retry loop can reconnect.", elapsed,
             wd.ttfb_timeout, self._model())
         agent._buffer_status(
-            f"⚠️ No first byte from provider in {int(elapsed)}s (codex stream, model: {self._model()}). "
+            f"⚠️ No first stream event from provider in {int(elapsed)}s (codex stream, model: {self._model()}). "
             f"Reconnecting." + (f" {silent_hint}" if silent_hint else ""))
         self._abort_request("codex_ttfb_kill")
         agent._emit_wait_notice(f"⚠ no response from provider in {int(elapsed)}s — reconnecting...")
-        agent._touch_activity(f"codex stream killed after {int(elapsed)}s with no first byte")
+        agent._touch_activity(f"codex stream killed after {int(elapsed)}s with no first stream event")
         self._await_worker_after_kill(
-            f"Codex stream produced no bytes within {int(elapsed)}s (TTFB threshold: {int(wd.ttfb_timeout)}s)"
+            f"Codex stream produced no parsed stream event within {int(elapsed)}s "
+            f"(TTFB threshold: {int(wd.ttfb_timeout)}s)"
             + (f". {silent_hint}" if silent_hint else ""))
 
     def _idle_kill(self, event_stale_elapsed: float) -> None:
-        """First byte arrived, then SSE events stopped (keepalive/in_progress
-        frames refresh the timestamp and don't count)."""
+        """SSE events stopped after the phase-specific idle arm point.
+
+        Only the implicit official OpenAI Codex policy arms on substantive model
+        progress; compatible providers and explicit operator timeouts arm on first
+        parsed event. Once armed, any parsed SSE event refreshes transport activity.
+        """
         agent, wd = self.agent, self.wd
-        logger.warning("Codex stream produced no SSE events for %.0fs after first byte "
+        arm_point = "model progress began" if wd.idle_requires_progress else "the first parsed event"
+        logger.warning("Codex stream produced no SSE events for %.0fs after %s "
             "(threshold %.0fs, model=%s, context=~%s tokens). Killing "
-            "connection so the retry loop can reconnect.", event_stale_elapsed, wd.idle_timeout,
+            "connection so the retry loop can reconnect.", event_stale_elapsed, arm_point, wd.idle_timeout,
             self._model(), f"{wd.est_tokens:,}")
         agent._buffer_status(
-            f"⚠️ Codex stream sent no events for {int(event_stale_elapsed)}s after first byte "
+            f"⚠️ Codex stream sent no events for {int(event_stale_elapsed)}s after {arm_point} "
             f"(model: {self._model()}). Reconnecting.")
         self._abort_request("codex_stream_idle_kill")
         agent._touch_activity(f"codex stream killed after {int(event_stale_elapsed)}s with no SSE events")
         self._await_worker_after_kill(
             f"Codex stream produced no SSE events for {int(event_stale_elapsed)}s "
-            f"after first byte (threshold: {int(wd.idle_timeout)}s)")
+            f"after {arm_point} (threshold: {int(wd.idle_timeout)}s)")
 
     def _stale_kill(self, elapsed: float) -> None:
         """No response within the stale timeout: kill and count toward the
@@ -1241,8 +1302,9 @@ class _NonStreamRequest:
 
     def _interrupt(self, elapsed: float) -> None:
         agent = self.agent
+        last_event_ts, _, _ = self._codex_watchdog_snapshot()
         _record_interrupted_provider_wait(agent, elapsed,
-            response_started=self.wd.codex and getattr(agent, "_codex_stream_last_event_ts", None) is not None
+            response_started=self.wd.codex and last_event_ts is not None
         )
         # Mark cancelled BEFORE force-closing so the worker treats the transport
         # error as a cancel (#6600). Never close the shared client (releasing a
@@ -1258,9 +1320,13 @@ class _NonStreamRequest:
         agent, wd = self.agent, self.wd
         if wd.codex:
             # Reset before the worker starts so a marker left over from a previous
-            # call on this agent can't be misread as first-byte for this one.
+            # call on this agent can't be misread as the first event for this one.
             agent._codex_stream_last_event_ts = None
             agent._codex_stream_last_progress_ts = None
+            with self.codex_watchdog_state.lock:
+                self.codex_watchdog_state.last_event_ts = None
+                self.codex_watchdog_state.last_progress_ts = None
+                self.codex_watchdog_state.retry_started_ts = None
         agent._touch_activity("waiting for non-streaming API response")
 
         self.thread = t = threading.Thread(target=_context_thread_target(self._call), daemon=True)
@@ -1271,15 +1337,24 @@ class _NonStreamRequest:
             poll_count += 1
             # Every ~30s: gateway inactivity heartbeat + rewrite the status line
             # so users see WHAT the wait is (the "infinite thinking" complaint).
-            elapsed = time.time() - self.call_start
+            now = time.time()
+            elapsed = now - self.call_start
             if poll_count % 100 == 0:  # 100 × 0.3s = 30s
                 self._emit_wait_notice(elapsed)
-            last_event_ts = getattr(agent, "_codex_stream_last_event_ts", None)
-            if wd.ttfb_enabled and elapsed > wd.ttfb_timeout and last_event_ts is None:
+            last_event_ts, last_progress_ts, retry_started_ts = self._codex_watchdog_snapshot()
+            retry_ttfb_elapsed = now - retry_started_ts if retry_started_ts is not None else None
+            if wd.ttfb_enabled and retry_ttfb_elapsed is not None and retry_ttfb_elapsed > wd.ttfb_timeout:
+                self._ttfb_kill(retry_ttfb_elapsed)
+                break
+            if (retry_started_ts is None and wd.ttfb_enabled
+                    and elapsed > wd.ttfb_timeout and last_event_ts is None):
                 self._ttfb_kill(elapsed)
                 break
-            if wd.idle_enabled and last_event_ts is not None and (time.time() - last_event_ts) > wd.idle_timeout:
-                self._idle_kill(time.time() - last_event_ts)
+            idle_elapsed = now - last_event_ts if last_event_ts is not None else None
+            if (retry_started_ts is None and wd.idle_enabled and idle_elapsed is not None
+                    and (not wd.idle_requires_progress or last_progress_ts is not None)
+                    and idle_elapsed > wd.idle_timeout):
+                self._idle_kill(idle_elapsed)
                 break
             if elapsed > wd.stale_timeout:
                 self._stale_kill(elapsed)

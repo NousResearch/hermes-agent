@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $notifications, clearNotifications } from '@/store/notifications'
+
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
 // doesn't implement it (nor hasPointerCapture / releasePointerCapture), so stub
 // them to let the dropdown open in tests.
@@ -83,6 +85,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  clearNotifications()
   profileSwitchHandler = null
 })
 
@@ -408,6 +411,131 @@ describe('ModelSettings', () => {
 
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
+  })
+})
+
+describe('ModelSettings auxiliary selection guard', () => {
+  const guardedMain = { provider: 'nous', model: 'hermes-4-contributor' }
+
+  beforeEach(() => {
+    getGlobalModelInfo.mockResolvedValue(guardedMain)
+    getAuxiliaryModels.mockResolvedValue({
+      main: guardedMain,
+      tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
+    })
+  })
+
+  async function waitForConfirmToast() {
+    return vi.waitFor(() => {
+      const toast = $notifications.get().find(item => item.id.startsWith('model-warning-confirm-'))
+
+      expect(toast).toBeDefined()
+
+      return toast!
+    })
+  }
+
+  it('prompts and retries Set to main when the backend demands confirm', async () => {
+    setModelAssignment
+      .mockResolvedValueOnce({
+        ok: false,
+        scope: 'auxiliary',
+        ...guardedMain,
+        confirm_required: true,
+        confirm_message: 'Confirm this data-training model.'
+      })
+      .mockResolvedValueOnce({ ok: true, scope: 'auxiliary', ...guardedMain, tasks: ['vision'] })
+
+    await renderModelSettings()
+    const loadCount = getAuxiliaryModels.mock.calls.length
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Set to main' }))[0])
+
+    const confirm = await waitForConfirmToast()
+
+    expect(getAuxiliaryModels.mock.calls.length).toBe(loadCount)
+    expect(setModelAssignment).toHaveBeenCalledTimes(1)
+
+    confirm.action?.onClick()
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          scope: 'auxiliary',
+          task: 'vision',
+          ...guardedMain,
+          confirm_expensive_model: true
+        })
+      )
+    )
+    await waitFor(() => expect(getAuxiliaryModels.mock.calls.length).toBeGreaterThan(loadCount))
+  })
+
+  it('does not treat ok:false as a successful aux assignment', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      ok: false,
+      scope: 'auxiliary',
+      provider: 'nous',
+      model: 'hermes-4',
+      confirm_message: 'Could not pin that auxiliary model.'
+    })
+
+    await renderModelSettings()
+    const loadCount = getAuxiliaryModels.mock.calls.length
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Set to main' }))[0])
+
+    expect(await screen.findByText('Could not pin that auxiliary model.')).toBeTruthy()
+    expect(getAuxiliaryModels.mock.calls.length).toBe(loadCount)
+    expect(setModelAssignment).toHaveBeenCalledTimes(1)
+  })
+
+  it('resets auxiliary slots without sending the guarded main model', async () => {
+    await renderModelSettings()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset all to main' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: '',
+        provider: '',
+        scope: 'auxiliary',
+        task: '__reset__'
+      })
+    )
+  })
+
+  it('prompts and retries Change-Apply when the backend demands confirm', async () => {
+    setModelAssignment
+      .mockResolvedValueOnce({
+        ok: false,
+        scope: 'auxiliary',
+        ...guardedMain,
+        confirm_required: true,
+        confirm_message: 'Confirm this data-training model.'
+      })
+      .mockResolvedValueOnce({ ok: true, scope: 'auxiliary', ...guardedMain, tasks: ['vision'] })
+
+    await renderModelSettings()
+    await screen.findByText('Vision')
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Change' })[0])
+    const applyButtons = screen.getAllByRole('button', { name: 'Apply' })
+    fireEvent.click(applyButtons[applyButtons.length - 1])
+
+    const confirm = await waitForConfirmToast()
+    confirm.action?.onClick()
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          scope: 'auxiliary',
+          task: 'vision',
+          ...guardedMain,
+          confirm_expensive_model: true
+        })
+      )
+    )
   })
 })
 

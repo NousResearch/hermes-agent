@@ -144,20 +144,15 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
   })
 }
 
-export async function setMainModelAssignment(
-  request: Omit<ModelAssignmentRequest, 'scope'>,
+export async function assignModelWithConfirm(
+  request: ModelAssignmentRequest,
   scopeProfile?: null | string,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
-  const { connection, generation } = beginCronModelImpactAssignment()
-  const profile = profileIdentity()
-
   // Only pass the extra arg when a scope override exists, so unscoped callers
   // keep the exact legacy call shape.
-  const assign = (body: Omit<ModelAssignmentRequest, 'scope'>) =>
-    scopeProfile == null
-      ? setModelAssignment({ ...body, scope: 'main' })
-      : setModelAssignment({ ...body, scope: 'main' }, scopeProfile)
+  const assign = (body: ModelAssignmentRequest) =>
+    scopeProfile == null ? setModelAssignment(body) : setModelAssignment(body, scopeProfile)
 
   let result = await assign(request)
 
@@ -186,6 +181,18 @@ export async function setMainModelAssignment(
   } else if (result.ok !== true) {
     throw new Error(result.confirm_message?.trim() || translateNow('cron.modelImpact.saveFailed'))
   }
+
+  return result
+}
+
+export async function setMainModelAssignment(
+  request: Omit<ModelAssignmentRequest, 'scope'>,
+  scopeProfile?: null | string,
+  options?: { skipConfirmPrompt?: boolean }
+): Promise<ModelAssignmentResponse> {
+  const { connection, generation } = beginCronModelImpactAssignment()
+  const profile = profileIdentity()
+  const result = await assignModelWithConfirm({ ...request, scope: 'main' }, scopeProfile, options)
 
   // A scoped assignment targets ANOTHER profile's backend: its cron impact
   // belongs to that profile, and the review action would open the ACTIVE

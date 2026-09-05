@@ -13,6 +13,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 import {
+  assignModelWithConfirm,
   CRON_MODEL_IMPACT_NOTIFICATION_ID,
   invalidateCronModelImpactScope,
   setMainModelAssignment
@@ -285,6 +286,75 @@ describe('setMainModelAssignment', () => {
     dismissNotification(CRON_MODEL_IMPACT_NOTIFICATION_ID)
 
     expect($notifications.get()).toEqual([])
+    expect(setModelAssignment).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('assignModelWithConfirm', () => {
+  it('retries an auxiliary assignment with confirm_expensive_model after the user accepts', async () => {
+    const confirmResponse = {
+      ok: false,
+      scope: 'auxiliary',
+      provider: 'nous',
+      model: 'hermes-4-contributor',
+      confirm_required: true,
+      confirm_message: 'Confirm this data-training model.'
+    } satisfies ModelAssignmentResponse
+
+    setModelAssignment.mockResolvedValueOnce(confirmResponse)
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      scope: 'auxiliary',
+      provider: 'nous',
+      model: 'hermes-4-contributor',
+      tasks: ['vision']
+    } satisfies ModelAssignmentResponse)
+
+    const pending = assignModelWithConfirm({
+      scope: 'auxiliary',
+      task: 'vision',
+      provider: 'nous',
+      model: 'hermes-4-contributor'
+    })
+
+    const confirm = await waitForConfirmToast()
+
+    confirm.action?.onClick()
+    await pending
+
+    expect(setModelAssignment).toHaveBeenNthCalledWith(1, {
+      scope: 'auxiliary',
+      task: 'vision',
+      provider: 'nous',
+      model: 'hermes-4-contributor'
+    })
+    expect(setModelAssignment).toHaveBeenLastCalledWith({
+      scope: 'auxiliary',
+      task: 'vision',
+      provider: 'nous',
+      model: 'hermes-4-contributor',
+      confirm_expensive_model: true
+    })
+    expect($notifications.get().some(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)).toBe(false)
+  })
+
+  it('throws on ok:false instead of treating the assignment as saved', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      ok: false,
+      scope: 'auxiliary',
+      provider: 'nous',
+      model: 'hermes-4',
+      confirm_message: 'Could not pin that auxiliary model.'
+    } satisfies ModelAssignmentResponse)
+
+    await expect(
+      assignModelWithConfirm({
+        scope: 'auxiliary',
+        task: 'vision',
+        provider: 'nous',
+        model: 'hermes-4'
+      })
+    ).rejects.toThrow('Could not pin that auxiliary model.')
     expect(setModelAssignment).toHaveBeenCalledTimes(1)
   })
 })

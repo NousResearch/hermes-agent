@@ -381,6 +381,43 @@ def test_picker_hints_api_key_warning_format():
     assert anthropic["warning"].startswith("paste ")
 
 
+def test_current_claude_sdk_row_is_authenticated_with_delegate_catalog():
+    ctx = _empty_ctx(provider="claude-agent-sdk", model="claude-opus-5")
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            picker_hints=True,
+        )
+
+    row = payload["providers"][0]
+    assert row["slug"] == "claude-agent-sdk"
+    assert row["authenticated"] is True
+    assert row["auth_type"] == "oauth_external"
+    assert row["warning"] == ""
+    assert row["models"][0] == "claude-opus-5"
+    assert "claude-sonnet-5" in row["models"]
+    assert "claude-fable-5" in row["models"]
+    assert row["total_models"] == len(row["models"])
+
+
+def test_current_claude_sdk_preview_model_stays_selectable():
+    preview = "claude-opus-preview-unlisted"
+    ctx = _empty_ctx(provider="claude-agent-sdk", model=preview)
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx,
+            explicit_only=True,
+            picker_hints=True,
+        )
+
+    row = payload["providers"][0]
+    assert row["models"][0] == preview
+    assert row["models"].count(preview) == 1
+    assert "claude-opus-5" in row["models"]
+    assert "claude-sonnet-5" in row["models"]
+
+
 # ─── canonical_order ───────────────────────────────────────────────────
 
 
@@ -681,7 +718,6 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
 
     with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
         inventory._apply_featured(rows)
-
 
 
 

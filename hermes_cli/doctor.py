@@ -54,6 +54,7 @@ from hermes_cli.doctor_state import (
     _check_skills_hub,
     _check_state_db,
 )
+from hermes_cli.doctor_auth import _check_claude_agent_sdk_auth
 
 _PROVIDER_ENV_HINTS = (
     "DEEPINFRA_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
@@ -113,7 +114,7 @@ DOCTOR_CHECKS = (
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Plugin import paths (removed Sep 14, 2026)', _check_plugin_compat), ('Auth Providers', _check_auth_providers),
-    ('Directory Structure', _check_directory_structure), (None, _check_state_db),
+    (None, _check_claude_agent_sdk_auth), ('Directory Structure', _check_directory_structure), (None, _check_state_db),
     (None, _check_gateway_supervision), (None, _check_command_installation),
     ('External Tools', _check_git_and_rg), (None, _check_terminal_backend), (None, _check_node_and_browser),
     (None, _check_npm_audit), ('API Connectivity', _check_api_connectivity),

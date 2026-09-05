@@ -9,7 +9,6 @@ import {
   publishThreadAtBottom,
   requestScrollToBottom,
   resetPublishedThreadScroll,
-  resetThreadScroll,
   setThreadAtBottom
 } from './thread-scroll'
 

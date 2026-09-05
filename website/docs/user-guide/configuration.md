@@ -2703,12 +2703,14 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 ## Clarify
 
-Configure how long the gateway waits for a response to a clarifying question. The canonical key is `agent.clarify_timeout` (default `3600` seconds); a legacy top-level `clarify.timeout` is still honored if explicitly set:
+Configure how long Hermes waits for a response to a clarifying question across the gateway, CLI, TUI, and desktop app. The canonical key is `agent.clarify_timeout` (default `3600` seconds); a legacy top-level `clarify.timeout` is still honored if explicitly set. Migrate legacy configuration to the canonical key when you next update it:
 
 ```yaml
 agent:
   clarify_timeout: 3600        # Seconds to wait for user clarification response (0 or less = unlimited)
 ```
+
+Restart an active CLI, TUI, or desktop session after changing this setting so it reloads the configuration.
 
 ## Context Files (SOUL.md, AGENTS.md)
 

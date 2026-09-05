@@ -412,7 +412,9 @@ def _cli_config_defaults():
             "persist_prompts": True,  # one-line summary of resolved modal prompts into scrollback
             "skin": "default",
         },
-        "clarify": {"timeout": 120},  # seconds before a clarify prompt auto-proceeds
+        # Do not materialize the legacy ``clarify.timeout`` here. Its presence
+        # is the explicit-override signal used by resolve_clarify_timeout(); a
+        # default value would mask the canonical agent.clarify_timeout setting.
         "code_execution": {"timeout": 300, "max_tool_calls": 50},
         "auxiliary": {"vision": {"provider": "auto", "model": "", "base_url": "", "api_key": ""}},
         # delegation: empty model/provider = inherit parent; api_key falls back to OPENAI_API_KEY

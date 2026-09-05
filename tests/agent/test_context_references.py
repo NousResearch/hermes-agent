@@ -175,6 +175,35 @@ def test_binary_reference_block_keeps_host_path_on_local_backend(tmp_path: Path,
     assert "/root/.hermes/attachments/" not in result.message
 
 
+def test_binary_reference_block_stages_unmounted_file_under_container_backend(tmp_path: Path, monkeypatch):
+    """Container backend: a binary reference pointing outside cache mounts is auto-staged
+    into attachments so the container sandbox can access it."""
+    from agent.context_references import preprocess_context_references
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True)
+    external_dir = tmp_path / "Downloads"
+    external_dir.mkdir(parents=True)
+    payload = external_dir / "report.pdf"
+    payload.write_bytes(b"%PDF-1.4 test bytes")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+
+    result = preprocess_context_references(
+        f"Read @file:{payload}",
+        cwd=tmp_path,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "/root/.hermes/attachments/report.pdf" in result.message
+    staged = hermes_home / "attachments" / "report.pdf"
+    assert staged.exists()
+    assert staged.read_bytes() == b"%PDF-1.4 test bytes"
+
+
+
 
 
 

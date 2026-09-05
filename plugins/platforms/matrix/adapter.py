@@ -1738,16 +1738,120 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _sync_loop(self) -> None:
         client = self._client
-        next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
+        # Resume from the token stored during the initial sync.
+        next_batch = await client.sync_store.get_next_batch()
+        # Lifetime recovery budget for this sync-loop process. A homeserver that
+        # keeps minting then rejecting since tokens must not spin forever.
+        cursor_resets = 0
+        max_cursor_resets = 3
+
+        def _sync_error_status(error: Any) -> Optional[int]:
+            # Successful sync payloads are dicts. Never regex-scan room history
+            # for "401"/"403" strings that can appear in ordinary message text.
+            if isinstance(error, dict):
+                return None
+            for attr in ("http_status", "status", "status_code"):
+                value = getattr(error, attr, None)
+                if value is None:
+                    continue
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    continue
+            message = getattr(error, "message", None)
+            text = message if isinstance(message, str) else str(error)
+            for pattern in (
+                r"\bHTTP(?:/\d(?:\.\d)?)?\s+(401|403)\b",
+                r"\bhttp_status\s*[=:]\s*(401|403)\b",
+                r"\bstatus(?:_code)?\s*[=:]\s*(401|403)\b",
+                r"\b(401|403)\s*[:,-]\s*(?:unauthorized|forbidden)\b",
+                r"\b(403)\s*[:,-]\s*access denied\b",
+            ):
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+            return None
+
+        def _sync_error_code(error: Any) -> str:
+            if isinstance(error, dict):
+                return ""
+            value = getattr(error, "errcode", None) or getattr(error, "err_code", None)
+            if value:
+                return str(value).upper()
+            message = getattr(error, "message", None)
+            text = message if isinstance(message, str) else str(error)
+            match = re.search(r"\bM_FORBIDDEN\b", text, re.IGNORECASE)
+            return "M_FORBIDDEN" if match else ""
+
+        def _is_permanent_sync_auth_error(error: Any) -> bool:
+            if isinstance(error, dict):
+                return False
+            status = _sync_error_status(error)
+            errcode = _sync_error_code(error)
+            if status == 401:
+                return True
+            if errcode in {"M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_UNAUTHORIZED"}:
+                return True
+            message = getattr(error, "message", None)
+            text = message if isinstance(message, str) else str(error)
+            lower = text.lower()
+            return (
+                "m_unknown_token" in lower
+                or "unknown_token" in lower
+                or "unauthorized" in lower
+            )
+
+        def _is_forbidden_sync_error(error: Any) -> bool:
+            if isinstance(error, dict):
+                return False
+            status = _sync_error_status(error)
+            errcode = _sync_error_code(error)
+            return status == 403 or errcode == "M_FORBIDDEN"
+
+        async def _reset_rejected_sync_cursor(error: Any) -> bool:
+            """Clear the cursor and back off; return False when the lifetime budget is exhausted."""
+            nonlocal next_batch, cursor_resets
+            cursor_resets += 1
+            if cursor_resets > max_cursor_resets:
+                logger.error(
+                    "Matrix: sync cursor rejected %d times — stopping after "
+                    "reset budget exhausted: %s",
+                    cursor_resets,
+                    error,
+                )
+                return False
+            logger.warning(
+                "Matrix: sync cursor rejected (%s) — resetting cursor and "
+                "retrying (attempt %d/%d)",
+                error,
+                cursor_resets,
+                max_cursor_resets,
+            )
+            next_batch = None
+            try:
+                await client.sync_store.put_next_batch(None)
+            except Exception as store_exc:
+                logger.warning("Matrix: failed to persist cleared sync cursor: %s", store_exc)
+            await asyncio.sleep(5)
+            return True
+
         while not self._closing:
             try:
                 # 45s outer cap guards TCP-level hangs the 30s long-poll timeout can't catch.
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
-                # Auth failures (M_UNKNOWN_TOKEN) arrive as SyncError objects, not exceptions.
-                _sync_msg = getattr(sync_data, "message", None)
-                if isinstance(_sync_msg, str) and "unknown_token" in _sync_msg.lower():
-                    logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
+
+                # Some client wrappers return error objects instead of raising.
+                if _is_permanent_sync_auth_error(sync_data):
+                    logger.error("Matrix: permanent auth error from sync: %s — stopping", sync_data)
                     return
+                if _is_forbidden_sync_error(sync_data):
+                    if next_batch:
+                        if await _reset_rejected_sync_cursor(sync_data):
+                            continue
+                        return
+                    logger.error("Matrix: permanent permission error from sync: %s — stopping", sync_data)
+                    return
+
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
@@ -1756,8 +1860,17 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                if any(k in str(exc).lower() for k in ("401", "403", "unauthorized", "forbidden")):
+                if _is_permanent_sync_auth_error(exc):
                     logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
+                    return
+                if _is_forbidden_sync_error(exc):
+                    if next_batch:
+                        if await _reset_rejected_sync_cursor(exc):
+                            continue
+                        return
+                    logger.error(
+                        "Matrix: permanent permission error: %s — stopping sync", exc
+                    )
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)
@@ -1774,9 +1887,14 @@ class MatrixAdapter(BasePlatformAdapter):
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)
+        rooms_leave = sync_data.get("rooms", {}).get("leave", {})
+        self._joined_rooms.difference_update(rooms_leave)
         if initial:
             logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))
             await self._refresh_dm_cache()
+        for room_id in rooms_leave:
+            self._dm_rooms.pop(room_id, None)
+            self._invalidate_room_identities(room_id)
         try:
             await self._dispatch_sync(sync_data)
         except Exception as exc:
@@ -1789,6 +1907,9 @@ class MatrixAdapter(BasePlatformAdapter):
         client = self._client
         if not client or not hasattr(client, "handle_sync"):
             return
+        # mautrix dispatches only state events from departed-room timelines.
+        # Preserve that path: membership updates are needed by its state/crypto
+        # handlers, while historical messages (including encrypted ones) stay out.
         tasks = client.handle_sync(sync_data)
         if inspect.isawaitable(tasks):
             tasks = await tasks

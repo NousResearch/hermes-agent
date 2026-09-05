@@ -102,8 +102,6 @@ class CLIChatTurnMixin:
             agent_thread.start()
             interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
             self._chat_settle_turn(turn)
-            if isinstance(turn.result, dict) and turn.result.get("waiting_on_delegates"):
-                return None
             return self._chat_render_turn(turn, agent_thread, interrupt_msg)
         except Exception as e:
             if origin_work_id:
@@ -519,6 +517,11 @@ class CLIChatTurnMixin:
         pending_message, _show_interrupt_marker = self._chat_resolve_interrupt(
             turn, agent_thread, interrupt_msg, response)
 
+        if turn.result and turn.result.get("waiting_on_delegates"):
+            # Waiting suppresses presentation, not late user-input recovery.
+            self._chat_requeue_pending_input(turn, pending_message)
+            return None
+
         self._chat_print_reasoning_box(turn)
         self._chat_print_response_panel(turn, response)
 
@@ -547,6 +550,11 @@ class CLIChatTurnMixin:
         if self._voice_tts and response and not turn.use_streaming_tts:
             self._voice_speak_response_async(response)
 
+        self._chat_requeue_pending_input(turn, pending_message)
+        return response
+
+    def _chat_requeue_pending_input(self, turn, pending_message):
+        """Recover late interrupts and steering even when the turn has no display."""
         # Re-queue the interrupt message (plus any that arrived meanwhile) as the next
         # prompt. Only reached in busy_input_mode == "interrupt"; "queue" mode routes
         # Enter straight to _pending_input.
@@ -573,8 +581,6 @@ class CLIChatTurnMixin:
             preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
             print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
             self._pending_input.put(_leftover_steer)
-
-        return response
 
     def _chat_resolve_interrupt(self, turn, agent_thread, interrupt_msg, response):
         """Return ``(pending_message, show_marker)``; clears a stale agent interrupt flag.

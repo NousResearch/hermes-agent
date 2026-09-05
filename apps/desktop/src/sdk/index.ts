@@ -65,6 +65,7 @@ import {
   newSessionInAgent,
   newSessionInProfile,
   normalizeProfileKey,
+  prewarmProfileBackend,
   refreshProfiles,
   selectProfile,
   setActiveProfile,
@@ -643,20 +644,25 @@ export const host = {
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change (openGatewayForProfile; it
-   *  already no-ops for shared-remote routes and the primary). Roster UIs
-   *  call this after mount so the FIRST click on an agent doesn't pay the
-   *  whole backend spawn + socket dial latency. Fire-and-forget: failures
-   *  are swallowed — the click path re-runs its own ensure and surfaces
-   *  errors properly. */
+   *  activation, no navigation, no scope change. Delegates to
+   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
+   *  guard, hover dwell, and per-profile throttle as the built-in rail
+   *  (#91545): a pointer sweep across a plugin roster (bot-row's
+   *  onPointerEnter fires with no dwell of its own) previously spawned at
+   *  pointer speed, filled the local backend pool past maxBackends, and left
+   *  the next profile's spawn queued until the 30s slot timeout — observed
+   *  as a profile surface that hangs forever while every other profile
+   *  renders. It already no-ops for shared-remote routes and the primary.
+   *  Fire-and-forget: failures are swallowed — the click path re-runs its
+   *  own ensure and surfaces errors properly. */
   warmProfile: (profile: string): void => {
     const name = (profile ?? '').trim()
 
-    if (!name || name === $activeGatewayProfile.get()) {
+    if (!name) {
       return
     }
 
-    void openGatewayForProfile(name).catch(() => undefined)
+    prewarmProfileBackend(name)
   },
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the

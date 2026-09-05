@@ -96,6 +96,10 @@ def run_tool_round(
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
+    if getattr(agent, "_conversational_response_suppressed", False):
+        # Suppressed prose must not reappear when a client reloads history.
+        # The original content/tool calls remain intact for provider replay.
+        assistant_msg["display_kind"] = "hidden"
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.

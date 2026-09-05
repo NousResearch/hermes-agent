@@ -454,14 +454,26 @@ class TestErrorsAndEvents:
             "message": "Continue toward the goal.",
             "display": "/goal resume",
         }
+        dispatch_result = {
+            **expected,
+            "model_context": {"private_trace": "never expose this nested value"},
+            "private_reasoning": "never expose this model-facing field",
+        }
+        emitted = []
+        monkeypatch.setattr(server, "_emit", lambda event, event_sid, payload=None: emitted.append((event, event_sid, payload)))
         monkeypatch.setitem(
             server._methods,
             "command.dispatch",
-            lambda rid, params: {"jsonrpc": "2.0", "id": rid, "result": expected},
+            lambda rid, params: {"jsonrpc": "2.0", "id": rid, "result": dispatch_result},
         )
 
         response = _call(server, "session.control", session_id=sid, action="goal.resume")
         assert response["result"]["dispatch"] == expected
+        assert "model_context" not in response["result"]["dispatch"]
+        assert "private_reasoning" not in response["result"]["dispatch"]
+        assert emitted == [("session.control.update", sid, {"control": response["result"]["control"]})]
+        assert "model_context" not in emitted[0][2]
+        assert "private_reasoning" not in emitted[0][2]
 
     def test_emit_failure_must_not_turn_mutation_into_rpc_error(self, server, session, monkeypatch):
         """Event delivery is best-effort: a failing _emit must not swallow an

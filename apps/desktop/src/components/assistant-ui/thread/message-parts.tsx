@@ -18,6 +18,7 @@ import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fall
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
+import { ChatRunCommandProvider } from '@/components/chat/shiki-highlighter'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
 import { generatedImageFromResult } from '@/lib/generated-images'
@@ -116,7 +117,9 @@ type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; time
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
   <>
     <TimelineTimestamp className="mb-0.5 block" completedAt={completedAt} timestamp={timestamp} />
-    <MarkdownText />
+    <ChatRunCommandProvider>
+      <MarkdownText />
+    </ChatRunCommandProvider>
   </>
 )
 

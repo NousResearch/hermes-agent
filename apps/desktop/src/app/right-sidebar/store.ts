@@ -15,6 +15,34 @@ export const setTerminalTakeover = (active: boolean) => $terminalTakeover.set(ac
  *  mounts still runs. Cleared after flush so a later remount can't replay it. */
 export const $terminalInjection = atom<null | string>(null)
 
+export interface ChatTerminalRunRequest {
+  command: string
+  terminalId: string
+}
+
+/** One-shot, user-approved chat command bound to one freshly-created user terminal.
+ * Unlike $terminalInjection this must never float to whichever shell happens to be active. */
+export const $chatTerminalRunRequest = atom<ChatTerminalRunRequest | null>(null)
+
+export function takeChatTerminalRunRequest(terminalId: string): string | null {
+  const pending = $chatTerminalRunRequest.get()
+
+  if (!pending || pending.terminalId !== terminalId) {
+    return null
+  }
+
+  // Clear before PTY write: a failed write is safer as a dropped command than a stale replay.
+  $chatTerminalRunRequest.set(null)
+
+  return pending.command
+}
+
+export function cancelChatTerminalRunRequest(terminalId: string): void {
+  if ($chatTerminalRunRequest.get()?.terminalId === terminalId) {
+    $chatTerminalRunRequest.set(null)
+  }
+}
+
 /** Open the terminal pane and run a command in it. Used to disconnect external
  *  (CLI-managed) providers, which Hermes can't clear via the API — the user
  *  sees exactly what runs instead of Hermes silently deleting their creds. */

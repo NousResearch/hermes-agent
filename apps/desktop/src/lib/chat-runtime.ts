@@ -5,6 +5,7 @@ import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalize } from '@/lib/text'
+import { fmtDayTime } from '@/lib/time'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
@@ -49,7 +50,26 @@ export function createClientSessionState(
 }
 
 export function sessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  const title = session.title?.trim()
+
+  if (title) {
+    return title
+  }
+
+  // Untitled sessions should still be individually identifiable: first-message
+  // previews inside one project group read nearly identically, so a bare
+  // preview leaves a wall of anonymous tiles (#80542). Fall back to a
+  // deterministic `model · day/time` label (or the start time alone when the
+  // model is unknown) before giving up on the preview.
+  const model = session.model?.trim()
+  const startedAt = session.started_at
+
+  const when =
+    startedAt > 0 && Number.isFinite(startedAt) ? fmtDayTime.format(new Date(startedAt * 1000)) : null
+
+  const deterministic = [model, when].filter(Boolean).join(' · ')
+
+  return deterministic || session.preview?.trim() || 'Untitled session'
 }
 
 /** What a session is called before it has been sent — and before its composer

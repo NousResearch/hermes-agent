@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
+import type { SessionInfo } from '@/types/hermes'
 
 import {
   attachmentDisplayText,
@@ -13,6 +14,7 @@ import {
   optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
+  sessionTitle,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -238,10 +240,66 @@ describe('messageCreatedAt', () => {
   })
 
   it('treats a zero / non-finite timestamp as absent', () => {
-    expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
-    expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+      expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
+      expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+    })
   })
-})
+
+  describe('sessionTitle', () => {
+    // Minimal but realistic session row; `title` and `preview` overridden per case.
+    function session(overrides: Partial<SessionInfo> = {}): SessionInfo {
+      return {
+        ended_at: null,
+        id: 's1',
+        input_tokens: 0,
+        is_active: false,
+        last_active: 1785282262,
+        message_count: 0,
+        model: null,
+        output_tokens: 0,
+        preview: 'first message text',
+        source: 'desktop',
+        started_at: 1785282262,
+        title: null,
+        tool_call_count: 0,
+        ...overrides
+      }
+    }
+
+    it('prefers the real title when present', () => {
+      expect(sessionTitle(session({ title: 'Fix the redirect bug' }))).toBe('Fix the redirect bug')
+    })
+
+    it('renders the deterministic model · day/time label for an untitled session', () => {
+      // 1785282262s → 2026-07-28; the exact clock segment is locale-dependent
+      // (e.g. "29 Feb, 14:30" vs "2月29日 14:30"), so only pin the parts that
+      // make the label deterministic and identifiable (#80542).
+      const title = sessionTitle(session({ model: 'deepseek-v4-pro' }))
+      expect(title).toMatch(/^deepseek-v4-pro · /)
+      expect(title).toMatch(/\d/)
+      expect(title).not.toBe('Untitled session')
+    })
+
+    it('uses the start time alone when the model is unknown', () => {
+      const title = sessionTitle(session({ model: null }))
+      expect(title).not.toContain('deepseek-v4-pro')
+      expect(title).toMatch(/\d/)
+    })
+
+    it('drops to the preview when neither title nor model nor a usable start time exists', () => {
+      const title = sessionTitle(session({ model: null, preview: 'first message text', started_at: 0 }))
+      expect(title).toBe('first message text')
+    })
+
+    it('keeps the preview when title is missing but nothing deterministic is available', () => {
+      const title = sessionTitle(session({ title: '', started_at: Number.NaN }))
+      expect(title).toBe('first message text')
+    })
+
+    it('keeps the last-resort placeholder when everything is missing', () => {
+      expect(sessionTitle(session({ model: null, preview: null, started_at: 0 }))).toBe('Untitled session')
+    })
+  })
 
 describe('toRuntimeMessage timeline metadata', () => {
   it('does not expose a fabricated visible timestamp for timestamp-less history', () => {

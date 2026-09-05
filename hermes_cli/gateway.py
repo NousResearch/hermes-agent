@@ -2740,6 +2740,37 @@ def _service_venv_dir() -> str:
     return str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
 
+def _get_gateway_service_wrapper() -> str | None:
+    """Return a configured absolute service wrapper path, when safe to use."""
+    try:
+        gateway_cfg = read_raw_config().get("gateway", {})
+    except Exception:
+        gateway_cfg = {}
+    raw = gateway_cfg.get("service_wrapper") if isinstance(gateway_cfg, dict) else None
+    if not isinstance(raw, str):
+        return None
+    expanded = os.path.expanduser(raw.strip())
+    if not expanded or any(char in expanded for char in ("\x00", "\n", "\r")):
+        return None
+    path = Path(expanded)
+    return str(path) if path.is_absolute() else None
+
+
+def _validate_gateway_service_wrapper(wrapper: str | None) -> str | None:
+    """Return *wrapper* only when the final service-side path is executable."""
+    if not wrapper:
+        return None
+    path = Path(wrapper)
+    return str(path) if path.is_file() and os.access(path, os.X_OK) else None
+
+
+def _gateway_service_command_parts(
+    *, python_path: str, profile_arg: str = "", wrapper: str | None = None
+) -> list[str]:
+    command = [python_path, "-m", "hermes_cli.main", *profile_arg.split(), "gateway", "run"]
+    return [wrapper, *command] if wrapper else command
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
@@ -2752,9 +2783,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     # TimeoutStopSec must cover the full stop budget (cron drain + cleanup) or systemd SIGKILLs mid-drain.
     restart_timeout = resolve_systemd_timeout_stop_sec(_get_restart_drain_timeout(), _get_cron_drain_timeout())
+    service_home: str | None = None
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
+        service_home = home_dir
         hermes_home = _hermes_home_for_target_user(home_dir)
         # Profile arg relative to the TARGET user's ~/.hermes when hermes_home lives under it.
         target_root = Path(home_dir) / ".hermes"
@@ -2787,6 +2820,17 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         identity_lines = env_lines = ""
         wanted_by = "default.target"
 
+    wrapper = _get_gateway_service_wrapper()
+    if service_home and wrapper:
+        wrapper = _remap_path_for_user(wrapper, service_home)
+    exec_start = " ".join(
+        shlex.quote(part)
+        for part in _gateway_service_command_parts(
+            python_path=python_path,
+            profile_arg=profile_arg,
+            wrapper=_validate_gateway_service_wrapper(wrapper),
+        )
+    )
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)
     systemd_type, systemd_watchdog_directives = "simple", ""
     if watchdog_seconds > 0:
@@ -2803,7 +2847,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type={systemd_type}
-{systemd_watchdog_directives}{identity_lines}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+{systemd_watchdog_directives}{identity_lines}ExecStart={exec_start}
 WorkingDirectory={working_dir}
 {env_lines}Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -3554,7 +3598,9 @@ def _gateway_run_command() -> list[str]:
     return [get_python_path(), "-m", "hermes_cli.main", *_profile_arg().split(), "gateway", "run", "--replace"]
 
 
-def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor: bool = False) -> list[str]:
+def _timestamped_stderr_gateway_command(
+    error_log: Path, *, external_supervisor: bool = False, wrapper: str | None = None
+) -> list[str]:
     """Wrap gateway run so raw stderr lines are timestamped before file write. ``external_supervisor``
     (launchd ProgramArguments only) adds ``--external-supervisor`` so ``hermes update`` hands back to
     launchd, and drops ``--replace``: KeepAlive respawns would re-arm takeover, so two profiles sharing
@@ -3576,6 +3622,8 @@ def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor:
         inner = [part for part in inner if part != "--replace"]
         if "--external-supervisor" not in inner:
             inner.append("--external-supervisor")
+    if wrapper:
+        inner = [wrapper, *inner]
     return [get_python_path(), "-m", "hermes_cli.stderr_timestamp", "--error-log", str(error_log), "--", *inner]
 
 
@@ -3644,9 +3692,12 @@ def generate_launchd_plist() -> str:
     sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping stderr.
+    wrapper = _validate_gateway_service_wrapper(_get_gateway_service_wrapper())
     prog_args_xml = "\n        ".join(
         f"<string>{part}</string>"
-        for part in _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
+        for part in _timestamped_stderr_gateway_command(
+            log_dir / "gateway.error.log", external_supervisor=True, wrapper=wrapper
+        )
     )
 
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist

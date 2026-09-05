@@ -1879,6 +1879,9 @@ DEFAULT_CONFIG = {
         # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
         # negative disables the timeout entirely (wait indefinitely).
         "platform_connect_timeout": 30,
+        # Optional executable that runs before supervised systemd/launchd
+        # gateway processes and receives the normal gateway command as argv.
+        "service_wrapper": "",
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
         # systemd/launchd revives the process instead of leaving a wedged-but-alive zombie.

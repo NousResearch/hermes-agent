@@ -714,9 +714,10 @@ export class GatewayClient extends EventEmitter {
   }
 
   private toError(raw: unknown): Error {
-    const err = raw as { message?: unknown } | null | undefined
+    const err = raw as { code?: unknown; message?: unknown } | null | undefined
+    const error = new Error(typeof err?.message === 'string' ? err.message : 'request failed')
 
-    return new Error(typeof err?.message === 'string' ? err.message : 'request failed')
+    return typeof err?.code === 'number' ? Object.assign(error, { code: err.code }) : error
   }
 
   private settle(p: Pending, err: Error | null, result: unknown) {

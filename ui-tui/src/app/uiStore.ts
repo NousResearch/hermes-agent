@@ -8,6 +8,7 @@ import { DEFAULT_THEME } from '../theme.js'
 import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
 
 const buildUiState = (): UiState => ({
+  handoffSessionId: null,
   battery: false,
   batteryStatus: null,
   bgTasks: new Set(),

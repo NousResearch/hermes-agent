@@ -139,6 +139,27 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('preserves a handoff preflight error code through the RPC transport', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws'
+    const gw = new GatewayClient()
+
+    try {
+      gw.start()
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      const request = gw.request('handoff.request', { session_id: 'session-test', platform: 'slack' })
+      const rejected = expect(request).rejects.toMatchObject({ code: 4025, message: 'platform not enabled' })
+      await vi.waitFor(() => expect(socket.sent).toHaveLength(1))
+      const frame = JSON.parse(socket.sent[0]!)
+      socket.message(
+        JSON.stringify({ id: frame.id, jsonrpc: '2.0', error: { code: 4025, message: 'platform not enabled' } })
+      )
+      await rejected
+    } finally {
+      gw.kill()
+    }
+  })
+
   it('waits for websocket open and resolves RPC requests', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()

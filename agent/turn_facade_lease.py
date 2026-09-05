@@ -281,10 +281,12 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        if waited:
+        handback = getattr(agent, "_reload_history_after_handoff", False)
+        if waited or handback:
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+            # AFTER admission. Explicit handback also reloads on immediate acquisition:
+            # its live source cache predates destination turns. Ordinary reuse stays cache-stable.
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id
@@ -293,6 +295,14 @@ def admit_durable_turn_lease(
                 agent.session_id, repair_alternation=True, include_row_ids=True
             )
         lease.build_threads()
+        if handback:
+            # A later turn-prologue failure recovers from this cache, not the
+            # facade's local history. Adopt before consuming the one-shot intent.
+            # Reloaded dicts already carry durable markers and row IDs; keep the
+            # flush cursor and pending user input under their existing policies.
+            with getattr(agent, "_session_persist_lock", None) or nullcontext():
+                agent._session_messages = admission.conversation_history
+                agent._reload_history_after_handoff = False
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.
         lease.release()

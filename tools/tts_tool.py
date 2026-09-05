@@ -418,14 +418,17 @@ def text_to_speech_tool(
     separate valid files and no over-limit artifact is ever returned."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    # Preserve paragraph breaks when using local TTS generators so they can insert silence.
+    _LOCAL_TTS_PROVIDERS = {"piper", "kittentts", "neutts"}
+    keep_paragraphs = provider in _LOCAL_TTS_PROVIDERS
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
         from tools.tts_text_normalize import prepare_spoken_text
-        text = prepare_spoken_text(text, max_chars=None)
+        text = prepare_spoken_text(text, max_chars=None, keep_paragraph_breaks=keep_paragraphs)
     except Exception:
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

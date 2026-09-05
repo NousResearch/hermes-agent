@@ -98,6 +98,24 @@ def _ram_bytes() -> tuple[int, int]:
                 if pages > 0:
                     avail = pages * page
             return total, avail
+        if sys.platform.startswith("linux"):
+            # _AVPHYS_PAGES (POSIX branch below) counts only FREE pages, so page cache and
+            # reclaimable slab read as "used" though the kernel reclaims them on demand: it
+            # measured 0.15 GiB against MemAvailable's 5.10 GiB of 7.76 GiB, i.e. the meter
+            # (ram_total - ram_available) said 98% used at 34% real use and the model budget
+            # lost ~5 GiB. MemAvailable answers what a new allocation can get — the question
+            # both callers ask. Falls through on a masked /proc rather than reporting zero.
+            with suppress(OSError, ValueError, IndexError):
+                fields = {}
+                with open("/proc/meminfo", encoding="utf-8") as fh:
+                    for line in fh:
+                        key, _, rest = line.partition(":")
+                        if key in ("MemTotal", "MemAvailable"):
+                            fields[key] = int(rest.split()[0]) * 1024
+                            if len(fields) == 2:
+                                break
+                if all(fields.get(k) for k in ("MemTotal", "MemAvailable")):
+                    return fields["MemTotal"], fields["MemAvailable"]
         # POSIX
         page = int(_stdout("getconf", "PAGE_SIZE") or 4096)
         total = int(_stdout("getconf", "_PHYS_PAGES") or 0) * page

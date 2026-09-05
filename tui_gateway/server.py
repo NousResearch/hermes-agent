@@ -2273,6 +2273,18 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
+    # Both inline TUI/Desktop sessions and the isolated compute host bind the
+    # session profile before entering here. Register against that profile's
+    # manager rather than the backend process's launch profile.
+    try:
+        from agent.shell_hooks import register_from_config as register_shell_hooks
+
+        register_shell_hooks(cfg, accept_hooks=False)
+    except Exception:
+        logger.warning(
+            "shell-hook registration failed for TUI/Desktop profile",
+            exc_info=True,
+        )
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     _pr = _load_provider_routing()

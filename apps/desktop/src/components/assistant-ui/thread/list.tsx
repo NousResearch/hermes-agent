@@ -31,6 +31,7 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+import { createRunStartAnchor } from './scroll-anchor'
 
 import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
 
@@ -644,12 +645,30 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => onThreadEditOpen(beginEditHold), [beginEditHold])
   useEffect(() => onThreadEditClose(endEditHold), [endEditHold])
   useEffect(() => () => endEditHold(), [endEditHold])
-  // New run → snap to the latest turn only when already near the bottom.
+  const runStartAnchorRef = useRef<ReturnType<typeof createRunStartAnchor> | null>(null)
+
+  useEffect(() => {
+    const anchor = createRunStartAnchor({ scrollToBottom, stopScroll })
+    runStartAnchorRef.current = anchor
+
+    return () => {
+      anchor.cancel()
+
+      if (runStartAnchorRef.current === anchor) {
+        runStartAnchorRef.current = null
+      }
+    }
+  }, [scrollToBottom, stopScroll])
+
+  // New run → reveal the new assistant turn once when already near the bottom,
+  // then release resize-follow so streamed token growth cannot pull the viewport
+  // away from what the user is reading. The jump button remains the explicit
+  // tail-follow path; readers in history are left in place.
   useAuiEvent('thread.runStart', () => {
     const el = scrollRef.current
 
     if (el && shouldSnapOnRunStart(el.scrollHeight - el.scrollTop - el.clientHeight)) {
-      scrollToBottom()
+      runStartAnchorRef.current?.anchor()
     }
   })
 

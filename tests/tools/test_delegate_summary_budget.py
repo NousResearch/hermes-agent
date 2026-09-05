@@ -88,3 +88,23 @@ def test_budget_uses_current_prompt_size_not_the_session_sum():
     fresh = _FakeParent(context_length=200_000, used_tokens=30_000, max_tokens=8_000)
     assert _parent_summary_char_budget(long_lived, 1) == _parent_summary_char_budget(fresh, 1)
     assert _parent_summary_char_budget(long_lived, 1) > _MIN_SUMMARY_CHARS
+
+
+def test_unknown_parent_usage_means_static_ceiling_not_zero_context():
+    """Independent-review witness: a parent with no usage yet was treated as 0 tokens used, so a 190K/200K
+    prompt got a 384K-char summary budget instead of ~4K."""
+    from types import SimpleNamespace
+    from tools.delegate_tool_results import _parent_summary_char_budget
+    parent = SimpleNamespace(context_compressor=SimpleNamespace(context_length=200_000, max_tokens=0),
+                             _last_turn_usage=None)
+    assert _parent_summary_char_budget(parent, 1) is None
+
+
+def test_moa_fold_does_not_inflate_the_parents_prompt_size():
+    """MoA folds advisor prompts into reported usage; the parent's context holds only the aggregator's."""
+    from types import SimpleNamespace
+    from tools.delegate_tool_results import _parent_summary_char_budget
+    cc = SimpleNamespace(context_length=200_000, max_tokens=0)
+    folded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 190_000}, _last_prompt_size_tokens=50_000)
+    unfolded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 50_000})
+    assert _parent_summary_char_budget(folded, 1) == _parent_summary_char_budget(unfolded, 1)

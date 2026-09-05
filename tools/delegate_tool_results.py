@@ -218,6 +218,20 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     footer_lines.append("─" * 37)
     return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines), spill_path
 
+def _parent_prompt_size_tokens(parent_agent) -> Optional[int]:
+    """The parent's current prompt size: the aggregator's own last ``prompt_tokens`` (pre-MoA-fold), else
+    the last provider usage. ``None`` when no request has completed yet: the caller then applies the
+    static ceiling only. Treating "no usage yet" as zero handed a 190K/200K parent a 384K-char budget."""
+    size = getattr(parent_agent, "_last_prompt_size_tokens", None)
+    if isinstance(size, (int, float)) and size > 0:
+        return int(size)
+    last_usage = getattr(parent_agent, "_last_turn_usage", None) or {}
+    used = last_usage.get("prompt_tokens") if isinstance(last_usage, dict) else None
+    if isinstance(used, (int, float)) and used > 0:
+        return int(used)
+    return None
+
+
 def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]:
     """Per-summary char budget from the parent's *remaining* context headroom (context length − the parent's
     current prompt size − the compressor's output reserve), a fraction of it split across the batch at ~4
@@ -233,10 +247,9 @@ def _parent_summary_char_budget(parent_agent, n_summaries: int) -> Optional[int]
         context_length = getattr(compressor, "context_length", None)
         if not isinstance(context_length, int) or context_length <= 0:
             return None
-        last_usage = getattr(parent_agent, "_last_turn_usage", None) or {}
-        used_tokens = last_usage.get("prompt_tokens") if isinstance(last_usage, dict) else None
-        if not isinstance(used_tokens, (int, float)) or used_tokens < 0:
-            used_tokens = 0
+        used_tokens = _parent_prompt_size_tokens(parent_agent)
+        if used_tokens is None:
+            return None  # no usage yet and nothing to estimate from: static ceiling only, never "zero context"
         headroom_tokens = context_length - int(used_tokens) - int(getattr(compressor, "max_tokens", 0) or 0)
         if headroom_tokens <= 0:
             return _MIN_SUMMARY_CHARS  # parent already over budget: floor only

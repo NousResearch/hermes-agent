@@ -90,16 +90,32 @@ const sessionScopeByRuntimeId = new Map<string, string>()
 // runtime whose event source already proved its owner can still route
 // session-scoped RPCs (approval.respond) when every durable binding
 // (tile / hint / row) is absent — while durable stored identity keeps
-// outranking it (#97511).
-const sessionOwnerByRuntimeId = new Map<string, SessionOwnerRoute>()
+// outranking it (#97511). A profile-only event (a pooled secondary with no
+// registry connection, createSecondary(profile, null)) proves only the bare
+// profile, not an exact route — recorded as that profile name, the same
+// owner shape a connection-tagged row without a connection stamp yields
+// (#103755).
+const sessionOwnerByRuntimeId = new Map<string, SessionOwnerRoute | string>()
 
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
-  if (event.session_id && event.connectionId) {
+  if (!event.session_id) {
+    return
+  }
+
+  if (event.connectionId) {
     sessionScopeByRuntimeId.set(event.session_id, registryBackendScopeKey(event.connectionId, event.profile))
     sessionOwnerByRuntimeId.set(event.session_id, {
       connectionId: event.connectionId,
       profile: String(event.profile ?? '').trim() || 'default'
     })
+
+    return
+  }
+
+  const profile = String(event.profile ?? '').trim()
+
+  if (profile) {
+    sessionOwnerByRuntimeId.set(event.session_id, profile)
   }
 }
 
@@ -989,10 +1005,12 @@ export function openTileGatewayScopes(): Set<string> {
  * Last rung: the owner recorded from the inbound runtime event itself
  * (sessionOwnerByRuntimeId, #97511) — an orphan runtime whose tile/hint/row
  * binding is absent or stale still routes through the exact
- * (connectionId, profile) its events proved, while every durable rung above
- * keeps outranking it, so a stored-id collision never inherits a stale
- * runtime ledger entry. Untagged events record nothing, so unknown owners in
- * multi-profile topology still fail closed.
+ * (connectionId, profile) its events proved, or the bare profile a
+ * profile-only secondary event proved (#103755), while every durable rung
+ * above keeps outranking it, so a stored-id collision never inherits a stale
+ * runtime ledger entry. Fully untagged events (no profile at all) record
+ * nothing, so genuinely unknown owners in multi-profile topology still fail
+ * closed.
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */

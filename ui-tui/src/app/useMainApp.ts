@@ -972,6 +972,9 @@ export function useMainApp(gw: GatewayClient) {
           resumeById: session.resumeById,
           setSessionStartedAt
         },
+        turn: {
+          interrupt: sid => turnController.interruptTurn({ appendMessage, gw, sid, sys })
+        },
         slashFlightRef,
         transcript: { page, panel, send, setHistoryItems, sys, trimLastExchange: session.trimLastExchange },
         voice: { setVoiceEnabled, setVoiceRecordKey, setVoiceTts }

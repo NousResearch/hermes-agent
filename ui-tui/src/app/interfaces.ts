@@ -545,6 +545,9 @@ export interface SlashHandlerContext {
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>
   }
+  turn: {
+    interrupt: (sid: string) => void
+  }
   slashFlightRef: MutableRefObject<number>
   transcript: {
     page: (text: string, title?: string) => void

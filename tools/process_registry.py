@@ -333,7 +333,18 @@ def _checkpoint_lock():
     handle = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(path, "a+b")
+        if _IS_WINDOWS:
+            # msvcrt.locking requires a byte to exist at the lock range. Seed a
+            # fresh file before opening it; a concurrent creator may win the race,
+            # in which case this write is harmless and the existing byte remains.
+            try:
+                if not path.exists() or path.stat().st_size == 0:
+                    path.write_bytes(b" ")
+            except OSError:
+                pass
+            handle = open(path, "r+b")
+        else:
+            handle = open(path, "a+b")
         _flock(handle, lock=True)
     except Exception as exc:
         logger.warning("Process checkpoint lock unavailable: %s", exc)

@@ -315,6 +315,26 @@ class TestMultiWriterCheckpoint:
         with patch.object(process_registry_module, "_flock", side_effect=OSError("no locks available")):
             assert registry.sync_from_checkpoint() == 1
 
+    def test_windows_lock_seeds_a_fresh_lock_file(self, tmp_path, monkeypatch):
+        """Windows msvcrt locking needs a byte at the locked range."""
+        checkpoint = tmp_path / "processes.json"
+        lock_path = checkpoint.with_name(checkpoint.name + ".lock")
+        monkeypatch.setattr(process_registry_module, "CHECKPOINT_PATH", checkpoint)
+        monkeypatch.setattr(process_registry_module, "_IS_WINDOWS", True)
+        calls = []
+
+        def fake_flock(handle, *, lock):
+            calls.append(lock)
+            assert lock_path.stat().st_size >= 1
+
+        monkeypatch.setattr(process_registry_module, "_flock", fake_flock)
+
+        with process_registry_module._checkpoint_lock() as locked:
+            assert locked
+
+        assert calls == [True, False]
+        assert lock_path.read_bytes() == b" "
+
     def test_startup_recovery_leaves_a_live_owners_rows_alone(self, checkpoint):
         gateway_b = ProcessRegistry()
         _track(gateway_b, "proc_b")

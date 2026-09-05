@@ -3597,19 +3597,24 @@ def _insert_decomposed_child(
     the dispatcher only ever sees a coherent graph); returns its id.
 
     Workspace: per-child override wins, else inherit the root's kind. Path
-    inherits only when kinds match (a 'dir' child must not point at the
-    root's worktree) and NEVER for worktrees — siblings dispatch concurrently
-    and one shared checkout would put them all on the first sibling's branch
-    with no lock; leaving it unset makes dispatch materialize a fresh
-    ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
+    NEVER inherits for scratch or worktree children — both are per-task
+    transient kinds, siblings dispatch concurrently, and one shared
+    checkout/dir would silently cross-contaminate sibling work (scratch
+    inherits the root's already-claimed path verbatim when kinds match, since
+    a claimed root has a persisted workspace_path). Leaving it unset makes
+    dispatch materialize a fresh ``<workspaces_root>/<child-id>`` or
+    ``<repo>/.worktrees/<child-id>`` per child. Only 'dir' — an explicitly
+    shared persistent checkout — inherits the root's path when kinds match.
     """
     root_ws_kind = root_row["workspace_kind"] or "scratch"
     child_ws_kind = child.get("workspace_kind") or root_ws_kind
     if child.get("workspace_path"):
         child_ws_path = child.get("workspace_path")
-    elif child_ws_kind == "worktree":
+    elif child_ws_kind in ("worktree", "scratch"):
         child_ws_path = None
     elif child_ws_kind == root_ws_kind:
+        # Only persistent kinds (dir) reach this branch: the shared checkout
+        # is the point of 'dir'.
         child_ws_path = root_row["workspace_path"]
     else:
         child_ws_path = None

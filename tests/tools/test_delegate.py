@@ -831,6 +831,68 @@ class TestDelegateFailedChildStatus(unittest.TestCase):
         self.assertEqual(entry["exit_reason"], "error")
         self.assertFalse(entry["truncated"])
 
+    def test_client_error_summary_without_error_field_marks_failed(self):
+        """Regression (#82599): older child result shapes can surface a
+        non-retryable provider/auth failure only as final_response while leaving
+        completed=False and omitting structured failed/error fields. A non-empty
+        HTTP error summary must not be mistaken for successful truncated work."""
+        entry = self._delegate_single(
+            {
+                "final_response": "HTTP 401: invalid x-api-key",
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "error")
+        self.assertFalse(entry["truncated"])
+        self.assertIn("HTTP 401", entry["error"])
+
+    def test_batch_client_error_summary_without_error_field_marks_failed(self):
+        """The public batch JSON must carry the same failure contract; callers
+        and UI icons read the serialized status/exit_reason, not private child
+        fields."""
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            failed_child = MagicMock()
+            failed_child.model = "claude-sonnet-4-6"
+            failed_child.session_prompt_tokens = 0
+            failed_child.session_completion_tokens = 0
+            failed_child.run_conversation.return_value = {
+                "final_response": "HTTP 401: token expired or incorrect",
+                "completed": False,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            ok_child = MagicMock()
+            ok_child.model = "claude-sonnet-4-6"
+            ok_child.session_prompt_tokens = 0
+            ok_child.session_completion_tokens = 0
+            ok_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.side_effect = [failed_child, ok_child]
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "will fail auth"}, {"goal": "will finish"}],
+                    parent_agent=parent,
+                )
+            )
+
+        by_index = {entry["task_index"]: entry for entry in result["results"]}
+        self.assertEqual(by_index[0]["status"], "failed")
+        self.assertEqual(by_index[0]["exit_reason"], "error")
+        self.assertFalse(by_index[0]["truncated"])
+        self.assertIn("HTTP 401", by_index[0]["error"])
+        self.assertEqual(by_index[1]["status"], "completed")
+
     def test_empty_error_with_summary_is_completed(self):
         """REGRESSION PIN: an empty-string ``error`` field must NOT be treated as
         a failure. ``result.get('error')`` returns ``''`` which is falsy, so the

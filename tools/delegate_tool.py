@@ -240,8 +240,9 @@ def _run_single_child(
 
     Contract, derived from the child's structured completion fields:
       status      ∈ {completed, interrupted, failed} — a structured failure
-                    (failed=True / non-empty error) or an invalid terminal state
-                    is "failed" even when a summary exists.
+                    (failed=True / non-empty error), a provider-error summary,
+                    or an invalid terminal state is "failed" even when a
+                    summary exists.
       exit_reason ∈ {completed, max_iterations, interrupted, error} —
                     "max_iterations" only for genuine budget exhaustion
                     (completed=False with no failure fields), never for errors.

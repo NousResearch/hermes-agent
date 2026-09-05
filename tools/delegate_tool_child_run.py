@@ -30,6 +30,38 @@ def _num(value: Any, default: int = 0) -> int:
 def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
+def _looks_like_child_error_summary(summary: str) -> bool:
+    """Detect legacy child result shapes that put the provider/client error in
+    ``final_response`` but omitted the newer ``failed``/``error`` fields.
+
+    Keep this intentionally narrower than a generic substring search so genuine
+    max-iteration summaries remain completed+truncated.
+    """
+    if _looks_like_error_output(summary):
+        return True
+    lines = (summary or "").strip().splitlines()
+    first = lines[0].strip().lower() if lines else ""
+    if first.startswith("http "):
+        parts = first.split(maxsplit=2)
+        status_token = parts[1].rstrip(":,") if len(parts) > 1 else ""
+        if status_token.isdigit() and 400 <= int(status_token) <= 599:
+            return True
+    return any(
+        marker in first
+        for marker in (
+            "authenticationerror",
+            "authorizationerror",
+            "badrequesterror",
+            "permissiondeniederror",
+            "rate limit",
+            "token expired",
+            "unauthorized",
+            "forbidden",
+            "invalid api key",
+            "invalid x-api-key",
+        )
+    )
+
 def _fabricated_entry(idx: int, status: str, error: str, child: Any, duration: float = 0) -> Dict[str, Any]:
     """Result entry for a child that raised, never finished, or was abandoned."""
     return {
@@ -471,7 +503,9 @@ def _build_result_entry(
     usable_summary = bool(summary) and summary.strip() != "(empty)"
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
-    elif result.get("failed") or result.get("error"):
+    elif result.get("failed") or result.get("error") or (
+        not result.get("completed", False) and _looks_like_child_error_summary(summary)
+    ):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
         status, exit_reason = "failed", "error"
@@ -518,7 +552,7 @@ def _build_result_entry(
                 "Final answer does not satisfy the declared output_schema" + (" (after 1 retry)." if schema.retries else ".")
             )
         else:
-            entry["error"] = result.get("error", "Subagent did not produce a response.")
+            entry["error"] = result.get("error") or summary or "Subagent did not produce a response."
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")

@@ -111,6 +111,199 @@ class TestRunBackgroundTask:
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_matrix_task_registers_isolated_interactive_approval(self, monkeypatch):
+        """A dangerous background action must emit a card in its source room."""
+        from gateway import run as gateway_run
+        from tools import approval
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        approvals = []
+        typed_resolution_counts = []
+        typed_session_key = ""
+
+        class MatrixAdapter:
+            typed_command_prefix = "!"
+
+            async def send_exec_approval(self, **kwargs):
+                approvals.append(kwargs)
+                count = approval.resolve_gateway_approval(
+                    typed_session_key,
+                    "once",
+                    approval_id=kwargs["metadata"]["approval_id"],
+                )
+                typed_resolution_counts.append(count)
+                if not count:
+                    approval.resolve_gateway_approval(
+                        kwargs["session_key"],
+                        "once",
+                        approval_id=kwargs["metadata"]["approval_id"],
+                    )
+                return MagicMock(success=True, error=None)
+
+            async def send(self, **_kwargs):
+                return MagicMock(success=True, error=None)
+
+            @staticmethod
+            def extract_media(response):
+                return [], response
+
+            @staticmethod
+            def extract_images(response):
+                return [], response
+
+        adapter = MatrixAdapter()
+        runner.adapters[Platform.MATRIX] = adapter
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            user_id="@user:example.org",
+            chat_id="!room:example.org",
+            user_name="user-example",
+            chat_type="group",
+            thread_id="$thread",
+        )
+        task_id = "bg_approval_test"
+        typed_session_key = runner._session_key_for_source(source)
+        observed = {}
+
+        monkeypatch.setattr(approval, "is_approved", lambda *_args: False)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: True)
+
+        def run_conversation(**_kwargs):
+            observed["session_key"] = approval.get_current_session_key(default="")
+            observed["decision"] = approval.check_dangerous_command(
+                "rm -rf -- /tmp/probe",
+                env_type="local",
+                has_host_access=True,
+            )
+            return {"final_response": "approved", "messages": []}
+
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.side_effect = run_conversation
+        mock_agent.shutdown_memory_provider = MagicMock()
+        mock_agent.close = MagicMock()
+
+        try:
+            with patch("run_agent.AIAgent", return_value=mock_agent):
+                await runner._run_background_task(
+                    "delete the probe",
+                    source,
+                    task_id,
+                    event_message_id="$request",
+                )
+        finally:
+            approval.clear_session(task_id)
+
+        assert observed["session_key"] == task_id
+        assert observed["decision"]["approved"] is True
+        assert typed_resolution_counts == [1]
+        assert len(approvals) == 1
+        assert approvals[0]["chat_id"] == source.chat_id
+        assert approvals[0]["command"] == "rm -rf -- /tmp/probe"
+        assert approvals[0]["session_key"] == task_id
+        assert approvals[0]["metadata"]["approval_id"]
+        assert approvals[0]["metadata"]["requester_user_id"] == source.user_id
+        assert approvals[0]["metadata"]["thread_id"] == source.thread_id
+        with approval._lock:
+            assert task_id not in approval._gateway_notify_cbs
+            assert task_id not in approval._gateway_command_session_keys
+
+    @pytest.mark.asyncio
+    async def test_telegram_dm_topic_completion_preserves_reply_anchor_metadata(self, monkeypatch):
+        """Background completion metadata must let Telegram send thread id plus reply id."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            return_value={"final_response": "done", "messages": []}
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+
+        await runner._run_background_task(
+            "say hello",
+            source,
+            "bg_test",
+            event_message_id="463",
+        )
+
+        mock_adapter.send.assert_called_once()
+        assert mock_adapter.send.call_args.kwargs["metadata"] == {
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "direct_messages_topic_id": "20197",
+            "telegram_reply_to_message_id": "463",
+        }
+
+    @pytest.mark.asyncio
+    async def test_agent_cleanup_runs_when_background_agent_raises(self):
+        """Temporary background agents must be cleaned up on error paths too."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.side_effect = RuntimeError("boom")
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # /bg in help and known_commands
 # ---------------------------------------------------------------------------

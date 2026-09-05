@@ -64,6 +64,7 @@ class TestFailoverReason:
             "image_corrupt",
             "model_not_found", "format_error",
             "invalid_encrypted_content",
+            "codex_reasoning_replay_rejected",
             "multimodal_tool_content_unsupported",
             "reasoning_mandatory",
             "provider_policy_blocked",
@@ -1596,3 +1597,67 @@ class TestServerInjectedParameterRejection:
         assert result.retryable is False
 
 
+
+
+
+def test_openai_codex_masked_invalid_prompt_is_replay_rejection_candidate():
+    e = MockAPIError(
+        "Error code: 400 - Request blocked.",
+        status_code=400,
+        body={"error": {
+            "message": "Request blocked.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_prompt",
+        }},
+    )
+    result = classify_api_error(e, provider="openai-codex", model="gpt-5.6-terra")
+    assert result.reason == FailoverReason.codex_reasoning_replay_rejected
+    assert result.retryable is False
+    assert result.should_fallback is False
+
+
+def test_openai_codex_direct_statusless_invalid_prompt_is_replay_rejection_candidate():
+    e = MockAPIError(
+        "Request blocked.",
+        body={
+            "message": "Request blocked.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_prompt",
+        },
+    )
+    result = classify_api_error(e, provider="openai-codex", model="gpt-5.6-terra")
+    assert result.reason == FailoverReason.codex_reasoning_replay_rejected
+
+
+def test_openai_codex_masked_invalid_prompt_near_miss_stays_format_error(caplog):
+    e = MockAPIError(
+        "Error code: 400 - Request blocked",
+        status_code=400,
+        body={"error": {
+            "message": "Request blocked",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_prompt",
+        }},
+    )
+    with caplog.at_level("DEBUG", logger="agent.error_classifier"):
+        result = classify_api_error(e, provider="openai-codex", model="gpt-5.6-terra")
+    assert result.reason == FailoverReason.format_error
+    assert "did not match the masked replay signature" in caplog.text
+
+
+def test_masked_invalid_prompt_other_provider_stays_format_error():
+    e = MockAPIError(
+        "Error code: 400 - Request blocked.",
+        status_code=400,
+        body={"error": {
+            "message": "Request blocked.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_prompt",
+        }},
+    )
+    result = classify_api_error(e, provider="openai", model="gpt-5.6-terra")
+    assert result.reason == FailoverReason.format_error

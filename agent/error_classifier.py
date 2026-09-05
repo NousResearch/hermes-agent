@@ -42,6 +42,7 @@ class FailoverReason(enum.Enum):
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    codex_reasoning_replay_rejected = "codex_reasoning_replay_rejected"  # ChatGPT Codex masked a replay rejection as invalid_prompt
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
@@ -486,6 +487,30 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
         return _V_CONTENT_BLOCKED
+    # ChatGPT Codex OAuth can mask a rejected encrypted-reasoning replay behind
+    # ``invalid_prompt: Request blocked.``. Keep this signature intentionally narrow:
+    # provider + structured code + exact body shape + status None/400. Recovery is
+    # still gated on cached codex_reasoning_items in turn_recovery.py.
+    if c.provider_slug == "openai-codex" and c.code == "invalid_prompt":
+        err_obj = _error_obj(c.body)
+        if not err_obj and isinstance(c.body, dict):
+            err_obj = c.body
+        codex_message = str(err_obj.get("message") or "").strip().lower()
+        matches_masked_replay = (
+            c.status_code in {None, 400}
+            and codex_message == "request blocked."
+            and err_obj.get("type") == "invalid_request_error"
+            and "param" in err_obj
+            and err_obj.get("param") is None
+        )
+        if matches_masked_replay:
+            return _v(_R.codex_reasoning_replay_rejected, retryable=False, should_fallback=False)
+        logger.debug(
+            "OpenAI Codex invalid_prompt did not match the masked replay signature: "
+            "status=%r message=%r type=%r param_present=%s param_is_null=%s",
+            c.status_code, codex_message[:160], err_obj.get("type"),
+            "param" in err_obj, err_obj.get("param") is None,
+        )
     # Anthropic thinking-block 400s (signature mismatch after transcript
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):

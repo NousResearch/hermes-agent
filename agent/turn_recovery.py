@@ -377,7 +377,10 @@ def _recover_format_errors(
     # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob:
     # disable replay for the session, strip cached items, retry once.
     if (
-        classified.reason == FailoverReason.invalid_encrypted_content
+        classified.reason in {
+            FailoverReason.invalid_encrypted_content,
+            FailoverReason.codex_reasoning_replay_rejected,
+        }
         and not _retry.invalid_encrypted_content_retry_attempted
         and agent.api_mode == "codex_responses"
         and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
@@ -402,6 +405,18 @@ def _recover_format_errors(
             agent.log_prefix, replay_stats["items"], replay_stats["messages"],
         )
         return True
+
+    if (
+        classified.reason == FailoverReason.codex_reasoning_replay_rejected
+        and not _retry.invalid_encrypted_content_retry_attempted
+        and agent.api_mode == "codex_responses"
+        and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+    ):
+        logger.debug(
+            "%sCodex masked replay rejection matched, but no cached "
+            "codex_reasoning_items were present; replay-strip recovery is a no-op",
+            agent.log_prefix,
+        )
 
     # Structured 400 naming ``context_management``: disable native compaction for the
     # session, retry once; local compression takes over.

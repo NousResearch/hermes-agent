@@ -2,7 +2,9 @@ import sys
 import types
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIError as OpenAIAPIError
 
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
@@ -2624,3 +2626,53 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+
+
+def test_openai_codex_masked_replay_rejection_strips_reasoning_and_retries(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    request_payloads = []
+
+    live_error = OpenAIAPIError(
+        message="Request blocked.",
+        request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"),
+        body={
+            "message": "Request blocked.",
+            "type": "invalid_request_error",
+            "param": None,
+            "code": "invalid_prompt",
+        },
+    )
+    assert not hasattr(live_error, "status_code")
+    responses = [live_error, _codex_message_response("Recovered without replay.")]
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        current = responses.pop(0)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    history = [{
+        "role": "assistant",
+        "content": "",
+        "finish_reason": "incomplete",
+        "codex_reasoning_items": [
+            {"type": "reasoning", "id": "rs_001", "encrypted_content": "enc_bad", "summary": []},
+        ],
+    }]
+
+    result = agent.run_conversation("continue", conversation_history=history)
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered without replay."
+    assert len(request_payloads) == 2
+    assert any(item.get("type") == "reasoning" for item in request_payloads[0]["input"])
+    assert not any(item.get("type") == "reasoning" for item in request_payloads[1]["input"])
+    assert request_payloads[0].get("include") == ["reasoning.encrypted_content"]
+    assert request_payloads[1].get("include") == []
+    assert result["messages"][0].get("codex_reasoning_items") is None
+    assert agent._codex_reasoning_replay_enabled is False

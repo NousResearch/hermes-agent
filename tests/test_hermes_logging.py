@@ -142,8 +142,62 @@ class TestSetupLogging:
             hermes_home / "logs" / "agent.log"
         ).read_text()
 
+    def test_profile_routing_falls_back_when_profile_home_deleted(
+        self, hermes_home, tmp_path, capsys
+    ):
+        """A profile deleted underneath a long-lived dashboard must not loop.
 
+        ``_profile_homes`` is a startup snapshot, so a ``hermes profile delete``
+        leaves the routing set naming a home whose directory no longer exists.
+        Records for that home must fall back to the default home instead of
+        retrying (and stderr-spamming) the vanished logs/ path on every record
+        (#103777).
+        """
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
+        profile_home = tmp_path / "profile-deleted"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, profile_home]
+        ) is True
+
+        logger = logging.getLogger("cron.scheduler.profile-routing-deleted-test")
+        # The default home's agent.log must exist before the fallback assertion
+        # can mean anything (lazy-opening handlers may not have created it yet).
+        logger.info("routing fallback default-home probe record")
+        hermes_logging.flush_log_queue()
+        default_log = hermes_home / "logs" / "agent.log"
+        assert "default-home probe record" in default_log.read_text()
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("profile-routed record before deletion")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+        assert "record before deletion" in (
+            profile_home / "logs" / "agent.log"
+        ).read_text()
+
+        # `hermes profile delete` removes the home while the dashboard process
+        # (and its static routing snapshot) keeps running.
+        import shutil
+
+        shutil.rmtree(profile_home)
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("profile-routed record after deletion")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert "record after deletion" in default_log.read_text()
+        # The deleted profile's directory must not be resurrected on disk.
+        assert not profile_home.exists()
+        # No "--- Logging error ---" FileNotFoundError loop on stderr.
+        assert "FileNotFoundError" not in capsys.readouterr().err
 
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""

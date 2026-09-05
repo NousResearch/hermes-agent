@@ -401,6 +401,40 @@ class TestResolveProviderClientMainRuntimeCustom:
         assert "my-gateway.example.com" in str(client.base_url)
         assert client.api_key == "***"
 
+    def test_custom_provider_main_runtime_preserves_responses_mode_for_compression(self, monkeypatch):
+        """An automatic compression override of ``provider: custom`` must retain
+        the live main runtime's wire mode.  The named Tianji provider resolves
+        to a bare ``custom`` runtime, so dropping ``api_mode`` here silently
+        sends the summary to ``/chat/completions`` instead of ``/responses``.
+        """
+        from agent.auxiliary_client import CodexAuxiliaryClient, resolve_provider_client
+
+        real_client = MagicMock()
+        real_client.api_key = "***"
+        real_client.base_url = "https://tianji.example.test/v1"
+        monkeypatch.setattr(
+            "agent.auxiliary_client._create_openai_client",
+            lambda **_kwargs: real_client,
+        )
+
+        client, model = resolve_provider_client(
+            "custom",
+            model="gpt-5.6-luna",
+            task="compression",
+            main_runtime={
+                "provider": "custom",
+                "model": "gpt-5.6-luna",
+                "base_url": "https://tianji.example.test/v1",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            },
+        )
+
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.6-luna"
+        assert client._real_client is real_client
+
+
     def test_custom_provider_main_runtime_no_credentials_falls_through(self, tmp_path, monkeypatch):
         """When main_runtime has no base_url or no api_key, the existing
         _try_custom_endpoint / _resolve_api_key_provider fallback chain is

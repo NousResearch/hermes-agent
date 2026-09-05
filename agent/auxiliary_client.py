@@ -4481,6 +4481,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     # /anthropic base while the plain OpenAI client uses the /v1-rewritten custom_base (never
     # /anthropic/chat/completions). Empty means "use custom_base".
     custom_base = custom_key = wrap_base = ""
+    transport_req = req
     if req.explicit_base_url:
         custom_base = _to_openai_base_url(req.explicit_base_url).strip()
         if req.api_mode == "anthropic_messages":
@@ -4503,6 +4504,12 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         _main_key = str(main_runtime.get("api_key") or "").strip()
         if _main_base and _main_key:
             custom_base, custom_key = _main_base, _main_key
+            if not req.api_mode:
+                runtime_api_mode = str(main_runtime.get("api_mode") or "").strip()
+                if runtime_api_mode:
+                    # Named custom runtimes are represented as bare ``custom`` here;
+                    # keep their resolved wire protocol for task-specific overrides.
+                    transport_req = req._replace(api_mode=runtime_api_mode)
     if custom_base and custom_key:
         final_model = _normalize_resolved_model(
             model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini", provider,
@@ -4515,7 +4522,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
         if _custom_headers:
             extra["default_headers"] = _custom_headers
         client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **extra)
-        client = _wrap_transport(req, client, final_model, wrap_base or custom_base, custom_key)
+        client = _wrap_transport(transport_req, client, final_model, wrap_base or custom_base, custom_key)
         return _route_client(req, client, final_model)
     # Try custom first, then API-key providers (Codex excluded here:
     # falling through to Codex with no model is a stale-constant trap).

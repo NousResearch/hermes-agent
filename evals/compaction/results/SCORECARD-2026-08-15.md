@@ -4,8 +4,8 @@ Four real 500K-token lineage transcripts from state.db (sweep campaign, GUI
 desktop work, PR-merge campaign, ACP/PR review), 15-question recall exam
 each. "recovery" = one session_search round-trip (FTS5+BM25 sim) against the
 archived region. Lean build includes: 25K clamped tail, tail tool demotion,
-chunked digests (noise-filtered, pristine tool contents), mechanical anchor
-index, verbatim user messages, recovery footer, upgraded summarizer prompt.
+single-call detailed session log, mechanical anchor index, verbatim user
+messages, recovery footer, upgraded summarizer prompt.
 
 > **Historical note (2026-08-30):** the "chunked digests" arm described here
 > was later replaced — the detailed session log is now produced by the SAME
@@ -352,6 +352,7 @@ mining, per-epoch anchor windows) before default flip.
   sweep/gui current-policy rows predate a question-bank regeneration
   (prmerge/acp are same-bank across all arms); the recovery sim conservatively
   approximates production session_search (same engine, no windowing).
-- Cost shape: lean compaction = ~25 aux-model digest calls (~2min, one-time
-  per compaction) vs 1 call today; every post-compaction turn is ~110K input
-  tokens cheaper. Break-even ~1 turn.
+- Cost shape: lean compaction makes exactly ONE auxiliary LLM request
+  (the main summary call which also produces the detailed session log);
+  every post-compaction turn is ~110K input tokens cheaper. Break-even
+  ~1 turn.

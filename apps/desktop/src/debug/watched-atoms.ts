@@ -6,6 +6,8 @@
 // question directly: while an agent is typing, what is being published, and
 // who re-renders because of it?
 
+import { $cronJobs } from '@/store/cron'
+import { $petInfo } from '@/store/pet'
 import { $projects, $projectTree } from '@/store/projects'
 import {
   $activeSessionId,
@@ -60,10 +62,12 @@ const DERIVED = {
  *  while an agent is typing, that is the bug. */
 const SIDEBAR = {
   $activeSessionId,
+  $cronJobs,
   $cronSessions,
   $currentCwd,
   $gatewayState,
   $messagingSessions,
+  $petInfo,
   $projects,
   $projectTree,
   $selectedStoredSessionId,

@@ -450,7 +450,7 @@ def test_unlink_dispatch_removes_edge_and_recomputes_child(worker_env):
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
-        parent = kb.create_task(conn, title="parent", assignee="x")
+        parent = worker_env
         child = kb.create_task(conn, title="child", assignee="x", parents=[parent])
     finally:
         conn.close()
@@ -470,16 +470,46 @@ def test_unlink_dispatch_removes_edge_and_recomputes_child(worker_env):
 
 
 def test_unlink_missing_edge_and_invalid_args_are_structured(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        child = kb.create_task(conn, title="unlinked child", assignee="x")
+    finally:
+        conn.close()
     from model_tools import handle_function_call
 
     out = json.loads(handle_function_call("kanban_unlink", {
-        "parent_id": "missing-parent", "child_id": "missing-child",
+        "parent_id": worker_env, "child_id": child,
     }))
-    assert out == {
-        "ok": True, "parent_id": "missing-parent", "child_id": "missing-child", "removed": False,
-    }
+    assert out == {"ok": True, "parent_id": worker_env, "child_id": child, "removed": False}
+    unknown = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": worker_env, "child_id": "missing-child",
+    }))
+    assert "unknown task" in unknown["error"]
     error = json.loads(handle_function_call("kanban_unlink", {"parent_id": worker_env}))
     assert "both parent_id and child_id are required" in error["error"]
+
+
+def test_unlink_validates_tasks_and_worker_scope(worker_env):
+    from model_tools import handle_function_call
+    unknown = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": worker_env, "child_id": "missing-child",
+    }))
+    assert "unknown task" in unknown["error"]
+
+    scoped = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": "other-parent", "child_id": "other-child",
+    }))
+    assert "scoped to task" in scoped["error"]
+
+
+def test_unlink_rejects_self_edge(worker_env):
+    from model_tools import handle_function_call
+    out = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": worker_env, "child_id": worker_env,
+    }))
+    assert "must differ" in out["error"]
 
 
 def test_unlink_refuses_delegated_children(monkeypatch, worker_env):

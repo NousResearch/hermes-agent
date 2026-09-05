@@ -947,12 +947,36 @@ def _handle_link(args: dict, **kw) -> str:
 
 @_kanban_handler("kanban_unlink")
 def _handle_unlink(args: dict, **kw) -> str:
-    """Remove a parent→child dependency edge, if present."""
+    """Remove one edge, retaining worker support only for an owned endpoint.
+
+    Dispatcher-owned workers need this to break dependency deadlocks, but a
+    delegated child shares its parent's environment and is never a Kanban
+    owner.  Orchestrators may route any board; workers may not cross their
+    dispatcher-pinned board.
+    """
     _reject_delegated_child_mutation("kanban_unlink")
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
+    parent_id, child_id = str(parent_id), str(child_id)
+    _check(parent_id != child_id, "kanban_unlink: parent_id and child_id must differ")
+    env_task = os.environ.get("HERMES_KANBAN_TASK")
+    if env_task:
+        _check(env_task in (parent_id, child_id),
+               f"worker is scoped to task {env_task}; refusing to mutate this edge")
+        pinned_board = os.environ.get("HERMES_KANBAN_BOARD")
+        requested_board = args.get("board")
+        _check(not requested_board or not pinned_board or requested_board == pinned_board,
+               f"worker is scoped to board {pinned_board}; refusing cross-board mutation")
+    board = args.get("board")
+    from hermes_cli import kanban_db as kb
+    if board is not None:
+        _check(kb.board_exists(board), f"kanban_unlink: board {board!r} does not exist")
     with _board(args.get("board")) as (kb, conn):
+        _check(kb.get_task(conn, parent_id) is not None,
+               f"kanban_unlink: unknown task {parent_id}")
+        _check(kb.get_task(conn, child_id) is not None,
+               f"kanban_unlink: unknown task {child_id}")
         removed = kb.unlink_tasks(conn, parent_id=parent_id, child_id=child_id)
         return _ok(parent_id=parent_id, child_id=child_id, removed=removed)
 
@@ -960,6 +984,8 @@ def _handle_unlink(args: dict, **kw) -> str:
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
+# kanban_unlink remains available to dispatcher-owned workers, but its handler
+# limits them to an owned endpoint and their pinned board.
 _ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),

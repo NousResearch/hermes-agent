@@ -861,6 +861,14 @@ SKILL_MANAGE_SCHEMA = {
                         "file_content": {
                             "type": "string",
                             "description": "Content for write_file."
+                        },
+                        "absorbed_into": {
+                            "type": "string",
+                            "description": (
+                                "Delete only: name of the umbrella skill that "
+                                "absorbs this skill's content. Required for "
+                                "curator consolidation deletes."
+                            )
                         }
                     },
                     "required": ["name", "action"]

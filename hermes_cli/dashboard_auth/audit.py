@@ -48,6 +48,11 @@ def _resolve_log_path() -> Path:
     return get_hermes_home() / "logs" / "dashboard-auth.log"
 
 
+def resolve_log_path() -> Path:
+    """Public path to the dashboard-auth audit log (same resolution as writers use)."""
+    return _resolve_log_path()
+
+
 def audit_log(event: AuditEvent, **fields: Any) -> None:
     """Append one event; token-like fields dropped, log dir created. Write failures are logged at
     WARNING but never raise — auth must not fail because the audit logger broke."""

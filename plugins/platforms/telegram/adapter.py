@@ -829,11 +829,27 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name, thread_id=None, message_id=str(message_id))
 
     def _telegram_auth_env_configured(self) -> bool:
-        """Return True when Telegram auth env vars make an early decision safe."""
-        keys = (
-            "TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS",
-            "TELEGRAM_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS")
-        return any(_scoped_gate_env(key).strip() for key in keys)
+        """Return True when Telegram auth env vars make an early decision safe.
+
+        Allowlist keys carry identities/chats, so any non-empty value counts as
+        configured. The ``*_ALLOW_ALL_USERS`` toggles are booleans, so they must
+        be parsed as such — an explicit ``false`` (a common ``.env``/template
+        default) means *not* configured, matching the boolean parse at
+        ``_is_user_authorized`` and the Discord adapter. Treating a literal
+        ``false`` as "configured" would route unknown DMs through the runner's
+        allowlist check and drop them before the pairing flow could run (#68794).
+        """
+        allowlist_keys = (
+            "TELEGRAM_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "TELEGRAM_GROUP_ALLOWED_CHATS",
+            "GATEWAY_ALLOWED_USERS",
+        )
+        allow_all_keys = ("TELEGRAM_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
+        truthy = {"true", "1", "yes"}
+        return any(_scoped_gate_env(key).strip() for key in allowlist_keys) or any(
+            _scoped_gate_env(key).strip().lower() in truthy for key in allow_all_keys
+        )
 
     def _should_pass_unauthorized_dm_for_pairing(self, source) -> bool:
         """True when an unauthorized DM must still reach gateway pairing (``unauthorized_dm_behavior``

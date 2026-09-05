@@ -12,18 +12,19 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from hermes_state import SessionDB
-from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
+from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION, USAGE_EVENTS_COVERAGE_START_KEY
 from hermes_state_repair import _db_opens_cleanly
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
 _CANONICAL_TABLES = (
-    "system_prompts", "sessions", "messages", "session_model_usage", "compression_locks", "gateway_routing",
+    "system_prompts", "sessions", "messages", "session_model_usage", "session_model_usage_events", "compression_locks", "gateway_routing",
     "async_delegations",
 )
 _TOPIC_TABLES = ("telegram_dm_topic_mode", "telegram_dm_topic_bindings")
@@ -716,7 +717,7 @@ def _reconcile(destination: sqlite3.Connection, table: str, where: str, mutation
     return count
 
 
-_DEPENDENT_TABLES = ("messages", "session_model_usage", "compression_locks", "telegram_dm_topic_bindings")
+_DEPENDENT_TABLES = ("messages", "session_model_usage", "session_model_usage_events", "compression_locks", "telegram_dm_topic_bindings")
 _RELINK_COUNTERS = ("session_prompt_refs_cleared", "sessions_parent_cleared")
 
 
@@ -907,6 +908,48 @@ def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any
     return result
 
 
+def _invalidate_incomplete_usage_coverage(
+    destination: sqlite3.Connection,
+    copy_report: dict[str, dict[str, Any]],
+    orphan_cleanup: Optional[dict[str, Any]] = None,
+) -> None:
+    """Bound the usage-ledger coverage marker when exact event history is not intact.
+
+    A fresh destination always has a ``state_meta`` marker from schema setup.
+    Event-table copy status alone is not enough: ``get_window_usage_rows()``
+    inner-joins sessions, so a complete event copy can still lose usable rows
+    after incomplete parent-session recovery or orphan cleanup.
+
+    Incomplete recovery must persist a conservative coverage-start at recovery
+    time. Deleting the key lets the next SessionDB init recreate it from
+    MIN(recorded_at) and treat remaining history as complete.
+    """
+    event_report = copy_report.get("session_model_usage_events") or {}
+    session_report = copy_report.get("sessions") or {}
+    cleanup = orphan_cleanup or {}
+    copied_rows = event_report.get("copied_rows")
+    usable_events = 0
+    if _table_columns(destination, "session_model_usage_events"):
+        usable_events = int(destination.execute(
+            "SELECT COUNT(*) FROM session_model_usage_events AS events "
+            "INNER JOIN sessions ON sessions.id = events.session_id"
+        ).fetchone()[0])
+    if (
+        event_report.get("status") == "complete"
+        and session_report.get("status") == "complete"
+        and not int(cleanup.get("sessions_reconstructed") or 0)
+        and copied_rows is not None
+        and usable_events == int(copied_rows)
+    ):
+        return
+    with _immediate_transaction(destination):
+        destination.execute(
+            "INSERT INTO state_meta(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (USAGE_EVENTS_COVERAGE_START_KEY, str(time.time())),
+        )
+
+
 def _lost_and_found_plausibility_errors(
     conn: sqlite3.Connection,
 ) -> list[str]:
@@ -1002,8 +1045,13 @@ def _recover_via_lost_and_found(
             "error": "recovered via page-level lost_and_found salvage; "
             "row completeness cannot be verified against the source",
         }
-        for table in ("sessions", "messages", "session_model_usage")
+        for table in ("sessions", "messages", "session_model_usage", "session_model_usage_events")
     }
+    usage_conn = _connect(output)
+    try:
+        _invalidate_incomplete_usage_coverage(usage_conn, copy_report)
+    finally:
+        usage_conn.close()
     orphan_cleanup = {
         "sessions_reconstructed": stubbing["sessions_stubbed"], "messages_retained": stubbing["messages_retained"],
         "messages_removed": 0, "total_removed_or_relinked": 0,
@@ -1110,6 +1158,7 @@ def recover_session_database(
                 )
             orphan_cleanup = _cleanup_partial_orphans(destination_conn) if allow_partial else None
             derived_metadata = _finalize_derived_metadata(destination_conn)
+            _invalidate_incomplete_usage_coverage(destination_conn, copy_report, orphan_cleanup)
         finally:
             source_conn.close()
             if destination_conn is not None:

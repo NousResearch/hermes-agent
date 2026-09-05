@@ -24,7 +24,7 @@ from hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
     FTS_STORAGE_VERSION, FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
-    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, fts_rebuild_admission,
+    SCHEMA_VERSION, USAGE_EVENTS_COVERAGE_START_KEY, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, fts_rebuild_admission,
 )
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -855,6 +855,25 @@ class SessionSchemaMixin:
             )
         else:
             self._run_data_migrations(cursor, row[0], fts5_available)
+
+        # The event ledger starts at schema-v27 cutover; historical lifetime
+        # aggregates cannot be reconstructed into per-call events honestly.
+        # Persist the earliest exact timestamp once, preserving a copied marker
+        # during recovery and healing interim v27 databases from MIN(event).
+        coverage_row = cursor.execute(
+            "SELECT value FROM state_meta WHERE key = ? LIMIT 1",
+            (USAGE_EVENTS_COVERAGE_START_KEY,),
+        ).fetchone()
+        if coverage_row is None:
+            earliest_row = cursor.execute(
+                "SELECT MIN(recorded_at) FROM session_model_usage_events"
+            ).fetchone()
+            earliest = earliest_row[0] if earliest_row is not None else None
+            coverage_start = float(earliest) if earliest is not None else time.time()
+            cursor.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?)",
+                (USAGE_EVENTS_COVERAGE_START_KEY, str(coverage_start)),
+            )
 
         self._ensure_unique_title_index(cursor)
         if fts5_available:

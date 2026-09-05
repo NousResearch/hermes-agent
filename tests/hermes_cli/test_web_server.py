@@ -3082,6 +3082,132 @@ class TestNewEndpoints:
         mock_generate.assert_not_called()
         assert any(tool["tool"] == "read_file" for tool in resp.json()["tools"])
 
+    def test_analytics_usage_includes_recent_delta_from_old_session(self):
+        """The dashboard's day window follows usage time, not session birth."""
+        import time
+        from hermes_state import SessionDB
+
+        now = time.time()
+        old = now - (10 * 86400)
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="old-live-usage",
+                source="telegram",
+                model="gpt-5.6-sol",
+            )
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = 'old-live-usage'",
+                (old,),
+            )
+            db.update_token_counts(
+                "old-live-usage",
+                input_tokens=100,
+                cache_read_tokens=1_000,
+                model="gpt-5.6-sol",
+                billing_provider="openai-codex",
+                api_call_count=1,
+            )
+            db._conn.execute(
+                "UPDATE session_model_usage_events SET recorded_at = ? "
+                "WHERE session_id = 'old-live-usage'",
+                (old,),
+            )
+            db.update_token_counts(
+                "old-live-usage",
+                input_tokens=20,
+                cache_read_tokens=200,
+                model="gpt-5.6-sol",
+                billing_provider="openai-codex",
+                api_call_count=1,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/usage?days=8")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["totals"]["total_input"] == 20
+        assert data["totals"]["total_cache_read"] == 200
+        assert data["totals"]["total_api_calls"] == 1
+        assert data["daily"][-1]["cache_read_tokens"] == 200
+        assert data["usage_coverage"]["window_complete"] is False
+        assert data["usage_coverage"]["exact_events_available"] is True
+
+        models_resp = self.client.get("/api/analytics/models?days=8")
+        assert models_resp.status_code == 200
+        models_data = models_resp.json()
+        model = next(
+            row for row in models_data["models"]
+            if row["model"] == "gpt-5.6-sol"
+        )
+        assert model["cache_read_tokens"] == 200
+        assert model["api_calls"] == 1
+        assert models_data["totals"]["total_input"] == 20
+        assert models_data["totals"]["total_cache_read"] == 200
+        assert models_data["totals"]["total_api_calls"] == 1
+        assert models_data["usage_coverage"]["coverage_start"] == data["usage_coverage"]["coverage_start"]
+        assert models_data["usage_coverage"]["window_complete"] is False
+        assert models_data["usage_coverage"]["exact_events_available"] is True
+        assert models_data["usage_coverage"]["legacy_fallback_used"] is False
+
+    def test_models_analytics_preserves_aux_task_rows(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                "aux-task-model",
+                source="cli",
+                model="shared-model",
+            )
+            db.update_token_counts(
+                "aux-task-model",
+                input_tokens=10,
+                model="shared-model",
+                billing_provider="provider",
+                api_call_count=1,
+            )
+            db.record_auxiliary_usage(
+                "aux-task-model",
+                "compression",
+                model="shared-model",
+                billing_provider="provider",
+                input_tokens=3,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+        rows = [
+            row for row in resp.json()["models"]
+            if row["model"] == "shared-model"
+        ]
+        assert {row.get("aux_task") for row in rows} == {None, "compression"}
+
+    def test_models_analytics_keeps_empty_provider_row_separate_from_aux_row(self):
+        from hermes_cli.web_routers.analytics import _fold_session_only_rows
+
+        rows = [
+            dict(model="model", billing_provider="", task="", sessions=1, input_tokens=0, output_tokens=0),
+            dict(model="model", billing_provider="provider", task="title_generation", sessions=1, input_tokens=10, output_tokens=0),
+        ]
+
+        folded = _fold_session_only_rows(rows)
+        assert len(folded) == 2
+        assert next(row for row in folded if not row["billing_provider"])["sessions"] == 1
+        assert next(row for row in folded if row["task"] == "title_generation")["sessions"] == 1
+
+        main_only = [
+            dict(model="model", billing_provider="", task="", sessions=1, input_tokens=0, output_tokens=0),
+            dict(model="model", billing_provider="provider", task="", sessions=1, input_tokens=10, output_tokens=0),
+        ]
+        folded_main_only = _fold_session_only_rows(main_only)
+        assert len(folded_main_only) == 1
+        assert folded_main_only[0]["sessions"] == 2
+        assert folded_main_only[0]["avg_tokens_per_session"] == 5
+
 # ---------------------------------------------------------------------------
 # Desktop-owned loopback backends are not gated by dashboard.public_url (#96490)
 # ---------------------------------------------------------------------------

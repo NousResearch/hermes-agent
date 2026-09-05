@@ -292,35 +292,18 @@ def _token_volume(row: Dict[str, Any]) -> Any:
     return (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
 
 
-def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
-    """Per-(model, task) auxiliary usage within the window: the task-dimension rows
-    (task != '') record_auxiliary_usage writes into session_model_usage. [] when the
-    table predates the task column (older DB opened read-only by newer code).
+def _aux_usage_rows(
+    db,
+    cutoff: float,
+    usage_rows: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Read and aggregate exact-window auxiliary usage."""
+    from agent.usage_window import aggregate_aux_usage, get_window_usage_rows
 
-    See #23270.
-    """
-    try:
-        cur = db._conn.execute("""
-            SELECT u.model,
-                   u.task,
-                   u.billing_provider,
-                   SUM(u.input_tokens) as input_tokens,
-                   SUM(u.output_tokens) as output_tokens,
-                   SUM(u.cache_read_tokens) as cache_read_tokens,
-                   SUM(u.reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(DISTINCT u.session_id) as sessions,
-                   SUM(COALESCE(u.api_call_count, 0)) as api_calls,
-                   MAX(u.last_seen) as last_used_at
-            FROM session_model_usage u
-            JOIN sessions s ON s.id = u.session_id
-            WHERE s.started_at > ? AND u.task != ''
-            GROUP BY u.model, u.task, u.billing_provider
-            ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
-        """, (cutoff,))
-        return [dict(r) for r in cur.fetchall()]
-    except Exception:
-        return []
+    rows = usage_rows
+    if rows is None:
+        rows = get_window_usage_rows(db._conn, cutoff)
+    return aggregate_aux_usage(rows)
 
 
 def _merge_aux_into_by_model(

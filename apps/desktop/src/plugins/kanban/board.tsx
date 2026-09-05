@@ -186,7 +186,11 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       ) : task.assignee ? (
-        <Avatar name={task.assignee} size="1.125rem" />
+        <Tip label={k.assignedToTip(task.assignee)}>
+          <span className="cursor-help">
+            <Avatar name={task.assignee} size="1.125rem" />
+          </span>
+        </Tip>
       ) : null}
       {arc === 'running' && (
         <Tip label={k.arcRunning}>
@@ -210,28 +214,52 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
       )}
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
         {typeof task.priority === 'number' && task.priority > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-amber-500">
-            <Codicon name="arrow-up" size="0.7rem" />
-            {task.priority}
-          </span>
+          <Tip label={k.priorityTip(task.priority)}>
+            <span className="inline-flex cursor-help items-center gap-0.5 text-amber-500">
+              <Codicon name="arrow-up" size="0.7rem" />
+              {task.priority}
+            </span>
+          </Tip>
         )}
         {task.progress && task.progress.total > 0 && (
-          <Meta icon="checklist">
-            {task.progress.done}/{task.progress.total}
-          </Meta>
+          <Tip label={k.progressTip(task.progress.done, task.progress.total)}>
+            <span className="cursor-help">
+              <Meta icon="checklist">
+                {task.progress.done}/{task.progress.total}
+              </Meta>
+            </span>
+          </Tip>
         )}
-        {Boolean(task.comment_count) && <Meta icon="comment">{task.comment_count}</Meta>}
-        {links > 0 && <Meta icon="references">{links}</Meta>}
+        {Boolean(task.comment_count) && (
+          <Tip label={k.commentCountTip(task.comment_count!)}>
+            <span className="cursor-help">
+              <Meta icon="comment">{task.comment_count}</Meta>
+            </span>
+          </Tip>
+        )}
+        {links > 0 && (
+          <Tip label={k.blocksTip(links)}>
+            <span className="cursor-help">
+              <Meta icon="references">{links}</Meta>
+            </span>
+          </Tip>
+        )}
         {task.warnings && task.warnings.count > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-destructive">
-            <Codicon name="warning" size="0.7rem" />
-            {task.warnings.count}
-          </span>
+          <Tip label={k.warningsTip(task.warnings.count, task.warnings.highest_severity ?? '')}>
+            <span className="inline-flex cursor-help items-center gap-0.5 text-destructive">
+              <Codicon name="warning" size="0.7rem" />
+              {task.warnings.count}
+            </span>
+          </Tip>
         )}
         {created && !task.assignee && !unassignedReady ? (
           <span className="text-(--ui-text-quaternary)">{created}</span>
         ) : null}
-        <span className="min-w-0 truncate font-mono text-(--ui-text-quaternary)">{shortId(task.id)}</span>
+        <Tip label={k.taskIdTip(task.id)}>
+          <span className="min-w-0 cursor-help truncate font-mono text-(--ui-text-quaternary)">
+            {shortId(task.id)}
+          </span>
+        </Tip>
       </div>
     </div>
   )

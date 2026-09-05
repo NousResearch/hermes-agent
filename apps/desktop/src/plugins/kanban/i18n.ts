@@ -40,6 +40,13 @@ type KanbanMessages = {
   wontRun: string
   wontRunTip: string
   noHeartbeat: string
+  assignedToTip: (name: string) => string
+  priorityTip: (n: number) => string
+  progressTip: (done: number, total: number) => string
+  commentCountTip: (n: number) => string
+  blocksTip: (n: number) => string
+  warningsTip: (n: number, severity: string) => string
+  taskIdTip: (id: string) => string
   expand: (label: string) => string
   collapse: (label: string) => string
   newTaskIn: (label: string) => string
@@ -160,6 +167,11 @@ type KanbanMessages = {
   copiedTitle: string
   close: string
   working: string
+  openLinkedBlocking: (id: string) => string
+  openLinkedWaiting: (id: string) => string
+  reassignTip: string
+  copyCliHintTip: string
+  reclaimTip: string
   // board switcher
   board: string
   newBoard: string
@@ -253,6 +265,14 @@ export const en: KanbanMessages = {
   wontRunTip:
     'Ready cards only run once a profile is assigned. Open the card and set an assignee, or configure a default assignee in orchestration settings.',
   noHeartbeat: 'no heartbeat',
+  assignedToTip: name => `Assigned to ${name}.`,
+  priorityTip: n =>
+    `Priority ${n} — higher numbers are picked first when several ready tasks share an assignee.`,
+  progressTip: (done, total) => `${done} of ${total} child tasks done.`,
+  commentCountTip: n => `${n} comment${n === 1 ? '' : 's'} on this task.`,
+  blocksTip: n => `Blocks ${n} other task${n === 1 ? '' : 's'} — they wait until this one is done.`,
+  warningsTip: (n, severity) => `${n} warning${n === 1 ? '' : 's'} — highest severity: ${severity}. Open the card for details.`,
+  taskIdTip: id => `Full id: ${id}.`,
   expand: label => `Expand ${label}`,
   collapse: label => `Collapse ${label}`,
   newTaskIn: label => `New task in ${label}`,
@@ -376,6 +396,11 @@ export const en: KanbanMessages = {
   copiedTitle: 'Copied title',
   close: 'Close',
   working: 'working',
+  openLinkedBlocking: id => `Open ${id} — still blocking this card.`,
+  openLinkedWaiting: id => `Open ${id} — waiting on this card.`,
+  reassignTip: 'Click to reassign — reclaims a running worker first.',
+  copyCliHintTip: 'Copy this command to your clipboard.',
+  reclaimTip: 'Reclaim this task — clears the failure streak and lets it be picked up again.',
   board: 'Board',
   newBoard: 'New board',
   newBoardDots: 'New board…',
@@ -465,6 +490,13 @@ const ja: KanbanMessages = {
   wontRunTip:
     'Ready のカードはプロフィールが割り当てられて初めて実行されます。カードを開いて担当を設定するか、オーケストレーション設定でデフォルトの担当を設定してください。',
   noHeartbeat: 'ハートビートなし',
+  assignedToTip: name => `担当: ${name}。`,
+  priorityTip: n => `優先度 ${n} — 同じ担当の Ready タスクが複数あるとき、数値が大きいものから先に実行されます。`,
+  progressTip: (done, total) => `子タスク ${done}/${total} 件完了。`,
+  commentCountTip: n => `このタスクへのコメント ${n} 件。`,
+  blocksTip: n => `他の ${n} 件のタスクをブロック中 — このカードが完了するまで待機します。`,
+  warningsTip: (n, severity) => `警告 ${n} 件 — 最高深刻度: ${severity}。詳細はカードを開いてください。`,
+  taskIdTip: id => `完全な ID: ${id}。`,
   expand: label => `${label} を展開`,
   collapse: label => `${label} を折りたたむ`,
   newTaskIn: label => `${label} に新しいタスク`,
@@ -587,6 +619,11 @@ const ja: KanbanMessages = {
   copiedTitle: 'タイトルをコピーしました',
   close: '閉じる',
   working: '作業中',
+  openLinkedBlocking: id => `${id} を開く — まだこのカードをブロックしています。`,
+  openLinkedWaiting: id => `${id} を開く — このカードの完了を待っています。`,
+  reassignTip: 'クリックして再割り当て — 実行中のワーカーは先に再取得されます。',
+  copyCliHintTip: 'このコマンドをクリップボードにコピーします。',
+  reclaimTip: 'このタスクを再取得 — 失敗回数をリセットし、再び取得可能にします。',
   board: 'ボード',
   newBoard: '新しいボード',
   newBoardDots: '新しいボード…',
@@ -675,6 +712,13 @@ const zh: KanbanMessages = {
   wontRun: '不会运行',
   wontRunTip: '就绪卡片只有在分配了配置档后才会运行。打开卡片设置负责人，或在编排设置中配置默认负责人。',
   noHeartbeat: '无心跳',
+  assignedToTip: name => `负责人：${name}。`,
+  priorityTip: n => `优先级 ${n} — 多个就绪任务共享负责人时，数字越大越先被处理。`,
+  progressTip: (done, total) => `子任务已完成 ${done}/${total}。`,
+  commentCountTip: n => `此任务有 ${n} 条评论。`,
+  blocksTip: n => `阻塞其他 ${n} 个任务 — 它们要等此卡片完成。`,
+  warningsTip: (n, severity) => `${n} 条警告 — 最高严重级别：${severity}。打开卡片查看详情。`,
+  taskIdTip: id => `完整 ID：${id}。`,
   expand: label => `展开 ${label}`,
   collapse: label => `折叠 ${label}`,
   newTaskIn: label => `在 ${label} 新建任务`,
@@ -796,6 +840,11 @@ const zh: KanbanMessages = {
   copiedTitle: '已复制标题',
   close: '关闭',
   working: '进行中',
+  openLinkedBlocking: id => `打开 ${id} — 仍在阻塞此卡片。`,
+  openLinkedWaiting: id => `打开 ${id} — 正在等待此卡片完成。`,
+  reassignTip: '点击重新分配 — 会先重新领取正在运行的工作单元。',
+  copyCliHintTip: '将此命令复制到剪贴板。',
+  reclaimTip: '重新领取此任务 — 清除失败计数，使其可再次被领取。',
   board: '面板',
   newBoard: '新建面板',
   newBoardDots: '新建面板…',
@@ -883,6 +932,13 @@ const zhHant: KanbanMessages = {
   wontRun: '不會執行',
   wontRunTip: '就緒卡片只有在指派了設定檔後才會執行。開啟卡片設定負責人，或在編排設定中設定預設負責人。',
   noHeartbeat: '無心跳',
+  assignedToTip: name => `負責人：${name}。`,
+  priorityTip: n => `優先順序 ${n} — 多個就緒任務共用負責人時，數字越大越先被處理。`,
+  progressTip: (done, total) => `子任務已完成 ${done}/${total}。`,
+  commentCountTip: n => `此任務有 ${n} 則留言。`,
+  blocksTip: n => `阻擋其他 ${n} 個任務 — 它們要等此卡片完成。`,
+  warningsTip: (n, severity) => `${n} 個警告 — 最高嚴重程度：${severity}。開啟卡片查看詳情。`,
+  taskIdTip: id => `完整 ID：${id}。`,
   expand: label => `展開 ${label}`,
   collapse: label => `摺疊 ${label}`,
   newTaskIn: label => `在 ${label} 新增任務`,
@@ -1004,6 +1060,11 @@ const zhHant: KanbanMessages = {
   copiedTitle: '已複製標題',
   close: '關閉',
   working: '進行中',
+  openLinkedBlocking: id => `開啟 ${id} — 仍在阻擋此卡片。`,
+  openLinkedWaiting: id => `開啟 ${id} — 正在等待此卡片完成。`,
+  reassignTip: '點擊重新指派 — 會先重新領取執行中的工作單元。',
+  copyCliHintTip: '將此指令複製到剪貼簿。',
+  reclaimTip: '重新領取此任務 — 清除失敗次數，使其可再次被領取。',
   board: '面板',
   newBoard: '新增面板',
   newBoardDots: '新增面板…',

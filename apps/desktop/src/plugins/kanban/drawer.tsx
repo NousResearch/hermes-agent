@@ -211,15 +211,16 @@ function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () 
             {actions.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {actions.map(action => (
-                  <Button
-                    key={`${action.kind}-${action.label}`}
-                    onClick={() => act(action)}
-                    size="xs"
-                    variant={action.suggested ? 'secondary' : 'outline'}
-                  >
-                    {action.kind === 'cli_hint' && <Codicon name="copy" size="0.7rem" />}
-                    {action.label}
-                  </Button>
+                  <Tip key={`${action.kind}-${action.label}`} label={action.kind === 'cli_hint' ? k.copyCliHintTip : k.reclaimTip}>
+                    <Button
+                      onClick={() => act(action)}
+                      size="xs"
+                      variant={action.suggested ? 'secondary' : 'outline'}
+                    >
+                      {action.kind === 'cli_hint' && <Codicon name="copy" size="0.7rem" />}
+                      {action.label}
+                    </Button>
+                  </Tip>
                 ))}
               </div>
             )}
@@ -245,22 +246,24 @@ function AssigneeMenu({
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          className="-mx-1 inline-flex max-w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-(--chrome-action-hover)"
-          type="button"
-        >
-          {current ? (
-            <>
-              <Avatar name={current} size="0.875rem" />
-              <span className="truncate">{current}</span>
-            </>
-          ) : (
-            <span className="text-(--ui-text-quaternary)">{k.unassigned}</span>
-          )}
-          <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="chevron-down" size="0.65rem" />
-        </button>
-      </DropdownMenuTrigger>
+      <Tip label={k.reassignTip}>
+        <DropdownMenuTrigger asChild>
+          <button
+            className="-mx-1 inline-flex max-w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-(--chrome-action-hover)"
+            type="button"
+          >
+            {current ? (
+              <>
+                <Avatar name={current} size="0.875rem" />
+                <span className="truncate">{current}</span>
+              </>
+            ) : (
+              <span className="text-(--ui-text-quaternary)">{k.unassigned}</span>
+            )}
+            <Codicon className="shrink-0 text-(--ui-text-quaternary)" name="chevron-down" size="0.65rem" />
+          </button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="start">
         {(roster?.profiles ?? []).map(profile => (
           <DropdownMenuItem key={profile.name} onSelect={() => onReassign(profile.name)}>
@@ -439,15 +442,17 @@ function AttachmentsSection({
             ref={fileRef}
             type="file"
           />
-          <Button
-            aria-label={k.uploadAttachment}
-            disabled={pending}
-            onClick={() => fileRef.current?.click()}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <Codicon name={pending ? 'sync' : 'cloud-upload'} size="0.8rem" spinning={pending} />
-          </Button>
+          <Tip label={k.uploadAttachment}>
+            <Button
+              aria-label={k.uploadAttachment}
+              disabled={pending}
+              onClick={() => fileRef.current?.click()}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name={pending ? 'sync' : 'cloud-upload'} size="0.8rem" spinning={pending} />
+            </Button>
+          </Tip>
         </>
       }
       label={k.attachments(attachments.length)}
@@ -690,15 +695,17 @@ export function TaskDrawer({
           <div className="ml-auto flex items-center gap-0.5">
             {task && (
               <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    aria-label={k.taskActions}
-                    className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                    type="button"
-                  >
-                    <Codicon name="ellipsis" size="0.9rem" />
-                  </button>
-                </DropdownMenuTrigger>
+                <Tip label={k.taskActions}>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      aria-label={k.taskActions}
+                      className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                      type="button"
+                    >
+                      <Codicon name="ellipsis" size="0.9rem" />
+                    </button>
+                  </DropdownMenuTrigger>
+                </Tip>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem
                     onSelect={() => {
@@ -730,14 +737,16 @@ export function TaskDrawer({
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-            <button
-              aria-label={k.close}
-              className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-              onClick={onClose}
-              type="button"
-            >
-              <Codicon name="close" size="0.9rem" />
-            </button>
+            <Tip label={k.close}>
+              <button
+                aria-label={k.close}
+                className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                onClick={onClose}
+                type="button"
+              >
+                <Codicon name="close" size="0.9rem" />
+              </button>
+            </Tip>
           </div>
         </div>
         {task && (
@@ -823,14 +832,18 @@ export function TaskDrawer({
                         {side === 'parents' ? k.blockedBy : k.blocks}
                       </span>
                       {detail.links[side].map(linked => (
-                        <button
-                          className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                        <Tip
                           key={linked}
-                          onClick={() => onOpen(linked)}
-                          type="button"
+                          label={side === 'parents' ? k.openLinkedBlocking(shortId(linked)) : k.openLinkedWaiting(shortId(linked))}
                         >
-                          {shortId(linked)}
-                        </button>
+                          <button
+                            className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                            onClick={() => onOpen(linked)}
+                            type="button"
+                          >
+                            {shortId(linked)}
+                          </button>
+                        </Tip>
                       ))}
                     </div>
                   ) : null

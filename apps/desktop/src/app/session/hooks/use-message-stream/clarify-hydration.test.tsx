@@ -176,6 +176,40 @@ describe('clarify.request stream hydration', () => {
     expect(stream.state().streamId).toBe('assistant-codex')
   })
 
+  it('hydrates an already-pending sparse clarify row from the live request', () => {
+    mountStream()
+
+    seedHydratedMessages([
+      { id: 'user-1', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+      {
+        id: 'assistant-pending',
+        role: 'assistant',
+        pending: true,
+        parts: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-provider',
+            toolName: 'clarify',
+            args: {},
+            argsText: '{}'
+          }
+        ]
+      }
+    ])
+
+    clarifyRequest({ choices: ['Approve', 'Reject'], question: 'Continue?', request_id: 'req-pending' })
+
+    const messages = stream.state().messages
+    const part = clarifyParts()[0]
+    expect(messages).toHaveLength(2)
+    expect(messages[1]).toMatchObject({ id: 'assistant-pending', pending: true })
+    expect(part).toMatchObject({
+      toolCallId: 'call-provider',
+      args: { choices: ['Approve', 'Reject'], question: 'Continue?' }
+    })
+    expect(stream.state().streamId).toBe('assistant-pending')
+  })
+
   it('keeps a hydrated DeepSeek text-plus-clarify row in its original position', () => {
     mountStream()
 

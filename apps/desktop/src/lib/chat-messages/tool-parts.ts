@@ -505,13 +505,26 @@ export function restorePendingClarifyToolCall(
 
   if (location) {
     const message = messages[location.messageIndex]
+    const part = message.parts[location.partIndex]
 
-    if (message.pending) {
+    if (part.type !== 'tool-call') {
       return { messages, streamId: message.id }
     }
 
+    // A sparse hydrated projection may already be marked pending while still
+    // lacking the authoritative clarify.request args. Re-arm in place and
+    // merge the live payload into that provider-authored part, preserving its
+    // tool-call id and transcript position.
+    const args = toolArgs(clarifyPayload, part.args)
+    const parts = [...message.parts]
+    parts[location.partIndex] = {
+      ...part,
+      args: args as never,
+      argsText: JSON.stringify(args)
+    }
+
     const next = [...messages]
-    next[location.messageIndex] = { ...message, pending: true }
+    next[location.messageIndex] = { ...message, parts, pending: true }
 
     return { messages: next, streamId: message.id }
   }
@@ -697,7 +710,6 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       isError: false
     } as ChatMessagePart
     messages[i] = { ...message, parts }
-
     return true
   }
 

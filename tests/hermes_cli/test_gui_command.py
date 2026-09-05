@@ -467,6 +467,9 @@ def _make_signable_app(desktop_dir: Path) -> Path:
     helper = app / "Contents" / "Frameworks" / "Hermes Helper.app"
     _write_info_plist(helper, "com.nousresearch.hermes.helper")
 
+    framework = app / "Contents" / "Frameworks" / "Electron Framework.framework"
+    _write_info_plist(framework, "com.github.Electron.framework")
+
     native_dir = app / "Contents" / "Resources" / "app.asar.unpacked" / "node_modules" / "pty"
     native_dir.mkdir(parents=True)
     (native_dir / "pty.node").write_text("", encoding="utf-8")
@@ -504,6 +507,23 @@ def test_desktop_macos_local_codesign_signs_native_binaries(tmp_path, monkeypatc
     signed = [c[-1] for c in calls if c[:3] == ["/usr/bin/codesign", "--force", "--sign"]]
     assert str(app / "Contents" / "Resources" / "app.asar.unpacked" / "node_modules" / "pty" / "pty.node") in signed
     assert str(app / "Contents" / "Frameworks" / "chrome_crashpad_handler") in signed
+
+
+def test_desktop_macos_local_codesign_preserves_framework_entitlements(tmp_path, monkeypatch):
+    """Hardened runtime frameworks must retain Electron's JIT entitlements."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = _make_signable_app(desktop_dir)
+    calls = _collect_codesign_calls(monkeypatch)
+
+    assert main_desktop._desktop_macos_local_codesign(app, desktop_dir=desktop_dir) is True
+
+    framework = app / "Contents" / "Frameworks" / "Electron Framework.framework"
+    framework_call = next(call for call in calls if call[-1] == str(framework))
+    assert framework_call[5:7] == ["--options", "runtime"]
+    assert framework_call[7:9] == [
+        "--entitlements",
+        str(desktop_dir / "electron" / "entitlements.mac.inherit.plist"),
+    ]
 
 
 

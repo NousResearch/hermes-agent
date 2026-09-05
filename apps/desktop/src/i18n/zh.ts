@@ -3047,6 +3047,7 @@ export const zh: Translations = {
     connected: '已连接',
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
     fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
+    bharatRouterPitch: 'India-resident OpenAI-compatible gateway — Krutrim, Sarvam + 140+ global models on one key',
     localModelsTitle: '本地运行模型',
     localModelsPitch: '无需账号——下载模型，在本机运行',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',

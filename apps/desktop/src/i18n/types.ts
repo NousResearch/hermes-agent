@@ -2459,6 +2459,7 @@ export interface Translations {
     connected: string
     featuredPitch: string
     fireworksPitch: string
+    bharatRouterPitch: string
     localModelsTitle: string
     localModelsPitch: string
     openRouterPitch: string

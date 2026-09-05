@@ -2134,6 +2134,7 @@ export const ar = defineLocale({
     connected: 'متصل',
     featuredPitch: 'اشتراك واحد، أكثر من 300 نموذج متقدم — الطريقة الموصى بها لتشغيل Hermes',
     fireworksPitch: 'نماذج مفتوحة سريعة مع استضافة Fireworks.',
+    bharatRouterPitch: 'India-resident OpenAI-compatible gateway — Krutrim, Sarvam + 140+ global models on one key',
     openRouterPitch: 'مفتاح واحد لمئات النماذج — خيار افتراضي جيد',
     apiKeyOptions: {
       openrouter: {

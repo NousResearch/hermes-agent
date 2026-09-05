@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { runInTerminal } from '@/app/right-sidebar/store'
 import {
+  BharatRouterProviderRow,
   FEATURED_ID,
   FeaturedProviderRow,
   FireworksProviderRow,
@@ -207,6 +208,7 @@ function OAuthPicker({
           ))}
           <FireworksProviderRow onClick={onWantApiKey} />
           <OpenRouterProviderRow onClick={onWantApiKey} />
+          <BharatRouterProviderRow onClick={onWantApiKey} />
         </>
       )}
       {collapsible && (

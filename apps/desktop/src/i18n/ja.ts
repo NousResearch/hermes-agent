@@ -2521,6 +2521,7 @@ export const ja = defineLocale({
     connected: '接続済み',
     featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
     fireworksPitch: '直接モデル API — Fireworks がホストする最先端モデル',
+    bharatRouterPitch: 'India-resident OpenAI-compatible gateway — Krutrim, Sarvam + 140+ global models on one key',
     localModelsTitle: 'モデルをローカルで実行',
     localModelsPitch: 'アカウント不要——モデルをダウンロードしてこのマシンで実行',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',

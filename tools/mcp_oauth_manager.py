@@ -15,9 +15,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.mcp_oauth_provider import HermesProviderMixin
+from tools.mcp_oauth_provider import HermesProviderMixin, _AlreadyAuthorized
 
 logger = logging.getLogger(__name__)
+
+
+class _SkippedRefreshResponse:
+    """Stand-in 2xx refresh response for the single-refresher skip path.
+
+    Duck-typed (``status_code`` + ``aread()``) so that if the pinned SDK ever
+    inspects the yielded response before calling ``_handle_refresh_response``,
+    it still sees a coherent 2xx instead of ``None``. ``_handle_refresh_response``
+    short-circuits on the skip flag before reading it either way.
+    """
+
+    status_code = 200
+
+    async def aread(self) -> bytes:
+        return b""
+
 
 try:
     from mcp.client.auth.oauth2 import OAuthClientProvider as _SDKOAuthClientProvider
@@ -228,9 +244,24 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if outgoing is request:
                     tokens = self.context.current_tokens
                     sent_access_token = tokens.access_token if tokens is not None else None
+                    # The SDK holds context.lock for its whole generator, even while HTTPX waits on
+                    # the MCP request. Release it for that request only; OAuth transitions stay serialized.
                     self.context.lock.release()
                     resource_lock_released = True
-                incoming = yield outgoing
+                if getattr(self, "_hermes_refresh_skipped", False) and (
+                    outgoing is not request
+                ):
+                    # _refresh_token adopted a token rotated by a sibling
+                    # process; do not POST the now-spent refresh token.
+                    # Feed a duck-typed 2xx stub so _handle_refresh_response
+                    # short-circuits cleanly (it returns True on the skip
+                    # flag before reading the response).
+                    # The `outgoing is not request` guard ensures a stale
+                    # skip flag can only suppress a refresh POST, never the
+                    # resource request itself (F1).
+                    incoming = _SkippedRefreshResponse()
+                else:
+                    incoming = yield outgoing
                 if resource_lock_released:
                     await self.context.lock.acquire()
                     resource_lock_released = False
@@ -246,10 +277,47 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
-                outgoing = await inner.asend(incoming)
+                # `incoming` may be the _SkippedRefreshResponse stub (skip
+                # path) rather than a real httpx2.Response; the SDK's
+                # _handle_refresh_response short-circuits before reading it.
+                outgoing = await inner.asend(incoming)  # type: ignore[arg-type]
+        except _AlreadyAuthorized:
+            # A concurrent flow already completed authorization for this server while this flow
+            # waited on the per-server authorization mutex. The re-check loaded that token into
+            # self.context; adopt it and retry the request instead of a second authorization.
+            self._add_auth_header(request)
+            await inner.aclose()
+            retry_after_concurrent_auth = True
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
+            # Release the per-server authorization mutex if this flow still holds it — a
+            # cancellation that lands between the acquire in _perform_authorization_code_grant and
+            # the release in _handle_token_response has no other release point. Idempotent.
+            self._hermes_release_auth_lock()
+            # If the refresh generator was cancelled between _refresh_token
+            # (which acquires the cross-process lock) and
+            # _handle_refresh_response (which releases it), the lock would
+            # otherwise leak and wedge every other process on the flock.
+            # Clear the skip flag for the same reason: a cancelled refresh
+            # must not leave a sticky skip that swallows the next resource
+            # request (F1).
+            #
+            # Ownership gate: the flock and skip flag are held ONLY for the
+            # refresh POST, which is yielded before the resource request.
+            # _handle_refresh_response releases the flock and clears the
+            # flag before the resource request is ever yielded, so by the
+            # time resource_lock_released is True this flow no longer owns
+            # them. A concurrent flow on the same cached provider instance
+            # may have acquired the flock and set the flag while this flow
+            # was suspended at the resource yield; releasing/clearing them
+            # unconditionally would stomp that concurrent flow's live
+            # refresh (re-POSTing a spent refresh token -> browser re-auth).
+            # Only touch them when this flow still owns them.
+            if not resource_lock_released:
+                self._hermes_refresh_skipped = False
+                if getattr(self, "_hermes_refresh_lock", None) is not None:
+                    self._hermes_release_refresh_lock()
             if resource_lock_released:
                 # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
                 # flow mid-request; shield only this local bookkeeping.
@@ -274,6 +342,12 @@ class MCPOAuthManager:
         self._entries_lock = threading.Lock()
         # Strong refs to in-flight 401 tasks so the loop's weak bookkeeping cannot GC them mid-run.
         self._inflight_tasks: set[asyncio.Task] = set()
+        # Per-server authorization mutexes, keyed by server_url so a duplicate/rebuilt provider
+        # for the same endpoint serializes behind the in-flight authorization. Each entry is
+        # (owning_event_loop, lock): ``asyncio.Lock`` pins to the loop it is first contended on,
+        # and the MCP loop is torn down and recreated per idle probe, so a lock left bound to a
+        # dead loop would raise "bound to a different event loop" on a later racing authorization.
+        self._authorization_locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
 
     def get_or_build_provider(self, server_name: str, server_url: str, oauth_config: Optional[dict]) -> Optional[Any]:
         """Cached OAuth provider for ``server_name``, built on first use (rebuilt when ``server_url`` changes);
@@ -291,6 +365,26 @@ class MCPOAuthManager:
                 if entry.provider is not None:
                     entry.provider._hermes_home = key[0]
             return entry.provider
+
+    def authorization_lock(self, server_url: str) -> asyncio.Lock:
+        """A per-server authorization mutex shared across providers for the same endpoint.
+
+        A duplicate/rebuilt provider carries its own ``context.lock``, so the SDK's serialization
+        does not span them; this shared mutex makes "one login == one authorization transaction"
+        by serializing the authorization step itself (redirect + callback + token exchange).
+
+        Keyed by server_url but loop-bound: ``asyncio.Lock`` pins to the loop it is first
+        contended on, and the MCP loop is torn down and recreated per idle probe. Recreate the
+        mutex when the running loop changed so a stale loop-bound lock can never raise "bound to
+        a different event loop" on a later (racing) authorization.
+        """
+        loop = asyncio.get_running_loop()
+        with self._entries_lock:
+            holder = self._authorization_locks.get(server_url)
+            if holder is None or holder[0] is not loop:
+                holder = (loop, asyncio.Lock())
+                self._authorization_locks[server_url] = holder
+            return holder[1]
 
     @staticmethod
     def _key(server_name: str, hermes_home: str | Path | None = None) -> tuple[str, str]:

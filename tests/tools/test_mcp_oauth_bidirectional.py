@@ -307,9 +307,392 @@ async def test_long_lived_resource_request_does_not_block_concurrent_post(
         await get_flow.asend(httpx.Response(200, request=get_retry))
 
 
+@pytest.mark.asyncio
+async def test_tokenless_long_lived_request_does_not_block_concurrent_post(
+    tmp_path, monkeypatch
+):
+    """A token-less session-long GET must not hold the provider state lock.
+
+    Regression for the login double-attempt "fix" attempt: gating the lock release on
+    ``sent_access_token is not None`` held ``context.lock`` across a token-less request's
+    entire network round-trip. On an OAuth server that serves its SSE GET without demanding
+    auth (e.g. Google Drive — acknowledged in hermes_cli/mcp_config.py), the GET never 401s,
+    the lock is never returned, and every concurrent tool-call POST hangs for the session.
+
+    The lock MUST be released for every resource request, authenticated or not. OAuth
+    transitions (discovery/registration/authorization) are still serialized: the bridge
+    re-acquires the lock before feeding the response back to the SDK, and the stale-401
+    retry guard (mcp_oauth_manager.py) makes a second token-less flow reuse the first flow's
+    freshly minted token instead of re-entering authorization.
+    """
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import OAuthClientMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    # No token, no client_info: both flows start token-less.
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    get_request = httpx.Request("GET", "https://example.com/mcp")
+    get_flow = provider.async_auth_flow(get_request)
+    get_outbound = await get_flow.__anext__()
+    assert get_outbound is get_request
+    assert "authorization" not in get_outbound.headers  # token-less: no Bearer yet
+
+    # Keep the token-less GET pending, as streamable HTTP does for the session lifetime.
+    # The concurrent POST must still reach its first yield (acquire the lock) without
+    # waiting for the GET to 401/authorize/complete.
+    post_request = httpx.Request("POST", "https://example.com/mcp")
+    post_flow = provider.async_auth_flow(post_request)
+    post_outbound = await asyncio.wait_for(post_flow.__anext__(), timeout=2.0)
+
+    assert post_outbound is post_request
+    assert "authorization" not in post_outbound.headers
+
+    # Complete both flows cleanly (a 200 short-circuits the SDK's 401/403 branches).
+    with pytest.raises(StopAsyncIteration):
+        await post_flow.asend(httpx.Response(200, request=post_outbound))
+    with pytest.raises(StopAsyncIteration):
+        await get_flow.asend(httpx.Response(200, request=get_outbound))
+
+
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
     return None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_authorization_across_providers_triggers_single_authorization(
+    tmp_path, monkeypatch
+):
+    """Two concurrent token-less flows across separate providers must authorize ONCE.
+
+    The login double-attempt bug: `hermes mcp login asana` printed TWO
+    "MCP OAuth: authorization required" blocks (distinct ``state`` / ``code_challenge`` each) and
+    the second flow died with ``OSError: [Errno 98] Address already in use``.
+
+    Two flows on ONE provider already serialize to a single authorization via the SDK's
+    ``context.lock`` + the stale-401 retry guard (covered by the neighbouring test). The live
+    double-trigger requires SEPARATE contexts/locks — a duplicate or rebuilt provider for the same
+    endpoint — so each flow carries its own ``context.lock`` and the SDK cannot serialize them. Both
+    then reach the authorization step, print two URLs, and collide on the resolved callback port.
+
+    The fix is a per-server authorization mutex (``MCPOAuthManager.authorization_lock``) held across
+    the redirect + callback + token exchange: the loser blocks, then adopts the winner's token from
+    shared storage and retries instead of re-authorizing.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from mcp.shared.auth import AuthorizationCodeResult, OAuthClientMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_tool import sdk_httpx
+
+    httpx = sdk_httpx()
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    # Both providers point at the SAME server and the SAME shared token storage, exactly as a
+    # duplicate/rebuilt provider for one endpoint would: separate contexts/locks, one token file.
+    storage = HermesTokenStorage("srv")
+    redirect_calls: list[str] = []
+    states: dict = {}
+
+    def make_handlers(tag: str):
+        async def redirect_handler(authorization_url: str) -> None:
+            redirect_calls.append(authorization_url)
+            states[tag] = parse_qs(urlparse(authorization_url).query).get("state", [None])[0]
+
+        async def callback_handler():
+            await asyncio.sleep(0.05)
+            return AuthorizationCodeResult(
+                code="FAKE_AUTH_CODE", state=states.get(tag), iss=None
+            )
+
+        return redirect_handler, callback_handler
+
+    def make_provider(tag: str):
+        redirect_handler, callback_handler = make_handlers(tag)
+        return _HERMES_PROVIDER_CLS(
+            server_name="srv",
+            server_url="https://example.com/mcp",
+            client_metadata=OAuthClientMetadata(
+                redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+                client_name="Hermes Agent",
+            ),
+            storage=storage,
+            redirect_handler=redirect_handler,
+            callback_handler=callback_handler,
+        )
+
+    provider_a = make_provider("a")
+    provider_b = make_provider("b")
+
+    WWW = 'Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"'
+    PRM = {"resource": "https://example.com/mcp", "authorization_servers": ["https://idp.example.com"]}
+    ASM = {
+        "issuer": "https://idp.example.com",
+        "authorization_endpoint": "https://idp.example.com/authorize",
+        "token_endpoint": "https://idp.example.com/token",
+        "registration_endpoint": "https://idp.example.com/register",
+        "response_types_supported": ["code"],
+    }
+    DCR = {
+        "client_id": "client-1",
+        "redirect_uris": ["http://127.0.0.1:12345/callback"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }
+    TOKEN = {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "ref"}
+
+    async def drive_one_flow(provider) -> None:
+        req = httpx.Request("POST", "https://example.com/mcp")
+        flow = provider.async_auth_flow(req)
+        outbound = await flow.__anext__()
+
+        # A flow that already carries a token completes cleanly and never re-authorizes.
+        if "authorization" in outbound.headers:
+            with pytest.raises(StopAsyncIteration):
+                await flow.asend(httpx.Response(200, request=outbound))
+            return
+
+        # Token-less: 401 -> discovery -> registration -> (authorization OR adopted-token retry).
+        nxt = await flow.asend(httpx.Response(401, request=outbound, headers={"www-authenticate": WWW}))
+        nxt = await flow.asend(httpx.Response(200, request=nxt, json=PRM))
+        nxt = await flow.asend(httpx.Response(200, request=nxt, json=ASM))
+        nxt = await flow.asend(httpx.Response(200, request=nxt, json=DCR))
+
+        # The winner yields the token request; the loser, blocked on the authorization mutex, is
+        # diverted to the adopted-token retry (a request that already carries an Authorization
+        # header) instead of a second token exchange.
+        if "authorization" in nxt.headers:
+            with pytest.raises(StopAsyncIteration):
+                await flow.asend(httpx.Response(200, request=nxt))
+            return
+
+        # Winner: token exchange, then the SDK retries the resource request with the new token.
+        nxt = await flow.asend(httpx.Response(200, request=nxt, json=TOKEN))
+        assert "authorization" in nxt.headers
+        with pytest.raises(StopAsyncIteration):
+            await flow.asend(httpx.Response(200, request=nxt))
+
+    await asyncio.gather(drive_one_flow(provider_a), drive_one_flow(provider_b))
+
+    assert len(redirect_calls) == 1, (
+        f"expected exactly one authorization flow (one browser URL), got {len(redirect_calls)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_401_rejected_token_still_triggers_authorization(tmp_path, monkeypatch):
+    """A 401 with an unexpired-but-rejected token must re-authorize, not re-adopt the same token.
+
+    Regression for the adoption guard in ``_hermes_adopt_external_authorization``: it must adopt
+    only a token that DIFFERS from the one this flow already holds. If it adopted the rejected
+    token itself, a 401 (or 403 step-up) would retry the SAME bad ``Bearer`` forever and never
+    reach the authorization step (zero redirects) — the login would silently spin instead of
+    re-prompting the browser.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from mcp.shared.auth import (
+        AuthorizationCodeResult,
+        OAuthClientInformationFull,
+        OAuthClientMetadata,
+        OAuthToken,
+    )
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_tool import sdk_httpx
+
+    httpx = sdk_httpx()
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(access_token="STALE", token_type="Bearer", expires_in=3600, refresh_token="ref")
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    redirect_calls: list[str] = []
+    captured_state: dict = {}
+
+    async def redirect_handler(authorization_url: str) -> None:
+        redirect_calls.append(authorization_url)
+        captured_state["state"] = parse_qs(urlparse(authorization_url).query).get("state", [None])[0]
+
+    async def callback_handler():
+        await asyncio.sleep(0.05)
+        return AuthorizationCodeResult(code="FAKE_AUTH_CODE", state=captured_state.get("state"), iss=None)
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=redirect_handler,
+        callback_handler=callback_handler,
+    )
+
+    WWW = 'Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"'
+    PRM = {"resource": "https://example.com/mcp", "authorization_servers": ["https://idp.example.com"]}
+    ASM = {
+        "issuer": "https://idp.example.com",
+        "authorization_endpoint": "https://idp.example.com/authorize",
+        "token_endpoint": "https://idp.example.com/token",
+        "response_types_supported": ["code"],
+    }
+    TOKEN = {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "ref"}
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+
+    outbound = await flow.__anext__()
+    assert "authorization" in outbound.headers  # sends the (rejected) STALE token
+
+    # 401 -> PRM discovery -> ASM discovery -> (client already registered) -> authorization.
+    nxt = await flow.asend(httpx.Response(401, request=outbound, headers={"www-authenticate": WWW}))
+    nxt = await flow.asend(httpx.Response(200, request=nxt, json=PRM))
+    nxt = await flow.asend(httpx.Response(200, request=nxt, json=ASM))
+
+    assert len(redirect_calls) == 1, (
+        f"expected the rejected token to trigger exactly one re-authorization, got {len(redirect_calls)}"
+    )
+
+    nxt = await flow.asend(httpx.Response(200, request=nxt, json=TOKEN))
+    assert "authorization" in nxt.headers
+    with pytest.raises(StopAsyncIteration):
+        await flow.asend(httpx.Response(200, request=nxt))
+
+
+@pytest.mark.asyncio
+async def test_403_insufficient_scope_step_up_still_triggers_authorization(tmp_path, monkeypatch):
+    """A 403 ``insufficient_scope`` step-up must re-authorize, not re-adopt the same token.
+
+    Same adoption guard as the 401 case, exercised through the SDK's 403 step-up branch (the
+    second ``_perform_authorization`` call site). A step-up must produce a fresh authorization
+    (one redirect), never a silent retry of the token that just lacked scope.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from mcp.shared.auth import (
+        AuthorizationCodeResult,
+        OAuthClientInformationFull,
+        OAuthClientMetadata,
+        OAuthToken,
+    )
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from tools.mcp_tool import sdk_httpx
+
+    httpx = sdk_httpx()
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(access_token="STALE", token_type="Bearer", expires_in=3600, refresh_token="ref")
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    redirect_calls: list[str] = []
+    captured_state: dict = {}
+
+    async def redirect_handler(authorization_url: str) -> None:
+        redirect_calls.append(authorization_url)
+        captured_state["state"] = parse_qs(urlparse(authorization_url).query).get("state", [None])[0]
+
+    async def callback_handler():
+        await asyncio.sleep(0.05)
+        return AuthorizationCodeResult(code="FAKE_AUTH_CODE", state=captured_state.get("state"), iss=None)
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=redirect_handler,
+        callback_handler=callback_handler,
+    )
+
+    TOKEN = {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600, "refresh_token": "ref"}
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+
+    outbound = await flow.__anext__()
+    assert "authorization" in outbound.headers  # sends the (scope-lacking) STALE token
+
+    # 403 insufficient_scope -> scope union -> authorization (no discovery/registration).
+    nxt = await flow.asend(
+        httpx.Response(403, request=outbound, headers={"www-authenticate": 'Bearer error="insufficient_scope"'})
+    )
+
+    assert len(redirect_calls) == 1, (
+        f"expected the scope step-up to trigger exactly one re-authorization, got {len(redirect_calls)}"
+    )
+
+    nxt = await flow.asend(httpx.Response(200, request=nxt, json=TOKEN))
+    assert "authorization" in nxt.headers
+    with pytest.raises(StopAsyncIteration):
+        await flow.asend(httpx.Response(200, request=nxt))
 
 
 async def _noop_callback() -> tuple[str, str | None]:

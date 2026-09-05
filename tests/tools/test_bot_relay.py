@@ -237,6 +237,10 @@ import textwrap
 def _managed_home(tmp_path, *, legacy_soul=False):
     home = tmp_path / ".hermes"
     home.mkdir(exist_ok=True)
+    # Relay integration fakes the default profile's canonical Bot Chat.
+    (home / "profile.yaml").write_text(
+        "ui_meta:\n  hermes-bots:\n    shape: cloud\n", encoding="utf-8"
+    )
     d = home / "profiles" / "researcher"
     d.mkdir(parents=True, exist_ok=True)
     (d / "profile.yaml").write_text(

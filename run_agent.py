@@ -44,13 +44,9 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
 
 
 def _session_source_for_agent(platform: Optional[str]) -> str:
-    try:
-        from gateway.session_context import get_session_env
+    from gateway.session_context import resolve_session_source
 
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
-    except Exception:
-        source = os.environ.get("HERMES_SESSION_SOURCE", "")
-    return str(source or "").strip() or platform or "cli"
+    return resolve_session_source(platform)
 
 
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:

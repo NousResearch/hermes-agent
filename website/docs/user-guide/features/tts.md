@@ -475,10 +475,12 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 # In ~/.hermes/config.yaml
 stt:
   provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
-  language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
+  language: ""                # Global language hint applied to every provider unless a per-provider language overrides it; "" = auto-detect (default), a set value is forced
   local:
     model: "base"             # tiny, base, small, medium, large-v3
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    fallback_language: "en"   # re-transcribe with this language when auto-detect is not confident (short/accented clips); "" = never
+    language_confidence_threshold: 0.6  # faster-whisper language_probability below this triggers the fallback
   groq:
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:

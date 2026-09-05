@@ -1058,9 +1058,12 @@ DEFAULT_CONFIG = {
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
         # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
-        # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
-        "language": "en",
+        # "deepinfra". Global language hint unless a per-provider language overrides it.
+        # "" = auto-detect (the default). A set value is FORCED on every provider, so a
+        # seeded "en" turned every non-English voice note into English nonsense; pin
+        # "es", "zh", ... only for a single-language install. The short/accented clips
+        # that auto-detect misreads are caught by local.fallback_language below.
+        "language": "",
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
         # inflates upload time, billing and hallucinations. Failure = raw upload.
         "cloud_trim_silence": True,
@@ -1069,6 +1072,11 @@ DEFAULT_CONFIG = {
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect; set "en", "es", ... to force
+            # Auto-detect confidence gate: when faster-whisper's language guess scores
+            # below the threshold (short or accented clips), the clip is re-transcribed
+            # with fallback_language. "" disables the fallback.
+            "fallback_language": "en",
+            "language_confidence_threshold": 0.6,
             "initial_prompt": "",
             # Anti-hallucination (faster-whisper decodes junk from silence). vad: Silero filter
             # (false = raw audio, for music/ambient). A segment is dropped only if no_speech_prob

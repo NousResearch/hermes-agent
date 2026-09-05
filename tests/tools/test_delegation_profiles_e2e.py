@@ -267,3 +267,37 @@ def test_e2e_lifecycle_launch_resolves_same_route_as_delegate_task(real_home, mo
     assert cap.built[0]["api_key"] == "sk-or-e2e-test-key"
     assert not cap.built[0]["fallback_model"]  # small's fallback: [] honored here too
     assert handle.requested_profile in ("small", None)  # provenance when stamped
+
+
+# ── E2E-6: unresolvable profile provider → clean tool_error, no child spawned ─
+
+CONFIG_ANTHROPIC_PROFILE = """
+model:
+  default: test-model
+delegation:
+  agent_routing: true
+  profiles:
+    small:
+      provider: anthropic
+      model: claude-haiku-e2e
+"""
+
+
+def test_e2e_unresolvable_provider_credentials_yield_clean_tool_error(real_home, monkeypatch):
+    """A profile pointing at a provider with no credentials must surface as a clean
+    tool_error string from _handle_model_call — never an escaped AuthError/RuntimeError —
+    exactly like the legacy delegation.provider branch."""
+    _write_config(real_home, CONFIG_ANTHROPIC_PROFILE)
+    for var in ("ANTHROPIC_API_KEY", "CLAUDE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+    from tools.delegate_tool import _handle_model_call
+    with _CaptureAIAgent() as cap:
+        result = _handle_model_call(
+            {"tasks": [{"goal": "x", "model_profile": "small"}]},
+            parent_agent=_make_parent(), background=False,
+        )
+    assert isinstance(result, str)
+    assert "small" in result
+    assert '"success": true' not in result.lower()
+    assert cap.built == []  # refused before any child construction

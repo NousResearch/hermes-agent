@@ -28,6 +28,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.usage_report import result_from_agent, write_usage_file
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -127,6 +128,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    usage_file: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +139,8 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        usage_file: Optional path; when set, a JSON usage report is written
+            after the run, even when the run fails.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -178,11 +182,12 @@ def run_oneshot(
     devnull = open(os.devnull, "w", encoding="utf-8")
 
     response: Optional[str] = None
+    result: dict = {}
     failure: BaseException | None = None
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
             try:
-                response = _run_agent(
+                response, result = _run_agent(
                     prompt,
                     model=model,
                     provider=provider,
@@ -208,15 +213,20 @@ def run_oneshot(
         # Re-raise control-flow exceptions so the parent handles them as usual
         # (Ctrl-C / explicit sys.exit() inside the agent).
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            write_usage_file(usage_file, result, failure=repr(failure))
             raise failure
+        write_usage_file(usage_file, result, failure=str(failure))
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
         return 1
 
     if not (response or "").strip():
+        write_usage_file(usage_file, result, failure="no final response")
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
         return 1
+
+    write_usage_file(usage_file, result)
 
     assert response is not None  # narrowed by the empty-response guard above
     real_stdout.write(response)
@@ -248,9 +258,9 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
-) -> str:
+) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns the final response string."""
+    run a single conversation.  Returns ``(final_response, usage_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -364,7 +374,8 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    response = agent.chat(prompt) or ""
+    return response, result_from_agent(agent)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

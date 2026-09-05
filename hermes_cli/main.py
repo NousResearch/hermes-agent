@@ -2388,6 +2388,7 @@ def cmd_chat(args):
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
         "compact": getattr(args, "compact", False),
+        "usage_file": getattr(args, "usage_file", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -11570,6 +11571,7 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "-t", "--toolsets",
         "-r", "--resume",
         "-s", "--skills",
+        "--usage-file",
         # ``-c / --continue`` is nargs='?' (optional value). Treat it as
         # value-taking: if the next token is a subcommand-looking word
         # the user almost certainly meant it as the session name, and
@@ -11793,6 +11795,7 @@ def _try_termux_fast_cli_launch() -> bool:
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 
@@ -13177,6 +13180,7 @@ def main():
                 model=getattr(args, "model", None),
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
+                usage_file=getattr(args, "usage_file", None),
             )
         )
 

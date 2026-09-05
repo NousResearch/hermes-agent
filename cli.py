@@ -1130,6 +1130,9 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
     try:
+        from hermes_cli.usage_report import write_usage_file_from_cli
+
+        write_usage_file_from_cli(cli)
         _notify_single_query_session_finalize(cli)
         _run_cleanup(notify_session_finalize=False)
     finally:
@@ -15004,6 +15007,7 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    usage_file: str = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -15140,6 +15144,7 @@ def main(
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
     )
+    cli.usage_file = usage_file
 
     if parsed_skills:
         skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(

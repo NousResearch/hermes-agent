@@ -322,6 +322,23 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onCancel).not.toHaveBeenCalled()
   })
 
+  it('dispatches a busy skill with its attachments for expansion before queueing', async () => {
+    const attachment: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.txt' }
+
+    const { hook, onSubmit, onSteer, queueCurrentDraft } = renderSubmitHook({
+      attachments: [attachment],
+      busy: true,
+      text: '/work inspect'
+    })
+
+    act(() => hook.result.current.submitDraft())
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith('/work inspect', expect.objectContaining({ attachments: [attachment] }))
+    )
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
   it('queues an attachment-bearing follow-up while busy', () => {
     const attachment: ComposerAttachment = { id: 'doc', kind: 'file', label: 'notes.txt' }
 

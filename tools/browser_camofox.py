@@ -355,18 +355,23 @@ def _fetch_snapshot(session: Dict[str, Any]) -> tuple[str, int]:
 
 def _navigate_tab(task_id: Optional[str], browser_url: str) -> tuple[Dict[str, Any], dict]:
     """Open ``browser_url`` in the task's tab (creating it if missing) and return
-    ``(session, navigate_response)``. A 404 on the existing tab means the server
-    garbage-collected it — recreate instead of failing."""
+    ``(session, navigate_response)``. A 404/410 on the existing tab means the server
+    garbage-collected (or destroyed, after a server restart) the tab — recreate
+    instead of failing."""
     session = _get_session(task_id)
     if session["tab_id"]:
         try:
             data = _post(_tab_path(session, "navigate"), {"userId": session["user_id"], "url": browser_url}, timeout=60)
             return session, data
         except requests.HTTPError as e:
-            if e.response is None or e.response.status_code != 404:
+            # 404 = unknown tab; 410 Gone = tab destroyed / timed out / page crash
+            # (the server maps tab_timeout, tab_destroyed and crash errors to 410).
+            # Either way the cached tab_id is stale — recreate the tab.
+            if e.response is None or e.response.status_code not in (404, 410):
                 raise
-            logger.warning("Camofox tab %s returned 404 — tab was garbage collected. Creating a fresh tab.",
-                           session["tab_id"])
+            logger.warning("Camofox tab %s returned %s — tab was garbage collected. Creating a fresh tab.",
+                           session["tab_id"],
+                           e.response.status_code)
             session["tab_id"] = None
     return _ensure_tab(task_id, browser_url), {"ok": True, "url": browser_url}
 

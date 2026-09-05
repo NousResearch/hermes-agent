@@ -89,13 +89,15 @@ const MIN_VISIBLE_GROUPS = 8
 // in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
 // past the initial commit, so the switch feels instant.
 //
-// 20, down from 60: the first-paint commit is synchronous and uninterruptible,
-// and at 60 cost units it measured 627ms on a real session (LoAF: block=575ms, no
-// attributed script — pure commit). A viewport after scroll-to-bottom shows
-// 1-2 normal turns ≈ 10-20 units; the transition backfill below fills the rest
-// interruptibly, so the only thing a smaller budget changes is how much work
-// blocks the click-to-paint path.
-const FIRST_PAINT_BUDGET = 20
+// 4, down from 20: the first-paint commit is synchronous and uninterruptible.
+// At 60 cost units a real session measured 627ms (LoAF: block=575ms, no
+// attributed script — pure commit); at 20, the production controlled rich-text
+// fixture still mounted five lightweight turns and produced a bimodal
+// 58-150ms click-to-DOM distribution. Four units keeps the newest complete
+// turn in the initial viewport even when that turn alone exceeds the budget.
+// The transition backfill below fills the rest interruptibly, so history
+// remains available.
+export const FIRST_PAINT_BUDGET = 4
 // A hot-hidden transcript is retained for instant tab return, but keeping its
 // full scrollback mounted defeats the bounded pane cache. Preserve only the
 // live tail while hidden; revealing it resumes stepped backfill.

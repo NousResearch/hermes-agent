@@ -282,6 +282,8 @@ class SessionMaintenanceMixin:
                                 if self._write_guards_reject(conn, sid, allow_closed_compression_parent=True)}
             if not session_ids:
                 return 0
+            roots_before = self._capture_display_ancestor_roots(conn, session_ids)
+            surviving_child_ids = self._surviving_children_for_deleted_sessions(conn, session_ids)
             conn.execute(f"UPDATE sessions SET parent_session_id = NULL "
                          f"WHERE parent_session_id IN ({_placeholders(session_ids)})", list(session_ids))
             for sid in session_ids:
@@ -289,6 +291,7 @@ class SessionMaintenanceMixin:
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
                 removed_ids.append(sid)
             self._delete_unreferenced_system_prompts(conn)
+            self._invalidate_display_topology(conn, roots_before, surviving_child_ids)
             return len(session_ids)
         count = self._execute_write(_do)
         for sid in removed_ids:

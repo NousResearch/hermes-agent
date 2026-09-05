@@ -285,6 +285,7 @@ class SessionMessagesMixin:
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
+            self._bump_display_revision(conn, session_id)
             return msg_id
         # THE critical write (failure aborts the turn): long patience so a sibling legitimately
         # holding the lock for seconds (VACUUM, checkpoint) can't kill it.
@@ -307,10 +308,12 @@ class SessionMessagesMixin:
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
             from agent.transcript_repair import resolve_and_repair_transcript_batch
-            inserted_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
+            inserted_rows, repaired_visible_rows = resolve_and_repair_transcript_batch(conn, session_id, messages,
                 encode_content_fn=self._encode_content, decode_content_fn=self._decode_content)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+            if inserted > 0 or repaired_visible_rows > 0:
+                self._bump_display_revision(conn, session_id)
             return inserted
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
@@ -322,15 +325,29 @@ class SessionMessagesMixin:
         producer provenance survives without classifying by content at render time."""
         if not session_id or not content or not display_kind:
             return False
+        stored_display_kind = _scrub_surrogates(display_kind)
+        stored_display_metadata = self._encode_display_metadata(display_metadata)
         def _do(conn):
-            row = conn.execute("SELECT id FROM messages WHERE session_id = ? AND role = ? "
+            row = conn.execute("SELECT id, display_kind, display_metadata FROM messages "
+                "WHERE session_id = ? AND role = ? "
                 "AND content = ? AND active = 1 ORDER BY id DESC LIMIT 1",
                 (session_id, role, self._encode_content(content))).fetchone()
             if row is None:
                 return False
-            conn.execute("UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
-                (_scrub_surrogates(display_kind), self._encode_display_metadata(display_metadata), row[0]))
-            return True
+            current_metadata = self._decode_display_metadata(row["display_metadata"])
+            requested_metadata = self._decode_display_metadata(stored_display_metadata)
+            current_metadata = None if current_metadata == {} else current_metadata
+            requested_metadata = None if requested_metadata == {} else requested_metadata
+            if row["display_kind"] == stored_display_kind and current_metadata == requested_metadata:
+                return False
+            updated = conn.execute(
+                "UPDATE messages SET display_kind = ?, display_metadata = ? WHERE id = ?",
+                (stored_display_kind, stored_display_metadata, row["id"]),
+            )
+            if updated.rowcount > 0:
+                self._bump_display_revision(conn, session_id)
+                return True
+            return False
         return self._execute_write(_do)
 
     def _reaction_list(self, meta: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -351,6 +368,7 @@ class SessionMessagesMixin:
                 return None
             meta = self._decode_display_metadata(row[0]) or {}
             existing = self._reaction_list(meta)
+            visible_before = list(existing)
             reactions = [r for r in existing if r.get("author") != author]
             previous = next((r for r in existing if r.get("author") == author), None)
             if emoji and (previous is None or previous.get("emoji") != emoji):
@@ -360,6 +378,10 @@ class SessionMessagesMixin:
             else:
                 meta.pop(self.REACTIONS_METADATA_KEY, None)
             conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta) if meta else None, message_row_id))
+            if self._encode_display_metadata(
+                {self.REACTIONS_METADATA_KEY: visible_before}
+            ) != self._encode_display_metadata({self.REACTIONS_METADATA_KEY: reactions}):
+                self._bump_display_revision(conn, session_id)
             return reactions
         return self._execute_write(_do)
 
@@ -454,12 +476,18 @@ class SessionMessagesMixin:
         either way; only the durability of the dropped turns differs.
         """
         from hermes_state_errors import CompressionSessionClosedError
+        active_clause = " AND active = 1" if active_only or archive_dropped else ""
         def _do(conn):
             if reject_active_turn_lease:
                 self._check_transcript_write_guards(
                     conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
             elif _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (session_id,)).fetchone()):
                 raise CompressionSessionClosedError(session_id)
+            affected_before = conn.execute(
+                f"SELECT 1 FROM messages WHERE session_id = ?{active_clause} LIMIT 1",
+                (session_id,),
+            ).fetchone() is not None
+            roots_before = self._capture_display_ancestor_roots(conn, [session_id])
             if archive_dropped:
                 # FTS triggers don't fire on `active`: replaced turns stay searchable (include_inactive=True).
                 conn.execute("UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1", (session_id,))
@@ -468,6 +496,8 @@ class SessionMessagesMixin:
             conn.execute(_RESET_COUNTERS_SQL, (session_id,))
             total_messages, total_tool_calls = self._insert_message_rows(conn, session_id, messages)
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (total_messages, total_tool_calls, session_id))
+            if affected_before or total_messages > 0:
+                self._bump_display_revision(conn, session_id, roots_before=roots_before)
         self._execute_write(_do)
 
     def has_archived_messages(self, session_id: str) -> bool:
@@ -537,6 +567,11 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            had_active_messages = conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND active = 1 LIMIT 1",
+                (session_id,),
+            ).fetchone() is not None
+            roots_before = self._capture_display_ancestor_roots(conn, [session_id])
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))
@@ -559,11 +594,13 @@ class SessionMessagesMixin:
                 conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
             if tail_ids:
-                self._clone_message_rows(conn, tail_ids)
+                self._clone_message_rows_with_lineage(conn, tail_ids, session_id)
                 inserted += len(tail_ids)
                 tool_calls_total += tail_tool_calls
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+            if had_active_messages or inserted > 0:
+                self._bump_display_revision(conn, session_id, roots_before=roots_before)
             return inserted
         return self._execute_write(_do)
 
@@ -631,27 +668,12 @@ class SessionMessagesMixin:
         """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
         rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
         ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging."""
-        if after_id is not None and (latest or offset):
-            raise ValueError("after_id is incompatible with latest/offset paging")
-        if after_id is not None and include_compacted:
-            raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
-        active_clause = self._active_clause(include_inactive, include_compacted)
-        if include_compacted:
-            # Full display set (the UI row cap lives in the endpoint), dedupe, then page ([:None] is a no-op).
-            rows = self._dedupe_display_generations(self._read_all(
-                "SELECT * FROM messages WHERE session_id = ?" + active_clause + " ORDER BY id ASC", [session_id]))
-            rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
-        else:
-            sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
-                f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")
-            params: list = [session_id] if after_id is None else [session_id, after_id]
-            if limit is not None or offset:
-                # SQLite's OFFSET requires LIMIT; -1 means "no limit".
-                sql += " LIMIT ? OFFSET ?"
-                params.extend([-1 if limit is None else limit, offset])
-            rows = self._read_all(sql, params)
-            if latest:
-                rows.reverse()
+        with self._read_ctx() as conn:
+            rows = self._get_message_rows_from_conn(
+                conn, session_id, include_inactive=include_inactive,
+                include_compacted=include_compacted, limit=limit, offset=offset,
+                latest=latest, after_id=after_id,
+            )
         return [self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True) for row in rows]
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
@@ -698,32 +720,11 @@ class SessionMessagesMixin:
         if not session_id:
             return session_id
         try:
-            session_id = self.get_compression_tip(session_id) or session_id
+            with self._read_ctx() as conn:
+                tip, _path = self._resolve_resume_lineage_from_conn(conn, session_id)
+            return tip
         except Exception:
-            pass
-        with self._read_ctx() as conn:
-            current = session_id
-            seen = {current}
-            best = None  # deepest node with messages
-            for _ in range(32):
-                try:
-                    if conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (current,)).fetchone() is not None:
-                        best = current
-                    child_row = conn.execute(
-                        "SELECT id FROM sessions AS child WHERE child.parent_session_id = ? "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
-                        f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
-                        "  AND COALESCE(child.source, '') != 'tool' "
-                        "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()
-                except Exception:
-                    return session_id
-                if child_row is None or not child_row["id"] or child_row["id"] in seen:
-                    break
-                current = child_row["id"]
-                seen.add(current)
-            return best if best is not None else session_id
+            return session_id
 
     def _fetch_conversation_rows(self, session_ids: List[str], active_clause: str, *, with_session_id: bool):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
@@ -741,11 +742,18 @@ class SessionMessagesMixin:
         only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever); the stored transcript is never mutated."""
-        rows = self._fetch_conversation_rows(
-            self._resume_lineage_ids(session_id) if include_ancestors else [session_id],
-            self._active_clause(include_inactive, include_compacted), with_session_id=False)
-        if include_compacted:
-            rows = self._dedupe_display_generations(rows)
+        session_ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS} FROM messages "
+                f"WHERE session_id IN ({_placeholders(session_ids)})"
+                f"{self._active_clause(include_inactive, include_compacted)} ORDER BY id",
+                tuple(session_ids),
+            ).fetchall()
+            if include_compacted:
+                rows = self._dedupe_legacy_message_clone_rows(
+                    conn, self._remove_proven_message_clone_sources(conn, rows, session_ids)
+                )
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids)
 
@@ -846,21 +854,30 @@ class SessionMessagesMixin:
         read as deleted even though every row is still on disk, and the REST transcript read (which has
         always included them) disagreed with this one about the same session (#92080).
         """
-        rows = self._fetch_conversation_rows(
-            self._resume_lineage_ids(session_id), _DISPLAY_ACTIVE_CLAUSE, with_session_id=True)
+        session_ids = self._resume_lineage_ids(session_id)
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} FROM messages "
+                f"WHERE session_id IN ({_placeholders(session_ids)})"
+                f"{_DISPLAY_ACTIVE_CLAUSE} ORDER BY id",
+                tuple(session_ids),
+            ).fetchall()
+            display_rows = self._dedupe_legacy_message_clone_rows(
+                conn, self._remove_proven_message_clone_sources(conn, rows, session_ids)
+            )
         # The model projection stays active-only: it is the compressed working context.
         model_history = self._rows_to_conversation(
             [r for r in rows if r["session_id"] == session_id and r["active"]], session_id=session_id,
             include_ancestors=False, repair_alternation=True, include_row_ids=True, include_summary_markers=True)
         display_history = self._rows_to_conversation(
-            self._dedupe_display_generations(rows), session_id=session_id,
+            display_rows, session_id=session_id,
             include_ancestors=True, repair_alternation=False, include_row_ids=True)
         return model_history, display_history
 
     def _resume_lineage_ids(self, session_id: str) -> List[str]:
         """Session ids a display resume materializes: the compression lineage, or the session alone for an
         explicit ``/branch`` copy. Shared with the resume guard so it counts exactly what a resume loads."""
-        return [session_id] if self._is_explicit_branch_session(session_id) else self._session_lineage_root_to_tip(session_id)
+        return self._history_lineage_root_to_tip(session_id)
 
     def _resume_count_scope(self, session_id: str, tip_only: bool) -> Tuple[List[str], str]:
         """``tip_only``: the tip's ACTIVE rows (model restore); else the full-lineage DISPLAY set."""
@@ -902,8 +919,16 @@ class SessionMessagesMixin:
         session_ids = self._resume_lineage_ids(session_id)
         if len(session_ids) <= 1:
             return []
-        rows = self._dedupe_display_generations(
-            self._fetch_conversation_rows(session_ids, _DISPLAY_ACTIVE_CLAUSE, with_session_id=True))
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} FROM messages "
+                f"WHERE session_id IN ({_placeholders(session_ids)})"
+                f"{_DISPLAY_ACTIVE_CLAUSE} ORDER BY id",
+                tuple(session_ids),
+            ).fetchall()
+            rows = self._dedupe_legacy_message_clone_rows(
+                conn, self._remove_proven_message_clone_sources(conn, rows, session_ids)
+            )
         ancestor_ids = {int(row["id"]) for row in rows if row["session_id"] != session_id and row["id"] is not None}
         if not ancestor_ids:
             return []
@@ -1004,6 +1029,7 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(
                 conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
+            roots_before = self._capture_display_ancestor_roots(conn, [session_id])
             if expected_active_ids is not None:
                 active_rows = conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()
                 if [int(r[0]) for r in active_rows] != expected_active_ids:
@@ -1030,6 +1056,8 @@ class SessionMessagesMixin:
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
             message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
+            if ids or replacement_message_id is not None:
+                self._bump_display_revision(conn, session_id, roots_before=roots_before)
             head_id = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
             return target_row, ids, head_id, replacement_message_id
@@ -1038,6 +1066,24 @@ class SessionMessagesMixin:
         target_row["content"] = self._decode_content(target_row.get("content"))
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
                 **({"replacement_message_id": replacement_message_id} if preserve_compaction_handoff else {})}
+
+    def restore_rewound(self, session_id: str, since_message_id: int) -> int:
+        """Mark inactive rows at or after *since_message_id* active again."""
+        def _do(conn):
+            ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 0",
+                    (session_id, since_message_id),
+                ).fetchall()
+            ]
+            if ids:
+                conn.execute(
+                    f"UPDATE messages SET active = 1 WHERE id IN ({_placeholders(ids)})", ids
+                )
+                self._bump_display_revision(conn, session_id)
+            return len(ids)
+        return self._execute_write(_do)
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""
@@ -1069,9 +1115,12 @@ class SessionMessagesMixin:
                 return False
         if not isinstance(cfg, dict):
             return False
-        markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"))
         parent_id = session.get("parent_session_id")
-        return parent_id in markers if parent_id else any(m is not None for m in markers)
+        branched = cfg.get("_branched_from")
+        delegated = cfg.get("_delegate_from")
+        if parent_id:
+            return branched == parent_id or delegated == parent_id
+        return delegated is not None and delegated != ""
 
     def is_explicit_fork_child(self, session_id: str) -> bool:
         """Read-only :meth:`_is_explicit_fork_child_row`; a missing row is not a fork (prompt_cache_scope keeps
@@ -1099,8 +1148,11 @@ class SessionMessagesMixin:
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
         def _do(conn):
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            roots_before = self._capture_display_ancestor_roots(conn, [session_id])
+            deleted = conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute(_RESET_COUNTERS_SQL, (session_id,))
+            if deleted.rowcount > 0:
+                self._bump_display_revision(conn, session_id, roots_before=roots_before)
         self._execute_write(_do)
 
     def purge_stale_tool_call_markers(self, *, dry_run: bool = False, backup: bool = True) -> Dict[str, Any]:
@@ -1130,7 +1182,15 @@ class SessionMessagesMixin:
         def _do(conn):
             ids = _find_affected(conn)
             if ids:
+                sessions = conn.execute(
+                    f"SELECT DISTINCT session_id FROM messages WHERE id IN ({_placeholders(ids)})", ids
+                ).fetchall()
+                roots = self._capture_display_ancestor_roots(
+                    conn, [row["session_id"] for row in sessions]
+                )
                 conn.execute(f"UPDATE messages SET content = '' WHERE id IN ({_placeholders(ids)})", ids)
+                for root_id in roots:
+                    self._bump_display_revision_root(conn, root_id)
             return ids
         affected_ids = self._execute_write(_do)
         if affected_ids:

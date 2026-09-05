@@ -37,11 +37,66 @@ connection count and make such assertions flaky.
 
 import hermes_state_readpool
 import queue
+import sqlite3
 import threading
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_state import SessionDB, StateDbReplacedError
+
+
+class _FaultInjectedReadConnection:
+    """Proxy a real tracked reader while faulting transaction boundaries."""
+
+    def __init__(self, connection, *, fail_begin=False, fail_rollback=False):
+        self._connection = connection
+        self.fail_begin = fail_begin
+        self.fail_rollback = fail_rollback
+        self.closed = False
+
+    @property
+    def in_transaction(self):
+        return self._connection.in_transaction
+
+    def execute(self, sql, parameters=()):
+        if sql == "BEGIN" and self.fail_begin:
+            raise sqlite3.OperationalError("forced begin failure")
+        if sql == "ROLLBACK" and self.fail_rollback:
+            raise sqlite3.OperationalError("forced rollback failure")
+        return self._connection.execute(sql, parameters)
+
+    def close(self):
+        self.closed = True
+        self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+def _install_faulty_pooled_reader(db, **faults):
+    connection = db._checkout_read_conn()
+    assert connection is not None, "test requires a pooled WAL reader"
+    faulty = _FaultInjectedReadConnection(connection, **faults)
+    db._read_pool.put_nowait(faulty)
+    return faulty
+
+
+def _install_faulty_primary_reader(db, monkeypatch, **faults):
+    """Force the transaction helper onto a faulting writer fallback."""
+    monkeypatch.setattr(db, "_checkout_read_conn", lambda: None)
+    faulty = _FaultInjectedReadConnection(db._conn, **faults)
+    db._conn = faulty
+    return faulty
+
+
+def _assert_discarded_then_healthy(db, faulty):
+    assert faulty.closed, "unhealthy reader was not closed"
+    with db._read_pool.mutex:
+        assert faulty not in db._read_pool.queue, "unhealthy reader was requeued"
+
+    assert db.get_session("s1")["id"] == "s1"
+    with db._read_ctx() as healthy:
+        assert healthy is not faulty, "subsequent read reused the poisoned reader"
 
 
 def _live_count(path) -> int:
@@ -103,6 +158,158 @@ def test_read_conn_returned_to_pool_and_reused(db):
     assert db._read_pool.qsize() >= 1, "connection was not returned to the pool"
     with db._read_ctx() as conn:
         assert conn is first, "pooled connection was not reused"
+
+
+@pytest.mark.requires_wal
+def test_read_transaction_discards_connection_already_in_transaction(db):
+    faulty = _install_faulty_pooled_reader(db)
+    faulty.execute("BEGIN")
+
+    with pytest.raises(
+        RuntimeError, match="unexpectedly has an active transaction"
+    ):
+        with db._read_transaction_ctx():
+            pass
+
+    _assert_discarded_then_healthy(db, faulty)
+
+
+@pytest.mark.requires_wal
+def test_read_transaction_discards_connection_when_begin_fails(db):
+    faulty = _install_faulty_pooled_reader(db, fail_begin=True)
+
+    with pytest.raises(sqlite3.OperationalError, match="forced begin failure"):
+        with db._read_transaction_ctx():
+            pass
+
+    _assert_discarded_then_healthy(db, faulty)
+
+
+@pytest.mark.requires_wal
+def test_read_transaction_preserves_body_error_when_rollback_fails(db):
+    class BodyFailure(RuntimeError):
+        pass
+
+    faulty = _install_faulty_pooled_reader(db, fail_rollback=True)
+    original = BodyFailure("sentinel body failure")
+
+    with pytest.raises(BodyFailure, match="sentinel body failure") as exc_info:
+        with db._read_transaction_ctx():
+            raise original
+
+    assert exc_info.value is original
+    _assert_discarded_then_healthy(db, faulty)
+
+
+@pytest.mark.requires_wal
+def test_read_transaction_surfaces_rollback_error_after_successful_body(db):
+    faulty = _install_faulty_pooled_reader(db, fail_rollback=True)
+
+    with pytest.raises(sqlite3.OperationalError, match="forced rollback failure"):
+        with db._read_transaction_ctx() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    _assert_discarded_then_healthy(db, faulty)
+
+
+def test_fallback_read_transaction_replaces_primary_after_rollback_failure(db, monkeypatch):
+    faulty = _install_faulty_primary_reader(db, monkeypatch, fail_rollback=True)
+
+    with pytest.raises(sqlite3.OperationalError, match="forced rollback failure"):
+        with db._read_transaction_ctx() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    assert faulty.closed
+    assert db._conn is not faulty
+    assert db._conn.in_transaction is False
+    assert db.get_session("s1")["id"] == "s1"
+    db.create_session("after-primary-recovery", source="cli")
+    assert db.get_session("after-primary-recovery")["id"] == "after-primary-recovery"
+
+
+def test_fallback_read_transaction_preserves_body_error_and_recovers_primary(
+    db, monkeypatch
+):
+    class BodyFailure(RuntimeError):
+        pass
+
+    faulty = _install_faulty_primary_reader(db, monkeypatch, fail_rollback=True)
+    original = BodyFailure("sentinel body failure")
+
+    with pytest.raises(BodyFailure, match="sentinel body failure") as exc_info:
+        with db._read_transaction_ctx():
+            raise original
+
+    assert exc_info.value is original
+    assert faulty.closed
+    assert db._conn is not faulty
+    assert db._conn.in_transaction is False
+    assert db.get_session("s1")["id"] == "s1"
+
+
+def test_fallback_read_transaction_fails_closed_when_primary_reopen_fails(
+    db, monkeypatch
+):
+    class BodyFailure(RuntimeError):
+        pass
+
+    faulty = _install_faulty_primary_reader(db, monkeypatch, fail_rollback=True)
+    original = BodyFailure("sentinel body failure")
+
+    def fail_reopen(*_args, **_kwargs):
+        raise sqlite3.OperationalError("forced primary reopen failure")
+
+    monkeypatch.setattr("hermes_state._connect_tracked_db", fail_reopen)
+
+    with pytest.raises(BodyFailure, match="sentinel body failure") as exc_info:
+        with db._read_transaction_ctx():
+            raise original
+
+    assert exc_info.value is original
+    assert faulty.closed
+    assert db._conn is None
+    assert db._primary_connection_recovery_failed is True
+    with pytest.raises(
+        RuntimeError, match="primary connection is unavailable after failed recovery"
+    ):
+        db.get_session("s1")
+    with pytest.raises(
+        RuntimeError, match="primary connection is unavailable after failed recovery"
+    ):
+        db.create_session("after-primary-recovery-failure", source="cli")
+
+
+def test_fallback_read_transaction_reopens_after_close(db, monkeypatch):
+    monkeypatch.setattr(db, "_checkout_read_conn", lambda: None)
+    db.close()
+
+    with db._read_transaction_ctx() as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    assert db._conn is not None
+
+
+def test_fallback_read_transaction_does_not_reopen_replaced_database(
+    db, monkeypatch
+):
+    faulty = _install_faulty_primary_reader(db, monkeypatch, fail_rollback=True)
+    monkeypatch.setattr(db, "_db_file_was_replaced", lambda: True)
+    reconnect_attempts = []
+
+    def unexpected_reconnect(*args, **kwargs):
+        reconnect_attempts.append((args, kwargs))
+        raise AssertionError("must not reconnect to a replaced database")
+
+    monkeypatch.setattr("hermes_state._connect_tracked_db", unexpected_reconnect)
+
+    with pytest.raises(StateDbReplacedError, match="replaced underneath"):
+        with db._read_transaction_ctx() as conn:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    assert faulty.closed
+    assert db._conn is None
+    assert db._db_replaced is True
+    assert reconnect_attempts == []
 
 
 @pytest.mark.requires_wal

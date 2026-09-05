@@ -12,6 +12,8 @@ soft-deleted Undo/Rewind rows (``active=0, compacted=0``) — that remains the
 job of ``include_inactive`` (audit / debug reads).
 """
 
+import sqlite3
+
 import pytest
 
 from hermes_state import SessionDB
@@ -119,26 +121,112 @@ class TestDisplayDedupe:
     """
 
     def _copy_tail_as_new_generation(self, db, sid, ids):
-        """Simulate one compaction epoch: duplicate rows as active=0,
-        compacted=1 with the SAME content and timestamp (the real
-        copy-protected-tail behaviour)."""
+        """Simulate the writer's explicit source-to-live-clone transition."""
 
         def _do(conn):
             placeholders = ",".join("?" * len(ids))
             conn.execute(
-                f"""
-                INSERT INTO messages
-                    (session_id, role, content, tool_call_id, tool_calls,
-                     tool_name, timestamp, active, compacted)
-                SELECT session_id, role, content, tool_call_id, tool_calls,
-                       tool_name, timestamp, 0, 1
-                FROM messages
-                WHERE session_id = ? AND id IN ({placeholders})
-                """,
+                f"UPDATE messages SET active = 0, compacted = 1 "
+                f"WHERE session_id = ? AND id IN ({placeholders})",
                 [sid, *ids],
             )
+            db._clone_message_rows_with_lineage(conn, ids, sid)
 
         db._execute_write(_do)
+
+    def test_real_watermark_clone_is_surfaced_once(self, db):
+        sid = "s1"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "before compression")
+        watermark = db.get_active_message_watermark(sid)
+        db.append_message(sid, "assistant", "concurrent tail")
+
+        db.archive_and_compact(
+            sid,
+            [{"role": "assistant", "content": "summary"}],
+            watermark=watermark,
+        )
+
+        messages = db.get_messages(sid, include_compacted=True)
+        tail_rows = [
+            message
+            for message in messages
+            if message["content"] == "concurrent tail"
+        ]
+        assert len(tail_rows) == 1
+        assert tail_rows[0]["active"] == 1
+
+    def test_legacy_rotation_without_provenance_uses_display_compat_dedupe(
+        self, tmp_path
+    ):
+        db_path = tmp_path / "legacy-state.db"
+        legacy = SessionDB(db_path)
+        legacy.create_session("parent", "desktop")
+        legacy.append_message("parent", "assistant", "before compression")
+        watermark = legacy.get_active_message_watermark("parent")
+        legacy.append_message("parent", "user", "concurrent tail")
+        legacy.publish_compression_child(
+            parent_session_id="parent",
+            child_session_id="child",
+            source="desktop",
+            messages=[{"role": "assistant", "content": "summary"}],
+            watermark=watermark,
+            require_compression_lease=False,
+        )
+        legacy.close()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP TABLE message_clone_lineage")
+
+        upgraded = SessionDB(db_path)
+        try:
+            page = upgraded.get_display_message_page(
+                "parent", limit=120, latest=False, include_compacted=True
+            )
+            tail_rows = [
+                message
+                for message in page["messages"]
+                if message["content"] == "concurrent tail"
+            ]
+            # Pre-provenance stores used payload-based display dedupe. Preserve
+            # that compatibility only for rows that predate the lineage table,
+            # so upgrading does not make an already-collapsed logical tail
+            # suddenly render twice.
+            assert len(tail_rows) == 1
+        finally:
+            upgraded.close()
+
+    def test_post_provenance_equal_rows_remain_distinct(self, tmp_path):
+        db_path = tmp_path / "provenance-state.db"
+        created = SessionDB(db_path)
+        created.close()
+
+        reopened = SessionDB(db_path)
+        try:
+            reopened.create_session("s1", "desktop")
+
+            def _insert_equal_rows(conn):
+                conn.executemany(
+                    "INSERT INTO messages "
+                    "(session_id, role, content, timestamp, active, compacted) "
+                    "VALUES (?, ?, ?, ?, 1, 0)",
+                    [
+                        ("s1", "assistant", "same payload", 1700000000.0),
+                        ("s1", "assistant", "same payload", 1700000000.0),
+                    ],
+                )
+
+            reopened._execute_write(_insert_equal_rows)
+            page = reopened.get_display_message_page(
+                "s1", limit=120, latest=False, include_compacted=True
+            )
+            equal_rows = [
+                message
+                for message in page["messages"]
+                if message["content"] == "same payload"
+            ]
+            assert len(equal_rows) == 2
+        finally:
+            reopened.close()
 
     def test_copied_protected_tail_is_surfaced_once(self, db):
         """A message copied across compaction epochs appears exactly once."""
@@ -165,10 +253,11 @@ class TestDisplayDedupe:
         db.create_session(sid, source="cli")
         db.append_messages_batch(sid, [{"role": "user", "content": "dup q"}])
         gen1 = _row_ids(db, sid)
-        self._copy_tail_as_new_generation(db, sid, gen1)  # compacted copy
+        self._copy_tail_as_new_generation(db, sid, gen1)
         msgs = db.get_messages(sid, include_compacted=True)
         assert len(msgs) == 1
-        assert msgs[0]["active"] == 1  # live row wins
+        assert msgs[0]["active"] == 1
+        gen2 = [msgs[0]["id"]]
 
         # Archive the live row and copy again: the newest compacted copy wins.
         db._execute_write(
@@ -177,7 +266,7 @@ class TestDisplayDedupe:
                 [sid],
             )
         )
-        self._copy_tail_as_new_generation(db, sid, gen1)
+        self._copy_tail_as_new_generation(db, sid, gen2)
         newest_id = max(m["id"] for m in db.get_messages(sid, include_inactive=True))
         msgs = db.get_messages(sid, include_compacted=True)
         assert len(msgs) == 1

@@ -13,6 +13,8 @@ fix, so resuming a polluted session doesn't re-teach the model to keep
 emitting the marker. Unaffected sessions pass through unchanged.
 """
 
+import pytest
+
 from hermes_state import (
     _is_stale_tool_call_marker_message,
     _strip_stale_tool_call_markers,
@@ -204,6 +206,74 @@ class TestPurgeStaleToolCallMarkers:
                 second = db.purge_stale_tool_call_markers(dry_run=False)
                 assert second["rows_affected"] == 0
                 assert second["backup_path"] is None  # nothing to change, nothing to back up
+            finally:
+                db.close()
+
+    def test_purge_bumps_each_visible_lineage_once_and_invalidates_conditional_page(self):
+        import tempfile
+        from pathlib import Path
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                db.create_session("root", source="cli")
+                db.append_message(
+                    "root", role="assistant", content="[memory]",
+                    tool_calls=[{"id": "1", "function": {"name": "a", "arguments": "{}"}}],
+                )
+                db.append_message(
+                    "root", role="assistant", content="[memory]",
+                    tool_calls=[{"id": "2", "function": {"name": "b", "arguments": "{}"}}],
+                )
+                db.create_session("other", source="cli")
+                db.append_message(
+                    "other", role="assistant", content="[memory]",
+                    tool_calls=[{"id": "3", "function": {"name": "c", "arguments": "{}"}}],
+                )
+                root_before = db.get_display_revision("root")
+                other_before = db.get_display_revision("other")
+
+                assert db.get_display_message_page(
+                    "root", limit=120, known_display_revision=root_before
+                )["unchanged"] is True
+                report = db.purge_stale_tool_call_markers(backup=False)
+
+                assert report["rows_affected"] == 3
+                assert db.get_display_revision("root") == root_before + 1
+                assert db.get_display_revision("other") == other_before + 1
+                assert db.get_display_message_page(
+                    "root", limit=120, known_display_revision=root_before
+                )["unchanged"] is False
+                assert db.purge_stale_tool_call_markers(backup=False)["rows_affected"] == 0
+                assert db.get_display_revision("root") == root_before + 1
+            finally:
+                db.close()
+
+    def test_purge_rolls_back_marker_write_when_revision_bump_fails(self, monkeypatch):
+        import tempfile
+        from pathlib import Path
+        import sqlite3
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            try:
+                db.create_session("root", source="cli")
+                db.append_message(
+                    "root", role="assistant", content="[memory]",
+                    tool_calls=[{"id": "1", "function": {"name": "a", "arguments": "{}"}}],
+                )
+
+                def fail_bump(conn, root_id):
+                    raise sqlite3.OperationalError("display revision write failed")
+
+                monkeypatch.setattr(db, "_bump_display_revision_root", fail_bump)
+                with pytest.raises(sqlite3.OperationalError, match="display revision write failed"):
+                    db.purge_stale_tool_call_markers(backup=False)
+
+                row = db._conn.execute("SELECT content FROM messages").fetchone()
+                assert row["content"] == "[memory]"
             finally:
                 db.close()
 

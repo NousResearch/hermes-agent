@@ -12,7 +12,30 @@ import {
 } from '@/app/right-sidebar/terminal/terminals'
 import { $repoStatusByCwd } from '@/store/coding-status'
 import { $gateway } from '@/store/gateway'
-import { $currentCwd, $messages, setBusy, setCurrentCwdTransient, setMessages } from '@/store/session'
+import {
+  $activeSessionId,
+  $awaitingResponse,
+  $busy,
+  $currentCwd,
+  $messages,
+  $selectedStoredSessionId,
+  $sessions,
+  setActiveSessionId,
+  setAwaitingResponse,
+  setBusy,
+  setCurrentCwdTransient,
+  setMessages,
+  setSelectedStoredSessionId
+} from '@/store/session'
+import { dropTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
+
+import { SESSION_OPEN_MARKS } from '../session/hooks/use-session-actions/session-open-marks'
+import {
+  runSessionOpenPerfFixture,
+  type SessionOpenPerfFixtureCleanup
+} from '../session/hooks/use-session-actions/session-open-perf-fixture'
+
+import { selectFirstPaintTranscriptProof, waitForSessionTranscriptDom } from './session-open-dom-proof'
 
 type Sample = {
   id: string
@@ -24,6 +47,14 @@ type Sample = {
 }
 
 type SyntheticDriverHandle = { stop: () => void }
+
+type SessionSwitchFixtureResult = {
+  /** The current resume/session.info protocol has no deferred-prewarm completion signal. */
+  agentReady: null
+  /** DOM observation after cache.commit; this is intentionally not a production performance mark. */
+  cachePaintReady?: number
+  marks: Partial<Record<(typeof SESSION_OPEN_MARKS)[number], number>>
+}
 
 declare global {
   interface Window {
@@ -55,6 +86,7 @@ declare global {
       rightPaneReset: () => void
       rightPaneSelect: (id: string) => void
       rightPaneWrite: (procId: string, chunk: string) => void
+      sessionSwitch: (opts?: { delayRuntimeMs?: number; verifiedCache?: boolean }) => Promise<SessionSwitchFixtureResult>
       reset: () => void
       snapshotMsgs: () => number
     }
@@ -118,6 +150,7 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
   // Driven by the perf harness (scripts/perf/) when no live LLM credit is available.
   let baseline: ReturnType<typeof $messages.get> | null = null
   let activeHandle: SyntheticDriverHandle | null = null
+  let sessionSwitchRound = 0
 
   let rightPaneBaseline: null | {
     activeTerminalId: null | string
@@ -143,6 +176,36 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
     $repoStatusByCwd.set(rightPaneBaseline.repoStatusByCwd)
     setCurrentCwdTransient(rightPaneBaseline.cwd)
     rightPaneBaseline = null
+  }
+
+  const marksForCurrentRound = (): SessionSwitchFixtureResult['marks'] =>
+    Object.fromEntries(
+      SESSION_OPEN_MARKS.flatMap(name => {
+        const entries = performance.getEntriesByName(name)
+        // A cold open can use the verified tail twice (the immediate paint and
+        // a later fallback). The controlled cache-paint metric is intentionally
+        // the first actual cache commit followed by rAF observation, never the
+        // later bookkeeping commit.
+        const entry = name === 'hermes.session.cache.commit' ? entries.at(0) : entries.at(-1)
+
+        return entry ? [[name, entry.startTime]] : []
+      })
+    )
+
+  const waitForSessionOpenMark = async (name: (typeof SESSION_OPEN_MARKS)[number]): Promise<number> => {
+    const deadline = performance.now() + 5_000
+
+    while (performance.now() < deadline) {
+      const entry = performance.getEntriesByName(name).at(-1)
+
+      if (entry) {
+        return entry.startTime
+      }
+
+      await new Promise<void>(resolve => window.setTimeout(resolve, 0))
+    }
+
+    throw new Error(`session-switch fixture did not observe ${name}`)
   }
 
   // One synthetic turn's worth of mixed markdown — prose, a list, a fenced
@@ -267,6 +330,155 @@ if (typeof window !== 'undefined' && !window.__PERF_DRIVE__) {
       return { procId, terminalIds }
     },
     rightPaneWrite: (procId, chunk) => writeAgentTerminalChunk(procId, chunk),
+    sessionSwitch: async ({ delayRuntimeMs = 0, verifiedCache = false } = {}) => {
+      // Controlled rounds clear only their fixed local marks; never wipe
+      // browser navigation, React, or other user performance entries.
+      for (const name of SESSION_OPEN_MARKS) {
+        performance.clearMarks(name)
+      }
+
+      sessionSwitchRound += 1
+
+      const storedSessionId = `perf-session-${sessionSwitchRound}`
+
+      const authority = {
+        connectionId: '',
+        displayRevision: 1,
+        lineageRootId: `perf-root-${sessionSwitchRound}`,
+        profile: 'default',
+        resolvedTipId: storedSessionId
+      }
+
+      // Verified-cache mode must retain the ENTIRE authoritative latest page;
+      // otherwise a conditional unchanged response would prove only the 40-row
+      // storage suffix. REST-publish mode keeps the heavier 80-turn payload.
+      const transcript = Array.from({ length: verifiedCache ? 20 : 80 }, (_, index) => syntheticTurn(index)).flat()
+      const originalActiveSessionId = $activeSessionId.get()
+      const originalAwaitingResponse = $awaitingResponse.get()
+      const originalBusy = $busy.get()
+      const originalMessages = $messages.get()
+      const originalSelectedStoredSessionId = $selectedStoredSessionId.get()
+      const originalSessions = $sessions.get()
+      const fixtureTimestamp = Math.floor(Date.now() / 1_000)
+      let fixtureCleanup: SessionOpenPerfFixtureCleanup = () => undefined
+
+      // Match a listed row to a real v3 local-cache entry. The mounted
+      // useSessionActions hook below performs the real cache read, display
+      // hydration, reconciliation, and fixed production marks. This fixture
+      // supplies only deterministic no-network gateway/REST responses.
+      $sessions.set([
+        {
+          _lineage_root_id: authority.lineageRootId,
+          connection_id: authority.connectionId,
+          display_revision: authority.displayRevision,
+          ended_at: null,
+          id: authority.resolvedTipId,
+          input_tokens: 0,
+          is_active: false,
+          last_active: fixtureTimestamp,
+          message_count: transcript.length,
+          model: null,
+          output_tokens: 0,
+          preview: null,
+          profile: authority.profile,
+          source: 'desktop',
+          started_at: fixtureTimestamp,
+          title: 'Session-open performance fixture',
+          tool_call_count: 0
+        } satisfies (typeof originalSessions)[number]
+      ])
+      const pagination = {
+        limit: 120,
+        offset: 0,
+        order: 'latest' as const,
+        returned: transcript.length
+      }
+      saveTranscriptTail(storedSessionId, transcript, authority, { pagination })
+
+      try {
+        const result = runSessionOpenPerfFixture({
+          delayRuntimeMs,
+          fetchLatest: async knownDisplayRevision =>
+            verifiedCache && knownDisplayRevision === authority.displayRevision
+              ? {
+                  display_revision: authority.displayRevision,
+                  lineage_root_id: authority.lineageRootId,
+                  messages: [],
+                  pagination: { ...pagination, returned: 0 },
+                  resolved_tip_id: authority.resolvedTipId,
+                  session_id: storedSessionId,
+                  unchanged: true
+                }
+              : {
+                  display_revision: authority.displayRevision,
+                  lineage_root_id: authority.lineageRootId,
+                  messages: transcript.map(message => ({
+                    content: message.parts,
+                    role: message.role,
+                    timestamp: message.timestamp
+                  })),
+                  pagination,
+                  resolved_tip_id: authority.resolvedTipId,
+                  session_id: storedSessionId
+                },
+          requestGateway: async method => {
+            if (method !== 'session.resume') {
+              throw new Error(`session-switch fixture received unexpected gateway method: ${method}`)
+            }
+
+            await new Promise<void>(resolve => window.setTimeout(resolve, Math.max(0, delayRuntimeMs)))
+
+            return {
+              info: {},
+              messages: [],
+              messages_omitted: true,
+              resumed: storedSessionId,
+              session_id: `perf-runtime-${sessionSwitchRound}`,
+              session_key: storedSessionId,
+              todo_state: { items: [] }
+            }
+          },
+          storedSessionId
+        })
+
+        let cachePaintReady: number | undefined
+
+        if (verifiedCache) {
+          await waitForSessionOpenMark('hermes.session.cache.commit')
+          const proof = selectFirstPaintTranscriptProof(transcript)
+
+          if (!proof) {
+            throw new Error('session-switch fixture could not select a first-paint transcript proof')
+          }
+
+          cachePaintReady = await waitForSessionTranscriptDom({
+            ...proof,
+            expectedStoredSessionId: storedSessionId,
+            root: document.body
+          })
+        }
+
+        fixtureCleanup = await result
+        await Promise.all([
+          ...(verifiedCache ? [] : [waitForSessionOpenMark('hermes.session.rest.commit')]),
+          waitForSessionOpenMark('hermes.session.resume.ready'),
+          waitForSessionOpenMark('hermes.session.history.ready')
+        ])
+
+        // No agent-ready mark: current protocol cannot report deferred agent
+        // prewarm completion, and deriving one from the mock delay is dishonest.
+        return { agentReady: null, cachePaintReady, marks: marksForCurrentRound() }
+      } finally {
+        fixtureCleanup()
+        dropTranscriptTail(storedSessionId, authority)
+        $sessions.set(originalSessions)
+        setSelectedStoredSessionId(originalSelectedStoredSessionId)
+        setActiveSessionId(originalActiveSessionId)
+        setMessages(originalMessages)
+        setBusy(originalBusy)
+        setAwaitingResponse(originalAwaitingResponse)
+      }
+    },
     loadTranscript: (turns = 200) => {
       if (!baseline) {
         baseline = $messages.get()

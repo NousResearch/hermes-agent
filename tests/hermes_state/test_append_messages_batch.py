@@ -118,6 +118,147 @@ class TestAppendMessagesBatch:
         ).fetchone()
         assert row["message_count"] == 0
 
+    @pytest.mark.parametrize(
+        "repaired_content",
+        [
+            pytest.param("filled", id="text"),
+            pytest.param(
+                [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AA=="},
+                    }
+                ],
+                id="image-only",
+            ),
+            pytest.param(
+                [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": "audio-data"},
+                    }
+                ],
+                id="audio-only",
+            ),
+        ],
+    )
+    def test_repair_only_batch_bumps_revision_without_changing_insert_count(
+        self, db, repaired_content
+    ):
+        message_id = db.append_message("sess-batch", "assistant", "")
+        before = db.get_display_revision("sess-batch")
+
+        inserted = db.append_messages_batch(
+            "sess-batch",
+            [
+                {
+                    "role": "assistant",
+                    "content": repaired_content,
+                    "_row_id": message_id,
+                }
+            ],
+        )
+
+        assert inserted == 0
+        assert [m["content"] for m in db.get_messages("sess-batch")] == [
+            repaired_content
+        ]
+        assert db.get_display_revision("sess-batch") == before + 1
+
+    @pytest.mark.parametrize(
+        "repaired_content",
+        [
+            pytest.param("filled", id="text"),
+            pytest.param(
+                [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AA=="},
+                    }
+                ],
+                id="image-only",
+            ),
+            pytest.param(
+                [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": "audio-data"},
+                    }
+                ],
+                id="audio-only",
+            ),
+        ],
+    )
+    def test_repair_only_batch_rolls_back_when_revision_bump_fails(
+        self, db, monkeypatch, repaired_content
+    ):
+        message_id = db.append_message("sess-batch", "assistant", "")
+        before = db.get_display_revision("sess-batch")
+
+        def fail_bump(conn, session_id):
+            raise sqlite3.OperationalError("display revision write failed")
+
+        monkeypatch.setattr(db, "_bump_display_revision", fail_bump)
+
+        with pytest.raises(sqlite3.OperationalError, match="display revision write failed"):
+            db.append_messages_batch(
+                "sess-batch",
+                [
+                    {
+                        "role": "assistant",
+                        "content": repaired_content,
+                        "_row_id": message_id,
+                    }
+                ],
+            )
+
+        assert [m["content"] for m in db.get_messages("sess-batch")] == [""]
+        row = db._conn.execute(
+            "SELECT message_count FROM sessions WHERE id = ?", ("sess-batch",)
+        ).fetchone()
+        assert row["message_count"] == 1
+        assert db.get_display_revision("sess-batch") == before
+
+    def test_semantically_equal_multimodal_repair_is_noop(self, db):
+        original_content = [
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AA=="},
+            }
+        ]
+        message_id = db.append_message(
+            "sess-batch", "assistant", original_content
+        )
+        raw_before = db._conn.execute(
+            "SELECT content FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()["content"]
+        before = db.get_display_revision("sess-batch")
+        reordered_content = [
+            {
+                "image_url": {"url": "data:image/png;base64,AA=="},
+                "type": "image_url",
+            }
+        ]
+
+        inserted = db.append_messages_batch(
+            "sess-batch",
+            [
+                {
+                    "role": "assistant",
+                    "content": reordered_content,
+                    "_row_id": message_id,
+                }
+            ],
+        )
+
+        assert inserted == 0
+        assert db.get_messages("sess-batch")[0]["content"] == original_content
+        assert db.get_display_revision("sess-batch") == before
+        raw_after = db._conn.execute(
+            "SELECT content FROM messages WHERE id = ?", (message_id,)
+        ).fetchone()["content"]
+        assert raw_after == raw_before
+
     def test_atomicity_all_or_nothing(self, db, monkeypatch):
         """A failure mid-batch leaves ZERO rows and untouched counters."""
         real_insert = SessionDB._insert_message_rows

@@ -1,27 +1,9 @@
 """Process-level bootstrap helpers for ``run_agent``.
 
-Three concerns, all tied to ``AIAgent`` boot-time / runtime IO setup:
-
-1. **Lazy OpenAI SDK import** — ``_load_openai_cls`` + ``_OpenAIProxy``
-   defer the 240ms-ish ``from openai import OpenAI`` cost until first use,
-   while preserving ``isinstance(client, OpenAI)`` checks and
-   ``patch("run_agent.OpenAI", ...)`` test patterns.
-
-2. **Crash-resistant stdio** — ``_SafeWriter`` wraps stdout/stderr so
-   ``OSError: Input/output error`` from broken pipes (systemd, Docker,
-   thread teardown races) cannot crash the agent.  ``_install_safe_stdio``
-   applies the wrapper.
-
-3. **HTTP proxy resolution** — ``_get_proxy_from_env`` reads
-   ``HTTPS_PROXY`` / ``HTTP_PROXY`` / ``ALL_PROXY``;
-   ``_get_proxy_for_base_url`` respects ``NO_PROXY`` for the given base URL.
-4. **Codex dual-stack resilience** — the synchronous ChatGPT/Codex transport
-   races resolved IPv6/IPv4 addresses so a blackholed family cannot exhaust
-   the request watchdog before a working address is attempted.
-
-``run_agent`` re-exports every name so existing
-``from run_agent import _get_proxy_from_env`` imports keep working
-unchanged.
+Lazy OpenAI SDK import (``_OpenAIProxy`` keeps ``isinstance`` and
+``patch("agent.process_bootstrap.OpenAI")`` working), crash-resistant stdio
+(``_SafeWriter``), env-only HTTP proxy resolution, and Codex dual-stack
+(Happy Eyeballs) connection racing.
 """
 
 from __future__ import annotations
@@ -39,8 +21,6 @@ from typing import Any, Optional
 from utils import base_url_hostname, normalize_proxy_url
 
 
-# Cached at module level so we only pay the OpenAI SDK import cost once
-# per process (after the first lazy load).
 _OPENAI_CLS_CACHE = None
 _HAPPY_EYEBALLS_DELAY_SECONDS = 0.25
 
@@ -59,47 +39,36 @@ HERMES_TRANSPORT_OWNER_EXT = "hermes_transport_owner"
 
 
 def _interleave_addrinfos(addrinfos: list[tuple]) -> list[tuple]:
-    """Interleave resolved address families while preserving resolver order."""
+    """Round-robin the resolved address families (deduped), preserving resolver order within each."""
     queues: dict[int, list[tuple]] = {}
-    family_order: list[int] = []
     seen: set[tuple] = set()
     for addrinfo in addrinfos:
         family, socktype, proto, _canonname, sockaddr = addrinfo
-        marker = (family, socktype, proto, sockaddr)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        if family not in queues:
-            queues[family] = []
-            family_order.append(family)
-        queues[family].append(addrinfo)
-
+        if (family, socktype, proto, sockaddr) not in seen:
+            seen.add((family, socktype, proto, sockaddr))
+            queues.setdefault(family, []).append(addrinfo)
     interleaved: list[tuple] = []
     while any(queues.values()):
-        for family in family_order:
-            if queues[family]:
-                interleaved.append(queues[family].pop(0))
+        interleaved.extend(queue.pop(0) for queue in queues.values() if queue)
     return interleaved
 
 
-def _happy_eyeballs_create_connection(
-    address: tuple[str, int],
-    timeout: Optional[float],
-    source_address: Optional[tuple[str, int]] = None,
-    socket_options=(),
-):
-    """Connect using staggered non-blocking attempts across resolved families.
+def _quiet_unregister(selector, sock) -> None:
+    try:
+        selector.unregister(sock)
+    except Exception:
+        pass
 
-    ``socket.create_connection`` tries every address serially. A host with
-    broken-but-advertised IPv6 can therefore consume the full connect timeout
-    for each AAAA record before trying a working IPv4 address. This follows the
-    Happy Eyeballs shape from RFC 8305: retain resolver preference, interleave
-    families, and start the next candidate after a short delay.
+
+def _happy_eyeballs_create_connection(address: tuple[str, int], timeout: Optional[float],
+                                      source_address: Optional[tuple[str, int]] = None, socket_options=()):
+    """RFC 8305-style connect: staggered non-blocking attempts across families.
+
+    ``socket.create_connection`` tries addresses serially, so broken-but-
+    advertised IPv6 can burn the whole timeout per AAAA record before IPv4.
     """
     host, port = address
-    addrinfos = _interleave_addrinfos(
-        socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    )
+    addrinfos = _interleave_addrinfos(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
     if not addrinfos:
         raise OSError(f"getaddrinfo returned no addresses for {host}")
 
@@ -110,35 +79,20 @@ def _happy_eyeballs_create_connection(
     deadline = None if timeout is None else time.monotonic() + max(timeout, 0.0)
     next_launch = time.monotonic()
     pending = list(addrinfos)
-    in_progress = {
-        0,
-        errno.EINPROGRESS,
-        errno.EWOULDBLOCK,
-        errno.EALREADY,
-        errno.EINTR,
-        getattr(errno, "WSAEWOULDBLOCK", 10035),
-    }
+    in_progress = {0, errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY, errno.EINTR, getattr(errno, "WSAEWOULDBLOCK", 10035)}
 
     def start_attempt(addrinfo):
         family, socktype, proto, _canonname, sockaddr = addrinfo
         candidate = socket.socket(family, socktype, proto)
         try:
             if source_address is not None:
-                local_infos = socket.getaddrinfo(
-                    source_address[0],
-                    source_address[1],
-                    family=family,
-                    type=socktype,
-                )
+                local_infos = socket.getaddrinfo(source_address[0], source_address[1], family=family, type=socktype)
                 if not local_infos:
-                    raise OSError(
-                        f"getaddrinfo returned no local {family} address for "
-                        f"{source_address[0]}"
-                    )
+                    raise OSError(f"getaddrinfo returned no local {family} address for {source_address[0]}")
                 candidate.bind(local_infos[0][4])
             candidate.setblocking(False)
             result = candidate.connect_ex(sockaddr)
-            if result == 0 or result == errno.EISCONN:
+            if result in (0, errno.EISCONN):
                 return candidate
             if result not in in_progress:
                 raise OSError(result, os.strerror(result))
@@ -154,11 +108,9 @@ def _happy_eyeballs_create_connection(
             now = time.monotonic()
             if deadline is not None and now >= deadline:
                 raise socket.timeout("timed out")
-
             if pending and now >= next_launch:
-                addrinfo = pending.pop(0)
                 try:
-                    winner = start_attempt(addrinfo)
+                    winner = start_attempt(pending.pop(0))
                 except OSError as exc:
                     last_error = exc
                     if not active:
@@ -167,18 +119,11 @@ def _happy_eyeballs_create_connection(
                 if winner is not None:
                     break
                 next_launch = now + _HAPPY_EYEBALLS_DELAY_SECONDS
-
             wait_timeout = None if deadline is None else max(0.0, deadline - now)
             if pending:
                 until_launch = max(0.0, next_launch - now)
-                wait_timeout = (
-                    until_launch
-                    if wait_timeout is None
-                    else min(wait_timeout, until_launch)
-                )
-
-            events = selector.select(wait_timeout)
-            for key, _mask in events:
+                wait_timeout = until_launch if wait_timeout is None else min(wait_timeout, until_launch)
+            for key, _mask in selector.select(wait_timeout):
                 candidate = key.fileobj
                 error_code = candidate.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                 selector.unregister(candidate)
@@ -194,14 +139,8 @@ def _happy_eyeballs_create_connection(
                 next_launch = time.monotonic()
 
         if winner is None:
-            if last_error is not None:
-                raise last_error
-            raise OSError(f"Could not connect to {host}:{port}")
-
-        try:
-            selector.unregister(winner)
-        except Exception:
-            pass
+            raise last_error if last_error is not None else OSError(f"Could not connect to {host}:{port}")
+        _quiet_unregister(selector, winner)
         active.discard(winner)
         winner.settimeout(timeout)
         for option in socket_options or ():
@@ -210,10 +149,7 @@ def _happy_eyeballs_create_connection(
         return winner
     finally:
         for candidate in active:
-            try:
-                selector.unregister(candidate)
-            except Exception:
-                pass
+            _quiet_unregister(selector, candidate)
             candidate.close()
         selector.close()
 
@@ -227,29 +163,17 @@ class _HappyEyeballsSyncBackend:
     def _default_backend(self):
         if self._fallback is None:
             from httpcore import SyncBackend
-
             self._fallback = SyncBackend()
         return self._fallback
 
-    def connect_tcp(
-        self,
-        host: str,
-        port: int,
-        timeout: Optional[float] = None,
-        local_address: Optional[str] = None,
-        socket_options=None,
-    ):
+    def connect_tcp(self, host: str, port: int, timeout: Optional[float] = None, local_address: Optional[str] = None,
+                    socket_options=None):
         from httpcore import ConnectError, ConnectTimeout
         from httpcore._backends.sync import SyncStream
-
         source_address = None if local_address is None else (local_address, 0)
         try:
-            sock = _happy_eyeballs_create_connection(
-                (host, port),
-                timeout,
-                source_address=source_address,
-                socket_options=socket_options or (),
-            )
+            sock = _happy_eyeballs_create_connection((host, port), timeout, source_address=source_address,
+                                                     socket_options=socket_options or ())
         except socket.timeout as exc:
             raise ConnectTimeout(str(exc)) from exc
         except OSError as exc:
@@ -264,74 +188,48 @@ class _HappyEyeballsSyncBackend:
 
 
 def _uses_codex_cloud_transport(base_url: str) -> bool:
-    return (
-        base_url_hostname(base_url).lower() == "chatgpt.com"
-        and "/backend-api/codex" in str(base_url).lower()
-    )
+    return base_url_hostname(base_url).lower() == "chatgpt.com" and "/backend-api/codex" in str(base_url).lower()
 
 
-def _enable_happy_eyeballs(transport) -> None:
-    """Install the sync racing backend on one httpx transport, if compatible.
+def _enable_happy_eyeballs(transport, skip_pool_types: tuple = ()) -> None:
+    """Install the racing backend on one httpx transport.
 
-    Reaches into httpx/httpcore private attributes (``transport._pool`` /
-    ``pool._network_backend``); safe because httpcore is pinned (1.0.x) and
-    both lookups are hasattr-guarded — on an incompatible httpcore this
-    degrades to the default serial backend instead of crashing.
+    Reaches into private ``transport._pool._network_backend`` (httpcore pinned
+    1.0.x); hasattr-guarded so an incompatible httpcore degrades to the default
+    serial backend. Pools of ``skip_pool_types`` (proxies) are left alone.
     """
     pool = getattr(transport, "_pool", None)
-    if pool is not None and hasattr(pool, "_network_backend"):
+    if pool is not None and hasattr(pool, "_network_backend") and not (skip_pool_types and isinstance(pool, skip_pool_types)):
         pool._network_backend = _HappyEyeballsSyncBackend()
 
 
 def enable_happy_eyeballs_on_client(client) -> None:
-    """Install the sync racing backend on every direct transport of a client.
+    """Install the racing backend on every direct transport of a ready-built httpx.Client.
 
-    Covers a ready-built ``httpx.Client`` (its default transport plus any
-    mounts), for callers that construct clients inline instead of going
-    through :func:`build_keepalive_http_client` — e.g. the Codex OAuth token
-    refresh / device-login / usage-probe clients in ``hermes_cli.auth``.
+    For callers that build clients inline (Codex OAuth/device-login). Proxy-backed
+    pools are skipped (TCP connect goes to the proxy host); async clients need
+    nothing (anyio already races per RFC 8305). Best-effort.
 
-    Proxy-backed transports (``httpcore.HTTPProxy`` / SOCKS pools) are left
-    untouched: with a proxy in play the TCP connect goes to the proxy host,
-    which is out of scope for the direct-transport racing added in #94388.
-    Async clients are also left untouched — httpcore's async backend already
-    performs RFC 8305 racing natively via
-    ``anyio.connect_tcp(happy_eyeballs_delay=0.25)``.
-
-    Best-effort and hasattr-guarded like ``_enable_happy_eyeballs``; on an
-    incompatible httpx/httpcore this silently keeps the default backend.
+    Proxy-backed transports (``httpcore.HTTPProxy`` / SOCKS pools) are left untouched: with a proxy in play
+    the TCP connect goes to the proxy host, which is out of scope for the direct-transport racing added in
+    #94388. Async clients are also left untouched — httpcore's async backend already performs RFC 8305
+    racing natively via ``anyio.connect_tcp(happy_eyeballs_delay=0.25)``.
     """
     try:
         import httpcore
-
         proxy_pool_types = tuple(
-            t
-            for t in (
-                getattr(httpcore, "HTTPProxy", None),
-                getattr(httpcore, "SOCKSProxy", None),
-            )
-            if t is not None
-        )
+            t for t in (getattr(httpcore, "HTTPProxy", None), getattr(httpcore, "SOCKSProxy", None)) if t is not None)
     except Exception:
         return
-
-    transports = [getattr(client, "_transport", None)]
-    transports.extend((getattr(client, "_mounts", None) or {}).values())
-    for transport in transports:
-        pool = getattr(transport, "_pool", None)
-        if pool is None or not hasattr(pool, "_network_backend"):
-            continue
-        if proxy_pool_types and isinstance(pool, proxy_pool_types):
-            continue
-        pool._network_backend = _HappyEyeballsSyncBackend()
+    for transport in (getattr(client, "_transport", None), *(getattr(client, "_mounts", None) or {}).values()):
+        _enable_happy_eyeballs(transport, proxy_pool_types)
 
 
 def _load_openai_cls() -> type:
     """Import and cache ``openai.OpenAI``."""
     global _OPENAI_CLS_CACHE
     if _OPENAI_CLS_CACHE is None:
-        from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
+        from openai import OpenAI as _OPENAI_CLS_CACHE
     return _OPENAI_CLS_CACHE
 
 
@@ -351,22 +249,11 @@ class _OpenAIProxy:
 
 
 class _SafeWriter:
-    """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
+    """Transparent stdio wrapper swallowing OSError/ValueError from broken pipes.
 
-    When hermes-agent runs as a systemd service, Docker container, or headless
-    daemon, the stdout/stderr pipe can become unavailable (idle timeout, buffer
-    exhaustion, socket reset). Any print() call then raises
-    ``OSError: [Errno 5] Input/output error``, which can crash agent setup or
-    run_conversation() — especially via double-fault when an except handler
-    also tries to print.
-
-    Additionally, when subagents run in ThreadPoolExecutor threads, the shared
-    stdout handle can close between thread teardown and cleanup, raising
-    ``ValueError: I/O operation on closed file`` instead of OSError.
-
-    This wrapper delegates all writes to the underlying stream and silently
-    catches both OSError and ValueError. It is transparent when the wrapped
-    stream is healthy.
+    Headless runs (systemd, Docker) lose the stdout pipe → ``OSError: [Errno 5]``;
+    subagent threads can see the shared handle close → ``ValueError``. Either
+    would otherwise crash the agent (often via double-fault in an except handler).
     """
 
     __slots__ = ("_inner",)
@@ -400,36 +287,19 @@ class _SafeWriter:
 
 
 def _get_proxy_from_env() -> Optional[str]:
-    """Read proxy URL from environment variables.
-
-    Checks HTTPS_PROXY, HTTP_PROXY, ALL_PROXY (and lowercase variants) in order.
-    Returns the first valid proxy URL found, or None if no proxy is configured.
-    """
-    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
-                "https_proxy", "http_proxy", "all_proxy"):
-        value = os.environ.get(key, "").strip()
-        if value:
-            return normalize_proxy_url(value)
-    return None
+    """First configured proxy URL from HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any case), or None."""
+    keys = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+    return next((normalize_proxy_url(v) for k in keys if (v := os.environ.get(k, "").strip())), None)
 
 
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
-    """Return an env-configured proxy unless NO_PROXY excludes this base URL."""
+    """Env-configured proxy unless NO_PROXY excludes this base URL."""
     proxy = _get_proxy_from_env()
-    if not proxy or not base_url:
-        return proxy
-
-    host = base_url_hostname(base_url)
-    if not host:
-        return proxy
-
+    host = base_url_hostname(base_url) if proxy and base_url else ""
     try:
-        if urllib.request.proxy_bypass_environment(host):
-            return None
+        return None if host and urllib.request.proxy_bypass_environment(host) else proxy
     except Exception:
-        pass
-
-    return proxy
+        return proxy
 
 
 def _shared_transport_cls():
@@ -442,13 +312,13 @@ def _shared_transport_cls():
     class _SharedTransportImpl(httpx.BaseTransport):
         """Per-client view of a process-shared ``httpx.HTTPTransport``.
 
-        ``httpx.Client.close()`` closes every mounted transport. Each OpenAI
-        client still owns its own ``httpx.Client`` (the #10933 contract:
-        closing one client must never poison the next), so the object we
-        mount must absorb that close while the underlying connection pool
-        keeps serving every other client. ``handle_request`` stamps the
-        owning view into ``request.extensions`` so socket-abort sweeps can
-        target only this client's in-flight connections on the shared pool.
+        ``httpx.Client.close()`` closes every mounted transport, and each OpenAI client still
+        owns its own ``httpx.Client`` (closing one client must never poison the next), so the
+        mounted object absorbs that close while the shared pool keeps serving other clients.
+        ``handle_request`` stamps the owning view into ``request.extensions`` so socket-abort
+        sweeps target only this client's in-flight connections on the shared pool.
+
+        See #10933.
         """
 
         __slots__ = ("_inner", "_closed")
@@ -457,10 +327,8 @@ def _shared_transport_cls():
             self._inner = inner
             self._closed = False
 
-        # httpx-private ``_pool`` is what our socket walkers and the
-        # happy-eyeballs / ssl-verify tests introspect: expose the shared one.
         @property
-        def _pool(self) -> Any:
+        def _pool(self) -> Any:  # httpx-private; socket walkers and tests introspect it
             return getattr(self._inner, "_pool", None)
 
         def handle_request(self, request: Any) -> Any:
@@ -470,9 +338,8 @@ def _shared_transport_cls():
             return self._inner.handle_request(request)
 
         def close(self) -> None:
-            # Deliberately does NOT close ``_inner``: it is shared. Idle
-            # connections are reaped by ``keepalive_expiry``; the pool lives
-            # for the process (see ``close_shared_transports``).
+            # Never closes the shared ``_inner``; idle connections are reaped by keepalive_expiry
+            # and the pool lives for the process (see ``close_shared_transports``).
             self._closed = True
 
     _SharedTransportImpl.__name__ = _SharedTransportImpl.__qualname__ = "_SharedTransport"
@@ -490,9 +357,7 @@ def _shared_transport_key(base_url: str, verify: Any, proxy: Optional[str]) -> t
     elif isinstance(verify, str):
         verify_key = ("path", verify)
     else:
-        # An ssl.SSLContext (or custom object): share only by object identity,
-        # which is what a caller passing the same context twice expects.
-        verify_key = ("id", id(verify))
+        verify_key = ("id", id(verify))  # SSLContext / custom object: share by identity only
     return (verify_key, proxy, _uses_codex_cloud_transport(base_url))
 
 
@@ -519,76 +384,44 @@ def close_shared_transports() -> int:
     return len(transports)
 
 
-def build_keepalive_http_client(
-    base_url: str = "",
-    *,
-    async_mode: bool = False,
-    verify: Any = True,
-) -> Optional[Any]:
-    """Build an httpx client for OpenAI SDK calls with env-only proxy policy.
+def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True) -> Optional[Any]:
+    """httpx client for OpenAI SDK calls with env-only proxy policy (None on failure).
 
-    Uses explicit ``HTTPS_PROXY`` / ``NO_PROXY`` env vars via
-    ``_get_proxy_for_base_url``. Plain no-proxy mounts disable httpx's default
-    ``trust_env`` proxy path, so macOS system proxy settings from
-    ``urllib.request.getproxies()`` (which omit the ExceptionsList) are not
-    applied. Mirrors ``AIAgent._build_keepalive_http_client``.
+    Explicit no-proxy mounts disable httpx's ``trust_env`` path so macOS system
+    proxies (which omit the ExceptionsList) are never applied. ``keepalive_expiry``
+    reaps idle connections before reverse proxies' 30-60 s timeouts (a custom
+    socket_options transport broke streaming and stripped TCP_NODELAY). ``verify``
+    goes on the client AND the mounts, since a mounted transport owns its SSL context.
 
-    Connection lifecycle is managed at the HTTP pool layer
-    (``keepalive_expiry=20.0`` reaps idle connections before reverse proxies'
-    typical 30-60 s timeouts) instead of the former custom
-    ``socket_options`` transport, which broke streaming behind reverse
-    proxies (#54049, #12952) and stalled TLS handshakes by stripping
-    ``TCP_NODELAY``.
+    Every call returns a NEW ``httpx.Client`` (per-client close semantics), but sync clients
+    with the same (verify, proxy, happy-eyeballs) identity mount the SAME underlying
+    ``HTTPTransport`` through a ``_SharedTransport`` view, so N delegated children share one
+    connection pool + SSL context. Async clients are never shared: an httpcore async pool is
+    bound to the event loop that first used it. Proxy-backed clients keep httpx's own transport.
 
-    ``verify`` is forwarded to httpx so auxiliary-client calls (compression,
-    vision, web_extract, title generation, etc.) honor the same per-provider
-    ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
-    client uses. It is passed on the client AND on the plain no-proxy mounts
-    (a mounted transport owns the SSL context for its scheme).
-
-    Every call returns a NEW ``httpx.Client`` (per-client close semantics are
-    what #10933 pins), but sync clients with the same
-    (verify, proxy, happy-eyeballs) identity mount the SAME underlying
-    ``HTTPTransport`` through a :class:`_SharedTransport` view, so N delegated
-    children share one connection pool + SSL context instead of N. Async
-    clients are never shared: an httpcore async pool is bound to the event
-    loop that first used it.
+    See #12952, #54049.
+    See #10933.
     """
     try:
         import httpx
-
         proxy = _get_proxy_for_base_url(base_url)
-
-        limits = httpx.Limits(
-            max_keepalive_connections=20,
-            max_connections=100,
-            keepalive_expiry=20.0,
-        )
-        # Generous read=None for SSE streaming endpoints.
-        timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)
-
+        limits = httpx.Limits(max_keepalive_connections=20, max_connections=100, keepalive_expiry=20.0)
+        timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)  # read=None for SSE streaming
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
-        mounts = {}
+        mounts = None
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
-            # One pool now serves every agent in the process, so its ceiling
-            # must cover a whole fan-out of concurrently streaming children,
-            # not one client. (Note: previously the mounts silently ran on
-            # httpx defaults — keepalive_expiry=5s — since Client-level
-            # ``limits`` only reach the default transport.)
+            # One pool serves every agent in the process, so its ceiling must cover a whole
+            # fan-out of concurrently streaming children. (Client-level ``limits`` never reach
+            # mounted transports — they used to run on httpx defaults, keepalive_expiry=5s.)
             direct_limits = limits if async_mode else httpx.Limits(
-                max_keepalive_connections=50,
-                max_connections=1000,
-                keepalive_expiry=20.0,
+                max_keepalive_connections=50, max_connections=1000, keepalive_expiry=20.0,
             )
 
             def _build_direct():
                 transport = transport_cls(verify=verify, limits=direct_limits)
-                # Async transports need no explicit racing: httpcore's anyio
-                # backend already implements RFC 8305 natively
-                # (``anyio.connect_tcp(happy_eyeballs_delay=0.25)``), covered
-                # by tests/agent/test_codex_happy_eyeballs.py.
+                # Async transports race natively (anyio happy_eyeballs_delay=0.25).
                 if happy_eyeballs:
                     _enable_happy_eyeballs(transport)
                 return transport
@@ -599,26 +432,13 @@ def build_keepalive_http_client(
                 key = _shared_transport_key(base_url, verify, proxy)
                 view_cls = _shared_transport_cls()
                 mounts = {
-                    f"{scheme}://": view_cls(
-                        _get_shared_transport((scheme, *key), _build_direct)
-                    )
+                    f"{scheme}://": view_cls(_get_shared_transport((scheme, *key), _build_direct))
                     for scheme in ("http", "https")
                 }
-                # Without this httpx builds a third, never-used direct
-                # transport (and pool + SSL context) per client.
-                return client_cls(
-                    limits=limits,
-                    timeout=timeout,
-                    transport=mounts["https://"],
-                    mounts=mounts,
-                )
-        return client_cls(
-            limits=limits,
-            timeout=timeout,
-            proxy=proxy,
-            mounts=mounts or None,
-            verify=verify,
-        )
+                # Default transport = the https view; otherwise httpx builds a third, never-used
+                # direct transport (pool + SSL context) per client.
+                return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts)
+        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
     except Exception:
         return None
 
@@ -631,21 +451,12 @@ def _install_safe_stdio() -> None:
             setattr(sys, stream_name, _SafeWriter(stream))
 
 
-# Module-level proxy instance — drops in for ``openai.OpenAI``.  Imported as
-# ``from agent.process_bootstrap import OpenAI`` (or re-exported via
-# ``run_agent`` for legacy tests).
+# Drop-in for ``openai.OpenAI``.
 OpenAI = _OpenAIProxy()
 
 
 __all__ = [
-    "OpenAI",
-    "_OpenAIProxy",
-    "_load_openai_cls",
-    "_SafeWriter",
-    "_install_safe_stdio",
-    "_get_proxy_from_env",
-    "_get_proxy_for_base_url",
-    "build_keepalive_http_client",
-    "close_shared_transports",
+    "OpenAI", "_OpenAIProxy", "_load_openai_cls", "_SafeWriter", "_install_safe_stdio", "_get_proxy_from_env",
+    "_get_proxy_for_base_url", "build_keepalive_http_client", "close_shared_transports",
     "enable_happy_eyeballs_on_client",
 ]

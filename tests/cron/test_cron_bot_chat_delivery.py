@@ -12,14 +12,15 @@ from unittest import mock
 import pytest
 
 from cron import scheduler as sched
-from cron.scheduler import (
+from cron import scheduler_delivery as sched_delivery
+from cron.scheduler import _resolve_delivery_targets
+from cron.scheduler_delivery import (
     BOT_CHAT_PLATFORM,
     _deliver_to_bot_chat,
-    _preflight_check_delivery,
     _resolve_bot_chat_target,
-    _resolve_delivery_targets,
     parse_bot_chat_deliver_token,
 )
+from cron.scheduler_preflight import _preflight_check_delivery
 
 
 # ── token parsing ────────────────────────────────────────────────────────────
@@ -66,10 +67,10 @@ def test_unknown_profile_resolves_to_none():
 def test_resolve_delivery_targets_combines_with_platform_targets():
     """bot-chat rides the same comma-separated deliver string as platforms."""
     job = {"id": "j1", "deliver": "bot-chat,telegram"}
-    with mock.patch.object(sched, "_get_home_target_chat_id", return_value="-100123"), \
-         mock.patch.object(sched, "_get_home_target_thread_id", return_value=None), \
-         mock.patch.object(sched, "_is_known_delivery_platform", return_value=True), \
-         mock.patch.object(sched, "_resolve_origin", return_value=None):
+    with mock.patch.object(sched_delivery, "_get_home_target_chat_id", return_value="-100123"), \
+         mock.patch.object(sched_delivery, "_get_home_target_thread_id", return_value=None), \
+         mock.patch.object(sched_delivery, "_is_known_delivery_platform", return_value=True), \
+         mock.patch.object(sched_delivery, "_resolve_origin", return_value=None):
         targets = _resolve_delivery_targets(job)
     platforms = {t["platform"] for t in targets}
     assert BOT_CHAT_PLATFORM in platforms
@@ -85,7 +86,7 @@ def test_preflight_ignores_bot_chat_targets():
 
 
 def test_preflight_still_blocks_unknown_platforms():
-    with mock.patch.object(sched, "_is_known_delivery_platform", return_value=False):
+    with mock.patch.object(sched_delivery, "_is_known_delivery_platform", return_value=False):
         err = _preflight_check_delivery({"id": "j1", "deliver": "nonexistent-platform"})
     assert err is not None and "not a known" in err
 
@@ -128,7 +129,7 @@ def test_deliver_runs_canonical_bot_chat_lane():
         return _completed()
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the output", "")
 
     assert err is None
@@ -153,7 +154,7 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
         return _completed()
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"), \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"), \
          mock.patch.dict(sched.os.environ, {"HERMES_HOME": "/tmp/other-profile"}):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "research")
 
@@ -167,7 +168,7 @@ def test_deliver_named_profile_uses_p_flag_and_clears_home():
 def test_deliver_failure_returns_error_string():
     with mock.patch.object(
         sched.subprocess, "run", return_value=_completed(returncode=1, stderr="boom")
-    ), mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
+    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
     assert err is not None
     assert "boom" in err
@@ -177,7 +178,7 @@ def test_deliver_timeout_returns_error_string():
     with mock.patch.object(
         sched.subprocess, "run",
         side_effect=subprocess.TimeoutExpired(cmd="hermes", timeout=600),
-    ), mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
+    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
     assert err is not None
     assert "timed out" in err
@@ -194,7 +195,7 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
         return _completed()
 
     with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
-         mock.patch.object(sched.shutil, "which", return_value="/usr/bin/hermes"):
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
         _deliver_to_bot_chat({"id": "j1", "name": "Daily digest"}, "the payload", "")
 
     assert 'Cronjob "Daily digest" output' in captured["message"]
@@ -207,7 +208,7 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
 def test_delivery_targets_include_local_profiles():
     with mock.patch("hermes_cli.profiles.list_profile_names",
                     return_value=["default", "research"]):
-        targets = sched.cron_delivery_targets()
+        targets = sched_delivery.cron_delivery_targets()
     ids = [t["id"] for t in targets]
     assert f"{BOT_CHAT_PLATFORM}:default" in ids
     assert f"{BOT_CHAT_PLATFORM}:research" in ids

@@ -37,3 +37,7 @@ optional_env:
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
     password: false
+  - name: EMAIL_AUTHSERV_ID
+    description: "Exact authserv-id stamped by the receiving MTA (required with an allowlist unless sender auth is disabled)"
+    prompt: "Receiving MTA authserv-id"
+    password: false

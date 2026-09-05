@@ -73,11 +73,14 @@ _PREAUTH_FETCH = (
 _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
+_MISSING_AUTHSERV_REASON = "authserv-id is not configured; refusing to trust Authentication-Results"
 # Operator-fixable reasons a granted sender's mail fails authentication, and the fix each log line names.
 _DROP_HINTS = {
     _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, set "
     "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
+    _MISSING_AUTHSERV_REASON: " Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to the receiving MTA's exact authserv-id, "
+    "or set platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
 }
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
@@ -362,8 +365,9 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so only the
-    FIRST instance is authoritative; when *authserv_id* is set, that instance must match it exactly.
-    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header → fail-closed
+    FIRST instance is authoritative, and it must match the required *authserv_id* exactly. A matching id is a
+    pin, not proof of provenance: the receiving MTA must strip inbound results claiming its id (RFC 8601).
+    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header or no pin → fail-closed
     (opt out via ``EmailAdapter._require_authenticated_sender``)."""
     from_domain = _domain_of(from_addr)
     if not from_domain:
@@ -375,7 +379,9 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     # receiver variants remain valid without allowing a lower field or a related domain to satisfy the pin.
     if (clauses := _ar_clauses(trusted)) is None:
         return False, "unbalanced quote or comment in Authentication-Results"
-    if authserv_id and clauses[0].strip().lower() != authserv_id.strip().lower():
+    if not authserv_id.strip():  # without a pin the topmost header may be one the sender wrote
+        return False, _MISSING_AUTHSERV_REASON
+    if clauses[0].strip().lower() != authserv_id.strip().lower():
         return False, _UNTRUSTED_AUTHSERV_REASON
     # Each verdict comes from the head of its own clause (split outside quotes/comments) and its domains only from that
     # clause: a quoted local part or comment can otherwise smuggle ``spf=pass``/``header.d=`` (GHSA-rxqh-5572-8m77).
@@ -474,7 +480,9 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = bool(extra["require_authenticated_sender"])
         else:
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
-        # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
+        # Pin Authentication-Results to the operator's receiving MTA. When an
+        # allowlist grants access, an absent pin fails closed rather than
+        # accepting a sender-supplied result header.
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth

@@ -292,13 +292,21 @@ function ChatRuntimeBoundary({
   const transcriptTailStates = useStore($transcriptTailBySessionId)
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
-    : undefined
+  const ownerRoute = useMemo(
+    () =>
+      storedId
+        ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
+        : undefined,
+    [storedId, connectionId, activeProfile]
+  )
 
-  const tailProfile = ownerRoute
-    ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
-    : undefined
+  const tailProfile = useMemo(
+    () =>
+      ownerRoute
+        ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
+        : undefined,
+    [ownerRoute?.connectionId, ownerRoute?.profile, ownerRoute?.targetProfile]
+  )
 
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)

@@ -1,14 +1,37 @@
 import { atom } from 'nanostores'
 
-import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+// "Read replies aloud" — a desktop-local preference. It deliberately does NOT
+// read or write `voice.auto_tts`: that key also drives the messaging gateway's
+// auto-TTS, so sharing it made the gateway voice bubble and desktop auto-speak
+// fire together (double-read, #99076). The first run with no stored preference
+// migrates from the old shared value once, so existing setups keep their state.
+const AUTO_SPEAK_KEY = 'hermes.desktop.autoSpeakReplies'
 
-// "Read replies aloud" — mirrors the canonical `voice.auto_tts` config key (also
-// in Settings → Voice, honored by the messaging gateway) so the composer toggle
-// and the Settings switch are one source of truth, not two that can disagree.
-export const $autoSpeakReplies = atom<boolean>(false)
+function readStoredAutoSpeak(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(AUTO_SPEAK_KEY)
 
-/** Seed the atom from a loaded config payload (mount / refresh). */
+    return raw === null ? null : raw === 'true'
+  } catch {
+    // Storage unavailable (locked-down renderer, quota edge) — fall back to
+    // treating the preference as unset rather than crashing module load.
+    return null
+  }
+}
+
+export const $autoSpeakReplies = atom<boolean>(readStoredAutoSpeak() ?? false)
+
+/**
+ * Seed the atom from a loaded config payload (mount / refresh). Only migrates
+ * from the legacy shared `voice.auto_tts` value while this desktop has never
+ * stored its own preference — after that, gateway-side changes to
+ * `voice.auto_tts` must not flip the local toggle.
+ */
 export function applyAutoSpeakFromConfig(config: { voice?: { auto_tts?: unknown } | null } | null | undefined) {
+  if (readStoredAutoSpeak() !== null) {
+    return
+  }
+
   $autoSpeakReplies.set(Boolean(config?.voice?.auto_tts))
 }
 
@@ -49,9 +72,9 @@ export function applyThinkingSoundFromConfig(
 }
 
 /**
- * Flip the preference and persist it. Optimistic — the atom updates instantly and
- * reverts if the config write fails. Read-modify-writes the whole record (the
- * same path the Settings page uses; there's no partial-update endpoint).
+ * Flip the preference and persist it locally. Optimistic — the atom updates
+ * instantly and reverts if the write fails. Never touches the shared config:
+ * `voice.auto_tts` stays owned by Settings → Voice and the gateway.
  */
 export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
   const previous = $autoSpeakReplies.get()
@@ -63,10 +86,7 @@ export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
   $autoSpeakReplies.set(enabled)
 
   try {
-    const record = await getHermesConfigRecord()
-    const voice = record.voice && typeof record.voice === 'object' ? (record.voice as Record<string, unknown>) : {}
-
-    await saveHermesConfig({ ...record, voice: { ...voice, auto_tts: enabled } })
+    window.localStorage.setItem(AUTO_SPEAK_KEY, String(enabled))
   } catch (error) {
     $autoSpeakReplies.set(previous)
     throw error

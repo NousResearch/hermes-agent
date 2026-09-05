@@ -860,16 +860,11 @@ class HostedRoomService:
                 )
             else:
                 session_id = str(action.get("session_id") or "")
-                profile = str(action.get("profile") or "")
                 if not session_id:
                     raise RuntimeError("local room approval identity is unavailable")
-                if profile:
-                    resumed = self.rpc.resume(
-                        profile=profile,
-                        session_id=session_id,
-                        source=ROOM_SESSION_SOURCE,
-                    )
-                    session_id = str((resumed or {}).get("session_id") or session_id)
+                # The fenced observer records a live runtime ID, not a stored
+                # conversation ID. Reopening it fails before the decision reaches
+                # the waiting tool; approval.respond already targets the live ID.
                 return self.rpc.approve(
                     session_id=session_id,
                     request_id=requested_approval_id,

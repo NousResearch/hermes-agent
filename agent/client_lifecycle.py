@@ -525,7 +525,7 @@ class ClientLifecycleMixin:
             return False
         return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
-    def _try_refresh_nous_client_credentials(self, *, force: bool = True) -> bool:
+    def _try_refresh_nous_client_credentials(self, *, force: bool = True, require_account: str | None = None) -> bool:
         # Portal serves anthropic/* on the native Messages route, so either client kind may hold the expiring JWT.
         if self.provider != "nous" or self.api_mode not in ("chat_completions", "anthropic_messages"):
             return False
@@ -545,6 +545,18 @@ class ClientLifecycleMixin:
             return False
         if str(api_key).strip() == str(self.api_key or "").strip():
             return False  # store holds the same key: nothing to adopt, no client rebuild
+        if require_account is not None:
+            try:
+                from hermes_cli.auth_constants import _decode_jwt_claims
+                new_account = _decode_jwt_claims(str(api_key)).get("sub")
+            except Exception:
+                new_account = None
+            if str(new_account or "") != require_account:
+                logger.info(
+                    "Nous pre-expiry adoption skipped: the store's key belongs to a different account "
+                    "than the one in hand; keeping the current credential."
+                )
+                return False
         if self.api_mode == "anthropic_messages":
             self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
             self._anthropic_api_key, self._anthropic_base_url = self.api_key, self.base_url
@@ -567,17 +579,24 @@ class ClientLifecycleMixin:
         every agent in a process learned about the hourly expiry from its own 401, all in the same
         minute (620 in one 200-subagent run), and the pool benched the sole credential for all of
         them. Returns True when a new key was adopted.
+
+        Identity guard: the replacement must belong to the SAME account (``sub`` claim) as the key
+        in hand. The store holds the logged-in singleton; an agent running on an explicitly supplied
+        or pool-selected key for a different account must never be silently moved onto it (that
+        changes who is billed). When either side lacks a ``sub`` nothing is adopted here; the
+        reactive 401 path is unchanged.
         """
         if getattr(self, "provider", "") != "nous" or not getattr(self, "api_key", None):
             return False
         try:
             from hermes_cli.auth_constants import _decode_jwt_claims
-            exp = _decode_jwt_claims(self.api_key).get("exp")
+            claims = _decode_jwt_claims(self.api_key)
         except Exception:
             return False
-        if not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
+        exp, account = claims.get("exp"), claims.get("sub")
+        if not account or not isinstance(exp, (int, float)) or exp - time.time() > self._NOUS_KEY_ADOPT_SKEW_S:
             return False
-        return self._try_refresh_nous_client_credentials(force=False)
+        return self._try_refresh_nous_client_credentials(force=False, require_account=str(account))
 
 
     def _resolve_env_credentials(self) -> Optional[tuple]:

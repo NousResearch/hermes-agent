@@ -12,10 +12,10 @@ from unittest.mock import patch
 from agent.client_lifecycle import ClientLifecycleMixin
 
 
-def _jwt(exp: float) -> str:
+def _jwt(exp: float, sub: str = "acct-A") -> str:
     def b64(o):
         return base64.urlsafe_b64encode(json.dumps(o).encode()).rstrip(b"=").decode()
-    return f"{b64({'alg': 'none'})}.{b64({'exp': exp})}.sig"
+    return f"{b64({'alg': 'none'})}.{b64({'exp': exp, 'sub': sub})}.sig"
 
 
 class _Agent(ClientLifecycleMixin):
@@ -40,14 +40,32 @@ def test_key_inside_the_skew_adopts_the_stores_fresh_key_without_forcing_a_refre
     agent = _Agent(_jwt(time.time() + 60))
     calls = []
 
+    fresh = _jwt(time.time() + 3600)  # same account A
+
     def resolve(**kw):
         calls.append(kw)
-        return {"api_key": "fresh-key", "base_url": agent.base_url}
+        return {"api_key": fresh, "base_url": agent.base_url}
 
     with patch("hermes_cli.auth.resolve_nous_runtime_credentials", side_effect=resolve):
         assert agent._adopt_nous_key_before_expiry() is True
     assert calls[0]["force_refresh"] is False  # the keepalive/peer refresh is adopted, never re-minted
-    assert agent.adopted == [("fresh-key", "nous_credential_refresh")]
+    assert agent.adopted == [(fresh, "nous_credential_refresh")]
+
+
+def test_a_fresh_key_for_a_different_account_is_never_adopted():
+    """Independent-review witness: an explicitly supplied account-A key near expiry was replaced by the
+    logged-in singleton's account-B key and the next real request went out as B. Identity is preserved."""
+    agent = _Agent(_jwt(time.time() + 60, sub="acct-A"))
+    other = _jwt(time.time() + 3600, sub="acct-B")
+    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": other, "base_url": agent.base_url}):
+        assert agent._adopt_nous_key_before_expiry() is False
+    assert agent.adopted == [] and agent.api_key != other
+
+
+def test_a_key_without_an_account_claim_is_left_alone_proactively():
+    agent = _Agent(_jwt(time.time() + 60, sub=""))
+    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", side_effect=AssertionError("must not hit the store")):
+        assert agent._adopt_nous_key_before_expiry() is False
 
 
 def test_same_key_back_from_the_store_is_not_readopted():

@@ -369,7 +369,7 @@ def _replay_message_items(msg: Dict[str, Any], *, is_github_responses: bool) -> 
     return replayed
 
 
-def _replay_tool_call_items(msg: Dict[str, Any], *, start_index: int) -> List[Dict[str, Any]]:
+def _replay_tool_call_items(msg: Dict[str, Any], *, start_index: int, bind: Optional[Callable[[str], str]] = None) -> List[Dict[str, Any]]:
     """Convert an assistant message's ``tool_calls`` into ``function_call`` items."""
     replayed: List[Dict[str, Any]] = []
     for tc in _as_list(msg.get("tool_calls")):
@@ -381,14 +381,15 @@ def _replay_tool_call_items(msg: Dict[str, Any], *, start_index: int) -> List[Di
             continue
         index = start_index + len(replayed)
         call_id = _resolve_call_id(tc.get("call_id"), tc.get("id"), fn_name, str(arguments), index, canonicalize_fc=True)
+        wire_call_id = bind(call_id.strip()) if bind is not None else _clamp_responses_call_id(call_id)
         replayed.append({
-            "type": "function_call", "call_id": _clamp_responses_call_id(call_id),
+            "type": "function_call", "call_id": wire_call_id,
             "name": _sanitize_replayed_fn_name(fn_name), "arguments": _coerce_arguments(arguments),
         })
     return replayed
 
 
-def _tool_output_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _tool_output_items(msg: Dict[str, Any], *, bind: Optional[Callable[[str], str]] = None) -> List[Dict[str, Any]]:
     """Convert a tool-role message to ``[function_call_output]`` (``[]`` if unpairable)."""
     raw_tool_call_id = msg.get("tool_call_id")
     call_id, tool_response_item_id = _split_responses_tool_id(raw_tool_call_id)
@@ -404,7 +405,8 @@ def _tool_output_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
     tool_content = msg.get("content")
     is_parts = isinstance(tool_content, list)
     output_value: Any = (_chat_content_to_responses_parts(tool_content) or "") if is_parts else str(tool_content or "")
-    return [{"type": "function_call_output", "call_id": _clamp_responses_call_id(call_id), "output": output_value}]
+    wire_output_id = bind(call_id.strip()) if bind is not None else _clamp_responses_call_id(call_id)
+    return [{"type": "function_call_output", "call_id": wire_output_id, "output": output_value}]
 
 
 def _chat_messages_to_responses_input(
@@ -456,6 +458,46 @@ def _chat_messages_to_responses_input(
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
+    # Duplicate stored tool ids across turns (e.g. `terminal:0` on two turns)
+    # would otherwise replay the same Responses `call_id` twice and the
+    # provider rejects the payload with 400 Duplicate function_call_output.
+    # Pair calls and outputs through per-base-id slots: each side first binds
+    # to a slot left open by the opposite side (so out-of-order stored
+    # history still pairs), otherwise opens a fresh slot whose wire id
+    # uniquifies repeats — the first occurrence keeps the stored id
+    # (cache-prefix safe), repeats get a `__r<N>` suffix.
+    _call_slots: Dict[str, List[Dict[str, Any]]] = {}
+    _used_call_ids: set = set()
+
+    def _bind_call_slot(base_id: str, *, is_call: bool) -> str:
+        slots = _call_slots.setdefault(base_id, [])
+        # Bind to a slot opened by the opposite side that is still waiting.
+        for slot in slots:
+            if is_call and slot["output"] and not slot["call"]:
+                slot["call"] = True
+                return slot["id"]
+            if not is_call and slot["call"] and not slot["output"]:
+                slot["output"] = True
+                return slot["id"]
+        # Open a fresh slot with a unique (clamped) wire id. Occurrence 1
+        # keeps the stored id (free unless another pair already emitted it);
+        # later occurrences take the first FREE `__r<N>` suffix — the search
+        # is unbounded because a natural stored id can already occupy a
+        # generated suffix (e.g. a real `terminal:0__r2` pair), and giving
+        # up there would re-emit the duplicate this converter exists to
+        # eliminate.
+        occurrence = 0
+        while True:
+            occurrence += 1
+            slot_id = _clamp_responses_call_id(
+                base_id if occurrence == 1 else f"{base_id}__r{occurrence}"
+            )
+            if slot_id not in _used_call_ids:
+                break
+        _used_call_ids.add(slot_id)
+        slots.append({"id": slot_id, "call": is_call, "output": not is_call})
+        return slot_id
+
     def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
@@ -464,7 +506,7 @@ def _chat_messages_to_responses_input(
             continue
         role = msg.get("role")
         if role == "tool":
-            emit(_tool_output_items(msg), msg)
+            emit(_tool_output_items(msg, bind=lambda base: _bind_call_slot(base, is_call=False)), msg)
             continue
         if role not in {"user", "assistant"}:
             continue
@@ -490,7 +532,7 @@ def _chat_messages_to_responses_input(
             fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
             if fallback is not None:
                 emit([{"role": "assistant", "content": fallback}], msg)
-        emit(_replay_tool_call_items(msg, start_index=len(items)), msg)
+        emit(_replay_tool_call_items(msg, start_index=len(items), bind=lambda base: _bind_call_slot(base, is_call=True)), msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint
     # first, retain pre-checkpoint USER and SUMMARY messages within a token budget, leave the tail.

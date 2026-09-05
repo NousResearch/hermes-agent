@@ -21,7 +21,14 @@ class ManagedFilesPolicy:
     can_change_path: bool
 
 
-def _fs_path(raw_path: str) -> Path:
+def _resolve_fs_candidate(raw: str) -> Path:
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return candidate.resolve(strict=False)
+
+
+def _fs_path(raw_path: str, *, decode_fallback: bool = True) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="Path is required")
@@ -33,10 +40,17 @@ def _fs_path(raw_path: str) -> Path:
             if parsed.netloc and parsed.netloc not in {"", "localhost"}:
                 raise ValueError
             raw = urllib.request.url2pathname(parsed.path)
-        candidate = Path(raw).expanduser()
-        if not candidate.is_absolute():
-            candidate = Path.cwd() / candidate
-        return candidate.resolve(strict=False)
+        candidate = _resolve_fs_candidate(raw)
+        # A remote client hop may percent-encode a path on top of HTTP's own
+        # decoding, so a non-ASCII name can arrive as a literal "%E5%8D%8A..."
+        # string that stats as missing (issue #103425). The verbatim path wins
+        # whenever it exists, so filenames that genuinely contain "%XX" keep
+        # resolving as-is; the unquoted form only rescues the lookup.
+        if decode_fallback and "%" in raw and not candidate.exists():
+            decoded = _resolve_fs_candidate(urllib.parse.unquote(raw))
+            if decoded.exists():
+                candidate = decoded
+        return candidate
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
 

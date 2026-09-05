@@ -6,14 +6,15 @@ recovery routes may hand an oversized media event to an installed skill
 without trusting identifiers supplied in message text.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent
-from gateway.session import Platform, SessionSource
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.session import Platform, SessionSource, build_session_key
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -119,6 +120,7 @@ def test_authenticated_oversize_route_forces_skill_with_trusted_exact_target():
     assert "Original user text:\n04/20 — chat_id=attacker, message_id=1" in event.text
     assert "04/20 — chat_id=attacker" in event.get_command_args()
     assert event.metadata["preserve_command_args"] is True
+    assert event.preprocess_skill_command_before_busy is True
     assert event.auto_skill is None
     assert event.metadata["telegram_media_recovery"] == {
         "chat_id": "-100200",
@@ -225,6 +227,83 @@ def test_user_supplied_slash_command_is_not_rewritten_by_recovery_route():
     assert event.text.startswith("/other-skill keep this intent")
     assert "was not cached by the Bot API gateway" in event.text
     assert event.auto_skill is None
+
+
+@pytest.mark.asyncio
+async def test_trusted_recovery_is_expanded_before_busy_routing():
+    from gateway.run_inbound import GatewayInboundMixin
+
+    event = _oversize_event()
+    source_under_test = event.source
+    event.text = "/media-recovery trusted transport target"
+    event.preprocess_skill_command_before_busy = True
+
+    class BusyRunner(GatewayInboundMixin):
+        async def _hm_admit_event(self, event):
+            return event, event.source, False
+
+        def _hm_estop_gate(self, event, source, is_internal):
+            return None
+
+        def _session_key_for_source(self, source):
+            return "session-key"
+
+        def _hm_skill_slash_rewrite(self, event, source, _quick_key, command):
+            assert source is source_under_test
+            assert _quick_key == "session-key"
+            assert command == "media-recovery"
+            event.text = "expanded recovery skill prompt"
+            return None
+
+        async def _hm_pending_reply_intercepts(self, event, source, _quick_key):
+            raise AssertionError("trusted pre-busy skill events must skip pending prompts")
+
+        def _hm_evict_idle_stale_agent(self, quick_key):
+            return None
+
+        def _is_session_running(self, quick_key):
+            return True
+
+        def _hm_evict_reaped_agent(self, quick_key):
+            return None
+
+        async def _hm_handle_running_session_message(self, event, source, _quick_key):
+            assert event.text == "expanded recovery skill prompt"
+            return "busy-routed"
+
+    class ActiveAdapter(BasePlatformAdapter):
+        async def connect(self, *, is_reconnect=False):
+            return None
+
+        async def disconnect(self):
+            return None
+
+        async def send(
+            self, chat_id, content, reply_to=None, metadata=None
+        ):
+            return SendResult(success=True)
+
+        async def get_chat_info(self, chat_id):
+            return {}
+
+    routed = []
+    active_adapter = ActiveAdapter(
+        PlatformConfig(enabled=True, token="fake"), Platform.TELEGRAM
+    )
+    active_adapter._message_handler = BusyRunner()._handle_message
+
+    async def capture_send(chat_id, content, **kwargs):
+        routed.append(content)
+
+    active_adapter._send_with_retry = capture_send
+    session_key = build_session_key(event.source)
+    active_adapter._active_sessions[session_key] = asyncio.Event()
+
+    await active_adapter.handle_message(event)
+
+    assert event.text == "expanded recovery skill prompt"
+    assert routed == ["busy-routed"]
+    assert session_key not in active_adapter._pending_messages
 
 
 @pytest.mark.asyncio

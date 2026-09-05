@@ -3116,7 +3116,12 @@ class GatewayTurnMixin:
                 daemon=True,
             ).start()
         worker.executor_task = asyncio.ensure_future(
-            self._run_in_executor_with_context(_run_sync_with_timeout_lifecycle)
+            self._run_in_executor_with_context(
+                _run_sync_with_timeout_lifecycle,
+                # Human-chat platforms take the reserved lane (no-op unless
+                # gateway.interactive_executor_workers is set).
+                _interactive=not self._is_batch_platform(turn_ctx.source),
+            )
         )
         return worker
 

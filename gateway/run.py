@@ -2035,6 +2035,7 @@ from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
+from gateway.run_executor_lanes import GatewayExecutorLanesMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -3229,7 +3230,7 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin):
+    GatewayAgentCacheMixin, GatewayExecutorLanesMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
@@ -3410,6 +3411,7 @@ class GatewayRunner(
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        self._interactive_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect the pool.
         self._executor_closing = False
         # ALL per-session state lives here (gateway/session_state.py); use _session_state / _peek_session_state.
@@ -4111,11 +4113,15 @@ class GatewayRunner(
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
 
-    async def _run_in_executor_with_context(self, func, *args):
-        """Run blocking work in the thread pool while preserving session contextvars."""
+    async def _run_in_executor_with_context(self, func, *args, _interactive=False):
+        """Run blocking work in the thread pool while preserving session contextvars.
+
+        ``_interactive=True`` uses the reserved lane when ``gateway.interactive_executor_workers``
+        is set (gateway/run_executor_lanes.py); otherwise it is the shared pool."""
         loop = asyncio.get_running_loop()
         ctx = copy_context()
-        return await loop.run_in_executor(self._get_executor(), ctx.run, func, *args)
+        executor = self._get_interactive_executor() if _interactive else self._get_executor()
+        return await loop.run_in_executor(executor, ctx.run, func, *args)
 
     def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
         """Return the gateway-owned executor for blocking agent work."""
@@ -4134,26 +4140,30 @@ class GatewayRunner(
             return executor
 
     def _shutdown_executor(self, drain_timeout: float = 0.0) -> int:
-        """Stop the gateway-owned executor; returns the number of worker threads still running.
-        ``drain_timeout=0`` is fire-and-forget; shutdown passes a bounded budget so blocking DB work
-        cannot outlive ``SessionDB.close()``. ``cancel_futures`` only drops unstarted work and cancelling
-        a ``run_in_executor`` awaitable does not stop its thread, so running workers are joined."""
+        """Stop the gateway-owned executors (shared + interactive lane); returns the number of worker
+        threads still running. ``drain_timeout=0`` is fire-and-forget; shutdown passes a bounded budget
+        so blocking DB work cannot outlive ``SessionDB.close()``. ``cancel_futures`` only drops unstarted
+        work and cancelling a ``run_in_executor`` awaitable does not stop its thread, so running workers
+        are joined."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
             return 0
         with lock:
             self._executor_closing = True
-            executor = getattr(self, "_executor", None)
+            pools = [getattr(self, "_executor", None), getattr(self, "_interactive_executor", None)]
             self._executor = None
-        if executor is None:
+            self._interactive_executor = None
+        pools = [pool for pool in pools if pool is not None]
+        if not pools:
             return 0
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except TypeError:
-            executor.shutdown(wait=False)
+        for pool in pools:
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                pool.shutdown(wait=False)
 
         # shutdown() has no timeout, so join workers directly; `_threads` is absent on test doubles (no wait).
-        workers = list(getattr(executor, "_threads", None) or ())
+        workers = [worker for pool in pools for worker in (getattr(pool, "_threads", None) or ())]
         deadline = time.monotonic() + max(float(drain_timeout or 0.0), 0.0)
         for worker in workers:
             remaining = deadline - time.monotonic()

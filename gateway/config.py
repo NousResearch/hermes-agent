@@ -583,6 +583,11 @@ class GatewayConfig:
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
+    # Worker threads reserved for INTERACTIVE (human-chat) agent turns. The shared agent-turn pool
+    # is FIFO, so heavy webhook/API traffic can hold every worker and a chat message waits behind
+    # it (observed: telegram turns completing with time=8335s api_calls=0 — pure queue wait).
+    # > 0 runs human-chat platforms on their own pool of this size; 0 = single shared pool.
+    interactive_executor_workers: int = 0
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -595,7 +600,7 @@ class GatewayConfig:
         "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior",
+        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "interactive_executor_workers",
     )
 
     def __post_init__(self) -> None:
@@ -734,6 +739,10 @@ class GatewayConfig:
             session_store_max_age_days = max(int(data.get("session_store_max_age_days", 90)), 0)
         except (TypeError, ValueError):
             session_store_max_age_days = 90
+        # Invalid or non-positive values warn and leave the lane off (single shared pool).
+        interactive_executor_workers = _coerce_optional_positive_int(
+            pick("interactive_executor_workers"), key_label("interactive_executor_workers")
+        ) or 0
 
         from gateway.profile_routing import parse_profile_routes
 
@@ -765,6 +774,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), {"pair", "ignore"}, "pair"),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            interactive_executor_workers=interactive_executor_workers,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
         )
 

@@ -543,3 +543,80 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+# ---------------------------------------------------------------------------
+# Pending restart must not strand manual (unsupervised) gateways (#103236)
+# ---------------------------------------------------------------------------
+
+
+def _patch_pending_restart_platform(monkeypatch):
+    """Hermetic platform: no systemd, no launchd, no Windows task."""
+    import hermes_cli.gateway as hermes_gateway
+
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+
+def test_pending_restart_relaunches_manual_profile_gateway(monkeypatch, capsys):
+    """A manually-run gateway must come back after the catch-up restart.
+
+    #103236: the pending path SIGTERMed leftover PIDs and printed success,
+    leaving an unsupervised gateway (no LaunchAgent/systemd) dead until a
+    manual ``gateway restart``.
+    """
+    import hermes_cli.gateway as hermes_gateway
+
+    _patch_pending_restart_platform(monkeypatch)
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **k: [4242])
+    monkeypatch.setattr(hermes_gateway, "_get_service_pids", lambda **k: set())
+    monkeypatch.setattr(
+        hermes_gateway,
+        "find_profile_gateway_processes",
+        lambda **k: [SimpleNamespace(pid=4242, profile="default")],
+    )
+    armed = []
+    monkeypatch.setattr(
+        hermes_gateway,
+        "_prepare_profile_gateway_update_restart",
+        lambda profile, pid: armed.append((profile, pid)) or "detached",
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet, "_drain_or_signal_gateway_for_update", lambda *a, **k: True
+    )
+    monkeypatch.setattr(hermes_gateway, "_wait_for_gateway_exit", lambda **k: None)
+    kills = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: kills.append(pid))
+    # Pre-fix path used the bare leftover sweep; keep it hermetic if reached.
+    monkeypatch.setattr(hermes_gateway, "kill_gateway_processes", lambda **k: 0)
+
+    assert update_cmd_fleet._run_pending_fleet_restart() is True
+
+    assert armed == [("default", 4242)]
+    assert kills == []
+    assert "Restarting manual gateway profile(s): default" in capsys.readouterr().out
+
+
+def test_pending_restart_surfaces_unmapped_manual_gateway(monkeypatch, capsys):
+    """An unmapped manual gateway is stopped LOUDLY, never silently."""
+    import hermes_cli.gateway as hermes_gateway
+
+    _patch_pending_restart_platform(monkeypatch)
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **k: [4343])
+    monkeypatch.setattr(hermes_gateway, "_get_service_pids", lambda **k: set())
+    monkeypatch.setattr(
+        hermes_gateway, "find_profile_gateway_processes", lambda **k: []
+    )
+    monkeypatch.setattr(hermes_gateway, "_wait_for_gateway_exit", lambda **k: None)
+    kills = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: kills.append(pid))
+    monkeypatch.setattr(hermes_gateway, "kill_gateway_processes", lambda **k: 0)
+
+    assert update_cmd_fleet._run_pending_fleet_restart() is True
+
+    assert kills == [4343]
+    out = capsys.readouterr().out
+    assert "Stopped 1 manual gateway process(es)" in out
+    assert "Restart manually" in out

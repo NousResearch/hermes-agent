@@ -220,8 +220,7 @@ def _run_pending_fleet_restart() -> bool:
     # user migrates.
     try:
         from hermes_cli.gateway import (
-            find_gateway_pids, is_macos, is_windows, kill_gateway_processes, supports_systemd_services,
-            _wait_for_gateway_exit,
+            find_gateway_pids, is_macos, is_windows, supports_systemd_services,
         )
     except Exception as exc:
         _warn_gateway_restart_phase_aborted(exc, None)
@@ -238,6 +237,7 @@ def _run_pending_fleet_restart() -> bool:
         return True
 
     failed: list = []
+    restarted_services: list = []
     try:
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
@@ -248,7 +248,7 @@ def _run_pending_fleet_restart() -> bool:
         # isolation happens inside.
         if is_macos():
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0)
+                _restart_macos_launchd_gateways(restarted_services, failed, 45.0)
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
@@ -260,14 +260,17 @@ def _run_pending_fleet_restart() -> bool:
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
-        try:
-            leftover = list(find_gateway_pids(all_profiles=True))
-        except Exception:
-            leftover = list(pids or [])
-        if leftover:
-            with _best_effort('Pending fleet restart: PID stop failed: %s'):
-                kill_gateway_processes(all_profiles=True)
-                _wait_for_gateway_exit(timeout=5.0, force_after=None)
+        # Manual (non-service) gateways get the main update path's contract:
+        # arm a detached-watcher relaunch for profile-mapped PIDs and print
+        # the "Restart manually" notice for the rest. A bare leftover kill
+        # here used to stop unsupervised gateways (e.g. macOS with no
+        # LaunchAgent) and declare success, leaving them down (#103236).
+        out = _GatewayRestartOutcome(
+            incomplete=False, phase_errors=[], pre_restart_gateway_pids=pids,
+            restarted_services=restarted_services, failed_or_stale_units=failed,
+            relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set(),
+        )
+        _restart_manual_gateways(out, 45.0)
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False

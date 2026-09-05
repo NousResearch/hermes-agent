@@ -11,6 +11,7 @@ from gateway.run import (
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
+from run_agent import AIAgent
 
 # Every human-facing chat surface that must receive noise-filtered,
 # secret-redacted, provider-error-sanitized output (not just Telegram).
@@ -36,6 +37,13 @@ NOISY_STATUS_MESSAGES = [
     "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
     "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",
     "⏳ Retrying in 4.2s (attempt 1/3)...",
+    "⚠️ Empty response from model — retrying (1/3) in 6s",
+    "⚠️ Model returning empty responses — switching to fallback provider...",
+    "❌ Model returned no content after all retries. No fallback providers configured.",
+    (
+        "No reply: the model returned empty content. Try again, switch "
+        "model/provider, or inspect the tool output above."
+    ),
     # Buffered overflow/attempt-cap retry chatter (replayed on retry exhaustion).
     "🗜️ Context too large (~250,000 tokens) — compressing (1/3)...",
     "🗜️ Compressed 30 → 12 messages, retrying...",
@@ -244,6 +252,51 @@ def test_chat_gateways_keep_normal_answers(platform):
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(platform, answer) == answer
+
+
+@pytest.mark.parametrize("platform", CHAT_PLATFORMS)
+@pytest.mark.parametrize(
+    "message",
+    [
+        "⚠️ Empty response from model — retrying (1/3) in 6s",
+        (
+            "⚠️ Empty response from model — retrying (1/1) in 6s — "
+            "high-cost request, reduced retry budget"
+        ),
+        "⚠️ Model returning empty responses — switching to fallback provider...",
+        "❌ Model returned no content after all retries. No fallback providers configured.",
+        "❌ Model returned no content after all retries and fallback attempts.",
+        AIAgent._format_turn_completion_explanation("empty_response_exhausted"),
+    ],
+)
+def test_chat_gateways_replace_retry_chatter_used_as_final_response(platform, message):
+    """A retry diagnostic promoted to the final reply must not leak or go silent."""
+    sanitized = _sanitize_gateway_final_response(platform, message)
+
+    assert sanitized == (
+        "⚠️ Something went wrong while generating a response. Please try again."
+    )
+
+
+def test_programmatic_surfaces_keep_retry_chatter_used_as_final_response():
+    message = "⚠️ Empty response from model — retrying (1/3) in 6s"
+
+    for platform in ("local", "api_server", "webhook", "msgraph_webhook"):
+        assert _sanitize_gateway_final_response(platform, message) == message
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        (
+            "The log line `Empty response from model — retrying (1/3) in 6s` "
+            "means the provider returned no visible content."
+        ),
+        "Empty response from model is a common name for a provider failure mode.",
+    ],
+)
+def test_chat_gateway_keeps_answer_that_explains_retry_chatter(answer):
+    assert _sanitize_gateway_final_response("telegram", answer) == answer
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)

@@ -63,6 +63,25 @@ _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
+_GATEWAY_RETRY_FAILURE_REPLY = (
+    "⚠️ Something went wrong while generating a response. Please try again."
+)
+
+_GATEWAY_RETRY_FINAL_DIAGNOSTIC_RE = re.compile(
+    r"^\s*(?:[⚠❌]\ufe0f?\s*)?(?:"
+    r"empty\s+response\s+from\s+model\s+[—-]\s+retrying"
+    r"(?:\s+\(\d+/\d+\))?\s+in\s+\d+(?:\.\d+)?s"
+    r"(?:\s+[—-]\s+high-cost\s+request,\s+reduced\s+retry\s+budget)?"
+    r"|model\s+returning\s+empty\s+responses\s+[—-]\s+switching\s+to\s+fallback\s+provider\.\.\."
+    r"|model\s+returned\s+no\s+content\s+after\s+all\s+retries"
+    r"(?:\s+and\s+fallback\s+attempts)?\."
+    r"(?:\s+no\s+fallback\s+providers\s+configured\.)?"
+    r"|no\s+reply:\s+the\s+model\s+returned\s+empty\s+content"
+    r"(?:\s+after\s+retries\s+and\s+any\s+fallback\s+providers)?\.\s+"
+    r"try\s+(?:`continue`|again),\s+switch\s+model/provider,\s+or\s+inspect\s+the\s+tool\s+output\s+above\."
+    r")\s*$",
+    re.IGNORECASE,
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -89,7 +108,10 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
+    r"|retrying(?:\s+\(\d+/\d+\))?\s+in\s+\d"
+    r"|empty\s+response\s+from\s+model"
+    r"|model\s+return(?:ed|ing)\s+(?:no\s+content|empty\s+responses)"
+    r"|no\s+reply:\s+the\s+model\s+returned\s+empty\s+content"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
@@ -667,6 +689,12 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    if _GATEWAY_RETRY_FINAL_DIAGNOSTIC_RE.fullmatch(redacted):
+        # Status callbacks suppress transient retry chatter, but a final reply
+        # cannot disappear without making the user's message look lost. Replace
+        # an emitted retry diagnostic with one short recovery prompt. Matching
+        # the complete emitter shape preserves assistant prose about the error.
+        return _GATEWAY_RETRY_FAILURE_REPLY
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted

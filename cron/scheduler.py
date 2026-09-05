@@ -2043,7 +2043,10 @@ def _prepare_job_prompt(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path, cancel_event=cancel_event)
+        # Pass workdir as subprocess cwd, mirroring the no_agent path: scripts get no arguments,
+        # so cwd is the only per-job context a gate script has.
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job, script_path, workdir=_resolve_job_workdir(job, job_id), cancel_event=cancel_event)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)

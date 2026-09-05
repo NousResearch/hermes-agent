@@ -1387,6 +1387,40 @@ class TestHTTPConfig:
 
         asyncio.run(_test())
 
+    def test_partial_sdk_symbols_trigger_reimport_not_nameerror(self):
+        """Regression test for #96528.
+
+        When only ``ClientSession`` is bound but ``StdioServerParameters``
+        is still ``None`` (e.g. a test or external code sets one symbol but
+        not the other), ``_ensure_mcp_sdk()`` must NOT short-circuit on the
+        partial state — it must re-import and bind all symbols. Otherwise
+        ``_run_stdio`` leaks a bare ``NameError: name 'StdioServerParameters'
+        is not defined``.
+        """
+        import tools.mcp_tool as m
+        pytest.importorskip("mcp", reason="mcp SDK not installed")
+
+        async def _test():
+            # Simulate partial symbol state: ClientSession bound,
+            # StdioServerParameters missing.
+            orig_cs = m.ClientSession
+            orig_ssp = m.StdioServerParameters
+            orig_attempted = m._MCP_SDK_IMPORT_ATTEMPTED
+            try:
+                m.ClientSession = MagicMock()
+                m.StdioServerParameters = None
+                m._MCP_SDK_IMPORT_ATTEMPTED = False
+                # Force a re-import so all symbols get bound.
+                assert m._ensure_mcp_sdk() is True
+                # After _ensure_mcp_sdk, StdioServerParameters must be bound.
+                assert m.StdioServerParameters is not None
+            finally:
+                m.ClientSession = orig_cs
+                m.StdioServerParameters = orig_ssp
+                m._MCP_SDK_IMPORT_ATTEMPTED = orig_attempted
+
+        asyncio.run(_test())
+
 # ---------------------------------------------------------------------------
 # Reconnection logic
 # ---------------------------------------------------------------------------

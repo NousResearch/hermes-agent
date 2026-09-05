@@ -16902,6 +16902,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 pass
+            # Flush busy-mode interrupt texts (#lost-interrupt-text).  A
+            # follow-up that arrived while the agent was busy was ACKED
+            # ("⚡ Interrupting current task...") and parked on the running
+            # agent's ``_interrupt_message`` — in-memory only.  A turn
+            # blocked without reaching a checkpoint never replays it, and
+            # this was the only place it could have been persisted before
+            # ``_release_running_agent_state`` drops the agent reference.
+            try:
+                from gateway.shutdown_flush import flush_interrupt_messages_to_file
+                _pending_interrupts = {}
+                for _key, _agent in self._running_agent_items():
+                    _itext = getattr(_agent, "_interrupt_message", None)
+                    if _itext:
+                        _pending_interrupts[_key] = _itext
+                flush_interrupt_messages_to_file(_pending_interrupts, reason="shutdown")
+            except Exception:
+                pass
             # On the real runner these are live SessionState views whose
             # clear() resets one field per session — never a wholesale dict
             # swap, so a concurrent writer on another session can't lose its

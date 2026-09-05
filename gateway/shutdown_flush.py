@@ -32,7 +32,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,89 @@ def flush_pending_to_file(
     if flushed:
         logger.info(
             "Flushed %d pending message(s) to %s (reason=%s)",
+            flushed, flush_dir, reason,
+        )
+    return flushed
+
+
+def flush_interrupt_messages_to_file(
+    interrupts: Dict[str, Any],
+    *,
+    reason: str = "shutdown",
+) -> int:
+    """Serialise pending ``_interrupt_message`` texts to disk.
+
+    Sibling of :func:`flush_pending_to_file` for the busy-mode interrupt
+    path: when a follow-up message arrives while the agent is busy, the
+    gateway acks ("⚡ Interrupting current task...") and stores the text on
+    the running agent (``agent._interrupt_message``), waiting for the agent
+    loop to reach its next checkpoint and replay it as a new turn.  A turn
+    blocked on a long-running tool (or on an internal wait primitive) may
+    never reach that checkpoint before shutdown — and that field is
+    in-memory only, so the user's message vanished with the process even
+    though the ack promised delivery (#lost-interrupt-text).
+
+    Each entry is written in the SAME payload shape as a pending-message
+    flush so ``recover_pending_to_db`` replays them unchanged.  Values may
+    be plain strings or objects exposing ``.text`` (mirrors
+    :func:`_serialise_value`).  Slash-command texts are skipped: the
+    recovery path discards them anyway (commands must never be replayed as
+    agent input), and a stale command replay after restart is worse than a
+    dropped one.
+
+    Parameters
+    ----------
+    interrupts:
+        Mapping of ``session_key`` → interrupt text (str) or event-like
+        object with a ``.text`` attribute.  ``None`` / empty values are
+        skipped.
+    reason:
+        Logged context (``shutdown``, ``restart``, etc.).
+
+    Returns
+    -------
+    int
+        Number of interrupt texts flushed.
+    """
+    if not interrupts:
+        return 0
+
+    flush_dir = _get_flush_dir()
+    ts = int(time.time())
+    flushed = 0
+
+    for session_key, value in list(interrupts.items()):
+        if value is None or not session_key:
+            continue
+        try:
+            if hasattr(value, "text"):
+                text = getattr(value, "text", "") or ""
+            else:
+                text = str(value)
+            text = text.strip()
+            # Commands are never replayed as user input (see
+            # recover_pending_to_db's caller-side safety net); do not flush.
+            if not text or text.startswith("/"):
+                continue
+            _write_payload(
+                flush_dir,
+                {
+                    "session_key": session_key,
+                    "reason": reason,
+                    "ts": ts,
+                    "data": {"text": text, "origin": "interrupt_message"},
+                },
+            )
+            flushed += 1
+        except Exception as exc:
+            logger.debug(
+                "Failed to flush interrupt message for %s: %s",
+                session_key, exc,
+            )
+
+    if flushed:
+        logger.info(
+            "Flushed %d pending interrupt message(s) to %s (reason=%s)",
             flushed, flush_dir, reason,
         )
     return flushed
@@ -343,6 +426,136 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
+def _session_key_alias_variants(session_key: str) -> List[str]:
+    """Return phone/LID alias variants of a WhatsApp gateway session key.
+
+    Gateway session keys end with the WhatsApp identity segment — the DM
+    chat_id, or the group participant id when per-user group sessions are
+    enabled. The bridge may materialise the SAME account under either a
+    phone-format id or a linked-device LID, and the pending flush may
+    carry a different shape than the one persisted on the session row
+    (live case: flush ``agent:<ns>:whatsapp:dm:55...`` vs row key
+    ``agent:<ns>:whatsapp:dm:56...@lid-era``). ``expand_whatsapp_aliases``
+    deterministically returns every alias reachable through the bridge's
+    ``lid-mapping-*.json`` files, and returns the input unchanged for
+    non-WhatsApp or non-numeric tails (group JIDs, other platforms), so
+    the variant list degrades to just the original when expansion does
+    not apply.  Only the trailing segment is touched (``rpartition``).
+    """
+    raw = str(session_key or "")
+    variants = [raw]
+    if ":whatsapp:" not in raw:
+        return variants
+    try:
+        from gateway.whatsapp_identity import expand_whatsapp_aliases
+
+        prefix, _, tail = raw.rpartition(":")
+        if not prefix:
+            return variants
+        expanded = sorted(expand_whatsapp_aliases(tail))
+        variants.extend(f"{prefix}:{v}" for v in expanded if f"{prefix}:{v}" != raw)
+    except Exception:
+        pass
+    return variants
+
+
+def _candidate_session_dbs(session_key: str, ambient_db):
+    """Yield (SessionDB, owned) candidates that may hold ``session_key``.
+
+    Under multiplex, gateway session keys encode the owning profile as the
+    ``agent:<namespace>:`` prefix and that profile's transcript rows live in
+    ``profiles/<name>/state.db`` — NOT in the root store the recovery worker
+    opens by default.  Yield the profile DB first (the authoritative store
+    for the key), then the ambient DB as a legacy fallback (single-profile
+    installs and keys predating the namespace split).
+    """
+    seen_paths = set()
+    profile = None
+    try:
+        parts = str(session_key).split(":")
+        if len(parts) >= 2 and parts[0] == "agent":
+            namespace = parts[1] or "main"
+            profile = None if namespace == "main" else namespace
+    except Exception:
+        profile = None
+
+    if profile:
+        try:
+            from hermes_cli.profiles import get_profile_dir, profile_exists
+
+            if profile_exists(profile):
+                db_path = Path(get_profile_dir(profile)) / "state.db"
+                if db_path.exists() and str(db_path) not in seen_paths:
+                    seen_paths.add(str(db_path))
+                    from hermes_state import SessionDB
+
+                    yield SessionDB(db_path=db_path), True
+        except Exception as exc:
+            logger.debug(
+                "Could not open profile DB for %r (key %r): %s",
+                profile, session_key, exc,
+            )
+
+    if ambient_db is not None:
+        yield ambient_db, False
+
+
+def _resolve_session_id_for_key(session_db, session_key: str):
+    """Resolve a gateway session_key to its live session row.
+
+    Tries every phone/LID alias variant of the key (see
+    :func:`_session_key_alias_variants`) against the key's owning profile
+    DB first, then the ambient store.  ``source`` is derived from the key's
+    platform segment, matching how gateway turns stamp session rows
+    (``Platform.<name>.value``, e.g. ``whatsapp`` → source ``whatsapp``).
+
+    Returns ``(session_id, db_to_write)``: the session_id string and the
+    SessionDB instance the message MUST be appended to.  Under multiplex the
+    authoritative store for an ``agent:<namespace>:`` key is
+    ``profiles/<namespace>/state.db`` — appending to the ambient root store
+    instead violates the sessions FK and strands the message (#multiplex-
+    recovery-split).  ``db_to_write`` is the ambient ``session_db`` when the
+    row was found there, and a caller-owned profile DB otherwise (the caller
+    releases it via :func:`hermes_state.release_or_close` after the append).
+    Returns ``("", None)`` when nothing matches.
+    """
+    if not session_key:
+        return "", None
+    # ``session_db`` may legitimately be None: the resolver opens the key's
+    # profile store itself via _candidate_session_dbs (the ambient DB is
+    # only a fallback candidate).
+
+    platform = ""
+    try:
+        parts = str(session_key).split(":")
+        if len(parts) >= 3:
+            platform = parts[2].strip().lower()
+    except Exception:
+        platform = ""
+
+    for key_variant in _session_key_alias_variants(session_key):
+        for db, owned in _candidate_session_dbs(session_key, session_db):
+            try:
+                row = db.find_latest_gateway_session_for_peer(
+                    source=platform, session_key=key_variant,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "session_key lookup failed for %r: %s", key_variant, exc,
+                )
+                row = None
+            if row and row.get("id"):
+                return str(row["id"]), db
+            if owned:
+                try:
+                    from hermes_state import release_or_close
+
+                    release_or_close(db)
+                except Exception:
+                    pass
+    return "", None
+
+
 def recover_pending_to_db(
     session_db=None,
 ) -> int:
@@ -435,29 +648,56 @@ def recover_pending_to_db(
             # data first; fall back to scanning sessions for a matching
             # session_key in the source column.
             session_id = data.get("session_id", "")
+            target_db = session_db
 
             if not session_id:
+                session_id, target_db = _resolve_session_id_for_key(
+                    session_db, session_key,
+                )
+
+            if not session_id or target_db is None:
                 # Try to extract from the session_key itself — gateway
                 # session keys contain the session_id as the last segment
                 # in some formats, but that's not guaranteed.  Log and
                 # skip if we can't resolve it.
                 logger.warning(
                     "Cannot recover pending message for %s: no session_id "
-                    "in flush file and session_key-to-id resolution is not "
-                    "available at this recovery stage. The message text is "
-                    "preserved in %s",
+                    "in flush file and session_key-to-id resolution failed. "
+                    "The message text is preserved in %s",
                     session_key, path,
                 )
                 continue
 
-            session_db.append_message(
-                session_id=session_id,
-                role="user",
-                content=text,
-                timestamp=payload.get("ts", int(time.time())),
-            )
+            # ``target_db`` is the store that holds the resolved session row:
+            # the ambient DB when the key belongs to it, else the owning
+            # profile's DB (multiplex).  Appending elsewhere violates the
+            # sessions FK and strands the message.
+            _profile_db_owned = target_db is not session_db
+            try:
+                target_db.append_message(
+                    session_id=session_id,
+                    role="user",
+                    content=text,
+                    timestamp=payload.get("ts", int(time.time())),
+                )
+            except BaseException:
+                if _profile_db_owned:
+                    try:
+                        from hermes_state import release_or_close
+
+                        release_or_close(target_db)
+                    except Exception:
+                        pass
+                raise
             recovered += 1
             path.unlink(missing_ok=True)
+            if _profile_db_owned:
+                try:
+                    from hermes_state import release_or_close
+
+                    release_or_close(target_db)
+                except Exception:
+                    pass
         except BaseException:
             # Shutdown cancellation/interrupt must not strand an owned DB.
             _close_owned_db()

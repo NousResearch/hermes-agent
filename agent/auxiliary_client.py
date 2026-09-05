@@ -3088,7 +3088,7 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         return False
     err_lower = str(exc).lower()
     return param_lower in err_lower and _contains_any(err_lower, (
-        "unsupported parameter", "unsupported_parameter", "not supported", "does not support",
+        "unsupported parameter", "unsupported_parameter", "not supported", "does not support", "doesn't support",
         "unknown parameter", "unrecognized request argument", "unrecognized parameter", "invalid parameter",
     ))
 

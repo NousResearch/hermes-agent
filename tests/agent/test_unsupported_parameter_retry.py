@@ -34,6 +34,7 @@ class TestIsUnsupportedParameterError:
         ("temperature", "HTTP 400: Unsupported parameter: temperature"),
         ("temperature", "Error code: 400 - {'error': {'code': 'unsupported_parameter', 'param': 'temperature'}}"),
         ("temperature", "this model does not support temperature"),
+        ("temperature", "This model doesn't support the temperature field. Remove temperature and try again."),
         # max_tokens phrasings
         ("max_tokens", "HTTP 400: Unsupported parameter: max_tokens"),
         ("max_tokens", "Unknown parameter: max_tokens — use max_completion_tokens"),

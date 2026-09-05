@@ -1807,8 +1807,21 @@ def is_linux() -> bool:
 from hermes_constants import is_container, is_termux, is_wsl
 
 
+def _systemd_runtime_marker_present() -> bool:
+    """Return True when systemd's ``/run/systemd/system`` marker exists.
+
+    The systemd FAQ documents this directory as the canonical
+    "booted with systemd" signal — systemd creates it during early
+    boot, so its presence is sufficient evidence that systemd is
+    PID 1 on this machine.
+    """
+    return Path("/run/systemd/system").is_dir()
+
+
 def _wsl_systemd_operational() -> bool:
     """WSL2 with ``systemd=true`` in wsl.conf has working systemd; WSL1/without it does not."""
+    if _systemd_runtime_marker_present():
+        return True
     return _systemd_operational(system=True)
 
 

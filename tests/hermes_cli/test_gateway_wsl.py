@@ -40,9 +40,31 @@ class TestIsWsl:
 # =============================================================================
 
 class TestWslSystemdOperational:
-    """Test the WSL systemd check."""
+    """Test the WSL systemd check.
+
+    ``/run/systemd/system`` is the canonical "booted with systemd"
+    marker per the systemd FAQ and short-circuits the runtime probe,
+    so tests that exercise the ``systemctl is-system-running``
+    fallback must stub out the marker check first — otherwise the
+    result depends on whether the test machine itself uses systemd.
+    """
+
+    def test_marker_present_short_circuits(self, monkeypatch):
+        """``/run/systemd/system`` present → True without calling systemctl."""
+        monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: True,
+        )
+
+        def _fail(*a, **kw):
+            raise AssertionError("systemctl must not be invoked when marker is present")
+
+        monkeypatch.setattr(gateway.subprocess, "run", _fail)
+        assert gateway._wsl_systemd_operational() is True
 
     def test_running(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway, "_systemd_runtime_marker_present", lambda: False,
+        )
         monkeypatch.setattr(
             gateway.subprocess, "run",
             lambda *a, **kw: SimpleNamespace(
@@ -150,4 +172,3 @@ class TestGatewayCommandWSLMessages:
         out = capsys.readouterr().out
         assert "WSL note" in out
         assert "tmux or screen" in out
-

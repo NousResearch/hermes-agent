@@ -373,6 +373,9 @@ def share_group_file(
 
     scope = _active_room_artifact_scope()
     if scope is None:
+        from tui_gateway.classic_exports import active_scope
+        scope = active_scope()
+    if scope is None:
         return json.dumps({
             "ok": False,
             "error": "File sharing is available only during a Group Chat turn.",
@@ -383,6 +386,11 @@ def share_group_file(
         from tools.file_tools_paths import _terminal_env_type_for_task
 
         requested = _requested_file_path(path)
+        if scope.as_mapping().get("kind") == "classic" and (
+            _is_sensitive_remote_path(requested)
+            or requested.name.casefold() in {"state.db", "state.db-wal", "state.db-shm", "config.yaml"}
+        ):
+            raise RoomArtifactError("Credential and internal state files cannot be shared.")
         if not requested.is_absolute():
             raise RoomArtifactError(
                 "That file cannot be shared. Move it to the workspace or a Hermes media folder and try again."

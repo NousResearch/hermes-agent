@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 
 def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_path):
     """A fresh profile resolves metadata and routes the official endpoint without live I/O."""
@@ -46,3 +48,33 @@ def test_astra_codex_oauth_fallback_uses_backend_context_limit():
 
     assert DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"] == 1_050_000
     assert _resolve_codex_oauth_context_length_with_source("gpt-6-astra") == (272_000, "fallback")
+
+
+@pytest.mark.parametrize("advertised,expected", [(272_000, 900_000), (200_000, 200_000), (1_050_000, 1_050_000)])
+def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, tmp_path, advertised, expected):
+    """Only the known stale advertisement is lifted; the alias never reaches the wire."""
+    from agent import model_metadata as metadata
+    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS, codex_supported_efforts
+    from agent.transports.codex import ResponsesApiTransport
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(metadata, "_codex_oauth_context_cache", {})
+    monkeypatch.setattr(metadata.requests, "get", lambda *args, **kwargs: SimpleNamespace(
+        status_code=200,
+        json=lambda: {"models": [{"slug": "gpt-6-astra", "context_window": advertised}]},
+    ))
+    route = {"base_url": "https://chatgpt.com/backend-api/codex", "provider": "openai-codex"}
+    assert metadata.get_model_context_length("gpt-6-astra-900k", api_key="test-token", **route) == expected
+    assert metadata.get_model_context_length("gpt-6-astra", api_key="test-token", **route) == advertised
+    assert codex_supported_efforts("gpt-6-astra-900k") == CODEX_ASTRA_EFFORTS
+
+    for config, expected_effort in [({"effort": "max"}, "max"), ({"enabled": False}, "low")]:
+        kwargs = ResponsesApiTransport().build_kwargs(
+            model="gpt-6-astra-900k", messages=[{"role": "user", "content": "Hi"}], tools=[],
+            is_codex_backend=True, reasoning_config=config,
+            request_overrides={"temperature": 0.5, "logprobs": True}, **route,
+        )
+        assert kwargs["model"] == "gpt-6-astra"
+        assert kwargs["reasoning"]["effort"] == expected_effort
+        assert "temperature" not in kwargs and "logprobs" not in kwargs
+        assert "prompt_cache_options" not in kwargs

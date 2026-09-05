@@ -121,6 +121,8 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
         json.dumps({"models": [
             {"slug": "gpt-6-astra", "priority": 0},
             {"slug": "openai/gpt-6-astra", "priority": 1},
+            {"slug": "gpt-6-astra-900k", "priority": 2},
+            {"slug": "openai/gpt-6-astra-900k", "priority": 3},
         ]}),
         encoding="utf-8",
     )
@@ -129,13 +131,16 @@ def test_astra_requires_live_codex_account_discovery(monkeypatch, tmp_path):
 
     assert "gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
     assert "openai/gpt-6-astra" not in get_codex_model_ids(access_token="stale-token")
+    assert "gpt-6-astra-900k" not in get_codex_model_ids(access_token="stale-token")
+    assert "openai/gpt-6-astra-900k" not in get_codex_model_ids(access_token="stale-token")
 
     monkeypatch.setattr(
         codex_models,
         "_fetch_models_from_api",
         lambda _token: codex_models._finalize_codex_models(["gpt-6-astra"], allow_astra=True),
     )
-    assert "gpt-6-astra" in get_codex_model_ids(access_token="entitled-token")
+    entitled = get_codex_model_ids(access_token="entitled-token")
+    assert entitled[entitled.index("gpt-6-astra") + 1] == "gpt-6-astra-900k"
 
 
 

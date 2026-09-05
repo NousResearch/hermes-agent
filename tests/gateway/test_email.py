@@ -1085,6 +1085,42 @@ class TestSenderAuthentication(unittest.TestCase):
         ok, reason = self._verify(
             "Admin <admin@example.com>",
             ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
+            authserv_id="mx.google.com",
+        )
+        self.assertTrue(ok, reason)
+
+    def test_missing_authserv_id_refuses_authentication_results(self):
+        ok, reason = self._verify(
+            "owner@allowed.example",
+            ["attacker.self; dmarc=pass header.from=allowed.example"],
+        )
+        self.assertFalse(ok, reason)
+        self.assertIn("authserv-id", reason)
+
+    def test_top_header_mismatch_does_not_scan_to_forged_lower_match(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "mx.other.example; dmarc=fail header.from=example.com",
+                "mx.pinned.example; dmarc=pass header.from=example.com",
+            ],
+            authserv_id="mx.pinned.example",
+        )
+        self.assertFalse(ok, reason)
+        self.assertIn("topmost", reason)
+
+    def test_authserv_id_requires_exact_match(self):
+        for authserv_id in ("example.com", "attacker.mx.example.com"):
+            ok, _ = self._verify(
+                "admin@example.com",
+                [f"{authserv_id}; dmarc=pass header.from=example.com"],
+                authserv_id="mx.example.com",
+            )
+            self.assertFalse(ok)
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.example.com; dmarc=pass header.from=example.com"],
+            authserv_id="mx.example.com",
         )
         self.assertTrue(ok, reason)
 
@@ -1093,6 +1129,7 @@ class TestSenderAuthentication(unittest.TestCase):
         ok, reason = self._verify(
             "admin@example.com",
             ["mx.google.com; dkim=pass header.d=example.com"],
+            authserv_id="mx.google.com",
         )
         self.assertTrue(ok, reason)
 
@@ -1101,6 +1138,7 @@ class TestSenderAuthentication(unittest.TestCase):
         ok, reason = self._verify(
             "admin@example.com",
             ["mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com"],
+            authserv_id="mx.google.com",
         )
         self.assertFalse(ok, reason)
 

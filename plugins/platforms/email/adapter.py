@@ -246,21 +246,31 @@ def _domains_aligned(a: str, b: str) -> bool:
 
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "") -> Tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
-    ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
-    ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so the FIRST
-    instance is trusted and an injected copy sorts below it; pinned to *authserv_id* when given.
-    True on DMARC pass, aligned SPF pass, or aligned DKIM (``header.d``) pass. No header → fail-closed
-    (opt out via ``EmailAdapter._require_authenticated_sender``)."""
+
+    ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77). Hermes requires an
+    exact configured ``authserv_id`` and examines only the topmost
+    ``Authentication-Results`` header, which the receiving MTA prepends after
+    stripping inbound headers that claim its namespace. A matching id is a pin,
+    not proof of provenance: that MTA-side sanitization remains an operator
+    requirement. True on DMARC pass, aligned SPF pass, or aligned DKIM
+    (``header.d``) pass. No usable header fails closed.
+    """
     from_domain = _domain_of(from_addr)
     if not from_domain:
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
         return False, "no Authentication-Results header"
-    values = (" ".join(str(raw).split()) for raw in headers)  # authserv-id precedes the first ';'
-    trusted = next((v for v in values if not authserv_id or (serv := v.split(";", 1)[0].strip().lower()) == authserv_id.lower()
-                    or _domains_aligned(serv, authserv_id)), None)
-    if trusted is None:
-        return False, "no Authentication-Results from trusted authserv-id"
+    pin = (authserv_id or "").strip().lower()
+    if not pin:
+        return False, "authserv-id is not configured; refusing to trust Authentication-Results"
+
+    # Do not scan downward: a genuine top header with a different id must not
+    # allow a forged lower header that merely copies the configured id.
+    trusted = " ".join(str(headers[0]).split())
+    serv = trusted.split(";", 1)[0].strip().lower()
+    if serv != pin:
+        return False, "topmost Authentication-Results authserv-id does not match pin"
+
     methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
     props = {p.lower(): v.strip().strip('"') for p, v in _AUTH_PROP_RE.findall(trusted)}
     if methods.get("dmarc") == "pass":  # DMARC already enforces From alignment
@@ -344,7 +354,9 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = bool(extra["require_authenticated_sender"])
         else:
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
-        # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
+        # Pin Authentication-Results to the operator's receiving MTA. When an
+        # allowlist grants access, an absent pin fails closed rather than
+        # accepting a sender-supplied result header.
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
@@ -604,10 +616,10 @@ class EmailAdapter(BasePlatformAdapter):
         # From:. Only matters when an allowlist GRANTS access and allow-all is off; fail-closed.
         if (self._require_authenticated_sender and self._allowlist_in_effect()
                 and not self._allow_all_senders() and not msg_data.get("sender_authenticated", False)):
-            logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
-                           "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
-                           "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
-                           sender_addr, msg_data.get("auth_reason", "no verdict"))
+            logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). Set EMAIL_AUTHSERV_ID "
+                           "(or platforms.email.authserv_id) to the receiving MTA's exact authserv-id, or set "
+                           "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) "
+                           "to accept the risk.", sender_addr, msg_data.get("auth_reason", "no verdict"))
             return False
         return True
 

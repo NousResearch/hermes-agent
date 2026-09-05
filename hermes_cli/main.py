@@ -1797,21 +1797,13 @@ cmd_import_agent = _forward_command("cmd_import_agent", "hermes_cli.agent_import
 
 
 def cmd_model(args):
-    """Select default model — starts with provider selection, then model picker."""
-    _require_tty("model")
-    if getattr(args, "refresh", False):
-        try:
-            from hermes_cli.models import clear_provider_models_cache
-            clear_provider_models_cache()
-            print("  Cleared model picker cache.")
-        except Exception:
-            pass
-    from hermes_cli.setup import run_setup_action_with_navigation
+    """Select the default model interactively or from complete CLI flags."""
+    from hermes_cli.model_command import run_model_command
 
-    run_setup_action_with_navigation(
-        "Model & Provider",
-        lambda: select_provider_and_model(args=args),
-        cancelled_message="No change.",
+    return run_model_command(
+        args,
+        require_tty=_require_tty,
+        interactive_select=select_provider_and_model,
     )
 
 

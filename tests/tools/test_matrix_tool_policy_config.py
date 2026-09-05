@@ -28,6 +28,23 @@ def test_policy_values_use_canonical_env_expansion(home, monkeypatch):
     assert tool_policy.gate("allow_redaction", "MATRIX_TOOLS_ALLOW_REDACTION")
 
 
+@pytest.mark.parametrize("prior", ["cold", "last-known-good", "cached-fallback"])
+def test_normalization_failure_cannot_discard_explicit_deny(home, monkeypatch, prior):
+    path = home / "config.yaml"
+    monkeypatch.setattr(config.managed_scope, "load_managed_config", lambda: {})
+    monkeypatch.setattr(tool_policy, "get_secret", lambda _: "true")
+    if prior != "cold":
+        path.write_text("matrix:\n  tools:\n    allow_redaction: true\n")
+        config.load_config_readonly()
+    text = "max_turns: 5\nagent: invalid\nmatrix:\n  tools:\n    allow_redaction: false\n"
+    path.write_text(text)
+    if prior == "cached-fallback":
+        config.load_config_readonly()
+    with pytest.raises(ValueError):
+        tool_policy.gate("allow_redaction", "MATRIX_TOOLS_ALLOW_REDACTION")
+    assert path.read_text() == text
+
+
 @pytest.mark.parametrize("text", ["matrix: [broken", "- invalid-root"])
 def test_malformed_policy_never_falls_back_to_allowing_env(home, monkeypatch, text):
     (home / "config.yaml").write_text(text)

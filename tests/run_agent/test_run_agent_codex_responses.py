@@ -18,14 +18,13 @@ def _no_codex_backoff(monkeypatch):
     """Short-circuit retry backoff so Codex retry tests don't block on real
     wall-clock waits (5s jittered_backoff base delay + tight time.sleep loop)."""
     import time as _time
-    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *a, **k: 0.0)
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
 
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
-        run_agent,
-        "get_tool_definitions",
+        "model_tools.get_tool_definitions",
         lambda **kwargs: [
             {
                 "type": "function",
@@ -37,7 +36,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
 
 def _build_agent(monkeypatch):
@@ -512,8 +511,8 @@ def _build_xai_agent_with_slash_enum_tool(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr(run_agent, "get_tool_definitions", _fake_get_tool_definitions)
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.get_tool_definitions", _fake_get_tool_definitions)
+    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
 
     agent = run_agent.AIAgent(
         model="grok-4.3",
@@ -1082,6 +1081,35 @@ def test_run_codex_stream_does_not_replay_after_visible_partial_delivery(monkeyp
     assert response._stream_no_retry is True
 
 
+@pytest.mark.parametrize("error_type", ["RemoteProtocolError", "ReadTimeout"])
+def test_run_codex_stream_retirement_during_drop_preserves_timeout(monkeypatch, error_type):
+    """Retirement can occur between the final delta and a socket exception."""
+    import httpx
+
+    agent = _build_agent(monkeypatch)
+    agent._active_codex_stream_request_token = object()
+    delivered = []
+    agent.stream_delta_callback = delivered.append
+    calls = []
+
+    class _RetiredDrop(_FakeCreateStream):
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.output_text.delta", delta="Visible prefix")
+            agent._active_codex_stream_request_token = None
+            raise getattr(httpx, error_type)("retired socket closed")
+
+    def _create(**kwargs):
+        calls.append(kwargs)
+        return _RetiredDrop([])
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=_create))
+    with pytest.raises(TimeoutError, match="retired"):
+        agent._run_codex_stream(_codex_request_kwargs())
+    assert len(calls) == 1
+    assert delivered == ["Visible prefix"]
+
+
 def test_run_codex_stream_retries_midstream_drop_before_visible_delivery(monkeypatch):
     """A transport drop remains retryable until any visible delta is accepted."""
     import httpx
@@ -1151,8 +1179,14 @@ def test_run_conversation_returns_partial_codex_stream_without_retry(monkeypatch
         return partial
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _partial_api_call)
+    outcomes = []
+    monkeypatch.setattr(
+        "agent.relay_llm.complete_logical_call",
+        lambda request_id, *, outcome: outcomes.append(outcome),
+    )
 
     result = agent.run_conversation("Explain the issue")
+    assert outcomes == ["failed"]
 
     assert calls["count"] == 1
     assert result["final_response"] == "Partial answer"
@@ -1161,6 +1195,39 @@ def test_run_conversation_returns_partial_codex_stream_without_retry(monkeypatch
     assert result["failed"] is False
     assert result["error"] == "network_stream_interrupted_after_partial_response"
     assert result["messages"][-1]["content"] == "Partial answer"
+    assert result["messages"][-1]["finish_reason"] == "incomplete"
+
+
+def test_run_conversation_does_not_retry_stream_partial_with_open_scratchpad(monkeypatch):
+    """Already-delivered text must outrank scratchpad recovery retries."""
+    agent = _build_agent(monkeypatch)
+    text = "Visible answer prefix <REASONING_SCRATCHPAD>unfinished"
+    partial = SimpleNamespace(
+        output=[SimpleNamespace(
+            type="message", role="assistant", status="incomplete",
+            content=[SimpleNamespace(type="output_text", text=text)],
+        )],
+        output_text=text, usage=None, status="incomplete", id=None,
+        model="gpt-5-codex", error=None,
+        incomplete_details=SimpleNamespace(reason="stream_error"),
+        _stream_no_retry=True,
+    )
+    calls = []
+
+    def _api_call(api_kwargs):
+        calls.append(api_kwargs)
+        return partial if len(calls) == 1 else _codex_message_response("Replayed answer")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _api_call)
+    result = agent.run_conversation("Explain the issue")
+
+    assert len(calls) == 1
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert result["failed"] is False
+    assert result["error"] == "network_stream_interrupted_after_partial_response"
+    assert "Visible answer prefix" in result["final_response"]
+    assert result["messages"][-1]["content"] == "Visible answer prefix unfinished"
     assert result["messages"][-1]["finish_reason"] == "incomplete"
 
 
@@ -1533,7 +1600,7 @@ def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
         "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
         _fake_resolve,
     )
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     existing = _ExistingClient()
     agent.client = existing
@@ -1639,7 +1706,7 @@ def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
         "hermes_cli.copilot_auth.get_copilot_api_token",
         lambda _raw: ("tid=exchanged-ide-token", None),
     )
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     agent.client = _ExistingClient()
     ok = agent._try_refresh_copilot_client_credentials()
@@ -1678,7 +1745,7 @@ def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged
         "hermes_cli.copilot_auth.get_copilot_api_token",
         lambda _raw: ("tid=fresh-exchanged", None),
     )
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     ok = agent._try_refresh_copilot_client_credentials()
 
@@ -1712,7 +1779,7 @@ def test_try_refresh_copilot_client_credentials_falls_back_when_exchange_unavail
         lambda _raw: None,
     )
     monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token", _boom)
-    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai)
 
     ok = agent._try_refresh_copilot_client_credentials()
 

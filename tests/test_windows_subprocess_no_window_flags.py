@@ -198,7 +198,7 @@ def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
     _kill_process_tree's taskkill /T to have a coherent tree to kill), so
     this checks the CREATE_NO_WINDOW bit is present rather than exact
     equality with the whole creationflags value."""
-    from tools import browser_tool
+    from tools import browser_tool_install
 
     captured = []
 
@@ -211,14 +211,14 @@ def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
             return ("1.2.3\n", "")
 
     monkeypatch.setattr(
-        browser_tool.shutil, "which",
+        browser_tool_install.shutil, "which",
         lambda name, path=None: "/usr/bin/npx",
     )
-    monkeypatch.setattr(browser_tool, "node_tool_runnable", lambda p: True)
-    monkeypatch.setattr(browser_tool, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(browser_tool.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: True)
+    monkeypatch.setattr("tools.browser_tool_install.windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(browser_tool_install.subprocess, "Popen", _FakePopen)
 
-    assert browser_tool.warm_agent_browser_npx_cache() is True
+    assert browser_tool_install.warm_agent_browser_npx_cache() is True
     assert captured[0][0][0] == "/usr/bin/npx"
     assert captured[0][1]["creationflags"] & _CREATE_NO_WINDOW == _CREATE_NO_WINDOW
 

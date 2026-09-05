@@ -1149,6 +1149,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     _install_fake_thread(monkeypatch)
 
     from tools import terminal_tool
+    from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
     container_id = env._container_id
@@ -1164,7 +1165,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
 
     try:
-        terminal_tool.cleanup_vm("session-close-test")
+        cleanup_vm("session-close-test")
     finally:
         terminal_tool._active_environments.pop("session-close-test", None)
 

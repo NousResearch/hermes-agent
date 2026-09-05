@@ -29,6 +29,7 @@ import {
 } from '@/store/agent-plugins'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
+import { $settingsScopeOverride } from '@/store/settings-scope'
 
 import { PluginsSettings } from './plugins-settings'
 
@@ -60,6 +61,7 @@ beforeEach(() => {
   $gatewayState.set('idle')
   $connection.set(null)
   $activeGatewayProfile.set('default')
+  $settingsScopeOverride.set(null)
 })
 
 afterEach(() => {
@@ -166,6 +168,23 @@ describe('PluginsSettings', () => {
 
     await waitFor(() => expect(getProfiles).toHaveBeenCalled())
     expect(screen.queryByText('Applies to:')).toBeNull()
+  })
+
+  it('follows the shared Settings profile scope', async () => {
+    getProfiles.mockResolvedValue({
+      profiles: [
+        { name: 'default', is_default: true },
+        { name: 'work', is_default: false }
+      ]
+    })
+    requestGateway.mockResolvedValue({ plugins: [legacyRow] })
+    $settingsScopeOverride.set('work')
+    $gatewayState.set('open')
+
+    renderSettings()
+
+    await waitFor(() => expect(screen.getByRole('combobox').textContent).toContain('work'))
+    expect(requestGateway).toHaveBeenCalledWith('plugins.manage', { action: 'list', profile: 'work' })
   })
 
   it('lists the active profile scope without a profile param and reloads scoped on change', async () => {

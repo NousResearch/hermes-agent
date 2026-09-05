@@ -27,8 +27,8 @@ import {
   toggleAgentPlugin
 } from '@/store/agent-plugins'
 import { notifyError } from '@/store/notifications'
-import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
+import { $settingsRequestProfile, $settingsScopeProfile, setSettingsScope } from '@/store/settings-scope'
 
 import { EmptyState, ListRowSkeleton, Pill, SettingsContent, SettingsSection } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
@@ -181,17 +181,10 @@ function AgentPluginsSection() {
   const error = useStore($agentPluginsError)
   const [query, setQuery] = useState('')
 
-  // 'Applies to' profile scope: which profile's plugins we list/toggle.
-  // Defaults to the app-wide active profile; overriding it here lets the user
-  // manage ANY profile's plugins without switching the whole app (same
-  // pattern as the Capabilities scope selector in app/skills). null = the
-  // active profile — the RPC is sent without a profile param so older
-  // backends keep working unchanged.
-  const activeProfile = useStore($activeGatewayProfile)
-  const [scopeOverride, setScopeOverride] = useState<null | string>(null)
-  const scopeProfile = scopeOverride ?? activeProfile ?? null
-  // The param we actually send: omit it for the active profile.
-  const requestProfile = scopeOverride && scopeOverride !== activeProfile ? scopeOverride : null
+  // Reuse the Settings-wide profile scope so navigating between pages keeps
+  // every read and toggle aimed at the same profile.
+  const scopeProfile = useStore($settingsScopeProfile)
+  const requestProfile = useStore($settingsRequestProfile) ?? null
 
   const { data: profilesData } = useQuery({
     queryKey: ['agent-plugins-profiles'],
@@ -200,12 +193,6 @@ function AgentPluginsSection() {
   })
 
   const profiles = profilesData?.profiles ?? []
-
-  // An app-wide profile switch retargets the default scope — drop the
-  // override so the list reloads for the profile the user just switched to.
-  useEffect(() => {
-    setScopeOverride(null)
-  }, [activeProfile])
 
   useEffect(() => {
     if (gatewayState !== 'open') {
@@ -243,10 +230,7 @@ function AgentPluginsSection() {
           <span className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
             {p.agent.appliesTo}
           </span>
-          <Select
-            onValueChange={name => setScopeOverride(name === activeProfile ? null : name)}
-            value={scopeProfile ?? ''}
-          >
+          <Select onValueChange={setSettingsScope} value={scopeProfile}>
             <SelectTrigger className="h-7 w-56 text-xs">
               <SelectValue />
             </SelectTrigger>

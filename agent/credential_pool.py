@@ -2229,12 +2229,18 @@ class CredentialPool:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
             borrowed_ids = getattr(self, "_borrowed_root_ids", None)
-            if borrowed_ids:
+            claims_single_use_provider = (
+                self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
+                and not _profile_owns_pool_provider(self.provider)
+            )
+            if borrowed_ids or claims_single_use_provider:
                 # ``hermes -p <profile> auth add <single-use provider>``: the
                 # profile claims its OWN credential. Persist only profile-owned
                 # rows — copying the borrowed root grant alongside would fork
-                # its single-use refresh token (#100339). Once the profile owns
-                # rows, the root fallback for this provider is shadowed.
+                # its single-use refresh token (#100339). Write directly rather
+                # than taking the borrowed-row update-only path, including when
+                # the root has no provider rows yet. Once the profile owns rows,
+                # the root fallback for this provider is shadowed.
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
                 write_credential_pool(self.provider, [e.to_dict() for e in self._entries])
                 self._borrowed_root_ids = set()

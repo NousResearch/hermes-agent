@@ -89,6 +89,22 @@ def _ic_signal_tool_workers(agent, active: bool, **kw) -> None:
 class InterruptControlMixin:
     """interrupt()/hard_interrupt()/clear_interrupt()/steer()/redirect() (see module docstring)."""
 
+    def _set_model_request_active(self, active: bool) -> None:
+        """Toggle model steer admission atomically with redirect and pending-steer state."""
+        with _ic_lock(self, "_pending_redirect_lock"):
+            with _ic_lock(self, "_pending_steer_lock"):
+                marker = getattr(self, "_model_request_active", None)
+                if marker is not None:
+                    if active:
+                        marker.set()
+                    else:
+                        marker.clear()
+
+    def _set_tool_execution_active(self, active: bool) -> None:
+        """Toggle tool steer admission atomically with pending-steer state."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            self._executing_tools = active
+
     def interrupt(
         self, message: Optional[str] = None, *, hard_cancel: bool = False,
         tool_reason: Optional[str] = None, require_generation: Optional[int] = None,
@@ -218,16 +234,16 @@ class InterruptControlMixin:
         concatenate with newlines. Returns False without a live model/tool delivery window."""
         if not text or not text.strip():
             return False
-        _model_active = getattr(self, "_model_request_active", None)
-        _executing_tools = getattr(self, "_executing_tools", None)
-        if (
-            (_executing_tools is not None or _model_active is not None)
-            and not _executing_tools
-            and (_model_active is None or not _model_active.is_set())
-        ):
-            return False
         cleaned = text.strip()
         with _ic_lock(self, "_pending_steer_lock"):
+            _model_active = getattr(self, "_model_request_active", None)
+            _executing_tools = getattr(self, "_executing_tools", None)
+            if (
+                (_executing_tools is not None or _model_active is not None)
+                and not _executing_tools
+                and (_model_active is None or not _model_active.is_set())
+            ):
+                return False
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
         return True

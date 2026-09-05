@@ -1277,7 +1277,7 @@ class AIAgent(
         """
         tool_calls = assistant_message.tool_calls
         args = (assistant_message, messages, effective_task_id, api_call_count)
-        self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
+        self._set_tool_execution_active(True)  # allow _vprint during tool execution even with stream consumers
         try:
             if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(*args)
@@ -1292,7 +1292,7 @@ class AIAgent(
             from agent.tool_executor import execute_tool_calls_segmented
             return execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
-            self._executing_tools = False
+            self._set_tool_execution_active(False)
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""

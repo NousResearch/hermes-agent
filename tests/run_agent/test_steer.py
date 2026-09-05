@@ -83,6 +83,59 @@ class TestSteerAcceptance:
             assert agent.steer("go ahead and check the logs") is True
             assert agent._pending_steer == "go ahead and check the logs"
 
+    def test_tool_window_closure_wins_before_pending_commit(self):
+        agent = _bare_agent()
+        attempted = threading.Event()
+        release = threading.Event()
+        tool_started = threading.Event()
+        finish_tools = threading.Event()
+        real_lock = threading.Lock()
+
+        class GateLock:
+            def __enter__(self):
+                if threading.current_thread().name == "late-steer":
+                    attempted.set()
+                    assert release.wait(timeout=1)
+                real_lock.acquire()
+                return self
+
+            def __exit__(self, *exc_info):
+                real_lock.release()
+
+        agent._pending_steer_lock = GateLock()
+        outcome = {}
+
+        def execute_tools(*_args):
+            tool_started.set()
+            assert finish_tools.wait(timeout=1)
+            outcome["drained"] = agent._drain_pending_steer()
+
+        agent._execute_tool_calls_sequential = execute_tools
+        assistant_message = type("AssistantMessage", (), {"tool_calls": [object()]})()
+        tool_worker = threading.Thread(
+            target=lambda: agent._execute_tool_calls(assistant_message, [], "task-id")
+        )
+        tool_worker.start()
+        assert tool_started.wait(timeout=1)
+
+        steer_worker = threading.Thread(
+            name="late-steer",
+            target=lambda: outcome.setdefault("accepted", agent.steer("preserve this correction")),
+        )
+        steer_worker.start()
+        assert attempted.wait(timeout=1)
+
+        finish_tools.set()
+        tool_worker.join(timeout=1)
+        assert tool_worker.is_alive() is False
+        assert outcome["drained"] is None
+        release.set()
+        steer_worker.join(timeout=1)
+
+        assert steer_worker.is_alive() is False
+        assert outcome["accepted"] is False
+        assert agent._pending_steer is None
+
 
 
 

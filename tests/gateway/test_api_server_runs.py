@@ -11,6 +11,7 @@ Covers:
 
 import asyncio
 import hashlib
+import json
 import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -136,6 +137,54 @@ def _make_slow_agent(**kwargs):
     mock_agent.session_total_tokens = 0
 
     return mock_agent, ready, interrupted
+
+
+def _make_scripted_agent():
+    """Return an agent factory whose delta callback and completion are test-controlled."""
+    ready = threading.Event()
+    release = threading.Event()
+    callbacks = {}
+    mock_agent = MagicMock()
+
+    def create_agent(*args, **kwargs):
+        callbacks["delta"] = kwargs["stream_delta_callback"]
+        return mock_agent
+
+    def run_conversation(**kwargs):
+        ready.set()
+        release.wait(timeout=5)
+        return {"final_response": "done"}
+
+    mock_agent.run_conversation.side_effect = run_conversation
+    mock_agent.steer.return_value = True
+    mock_agent.session_prompt_tokens = 0
+    mock_agent.session_completion_tokens = 0
+    mock_agent.session_total_tokens = 0
+    return create_agent, callbacks, ready, release
+
+
+async def _read_sse_frame(response):
+    lines = []
+    while True:
+        line = await response.content.readline()
+        if not line:
+            break
+        lines.append(line.decode())
+        if line == b"\n":
+            break
+    sequence = next(
+        (int(line.removeprefix("id: ")) for line in lines if line.startswith("id: ")),
+        None,
+    )
+    event = next(
+        (
+            json.loads(line.removeprefix("data: "))
+            for line in lines
+            if line.startswith("data: ")
+        ),
+        None,
+    )
+    return sequence, event
 
 
 @pytest.fixture
@@ -390,6 +439,94 @@ class TestRunEvents:
                 assert "run.completed" in body
                 assert "Hello!" in body
 
+    @pytest.mark.asyncio
+    async def test_concurrent_subscribers_each_receive_delta_and_terminal(self, adapter):
+        """Each SSE client observes the complete run instead of sharing one FIFO."""
+        app = _create_runs_app(adapter)
+        create_agent, callbacks, ready, release = _make_scripted_agent()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                await asyncio.get_running_loop().run_in_executor(None, ready.wait, 5)
+
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                second = await cli.get(f"/v1/runs/{run_id}/events")
+                callbacks["delta"]("shared")
+                release.set()
+
+                first_body, second_body = await asyncio.wait_for(
+                    asyncio.gather(first.text(), second.text()), timeout=5
+                )
+
+        for body in (first_body, second_body):
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in body.splitlines()
+                if line.startswith("data: ")
+            ]
+            assert [event["event"] for event in events] == [
+                "message.delta",
+                "run.completed",
+            ]
+            assert events[0]["delta"] == "shared"
+
+    @pytest.mark.asyncio
+    async def test_reconnect_receives_exactly_missed_events_and_terminal(self, adapter):
+        """Reconnect replays missed delta, steer, and terminal exactly once."""
+        app = _create_runs_app(adapter)
+        create_agent, callbacks, ready, release = _make_scripted_agent()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", side_effect=create_agent):
+                started = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await started.json())["run_id"]
+                await asyncio.get_running_loop().run_in_executor(None, ready.wait, 5)
+
+                first = await cli.get(f"/v1/runs/{run_id}/events")
+                callbacks["delta"]("seen")
+                seen_sequence, seen_event = await asyncio.wait_for(
+                    _read_sse_frame(first), timeout=5
+                )
+                assert seen_sequence is not None
+                assert seen_event["delta"] == "seen"
+                first.close()
+                await asyncio.sleep(0.1)
+
+                steered = await cli.post(
+                    f"/v1/runs/{run_id}/steer",
+                    json={"input": "missed guidance"},
+                )
+                assert steered.status == 200
+                callbacks["delta"]("missed")
+                release.set()
+                await asyncio.sleep(0.1)
+                resumed = await cli.get(
+                    f"/v1/runs/{run_id}/events",
+                    headers={"Last-Event-ID": str(seen_sequence)},
+                )
+                body = await asyncio.wait_for(resumed.text(), timeout=5)
+
+        frames = []
+        for block in body.split("\n\n"):
+            data = next(
+                (
+                    json.loads(line.removeprefix("data: "))
+                    for line in block.splitlines()
+                    if line.startswith("data: ")
+                ),
+                None,
+            )
+            if data is not None:
+                frames.append(data)
+        assert [event["event"] for event in frames] == [
+            "run.steered",
+            "message.delta",
+            "run.completed",
+        ]
+        assert frames[0]["accepted"] is True
+        assert frames[1]["delta"] == "missed"
 
     @pytest.mark.asyncio
     async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):

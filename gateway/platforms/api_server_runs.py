@@ -45,6 +45,37 @@ _FIXED_EVENT_FIELDS = {
     "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
 
 
+class _RunStream:
+    """Sequence and retain one run's events while fanning out to SSE clients."""
+
+    def __init__(self) -> None:
+        self.subscribers: set[asyncio.Queue] = set()
+        self.backlog: list[tuple[int, Optional[Dict[str, Any]]]] = []
+        self.next_seq = 0
+        self.terminal = False
+
+    def put_nowait(self, event: Optional[Dict[str, Any]]) -> None:
+        if self.terminal:
+            return
+        seq = self.next_seq
+        self.next_seq += 1
+        self.backlog.append((seq, event))
+        if event is None:
+            self.terminal = True
+        for queue in list(self.subscribers):
+            queue.put_nowait((seq, event))
+
+    def attach(
+        self, last_seq: int = -1
+    ) -> tuple[asyncio.Queue, list[tuple[int, Optional[Dict[str, Any]]]]]:
+        queue: asyncio.Queue = asyncio.Queue()
+        self.subscribers.add(queue)
+        return queue, [(seq, event) for seq, event in self.backlog if seq > last_seq]
+
+    def detach(self, queue: asyncio.Queue) -> None:
+        self.subscribers.discard(queue)
+
+
 def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> None:
     value = float(claims.get("status_expires_at") or claims.get("expires_at") or 0)
     try:
@@ -312,7 +343,7 @@ class _RunLaunch:
 
     owner: Any
     run_id: str
-    queue: "asyncio.Queue[Optional[Dict]]"
+    queue: _RunStream
     session_id: str
     gateway_session_key: Optional[str]
     declared_selected: bool
@@ -425,7 +456,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     # An explicit or chained session owns its routing key and is never rebound to the header.
     _declared_selected = not session_id and bool(gateway_session_key)
     session_id = session_id or self._declared_conversation_session(gateway_session_key) or run_id
-    q = self._run_streams[run_id] = asyncio.Queue()
+    q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
@@ -677,27 +708,49 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
         await asyncio.sleep(0.05)
     else:
         return _run_not_found(_api_server._openai_error, run_id)
-    q = self._run_streams[run_id]
+    stream = self._run_streams[run_id]
+    raw_last_seq = request.headers.get("Last-Event-ID") or request.query.get("last_seq")
+    try:
+        last_seq = max(-1, int(str(raw_last_seq).strip())) if raw_last_seq is not None else -1
+    except (TypeError, ValueError):
+        last_seq = -1
+    q, replay = stream.attach(last_seq)
     self._run_stream_subscribers.add(run_id)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    async def _write_event(seq: int, event: Dict[str, Any]) -> None:
+        payload = dict(event)
+        payload["seq"] = seq
+        await response.write(f"id: {seq}\n".encode() + _api_server._sse_frame(payload))
+
     await response.prepare(request)
     try:
+        for seq, event in replay:
+            if event is None:
+                await response.write(b": stream closed\n\n")
+                return response
+            await _write_event(seq, event)
+        if stream.terminal:
+            await response.write(b": stream closed\n\n")
+            return response
         while True:
             try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
+                seq, event = await asyncio.wait_for(q.get(), timeout=30.0)
             except asyncio.TimeoutError:
                 await response.write(b": keepalive\n\n")
                 continue
             if event is None:  # run finished
                 await response.write(b": stream closed\n\n")
                 break
-            await response.write(_api_server._sse_frame(event))
+            await _write_event(seq, event)
     except Exception as exc:
         logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
-        self._run_stream_subscribers.discard(run_id)
-        _drop_run_transport(self, run_id)
+        stream.detach(q)
+        if not stream.subscribers:
+            self._run_stream_subscribers.discard(run_id)
+        self._release_run_owner_if_forgotten(run_id)
     return response
 
 

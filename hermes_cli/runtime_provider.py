@@ -815,6 +815,15 @@ def _opencode_free_runtime(provider, requested_provider, model_cfg, target_model
 
 
 
+# Errors that mean THIS code is broken, not that a provider is misconfigured.
+# The cooldown probes all fail open by design -- a hot path must not take a turn
+# down over an unreadable store -- but that same silence let a missing import
+# report "nothing benched" for every custom endpoint, invisible until the tests
+# ran. So these still fail open, and still return the safe answer, but they say
+# so at a level an operator and CI will actually see.
+_PROBE_BUG_ERRORS = (NameError, AttributeError, ImportError)
+
+
 #: Key set on a resolved runtime when every live pooled credential for the
 #: provider is benched by a 429. Callers that own a fallback chain read it to
 #: route around the cooldown; everyone else can ignore it and use the runtime.
@@ -886,6 +895,14 @@ def _pooled_credentials_cooldown_until(
         if not pool_backed:
             return None
         cooling_until = pool.rate_limited_until()
+    except _PROBE_BUG_ERRORS:
+        logger.error(
+            "Cooldown probe for %s is broken -- a benched pool will read as "
+            "healthy until this is fixed",
+            getattr(pool, "provider", "?"),
+            exc_info=True,
+        )
+        return None
     except Exception:
         logger.debug(
             "Credential-pool cooldown probe failed for %s; leaving resolution "
@@ -958,6 +975,14 @@ def pool_for_runtime(runtime: Optional[Dict[str, Any]]) -> Optional[CredentialPo
                     return pool
             return None
         return load_pool(provider)
+    except _PROBE_BUG_ERRORS:
+        logger.error(
+            "Pool lookup for %s is broken -- every cooldown probe on this "
+            "provider will report it healthy until this is fixed",
+            provider,
+            exc_info=True,
+        )
+        return None
     except Exception:
         logger.debug(
             "Could not load %s's credential pool for a cooldown probe",

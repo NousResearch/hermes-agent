@@ -27,6 +27,13 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Errors that mean THIS module is broken, not that a provider is misconfigured.
+# Everything here fails open by design -- a cooldown must never take a turn down
+# -- but that same silence let a missing import report "nothing benched" for
+# every custom endpoint, invisible until the tests ran. These keep the safe
+# answer and say so at a level an operator and CI will actually see.
+_PROBE_BUG_ERRORS = (NameError, AttributeError, ImportError)
+
 
 def runtime_is_rate_limited(runtime: Optional[dict[str, Any]]) -> bool:
     """Whether *runtime* draws on a credential pool that is serving a 429.
@@ -41,6 +48,14 @@ def runtime_is_rate_limited(runtime: Optional[dict[str, Any]]) -> bool:
         )
 
         return runtime_credentials_cooling_down_until(runtime) is not None
+    except _PROBE_BUG_ERRORS:
+        logger.error(
+            "Cooldown probe is broken -- %s will be treated as healthy while "
+            "its pool may be benched",
+            runtime.get("provider") or "?",
+            exc_info=True,
+        )
+        return False
     except Exception:
         logger.debug(
             "Could not probe %s's pool for a cooldown",
@@ -76,6 +91,13 @@ def resolve_fallback_entry_runtime(
         logger.debug(
             "Fallback entry %s has no usable credentials: %s",
             entry.get("provider"), exc,
+        )
+        return None
+    except _PROBE_BUG_ERRORS:
+        logger.error(
+            "Fallback entry %s cannot be resolved because this code is broken "
+            "-- no chain entry will resolve until it is fixed",
+            entry.get("provider"), exc_info=True,
         )
         return None
     except Exception:
@@ -203,7 +225,15 @@ def _draws_on_the_same_pool(
     try:
         a = pool_for_runtime(primary)
         b = pool_for_runtime(candidate)
+    except _PROBE_BUG_ERRORS:
+        logger.error(
+            "Same-pool check is broken -- a fallback drawing on the benched "
+            "pool will be picked as if it were a different one",
+            exc_info=True,
+        )
+        return False
     except Exception:
+        logger.debug("Could not compare the two runtimes' pools", exc_info=True)
         return False
     if a is None or b is None:
         return False
@@ -259,6 +289,13 @@ def demote_if_rate_limited(
 
     try:
         entries = chain()
+    except _PROBE_BUG_ERRORS:
+        logger.error(
+            "Reading the fallback chain is broken -- every demotion will keep "
+            "the benched primary until this is fixed",
+            exc_info=True,
+        )
+        entries = None
     except Exception:
         # Fail open, as everywhere else here: an unreadable chain leaves the
         # primary in place rather than taking the turn down with it. This is

@@ -8,12 +8,14 @@ through whichever caller happens to be under test.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from hermes_cli.provider_cooldown import (
     Demotion,
     demote_if_rate_limited,
     resolve_non_cooling_fallback_runtime,
+    runtime_is_rate_limited,
 )
 from hermes_cli.runtime_provider import CREDENTIALS_COOLING_DOWN_KEY
 
@@ -106,3 +108,28 @@ def test_a_benched_primary_with_an_empty_chain_keeps_running_on_it():
     assert result.switched is False
     assert result.runtime is primary
     assert result.model is None
+
+
+def test_a_broken_probe_says_so_instead_of_reporting_health(monkeypatch, caplog):
+    """The failure this module actually shipped: a name the probe called was no
+    longer imported, the blanket handler swallowed the NameError, and every
+    benched pool read as healthy -- invisible until the tests ran, because the
+    only trace was a debug-level line.
+
+    Failing open stays right (a cooldown must never take a turn down), so the
+    answer is still False. What is pinned here is that it is no longer silent:
+    a defect in this code reports itself as one.
+    """
+    import hermes_cli.runtime_provider as rp
+
+    def _broken(_runtime):
+        raise NameError("name 'get_custom_provider_pool_key' is not defined")
+
+    monkeypatch.setattr(rp, "runtime_credentials_cooling_down_until", _broken)
+
+    with caplog.at_level(logging.ERROR, logger="hermes_cli.provider_cooldown"):
+        assert runtime_is_rate_limited(_runtime("gemini")) is False
+
+    assert [r for r in caplog.records if r.levelno >= logging.ERROR], (
+        "a probe broken by a code defect must not be swallowed at debug level"
+    )

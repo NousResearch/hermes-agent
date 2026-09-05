@@ -3333,6 +3333,7 @@ class GatewayRunner(
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self._attach_cron_persist_listener()
         # Non-None means SessionDB init failed — the gateway broadcasts a one-time warning to the home
         # channel(s) after connecting so the user learns persistence is broken before /resume fails.
         # See #88235.
@@ -3845,6 +3846,18 @@ class GatewayRunner(
         Passes ONLY ``active_agents`` so the read-merge-write keeps lifecycle state (gateway_state=None
         would clobber it). Best-effort: a failed write must never disrupt a turn."""
         _write_runtime_status_quiet(active_agents=self._active_work_count())
+
+    def _attach_cron_persist_listener(self) -> None:
+        """Make a cron job's start and end a persist boundary too. Cron work counts in
+        ``_active_work_count`` but runs outside the chat-turn boundaries that call
+        ``_persist_active_agents``, so a cron that outlived the last chat turn left
+        ``active_agents`` stale in ``gateway_state.json`` (a fleet's polite restart probe then
+        read "mid-turn" for a day), and a cron with no chat turn open was invisible to it."""
+        try:
+            from cron.scheduler import add_running_jobs_listener
+            add_running_jobs_listener(self._persist_active_agents)
+        except Exception:
+            logger.debug("cron running-jobs listener not attached", exc_info=True)
 
     def _running_agent_ids(self) -> set:
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of

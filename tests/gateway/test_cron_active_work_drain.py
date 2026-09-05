@@ -118,3 +118,28 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         assert marked_calls, "mark_running_jobs_interrupted was never called during shutdown"
         assert any(result == ["job-1"] for _reason, result in marked_calls)
 
+
+
+# --- a cron job's start and end persist active_agents (the stale-flag fix) ------ #
+
+def test_cron_start_and_end_persist_active_agents_without_a_chat_turn(monkeypatch):
+    """A cron job that runs with no chat turn open, or that outlives the last chat turn,
+    must move ``active_agents`` in gateway_state.json itself. Before the listener the file
+    only moved at chat-turn boundaries, so a cron ending after the last turn left it at 1
+    (an idle box read as mid-turn for 26 hours) and a cron with no turn open read as 0."""
+    import cron.scheduler as sched
+    from gateway import run as gateway_run
+
+    persisted = []
+    monkeypatch.setattr(gateway_run, "_write_runtime_status_quiet",
+                        lambda **fields: persisted.append(fields.get("active_agents")))
+    sched._running_jobs_listeners.clear()
+    runner, _adapter = make_restart_runner()
+    runner._attach_cron_persist_listener()
+    try:
+        assert sched.try_register_running_job("evening-log") is True
+        assert persisted == [1]
+        sched.release_running_job("evening-log")
+        assert persisted == [1, 0]
+    finally:
+        sched._running_jobs_listeners.clear()

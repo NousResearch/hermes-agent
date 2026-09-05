@@ -119,20 +119,28 @@ def _record_turn_marker(session: dict, text: Any, *, auto_continue: bool = True)
     """Write the durable crash marker; returns the session key it was written under (compression
     can rotate session_key mid-turn).  A surviving marker means the process died mid-turn.
     The key is published before the disk write so an interrupt racing startup can retire
-    it; the post-write cancel check closes the inverse race (Stop landed first, no file)."""
+    it; the post-write cancel check closes the inverse race (Stop landed first, no file).
+
+    The marker carries the recording holder's lease identity (preemptible leases): clears
+    are conditional compare-and-deletes, so a holder displaced mid-turn can never retire
+    the new owner's marker."""
     marker_home = _session_home(session)
     marker_key = str(session.get("session_key") or "")
     marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
     marker_text = session.pop("_auto_continue_prompt", None) or text
+    lease = session.get("active_session_lease")
+    marker_writer = (
+        {"lease_id": lease.lease_id, "epoch": int(getattr(lease, "epoch", 1) or 1)}
+        if lease is not None else None)
     if isinstance(marker_text, str) and marker_text.strip():
         with session["history_lock"]:
             session["_active_turn_marker_key"] = marker_key
         record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt,
-                          auto_continue=auto_continue)
+                          auto_continue=auto_continue, writer=marker_writer)
         with session["history_lock"]:
             marker_cancelled = bool(session.get("_turn_cancel_requested"))
         if marker_cancelled:
-            clear_turn_marker(marker_home, marker_key)
+            clear_turn_marker(marker_home, marker_key, writer=marker_writer)
     return marker_key
 
 
@@ -521,6 +529,10 @@ def _invoke_agent(
     agent = st.agent
 
     def _stream(delta):
+        # Preemptible leases: every visible delta keeps the lease's activity clock fresh
+        # (throttled + non-blocking inside _touch_lease_activity) — a streaming turn
+        # protects itself even when the maintenance watcher thread is dead.
+        _touch_lease_activity(session)
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
         payload = {"text": delta}
@@ -865,6 +877,13 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not st.error_retained:
                     _clear_inflight_turn(session)
+            # Preemptible leases: clear the published busy mark BESIDE running=False, BEFORE
+            # the finished bookend and the post-turn followups — the registry reads idle in
+            # the inter-turn gap, so a steal there breaks a followup chain cleanly at its
+            # next admission instead of stranding the phone (followups re-mark 'user' at
+            # their own admission). An active auto token (bg-review) re-marks 'auto'.
+            with contextlib.suppress(Exception):
+                _lease_turn_settled(session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
             # agent.session_id is re-read because compression may have rotated it (an
             # accepted/finished pair whose id changed IS a rotation trace).

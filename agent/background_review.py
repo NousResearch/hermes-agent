@@ -71,6 +71,33 @@ def _optional_lock(agent: Any, attr: str) -> Iterator[None]:
         yield
 
 
+def _lease_auto_busy_begin(agent: Any, detail: str = "bg_review") -> None:
+    """Publish busy_kind='auto' on the session's lease for the review's lifetime
+    (preemptible leases): bg-review runs on a daemon thread that never touches the
+    gateway session's ``running`` flag, so without this token a cross-surface steal
+    would interrupt an invisible in-flight review. The gateway installs
+    ``agent._session_lease_busy_hook`` when the session holds a lease; agents without
+    one (CLI, gateway-side runs, test stubs) no-op. Best-effort by design — the 90s
+    HERMES_LEASE_AUTO_BUSY_GRACE_S window rides out observed 65-80s reviews, past
+    that a steal may interrupt the review (result=none on interrupt, same exposure
+    class as the existing client-gone reaper)."""
+    hook = getattr(agent, "_session_lease_busy_hook", None)
+    if hook is None:
+        return
+    with suppress(Exception):
+        hook("auto", detail)
+
+
+def _lease_auto_busy_end(agent: Any, detail: str = "bg_review") -> None:
+    """Clear the review's auto-busy token (conditional: a live user turn's mark is never
+    downgraded; the session's token bookkeeping re-arms 'auto' when that turn settles)."""
+    hook = getattr(agent, "_session_lease_busy_hook", None)
+    if hook is None:
+        return
+    with suppress(Exception):
+        hook(None, detail)
+
+
 def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
     run = _BackgroundReviewRun()
@@ -1168,6 +1195,10 @@ def _run_review_in_thread(
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
+    # Preemptible leases: mark for the review's LIFETIME (begin here — covering every
+    # spawn path: automatic, /refine, idle-queue deferral, requeue — and cleared in this
+    # function's finally below).
+    _lease_auto_busy_begin(agent)
     _set_thread_approval_callback(_bg_review_auto_deny)
     # A client that can't carry Hermes tool calls back would spawn a fork that cannot write
     # anything. Checked BEFORE the thread-scoped silence so the warning is not swallowed; cheap
@@ -1233,6 +1264,8 @@ def _run_review_in_thread(
         if st.review_agent is not None:
             with suppress(Exception), thread_scoped_silence():
                 _release_fork_clients(st.review_agent)
+        # Preemptible leases: the review token ends with the review (completion path).
+        _lease_auto_busy_end(agent)
         # Clear the approval callback so a recycled thread-id doesn't inherit it.
         _set_thread_approval_callback(None)
 

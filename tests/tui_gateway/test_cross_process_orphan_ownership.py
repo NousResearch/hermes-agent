@@ -450,23 +450,27 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_ends_sole_owner(
             "idle_timeout",
             "lru_evict",
             "tui_shutdown",
+            # Preemptible leases: the maintenance watcher closes a session whose lease
+            # was stolen — automatic, like the reapers above.
+            "lease_preempted",
         )
         assert set(reasons) == server._AUTOMATIC_SESSION_END_REASONS
 
-        # With the per-session fence (#94595) this backend can no longer claim
-        # a second lease on a session another backend owns — the exact
-        # double-writer state the fence exists to prevent.
-        refused_lease, refusal = server._claim_active_session_slot(
+        # With the per-session fence (#94595) plus preemptible leases, a backend
+        # claiming a session another LIVE backend holds while IDLE no longer bounces
+        # off a refusal — it STEALS the lease atomically (epoch bump), the sanctioned
+        # takeover. The fence's invariant is unchanged at heart: never a SECOND live
+        # entry for the session (the steal REPLACES the holder, it does not duplicate).
+        stolen_lease, refusal = server._claim_active_session_slot(
             session_id,
             live_session_id="local-runtime",
             surface="desktop",
             profile_home=profile_home,
         )
-        assert refused_lease is None
-        assert getattr(refusal, "reason", None) == "SESSION_NOT_OWNED"
-        assert (
-            len(active_session_registry_snapshot(registry_home=profile_home)) == 1
-        )
+        assert stolen_lease is not None and refusal is None
+        assert stolen_lease.epoch == 2, "claiming over the child's live idle lease must be a steal"
+        remaining = active_session_registry_snapshot(registry_home=profile_home)
+        assert len(remaining) == 1 and remaining[0]["lease_id"] == stolen_lease.lease_id
 
         # A LEASELESS local record of that session (a viewer / never-ran-a-turn
         # tab) must still preserve the sibling's session on every automatic
@@ -484,6 +488,10 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_ends_sole_owner(
         assert ended == [(session_id, "tui_close")]
         ended.clear()
 
+        # Drop the stolen lease before the child exits so the registry drains: the
+        # displaced child's own release() is a lease_id-scoped no-op by then (its entry
+        # was replaced by the steal — never the new owner's).
+        stolen_lease.release()
         release_file.write_text("release", encoding="utf-8")
         stdout, stderr = child.communicate(timeout=30)
         assert child.returncode == 0, f"stdout: {stdout}\nstderr: {stderr}"

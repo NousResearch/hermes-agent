@@ -208,6 +208,11 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
         session.pop("_compute_host_open_request", None)
+    # Preemptible leases: the isolated turn has no in-process turn thread, so its finally
+    # never runs — clear the published busy mark HERE, beside running=False and before
+    # the queued drain below (which re-marks at its own admission gate).
+    with contextlib.suppress(Exception):
+        _lease_turn_settled(session)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})

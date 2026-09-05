@@ -1,18 +1,24 @@
-"""Auto-yield patch: a cross-surface send fenced out by an IDLE same-process desktop session
-takes over instead of being refused; a RUNNING desktop owner still fences; a foreign-process
-owner is never fabricated into a takeover.
+"""Preemptible cross-surface leases: a cross-surface send fenced out by an IDLE
+desktop session takes over (now by ATOMIC STEAL inside the registry flock — epoch
+bump, displaced close — instead of the retired 8s yield-request dance); a RUNNING
+desktop owner still fences (SESSION_BUSY); a foreign-process owner is never
+fabricated into a takeover.
 
-Cross-process contract: a requester refused by a LIVE foreign pid writes a yield request into
-the lease registry's runtime dir; the holder honors it only for a still-matching, idle session;
-expired or mismatched requests are dropped.
+Cross-process compat contract (kept): OLD-code requesters still write yield-request
+files; the NEW holder's lease maintenance watcher honors them only for a
+still-matching, idle session, requeues busy ones with the ORIGINAL requested_at, and
+drops expired or mismatched requests.
 
-These exercise the REAL bound functions on tui_gateway.server (split-module binding at import),
-with a real on-disk lease registry under a temp HERMES_HOME. Behavior contract, not mocks.
+These exercise the REAL bound functions on tui_gateway.server (split-module binding at
+import), with a real on-disk lease registry under a temp HERMES_HOME. Behavior
+contract, not mocks. Deeper preemptible-lease coverage (steal tiers, watcher startup,
+displacement detection) lives in test_lease_preempt.py.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -39,7 +45,14 @@ def _relay_session(session_key: str) -> dict:
         "active_session_lease": None,
         "running": False,
         "history_lock": threading.RLock(),
+        "history": [],
+        "history_version": 0,
+        "agent": None,
+        "slash_worker": None,
         "profile_home": None,
+        "source": "webui",
+        "created_at": time.time(),
+        "last_active": time.time(),
     }
 
 
@@ -55,44 +68,101 @@ def _desktop_session(session_key: str, *, running: bool = False) -> dict:
     return sess
 
 
+def _registry_entry(session_key: str):
+    from hermes_cli import active_sessions as AS
+    state = AS._state_path(None)
+    if not state.exists():
+        return None
+    return next(
+        (e for e in json.loads(state.read_text())["entries"]
+         if e.get("session_id") == session_key), None)
+
+
+def _self_pid() -> int:
+    return os.getpid()
+
+
 def test_idle_desktop_owner_yields_to_cross_surface_send(gateway):
-    """Relay send vs an IDLE desktop tab in this process: tab closes, send claims, turn admitted."""
+    """Relay send vs an IDLE desktop tab in this process: the claim STEALS the lease
+    atomically (epoch bump), the turn is admitted, and the displaced tab closes."""
     desktop = _desktop_session("sess-yield-1", running=False)
+    # The desktop's last turn finished: publish idle (busy cleared beside running=False).
+    server._lease_turn_settled(desktop)
+    holder_epoch = int(_registry_entry("sess-yield-1").get("epoch") or 1)
     gateway._sessions["desktop-live"] = desktop
     relay = _relay_session("sess-yield-1")
 
     result = server._ensure_active_session_slot("relay-live", relay)
 
-    assert result is None, f"turn should be admitted after yield, got: {result}"
+    assert result is None, f"turn should be admitted after steal, got: {result}"
     assert relay["active_session_lease"] is not None
-    assert "desktop-live" not in gateway._sessions, "desktop tab must be closed"
+    entry = _registry_entry("sess-yield-1")
+    assert entry["pid"] == _self_pid()
+    assert entry["lease_id"] == relay["active_session_lease"].lease_id
+    assert int(entry["epoch"]) == holder_epoch + 1, "a steal must bump the fencing epoch"
+    assert entry["busy"] is True and entry["busy_kind"] == "user"
+    # The displaced tab closes (the lease maintenance watcher detects the theft within
+    # one tick); event-synced poll with a wide margin per AGENTS.md timing rules.
+    deadline = time.monotonic() + 10.0
+    while "desktop-live" in gateway._sessions and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert "desktop-live" not in gateway._sessions, "displaced desktop tab must close"
 
 
 def test_running_desktop_owner_never_yields(gateway):
-    """A mid-turn desktop session keeps its lease; the cross-surface send is still refused."""
-    from hermes_cli.active_sessions import SESSION_NOT_OWNED
+    """A mid-turn desktop session keeps its lease; the cross-surface send is refused
+    fast with SESSION_BUSY — including the dead-watcher variant (stale heartbeat),
+    which must STILL never steal a visibly streaming turn."""
+    from hermes_cli import active_sessions as AS
+    from hermes_cli.active_sessions import _lock_path, _state_path, _FileLock, _write_entries
 
-    gateway._sessions["desktop-live"] = _desktop_session("sess-yield-2", running=True)
+    def _age_heartbeat(age_s: float) -> None:
+        state = _state_path(None)
+        with _FileLock(_lock_path(None)):
+            entries = json.loads(state.read_text())["entries"]
+            for entry in entries:
+                if entry.get("session_id") == "sess-yield-2":
+                    entry["heartbeat_at"] = time.time() - age_s
+            _write_entries(state, entries)
+
+    desktop = _desktop_session("sess-yield-2", running=True)
+    # A live admitted turn: publish busy_kind='user' with fresh activity.
+    assert server._lease_admission_check("desktop-live", desktop) is None
+    assert _registry_entry("sess-yield-2")["busy"] is True
+    gateway._sessions["desktop-live"] = desktop
+
     relay = _relay_session("sess-yield-2")
-
+    t0 = time.monotonic()
     result = server._ensure_active_session_slot("relay-live", relay)
-
-    assert getattr(result, "reason", None) == SESSION_NOT_OWNED
+    elapsed = time.monotonic() - t0
+    assert getattr(result, "reason", None) == AS.SESSION_BUSY
+    assert "mid-turn" in str(result)
+    assert elapsed < 2.0, f"fresh-turn refusal must be fast, took {elapsed:.2f}s"
     assert "desktop-live" in gateway._sessions, "running owner must be untouched"
 
+    # Dead-watcher variant: heartbeat 120s stale — STILL refused, never stolen (F1 pin).
+    _age_heartbeat(120.0)
+    relay2 = _relay_session("sess-yield-2")
+    result = server._ensure_active_session_slot("relay-live-2", relay2)
+    assert getattr(result, "reason", None) == AS.SESSION_BUSY
+    entry = _registry_entry("sess-yield-2")
+    assert entry["lease_id"] == desktop["active_session_lease"].lease_id, (
+        "a streaming turn is never stolen, in any heartbeat state")
+    assert "desktop-live" in gateway._sessions
 
-def test_foreign_live_owner_request_written_and_refusal_kept(gateway):
-    """Refused by a REAL other process: a yield request is written for it, the refusal stands
-    until that process honors it (we do not fabricate a takeover), and the refusal carries the
-    holder identity for the requester."""
-    from hermes_cli.active_sessions import (
-        SESSION_NOT_OWNED, poll_yield_requests, try_acquire_active_session)
+
+def test_foreign_live_owner_refused_fast_no_request_files(gateway):
+    """Refused by a REAL other process (registry entry shaped like old-code output —
+    no new fields): SESSION_NOT_OWNED in one fast claim, holder identity attached, no
+    takeover fabricated, and NO yield-request file written by the new-code requester."""
+    from hermes_cli import active_sessions as AS
+    from hermes_cli.active_sessions import try_acquire_active_session
 
     key = "sess-yield-3"
     foreign = subprocess.Popen(["sleep", "30"])
     try:
         # Acquire from THIS process, then rewrite the entry so it belongs to the real
-        # live foreign pid (a fake dead pid would be pruned by upstream — not this contract).
+        # live foreign pid AND carries no preemptible-lease fields (old-code shape).
         lease, refusal = try_acquire_active_session(
             session_id=key, surface="desktop", config={}, track_liveness=False,
             metadata={"live_session_id": "foreign"})
@@ -103,31 +173,36 @@ def test_foreign_live_owner_request_written_and_refusal_kept(gateway):
             if entry["session_id"] == key:
                 entry["pid"] = foreign.pid
                 entry.pop("process_start_time", None)
+                for field in ("epoch", "busy", "busy_kind", "busy_detail",
+                              "busy_since", "activity_at", "heartbeat_at"):
+                    entry.pop(field, None)
         registry_path.write_text(json.dumps(data))
 
         relay = _relay_session(key)
-        t0 = time.time()
+        t0 = time.monotonic()
         result = server._ensure_active_session_slot("relay-live", relay)
-        waited = time.time() - t0
+        waited = time.monotonic() - t0
 
-        assert getattr(result, "reason", None) == SESSION_NOT_OWNED
-        # The refusal must carry the holder entry (cross-process yield handshake data).
+        assert getattr(result, "reason", None) == AS.SESSION_NOT_OWNED
+        assert "restart once" in str(result)
+        # The refusal must carry the holder entry (cross-process handshake data).
         assert isinstance(getattr(result, "holder_entry", None), dict)
         assert result.holder_entry.get("pid") == foreign.pid
-        # Nobody honored the request within the wait window; the wait is bounded and short.
-        assert waited < 12, f"yield wait must stay bounded, took {waited:.1f}s"
-        # The request file for the foreign holder exists and is well-formed for ITS poller.
-        # (This process is not the holder, so polling from here returns nothing.)
-        assert poll_yield_requests() == []
+        # Single fast claim — the 8s dance is retired; nothing is fabricated.
+        assert waited < 2.0, f"refusal must be fast, took {waited:.2f}s"
+        # New requesters never write yield-request files to acquire.
+        req_dir = AS._yield_request_dir(None)
+        leftover = list(req_dir.glob("*.json")) if req_dir.exists() else []
+        assert leftover == [], f"no request files may be written by the new code: {leftover}"
     finally:
         foreign.terminate()
         foreign.wait()
 
 
 def test_yield_request_roundtrip_holder_honors(gateway):
-    """Full cross-process contract, holder side: a fresh request naming one of THIS process's
-    IDLE sessions closes it; a request for a RUNNING session does not; an expired request is
-    dropped without effect."""
+    """Full cross-process compat contract, holder side: a fresh request naming one of
+    THIS process's IDLE sessions closes it; a request for a RUNNING session does not;
+    an expired request is dropped without effect."""
     from hermes_cli.active_sessions import (
         request_cross_surface_yield, poll_yield_requests)
 
@@ -136,12 +211,12 @@ def test_yield_request_roundtrip_holder_honors(gateway):
 
     # Idle desktop tab holding a lease for sess-a; running tab holding sess-b.
     gateway._sessions["tab-idle"] = _desktop_session("sess-a", running=False)
+    server._lease_turn_settled(gateway._sessions["tab-idle"])
     gateway._sessions["tab-busy"] = _desktop_session("sess-b", running=True)
 
-    holder_pid = server._sessions["tab-idle"]["active_session_lease"]
     # Mint a request as if a foreign requester had been refused by this process's lease.
     ok = request_cross_surface_yield(
-        "sess-a", {"pid": holder_pid_pid_of_self(), "process_start_time": None})
+        "sess-a", {"pid": _self_pid(), "process_start_time": None})
     assert ok
 
     # THIS process polls its own request dir: it is the holder.
@@ -153,9 +228,11 @@ def test_yield_request_roundtrip_holder_honors(gateway):
     assert "tab-idle" not in gateway._sessions
     assert "tab-busy" in gateway._sessions, "running session must survive"
 
-    # A request for the busy session leaves it alone and REQUEUES itself (retry when idle).
+    # A request for the busy session leaves it alone and REQUEUES itself (retry when
+    # idle) with the ORIGINAL requested_at (bounded TTL chain).
+    t0 = time.time()
     ok = request_cross_surface_yield(
-        "sess-b", {"pid": holder_pid_pid_of_self(), "process_start_time": None})
+        "sess-b", {"pid": _self_pid(), "process_start_time": None})
     assert ok
     mine = poll_yield_requests()
     assert len(mine) == 1 and mine[0]["session_id"] == "sess-b"
@@ -164,32 +241,30 @@ def test_yield_request_roundtrip_holder_honors(gateway):
     requeued = poll_yield_requests()
     assert len(requeued) == 1 and requeued[0]["session_id"] == "sess-b", \
         "busy session must requeue its yield request for a retry"
+    assert requeued[0]["requested_at"] == pytest.approx(t0, abs=2.0), \
+        "requeue must preserve the ORIGINAL requested_at (bounded TTL chain)"
     _yield_session_for_request(gateway_home(), requeued[0])  # consume the requeue
 
     # An expired request is dropped by the poll, never honored.
     from hermes_cli.active_sessions import _yield_request_dir
     stale = _yield_request_dir(gateway_home()) / "stale-abc12345.json"
     stale.write_text(json.dumps({
-        "session_id": "sess-b", "holder_pid": holder_pid_pid_of_self(),
+        "session_id": "sess-b", "holder_pid": _self_pid(),
         "holder_process_start_time": None, "requested_at": time.time() - 9999}))
     # Drain any requeued requests first so the assertion isolates the stale file.
     poll_yield_requests()
     assert poll_yield_requests() == []
-
-
-def holder_pid_pid_of_self() -> int:
-    import os
-    return os.getpid()
+    assert not stale.exists(), "expired request files must be unlinked"
 
 
 def gateway_home():
-    import os
     return os.environ["HERMES_HOME"]
 
 
 def test_poller_leaves_fresh_foreign_requests_alone(tmp_path, monkeypatch):
     """Every backend sweeps every home, so a poller must NOT consume a request addressed to
-    another live pid — only its own, or expired/corrupt ones."""
+    another live pid — only its own, or expired/corrupt ones. A fresh own-pid file of a
+    FUTURE protocol also survives (its future-version reader may need it)."""
     from hermes_cli.active_sessions import _yield_request_dir, poll_yield_requests
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -198,6 +273,10 @@ def test_poller_leaves_fresh_foreign_requests_alone(tmp_path, monkeypatch):
     (req_dir / "foreign-live.json").write_text(json.dumps({
         "session_id": "x", "holder_pid": 424242, "holder_process_start_time": None,
         "requested_at": time.time()}))
+    (req_dir / "future-own.json").write_text(json.dumps({
+        "session_id": "x", "holder_pid": _self_pid(), "protocol": 99,
+        "requested_at": time.time()}))
     mine = poll_yield_requests()
     assert mine == []
     assert (req_dir / "foreign-live.json").exists(), "foreign request must survive for its owner"
+    assert (req_dir / "future-own.json").exists(), "fresh future-protocol own-pid file survives"

@@ -39,11 +39,32 @@ def _session_home(session: dict) -> Path:
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker right before the terminal frame (not at turn-thread end: post-turn work outlives the
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
-    cover a session_key that compression rotated mid-turn."""
+    cover a session_key that compression rotated mid-turn.
+
+    The clear is writer-identified (preemptible leases): a holder displaced mid-turn can
+    no longer retire the NEW owner's marker — identity mismatch no-ops instead."""
     home = _session_home(session)
+    lease = session.get("active_session_lease")
+    writer = (
+        {"lease_id": lease.lease_id, "epoch": int(getattr(lease, "epoch", 1) or 1)}
+        if lease is not None else None)
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
-            clear_turn_marker(home, key)
+            clear_turn_marker(home, key, writer=writer)
+
+
+def _auto_continue_still_valid(sid: str, session: dict, home, session_key: str, marker: dict) -> bool:
+    """Post-admission re-check for a scheduled auto-continue (preemptible leases): the
+    durable marker must still be the one this kickoff read (same started_at — a steal
+    force-clears or replaces foreign markers), and the admission must still hold (an
+    epoch-fenced revalidate; a displaced lease closes the session and returns False).
+    Bailing leaves the marker to the resume that legitimately owns it."""
+    with contextlib.suppress(Exception):
+        current = read_turn_marker(home, session_key)
+        if current is None or marker.get("started_at") != current.get("started_at"):
+            return False
+        return _lease_admission_check(sid, session) is None
+    return False
 
 
 def _auto_continue_note(prompt: str) -> str:
@@ -100,6 +121,17 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         # #94778.
         if _ensure_active_session_slot(sid, session) is not None:
             logger.info("auto-continue for %s refused: session has another live owner", session_key)
+            with session["history_lock"]:
+                session["running"] = False
+                session["_auto_continue_scheduled"] = False
+            return
+        # Preemptible leases: re-check AFTER admission and BEFORE dispatch — a steal that
+        # landed in between force-cleared the marker (or bumped the lease epoch), and
+        # running the cached crashed prompt anyway would auto-continue the DISPLACED
+        # surface's in-flight prompt on the new owner's surface (the observed 01:32:10
+        # double-submit shape).
+        if not _auto_continue_still_valid(sid, session, home, session_key, marker):
+            logger.info("auto-continue for %s bailed: marker vanished or lease moved after admission", session_key)
             with session["history_lock"]:
                 session["running"] = False
                 session["_auto_continue_scheduled"] = False
@@ -318,6 +350,16 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     try:
         if not use_compute_host:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
+        elif (_lease_refusal := _lease_admission_check(sid, session)) is not None:
+            # Preemptible leases: the isolated compute-host stream bypasses _run_prompt_submit's
+            # admission gate — fence it HERE so the turn publishes busy_kind='user' like every
+            # other visible turn, and a session displaced mid-queue drops the envelope instead
+            # of streaming on the new owner's session (the queued-drain bypass hole).
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            _emit("error", sid, {"message": str(_lease_refusal)})
+            dispatch_failed = True
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False

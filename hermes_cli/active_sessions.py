@@ -110,6 +110,16 @@ MAX_CONCURRENT_SESSIONS = "MAX_CONCURRENT_SESSIONS"
 # call for different operator action, and collapsing the second into a silent go-ahead is exactly the
 # fail-open hole that let two writers share one session (#94595 review, blocker 2).
 SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
+# Preemptible leases (#auto-yield -> preemptible leases): a LIVE foreign holder is either
+# stolen from atomically (idle / stalled turn / past-grace auto work / heartbeat-dead) or
+# refused fast. SESSION_BUSY means "a live owner is mid-turn or protected; retry or preempt
+# later" — machine-distinguishable from the SESSION_NOT_OWNED a heartbeat-less LEGACY
+# (pre-steal) holder still produces, so callers can shape retries and messaging per class.
+SESSION_BUSY = "SESSION_BUSY"
+# Holder-side next-touch fence: the lease this process cached was taken over (or the
+# registry no longer proves it ours). The session must close and reload from the DB;
+# continuing to write on it is exactly the double-writer the fence exists to prevent.
+SESSION_DISPLACED = "SESSION_DISPLACED"
 
 # Advertised through the gateway. A module constant, not a config flag: it holds
 # because try_acquire_active_session checks atomically, so it cannot drift from the
@@ -124,8 +134,59 @@ PER_SESSION_EXCLUSIVE_SUBMIT = True
 # expire after YIELD_REQUEST_TTL_S, and the pid+create-time pair in the request must
 # match the current lease entry, so a stale or forged request cannot fence a live
 # session out of its own ownership.
+#
+# Preemptible leases: this file channel is now a COMPAT path only — OLD-code requesters
+# (pre-steal builds) keep their 8s write-and-poll dance and a restarted (fixed) holder
+# honors it, but NEW requesters never write request files to acquire; they steal or
+# refuse inside try_acquire_active_session's flock instead. Remove the channel once the
+# fleet has converged.
 YIELD_REQUEST_FILENAME = "yield_requests"
 YIELD_REQUEST_TTL_S = 15.0
+# Bump when the payload shape changes; poll_yield_requests leaves FRESH own-pid files of a
+# FUTURE protocol alone (a newer build may need them) while still unlinking expired ones.
+YIELD_REQUEST_PROTOCOL = 2
+
+
+def _env_float(name: str, default: float) -> float:
+    # Tolerant env parsing (mirrors tui_gateway._env.env_float): a bare float() would raise
+    # at import on a typo and kill the process before it serves a command.
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_flag(name: str) -> bool:
+    return str(os.environ.get(name, "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# --- Preemptible-lease tunables (#auto-yield -> preemptible leases) -----------------
+# Steal-decision windows, all in epoch seconds, all env-overridable.
+# HERMES_LEASE_HEARTBEAT_FRESH_S is floored at 2x the 1.5s maintenance tick + margin: a
+# freshness window shorter than the tick would make every HEALTHY holder look stale
+# between ticks (freshness-headroom rule).
+HERMES_LEASE_HEARTBEAT_FRESH_S = max(2.0, _env_float("HERMES_LEASE_HEARTBEAT_FRESH_S", 6.0))
+# A busy_kind='user' turn is protected while its activity clock (last visible streaming/
+# tool progress, refreshed from the turn thread itself) is at most this old.
+HERMES_LEASE_ACTIVITY_FRESH_S = _env_float("HERMES_LEASE_ACTIVITY_FRESH_S", 15.0)
+# Past this activity age a 'user' turn counts as stalled (blocked approval, hung tool,
+# silent compute) and becomes stealable — the owner-reported "UI looked done" shape.
+# 0 disables the stall tier: a user turn is then never interruptible, however silent.
+HERMES_LEASE_STALL_ACTIVITY_S = _env_float("HERMES_LEASE_STALL_ACTIVITY_S", 60.0)
+# bg-review grace: observed review API calls run 65.6s/79.7s — 90s lets most reviews
+# finish before a steal may interrupt them (best-effort work, never a hard guarantee).
+HERMES_LEASE_AUTO_BUSY_GRACE_S = _env_float("HERMES_LEASE_AUTO_BUSY_GRACE_S", 90.0)
+# An idle lease whose heartbeat is staler than this is stealable — the escape hatch that
+# bounds a dead maintenance watcher (a heartbeat-writing holder runs new code whose
+# admission fence bounds it at next touch, so stealing from it is safe).
+HERMES_LEASE_HEARTBEAT_STALE_STEAL_S = _env_float("HERMES_LEASE_HEARTBEAT_STALE_STEAL_S", 30.0)
+# Operator escape for LEGACY (pre-steal) holders — default OFF. A legacy holder has no
+# displacement detector and short-circuits on its cached lease between turns, so stealing
+# from it opens a blind double-writer; absence of heartbeat = unknown = fail-closed refuse.
+HERMES_STEAL_LEGACY_HOLDER = _env_flag("HERMES_STEAL_LEGACY_HOLDER")
+# Turn-path activity piggyback throttle: at most one non-blocking activity refresh per
+# window, so streaming never pays a registry write per token.
+HERMES_LEASE_ACTIVITY_REFRESH_MIN_S = _env_float("HERMES_LEASE_ACTIVITY_REFRESH_MIN_S", 2.5)
 
 
 def _yield_request_dir(registry_home: str | Path | None = None) -> Path:
@@ -134,12 +195,17 @@ def _yield_request_dir(registry_home: str | Path | None = None) -> Path:
 
 def request_cross_surface_yield(
     session_id: str, entry: dict[str, Any], *, registry_home: str | Path | None = None,
+    requested_at: float | None = None,
 ) -> bool:
     """Ask the live owner in ``entry`` to close its idle session for ``session_id``.
 
     Returns True when a request file was written. The holder honors it only while the
     request stays fresh (TTL) and the lease still matches pid + process_start_time —
     a request can never close a session that changed owners since it was written.
+
+    ``requested_at`` (987d564112 repair): a REQUEUE must pass the ORIGINAL mint time or
+    the fresh stamp below silently extends a busy chain's TTL on every hop — the opposite
+    of what the old requeue comment claimed. New requests leave it None (mint now).
     """
     target = str(session_id or "")
     holder_pid = entry.get("pid")
@@ -153,7 +219,8 @@ def request_cross_surface_yield(
             "session_id": target,
             "holder_pid": int(holder_pid),
             "holder_process_start_time": holder_start,
-            "requested_at": time.time(),
+            "requested_at": time.time() if requested_at is None else float(requested_at),
+            "protocol": YIELD_REQUEST_PROTOCOL,
         }
         tmp = req_dir / f".{int(holder_pid)}.{uuid.uuid4().hex}.tmp"
         tmp.write_text(json.dumps(payload), encoding="utf-8")
@@ -169,7 +236,9 @@ def poll_yield_requests(
 ) -> list[dict[str, Any]]:
     """Fresh, well-formed requests targeting THIS process. Files addressed to another pid
     are LEFT in place for their rightful owner (every backend sweeps every home, so the
-    first poller must not consume a foreign request); corrupt and expired files are removed."""
+    first poller must not consume a foreign request); corrupt and expired files are removed
+    regardless of protocol (an expired future-protocol file must not leak forever); a FRESH
+    own-pid file of a future protocol is left in place for a future-version reader."""
     req_dir = _yield_request_dir(registry_home)
     mine: list[dict[str, Any]] = []
     try:
@@ -192,16 +261,26 @@ def poll_yield_requests(
             not isinstance(payload, dict)
             or now - float(payload.get("requested_at") or 0.0) > max_age_s
         )
-        if not expired and file_pid is not None and file_pid != os.getpid():
+        # Expired/corrupt determination comes FIRST, before the foreign/future-protocol
+        # guards, so nothing downstream can keep a dead file alive on disk.
+        if expired:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            continue
+        if file_pid is not None and file_pid != os.getpid():
             continue  # not ours, still fresh: leave it for the addressed holder
+        try:
+            protocol = int(payload.get("protocol") or 1)
+        except (TypeError, ValueError):
+            protocol = 1
+        if protocol > YIELD_REQUEST_PROTOCOL:
+            continue  # fresh own-pid future-protocol file: leave it for its future reader
         try:
             path.unlink(missing_ok=True)
         except Exception:
             pass
-        if not isinstance(payload, dict):
-            continue
-        if expired:
-            continue
         if file_pid == os.getpid():
             mine.append(payload)
     return mine
@@ -244,16 +323,52 @@ def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -
     return bool(existing_live and incoming_live) and existing_live == incoming_live
 
 
+def _format_state_age(seconds: float) -> str:
+    # Seconds precision under a minute (the phone renders "~4s mid-turn", not "~0m"),
+    # minute granularity past that via the existing lease-age formatter.
+    return f"{max(0, int(seconds))}s" if seconds < 60 else format_age(seconds)
+
+
+def _holder_state_phrase(entry: dict[str, Any], now: float) -> str:
+    """Truthful parenthetical about what the holder is doing (preemptible leases). The
+    phone renders the refusal string verbatim as its 'Not sent' detail — the only
+    UX channel a frozen client gives us, so it must never claim 'mid-turn' for a holder
+    that may be idle with a lagging maintenance watcher."""
+    heartbeat = _optional_float(entry.get("heartbeat_at"))
+    if heartbeat is None:
+        # Legacy pre-steal holder: no heartbeat field was ever published. Name the needed
+        # operator action instead of a state we cannot know.
+        return "; its backend must restart once to enable handover"
+    busy_kind = entry.get("busy_kind") if entry.get("busy") else None
+    activity = _optional_float(entry.get("activity_at"))
+    if busy_kind == "user" and activity is not None:
+        elapsed = now - activity
+        if elapsed <= max(0.0, HERMES_LEASE_ACTIVITY_FRESH_S):
+            return f", mid-turn ~{_format_state_age(elapsed)}"
+        return f", no visible progress for ~{_format_state_age(elapsed)}"
+    if busy_kind == "auto":
+        since = _optional_float(entry.get("busy_since")) or now
+        return f", background review ~{_format_state_age(now - since)}"
+    if (now - heartbeat) > HERMES_LEASE_HEARTBEAT_FRESH_S:
+        # Live pid but the lease's heartbeat lags: holder maintenance (not the user's
+        # turn) is the thing that looks stuck — never call this 'mid-turn'.
+        return ", lease stale — holder maintenance lagging"
+    return ""
+
+
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:
     surface = str(entry.get("surface") or "another surface")
     pid = entry.get("pid")
     started = _optional_float(entry.get("started_at"))
-    age = f", lease age {format_age(time.time() - started)}" if started else ""
+    # NOTE: this "running Xm" is LEASE age, not turn state — never conflate the two (the
+    # turn state lives in the busy/activity fields via _holder_state_phrase).
+    age = f", running {format_age(time.time() - started)}" if started else ""
+    state = _holder_state_phrase(entry, time.time())
     return (
-        f"Session {session_id} already has a live owner ({surface}, pid {pid}{age}). "
-        "Its turn activity is unknown; an open lease does not mean a turn is running. "
-        "Attach through a compatible owner, or close the session in its owning surface "
-        "before resuming here. Do not delete a live owner's lease to force a takeover."
+        f"Session {session_id} already has a live owner ({surface}, pid {pid}{age}{state}). "
+        "Only one surface at a time may run a session, because a second one would "
+        "reason from a transcript that does not include the first one's work. "
+        "Do not delete a live owner's lease to force a takeover."
     )
 
 
@@ -278,15 +393,24 @@ def _lease_paths(
     return home / "runtime" / "active_sessions.json", home / "runtime" / "active_sessions.lock"
 
 
-def _flock(fh, *, lock: bool) -> None:
-    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows)."""
+def _flock(fh, *, lock: bool, blocking: bool = True) -> None:
+    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows).
+    ``blocking=False`` (acquire only) skips on contention via LOCK_NB — callers degrade
+    to "try again on the next touch" instead of waiting behind a slow registry writer."""
     if os.name == "nt":
         import msvcrt
+        if lock and not blocking:
+            # msvcrt.locking has no LOCK_NB; a non-blocking acquire on Windows degrades
+            # to the blocking form (callers on this platform accept the wait).
+            blocking = True
         fh.seek(0)
         msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+        op = fcntl.LOCK_EX if lock else fcntl.LOCK_UN
+        if lock and not blocking:
+            op |= fcntl.LOCK_NB
+        fcntl.flock(fh.fileno(), op)
 
 
 class _FileLock:
@@ -351,6 +475,19 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
             (lambda: not _optional_isinstance(entry.get("track_liveness"), bool), "an invalid liveness marker"),
             (lambda: not _optional_isinstance(entry.get("metadata"), dict), "invalid metadata"),
             (lambda: not _valid_process_start(entry.get("process_start_time")), "an invalid process start time"),
+            # Preemptible-lease fields: absence stays VALID everywhere — entries written by
+            # OLD code must parse under NEW rules and vice versa (additive-only schema).
+            (lambda: "epoch" in entry and (isinstance(entry.get("epoch"), bool)
+                                           or not isinstance(entry.get("epoch"), int)
+                                           or entry["epoch"] < 1), "an invalid epoch"),
+            (lambda: "busy" in entry and not isinstance(entry.get("busy"), bool), "an invalid busy marker"),
+            (lambda: "busy_kind" in entry and entry.get("busy_kind") not in ("user", "auto"),
+             "an invalid busy kind"),
+            (lambda: "busy_detail" in entry and entry.get("busy_detail") is not None
+             and not isinstance(entry.get("busy_detail"), str), "an invalid busy detail"),
+            (lambda: any(_valid_process_start(entry.get(k)) is False
+                         for k in ("busy_since", "activity_at", "heartbeat_at")),
+             "an invalid lease clock"),
         ):
             if bad():
                 raise invalid(f"contains {what}")
@@ -461,6 +598,10 @@ class ActiveSessionLease:
     state_path: Optional[Path] = None
     lock_path: Optional[Path] = None
     track_liveness: bool = False
+    # Fencing generation (preemptible leases): 1 on first acquire, prev+1 on every steal,
+    # preserved on same-writer re-entrancy. A holder's cached lease is only valid while
+    # the registry entry still carries THIS epoch — a bump means someone stole it.
+    epoch: int = 1
 
     def release(self) -> None:
         if self.released or not self.enabled:
@@ -508,6 +649,7 @@ def _read_live_entries(
 def _lease_entry(
     *, lease_id: str, session_id: str, surface: str,
     metadata: Optional[dict[str, Any]] = None, track_liveness: bool = False,
+    epoch: int = 1, busy_kind: Optional[str] = None, busy_detail: Optional[str] = None,
 ) -> dict[str, Any]:
     now = time.time()
     entry: dict[str, Any] = {
@@ -518,17 +660,86 @@ def _lease_entry(
         "process_start_time": _process_start_time(os.getpid()),
         "started_at": now,
         "updated_at": now,
+        # Every NEW-code entry stamps epoch + heartbeat_at: epoch fences revalidation,
+        # and a heartbeat-writing holder is by definition new code whose admission gate
+        # bounds it at next touch (the property that makes the stale-heartbeat steal safe).
+        "epoch": max(1, int(epoch)),
+        "heartbeat_at": now,
     }
     if track_liveness:
         entry["track_liveness"] = True
     if metadata:
         entry["metadata"] = _clean_metadata(metadata)
+    if busy_kind:
+        # Busy trio + clocks (holder-published turn state). Absent on non-admission
+        # acquires — the entry then reads "idle", which is exactly what it is.
+        entry["busy"] = True
+        entry["busy_kind"] = str(busy_kind)
+        if busy_detail:
+            entry["busy_detail"] = str(busy_detail)
+        entry["busy_since"] = now
+        entry["activity_at"] = now
     return entry
+
+
+def _stealable_entry(existing: dict[str, Any], now: float) -> bool:
+    """Preemptible-lease steal decision for a live foreign holder (post dead-holder
+    pruning, under the caller's flock). Decision table, in precedence order:
+
+    1. heartbeat_at ABSENT → NOT stealable (legacy pre-steal holder) unless
+       HERMES_STEAL_LEGACY_HOLDER. A legacy holder has no displacement detector and
+       short-circuits on its cached lease between turns; stealing would create a blind
+       double-writer. Fail-closed (I2 precedent).
+    2. busy_kind='user' + activity FRESH → NOT stealable, EVER, in any heartbeat state
+       — a stale heartbeat plus busy=user means "mid-user-turn with dead maintenance",
+       which must refuse (the F1 carve-out).
+    3. busy_kind='user' + activity stale in (FRESH, STALL] → NOT stealable ("no visible
+       progress yet" — could be a slow-but-live computation the user is watching).
+    4. busy_kind='user' + activity stale > STALL (>0) → stealable (the stall shape:
+       blocked approval, hung tool, silent compute; the owner-reported flagship case).
+    5. busy_kind='auto' → not stealable while now-busy_since <= AUTO_BUSY_GRACE_S
+       (rides out observed 65-80s bg-review API calls), stealable past grace.
+    6. busy=True with an unknown kind → NOT stealable (absence = unknown = fail-closed).
+    7. idle (busy False/absent) + heartbeat fresh → stealable immediately (the common
+       idle-tab case).
+    8. idle + heartbeat stale in (FRESH, STALE_STEAL_S] → NOT stealable (unknown; the
+       holder may be perfectly healthy with a lagging watcher — refuse honestly).
+    9. idle + heartbeat stale > STALE_STEAL_S → stealable (dead-watcher escape hatch:
+       guarantees the system can never reach a permanently-unyieldable state).
+    """
+    heartbeat_at = _optional_float(existing.get("heartbeat_at"))
+    if heartbeat_at is None:
+        return HERMES_STEAL_LEGACY_HOLDER
+    busy = bool(existing.get("busy"))
+    busy_kind = existing.get("busy_kind")
+    activity_at = _optional_float(existing.get("activity_at"))
+    if busy and busy_kind == "user":
+        # Tier 2-4: the activity clock (kept fresh by the turn thread itself) decides —
+        # NOT the heartbeat, so protection survives a dead maintenance watcher.
+        if activity_at is None:
+            return False  # busy without a readable clock: unknown, never steal
+        if (now - activity_at) <= max(0.0, HERMES_LEASE_ACTIVITY_FRESH_S):
+            return False
+        if HERMES_LEASE_STALL_ACTIVITY_S <= 0:
+            return False  # stall-steal disabled: a user turn is never interruptible
+        return (now - activity_at) > HERMES_LEASE_STALL_ACTIVITY_S
+    if busy:
+        if busy_kind == "auto":
+            busy_since = _optional_float(existing.get("busy_since"))
+            return busy_since is not None and (now - busy_since) > max(0.0, HERMES_LEASE_AUTO_BUSY_GRACE_S)
+        return False  # unknown busy kind: fail-closed
+    heartbeat_age = now - heartbeat_at
+    if heartbeat_age <= HERMES_LEASE_HEARTBEAT_FRESH_S:
+        return True  # idle + provably-maintained holder: the common idle-tab steal
+    if heartbeat_age <= HERMES_LEASE_HEARTBEAT_STALE_STEAL_S:
+        return False  # unknown maintenance state: refuse with honest "lease stale" text
+    return True  # dead-watcher escape hatch (tier 2 already protected live user turns)
 
 
 def try_acquire_active_session(
     *, session_id: str, surface: str, config: Any, metadata: Optional[dict[str, Any]] = None,
     registry_home: str | Path | None = None, track_liveness: bool = False,
+    mark_busy: bool = False,
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot: ``(lease, None)`` or ``(None, ActiveSessionRefusal)``.
 
@@ -536,6 +747,14 @@ def try_acquire_active_session(
     owner per stored session); ``max_concurrent_sessions`` is resource POLICY, applied
     only when configured. ``registry_home`` lets profile-scoped backends share the owning
     profile's registry. Ownership uncertainty fails CLOSED (SESSION_COORDINATION_UNAVAILABLE).
+
+    Preemptible leases (#auto-yield -> preemptible leases): a live FOREIGN holder is
+    either stolen from atomically in this same flock (idle / stalled / past-grace /
+    heartbeat-dead — epoch+1, busy marked) or refused fast with SESSION_BUSY (or
+    SESSION_NOT_OWNED against a heartbeat-less legacy holder, which is never stolen
+    from). ``mark_busy=True`` stamps the busy trio on the acquired entry — a turn
+    admission publishing "mid-turn" from the first instant, so ownership cannot
+    ping-pong between two requesters inside the first turn.
 
     Liveness tracking keeps richer desktop lifecycle semantics; ``registry_home`` lets profile-scoped
     backends share the owning profile's registry even when launched from another home. See #94595.
@@ -553,7 +772,7 @@ def try_acquire_active_session(
 
     entry = _lease_entry(
         lease_id=lease_id, session_id=key, surface=str(surface), metadata=metadata,
-        track_liveness=track_liveness,
+        track_liveness=track_liveness, busy_kind="user" if mark_busy else None,
     )
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     lease = ActiveSessionLease(
@@ -595,15 +814,50 @@ def try_acquire_active_session(
                 # The same writer is not a second writer: a live session that
                 # leaked its lease reference would otherwise be fenced out of
                 # its own session permanently (pruning only removes entries
-                # whose PROCESS is dead). Re-entrancy, not concurrency.
+                # whose PROCESS is dead). Re-entrancy, not concurrency. The
+                # fencing epoch is preserved so the holder's cached lease stays
+                # valid across the re-acquire.
                 if _is_same_writer(existing, metadata):
-                    entries[index] = entry
+                    own_epoch = int(existing.get("epoch") or 1)
+                    entries[index] = _lease_entry(
+                        lease_id=lease_id, session_id=key, surface=str(surface),
+                        metadata=metadata, track_liveness=track_liveness,
+                        epoch=own_epoch, busy_kind="user" if mark_busy else None)
+                    lease.epoch = own_epoch
                     _write_entries(state_path, entries)
                     return lease, None
+                # The holder is LIVE (dead ones were pruned above). Decide the steal
+                # RIGHT HERE, under the same flock a holder's admission revalidate
+                # takes — exactly one of {requester steals, holder marks busy} can win.
+                if (_pid_liveness(existing.get("pid"), existing.get("process_start_time"),
+                                  lenient=False) is True
+                        and _stealable_entry(existing, time.time())):
+                    new_epoch = int(existing.get("epoch") or 0) + 1
+                    # A steal ALWAYS marks busy (the acquisition is a turn admission):
+                    # without it two requesters could ping-pong ownership inside the
+                    # first turn. Net entry count is unchanged, so the capacity check
+                    # below stays untouched (the foreign entry already held the slot).
+                    entries[index] = _lease_entry(
+                        lease_id=lease_id, session_id=key, surface=str(surface),
+                        metadata=metadata, track_liveness=track_liveness,
+                        epoch=new_epoch, busy_kind="user")
+                    lease.epoch = new_epoch
+                    _write_entries(state_path, entries)
+                    logger.info(
+                        "Stole active session lease for %s: pid=%s surface=%s epoch=%s -> %s",
+                        key, existing.get("pid"), existing.get("surface"),
+                        int(existing.get("epoch") or 0), new_epoch)
+                    return lease, None
+                # Not stealable: refuse fast and truthfully. SESSION_BUSY when the holder
+                # publishes a heartbeat (new code); SESSION_NOT_OWNED for a heartbeat-less
+                # LEGACY holder — machine-distinguishable so callers never retry-burn or
+                # fabricate a takeover against old code.
+                reason = SESSION_BUSY if existing.get("heartbeat_at") is not None else SESSION_NOT_OWNED
                 return refuse(
-                    session_already_owned_message(key, existing), SESSION_NOT_OWNED,
-                    "Refused active session %s: already held by pid=%s surface=%s",
+                    session_already_owned_message(key, existing), reason,
+                    "Refused active session %s: already held by pid=%s surface=%s busy=%s",
                     key, existing.get("pid"), existing.get("surface"),
+                    bool(existing.get("busy")),
                     holder_entry=existing)
 
         # Capacity second, and only when an operator asked for one.
@@ -618,6 +872,194 @@ def try_acquire_active_session(
         _write_entries(state_path, entries)
 
     return lease, None
+
+
+def _entry_still_owned(entry: Optional[dict[str, Any]], lease: ActiveSessionLease) -> bool:
+    """Whether ``entry`` is still THIS lease: lease_id, this process (pid + process
+    start pairing), and the same fencing epoch. The ONLY sanctioned identity predicate
+    for holder-side busy/heartbeat writes — never find-by-session_id (a stolen session's
+    new owner must never be mutated by the displaced holder's cleanup)."""
+    if not isinstance(entry, dict):
+        return False
+    if str(entry.get("lease_id") or "") != lease.lease_id:
+        return False
+    if _registry_pid(entry.get("pid")) != os.getpid():
+        return False
+    expected_start = _optional_float(entry.get("process_start_time"))
+    current_start = _process_start_time(os.getpid())
+    if expected_start is not None and current_start is not None:
+        if abs(current_start - expected_start) >= 0.001:
+            return False  # this pid is a different incarnation: the lease died with the old one
+    return int(entry.get("epoch") or 0) == int(getattr(lease, "epoch", 1) or 1)
+
+
+def revalidate_active_session(
+    lease: ActiveSessionLease, *, mark_busy: bool = False,
+    busy_kind: Optional[str] = None, busy_detail: Optional[str] = None,
+) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
+    """Holder-side next-touch displacement check AND busy marker in ONE flock critical
+    section (preemptible leases): ``(lease, None)`` when the lease is provably still
+    ours, else ``(None, ActiveSessionRefusal(SESSION_DISPLACED))`` with the current
+    entry attached as ``holder_entry`` — and NEVER a write in that case.
+
+    ``mark_busy=True`` publishes the busy trio under the same lock: the flock-serialized
+    point that makes "holder starts a turn" mutually exclusive with "requester steals".
+    This is the ONLY sanctioned busy-marking primitive — no find-by-session_id mutation
+    exists anywhere. Semantics:
+      * busy_kind='user' sets busy/user + fresh activity (busy_since preserved when the
+        entry already reads user — a followup chain is ONE continuous busy span).
+      * busy_kind='auto' NEVER downgrades a live 'user' mark (a foreground turn wins);
+        the caller's session token re-arms 'auto' when the user turn settles.
+      * mark_busy=False (a user turn settling) clears the mark UNLESS the entry still
+        reads busy_kind='auto' (a bg-review token is active); busy_kind='auto' with
+        mark_busy=False is the conditional auto-clear (no-op while a user turn holds it).
+    """
+    if (not getattr(lease, "enabled", True) or getattr(lease, "released", False)
+            or getattr(lease, "state_path", None) is None or getattr(lease, "lock_path", None) is None):
+        return lease, None  # disabled no-op lease (or a leaseless session stub): nothing to fence
+    state_path, lock_path = _lease_paths(lease)
+    now = time.time()
+    with _FileLock(lock_path):
+        try:
+            entries = _read_entries(state_path, strict=True)
+        except ActiveSessionRegistryError as exc:
+            # Unknown ownership never proceeds (the #94595 fail-closed rule): report it
+            # as coordination failure, NOT displacement — a corrupt registry must not
+            # close live sessions.
+            logger.warning("Lease revalidation could not read the registry: %s", exc)
+            return None, ActiveSessionRefusal(
+                "Hermes could not read the active-session registry, so it cannot prove "
+                "this session is still owned by this surface. Try again.",
+                SESSION_COORDINATION_UNAVAILABLE)
+        entry = next((e for e in entries if str(e.get("lease_id") or "") == lease.lease_id), None)
+        if not _entry_still_owned(entry, lease):
+            return None, ActiveSessionRefusal(
+                "Session taken over by another surface; reload to continue",
+                SESSION_DISPLACED,
+                holder_entry=entry if isinstance(entry, dict) else None)
+        assert entry is not None  # _entry_still_owned implies it
+        current_kind = entry.get("busy_kind") if entry.get("busy") else None
+        if mark_busy:
+            if busy_kind == "user":
+                entry["busy"] = True
+                entry["busy_kind"] = "user"
+                if busy_detail:
+                    entry["busy_detail"] = str(busy_detail)
+                else:
+                    entry.pop("busy_detail", None)
+                # Preserve busy_since across a continuous user span (chain shape); a
+                # fresh span (idle -> user) mints now.
+                if current_kind != "user":
+                    entry["busy_since"] = now
+                entry["activity_at"] = now
+            elif busy_kind == "auto" and current_kind != "user":
+                entry["busy"] = True
+                entry["busy_kind"] = "auto"
+                entry["busy_detail"] = str(busy_detail or "auto")
+                if current_kind != "auto":
+                    entry["busy_since"] = now
+            # busy_kind='auto' while a user turn holds the mark: deliberate no-op above —
+            # the caller's session token re-arms 'auto' when the user turn settles.
+        else:
+            if busy_kind == "auto":
+                if current_kind == "auto":
+                    entry["busy"] = False
+                    entry.pop("busy_kind", None)
+                    entry.pop("busy_detail", None)
+                    entry.pop("busy_since", None)
+                    entry.pop("activity_at", None)
+            else:
+                if current_kind != "auto":
+                    # A user turn settling clears its own mark; an active auto token
+                    # (bg-review) survives until its own completion clears it.
+                    entry["busy"] = False
+                    entry.pop("busy_kind", None)
+                    entry.pop("busy_detail", None)
+                    entry.pop("busy_since", None)
+                    entry.pop("activity_at", None)
+        entry["heartbeat_at"] = now
+        entry["updated_at"] = now
+        _write_entries(state_path, entries)
+    return lease, None
+
+
+def heartbeat_leases(leases: list[ActiveSessionLease]) -> set[str]:
+    """Refresh ``heartbeat_at`` on every held lease whose entry still matches (lease_id,
+    pid, process_start_time, epoch); returns the DISPLACED lease_ids so the maintenance
+    watcher can close those sessions (theft detection). Preserves all busy fields
+    verbatim — a heartbeat never rewrites turn state. Registry read failures skip the
+    group (no refresh, no displacement): a transient error must not close live sessions,
+    and a persistent one ages the heartbeat into the stale-steal escape instead."""
+    displaced: set[str] = set()
+    groups: dict[Path, list[ActiveSessionLease]] = {}
+    for lease in leases:
+        if (not getattr(lease, "enabled", True) or getattr(lease, "released", False)
+                or not getattr(lease, "lease_id", None)
+                or getattr(lease, "state_path", None) is None or getattr(lease, "lock_path", None) is None):
+            continue
+        groups.setdefault(lease.lock_path, []).append(lease)
+    now = time.time()
+    for lock_path, group in groups.items():
+        try:
+            with _FileLock(lock_path):
+                entries = _read_entries(group[0].state_path, strict=True)
+                by_id = {str(e.get("lease_id") or ""): e for e in entries}
+                wrote = False
+                for lease in group:
+                    entry = by_id.get(lease.lease_id)
+                    if not _entry_still_owned(entry, lease):
+                        displaced.add(lease.lease_id)
+                        continue
+                    entry["heartbeat_at"] = now
+                    entry["updated_at"] = now
+                    wrote = True
+                if wrote:
+                    _write_entries(group[0].state_path, entries)
+        except ActiveSessionRegistryError:
+            continue
+        except OSError:
+            continue
+    return displaced
+
+
+def refresh_lease_activity(lease: ActiveSessionLease, *, activity_at: Optional[float] = None) -> bool:
+    """Turn-thread activity piggyback: refresh ``activity_at`` (and ``heartbeat_at``)
+    under a NON-BLOCKING flock — skip entirely on contention (the next touch retries).
+    Keeps a visibly streaming turn protected even when the maintenance watcher thread is
+    dead; callers throttle to >= 1 write per HERMES_LEASE_ACTIVITY_REFRESH_MIN_S."""
+    if (not getattr(lease, "enabled", True) or getattr(lease, "released", False)
+            or lease.state_path is None or lease.lock_path is None):
+        return False
+    state_path, lock_path = _lease_paths(lease)
+    now = time.time() if activity_at is None else float(activity_at)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "a+b")
+    except OSError:
+        return False
+    try:
+        try:
+            _flock(fh, lock=True, blocking=False)
+        except (BlockingIOError, OSError):
+            return False  # contended: never stall the streaming path on the registry
+        try:
+            entries = _read_entries(state_path, strict=True)
+            entry = next((e for e in entries if str(e.get("lease_id") or "") == lease.lease_id), None)
+            if not _entry_still_owned(entry, lease):
+                return False
+            entry["activity_at"] = now
+            entry["heartbeat_at"] = now
+            entry["updated_at"] = now
+            _write_entries(state_path, entries)
+            return True
+        finally:
+            with suppress(Exception):
+                _flock(fh, lock=False)
+    except ActiveSessionRegistryError:
+        return False
+    finally:
+        with suppress(Exception):
+            fh.close()
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:
@@ -670,6 +1112,18 @@ def transfer_active_session(
             if metadata:
                 own["metadata"] = _clean_metadata(metadata)
         elif lease.track_liveness:
+            # Resurrect guard (preemptible leases): never re-append a lease onto a session
+            # a LIVE foreign entry already holds — the displaced holder's transfer must
+            # fail (lease treated as gone), not create a second writer. The epoch
+            # comparison is skipped entirely when the foreign entry LACKS an epoch: an
+            # old-code owner (epoch absent = 0) must still win this guard under skew.
+            foreign = next((
+                e for e in entries
+                if str(e.get("session_id") or "") == new_session_id
+                and str(e.get("lease_id") or "") != lease.lease_id), None)
+            if foreign is not None and _pid_liveness(
+                    foreign.get("pid"), foreign.get("process_start_time")) is not False:
+                return False
             entries.append(_lease_entry(
                 lease_id=lease.lease_id, session_id=new_session_id, surface=lease.surface,
                 metadata=metadata, track_liveness=True,

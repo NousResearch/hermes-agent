@@ -511,7 +511,13 @@ _TRUNCATION_PARAMS = (
 def _lock_in_submit_turn(
     rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
+    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``.
+
+    Preemptible leases: the epoch-fenced busy mark runs immediately AFTER the lock is
+    released and BEFORE any API call / transcript append / persist — no user-visible
+    effect may precede the flock-confirmed mark (mutual exclusion of {mark-busy, steal}
+    is the registry flock itself). history_lock is never held across that blocking flock:
+    no code path takes the registry flock and then history_lock, so no cycle exists."""
     fields = {}
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn (own running flag False); typing
@@ -531,9 +537,24 @@ def _lock_in_submit_turn(
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
+        # Pending-busy flag: a steal observing this window knows a mark is in flight (the
+        # registry may read idle for a few ms between running=True and the flock write).
+        session["_lease_busy_mark_pending"] = True
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text)
+    session.pop("_lease_busy_mark_pending", None)
+    if (lease_refusal := _lease_admission_check(sid, session)) is not None:
+        # SESSION_DISPLACED (lease taken between submit and here): unwind the running
+        # claim — the session was gracefully closed by the admission check; the turn
+        # never starts, so nothing user-visible has happened yet.
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
+        _emit("error", sid, {"message": str(lease_refusal)})
+        return _err(
+            rid, 4090, str(lease_refusal),
+            {"reason": getattr(lease_refusal, "reason", None)}), fields
     return None, fields
 
 

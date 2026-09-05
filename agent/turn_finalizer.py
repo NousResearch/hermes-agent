@@ -610,6 +610,10 @@ def finalize_turn(
     # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
     # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
     # clones the snapshot structurally so its sanitizers can't reach the live transcript.
+    # Preemptible leases: the review thread marks the session's lease busy_kind='auto'
+    # (busy_detail='bg_review') for its lifetime (agent/background_review.py), so this
+    # invisible work is steal-protected under the 90s auto grace instead of publishing
+    # "idle" while a 65-80s review is mid-flight.
     if (
         final_response
         and not interrupted

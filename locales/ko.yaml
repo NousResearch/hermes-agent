@@ -66,6 +66,8 @@ gateway:
     session_plural:        "✅ 명령이 승인되었습니다 (이 세션 동안 패턴 승인됨) ({count}개). 에이전트가 재개됩니다..."
     always_singular:       "✅ 명령이 승인되었습니다 (패턴 영구 승인됨). 에이전트가 재개됩니다..."
     always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
+    grant_singular:        "✅ 명령이 승인되었습니다 ({scope}). 에이전트가 계속합니다..."
+    grant_plural:          "✅ 명령이 승인되었습니다 ({scope}, {count}개). 에이전트가 계속합니다..."
 
   background:
     usage:                 "사용법: /bg <prompt>\n예시: /bg 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
@@ -449,6 +451,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (모든 메시지에 음성으로 응답)"
     help:                  "{toggle}\n\n**/voice 사용법**\n• `/voice on` — 음성 메시지를 보내면 음성으로 답변\n• `/voice tts` — *모든* 메시지에 음성으로 답변\n• `/voice off` — 텍스트 전용 답변으로 복귀\n• `/voice status` — 현재 모드 표시\n• `/voice` (인자 없음) — 켜기와 끄기를 빠르게 전환{channels}"
     help_channels:         "\n\n**라이브 음성 채널 (Discord)**\n• 먼저 음성 채널에 들어간 다음 `/voice channel` — 제가 참여해 듣고 음성으로 답변합니다\n• `/voice leave` — 음성 채널에서 연결 해제"
+
+  grants:
+    none:                  "이 채팅에 활성 승인 권한이 없습니다."
+    header:                "🔑 **활성 승인 권한** ({count}개):"
+    row:                   "• `{id}` — {description} — {remaining} 남음{uses}"
+    uses_left:             ", {count}회 남음"
+    footer:                "`/grants revoke <id>`로 하나를, `/grants revoke all`로 전부 취소합니다."
+    none_revoked:          "취소할 항목이 없습니다."
+    revoked_singular:      "🔒 승인 권한 1개를 취소했습니다."
+    revoked_plural:        "🔒 승인 권한 {count}개를 취소했습니다."
 
   yolo:
     disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."

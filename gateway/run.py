@@ -591,6 +591,7 @@ def _format_exec_approval_fallback(
 
     choices = [f"Reply `{command_prefix}approve` to execute this one operation"]
     if not smart_denied and allow_session:
+        choices.append(f"`{command_prefix}approve for 30m` (or `3 times`) to allow this pattern for a bounded window")
         choices.append(f"`{command_prefix}approve session` to approve this pattern for the session")
         if allow_permanent:
             choices.append(f"`{command_prefix}approve always` to approve permanently")

@@ -66,6 +66,8 @@ gateway:
     session_plural:        "✅ Komutlar onaylandı (desen bu oturum için onaylandı) ({count} komut). Ajan devam ediyor..."
     always_singular:       "✅ Komut onaylandı (desen kalıcı olarak onaylandı). Ajan devam ediyor..."
     always_plural:         "✅ Komutlar onaylandı (desen kalıcı olarak onaylandı) ({count} komut). Ajan devam ediyor..."
+    grant_singular:        "✅ Komut onaylandı {scope}. Ajan devam ediyor..."
+    grant_plural:          "✅ Komutlar onaylandı {scope} ({count} komut). Ajan devam ediyor..."
 
   background:
     usage:                 "Kullanım: /bg <prompt>\nÖrnek: /bg Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
@@ -449,6 +451,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (tüm mesajlara sesli yanıt)"
     help:                  "{toggle}\n\n**/voice nasıl çalışır**\n• `/voice on` — sesli mesaj gönderdiğinde sesli yanıt\n• `/voice tts` — *her* mesaja sesli yanıt\n• `/voice off` — yalnızca metin yanıtlarına dön\n• `/voice status` — geçerli modu göster\n• `/voice` (argümansız) — açık ve kapalı arasında hızlı geçiş{channels}"
     help_channels:         "\n\n**Canlı ses kanalları (Discord)**\n• Önce bir ses kanalına katıl, sonra `/voice channel` — katılırım, dinlerim ve yanıtlarımı sesli söylerim\n• `/voice leave` — ses kanalından ayrıl"
+
+  grants:
+    none:                  "Bu sohbette etkin onay izni yok."
+    header:                "🔑 **Etkin onay izinleri** ({count}):"
+    row:                   "• `{id}` — {description} — {remaining} kaldı{uses}"
+    uses_left:             ", {count} kullanım kaldı"
+    footer:                "Birini `/grants revoke <id>` ile, tümünü `/grants revoke all` ile iptal edin."
+    none_revoked:          "İptal edilecek bir şey yok."
+    revoked_singular:      "🔒 1 onay izni iptal edildi."
+    revoked_plural:        "🔒 {count} onay izni iptal edildi."
 
   yolo:
     disabled:                   "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."

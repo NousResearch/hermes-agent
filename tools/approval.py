@@ -289,12 +289,19 @@ def _yolo_active() -> bool:
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:
-    """Session-scoped or permanent approval. Accepts the canonical key and the legacy
-    regex-derived key so existing command_allowlist entries survive key migrations."""
+    """Session-scoped, permanent, or bounded-grant approval. Accepts the canonical key and the
+    legacy regex-derived key so existing command_allowlist entries survive key migrations.
+
+    Grants are checked last and CONSUME a use, so this is not a pure read when a grant covers
+    the pattern; every caller is a "may this execution proceed?" check, which is the intended
+    semantics (a listing surface reads ``approval_grants.list_active`` instead)."""
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         approved = _permanent_approved | _session_approved.get(session_key, set())
-    return any(alias in approved for alias in aliases)
+    if any(alias in approved for alias in aliases):
+        return True
+    from tools import approval_grants
+    return approval_grants.consume(session_key, pattern_key, aliases)
 
 
 def approve_permanent(pattern_key: str):
@@ -310,9 +317,20 @@ def load_permanent(patterns: set):
 
 
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
-    """Persist a human ``session``/``always`` choice for each ``(key, _, is_tirith)``. Tirith
-    findings are session-max by design (no broad permanent allowlisting of content-level
-    findings), so ``always`` downgrades them to session. ``once`` persists nothing."""
+    """Persist a human ``session``/``always``/``grant:<spec>`` choice for each
+    ``(key, _, is_tirith)``. Tirith findings are session-max by design (no broad permanent
+    allowlisting of content-level findings), so ``always`` downgrades them to session. A
+    bounded grant (``grant:for 30m``, ``grant:3 times``) is narrower than ``session`` in time
+    and broader in that it survives ``/new``; tirith keys take it too since it expires.
+    ``once`` persists nothing."""
+    if choice.startswith("grant:"):
+        from tools import approval_grants
+        spec = approval_grants.parse_grant_spec(choice[len("grant:"):])
+        if spec is None:
+            return  # unparseable spec was already reduced to once by the caller
+        for key, desc, _ in warnings:
+            approval_grants.create(session_key, key, desc or key, spec)
+        return
     for key, _, is_tirith in warnings:
         if choice not in ("session", "always"):
             continue

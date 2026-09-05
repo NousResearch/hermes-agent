@@ -70,6 +70,8 @@ gateway:
     session_plural:        "✅ Orduithe ceadaithe (patrún ceadaithe don seisiún seo) ({count} ordú). Tá an gníomhaire ag atosú..."
     always_singular:       "✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú..."
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
+    grant_singular:        "✅ Ordú ceadaithe {scope}. Tá an gníomhaire ag leanúint ar aghaidh..."
+    grant_plural:          "✅ Orduithe ceadaithe {scope} ({count} ordú). Tá an gníomhaire ag leanúint ar aghaidh..."
 
   background:
     usage:                 "Úsáid: /bg <leid>\nSampla: /bg Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
@@ -453,6 +455,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_all:             "TTS (freagra gutha do gach teachtaireacht)"
     help:                  "{toggle}\n\n**Conas a oibríonn /voice**\n• `/voice on` — freagra gutha nuair a sheolann tú teachtaireacht gutha\n• `/voice tts` — freagra gutha do *gach* teachtaireacht\n• `/voice off` — ar ais go freagraí téacs amháin\n• `/voice status` — taispeáin an mód reatha\n• `/voice` (gan argóint) — scoránaigh go tapa idir air agus as{channels}"
     help_channels:         "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
+
+  grants:
+    none:                  "Níl aon cheadanna gníomhacha sa chomhrá seo."
+    header:                "🔑 **Ceadanna gníomhacha** ({count}):"
+    row:                   "• `{id}` — {description} — {remaining} fágtha{uses}"
+    uses_left:             ", {count} úsáid fágtha"
+    footer:                "Cealaigh ceann le `/grants revoke <id>`, nó iad uile le `/grants revoke all`."
+    none_revoked:          "Níl aon rud le cealú."
+    revoked_singular:      "🔒 Cealaíodh 1 chead."
+    revoked_plural:        "🔒 Cealaíodh {count} cead."
 
   yolo:
     disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."

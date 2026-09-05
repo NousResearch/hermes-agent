@@ -198,8 +198,9 @@ platform network disconnect as an event-loop failure.
 | `/status` | Show session info |
 | `/whoami` | Show your slash command access on this scope (admin / user / unrestricted) |
 | `/stop` | Stop the running agent |
-| `/approve` | Approve a pending dangerous command |
+| `/approve` | Approve a pending dangerous command (`session`, `always`, `for 30m`, `3 times`) |
 | `/deny` | Reject a pending dangerous command |
+| `/grants` | List or revoke this chat's time-boxed approval grants |
 | `/sethome` | Set this chat as the home channel |
 | `/compress` | Manually compress conversation context |
 | `/title [name]` | Set or show the session title |

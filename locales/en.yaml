@@ -81,6 +81,8 @@ gateway:
     session_plural:        "✅ Commands approved (pattern approved for this session) ({count} commands). The agent is resuming..."
     always_singular:       "✅ Command approved (pattern approved permanently). The agent is resuming..."
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
+    grant_singular:        "✅ Command approved {scope}. The agent is resuming..."
+    grant_plural:          "✅ Commands approved {scope} ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Usage: /bg <prompt>\nExample: /bg Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
@@ -462,6 +464,16 @@ gateway:
     label_all:             "TTS (voice reply to all messages)"
     help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
     help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
+
+  grants:
+    none:                  "No active approval grants in this chat."
+    header:                "🔑 **Active approval grants** ({count}):"
+    row:                   "• `{id}` — {description} — {remaining} left{uses}"
+    uses_left:             ", {count} use(s) left"
+    footer:                "Revoke one with `/grants revoke <id>`, or all with `/grants revoke all`."
+    none_revoked:          "Nothing to revoke."
+    revoked_singular:      "🔒 Revoked 1 approval grant."
+    revoked_plural:        "🔒 Revoked {count} approval grants."
 
   yolo:
     disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."

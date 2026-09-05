@@ -7,6 +7,7 @@
  */
 
 import {
+  Button,
   cn,
   coarseElapsed,
   Codicon,
@@ -18,8 +19,15 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
   ContextMenuTrigger,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   haptic,
   host,
+  Input,
   queryClient,
   RowButton,
   SessionStatusDot,
@@ -28,6 +36,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -55,7 +64,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { $groupChats, $groupChatWorkspace } from './group-chat'
+import { $groupChats, $groupChatWorkspace, setGroupChatDescription } from './group-chat'
 import { botGroups, groupLastActivity } from './group-membership'
 import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
@@ -180,9 +189,17 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
 
   const handle = botHandle(bot.name, bot)
   const gatewayLabel = bot.connectionLabel || (bot.connectionId === 'local' ? 'This device' : '')
-  const showDetailsRow = Boolean(showHandle || displayPreview || fromBot)
+  const botRole = (meta?.description || bot.description || bot.title || '').trim()
+  const displaySubtitle = displayPreview || (!fromBot && botRole ? botRole : '')
+  const showDetailsRow = Boolean(showHandle || displaySubtitle || fromBot)
 
-  const rowTooltip = [displayName(bot, meta), `@${handle}`, gatewayLabel, sourceStatus.label]
+  const rowTooltip = [
+    displayName(bot, meta),
+    `@${handle}`,
+    botRole ? `"${botRole}"` : '',
+    gatewayLabel,
+    sourceStatus.label
+  ]
     .filter(Boolean)
     .join(' · ')
 
@@ -272,7 +289,19 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
                 <Codicon className="shrink-0 text-[0.6875rem] text-(--ui-text-quaternary)" name="eye-closed" />
               </Tip>
             ) : null}
-            <Tip label={rowTooltip}>
+            <Tip
+              label={
+                <span className="flex flex-col gap-0.5 text-left">
+                  <span className="font-semibold">
+                    {displayName(bot, meta)} <span className="font-mono font-normal opacity-75">@{handle}</span>
+                  </span>
+                  {botRole ? <span className="font-normal opacity-90">{botRole}</span> : null}
+                  <span className="text-[10px] font-normal opacity-60">
+                    {[gatewayLabel, sourceStatus.label].filter(Boolean).join(' · ')}
+                  </span>
+                </span>
+              }
+            >
               <span className="min-w-0 truncate text-[0.8125rem] font-medium">{displayName(bot, meta)}</span>
             </Tip>
           </div>
@@ -296,9 +325,13 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
             {showHandle ? (
               <span className="shrink-0 font-mono text-[0.6875rem] text-(--ui-text-quaternary)">{`@${handle}`}</span>
             ) : null}
-            {showHandle && displayPreview ? <span className="shrink-0 text-(--ui-text-quaternary)">·</span> : null}
+            {showHandle && (displayPreview || (!fromBot && botRole)) ? (
+              <span className="shrink-0 text-(--ui-text-quaternary)">·</span>
+            ) : null}
             {displayPreview ? (
               <span className={cn('min-w-0 truncate', fromBot && 'italic')}>{displayPreview}</span>
+            ) : !fromBot && botRole ? (
+              <span className="min-w-0 truncate text-(--ui-text-tertiary)">{botRole}</span>
             ) : null}
           </div>
         ) : null}
@@ -462,6 +495,7 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
   const { t } = useI18n()
   const b = useBots()
   const rooms = useValue($groupChats)
+  const [editDescOpen, setEditDescOpen] = useState(false)
 
   const room = rooms[group] || {
     log: []
@@ -479,12 +513,24 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
     members.find(member => member?.name === lastFrom)
   )
 
+  const groupDescription = (room.description || '').trim()
+
   const preview = last
     ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
-    : `${members.length} bots`
+    : groupDescription || `${members.length} bots`
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
   const availabilityLabel = `${availableMembers} of ${members.length} available`
+
+  const groupTooltip = (
+    <span className="flex flex-col gap-0.5 text-left">
+      <span className="font-semibold">{group}</span>
+      {groupDescription ? <span className="font-normal opacity-90">{groupDescription}</span> : null}
+      <span className="text-[10px] font-normal opacity-60">
+        {members.length} bots · {availabilityLabel}
+      </span>
+    </span>
+  )
 
   const row = (
     <RowButton
@@ -532,7 +578,9 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{group}</span>
+          <Tip label={groupTooltip}>
+            <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-medium">{group}</span>
+          </Tip>
           {needsYou ? (
             <Tip label={b.group.needsYourInput}>
               <Codicon aria-label={b.roster.needsInput} className="shrink-0 text-(--ui-accent)" name="question" />
@@ -550,23 +598,93 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
   )
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
-      <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          className="text-destructive focus:text-destructive"
-          onSelect={() =>
-            onDisband({
-              name: group,
-              members
-            })
-          }
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onSelect={() => onOpen(group)}>Open Group Chat</ContextMenuItem>
+          <ContextMenuItem onSelect={() => setEditDescOpen(true)}>
+            <Codicon className="mr-1.5" name="edit" />
+            Edit Description…
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() =>
+              onDisband({
+                name: group,
+                members
+              })
+            }
+          >
+            {b.group.deleteAction}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      {editDescOpen ? (
+        <EditGroupDescriptionDialog
+          group={group}
+          initialDescription={groupDescription}
+          onClose={() => setEditDescOpen(false)}
+          open={editDescOpen}
+        />
+      ) : null}
+    </>
+  )
+}
+
+function EditGroupDescriptionDialog({
+  group,
+  initialDescription,
+  onClose,
+  open
+}: {
+  group: string
+  initialDescription: string
+  onClose: () => void
+  open: boolean
+}) {
+  const [desc, setDesc] = useState(initialDescription)
+
+  useEffect(() => {
+    if (open) {
+      setDesc(initialDescription)
+    }
+  }, [initialDescription, open])
+
+  const save = () => {
+    setGroupChatDescription(group, desc)
+    onClose()
+  }
+
+  return (
+    <Dialog onOpenChange={val => !val && onClose()} open={open}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Edit Group Description</DialogTitle>
+          <DialogDescription>Set a purpose or focus for {group}.</DialogDescription>
+        </DialogHeader>
+        <form
+          onSubmit={event => {
+            event.preventDefault()
+            save()
+          }}
         >
-          {b.group.deleteAction}
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+          <Input
+            aria-label="Group description"
+            maxLength={256}
+            onChange={event => setDesc(event.target.value)}
+            placeholder="e.g. Incident triage, coordination, ops"
+            value={desc}
+          />
+        </form>
+        <DialogFooter>
+          <Button onClick={onClose} variant="secondary">
+            Cancel
+          </Button>
+          <Button onClick={save}>Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

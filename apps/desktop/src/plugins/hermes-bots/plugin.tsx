@@ -244,6 +244,7 @@ export default {
                   holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+                  description: typeof room.description === 'string' && room.description ? room.description : undefined,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,

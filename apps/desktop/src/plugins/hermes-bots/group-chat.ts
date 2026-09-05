@@ -56,6 +56,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
+  description?: string
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
@@ -243,6 +244,11 @@ export function groupChatSyncSnapshot(
       ...(typeof room?.roomId === 'string' && room.roomId
         ? {
             roomId: String(room.roomId).slice(0, 128)
+          }
+        : {}),
+      ...(typeof room?.description === 'string' && room.description.trim()
+        ? {
+            description: String(room.description).trim().slice(0, 512)
           }
         : {}),
       log,
@@ -475,6 +481,11 @@ export function mergeGroupChatSyncSnapshots(
         ? {
             image
           }
+        : {}),
+      ...(typeof identity?.description === 'string' && identity.description.trim()
+        ? {
+            description: identity.description.trim().slice(0, 512)
+          }
         : {})
     }
   }
@@ -680,6 +691,11 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
           ? projected.image || null
           : existing.image || null,
+      description: isPreserved
+        ? existing.description || undefined
+        : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'description')
+          ? projected.description || undefined
+          : existing.description || undefined,
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
@@ -748,6 +764,11 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       // name-keyed identity — same field updateGroupChat's inline map
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+      ...(typeof room.description === 'string' && room.description.trim()
+        ? {
+            description: room.description.trim().slice(0, 512)
+          }
+        : {}),
       image: room.image || null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
@@ -1346,6 +1367,7 @@ export function updateGroupChat(
         members: Array.isArray(room.members) ? room.members : [],
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+        description: typeof room.description === 'string' && room.description ? room.description : undefined,
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
@@ -1388,6 +1410,19 @@ export interface GroupChatRoom extends GroupChat {
 export function setGroupChatImage(group: string, image: null | string | undefined) {
   updateGroupChat(group, (room: GroupChatRoom) => {
     room.image = image || null
+
+    return room
+  })
+}
+
+/** Set or clear a group chat's description. Persists with the room record. */
+export function setGroupChatDescription(group: string, description: null | string | undefined) {
+  updateGroupChat(group, (room: GroupChatRoom) => {
+    const clean = String(description || '')
+      .trim()
+      .slice(0, 512)
+
+    room.description = clean ? clean : undefined
 
     return room
   })

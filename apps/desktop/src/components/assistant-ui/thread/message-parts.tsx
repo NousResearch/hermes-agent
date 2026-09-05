@@ -24,7 +24,7 @@ import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -63,8 +63,37 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 }
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+  const showReasoning = useStore($showReasoning)
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
+    return null
+  }
+
+  // Answer-only: hide agent-work chrome. Keep clarify / MCP setup / generated
+  // images / failed calls the user still has to act on (#93817 / #85110).
+  if (!showReasoning) {
+    if (props.toolName === 'clarify') {
+      return (
+        <>
+          <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
+          <ClarifyTool {...props} />
+        </>
+      )
+    }
+
+    if (props.toolName === 'setup_mcp') {
+      return <McpSetupTool {...props} />
+    }
+
+    if (props.toolName === 'image_generate') {
+      return <ImageGenerateTool {...props} />
+    }
+
+    if (props.isError) {
+      return <ToolFallback {...props} />
+    }
+
     return null
   }
 
@@ -301,7 +330,9 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent) {
+  const showReasoning = useStore($showReasoning)
+
+  if (!hasContent || !showReasoning) {
     return null
   }
 

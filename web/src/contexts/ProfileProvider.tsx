@@ -8,6 +8,7 @@ import {
 import { useLocation, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
+import { profileSelectionSearchParams } from "@/contexts/profile-search-params";
 
 /**
  * Machine-level management-profile scope.
@@ -114,16 +115,12 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       setManagementProfile(name);
       setProfileState(name);
       setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          if (name) next.set("profile", name);
-          else next.delete("profile");
-          return next;
-        },
+        (prev) =>
+          profileSelectionSearchParams(prev, name, profile, currentProfile),
         { replace: true },
       );
     },
-    [setSearchParams],
+    [currentProfile, profile, setSearchParams],
   );
 
   const value = useMemo(

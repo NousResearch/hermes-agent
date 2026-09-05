@@ -37,6 +37,7 @@ tempfile = "3.27"
 
 [lints.clippy]
 unwrap_used = "deny"
+expect_used = "deny"
 
 [profile.release]
 opt-level = 3

@@ -27,3 +27,5 @@ cargo run --release
 ```
 
 Do not replace Ink or flip `hermes --tui` without soak time on macOS, Linux, and WSL2.
+
+Keep this tree in sync with the standalone crate via `scripts/sync-landing.sh crates/tui` from https://github.com/0xNyk/hermes-tui. That script copies `src/` and `Cargo.lock` and keeps this package's `repository` URL.

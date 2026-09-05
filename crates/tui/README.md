@@ -4,7 +4,7 @@ Native **Hermes TUI 2.0**: Rust owns the screen, Python still owns the agent.
 
 Binary: `hermes-tui-native` (avoids colliding with the npm package `hermes-tui` in `ui-tui/`).
 
-This crate is an opt-in replacement *client* for the Ink TUI (`ui-tui/`). It is not a second agent. Ink stays `hermes --tui`. Native is `hermes --tui --native` or `HERMES_TUI_NATIVE=1`. It speaks the same newline-delimited JSON-RPC:
+This crate is a second, opt-in screen client for the Ink TUI (`ui-tui/`). It is not a second agent and does not replace `hermes --tui`. Native is `hermes --tui --native` or `HERMES_TUI_NATIVE=1`. It speaks the same newline-delimited JSON-RPC:
 
 ```text
 hermes-tui

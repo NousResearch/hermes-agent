@@ -758,9 +758,11 @@ fn wrap_spans(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> 
                 used = 0;
                 continue;
             }
-            rows.last_mut()
-                .expect("row")
-                .push(Span::styled(take.to_string(), span.style));
+            if let Some(row) = rows.last_mut() {
+                row.push(Span::styled(take.to_string(), span.style));
+            } else {
+                rows.push(vec![Span::styled(take.to_string(), span.style)]);
+            }
             used += take.width();
             rest = rest[take.len()..].trim_start();
         }
@@ -785,7 +787,9 @@ fn take_prefix(s: &str, max_width: usize) -> &str {
         end = i + ch.len_utf8();
     }
     if end == 0 && !s.is_empty() {
-        let ch = s.chars().next().expect("char");
+        let Some(ch) = s.chars().next() else {
+            return "";
+        };
         return &s[..ch.len_utf8()];
     }
     &s[..end]

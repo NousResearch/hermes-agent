@@ -1186,21 +1186,7 @@ mod tests {
         assert_eq!(redact_gateway_line("gateway starting"), "gateway starting");
     }
 
-    #[tokio::test]
-    async fn fake_gateway_ready_and_session_create() {
-        let python = std::process::Command::new("python3")
-            .arg("-c")
-            .arg("print(1)")
-            .output();
-        if python.map(|o| !o.status.success()).unwrap_or(true) {
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("hermes-tui-gw-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("tui_gateway")).expect("tmpdir");
-        std::fs::write(dir.join("tui_gateway/__init__.py"), "").expect("init");
-        std::fs::write(
-            dir.join("tui_gateway/entry.py"),
-            r#"
+    const FAKE_GATEWAY: &str = r#"
 import json, sys
 sys.stdout.write(json.dumps({
     "jsonrpc": "2.0",
@@ -1213,16 +1199,42 @@ for line in sys.stdin:
     if not line:
         continue
     req = json.loads(line)
-    if req.get("method") == "session.create":
+    method = req.get("method")
+    rid = req.get("id")
+    if method == "session.create":
         sys.stdout.write(json.dumps({
             "jsonrpc": "2.0",
-            "id": req["id"],
+            "id": rid,
             "result": {"session_id": "s-test"}
         }) + "\n")
-        sys.stdout.flush()
-"#,
-        )
-        .expect("entry");
+    elif method == "session.interrupt":
+        sid = (req.get("params") or {}).get("session_id")
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {"ok": True, "session_id": sid}
+        }) + "\n")
+    else:
+        sys.stdout.write(json.dumps({
+            "jsonrpc": "2.0",
+            "id": rid,
+            "error": {"code": -32601, "message": method}
+        }) + "\n")
+    sys.stdout.flush()
+"#;
+
+    async fn spawn_fake_gateway() -> Option<(GatewayClient, std::path::PathBuf)> {
+        let python = std::process::Command::new("python3")
+            .arg("-c")
+            .arg("print(1)")
+            .output();
+        if python.map(|o| !o.status.success()).unwrap_or(true) {
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("hermes-tui-gw-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("tui_gateway")).expect("tmpdir");
+        std::fs::write(dir.join("tui_gateway/__init__.py"), "").expect("init");
+        std::fs::write(dir.join("tui_gateway/entry.py"), FAKE_GATEWAY).expect("entry");
         let cfg = LaunchConfig {
             python: "python3".into(),
             src_root: dir.clone(),
@@ -1236,11 +1248,35 @@ for line in sys.stdin:
         let client = GatewayClient::spawn(&cfg)
             .await
             .expect("spawn fake gateway");
+        Some((client, dir))
+    }
+
+    #[tokio::test]
+    async fn fake_gateway_ready_and_session_create() {
+        let Some((client, dir)) = spawn_fake_gateway().await else {
+            return;
+        };
         let sid = client
             .create_session("t", &dir)
             .await
             .expect("session.create");
         assert_eq!(sid, "s-test");
+        client.shutdown().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fake_gateway_interrupt_is_rpc_not_kill() {
+        let Some((client, dir)) = spawn_fake_gateway().await else {
+            return;
+        };
+        let sid = client
+            .create_session("t", &dir)
+            .await
+            .expect("session.create");
+        client.interrupt(&sid).await.expect("session.interrupt");
+        // Child still answers after interrupt — we did not restart Python.
+        client.interrupt(&sid).await.expect("second interrupt");
         client.shutdown().await;
         let _ = std::fs::remove_dir_all(&dir);
     }

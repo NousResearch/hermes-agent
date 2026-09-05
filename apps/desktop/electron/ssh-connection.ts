@@ -332,6 +332,7 @@ function forwardSpec(localPort, remotePort, remoteHost = '127.0.0.1') {
 const SSH_ERROR = {
   UNREACHABLE: 'unreachable',
   AUTH_FAILED: 'auth-failed',
+  INTERACTIVE_AUTH: 'interactive-auth',
   HOST_KEY_CHANGED: 'host-key-changed',
   TIMEOUT: 'timeout',
   UNKNOWN: 'unknown'
@@ -348,6 +349,12 @@ function classifySshError(stderr) {
     )
   ) {
     return SSH_ERROR.HOST_KEY_CHANGED
+  }
+
+  if (
+    /Tailscale SSH requires an additional check|To authenticate, visit:\s*https:\/\/login\.tailscale\.com\//i.test(text)
+  ) {
+    return SSH_ERROR.INTERACTIVE_AUTH
   }
 
   if (
@@ -388,6 +395,16 @@ function sshErrorMessage(kind, conn, stderr?) {
         `ssh-agent first (e.g. \`ssh-add ~/.ssh/id_ed25519\`), or set an IdentityFile in ` +
         `~/.ssh/config. Original error: ${String(stderr || '').trim()}`
       )
+    case SSH_ERROR.INTERACTIVE_AUTH: {
+      const portArg = conn.port && conn.port !== 22 ? ` -p ${conn.port}` : ''
+
+      return (
+        `Tailscale SSH requires an interactive browser check for ${host}. ` +
+        `Hermes Desktop runs SSH non-interactively. In Terminal, run ` +
+        `\`ssh${portArg} ${host} true\`, complete the browser check, then retry. ` +
+        `If checks recur, use a key-authenticated OpenSSH route or adjust the tailnet SSH check policy.`
+      )
+    }
 
     case SSH_ERROR.UNREACHABLE:
       return `Could not reach ${host} over SSH. Check the host, port, and your network. Original error: ${String(stderr || '').trim()}`
@@ -448,6 +465,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
 
       const err: any = new Error(`ssh timed out after ${timeoutMs}ms`)
       err.kind = SSH_ERROR.TIMEOUT
+      // Keep only a safe classification of buffered stderr. Tailscale's
+      // browser-check line carries a one-time URL that must not escape through
+      // Desktop errors or lifecycle logs.
+      err.stderrKind = classifySshError(stderr)
       signal?.removeEventListener('abort', onAbort)
       reject(err)
     }, timeoutMs)
@@ -614,8 +635,11 @@ class SshConnection {
     }
 
     if (stderrOrErr && stderrOrErr.kind === SSH_ERROR.TIMEOUT) {
-      const err: any = new Error(sshErrorMessage(SSH_ERROR.TIMEOUT, this))
-      err.kind = SSH_ERROR.TIMEOUT
+      const kind =
+        stderrOrErr.stderrKind === SSH_ERROR.INTERACTIVE_AUTH ? SSH_ERROR.INTERACTIVE_AUTH : SSH_ERROR.TIMEOUT
+
+      const err: any = new Error(sshErrorMessage(kind, this))
+      err.kind = kind
 
       return err
     }

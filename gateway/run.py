@@ -1080,6 +1080,33 @@ def _build_replay_entry(
     return entry
 
 
+def _has_replay_payload(msg: Dict[str, Any]) -> bool:
+    """True when an assistant row carries replay state worth preserving even
+    though its ``content`` is empty.
+
+    The predicate is DERIVED from ``_ASSISTANT_REPLAY_FIELDS`` rather than
+    hardcoding a subset, so it cannot drift as that contract grows, and it
+    mirrors ``_build_replay_entry``'s own empty-value handling exactly: every
+    field must be truthy to count, except ``reasoning_content``, whose
+    empty-string sentinel is meaningful (see that function's docstring —
+    dropping it can cause HTTP 400 from strict thinking providers).
+
+    A row with none of these fields populated is a truly empty assistant
+    shell and must still be dropped.
+    """
+    for _rkey in _ASSISTANT_REPLAY_FIELDS:
+        if _rkey not in msg:
+            continue
+        _rval = msg.get(_rkey)
+        if _rkey == "reasoning_content":
+            # Preserve empty-string sentinel for thinking-mode replay.
+            if _rval is not None:
+                return True
+        elif _rval:
+            return True
+    return False
+
+
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
 _OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
@@ -1186,6 +1213,29 @@ def _build_gateway_agent_history(
             # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
             agent_history.append(entry)
+        elif role == "assistant" and _has_replay_payload(msg):
+            # Reasoning-only assistant turn: ``content`` is empty but the row
+            # still carries replay state (``_ASSISTANT_REPLAY_FIELDS``).  The
+            # agent side already treats such rows as valid — see
+            # ``agent.agent_runtime_helpers._msg_has_payload``, which notes a
+            # commentary-phase Codex turn "persists with content:'' by DESIGN"
+            # because its text lives in ``codex_message_items``.  Without this
+            # arm the gateway drops the row entirely, losing multi-turn
+            # thinking fidelity on reload; for the documented
+            # ``reasoning_content == ""`` sentinel it also makes the next
+            # request omit the field, which strict thinking providers reject
+            # with HTTP 400.  Truly empty assistant shells still fall through
+            # and are dropped.  Assistant timestamps stay dropped, per the
+            # comment above.
+            #
+            # Only the None/absent case is normalized to "" — the shape the
+            # entry dict expects for a missing value.  Any other falsy content
+            # (notably an empty multimodal block list) is forwarded verbatim so
+            # the replay entry keeps the stored content TYPE rather than being
+            # silently rewritten to a string.
+            agent_history.append(
+                _build_replay_entry(role, "" if content is None else content, msg)
+            )
 
     # Strip interrupted tool-call tails so the LLM doesn't re-execute tools killed mid-flight.
     agent_history = strip_interrupted_tool_tails(agent_history)

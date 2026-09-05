@@ -7,7 +7,7 @@ Covers the three seams added for remote Desktop backends:
     never pins an attacker-controlled redirect into a DCR registration);
   - start_flow(client_redirect_uri=...): no gateway-side listener is bound and
     the flow's redirect_uri is pinned to the client's listener;
-  - deliver_callback_flow: relays a client-captured code/state into the flow
+  - deliver_callback_flow: relays a client-captured code/state/iss into the flow
     with the SAME state verification as the loopback path (wrong state
     rejected, replay rejected, unknown session rejected).
 """
@@ -185,7 +185,23 @@ def test_deliver_callback_accepts_matching_state():
     flow = _make_session()
     out = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="s3cr3tstate")
     assert out == {"ok": True, "session_id": "sess-relay-1"}
-    assert flow._callback == ("abc", "s3cr3tstate")
+    assert flow._callback == ("abc", "s3cr3tstate", None)
+
+
+def test_deliver_callback_forwards_iss():
+    # RFC 9207: an iss-enforcing provider's redirect carries ?iss=..., and
+    # mcp 2.0 rejects the response if it goes missing between the client
+    # listener and the flow. The relay must hand it through untouched.
+    flow = _make_session()
+    out = deliver_callback_flow(
+        "sess-relay-1",
+        "hosp",
+        code="abc",
+        state="s3cr3tstate",
+        iss="https://as.example.com",
+    )
+    assert out == {"ok": True, "session_id": "sess-relay-1"}
+    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
 
 
 def test_deliver_callback_rejects_state_mismatch():

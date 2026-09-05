@@ -345,8 +345,9 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
     }
 
     // With a client listener bound: await the provider redirect here and relay
-    // code/state to the gateway. Runs concurrently with the status poll below;
-    // errors surface through the poll (the gateway marks the flow failed).
+    // code/state (and the RFC 9207 iss issuer) to the gateway. Runs
+    // concurrently with the status poll below; errors surface through the
+    // poll (the gateway marks the flow failed).
     if (listener) {
       const listenerId = listener.id
 
@@ -363,7 +364,8 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
           session_id: sessionId,
           code: cb.code || undefined,
           state: cb.state || undefined,
-          error: cb.error || undefined
+          error: cb.error || undefined,
+          iss: cb.iss || undefined
         })
 
         const rp = relay.result && (relay.result.result || relay.result)

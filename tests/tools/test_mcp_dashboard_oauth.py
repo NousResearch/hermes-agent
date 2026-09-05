@@ -27,7 +27,32 @@ def test_dashboard_flow_exposes_authorization_url_and_accepts_callback():
     }
 
     flow.deliver_callback(code="code-1", state="s1", error=None)
-    assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1")
+    assert asyncio.run(flow.wait_for_callback()) == ("code-1", "s1", None)
+
+
+def test_dashboard_flow_preserves_rfc9207_iss():
+    """The RFC 9207 ``iss`` authorization-response parameter must survive the
+    dashboard callback round-trip: mcp 2.0 validates it against discovered
+    metadata and rejects a response that omits it when the server advertises
+    ``authorization_response_iss_parameter_supported`` (all Cloudflare MCP
+    servers do)."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-iss",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-iss",
+    )
+    asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=s9"))
+
+    flow.deliver_callback(
+        code="code-9", state="s9", error=None, iss="https://idp.example"
+    )
+    assert asyncio.run(flow.wait_for_callback()) == (
+        "code-9", "s9", "https://idp.example",
+    )
 
 
 def test_dashboard_flow_accepts_only_one_concurrent_callback():

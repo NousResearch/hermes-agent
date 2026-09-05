@@ -1845,6 +1845,62 @@ class TestClickButtonPassthrough:
         assert scroll_args["window_id"] == 222
         assert scroll_args["x"] == 50 and scroll_args["y"] == 60
 
+    def test_coordinate_scroll_uses_schema_when_capability_token_missing(self):
+        """cua-driver 0.23.x removed `input.scroll.coordinates` from the
+        capability vocabulary while still declaring `x`/`y` in the live
+        scroll inputSchema (#89527): the raw tools/list advertises
+        ['input.pointer.scroll', 'accessibility.element_tokens',
+        'input.delivery_mode'] for `scroll`, with x/y present in
+        inputSchema.properties. Capability-only gating therefore drops the
+        coordinates and the driver scrolls the window generically — the
+        wrong pane in a multi-pane app. The schema probe must recover it.
+        """
+        backend = self._backend_with_active_target()
+        backend._session.supports_capability.return_value = False
+        backend._session.supports_input_property.return_value = True
+
+        backend.scroll(direction="down", x=50, y=60)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "scroll"
+        assert args["x"] == 50 and args["y"] == 60, (
+            "coordinate scroll must be sent when the live scroll schema "
+            "declares x/y, even without the input.scroll.coordinates "
+            "capability token (#89527)"
+        )
+
+    def test_coordinate_scroll_omitted_when_schema_declares_only_one_axis(self):
+        """Fail closed for a malformed/asymmetric scroll schema: sending y
+        because only x was declared can violate additionalProperties:false.
+        """
+        backend = self._backend_with_active_target()
+        backend._session.supports_capability.return_value = False
+        backend._session.supports_input_property.side_effect = (
+            lambda tool, prop: tool == "scroll" and prop == "x"
+        )
+
+        backend.scroll(direction="down", x=50, y=60)
+        _, args = backend._session.call_tool.call_args.args
+        assert "x" not in args and "y" not in args
+
+    def test_coordinate_scroll_omitted_when_no_support_signal(self):
+        """Fail-closed: neither the capability token nor the live schema
+        declares coordinate support — x/y must be omitted so drivers with
+        `additionalProperties: false` schemas (CUA Driver 0.7.1 Linux)
+        are not sent fields they reject.
+        """
+        backend = self._backend_with_active_target()
+        backend._session.supports_capability.return_value = False
+        backend._session.supports_input_property.return_value = False
+
+        backend.scroll(direction="down", x=50, y=60)
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "scroll"
+        assert "x" not in args and "y" not in args, (
+            "x/y must be dropped when neither the capability vocabulary "
+            "nor the live inputSchema advertises coordinate scrolling"
+        )
+        assert args["window_id"] == 222  # routing still happens
+
     def test_coordinate_actions_without_window_id_fail_closed(self):
         backend = self._backend_with_active_target()
         backend._active_window_id = None

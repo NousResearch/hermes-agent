@@ -4,7 +4,7 @@ import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { $gateway } from '@/store/gateway'
+import { $gateway, requestGatewayForAgent } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
@@ -46,6 +46,14 @@ const loadPreviewEngine = () => {
  *  message reactions. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   const { event, payload, isActiveEvent } = ctx
+  // Replies belong to the socket that issued the request. The foreground
+  // gateway may be another profile, or may change during an async page read.
+  const legacyGateway = $gateway.get()
+
+  const respond = (method: string, params: Record<string, unknown>) =>
+    event.profile || event.connectionId
+      ? requestGatewayForAgent(event.connectionId ?? null, event.profile ?? 'default', method, params)
+      : legacyGateway?.request(method, params)
 
   if (event.type === 'terminal.read.request') {
     // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -57,7 +65,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
       const result = readActiveTerminal({ start, count })
 
-      void $gateway.get()?.request('terminal.read.respond', {
+      void respond('terminal.read.respond', {
         request_id: requestId,
         text: result ? JSON.stringify(result) : ''
       })
@@ -76,7 +84,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
 
       void readActivePreview({ count, start }).then(result => {
-        void $gateway.get()?.request('preview.read.respond', {
+        void respond('preview.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -96,7 +104,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
 
     if (requestId) {
       const answer = (result: unknown) =>
-        $gateway.get()?.request('preview.act.respond', {
+        respond('preview.act.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -140,7 +148,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const read = window.hermesDesktop?.readWindowBelow
 
       const answer = (result: unknown) =>
-        $gateway.get()?.request('window.read.respond', {
+        respond('window.read.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })
@@ -180,7 +188,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
 
     if (requestId) {
       const answer = (result: unknown) =>
-        $gateway.get()?.request('tour.respond', {
+        respond('tour.respond', {
           request_id: requestId,
           text: result ? JSON.stringify(result) : ''
         })

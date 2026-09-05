@@ -13,16 +13,21 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
 
-import aiohttp
-
 try:
+    import aiohttp
     from slack_bolt.async_app import AsyncApp
     from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
     from slack_sdk.web.async_client import AsyncWebClient
 
     SLACK_AVAILABLE = True
 except ImportError:
+    # Must not raise at plugin-import time. A missing aiohttp/slack-bolt used
+    # to abort register() entirely ("Failed to load plugin 'slack-platform'"),
+    # so ensure_deps_fn never ran and Slack stayed dead while Telegram
+    # lazy-installed. Keep this ImportError-soft so check_fn=False and the
+    # registry can install platform.slack on demand.
     SLACK_AVAILABLE = False
+    aiohttp = None  # type: ignore[assignment]
     AsyncApp = Any
     AsyncSocketModeHandler = Any
     AsyncWebClient = Any

@@ -54,8 +54,9 @@ async function load(): Promise<Modules> {
 let modules: Modules
 
 /** Room records as the store holds them, built from the handful of fields a
- *  case actually cares about. */
-function rooms(map: Record<string, Partial<GroupChat>>): Record<string, GroupChat> {
+ *  case actually cares about. Runtime `turn` included — presence tests key
+ *  off it. */
+function rooms(map: Record<string, Partial<groupChat.GroupChatRoom>>): Record<string, groupChat.GroupChatRoom> {
   return Object.fromEntries(Object.entries(map).map(([name, room]) => [name, { log: [], watermarks: {}, ...room }]))
 }
 
@@ -368,5 +369,50 @@ describe('legacy display-name descriptors', () => {
     modules.chat.$groupChats.set(rooms({ room: { log: [], members: [descriptor] } }))
 
     expect(modules.membership.groupChatMemberBots('room', [TAIYI], {})[0]).toBe(TAIYI)
+  })
+})
+
+// Presence: a member mid group turn lights its roster row (and, through the
+// member keys, the group row). The room's runtime `turn` is the same identity
+// the thread's thinking line uses, so the roster cannot disagree with the room.
+describe('activeGroupMemberKeys', () => {
+  const RESEARCHER: RosterRow = { connectionId: 'local', name: 'researcher', remoteSource: false }
+  const SCRIBE: RosterRow = { connectionId: 'local', name: 'scribe', remoteSource: false }
+
+  it('maps the room turn to the live source-qualified roster key', () => {
+    modules.chat.$groupChats.set(rooms({ room: { log: [], running: true, turn: 'researcher' } }))
+    modules.data.$botMeta.set({ researcher: { groups: ['room'] } })
+
+    const keys = modules.membership.activeGroupMemberKeys(
+      modules.chat.$groupChats.get(),
+      [RESEARCHER, SCRIBE],
+      { researcher: { groups: ['room'] } }
+    )
+
+    expect(keys).toEqual(['local::researcher'])
+  })
+
+  it('seats a remote member through its stored descriptor and qualifies the key', () => {
+    const dixie: RosterRow = { connectionId: 'mini', name: 'dixie', remoteSource: true }
+
+    modules.chat.$groupChats.set(
+      rooms({ room: { log: [], members: [{ connectionId: 'mini', name: 'dixie' }], running: true, turn: 'dixie' } })
+    )
+
+    expect(modules.membership.activeGroupMemberKeys(modules.chat.$groupChats.get(), [dixie], {})).toEqual(['mini::dixie'])
+  })
+
+  it('stays empty when the room is idle, nobody is on turn, or the member is unseated', () => {
+    modules.chat.$groupChats.set(rooms({ room: { log: [], running: true } }))
+
+    expect(modules.membership.activeGroupMemberKeys(modules.chat.$groupChats.get(), [RESEARCHER], {})).toEqual([])
+
+    modules.chat.$groupChats.set(rooms({ room: { log: [], running: true, turn: 'ghost' } }))
+
+    expect(modules.membership.activeGroupMemberKeys(modules.chat.$groupChats.get(), [RESEARCHER], {})).toEqual([])
+
+    modules.chat.$groupChats.set(rooms({ room: { log: [], running: false, turn: 'researcher' } }))
+
+    expect(modules.membership.activeGroupMemberKeys(modules.chat.$groupChats.get(), [RESEARCHER], {})).toEqual([])
   })
 })

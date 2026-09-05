@@ -155,6 +155,14 @@ describe('which bots are working right now', () => {
     expect(workerActiveAt(finished, NOW)).toBe(false)
     expect(ACTIVE_WINDOW_S).toBeGreaterThan(0)
   })
+
+  it('includes a member whose group turn is running, keyed by source', () => {
+    const coder = row({ connectionId: 'local', name: 'coder' })
+
+    expect(activeBots([coder], 'other', 'open', NOW, ['local::coder']).map(bot => bot.name)).toContain('coder')
+    // Another connection's same-named member must not light this row.
+    expect(activeBots([coder], 'other', 'open', NOW, ['remote::coder'])).toEqual([])
+  })
 })
 
 describe('the roster activity filter', () => {

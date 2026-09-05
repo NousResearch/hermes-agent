@@ -6,6 +6,7 @@
 
 import { $botMeta, botFriendlyNames, botMetaKey, botRosterKey } from './data'
 import { $groupChats, groupChatRoomKey } from './group-chat'
+import type { GroupChatRoom } from './group-chat'
 import { botConnectionRoute, botRosterMeta, resolveBotConnectionRoute } from './routing'
 import type { BotMeta, GroupChat, GroupMember, RosterRow } from './types'
 
@@ -240,6 +241,25 @@ export function groupChatMemberBots(
   }
 
   return [...local, ...remote]
+}
+
+/** Source-qualified roster keys for members whose group turn is currently
+ *  running. The room's runtime `turn` is the same identity the thread's
+ *  "is thinking" line uses, so the roster and the room cannot drift apart. */
+export function activeGroupMemberKeys(
+  rooms: Record<string, GroupChatRoom>,
+  roster: RosterRow[],
+  metaByName: Record<string, BotMeta>
+): string[] {
+  return Object.entries(rooms || {}).flatMap(([group, room]) => {
+    if (!room?.running || !room.turn) {
+      return []
+    }
+
+    const member = groupChatMemberBots(group, roster, metaByName).find(bot => bot.name === room.turn)
+
+    return member ? [botRosterKey(member)] : []
+  })
 }
 
 /** A stored member descriptor, resolved against the live roster when its

@@ -86,21 +86,25 @@ export function workerActiveAt(bot: null | RosterRow | undefined, now = Date.now
 
 /** Bots that are working right now: the profile the gateway is running a
  *  turn for (busy), any bot whose last message landed inside the liveness
- *  window, plus any bot with a live kanban/tool worker. Pure — output
- *  follows the input roster's order, so presence never reorders or hides
- *  the normal list. */
+ *  window, any live kanban/tool worker, plus members on a group turn (keys
+ *  from `activeGroupMemberKeys`). Pure — output follows the input roster's
+ *  order, so presence never reorders or hides the normal list. */
 export function activeBots(
   roster: null | RosterRow[] | undefined,
   activeProfile: string,
   gatewayState: string,
-  now = Date.now()
+  now = Date.now(),
+  groupKeys: string[] = []
 ): RosterRow[] {
+  const groupTurnKeys = new Set(groupKeys)
+
   return (roster || []).filter(bot => {
     const busyTurn = !bot.remoteSource && bot.name === activeProfile && gatewayState === 'busy'
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
+    const groupTurn = groupTurnKeys.has(botRosterKey(bot))
 
-    return busyTurn || inWindow || workerActiveAt(bot, now)
+    return busyTurn || inWindow || workerActiveAt(bot, now) || groupTurn
   })
 }
 

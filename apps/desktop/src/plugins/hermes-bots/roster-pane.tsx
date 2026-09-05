@@ -58,7 +58,7 @@ import {
 import { EditProfileDialog } from './edit-profile-dialog'
 import { $groupChats, $groupChatWorkspace, $groupNeedsYou } from './group-chat'
 import { disbandGroupChat, GroupChatWorkspace, openGroupChat } from './group-chat-view'
-import { groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
+import { activeGroupMemberKeys, groupChatMemberBots, groupChatNames, groupLastActivity } from './group-membership'
 import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
 import { $showHiddenBots, isBotHidden, isBotPinned } from './hidden-bots'
 import { useBots } from './i18n'
@@ -343,7 +343,10 @@ export function BotsPane() {
   // and the persisted connection registry hydrate. Keep that transition in a
   // neutral loading state instead of flashing the first-run "No bots" copy.
   const initialRosterLoading = !data && !error && roster.length === 0
-  const activeRosterKeys = new Set(activeBots(roster, activeProfile, gatewayState).map(botRosterKey))
+  const groupActiveKeys = activeGroupMemberKeys(groupRooms, roster, allMeta)
+  const activeRosterKeys = new Set(
+    activeBots(roster, activeProfile, gatewayState, Date.now(), groupActiveKeys).map(botRosterKey)
+  )
   const gatewayOptions = rosterGatewayOptions(sourceSnapshot, roster)
   const selectedGateway = gatewayOptions.find(option => option.connectionId === gatewayFilter)
   const gatewayFilterExists = gatewayFilter === 'all' || Boolean(selectedGateway)

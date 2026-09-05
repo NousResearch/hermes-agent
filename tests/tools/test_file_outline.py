@@ -1,6 +1,8 @@
 """Synthetic documents exercised through real registry and local backend I/O."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event
 
 import pytest
 
@@ -12,6 +14,7 @@ from tools.registry import registry
 
 @pytest.fixture
 def document(tmp_path, monkeypatch):
+    file_tools.clear_file_ops_cache("outline-test")
     operations = ShellFileOperations(LocalEnvironment(str(tmp_path)))
     monkeypatch.setattr(file_tools, "_get_file_ops", lambda _: operations)
     return tmp_path / "spec.md"
@@ -172,9 +175,85 @@ def test_one_call_spans_many_backend_windows(document, monkeypatch):
     assert [e["heading"] for e in page["outline"]] == [f"H{i}" for i in range(40)]
 
 
-def test_repeated_first_page_of_unchanged_file_is_deduplicated(document):
-    document.write_text("# Same\n", encoding="utf-8")
-    assert call(document, mode="outline")["outline"]
-    assert call(document, mode="outline")["dedup"] is True
+def test_interleaved_files_and_eviction_are_explicit(document):
+    first_pages = []
+    for index in range(file_outline.CURSOR_COUNT + 1):
+        path = document.with_name(f"document-{index}.md")
+        path.write_text(f"# First {index}\n# Next {index}\n", encoding="utf-8")
+        first_pages.append((path, call(path, mode="outline", limit=1)["next_cursor"]))
+    path, cursor = first_pages[0]
+    assert "expired" in call(path, mode="outline", cursor=cursor)["error"]
+    # Completing recent files does not create more checkpoints or confuse paths.
+    for index, (path, cursor) in enumerate(first_pages[1:], 1):
+        result = call(path, mode="outline", cursor=cursor)
+        assert result["outline"] == [{"line": 2, "level": 1, "heading": f"Next {index}"}]
+        assert result["scan_complete"]
+
+
+def test_concurrent_retries_have_independent_continuations(document, monkeypatch):
+    document.write_text("# One\n# Two\n# Three\n", encoding="utf-8")
+    cursor = call(document, mode="outline", limit=1)["next_cursor"]
+    ops = file_tools._get_file_ops("outline-test")
+    original = ops.read_outline_window
+    barrier = Barrier(2)
+
+    def simultaneous(*args):
+        result = original(*args)
+        barrier.wait(timeout=10)
+        return result
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ops, "read_outline_window", simultaneous)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(call, document, mode="outline", limit=1, cursor=cursor) for _ in range(2)]
+            results = [f.result(timeout=15) for f in futures]
+    for result in results:
+        assert result["outline"] == [{"line": 2, "level": 1, "heading": "Two"}]
+        following = call(document, mode="outline", cursor=result["next_cursor"])
+        assert following["outline"] == [{"line": 3, "level": 1, "heading": "Three"}]
+
+
+def test_task_cleanup_invalidates_inflight_and_saved_cursors(document, monkeypatch):
+    document.write_text("# One\n# Two\n# Three\n", encoding="utf-8")
+    cursor = call(document, mode="outline", limit=1)["next_cursor"]
+    ops = file_tools._get_file_ops("outline-test")
+    original = ops.read_outline_window
+    ready, resume = Event(), Event()
+
+    def paused(*args):
+        result = original(*args)
+        ready.set()
+        assert resume.wait(timeout=10)
+        return result
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(ops, "read_outline_window", paused)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(call, document, mode="outline", limit=1, cursor=cursor)
+            try:
+                assert ready.wait(timeout=10)
+                file_tools.clear_file_ops_cache("outline-test")
+            finally:
+                resume.set()
+            assert "task ended" in pending.result(timeout=15)["error"]
+    assert "expired" in call(document, mode="outline", cursor=cursor)["error"]
+
+
+def test_repeated_page_guard_allows_progress_and_changed_files(document):
+    """Same stub-then-block ladder as body reads; continuation and changed files still work."""
+    document.write_text("# One\n# Two\n", encoding="utf-8")
+    first = call(document, mode="outline", limit=1)
+    assert call(document, mode="outline", limit=1)["dedup"] is True
+    assert "BLOCKED" in call(document, mode="outline", limit=1)["error"]
+    following = call(document, mode="outline", cursor=first["next_cursor"])
+    assert following["outline"][0]["heading"] == "Two"
     document.write_text("# Changed\n", encoding="utf-8")
-    assert call(document, mode="outline")["outline"][0]["heading"] == "Changed"
+    assert call(document, mode="outline", limit=1)["outline"][0]["heading"] == "Changed"
+
+
+@pytest.mark.windows_only
+def test_windows_backend_path_quoting_and_crlf(document):
+    path = document.with_name("Unicode 标题's $notes.md")
+    path.write_bytes(b"# First\r\n# Last\r\n")
+    result = list(pages(path, limit=1))
+    assert [item["line"] for page in result for item in page["outline"]] == [1, 2]

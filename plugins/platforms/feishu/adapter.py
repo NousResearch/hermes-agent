@@ -2106,7 +2106,10 @@ class FeishuAdapter(BasePlatformAdapter):
             return False
         allowed_ids = set(self._admins) | set(self._allowed_group_users)
         if not allowed_ids:
-            return True
+            return (
+                os.getenv("FEISHU_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}
+                or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}
+            )
         return "*" in allowed_ids or normalized in allowed_ids
 
     @staticmethod

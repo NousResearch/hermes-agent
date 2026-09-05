@@ -1776,7 +1776,12 @@ class MatrixAdapter(BasePlatformAdapter):
             if isinstance(error, dict):
                 return ""
             value = getattr(error, "errcode", None) or getattr(error, "err_code", None)
-            return str(value or "").upper()
+            if value:
+                return str(value).upper()
+            message = getattr(error, "message", None)
+            text = message if isinstance(message, str) else str(error)
+            match = re.search(r"\bM_FORBIDDEN\b", text, re.IGNORECASE)
+            return "M_FORBIDDEN" if match else ""
 
         def _is_permanent_sync_auth_error(error: Any) -> bool:
             if isinstance(error, dict):
@@ -1882,9 +1887,14 @@ class MatrixAdapter(BasePlatformAdapter):
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if nb:
             await client.sync_store.put_next_batch(nb)
+        rooms_leave = sync_data.get("rooms", {}).get("leave", {})
+        self._joined_rooms.difference_update(rooms_leave)
         if initial:
             logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))
             await self._refresh_dm_cache()
+        for room_id in rooms_leave:
+            self._dm_rooms.pop(room_id, None)
+            self._invalidate_room_identities(room_id)
         try:
             await self._dispatch_sync(sync_data)
         except Exception as exc:
@@ -1897,11 +1907,9 @@ class MatrixAdapter(BasePlatformAdapter):
         client = self._client
         if not client or not hasattr(client, "handle_sync"):
             return
-        # Cursor recovery can replay departed-room timelines. Do not dispatch
-        # those events, but keep joined rooms, invites and E2EE to-device data.
-        rooms = sync_data.get("rooms", {})
-        if "leave" in rooms:
-            sync_data = {**sync_data, "rooms": {key: value for key, value in rooms.items() if key != "leave"}}
+        # mautrix dispatches only state events from departed-room timelines.
+        # Preserve that path: membership updates are needed by its state/crypto
+        # handlers, while historical messages (including encrypted ones) stay out.
         tasks = client.handle_sync(sync_data)
         if inspect.isawaitable(tasks):
             tasks = await tasks

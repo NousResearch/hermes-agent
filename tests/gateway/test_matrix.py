@@ -1268,11 +1268,109 @@ class TestMatrixDeviceIdConfig:
 
 class TestMatrixSyncLoop:
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["NOT_M_FORBIDDEN", "M_FORBIDDEN_EXTRA"])
+    async def test_forbidden_text_requires_errcode_boundaries(self, message):
+        adapter = _make_adapter()
+        calls = []
+        async def sync(**kwargs):
+            calls.append(kwargs["since"])
+            if len(calls) == 1:
+                return types.SimpleNamespace(message=message)
+            adapter._closing = True
+            return {"next_batch": "fresh"}
+        client = types.SimpleNamespace(
+            sync=AsyncMock(side_effect=sync), handle_sync=MagicMock(return_value=[]),
+            sync_store=types.SimpleNamespace(get_next_batch=AsyncMock(return_value="stored"),
+                                            put_next_batch=AsyncMock()))
+        adapter._client = client
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", AsyncMock()):
+            await adapter._sync_loop()
+        assert calls == ["stored", "stored"]
+        client.sync_store.put_next_batch.assert_awaited_once_with("fresh")
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["result", "exception"])
+    @pytest.mark.parametrize("scenario", ["no_cursor", "recovery", "budget"])
+    async def test_message_only_forbidden_is_bounded(self, kind, scenario):
+        adapter = _make_adapter()
+        calls = []
+        async def sync(**kwargs):
+            calls.append(kwargs["since"])
+            if len(calls) > 8:
+                raise asyncio.CancelledError()  # fail promptly instead of hanging on regressions
+            if scenario != "no_cursor" and kwargs["since"] is None:
+                if scenario == "recovery":
+                    adapter._closing = True
+                return {"next_batch": "fresh", "rooms": {"join": {}}}
+            if kind == "exception":
+                raise RuntimeError("sync failed (M_FORBIDDEN): Access Denied")
+            return types.SimpleNamespace(message="sync failed (M_FORBIDDEN): Access Denied")
+        client = types.SimpleNamespace(
+            sync=AsyncMock(side_effect=sync), handle_sync=MagicMock(return_value=[]),
+            sync_store=types.SimpleNamespace(
+                get_next_batch=AsyncMock(return_value=None if scenario == "no_cursor" else "stored"),
+                put_next_batch=AsyncMock()))
+        adapter._client = client
+        with patch("plugins.platforms.matrix.adapter.asyncio.sleep", AsyncMock()) as sleep:
+            await adapter._sync_loop()
+        assert calls == {"no_cursor": [None], "recovery": ["stored", None],
+                         "budget": ["stored", None, "fresh", None, "fresh", None, "fresh"]}[scenario]
+        resets = [c.args[0] for c in client.sync_store.put_next_batch.await_args_list if c.args[0] is None]
+        assert len(resets) == {"no_cursor": 0, "recovery": 1, "budget": 3}[scenario]
+        assert sum(c.args == (5,) for c in sleep.await_args_list) == len(resets)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("initial", [False, True])
-    async def test_absorb_sync_drops_left_room_events_without_mutating_response(self, initial):
-        """Fresh sync after a cursor reset must not dispatch departed-room history."""
+    async def test_left_room_real_sdk_membership_and_crypto_cache(self, initial):
+        from mautrix.client import Client
+        from mautrix.client.state_store import MemoryStateStore
+        from mautrix.types import EventType, Membership, RoomID, UserID
+        from plugins.platforms.matrix.adapter import _CryptoStateStore
+        adapter = _make_adapter()
+        room, user = RoomID("!left:example.org"), UserID("@bot:example.org")
+        adapter._joined_rooms.update([room, "!kept:example.org"])
+        adapter._dm_rooms[room] = True
+        adapter._room_identities[room] = MagicMock()
+        adapter._room_identity_cached_at[room] = time.monotonic()
+        crypto_store = _CryptoStateStore(MagicMock(), adapter._joined_rooms)
+        state = MemoryStateStore()
+        client = Client(mxid=user, base_url="https://example.org", state_store=state)
+        adapter._client = client
+        message = AsyncMock()
+        member = AsyncMock()
+        client.add_event_handler(EventType.ROOM_MESSAGE, message, wait_sync=True)
+        client.add_event_handler(EventType.ROOM_ENCRYPTED, message, wait_sync=True)
+        client.add_event_handler(EventType.ROOM_MEMBER, member, wait_sync=True)
+        # Await the real SDK state update instead of leaving its default background task pending.
+        client.add_event_handler(EventType.ALL, client._update_state, wait_sync=True)
+        event = {"sender": user, "event_id": "$leave", "origin_server_ts": 1,
+                 "type": "m.room.member", "state_key": user, "content": {"membership": "leave"}}
+        payload = {"rooms": {"leave": {room: {"timeline": {"events": [event,
+            {"sender": user, "event_id": "$old", "origin_server_ts": 1,
+             "type": "m.room.message", "content": {"msgtype": "m.text", "body": "old"}},
+            {"sender": user, "event_id": "$encrypted", "origin_server_ts": 1,
+             "type": "m.room.encrypted", "content": {}}]}}}}}
+        try:
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()), patch.object(adapter, "_schedule_pending_invite_joins"):
+                await adapter._absorb_sync(client, payload, initial=initial)
+            member.assert_awaited_once()
+            message.assert_not_awaited()
+            assert await state.get_membership(room, user) == Membership.LEAVE
+            assert set(await crypto_store.find_shared_rooms(user)) == {"!kept:example.org"}
+            assert room not in adapter._dm_rooms
+            assert room not in adapter._room_identities
+            assert room not in adapter._room_identity_cached_at
+        finally:
+            await client.api.session.close()
+
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("initial", [False, True])
+    async def test_absorb_sync_preserves_left_room_state(self, initial):
+        """Leave state reaches the SDK alongside joins, invites and to-device data."""
         adapter = _make_adapter()
         payload = {
             "next_batch": "s-fresh",
@@ -1296,7 +1394,7 @@ class TestMatrixSyncLoop:
              patch.object(adapter, "_schedule_pending_invite_joins") as schedule:
             token = await adapter._absorb_sync(client, payload, initial=initial)
         forwarded = client.handle_sync.call_args.args[0]
-        assert "leave" not in forwarded["rooms"]
+        assert forwarded["rooms"]["leave"] == payload["rooms"]["leave"]
         assert "leave" in payload["rooms"]
         assert forwarded["rooms"]["join"] == payload["rooms"]["join"]
         assert forwarded["rooms"]["invite"] == payload["rooms"]["invite"]

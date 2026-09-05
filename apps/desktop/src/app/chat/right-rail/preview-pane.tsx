@@ -26,12 +26,14 @@ import {
   flushAnnotateStack
 } from '@/lib/preview-annotate'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { createPreviewWebview } from '@/lib/preview-webview'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $browserPages,
   $previewServerRestart,
+  canPopOutBrowserTab,
   commitBrowserTabLocation,
   failPreviewServerRestart,
   noteBrowserPage,
@@ -269,6 +271,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
+  const isolatedBrowser = target.browserContext === 'isolated'
   const [annotate, setAnnotate] = useState(emptyAnnotateSession)
   const [draftNote, setDraftNote] = useState('')
   const annotateRef = useRef(annotate)
@@ -1020,11 +1023,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       return
     }
 
-    const webview = document.createElement('webview') as PreviewWebview
-    webview.className = 'flex h-full w-full flex-1 bg-transparent'
-    webview.setAttribute('partition', 'persist:hermes-preview')
-    webview.setAttribute('src', target.url)
-    webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+    const webview = createPreviewWebview(target.url, target.browserContext) as PreviewWebview
 
     const onConsole = (event: Event) => {
       const detail = event as Event & {
@@ -1235,7 +1234,17 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, tabId, target.kind, target.url])
+  }, [
+    appendConsoleEntry,
+    consoleState,
+    copy,
+    isRemoteHtml,
+    isWebPreview,
+    tabId,
+    target.browserContext,
+    target.kind,
+    target.url
+  ])
 
   return (
     <aside
@@ -1303,7 +1312,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             }
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
-              isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
+              isBrowserWindow() || !tabId || !canPopOutBrowserTab(tabId) ? undefined : () => popOutBrowserTab(tabId)
             }
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}
@@ -1315,7 +1324,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
         {/* First-open real-profile consent offer — Browser tabs only (URL
             vessels the user browses with), never file/HTML previews. */}
-        {target.kind === 'url' && tabId && <RealProfileConsentDialog tabId={tabId} />}
+        {target.kind === 'url' && !isolatedBrowser && tabId && <RealProfileConsentDialog tabId={tabId} />}
 
         <div
           className="pointer-events-auto relative min-h-0 flex-1 overflow-hidden bg-transparent"

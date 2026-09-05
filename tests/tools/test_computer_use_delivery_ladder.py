@@ -161,6 +161,8 @@ def test_text_response_surfaces_fields_additively():
     assert payload["escalation"] == {"recommended": "foreground"}
     assert payload["code"] == "background_unavailable"
     assert payload["verified"] is False
+    assert payload["verdict"]["decision"] == "escalate"
+    assert payload["verdict"]["recommended"] == "foreground"
 
     # Bare transport success still requires fresh verification, without None noise.
     r2 = ActionResult(ok=True, action="click")

@@ -437,9 +437,10 @@ class CLISessionMixin:
         Non-blocking; errors swallowed. Safe from shutdown, /new, /reset."""
         with contextlib.suppress(Exception):
             from hermes_cli.lifecycle import finalize_session, invoke_hook
+            from hermes_cli.session_hook_context import agent_session_identity
 
             context = {
-                "session_id": self.agent.session_id if self.agent else None,
+                **agent_session_identity(self.agent),
                 "platform": getattr(self, "platform", None) or "cli",
                 "reason": "new_session" if event_type == "on_session_reset" else "session_boundary"}
             if event_type == "on_session_finalize":

@@ -22,6 +22,9 @@ import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
 export interface PreviewTarget {
   binary?: boolean
+  /** Isolated viewer, not a personal browser: fresh in-memory cookies/storage
+   * and no profile-import offer. Independent of tab persistence (`transient`). */
+  browserContext?: 'isolated'
   byteSize?: number
   /** Inline image bytes (a `data:` URL) when the renderer already holds them —
    * e.g. a pasted/dropped screenshot whose only on-disk copy is a transient
@@ -274,10 +277,18 @@ export function adoptPersistedBrowserTab(tabId: string) {
   }
 }
 
+/** The ordinary popout restores its target from storage in another renderer.
+ * Runtime-only viewers need the explicit viewer-window capability instead. */
+export function canPopOutBrowserTab(tabId: string): boolean {
+  const target = $previewTabs.get().find(tab => tab.id === tabId)?.target
+
+  return canOpenBrowserWindow() && target?.kind === 'url' && !target.transient && target.browserContext !== 'isolated'
+}
+
 /** Pop the in-app Browser into its own OS window. Shared by the address-bar
  *  glyph and the tab context menu so they cannot drift. */
 export function popOutBrowserTab(tabId: string) {
-  if (!tabId || !canOpenBrowserWindow()) {
+  if (!tabId || !canPopOutBrowserTab(tabId)) {
     return
   }
 
@@ -338,7 +349,7 @@ export function previewTabId(target: PreviewTarget): RightRailTabId {
   return `${target.kind}:${target.url}`
 }
 
-const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url'
+const isBrowserTab = (tab: PreviewTab): boolean => tab.target.kind === 'url' && tab.target.browserContext !== 'isolated'
 
 /** A Browser tab's id, minted the way a terminal's is — there is no identity to
  *  derive one from. Random rather than the lowest free slot: an id is never
@@ -385,7 +396,15 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
 export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
   const resolved = previewTargetForSource(target, source)
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+
+  const id =
+    resolved.kind !== 'url'
+      ? previewTabId(resolved)
+      : resolved.browserContext === 'isolated'
+        ? (current.find(tab => tab.target.browserContext === 'isolated' && tab.target.url === resolved.url)?.id ??
+          mintBrowserTabId())
+        : browserTabId(current)
+
   const index = current.findIndex(tab => tab.id === id)
   const tab: PreviewTab = { id, target: resolved }
 

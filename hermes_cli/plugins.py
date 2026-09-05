@@ -123,7 +123,7 @@ VALID_HOOKS: Set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
-    "on_session_finalize", "on_session_reset",
+    "on_session_finalize", "on_session_reset", "on_session_identity",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
@@ -654,8 +654,11 @@ class PluginContext:
         argument_mode: str | None = None,
     ) -> Optional[PluginRegistration]:
         """Register an in-session slash command (``/name``); handler ``fn(raw_args: str) -> str | None``
-        (sync or async). ``args_hint`` (e.g. ``"<file>"``) lets adapters like Discord surface an argument
-        field; without it the command registers parameterless there but still accepts trailing text."""
+        (sync or async). Handlers may opt into session_id, task_id, runtime_session_id,
+        stored_session_id, profile, hermes_home and surface keyword fields; narrow legacy
+        signatures still receive only raw_args. ``args_hint`` (e.g. ``"<file>"``) lets adapters
+        like Discord surface an argument field; without it the command registers parameterless
+        there but still accepts trailing text."""
         clean = name.lower().strip().lstrip("/").replace(" ", "-")
         if not clean:
             logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
@@ -1770,6 +1773,9 @@ def _get_pre_tool_call_directive_details(
     tool_name: str, args: Optional[Dict[str, Any]], task_id: str = "", session_id: str = "",
     tool_call_id: str = "", turn_id: str = "", api_request_id: str = "",
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    *, runtime_session_id: Optional[str] = None, stored_session_id: Optional[str] = None,
+    profile: Optional[str] = None, hermes_home: Optional[Path] = None,
+    source: Optional[str] = None, surface: Optional[str] = None,
 ) -> _PreToolCallDirective:
     """Check ``pre_tool_call`` hooks for ``{"action": "block", "message"}`` (veto; message becomes
     the tool result) or ``{"action": "approve", "message", "rule_key"?}`` (escalate ANY tool to the
@@ -1784,6 +1790,8 @@ def _get_pre_tool_call_directive_details(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
         task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         api_request_id=api_request_id, middleware_trace=list(middleware_trace or []),
+        runtime_session_id=runtime_session_id, stored_session_id=stored_session_id,
+        profile=profile, hermes_home=hermes_home, source=source, surface=surface,
     )
     modified_args: Optional[Dict[str, Any]] = None
     for result in hook_results:
@@ -2000,7 +2008,10 @@ def resolve_plugin_command_result(result: Any) -> Any:
         finally:
             done.set()
 
-    threading.Thread(target=_runner, name="hermes-plugin-command-await", daemon=True).start()
+    from contextvars import copy_context
+
+    threading.Thread(target=copy_context().run, args=(_runner,),
+                     name="hermes-plugin-command-await", daemon=True).start()
     if not done.wait(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS):
         raise TimeoutError("Plugin command async handler did not complete within "
                            f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s")

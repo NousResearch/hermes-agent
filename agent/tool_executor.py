@@ -613,11 +613,15 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
     hook-modified args applied. Hook failures never block."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+        from hermes_cli.session_hook_context import agent_session_identity
+
+        identity = agent_session_identity(agent)
+        identity.update(tool_hook_ids(agent, ref.task_id, ref.call_id))
 
         block_msg, modified_args = _dispatch_pre_tool_call_hooks(
             ref.name,
             ref.args,
-            **tool_hook_ids(agent, ref.task_id, ref.call_id),
+            **identity,
             middleware_trace=list(ref.trace),
         )
         return block_msg, (ref.args if modified_args is None else modified_args)

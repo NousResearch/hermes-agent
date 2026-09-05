@@ -15,6 +15,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.session_execution import SessionExecutionError
 from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.cua_backend_parse import _extract_tool_result, _mcp_field, _tool_envelope
 
@@ -185,7 +186,8 @@ class _CuaDriverSession:
     # See #74799.
     _timeout_suspect = False
 
-    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None) -> None:
+    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None, *, execution_context=None) -> None:
+        self.execution_context = execution_context
         self._bridge, self._embedded_daemon, self._session = bridge, embedded_daemon, None
         self._lock, self._started = threading.Lock(), False
         # Per-tool capability-token sets from `tools/list` (read via supports_capability). Raw input schemas are
@@ -222,7 +224,11 @@ class _CuaDriverSession:
         # reports HOW FAR it got instead of an opaque "never reached ready".
         self._startup_phase = "binary-check"
         try:
-            driver_cmd = _driver.resolve_cua_driver_cmd()
+            execution = self.execution_context
+            if execution is not None:
+                execution.check()
+            launch = execution.context.computer_use if execution else None
+            driver_cmd = (launch.driver_command if launch else None) or _driver.resolve_cua_driver_cmd()
             if not driver_cmd:
                 raise RuntimeError(_driver.cua_driver_install_hint())
             self._startup_phase = "manifest-discovery"
@@ -231,8 +237,25 @@ class _CuaDriverSession:
                 (daemon.proxy_invocation(), daemon.child_env()) if daemon is not None
                 else (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
             _t_manifest = _time.monotonic()
+            if execution is not None:
+                command, *args = execution.wrap_argv([command, *args], computer_use=True)
             # Telemetry policy first (default: disabled), then strip Hermes secrets.
-            params = StdioServerParameters(command=command, args=args, env=_sanitize_subprocess_env(child_env))
+            clean_env = (_cb.sanitize_cua_child_env(child_env, execution) if execution is not None
+                         else _sanitize_subprocess_env(child_env))
+            if execution is not None:
+                # MCP always merges its default environment, reintroducing unset
+                # HOME/LOGNAME/etc. Exec a tiny scrubber before the owner's wrapper;
+                # never mutate os.environ or the SDK's process-global defaults.
+                import sys
+                from mcp.client.stdio import DEFAULT_INHERITED_ENV_VARS
+                removed = sorted(set(DEFAULT_INHERITED_ENV_VARS) - clean_env.keys())
+                if removed:
+                    args = ["-c", "import os,sys,json; "
+                            "[os.environ.pop(k,None) for k in json.loads(sys.argv[1])]; "
+                            "os.execvpe(sys.argv[2],sys.argv[2:],os.environ)",
+                            json.dumps(removed), command, *args]
+                    command = sys.executable
+            params = StdioServerParameters(command=command, args=args, env=clean_env)
             async with stdio_client(params) as (read, write):
                 self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
@@ -309,6 +332,8 @@ class _CuaDriverSession:
                 f"{getattr(self, '_startup_phase', 'unknown')}). Run `hermes computer-use doctor` and check "
                 f"{display_hermes_home()}/logs/agent.log for the phase timings.")
         if self._setup_error is not None:
+            if isinstance(self._setup_error, SessionExecutionError):
+                raise self._setup_error
             raise RuntimeError(f"cua-driver session setup failed: {self._setup_error}") from self._setup_error
         self._transport_generation += 1
         if self._transport_generation > 1:
@@ -350,6 +375,10 @@ class _CuaDriverSession:
                 loop.call_soon_threadsafe(event.set)
 
     async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        from tools.computer_use.session_context import check_desktop_call
+        # Recovery/redeclaration and bridge scheduling can outlive entry-time authorization.
+        # Validate here without re-entering call_tool (start_session must not restart itself).
+        check_desktop_call(getattr(self, "execution_context", None), name, args)
         return _extract_tool_result(await self._session.call_tool(name, args))
 
     # ── Capability detection ─────────────────────────────────────────
@@ -444,28 +473,39 @@ class _CuaDriverSession:
         from tools.computer_use import cua_backend as _cb
         from tools.environments.local import _sanitize_subprocess_env
 
+        from tools.computer_use.session_context import check_desktop_call
+        execution = getattr(self, "execution_context", None)
+        check_desktop_call(execution, name, args)
         call_args, shot_file = dict(args), None
         if name == "get_window_state" and "screenshot_out_file" not in call_args:
             fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
             os.close(fd)
             call_args["screenshot_out_file"] = shot_file
-        driver_command = _driver.resolve_cua_driver_cmd()
+        launch = execution.context.computer_use if execution else None
+        driver_command = (launch.driver_command if launch else None) or _driver.resolve_cua_driver_cmd()
         if not driver_command:
             raise RuntimeError(_driver.cua_driver_install_hint())
-        child_env, socket_args = _cb.cua_driver_child_env(), []
+        child_env, socket_args = _cb.cua_driver_child_env(
+            **({"execution_context": execution} if execution else {})), []
         daemon = getattr(self, "_embedded_daemon", None)
         if daemon is not None:
             driver_command, child_env = daemon.proxy_invocation()[0], daemon.child_env()
             socket_args = ["--socket", daemon.socket_path]
         cmd = [driver_command, "call", name, json.dumps(call_args), *socket_args]
+        if execution is not None:
+            cmd = execution.wrap_argv(cmd, computer_use=True)
         try:
-            return _cli_result(_cli_run_json(cmd, _sanitize_subprocess_env(child_env), name, timeout), shot_file)
+            clean_env = (_cb.sanitize_cua_child_env(child_env, execution) if execution is not None
+                         else _sanitize_subprocess_env(child_env))
+            return _cli_result(_cli_run_json(cmd, clean_env, name, timeout), shot_file)
         finally:
             if shot_file and os.path.exists(shot_file):
                 with contextlib.suppress(OSError):
                     os.remove(shot_file)
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        from tools.computer_use.session_context import check_desktop_call
+        check_desktop_call(getattr(self, "execution_context", None), name, args)
         if name not in self._LIFECYCLE_CALLS:
             # A prior MCP timeout marks the session suspect (possibly wedged): recreate it so one timeout never
             # poisons the run. Healthy sessions are never restarted here.
@@ -481,6 +521,9 @@ class _CuaDriverSession:
             raise RuntimeError("cua-driver session not started")
         try:
             result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        except SessionExecutionError:
+            # Policy refusals are never transport failures, regardless of their message.
+            raise
         except concurrent.futures.TimeoutError as e:
             # Fail closed: the action may have landed, so never replay it.
             # MCP deadline hit (#74799): the session is suspect and must be recreated before the next call.

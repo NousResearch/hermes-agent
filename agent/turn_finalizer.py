@@ -617,10 +617,12 @@ def finalize_turn(
 
     # Memory provider on_session_end()/shutdown_all() are NOT called here:
     # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
+    from hermes_cli.session_hook_context import agent_session_identity
+    identity = agent_session_identity(agent)
+    identity["task_id"] = effective_task_id
     _invoke_hook_safely(
         "on_session_end", logger,
-        session_id=agent.session_id,
-        task_id=effective_task_id,
+        **identity,
         turn_id=turn_id,
         completed=completed,
         failed=failed,

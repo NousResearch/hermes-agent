@@ -100,6 +100,18 @@ import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
 import { planPluginOpenSession } from './plugin-open-session-plan'
+import { openPluginPreview } from './preview'
+export type { PluginPreviewInput } from './preview'
+// Every contribution surface, plugin-reachable: register keybinds, palette
+// commands, routes, themes, panes, composer extensions, and bar items with
+// the same area ids + payload types core uses.
+export {
+  COMPOSER_AREAS,
+  type ComposerAtCompletionItem,
+  type ComposerAtCompletionSource,
+  type ComposerAttachmentProvider,
+  type ComposerMiddleware
+} from '@/app/chat/composer/contrib'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -578,6 +590,7 @@ async function awaitProfileActivation(
 }
 
 export const host = {
+  openPreview: openPluginPreview,
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
     activeSessionId: readonlyAtom<null | string>($activeSessionId),
@@ -1398,19 +1411,6 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-// Every contribution surface, plugin-reachable: register keybinds, palette
-// commands, routes, themes, panes, composer extensions, and bar items with
-// the same area ids + payload types core uses.
-export {
-  COMPOSER_AREAS,
-  type ComposerAtCompletionItem,
-  type ComposerAtCompletionSource,
-  type ComposerAttachmentProvider,
-  type ComposerMiddleware
-} from '@/app/chat/composer/contrib'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1419,6 +1419,9 @@ export {
  *  circle beside it — a plugin's own dot inverts core's color vocabulary the
  *  moment either side moves. */
 export { SessionStatusDot, type SessionStatusDotProps } from '@/app/chat/session-status-dot'
+
+// -- ui: the design language --------------------------------------------------
+
 /** The sidebar row's leading cell — the fixed box a dot, icon or handle sits in.
  *  Reserve it and your label starts on the same left edge as every session row
  *  above you; spell the classes yourself and the row drifts. The session row is
@@ -1457,12 +1460,12 @@ export {
   PanelSectionLabel
 } from '@/app/overlays/panel'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
-
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
  *  `toolset`, optional `onConfiguredChange`, and an optional `profile`. */
 export { ToolsetConfigPanel } from '@/app/settings/toolset-config-panel'
+
 /** THE model catalog menu — the same searchable, provider-grouped, family-
  *  collapsing picker the chat composer uses, including the per-row
  *  thinking/effort/fast submenu. Drive it with a `ModelMenuController`: the
@@ -1582,6 +1585,7 @@ export type {
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
+export type { PluginViewerInput } from '@/contrib/plugin-viewer'
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
@@ -1591,6 +1595,12 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 
 // -- contracts ----------------------------------------------------------------
 
+export {
+  type PluginSessionContext,
+  SESSION_AREAS,
+  type SessionContribution,
+  type SessionContributionProps
+} from '@/contrib/session'
 export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `McpTab`
  *  takes; obtain the instance from `host.getGateway()`. */

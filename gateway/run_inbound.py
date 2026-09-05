@@ -978,13 +978,11 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
-                        result = await result
-                    return True, str(result) if result else None, command
+                from gateway.plugin_commands import dispatch_plugin_command
+
+                handled, result = await dispatch_plugin_command(self, event, source, command)
+                if handled:
+                    return True, result, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)
         return False, None, command

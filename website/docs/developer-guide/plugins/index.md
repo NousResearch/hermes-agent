@@ -1191,7 +1191,40 @@ After registration, users can type `/mystatus` in any session. The command appea
 
 **Conflict protection:** If a plugin tries to register a name that conflicts with a built-in command (`help`, `model`, `new`, etc.), the registration is silently rejected with a log warning. Built-in commands always take precedence.
 
-**Async handlers:** The gateway dispatch automatically detects and awaits async handlers, so you can use either sync or async functions:
+**Session-aware handlers:** The first argument stays the raw string. CLI, messaging gateway,
+TUI, and desktop dispatch additionally offer the following keyword fields. Declare just the
+fields you need, or accept `**kwargs` for the full payload; old one-argument callbacks are unchanged.
+
+```python
+def _handle_workspace(raw_args: str, *, session_id=None, task_id=None,
+                      runtime_session_id=None, stored_session_id=None,
+                      profile=None, hermes_home=None, surface=None):
+    if not session_id:
+        return "This command needs an active conversation."
+    return f"Conversation {session_id}, profile {profile}: {raw_args}"
+```
+
+| Keyword | Meaning |
+|---|---|
+| `session_id` | Current agent conversation ID; before lazy agent initialization, the stored conversation ID. Messaging uses the canonical session-store entry. |
+| `task_id` | Execution identity: desktop/TUI's durable session key, messaging's conversation ID, or CLI agent's current/last task ID (`None` before the first turn). Never the desktop runtime UUID. |
+| `runtime_session_id` | Desktop/TUI runtime handle, or `None` elsewhere. |
+| `stored_session_id` | Durable ID used to resume the conversation (may differ from the current agent ID). |
+| `profile` | Owning profile name (`default`, a named profile, or `custom` for an arbitrary home). |
+| `hermes_home` | Owning profile's `pathlib.Path`; use this rather than reading process environment. |
+| `surface` | `cli`, `gateway`, or the desktop/TUI session's source (`desktop`, `tui`, etc.). |
+
+Unavailable identities are `None`. These are invocation snapshots, not mutable agent or session
+objects. Do not guess an owner from a process-global "last session"; commands that mutate
+session-owned resources should refuse missing identity. A messaging command resolves/creates the
+canonical session-store entry before invocation, so an action before the first prompt has the same
+owner as the subsequent conversation. Desktop/TUI lookup and execution use the session's profile,
+not a client-supplied profile override. No prompt, history, or tool schema is changed by dispatch.
+
+**Async handlers:** All surfaces await async results. CLI/desktop/TUI use a helper thread when
+called from an already-running event loop, copying the caller's context (including profile home).
+The existing 30-second bound applies to that helper-thread wait; it is not cancellation of the
+plugin's operation. The messaging gateway awaits on its own loop. You can use sync or async functions:
 
 ```python
 async def _handle_check(raw_args: str) -> str:

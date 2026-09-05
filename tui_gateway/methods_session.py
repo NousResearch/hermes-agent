@@ -329,6 +329,7 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport}
         _register_session_cwd(_sessions[sid])
+    _publish_session_identity(sid, _sessions[sid])
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded branch children.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
@@ -533,6 +534,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
             live["transport"] = transport
             live.setdefault("viewers", {})[transport] = time.time()
     _cancel_ws_orphan_reap(live_sid)
+    _publish_session_identity(live_sid, live)
     history = live.get("history") or []
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
@@ -636,6 +638,7 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
         if session.get("_client_gone_interrupt_requested"):
             return _err(ctx.rid, 4009, "session disconnect interrupt settling")
         _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+        _publish_session_identity(sid, session)
         payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
                                         transport=current_transport() or _stdio_transport)
         payload["resumed"] = ctx.target
@@ -755,7 +758,8 @@ def _resume_eager(ctx: _Resume) -> dict:
         try:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
-                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                              session_db=ctx.db, source=source, profile_home=ctx.profile_home,
+                              explicit_cwd=bool(ctx.profile_resume_cwd))
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every

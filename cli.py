@@ -823,7 +823,7 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         if notify_session_finalize:
             cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
             if _should_emit_cleanup_session_finalize(cleanup_session_id):
-                _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown")
+                _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown", agent=_active_agent_ref)
         try:
             _shutdown_agent_memory_provider(_active_agent_ref)
         except Exception as e:
@@ -845,10 +845,13 @@ def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
     return session_id not in _single_query_finalize_attempted_session_ids
 
 
-def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown") -> None:
+def _notify_session_finalize(*, session_id: str | None, platform: str = "cli", reason: str = "shutdown", agent=None) -> None:
     with suppress(Exception):
         from hermes_cli.lifecycle import finalize_session
-        finalize_session(session_id=session_id, platform=platform, reason=reason)
+        from hermes_cli.session_hook_context import agent_session_identity
+        context = agent_session_identity(agent)
+        context["session_id"] = session_id
+        finalize_session(**context, platform=platform, reason=reason)
 
 
 def _oneshot_agent_and_session(cli):
@@ -861,10 +864,13 @@ def _invoke_interrupted_session_end(agent, session_id, reason: str, **extra) -> 
     """Best-effort ``on_session_end`` hook for a turn cut short (never raises)."""
     with suppress(Exception):
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+        from hermes_cli.session_hook_context import agent_session_identity
+        context = agent_session_identity(agent)
+        context.update(extra, session_id=session_id)
         _invoke_hook(
-            "on_session_end", session_id=session_id, completed=False, interrupted=True,
+            "on_session_end", **context, completed=False, interrupted=True,
             model=getattr(agent, "model", None), platform=getattr(agent, "platform", None) or "cli",
-            reason=reason, **extra,
+            reason=reason,
         )
 
 
@@ -899,7 +905,7 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
         return
 
     try:
-        _notify_session_finalize(session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason)
+        _notify_session_finalize(session_id=session_id, platform=getattr(agent, "platform", None) or "cli", reason=reason, agent=agent)
     finally:
         _single_query_finalize_attempted_session_ids.add(session_id)
 
@@ -3303,7 +3309,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
         if not plugin_handler:
             return
         try:
-            result = resolve_plugin_command_result(plugin_handler(user_args))
+            from hermes_cli.plugins_command import invoke_plugin_command, plugin_command_context
+
+            agent = getattr(self, "agent", None)
+            stored_id = getattr(self, "session_id", None)
+            context = plugin_command_context(
+                session_id=getattr(agent, "session_id", None) or stored_id,
+                task_id=getattr(agent, "_current_task_id", None) or None,
+                stored_session_id=stored_id, surface="cli")
+            result = resolve_plugin_command_result(invoke_plugin_command(plugin_handler, user_args, **context))
             if result:
                 _cprint(str(result))
         except Exception as e:

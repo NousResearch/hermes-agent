@@ -41,6 +41,8 @@ export async function activeConnection(): Promise<HermesConnection> {
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {
+  /** Explicit owner scope for session contributions; omission retains ambient routing. */
+  scope?: { connectionId: string; profile: string }
   method?: string
   body?: unknown
   /** Single-file multipart upload (see HermesApiRequest.upload). */
@@ -81,7 +83,7 @@ export async function pluginRest<T>(pluginId: string, path: string, opts: Plugin
     body: opts.body,
     upload: opts.upload,
     timeoutMs: opts.timeoutMs,
-    ...profileScoped()
+    ...(opts.scope ? { connectionId: opts.scope.connectionId, profile: opts.scope.profile } : profileScoped())
   })
 }
 

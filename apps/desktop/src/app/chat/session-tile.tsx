@@ -31,6 +31,8 @@ import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '
 import { $workspaceOwnerLabels, workspaceOwnerTitle } from '@/components/pane-shell/workspace-scope'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { SESSION_AREAS } from '@/contrib/session'
+import { SessionContributions } from '@/contrib/session-contributions'
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -764,7 +766,10 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   // two surfaces. Self-subscribing (live state + resolved color), so the strip
   // needn't re-sync when it changes.
   tabLead: storedSessionId => (
-    <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
+    <>
+      <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
+      <SessionContributions area={SESSION_AREAS.tileBadge} storedSessionId={storedSessionId} />
+    </>
   ),
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.

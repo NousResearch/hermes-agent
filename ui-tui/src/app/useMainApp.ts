@@ -46,6 +46,7 @@ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
+import { hasComposerDraft, shouldDrainQueuedFollowUp } from './composerSubmitGuard.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
@@ -800,12 +801,19 @@ export function useMainApp(gw: GatewayClient) {
   // session first comes up with pre-queued messages. Without this, shell.exec
   // and error paths never emit message.complete, so anything enqueued while
   // `!sleep` / a failed turn was running would stay stuck forever.
+  //
+  // Do not drain while the composer still has unsent text. A chat row landing
+  // (busy → false) would otherwise fire a half-finished follow-up the user
+  // queued with Enter-while-busy, or a leftover CR from the redraw.
   useEffect(() => {
     if (
-      !ui.sid ||
-      ui.busy ||
-      composerRefs.queueEditRef.current !== null ||
-      composerRefs.queueRef.current.length === 0
+      !shouldDrainQueuedFollowUp({
+        busy: ui.busy,
+        composerDraft: hasComposerDraft(composerState.input, composerState.inputBuf),
+        queueEdit: composerRefs.queueEditRef.current,
+        queueLength: composerRefs.queueRef.current.length,
+        sid: ui.sid
+      })
     ) {
       return
     }
@@ -816,7 +824,15 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+  }, [
+    composerActions,
+    composerRefs,
+    composerState.input,
+    composerState.inputBuf,
+    sendQueued,
+    ui.busy,
+    ui.sid
+  ])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {

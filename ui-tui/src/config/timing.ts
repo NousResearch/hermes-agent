@@ -3,6 +3,11 @@ export const STREAM_IDLE_BATCH_MS = 16
 export const STREAM_SCROLL_BATCH_MS = 96
 export const STREAM_TYPING_BATCH_MS = 80
 export const TYPING_IDLE_MS = 250
+
+// Incoming chat rows reflow the composer. A leftover CR from that redraw
+// can look like Enter. Hold user-submit this long so a new message can't
+// fire the half-finished draft. Voice/slash/billing do not use this path.
+export const COMPOSER_SUBMIT_LOCK_MS = 120
 export const REASONING_PULSE_MS = 700
 
 // A drag-resize fires a burst of SIGWINCH events (one per pixel step in some

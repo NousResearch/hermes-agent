@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { resetComposerSubmitGuard } from '../app/composerSubmitGuard.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
@@ -64,6 +65,7 @@ describe('createGatewayEventHandler', () => {
     resetUiState()
     resetTurnState()
     turnController.fullReset()
+    resetComposerSubmitGuard()
     patchUiState({ showReasoning: true })
   })
 

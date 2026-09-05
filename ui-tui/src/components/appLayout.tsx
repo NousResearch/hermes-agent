@@ -5,6 +5,7 @@ import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
 
+import { isComposerSubmitLocked } from '../app/composerSubmitGuard.js'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
@@ -424,7 +425,13 @@ const ComposerPane = memo(function ComposerPane({
                   mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
-                  onSubmit={composer.submit}
+                  onSubmit={value => {
+                    if (isComposerSubmitLocked()) {
+                      return
+                    }
+
+                    composer.submit(value)
+                  }}
                   placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both

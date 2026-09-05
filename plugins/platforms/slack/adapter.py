@@ -4814,6 +4814,18 @@ class SlackAdapter(BasePlatformAdapter):
                 self._model_picker_state, self._MODEL_PICKER_STATE_MAX
             )
 
+            if msg_ts and thread_ts:
+                # The threaded approval post auto-clears the assistant status
+                # on Slack's side, but the tracked entry survives, so a
+                # delayed send_typing (e.g. a refresh already in flight when
+                # the pause flag was set) re-creates "is thinking..." and
+                # disables the composer exactly while the user needs to type
+                # /approve. Run the client-side clear so the tracked entry is
+                # dropped and a late set has nothing to resurrect.
+                await self._clear_thread_status_quietly(
+                    chat_id, {**(metadata or {}), "thread_id": thread_ts}
+                )
+
             return SendResult(success=True, message_id=msg_ts, raw_response=result)
         except Exception as e:
             logger.error("[Slack] send_model_picker failed: %s", e, exc_info=True)

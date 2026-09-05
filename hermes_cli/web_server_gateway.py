@@ -75,7 +75,7 @@ _PORT_BINDING_PLATFORM_PORTS: dict[str, tuple[str, int]] = {
 }
 
 # Platform states that mean the adapter is NOT serving its port right now.
-_PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
+_PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped", "disabled"})
 
 
 def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict[str, int]:

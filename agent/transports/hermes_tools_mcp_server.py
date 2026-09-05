@@ -48,7 +48,7 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes", "kanban_comment",
     "kanban_heartbeat", "kanban_show", "kanban_list",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
-    "kanban_create", "kanban_unblock", "kanban_link",
+    "kanban_create", "kanban_unblock", "kanban_link", "kanban_unlink",
 )
 
 

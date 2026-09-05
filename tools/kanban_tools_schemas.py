@@ -509,3 +509,19 @@ KANBAN_LINK_SCHEMA = _schema(
     },
     ["parent_id", "child_id"],
 )
+
+KANBAN_UNLINK_SCHEMA = _schema(
+    "kanban_unlink",
+    (
+        "Remove one parent→child dependency edge after validating both tasks "
+        "on the selected board. Missing edges are a safe no-op (removed=false); "
+        "the audited store recomputes child readiness and records an event. "
+        "Dispatcher-owned workers may remove only edges involving their task; "
+        "delegated children are refused."
+    ),
+    {
+        "parent_id": {"type": "string", "description": "Parent task id."},
+        "child_id":  {"type": "string", "description": "Child task id."},
+    },
+    ["parent_id", "child_id"],
+)

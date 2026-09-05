@@ -444,6 +444,123 @@ def test_link_happy_path(worker_env):
     assert d["ok"] is True
 
 
+def test_unlink_dispatch_removes_edge_and_recomputes_child(worker_env):
+    """The model-tool dispatch path removes an edge and immediately re-gates its child."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        parent = worker_env
+        child = kb.create_task(conn, title="child", assignee="x", parents=[parent])
+    finally:
+        conn.close()
+
+    from model_tools import handle_function_call
+    out = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": parent, "child_id": child,
+    }))
+    assert out == {"ok": True, "parent_id": parent, "child_id": child, "removed": True}
+
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, child).status == "ready"
+        assert kb.parent_ids(conn, child) == []
+    finally:
+        conn.close()
+
+
+def test_unlink_missing_edge_and_invalid_args_are_structured(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        child = kb.create_task(conn, title="unlinked child", assignee="x")
+    finally:
+        conn.close()
+    from model_tools import handle_function_call
+
+    out = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": worker_env, "child_id": child,
+    }))
+    assert out == {"ok": True, "parent_id": worker_env, "child_id": child, "removed": False}
+    unknown = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": worker_env, "child_id": "missing-child",
+    }))
+    assert "unknown task" in unknown["error"]
+    error = json.loads(handle_function_call("kanban_unlink", {"parent_id": worker_env}))
+    assert "both parent_id and child_id are required" in error["error"]
+
+
+def test_unlink_validates_tasks_and_worker_scope(worker_env):
+    from model_tools import handle_function_call
+    unknown = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": worker_env, "child_id": "missing-child",
+    }))
+    assert "unknown task" in unknown["error"]
+
+    scoped = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": "other-parent", "child_id": "other-child",
+    }))
+    assert "scoped to task" in scoped["error"]
+
+
+def test_unlink_rejects_self_edge(worker_env):
+    from model_tools import handle_function_call
+    out = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": worker_env, "child_id": worker_env,
+    }))
+    assert "must differ" in out["error"]
+
+
+def test_unlink_refuses_delegated_children(monkeypatch, worker_env):
+    from agent import delegation_context
+    monkeypatch.setattr(delegation_context, "is_delegated_child_context", lambda: True)
+    from model_tools import handle_function_call
+
+    out = json.loads(handle_function_call("kanban_unlink", {
+        "parent_id": "parent", "child_id": "child",
+    }))
+    assert "not Kanban run owners" in out["error"]
+
+
+def test_unlink_refuses_non_dispatcher_owned_inherited_worker(monkeypatch, worker_env):
+    from agent.delegation_context import non_dispatcher_owned_context
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    try:
+        child = kb.create_task(conn, title="inherited child", assignee="x", parents=[worker_env])
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    from model_tools import handle_function_call
+    with non_dispatcher_owned_context():
+        out = json.loads(handle_function_call("kanban_unlink", {
+            "parent_id": worker_env, "child_id": child,
+        }))
+
+    assert "non-dispatcher-owned" in out["error"]
+    conn = kbc.connect()
+    try:
+        assert kb.parent_ids(conn, child) == [worker_env]
+    finally:
+        conn.close()
+
+
+def test_unlink_is_registered_and_exposed(worker_env):
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+    invalidate_check_fn_cache()
+    definitions = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    names = {item["function"]["name"] for item in definitions if "function" in item}
+    assert "kanban_unlink" in names
+
+    from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
+    assert "kanban_unlink" in EXPOSED_TOOLS
+
+
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb

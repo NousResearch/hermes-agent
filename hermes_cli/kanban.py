@@ -521,7 +521,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
+    diags = kd.compute_task_diagnostics(
+        task, events, runs, graph=graph,
+        config={"board_default_workdir": kd.read_board_default_workdir(kb)},
+    )
     if diags:
         print(f"\n  Diagnostics ({len(diags)}):")
         _print_diagnostics(diags, "    ", with_kind=False)
@@ -629,6 +632,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     from hermes_cli.config import load_config
 
     diag_config = kd.config_from_runtime_config(load_config())
+    diag_config["board_default_workdir"] = kd.read_board_default_workdir(kb)
 
     with kbc.connect_closing() as conn:
         # Either one-task mode or fleet mode.

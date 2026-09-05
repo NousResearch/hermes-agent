@@ -860,12 +860,34 @@ def _novita_models(pconfig, curated, api_key, base_url):
     return curated
 
 
+def _nvidia_models(pconfig, curated, api_key, base_url):
+    """NVIDIA NIM: live first, then models.dev, then curated.
+
+    NIM retires models (HTTP 410) and returns HTTP 404 for absent ones
+    often enough that a models.dev-first (or curated-first) list drifts out
+    of sync with what the account can actually call — the live probe is the
+    only source of truth for what NIM currently serves. (#47977)
+    """
+    from hermes_cli.models import fetch_api_models
+    live_models = fetch_api_models(api_key, base_url)
+    if live_models:
+        _report_live_models(live_models, f"{pconfig.name} API")
+        return live_models
+    model_list = _models_dev_merged("nvidia", curated)
+    if model_list:
+        _report_live_models(model_list, "models.dev registry")
+        return model_list
+    _show_curated(curated)
+    return curated
+
+
 # provider id -> (pconfig, curated, api_key_for_probe, effective_base) -> model list
 _SPECIAL_MODEL_LISTS = {
     "lmstudio": _lmstudio_models,
     "ollama-cloud": _ollama_cloud_models,
     "opencode-free": _opencode_free_models,
-    "novita": _novita_models}
+    "novita": _novita_models,
+    "nvidia": _nvidia_models}
 
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:

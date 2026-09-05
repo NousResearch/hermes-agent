@@ -671,6 +671,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
             "text": raw if isinstance(raw, str) else str(raw),
             **({"error": str(error_value or raw)} if status == "error" else {})})
         st.receipt_committed = True
+    from tui_gateway.classic_exports import settle
+    settle(session, raw, status == "complete")
     if st.receipt_committed:
         _retire_turn_marker(session, st.marker_key)
     return payload, raw, status
@@ -754,7 +756,8 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    classic_admission=None) -> bool:
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -780,6 +783,8 @@ def _run_prompt_submit(
         # before any tool can commission a child (delegate_task captures it as authority).
         transport_token = bind_transport(session.get("transport"))
         runtime_session_token = _current_runtime_session_record.set(session)
+        from tui_gateway import classic_exports
+        classic_token = classic_exports.bind(session, classic_admission)
         st = _TurnRun(
             session["agent"], session.pop("one_turn_model_restore", None), terminal_callback,
             receipt_committed=terminal_callback is None)
@@ -803,6 +808,11 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
+            classic_exports.reset(classic_token)
+            try:
+                classic_exports.finish(session)
+            except Exception:
+                logger.exception("Classic export retirement pending; private staging remains TTL-bounded")
             _finish_turn(sid, session, st)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)

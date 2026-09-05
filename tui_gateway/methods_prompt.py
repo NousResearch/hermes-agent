@@ -187,7 +187,11 @@ def _typed_stop_phrase_response(rid, text):
     return _ok(rid, {"voice_stopped": True})
 
 
-_HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation"}
+_HOSTED_TASK_FIELDS = {
+    "room_id", "task_id", "thread_id", "turn_id", "execution_generation",
+    "member_id", "target_profile", "home_install_id", "target_install_id",
+    "authority_gateway_id", "authority_epoch",
+}
 
 
 def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
@@ -198,8 +202,9 @@ def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
         isinstance(hosted_task, dict) and callable(hosted_terminal_callback)
         and set(hosted_task) == _HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
-                for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
-        and isinstance(hosted_task.get("execution_generation"), int))
+                for f in _HOSTED_TASK_FIELDS - {"execution_generation", "authority_epoch"})
+        and all(isinstance(hosted_task.get(f), int) and not isinstance(hosted_task.get(f), bool)
+                and hosted_task[f] >= 1 for f in ("execution_generation", "authority_epoch")))
     return None if valid else _err(rid, 4120, "invalid hosted room turn proof")
 
 
@@ -465,7 +470,7 @@ def _persist_session_row_for_submit(rid, session):
     return None
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback):
+def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, classic_admission=None):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -473,6 +478,9 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
     # expires. See #63078.
     err = _wait_agent_for_prompt(session, rid, sid)
     if err:
+        if classic_admission is not None:
+            from tui_gateway.classic_exports import abort_before_run
+            abort_before_run(session)
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
         _emit_terminal_turn_error(
@@ -485,6 +493,9 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
+            if classic_admission is not None:
+                from tui_gateway.classic_exports import abort_before_run
+                abort_before_run(session)
             session["running"] = False
             _clear_inflight_turn(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
@@ -495,7 +506,8 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback)
+        terminal_callback=hosted_terminal_callback,
+        **({"classic_admission": classic_admission} if classic_admission is not None else {}))
 
 
 _TRUNCATION_PARAMS = (
@@ -522,6 +534,18 @@ def _lock_in_submit_turn(
                 rid, sid, session, params, requested_rebind_ids)
             if err is not None:
                 return err, {}
+        if params.get("classic_export") is not None:
+            from tui_gateway.classic_exports import admit
+            from gateway.hosted_room_artifacts import RoomArtifactError
+            if session.get("running"):
+                return _err(rid, 4091, "classic member session is busy"), fields
+            try:
+                fresh, receipt = admit(session, params["classic_export"], text)
+            except RoomArtifactError as exc:
+                return _err(rid, 4150, str(exc)), fields
+            if not fresh:
+                return _ok(rid, {"status": "accepted", "classic_export": receipt}), fields
+            fields["classic_export"] = receipt
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -549,6 +573,15 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    if params.get("classic_export") is not None:
+        from tui_gateway.classic_exports import preflight
+        from gateway.hosted_room_artifacts import RoomArtifactError
+        try:
+            prior = preflight(sid, session, params["classic_export"], text)
+        except (RoomArtifactError, ValueError) as exc:
+            return _err(rid, 4150, str(exc))
+        if prior is not None:
+            return _ok(rid, prior)
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -570,7 +603,7 @@ def _(rid, params: dict) -> dict:
         # `/work fix it` sends nine literal chars.
         text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
-    if internal_hosted_submit and turn_isolation:
+    if (internal_hosted_submit or params.get("classic_export") is not None) and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
     # if a disconnect/fallback moved the session to stdio.
@@ -585,7 +618,7 @@ def _(rid, params: dict) -> dict:
         with session["history_lock"]:
             if not session.get("running"):
                 break
-            if internal_hosted_submit:
+            if internal_hosted_submit or params.get("classic_export") is not None:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
         busy_response = _handle_busy_submit(
@@ -619,18 +652,36 @@ def _(rid, params: dict) -> dict:
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
     if (err := _persist_session_row_for_submit(rid, session)) is not None:
+        if params.get("classic_export") is not None:
+            _abort_classic_prompt_start(session)
         return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
-    run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback),
-        daemon=True)
-    # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    try:
+        if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
+            _start_agent_build(sid, session)
+        classic_admission = session.get("_classic_export_admission") if params.get("classic_export") is not None else None
+        run_thread = threading.Thread(
+            target=lambda: _run_after_agent_ready(
+                rid, sid, session, text, display_kind, hosted_terminal_callback, classic_admission),
+            daemon=True)
+        # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
+        session["_run_thread"] = run_thread
+        run_thread.start()
+    except Exception:
+        if params.get("classic_export") is None:
+            raise
+        _abort_classic_prompt_start(session)
+        logger.exception("Classic member turn failed before worker start")
+        return _err(rid, 4151, "Classic member turn could not start; its admission was not replayed")
     return _ok(rid, {"status": "streaming", **survivor_fields})
+
+
+def _abort_classic_prompt_start(session):
+    from tui_gateway.classic_exports import abort_before_run
+    abort_before_run(session)
+    with session["history_lock"]:
+        session["running"] = False
+        _clear_inflight_turn(session)
 
 
 # ── attachments ─────────────────────────────────────────────────────────────
@@ -1171,6 +1222,8 @@ def _(rid, params: dict) -> dict:
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
+    from tui_gateway.classic_exports import register as register_classic_exports
+    register_classic_exports(server)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

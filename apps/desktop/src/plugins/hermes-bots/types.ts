@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { ClassicFileRef, ClassicTurn } from './classic-output'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -88,6 +90,13 @@ export interface RosterRow {
   /** An offline twin of a selected bot, kept visible so the row doesn't vanish. */
   ghost?: boolean
   handle?: string
+  /** Server member identity is independent of this Desktop's connection aliases. */
+  hostedIdentity?: {
+    installationId: string
+    profile: string
+    roomId: string
+    memberId: string
+  }
   has_avatar?: boolean
   last_session?: SessionPreview | null
   remoteSource?: boolean
@@ -115,6 +124,7 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'hostedIdentity'
   | 'name'
   | 'remoteSource'
   | 'route'
@@ -128,10 +138,22 @@ export type GroupMember = Pick<
 export type AttachmentKind = 'file' | 'image' | 'pdf'
 
 export interface Attachment {
-  /** Data URL. */
-  data: string
+  /** Non-secret, explicitly published producer reference. Never cache its bytes here. */
+  classicExport?: ClassicFileRef
+  /** Local composer/preview data URL. Durable replay omits raw bytes. */
+  data?: string
+  /** Opaque gateway identity after durable staging. */
+  attachmentId?: string
   kind: AttachmentKind
+  mime?: string
   name: string
+  size?: number
+  /** Window-local idempotency key retained when a failed upload restores the draft. */
+  uploadId?: string
+}
+
+export type HostedMessageIdentity = Pick<NonNullable<GroupMember['hostedIdentity']>, 'roomId' | 'memberId'> & {
+  profile?: string
 }
 
 export interface GroupMessageAuthor {
@@ -139,14 +161,26 @@ export interface GroupMessageAuthor {
   name: string
   /** Connection label, present when the speaker lives on another machine. */
   source?: string
+  /** Hosted event actor identity for display binding, never a dispatch route. */
+  hostedIdentity?: HostedMessageIdentity
+  /** Display-only evidence: weak inheritance or a durable unresolved actor conflict. */
+  hostedIdentityEvidence?: 'mirror' | 'mirror-conflict' | 'replay-conflict'
 }
 
 export interface GroupMessage {
   /** Milliseconds. */
   at: number
+  /** Stable gateway event identity after a hosted-room replay. */
+  eventId?: string
+  /** Hosted room scope, never a dispatch route. */
+  roomId?: string
+  /** Untrusted legacy display metadata; never proof of outgoing intent. */
+  clientEventId?: string
   from: GroupMessageAuthor
   id?: string
   images?: Attachment[]
+  /** Monotonic gateway order for hosted-room events. */
+  seq?: number
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string
@@ -158,6 +192,8 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** User-facing continuity choice. Missing records are classic Desktop rooms. */
+  continuityMode?: 'desktop' | 'distributed' | 'gateway'
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   holds?: Record<string, GroupHold>
@@ -167,12 +203,36 @@ export interface GroupChat {
   /** Immutable identity, so a rename doesn't fork the room. */
   roomId?: null | string
   running?: boolean
+  /** Stable authority installation id for a gateway-hosted room. */
+  hosted?: null | string
+  /** The local Desktop connection that currently reaches the authority. */
+  hostedConnectionId?: null | string
+  /** Server-issued fencing epoch for the hosted authority. */
+  hostedEpoch?: null | number
+  /** Last contiguous hosted-room event sequence applied locally. */
+  hostedSeq?: number
+  /** Local groups.state verification; never accepted from or sent to ui_meta. */
+  hostedMembersVerified?: boolean
+  /** A conflicting display mirror requires a fresh authoritative membership read. */
+  hostedMembersNeedRefresh?: boolean
+  hostedStatus?: null | {
+    canReconnect?: boolean
+    canRetry?: boolean
+    canStop?: boolean
+    label: string
+    reconnectMemberId?: string
+    retryCommandId?: string
+    state: string
+    taskId?: string
+  }
+  /** Short, actionable continuity problem for the room surface. */
+  continuityIssue?: null | string
   /** The immutable owner descriptor captured beside each plumbing session,
    *  keyed the same way as `sessions`. Partial: legacy records hold a bare
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  stranded?: Record<string, number | { before: number; thread?: string }>
+  stranded?: Record<string, number | { before: number; thread?: string; classicTurn?: ClassicTurn }>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
@@ -206,6 +266,14 @@ export interface GroupPrompt {
   choices: string[]
   command?: string
   group: string
+  /** Exact hosted-task identity when the prompt is owned by a Group Chat
+   * authority rather than a visible member session. */
+  hostedApproval?: {
+    executionGeneration: number
+    memberId: string
+    roomId: string
+    taskId: string
+  }
   kind: GroupPromptKind
   member: string
   memberKey: string

@@ -8,16 +8,30 @@
 
 import { host } from '@hermes/plugin-sdk'
 
+import {
+  beginClassicTurn,
+  ClassicTurnEndedError,
+  groupTurnText,
+  readClassicAttachment,
+  readClassicTurn
+} from './classic-output'
+import type { ClassicTurn, GroupTurnReply } from './classic-output'
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, $groupNeedsYou, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import { GroupFileDeliveryError } from './group-file-delivery'
 import { groupMemberKey, groupSessionOwner } from './group-membership'
+import { approveHostedGroupChat } from './hosted-room-runtime'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
 /** "(pass)" (loosely: pass / (pass) / pass.) or empty = the member stayed silent. */
 export function isGroupPassText(text: unknown) {
-  const trimmed = String(text || '').trim()
+  if (text && typeof text === 'object' && 'images' in text && Array.isArray(text.images) && text.images.length) {
+    return false
+  }
+
+  const trimmed = String(text && typeof text === 'object' && 'text' in text ? text.text : text || '').trim()
 
   if (!trimmed) {
     return true
@@ -368,16 +382,35 @@ async function submitGroupTurnPrompt(
   member: GroupMember,
   runtime: string,
   stored: null | string | true | undefined,
-  text: string
+  text: string,
+  classicTurn?: ClassicTurn | null
 ): Promise<string> {
   try {
     await requestForBot(member, 'prompt.submit', {
       session_id: runtime,
-      text
+      text,
+      ...(classicTurn ? { classic_export: classicTurn.request } : {})
     })
 
     return runtime
   } catch (error: any) {
+    if (classicTurn) {
+      if ([4001, 4091, 4121, 4150].includes(error?.code)) {
+        throw Object.assign(new GroupFileDeliveryError(error.message), { notAdmitted: true })
+      }
+
+      // Unknown transport outcomes are read back, never blindly submitted twice.
+      try {
+        await readClassicTurn(member, runtime, classicTurn)
+
+        return runtime
+      } catch {
+        throw new GroupFileDeliveryError(
+          'File turn outcome is unknown. Reconnect to recover this turn before retrying.'
+        )
+      }
+    }
+
     if (!isSessionGoneError(error) || !stored) {
       throw error
     }
@@ -536,11 +569,17 @@ export async function answerGroupClarify(
   answers: Record<string, string> | string | undefined
 ) {
   if (entry.kind === 'approval') {
-    await requestForBot(member, 'approval.respond', {
-      session_id: entry.sessionId || undefined,
-      request_id: entry.requestId,
-      choice: typeof answers === 'string' && answers ? answers : 'deny'
-    })
+    const choice = typeof answers === 'string' && answers ? answers : 'deny'
+
+    if (entry.hostedApproval) {
+      await approveHostedGroupChat(entry, choice)
+    } else {
+      await requestForBot(member, 'approval.respond', {
+        session_id: entry.sessionId || undefined,
+        request_id: entry.requestId,
+        choice
+      })
+    }
   } else if (entry.questions && entry.questions.length) {
     for (const question of entry.questions) {
       // Question ids are opaque on the wire (`GroupPrompt.questions` types
@@ -585,7 +624,7 @@ export async function runGroupChatMemberTurn(
   prompt: string,
   thread: string,
   images?: Attachment[]
-): Promise<null | string> {
+): Promise<null | GroupTurnReply> {
   // #93602: hold the member's route socket for the whole turn. Without the
   // lease, every RPC below rides its own request-scoped socket lease; the
   // socket that minted `runtime` can close between RPCs, the gateway reaps
@@ -605,7 +644,7 @@ async function runGroupChatMemberTurnLeased(
   prompt: string,
   thread: string,
   images?: Attachment[]
-): Promise<null | string> {
+): Promise<null | GroupTurnReply> {
   const { runtime, stored } = await ensureGroupChatSession(group, member)
 
   if (!runtime) {
@@ -654,7 +693,17 @@ async function runGroupChatMemberTurnLeased(
   // the member knows something was shared.
   const fileRefs: string[] = []
 
-  for (const img of Array.isArray(images) ? images : []) {
+  for (const original of Array.isArray(images) ? images : []) {
+    let img = original
+
+    if (img?.classicExport) {
+      try {
+        img = await readClassicAttachment(group, img, member)
+      } catch {
+        throw new GroupFileDeliveryError()
+      }
+    }
+
     if (!img || typeof img.data !== 'string' || !img.data) {
       continue
     }
@@ -675,6 +724,8 @@ async function runGroupChatMemberTurnLeased(
 
         if (res?.ref_text) {
           fileRefs.push(`${img.name || 'attachment'} → ${res.ref_text}`)
+        } else {
+          throw new GroupFileDeliveryError()
         }
       } else {
         await requestForBot(member, 'image.attach_bytes', {
@@ -684,18 +735,59 @@ async function runGroupChatMemberTurnLeased(
         })
       }
     } catch {
+      if (img.kind === 'file' || img.kind === 'pdf' || original.classicExport) {
+        throw new GroupFileDeliveryError()
+      }
       /* text-only fallback for this member */
     }
   }
 
-  const turnText = fileRefs.length
+  let turnText = fileRefs.length
     ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
     : prompt
+
+  const classicTurn = await beginClassicTurn(group, member, String(stored || runtime), thread)
+
+  if (classicTurn) {
+    if (
+      $groupChats.get()[group]?.roomId !== classicTurn.request.group_id ||
+      $groupChats.get()[group]?.tombstone ||
+      ($groupChats.get()[group]?.epoch || 0) !== dispatchEpoch
+    ) {
+      return null
+    }
+
+    turnText +=
+      '\n\nFiles are private until you explicitly call share_group_file. Use it to share output; a pathname is not a shared file.'
+    updateGroupChat(group, r => ({
+      ...r,
+      stranded: {
+        ...(r.stranded || {}),
+        [memberKey]: { before, thread, classicTurn }
+      }
+    }))
+  }
 
   // #93602: one-shot recovery when the runtime session was reaped between
   // minting and submitting. Tracks the runtime id the submit landed on so
   // the poll fallback below targets a live session.
-  const liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText)
+  let liveRuntime: string
+
+  try {
+    liveRuntime = await submitGroupTurnPrompt(member, runtime, stored, turnText, classicTurn)
+  } catch (error: any) {
+    if (error?.notAdmitted) {
+      updateGroupChat(group, r => {
+        const stranded = { ...(r.stranded || {}) }
+        delete stranded[memberKey]
+
+        return { ...r, stranded }
+      })
+    }
+
+    throw error
+  }
+
   runtimeIds.add(liveRuntime)
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
@@ -747,6 +839,31 @@ async function runGroupChatMemberTurnLeased(
     const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
+      if (classicTurn) {
+        let reply
+
+        try {
+          reply = await readClassicTurn(member, state?.session_id || liveRuntime, classicTurn)
+        } catch (error) {
+          throw error instanceof GroupFileDeliveryError
+            ? error
+            : new GroupFileDeliveryError('Export recovery is pending. Reconnect before retrying.')
+        }
+
+        if (reply === null) {
+          continue
+        }
+
+        updateGroupChat(group, r => {
+          const stranded = { ...(r.stranded || {}) }
+          delete stranded[memberKey]
+
+          return { ...r, stranded }
+        })
+
+        return reply
+      }
+
       const replyText = pickGroupTurnReply(messages, before)
 
       if (replyText !== null) {
@@ -791,7 +908,8 @@ async function runGroupChatMemberTurnLeased(
       ...(r.stranded || {}),
       [groupMemberKey(member)]: {
         before,
-        thread
+        thread,
+        ...(classicTurn ? { classicTurn } : {})
       }
     }
 
@@ -805,6 +923,20 @@ async function runGroupChatMemberTurnLeased(
  *  after we stopped waiting. Called at the member's next turn boundary and
  *  on user sends, so long-running work is delivered late rather than lost. */
 export async function harvestStrandedGroupReply(group: string, member: GroupMember) {
+  if ($groupChats.get()[group]?.stranded?.[groupMemberKey(member)] === undefined) {
+    return
+  }
+
+  const release = await retainGroupTurnRoute(member)
+
+  try {
+    await harvestStrandedGroupReplyLeased(group, member)
+  } finally {
+    release()
+  }
+}
+
+async function harvestStrandedGroupReplyLeased(group: string, member: GroupMember) {
   const memberKey = groupMemberKey(member)
   const room = $groupChats.get()[group] || {}
   const marker = room.stranded?.[memberKey]
@@ -838,6 +970,58 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     return
   }
 
+  const classicTurn = typeof marker === 'object' ? marker.classicTurn : undefined
+  let exported: Awaited<ReturnType<typeof readClassicTurn>> = null
+
+  if (classicTurn) {
+    const current = $groupChats.get()[group]
+
+    const forget = () =>
+      updateGroupChat(group, r => {
+        const stranded = { ...(r.stranded || {}) }
+        delete stranded[memberKey]
+
+        return { ...r, stranded }
+      })
+
+    if (!current || current.tombstone || current.roomId !== classicTurn.request.group_id) {
+      return
+    }
+
+    if (current.holds?.[memberKey] || !(current.members || []).some(m => groupMemberKey(m) === memberKey)) {
+      forget()
+
+      return
+    }
+
+    // A newer user input in this thread invalidates the original pending output.
+    const anchor = current.log.findIndex(entry => entry.id === classicTurn.anchor)
+
+    const newer =
+      anchor < 0 ||
+      current.log.slice(anchor + 1).some(entry => entry.from.kind === 'user' && entry.thread === strandedThread)
+
+    if (newer) {
+      forget()
+
+      return
+    }
+
+    try {
+      exported = await readClassicTurn(member, state?.session_id || '', classicTurn)
+    } catch (error) {
+      if (error instanceof ClassicTurnEndedError) {
+        forget()
+      }
+
+      return
+    }
+
+    if (!exported) {
+      return
+    }
+  }
+
   // Done (or dead): the marker is consumed either way.
   updateGroupChat(group, (r: GroupChatRoom) => {
     const next = {
@@ -855,7 +1039,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     return
   }
 
-  const reply = pickGroupTurnReply(messages, strandedBefore)
+  const reply = exported || pickGroupTurnReply(messages, strandedBefore)
 
   if (reply && !isGroupPassText(reply)) {
     recordGroupActivity(group, {
@@ -874,11 +1058,24 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
             }
           : {})
       },
-      reply,
-      strandedThread
+      groupTurnText(reply),
+      strandedThread,
+      exported?.images,
+      exported?.entryId
     )
     updateGroupChat(group, (r: GroupChatRoom) => {
-      r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+      if (classicTurn) {
+        const anchor = r.log.findIndex(entry => entry.id === classicTurn.anchor)
+
+        if (anchor >= 0) {
+          r.watermarks[`${strandedThread}::${memberKey}`] = Math.max(
+            r.watermarks[`${strandedThread}::${memberKey}`] || 0,
+            anchor + 1
+          )
+        }
+      } else {
+        r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+      }
 
       return r
     })

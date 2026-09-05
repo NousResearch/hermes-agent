@@ -24,6 +24,7 @@ from urllib.parse import quote, unquote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from gateway.native_document_guard import mark_native_document_guard
 from gateway.platforms.base import (
     BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len)
@@ -472,6 +473,9 @@ class SignalAdapter(BasePlatformAdapter):
             chat_type="group" if is_group else "dm", user_id=sender,
             user_name=sender_name or sender, user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None)
+        source.is_one_to_one = not is_group
+        source.message_is_edit = envelope_data.get("editMessage") is not None
+        source.message_had_attachments = bool(attachments_data)
         # First matching MIME prefix wins; everything else (application/*, text/*, unknown) is a DOCUMENT
         # so run.py's document-context injection surfaces the cached path.
         msg_type = MessageType.TEXT if not media_types else next(
@@ -888,6 +892,7 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"{media_label} too large ({file_size} bytes)")
         return await self._send_file(chat_id, file_path, caption, f"RPC send {media_label.lower()} failed")
 
+    @mark_native_document_guard
     async def send_document(self, chat_id, file_path, caption=None, filename=None, **kwargs) -> SendResult:
         return await self._send_attachment(chat_id, file_path, "File", caption)
 

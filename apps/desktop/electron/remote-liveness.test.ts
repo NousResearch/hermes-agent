@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   ensureHealthyPooledRemoteBackendForDispatch,
+  POOLED_REMOTE_DISPATCH_PROBE_PATH,
   POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
@@ -292,9 +293,11 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
       })
     ).resolves.toBe(replacement)
 
-    expect(probe).toHaveBeenCalledWith(stale, '/api/status', {
+    expect(probe).toHaveBeenCalledWith(stale, POOLED_REMOTE_DISPATCH_PROBE_PATH, {
       timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
     })
+    expect(POOLED_REMOTE_DISPATCH_PROBE_PATH).toBe('/api/health')
+    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBe(5_000)
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
   })

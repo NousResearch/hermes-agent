@@ -23,11 +23,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
+import { canonicalUser, optimisticUser, userRoom } from './user-event-test-fixtures'
 
 const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
   paneVisibility: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
+  startHostedRoomRuntime: vi.fn(async () => undefined),
+  stopHostedRoomRuntime: vi.fn(),
   setWorkspaceScope: vi.fn()
 }))
 
@@ -49,10 +52,15 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 // storage sweeps and the panes' own render trees.
 vi.mock('./avatar', () => ({ startFaceClock: vi.fn(), stopFaceClock: vi.fn() }))
 vi.mock('./relay', () => ({ startBotRelay: vi.fn(), stopBotRelay: vi.fn() }))
+vi.mock('./hosted-room-runtime', () => ({
+  startHostedRoomRuntime: mocks.startHostedRoomRuntime,
+  stopHostedRoomRuntime: mocks.stopHostedRoomRuntime
+}))
 vi.mock('./session-sweep', () => ({ startHideSweepScheduler: vi.fn() }))
 vi.mock('./canonical-chat', () => ({ openBotCanonicalChat: vi.fn() }))
 vi.mock('./chat-empty', () => ({ BotChatEmpty: () => null }))
 vi.mock('./hygiene', () => ({ annotateOrphanedGroupChatMembers: () => ({ changed: false, rooms: {} }) }))
+vi.mock('./group-chat-view', () => ({ renameGroupChat: vi.fn(async (_old, next) => next) }))
 vi.mock('./cron', () => ({ bindProfileSync: () => () => undefined, RoutinesPane: () => null }))
 vi.mock('./roster-pane', () => ({
   botChatOwnsWorkspace: mocks.botChatOwnsWorkspace,
@@ -69,7 +77,7 @@ vi.mock('./group-chat', async () => {
     $groupChatWorkspace: nanoAtom(null),
     assignLegacyThreads: (log: unknown[]) => log,
     handleSessionsGatewayTransition: vi.fn(),
-    pullGroupChatServerState: async () => false,
+    pullGroupChatServerState: vi.fn(async () => false),
     scheduleGroupChatServerSync: vi.fn(),
     setGroupChatSyncDisposed: vi.fn(),
     stopGroupChatServerSync: vi.fn(),
@@ -97,7 +105,7 @@ interface Registration {
 }
 
 /** A recording `PluginContext`: registrations, their disposers, teardown. */
-function recordingContext() {
+function recordingContext(storageGet: (key: string) => Promise<unknown> = async () => undefined) {
   const disposers: (() => void)[] = []
   const registrations: Registration[] = []
   const unregisters = new Map<string, () => void>()
@@ -116,7 +124,7 @@ function recordingContext() {
 
       return unregister
     },
-    storage: { get: async () => undefined, set: async () => undefined }
+    storage: { get: storageGet, set: async () => undefined }
   }
 
   return {
@@ -177,6 +185,94 @@ describe('the Bots pane dock', () => {
     expect(data).not.toHaveProperty('heal')
 
     harness.dispose()
+  })
+})
+
+describe('hosted Group Chat startup', () => {
+  it('heals a cold duplicated user cache before any gateway replay is available', async () => {
+    paneStores()
+    const cold = JSON.parse(JSON.stringify({ Board: userRoom([optimisticUser(), canonicalUser()]) }))
+    const harness = recordingContext(async key => (key === 'group-chats' ? cold : undefined))
+    const { $groupChats } = await import('./group-chat')
+
+    plugin.register(harness.ctx)
+    await settle()
+
+    expect($groupChats.get().Board.log).toEqual([canonicalUser()])
+    expect(mocks.startHostedRoomRuntime).toHaveBeenCalled()
+    harness.dispose()
+  })
+
+  it.each([true, false, undefined, 'true'])(
+    'restores local membership verification before projection pull: %s',
+    async value => {
+      paneStores()
+      const chat = await import('./group-chat')
+      chat.$groupChats.set({})
+      const beforePull: boolean[] = []
+      vi.mocked(chat.pullGroupChatServerState).mockImplementationOnce(async () => {
+        beforePull.push(chat.$groupChats.get().Saved?.hostedMembersVerified === true)
+
+        return false
+      })
+
+      const harness = recordingContext(async key =>
+        key === 'group-chats'
+          ? {
+              Saved: {
+                roomId: 'saved-room',
+                hosted: 'saved-authority',
+                hostedMembersVerified: value,
+                members: [{ name: 'default' }],
+                log: [],
+                watermarks: {}
+              }
+            }
+          : undefined
+      )
+
+      try {
+        plugin.register(harness.ctx)
+        await settle()
+        expect(beforePull).toEqual([value === true])
+        expect(chat.$groupChats.get().Saved?.hostedMembersVerified === true).toBe(value === true)
+        expect(mocks.startHostedRoomRuntime).toHaveBeenCalledTimes(1)
+      } finally {
+        harness.dispose()
+        chat.$groupChats.set({})
+      }
+    }
+  )
+
+  it('does not probe or replay hosted rooms before local Group Chat hydration settles', async () => {
+    paneStores()
+    let releaseRooms: (value: unknown) => void = () => undefined
+
+    const rooms = new Promise(resolve => {
+      releaseRooms = resolve
+    })
+
+    const harness = recordingContext(async key => (key === 'group-chats' ? rooms : undefined))
+
+    plugin.register(harness.ctx)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(mocks.startHostedRoomRuntime).not.toHaveBeenCalled()
+
+    releaseRooms({})
+    await settle()
+
+    expect(mocks.startHostedRoomRuntime).toHaveBeenCalledTimes(1)
+    expect(mocks.startHostedRoomRuntime).toHaveBeenCalledWith(
+      harness.ctx.storage,
+      expect.objectContaining({
+        renameGroupChat: expect.any(Function)
+      })
+    )
+
+    harness.dispose()
+    expect(mocks.stopHostedRoomRuntime).toHaveBeenCalled()
   })
 })
 

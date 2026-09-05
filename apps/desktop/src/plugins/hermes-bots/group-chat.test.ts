@@ -273,6 +273,22 @@ describe('duplicate append guard (#93127)', () => {
 })
 
 describe('threads', () => {
+  it('repairs cached gateway-second timestamps during hydration', async () => {
+    const room = await loadRoom()
+    const seconds = 1_787_969_590.436
+
+    expect(
+      room.chat.assignLegacyThreads([
+        {
+          at: seconds,
+          from: { kind: 'user', name: 'You' },
+          text: 'Hello',
+          thread: 'thread-1'
+        }
+      ])[0].at
+    ).toBe(seconds * 1000)
+  })
+
   it('hydration assigns legacy thread ids — a lull splits, follow-ups stay together', async () => {
     const { chat } = await loadRoom()
     const minute = 60000
@@ -294,6 +310,25 @@ describe('threads', () => {
     expect(log[2].thread).toBe(log[3].thread)
     expect(log[0].thread).not.toBe(log[4].thread)
     expect(log[4].thread).toBe(log[5].thread)
+  })
+
+  it('counts only visible replies after the thread head', async () => {
+    const { chat } = await loadRoom()
+
+    const log = [
+      { at: 1, from: { kind: 'user', name: 'You' }, text: 'Start', thread: 'thread-1' },
+      { at: 2, from: { kind: 'member', name: 'research' }, text: '', thread: 'thread-1' },
+      { at: 3, from: { kind: 'member', name: 'research' }, text: 'Visible', thread: 'thread-1' },
+      {
+        at: 4,
+        from: { kind: 'member', name: 'builder' },
+        images: [{ data: 'data:image/png;base64,x', kind: 'image', name: 'result.png' }],
+        text: '',
+        thread: 'thread-1'
+      }
+    ] as GroupMessage[]
+
+    expect(chat.groupThreadReplyCount(log, 'thread-1')).toBe(2)
   })
 })
 
@@ -468,6 +503,23 @@ describe('gateway mirror', () => {
 })
 
 describe('snapshot merge', () => {
+  it('collapses identity-free projection echoes when authoritative replay arrives', async () => {
+    const { chat } = await loadRoom()
+
+    const fallback = {
+      at: 100,
+      from: { kind: 'member' as const, name: 'research' },
+      text: 'Complete',
+      thread: 'thread-1'
+    }
+
+    const echoes = Array.from({ length: 96 }, () => ({ ...fallback }))
+
+    const merged = chat.mergeGroupChatSyncEntries(echoes, [{ ...fallback, eventId: 'event-9', id: 'event-9', seq: 9 }])
+
+    expect(merged).toEqual([{ ...fallback, eventId: 'event-9', id: 'event-9', seq: 9 }])
+  })
+
   it('pull-before-push preserves disjoint rooms, messages and members', async () => {
     const { chat } = await loadRoom()
 

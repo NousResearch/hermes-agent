@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Dict, Mapping, Optional
@@ -34,10 +35,11 @@ def is_multiplex_active() -> bool:
 
 
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
+_STRICT_SECRET_SCOPE: ContextVar[bool] = ContextVar("_STRICT_SECRET_SCOPE", default=False)
 
 
 class UnscopedSecretError(RuntimeError):
-    """A secret was read in multiplex mode with no scope installed.
+    """A secret was read in multiplex or strict mode with no scope installed.
 
     The fix is to wrap the call path in ``set_secret_scope(...)`` (the per-turn
     / per-adapter profile scope), not to widen the global allowlist.
@@ -56,6 +58,25 @@ def reset_secret_scope(token: Token) -> None:
 def current_secret_scope() -> Optional[Mapping[str, str]]:
     """The active secret mapping, or None when no scope is installed."""
     return _SECRET_SCOPE.get()
+
+
+@contextmanager
+def strict_secret_scope(secrets: Optional[Mapping[str, str]]):
+    """Make this context's mapping authoritative without changing deployment mode.
+
+    Scope setters/resetters cannot re-enable ambient fallback inside this block;
+    clearing the mapping makes credential reads fail closed. Global settings keep
+    their normal environment behavior. Both prior scope and strictness restore.
+    """
+    scope_token = set_secret_scope(secrets)
+    strict_token = _STRICT_SECRET_SCOPE.set(True)
+    try:
+        yield
+    finally:
+        try:
+            reset_secret_scope(scope_token)
+        finally:
+            _STRICT_SECRET_SCOPE.reset(strict_token)
 
 
 # Genuinely-global env vars: process/deployment settings, NOT profile secrets.
@@ -116,6 +137,8 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     inject credentials via the process env (systemd, ``op run``), so the scope
     must stay a ``.env`` overlay, not a blindfold (otherwise cron 401s). With no
     scope: multiplex INACTIVE reads ``os.environ``; ACTIVE raises (fail closed).
+    ``strict_secret_scope`` opts this context into the same fail-closed behavior
+    without changing the single-profile default or process-global deployment mode.
     """
     if _is_global_env(name):
         return _environ_or(name, default)
@@ -124,11 +147,12 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = scope.get(name)
         if val is not None:
             return val
-        return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
-    if _MULTIPLEX_ACTIVE:
+        return default if _MULTIPLEX_ACTIVE or _STRICT_SECRET_SCOPE.get() else _environ_or(name, default)
+    if _MULTIPLEX_ACTIVE or _STRICT_SECRET_SCOPE.get():
+        mode = "multiplexing is on" if _MULTIPLEX_ACTIVE else "a strict secret scope is active"
         raise UnscopedSecretError(
             f"get_secret({name!r}) called with no profile secret scope active "
-            f"while multiplexing is on. This credential read must run inside a "
+            f"while {mode}. This credential read must run inside a "
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
             f"profile's value. See docs/design/multiplexing-gateway.md "

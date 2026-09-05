@@ -191,3 +191,13 @@ def async_delivery_supported() -> bool:
         return False
     value = _SESSION_ASYNC_DELIVERY.get()
     return True if value is _UNSET else bool(value)
+
+
+def bind_session_source(source: str):
+    """Temporarily override only source without disturbing sibling context."""
+
+    return _SESSION_SOURCE.set(str(source or ""))
+
+
+def reset_session_source(token) -> None:
+    _SESSION_SOURCE.reset(token)

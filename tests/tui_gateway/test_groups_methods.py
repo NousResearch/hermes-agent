@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import base64
+
 from types import SimpleNamespace
 
 import pytest
@@ -73,24 +76,38 @@ def test_capabilities_are_honest_about_the_driver_boundary(home):
     assert "groups.send" in srv._LONG_HANDLERS
     assert "groups.retry" in result["methods"]
     assert "groups.approve" in result["methods"]
+    assert "groups.desktop.claim" in result["methods"]
+    assert "groups.desktop.presence" in result["methods"]
+    assert "groups.desktop.renew" in result["methods"]
+    assert "groups.desktop.complete" in result["methods"]
+    assert "groups.attachment.put" in result["methods"]
+    assert "groups.attachment.read" in result["methods"]
     advertised = [
         str(value).lower() for value in (*result["features"], *result["methods"])
     ]
     assert not any(
         token in value
-        for token in ("attachment", "desktop", "messaging")
+        for token in ("messaging",)
         for value in advertised
     )
     assert result["room_link"]["enabled"] is True
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
+    from gateway.platforms import api_server_room_attachments
+
+    monkeypatch.setattr(
+        api_server_room_attachments,
+        "roomlink_attachments_available",
+        lambda: True,
+    )
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")
     result = _result(srv._methods["groups.capabilities"](1, {}))
     assert result["room_link"]["enabled"] is True
     assert result["room_link"]["profile"] == "reviewer"
     assert result["room_link"]["catalog"]["text"] is True
+    assert result["room_link"]["catalog"]["attachments"] is True
     assert "groups.peer.invite" in result["methods"]
     assert "groups.peer.register" in result["methods"]
 
@@ -109,6 +126,7 @@ def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch
     )
     assert invitation["target_profile"] == "reviewer"
     assert invitation["catalog"] == result["room_link"]["catalog"]
+    assert invitation["catalog"]["attachments"] is True
     assert "." in invitation["grant"]
     from gateway import hosted_rooms
 
@@ -234,6 +252,7 @@ def test_roomlink_endpoint_absence_has_machine_reason(home, monkeypatch):
 
 
 def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
+    from gateway import hosted_rooms
     from gateway.hosted_room_peer import (
         HostedRoomGrantError,
         decode_room_grant,
@@ -268,12 +287,38 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
         permission="status",
     )
     assert claims["target_profile"] == "reviewer"
+    assert hosted_rooms.peer_room_is_reserved(
+        home / "state.db",
+        room_id="room-1",
+        target_profile="reviewer",
+    )
+    assert hosted_rooms.peer_room_is_reserved(
+        reviewer_home / "state.db",
+        room_id="room-1",
+        target_profile="reviewer",
+    )
     with pytest.raises(HostedRoomGrantError, match="signature"):
         decode_room_grant(
             derive_room_grant_secret(default_key),
             invitation["grant"],
             permission="status",
         )
+
+    revoked = _result(
+        srv._methods["groups.peer.revoke"](
+            4,
+            {"grant": invitation["grant"], "profile": "reviewer"},
+        )
+    )
+    assert revoked == {"revoked": True}
+    assert hosted_rooms.room_grant_is_revoked(
+        reviewer_home / "state.db",
+        claims=claims,
+    )
+    assert hosted_rooms.room_grant_is_revoked(
+        home / "state.db",
+        claims=claims,
+    )
 
 
 def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):
@@ -739,8 +784,8 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
         turn_id="turn-1",
     )
     service = SimpleNamespace(
-        retry_room_task=lambda room_id, task_id: (
-            calls.append(("retry", room_id, task_id))
+        retry_room_task=lambda room_id, task_id, retry_id=None: (
+            calls.append(("retry", room_id, task_id, retry_id))
             or {
                 "identity": identity,
                 "status": "queued",
@@ -757,9 +802,10 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     retried = _result(
         srv._methods["groups.retry"](
             1,
-            {"room_id": "room-1", "task_id": "task-1"},
+            {"room_id": "room-1", "task_id": "task-1", "command_id": "retry-1"},
         )
     )
+    assert calls[0] == ("retry", "room-1", "task-1", "retry-1")
     approved = _result(
         srv._methods["groups.approve"](
             2,
@@ -785,7 +831,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     }
     assert approved == {"approved": True, "result": {"resolved": 1}}
     assert calls == [
-        ("retry", "room-1", "task-1"),
+        ("retry", "room-1", "task-1", "retry-1"),
         (
             "approve",
             "room-1",
@@ -915,17 +961,42 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
 
     class FakeService:
         db_path = home / "state.db"
+        attachments = SimpleNamespace(
+            mark_room_disbanded=lambda room_id: calls.append(("files", room_id)),
+            prune=lambda: calls.append(("prune", "room-1")),
+        )
 
         def stop_room(self, room_id, **_kwargs):
             calls.append(("stop", room_id))
 
+        def begin_room_disband(self, room_id):
+            calls.append(("fence", room_id))
+
         def revoke_room_routes(self, room_id):
             calls.append(("revoke", room_id))
 
+        def retire_and_disband_room(self, room_id, **kwargs):
+            from gateway.hosted_rooms import disband_room
+
+            calls.append(("artifacts", room_id))
+            return disband_room(self.db_path, room_id=room_id, **kwargs)
+
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
+    monkeypatch.setattr(
+        "gateway.hosted_room_controls.revoke_home_control_tokens",
+        lambda _db_path, *, room_id: calls.append(("revoke-controls", room_id)),
+    )
     _result(srv._methods["groups.disband"](9, {"room_id": "room-1"}))
 
-    assert calls == [("stop", "room-1"), ("revoke", "room-1")]
+    assert calls == [
+        ("fence", "room-1"),
+        ("stop", "room-1"),
+        ("revoke", "room-1"),
+        ("revoke-controls", "room-1"),
+        ("artifacts", "room-1"),
+        ("files", "room-1"),
+        ("prune", "room-1"),
+    ]
     assert _result(srv._methods["groups.list"](10, {}))["rooms"] == []
 
 
@@ -934,6 +1005,9 @@ def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
 
     class FakeService:
         db_path = home / "state.db"
+
+        def begin_room_disband(self, _room_id):
+            return None
 
         def stop_room(self, _room_id, **_kwargs):
             return 1
@@ -960,6 +1034,9 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     class FakeService:
         db_path = home / "state.db"
 
+        def begin_room_disband(self, _room_id):
+            calls.append(("fence", True))
+
         def stop_room(self, _room_id, **kwargs):
             calls.append(("stop", kwargs["require_acknowledged"]))
             raise RuntimeError("room work is still stopping")
@@ -971,7 +1048,7 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     result = srv._methods["groups.disband"](13, {"room_id": "room-1"})
 
     assert result["error"]["code"] == 5114
-    assert calls == [("stop", True)]
+    assert calls == [("fence", True), ("stop", True)]
     assert [
         room["room_id"]
         for room in _result(srv._methods["groups.list"](14, {}))["rooms"]
@@ -1011,3 +1088,377 @@ def test_approve_routes_one_exact_peer_action(home, monkeypatch):
         "request_id": "approval-1",
         "choice": "once",
     }
+
+
+def test_desktop_mailbox_rpc_claim_and_complete(home):
+    from gateway.desktop_room_mailbox import default_db_path, enqueue_command
+
+    enqueue_command(
+        default_db_path(),
+        command_id="messaging:one",
+        room_id="classic-room",
+        authority_hash=hashlib.sha256(b"authority:test").hexdigest(),
+        action="send",
+        payload={"message": "hello"},
+    )
+
+    claimed = _result(
+        srv._methods["groups.desktop.claim"](
+            1,
+            {
+                "consumer_id": "desktop:test",
+                "room_authorities": [
+                    {
+                        "room_id": "classic-room",
+                        "authority_token": "authority:test",
+                    }
+                ],
+            },
+        )
+    )["commands"]
+    assert [item["command_id"] for item in claimed] == ["messaging:one"]
+
+    renewed = _result(
+        srv._methods["groups.desktop.renew"](
+            2,
+            {
+                "consumer_id": "desktop:test",
+                "command_id": claimed[0]["command_id"],
+                "lease_token": claimed[0]["lease_token"],
+            },
+        )
+    )["command"]
+    assert renewed["state"] == "claimed"
+
+    completed = _result(
+        srv._methods["groups.desktop.complete"](
+            3,
+            {
+                "consumer_id": "desktop:test",
+                "command_id": claimed[0]["command_id"],
+                "lease_token": claimed[0]["lease_token"],
+                "success": True,
+                "result": {"thread_id": "thread-1"},
+            },
+        )
+    )["command"]
+    assert completed["state"] == "completed"
+
+
+def test_desktop_presence_rpc_renews_without_claiming_work(home):
+    from gateway.desktop_room_mailbox import (
+        default_db_path,
+        register_projected_authorities,
+        room_available,
+    )
+
+    register_projected_authorities(
+        default_db_path(),
+        [{
+            "room_id": "classic-room",
+            "authority_hash": hashlib.sha256(b"authority:test").hexdigest(),
+        }],
+    )
+
+    result = _result(
+        srv._methods["groups.desktop.presence"](
+            1,
+            {
+                "consumer_id": "desktop:test",
+                "room_authorities": [{
+                    "room_id": "classic-room",
+                    "authority_token": "authority:test",
+                }],
+            },
+        )
+    )
+
+    assert result == {"room_ids": ["classic-room"]}
+    assert room_available(default_db_path(), "classic-room") is True
+
+
+def test_reciprocal_control_network_calls_stay_off_the_rpc_reader_thread():
+    assert {
+        "groups.control.invite",
+        "groups.control.register",
+        "groups.control.revoke",
+    } <= srv._LONG_HANDLERS
+
+
+def test_reciprocal_control_link_is_scoped_to_the_live_peer_reservation(
+    home, monkeypatch
+):
+    from gateway import hosted_room_controls, hosted_rooms
+
+    control_calls = []
+
+    class _ControlClient:
+        def __init__(self, link):
+            self.link = link
+
+        def summary(self):
+            control_calls.append(("summary", self.link.room_id))
+            return {
+                "room": {
+                    "room_id": self.link.room_id,
+                    "authority_gateway_id": self.link.authority_gateway_id,
+                    "authority_epoch": self.link.authority_epoch,
+                }
+            }
+
+        def revoke(self):
+            control_calls.append(("revoke", self.link.room_id))
+            return None
+
+    monkeypatch.setattr(
+        "gateway.hosted_room_control_client.RoomControlHTTPClient",
+        _ControlClient,
+    )
+
+    monkeypatch.setenv("HERMES_ROOM_LINK_URL", "https://home.example.test/hermes")
+    service = srv.get_hosted_room_service()
+    service.create_room(
+        room_id="room-control",
+        name="Control room",
+        members=[
+            {
+                "member_id": "member-peer",
+                "profile": "ops",
+                "handle": "ops",
+                "target": {
+                    "kind": "peer",
+                    "peer_id": "install-peer",
+                    "installation_id": "install-peer",
+                    "profile": "ops",
+                    "capability_digest": "a" * 64,
+                },
+            },
+            {"member_id": "default", "profile": "default", "handle": "hermes"},
+        ],
+    )
+    invitation = _result(
+        srv._methods["groups.control.invite"](
+            1,
+            {
+                "room_id": "room-control",
+                "member_id": "member-peer",
+                "caller_install_id": "install-peer",
+                "request_id": "control-room-member-peer-v1",
+            },
+        )
+    )
+    hosted_rooms.reserve_peer_room(
+        hosted_rooms.default_db_path(),
+        claims={
+            "room_id": "room-control",
+            "member_id": "member-peer",
+            "target_profile": "ops",
+            "authority_gateway_id": invitation["authority_gateway_id"],
+            "authority_epoch": invitation["authority_epoch"],
+        },
+        expires_at=invitation["expires_at"],
+    )
+    registered = _result(
+        srv._methods["groups.control.register"](
+            2,
+            {**invitation, "profile": "ops"},
+        )
+    )
+    assert registered["registered"] is True
+    links = hosted_room_controls.load_peer_control_links(
+        hosted_rooms.default_db_path()
+    ).links
+    assert links[0].room_id == "room-control"
+    assert links[0].home_url == "https://home.example.test/hermes"
+    assert links[0].target_profile == "ops"
+    assert control_calls == [("summary", "room-control")]
+
+    revoked = _result(
+        srv._methods["groups.control.revoke"](
+            3,
+            {"room_id": "room-control", "member_id": "member-peer"},
+        )
+    )
+    assert revoked["revoked"] == 1
+    assert control_calls == [
+        ("summary", "room-control"),
+        ("revoke", "room-control"),
+    ]
+def test_attachment_put_send_read_roundtrip_is_recipient_scoped(home, monkeypatch):
+    _create_room()
+    encoded = base64.b64encode(b"\x89PNG\r\n\x1a\nimage").decode("ascii")
+    put_params = {
+        "room_id": "room-1",
+        "upload_id": "upload-1",
+        "kind": "image",
+        "name": "diagram.png",
+        "mime": "image/png",
+        "content_base64": encoded,
+    }
+    stored = _result(
+        srv._methods["groups.attachment.put"](1, put_params)
+    )["attachment"]
+    manifest = {
+        key: stored[key]
+        for key in ("attachment_id", "kind", "name", "size", "mime")
+    }
+
+    sent = _result(
+        srv._methods["groups.send"](
+            2,
+            {
+                "room_id": "room-1",
+                "event_id": "event-attachment-1",
+                "payload": {
+                    "text": "Review this image",
+                    "thread_id": "thread-1",
+                    "attachments": [manifest],
+                },
+            },
+        )
+    )
+    assert sent["event"]["payload"]["attachments"] == [manifest]
+    read = _result(
+        srv._methods["groups.attachment.read"](
+            3,
+            {
+                    "room_id": "room-1",
+                    "attachment_id": stored["attachment_id"],
+                    "purpose": "viewer",
+                    "event_id": sent["event"]["event_id"],
+                },
+        )
+    )
+    assert base64.b64decode(read["content_base64"]) == b"\x89PNG\r\n\x1a\nimage"
+    denied = srv._methods["groups.attachment.read"](
+        4,
+        {
+            "room_id": "room-1",
+            "attachment_id": stored["attachment_id"],
+            "purpose": "member",
+            "event_id": "event-attachment-1",
+        },
+    )
+    assert denied["error"]["code"] == 4141
+
+    service = methods_groups.get_hosted_room_service()
+    assert service is not None
+    monkeypatch.setattr(service, "stop_room", lambda *_args, **_kwargs: 0)
+
+    _result(
+        srv._methods["groups.disband"](
+            5,
+            {"room_id": "room-1", "cancel_id": "disband-file-room"},
+        )
+    )
+    after_disband = srv._methods["groups.attachment.read"](
+        6,
+        {
+            "room_id": "room-1",
+            "attachment_id": stored["attachment_id"],
+            "purpose": "viewer",
+            "event_id": "event-attachment-1",
+        },
+    )
+    assert after_disband["error"]["code"] == 4141
+
+
+def test_peer_revoke_discards_the_scoped_attachment_spool(home, monkeypatch):
+    from gateway.platforms import api_server_room_attachments
+
+    monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
+    invitation = _result(
+        srv._methods["groups.peer.invite"](
+            1,
+            {
+                "room_id": "room-revoke",
+                "home_install_id": "install-home",
+                "authority_gateway_id": "install-home",
+                "authority_epoch": 1,
+                "member_id": "member-peer",
+                "grant_id": "grant-room-revoke",
+            },
+        )
+    )
+    discarded = []
+
+    class FakeSpool:
+        def discard_scope(self, claims):
+            discarded.append(dict(claims))
+            return 1
+
+    monkeypatch.setattr(api_server_room_attachments, "_default_spool", FakeSpool)
+    result = _result(
+        srv._methods["groups.peer.revoke"](
+            2,
+            {"grant": invitation["grant"]},
+        )
+    )
+
+    assert result["revoked"] is True
+    assert discarded[0]["room_id"] == "room-revoke"
+    assert discarded[0]["member_id"] == "member-peer"
+
+
+def test_peer_scope_revoke_discards_output_but_exact_old_grant_revoke_does_not(
+    home, monkeypatch
+):
+    from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
+    from gateway.hosted_room_peer import decode_room_grant, gateway_room_grant_secret
+
+    monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
+    common = {
+        "room_id": "room-output-revoke",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "install-home",
+        "authority_epoch": 1,
+        "member_id": "member-peer",
+    }
+    old = _result(
+        srv._methods["groups.peer.invite"](
+            1, {**common, "grant_id": "grant-output-old"}
+        )
+    )
+    current = _result(
+        srv._methods["groups.peer.invite"](
+            2, {**common, "grant_id": "grant-output-current"}
+        )
+    )
+    claims = decode_room_grant(
+        gateway_room_grant_secret(home), current["grant"], permission="status"
+    )
+    scope = RoomArtifactScope.from_mapping(
+        {
+            **{
+                key: claims[key]
+                for key in (
+                    "room_id",
+                    "home_install_id",
+                    "authority_gateway_id",
+                    "authority_epoch",
+                    "member_id",
+                    "target_install_id",
+                    "target_profile",
+                )
+            },
+            "task_id": "task-output-revoke",
+            "execution_generation": 1,
+        }
+    )
+    outbox = RoomArtifactOutbox(home / "state.db")
+    outbox.put_bytes(scope=scope, source_name="private.txt", data=b"private")
+
+    assert _result(
+        srv._methods["groups.peer.revoke_exact"](
+            3, {"grant": old["grant"]}
+        )
+    ) == {"revoked": True}
+    assert len(outbox.list(scope)) == 1
+
+    assert _result(
+        srv._methods["groups.peer.revoke"](
+            4, {"grant": current["grant"]}
+        )
+    ) == {"revoked": True}
+    assert outbox.list(scope) == []
+    assert list(outbox.blob_root.iterdir()) == []

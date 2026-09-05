@@ -153,6 +153,11 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
 
 
 def _wire_callbacks(sid: str):
+    from tui_gateway.classic_exports import install_schema
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if session is not None:
+        install_schema(session)
     from tools.terminal_tool import set_sudo_password_callback
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback

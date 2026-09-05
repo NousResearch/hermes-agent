@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.platforms import api_server
+from gateway.platforms import api_server_room_attachments
+from gateway.platforms import api_server_room_artifacts
+from gateway.platforms import api_server_room_controls
+from gateway.platforms import api_server_room_dispatch
 from gateway.platforms import api_server_room_grants
 from gateway.platforms import api_server_runs
 
@@ -164,12 +168,25 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
     room_routes = api_server_room_grants._http_routes(adapter)
     run_routes = api_server_runs._http_routes(adapter)
 
-    assert [(method, path) for method, path, _ in room_routes] == [
-        ("POST", "/v1/room-members/invitations"),
-        ("GET", "/v1/room-members/capabilities"),
-        ("POST", "/v1/room-members/grants/refresh"),
-        ("POST", "/v1/room-members/grants/revoke"),
+    member_routes = [
+        ("POST", "/v1/room-members/invitations", adapter._handle_room_member_invitation),
+        ("GET", "/v1/room-members/capabilities", adapter._handle_room_member_capabilities),
+        ("POST", "/v1/room-members/grants/refresh", adapter._handle_room_member_grant_refresh),
+        ("POST", "/v1/room-members/grants/revoke", adapter._handle_room_member_grant_revoke),
     ]
+    assert room_routes[:len(member_routes)] == member_routes
+    exact_revoke = room_routes[len(member_routes)]
+    assert exact_revoke[:2] == ("POST", "/v1/room-members/grants/revoke-exact")
+    assert exact_revoke[2].__module__ == api_server_room_grants.__name__
+    expected_extensions = [
+        *api_server_room_controls._http_routes(adapter),
+        *api_server_room_attachments._http_routes(adapter),
+        *api_server_room_artifacts._http_routes(adapter),
+    ]
+    def route_contract(routes):
+        return [(method, path, handler.__module__) for method, path, handler in routes]
+    assert route_contract(room_routes[len(member_routes) + 1:]) == route_contract(expected_extensions)
+    assert all(callable(handler) for _, _, handler in room_routes)
     assert [(method, path) for method, path, _ in run_routes] == [
         ("POST", "/v1/runs"),
         ("GET", "/v1/runs/{run_id}"),
@@ -178,5 +195,14 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/runs/{run_id}/steer"),
         ("POST", "/v1/runs/{run_id}/stop"),
     ]
-    assert all(handler.__self__ is adapter for _, _, handler in room_routes)
     assert all(handler.__self__ is adapter for _, _, handler in run_routes)
+
+
+def test_room_dispatch_errors_never_expose_local_paths():
+    message, code = api_server_room_dispatch._public_dispatch_error(
+        RuntimeError("failed at /Users/private/.hermes/state.db")
+    )
+
+    assert message == "Room dispatch was rejected."
+    assert code == "invalid_room_dispatch"
+    assert "/Users/private" not in message

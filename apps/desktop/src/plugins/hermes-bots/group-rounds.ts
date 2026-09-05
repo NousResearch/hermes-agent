@@ -1,9 +1,10 @@
+import { groupTurnText } from './classic-output'
+import type { GroupTurnReply } from './classic-output'
 /**
  * Room-level coordination: who speaks, in what order, for how long — the
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
  * path, and the user send that starts it all.
  */
-
 import { botFriendlyNames, botHandle, clearBotAttention, mentionNameForms, noteBotAttention } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
@@ -14,6 +15,7 @@ import {
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
   GROUP_CHAT_MAX_ROUNDS,
+  groupChatHostedGateway,
   groupSpeakerLabel,
   groupThreadOf,
   mintGroupThreadId,
@@ -21,10 +23,23 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
+import { GroupFileDeliveryError } from './group-file-delivery'
 import { durableGroupChatMembers, groupMemberKey } from './group-membership'
 import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import {
+  beginHostedRoomMutation,
+  groupChatContinuityReady,
+  hostedRoomMutationIsCurrent,
+  queueHostedGroupChat,
+  stopHostedGroupChat
+} from './hosted-room-runtime'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
+
+function hostedConnectionName(room: null | Partial<GroupChatRoom> | undefined) {
+  return room?.members?.find(member => member.connectionLabel)?.connectionLabel || botsText().group.thisHost
+}
 
 // ── group chats: bounded round-robin coordination over a shared room log ─────
 //
@@ -425,6 +440,86 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *  falls back to the room's durable roster so a two-arg call still works. */
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
   const room = $groupChats.get()[group] || {}
+
+  if (groupChatHostedGateway(room)) {
+    if (room.hostedStatus?.state === 'stopping') {
+      return
+    }
+
+    const connectionName = hostedConnectionName(room)
+    const roomId = String(room.roomId || '')
+    const generation = beginHostedRoomMutation(roomId)
+
+    updateGroupChat(
+      group,
+      current => ({
+        ...current,
+        running: true,
+        hostedStatus: {
+          state: 'stopping',
+          label: botsText().group.hostedStopping
+        }
+      }),
+      {
+        sync: false
+      }
+    )
+
+    try {
+      const acknowledged = await stopHostedGroupChat(group)
+
+      if (!hostedRoomMutationIsCurrent(roomId, generation)) {
+        return
+      }
+
+      updateGroupChat(
+        group,
+        current => ({
+          ...current,
+          running: !acknowledged,
+          hostedStatus: {
+            state: acknowledged ? 'stopped' : 'queued',
+            label: acknowledged ? botsText().group.hostedStopped : botsText().group.hostedStopQueued(connectionName)
+          },
+          continuityIssue: acknowledged ? null : botsText().group.hostedStopQueuedHint(connectionName)
+        }),
+        {
+          sync: false
+        }
+      )
+    } catch {
+      if (!hostedRoomMutationIsCurrent(roomId, generation)) {
+        return
+      }
+
+      updateGroupChat(
+        group,
+        current => ({
+          ...current,
+          running: false,
+          hostedStatus: {
+            state: 'offline',
+            label: botsText().group.hostedUnavailable(connectionName)
+          },
+          continuityIssue: botsText().group.hostedReconnectToStop(connectionName)
+        }),
+        {
+          sync: false
+        }
+      )
+    }
+
+    if (hostedRoomMutationIsCurrent(roomId, generation)) {
+      recordGroupActivity(group, {
+        kind: 'stopped',
+        member: 'You',
+        thread: thread || null
+      })
+    }
+
+    return
+  }
+
   const roster = Array.isArray(members) && members.length ? members : room.members || []
   const turnName = room.turn || null
 
@@ -497,6 +592,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
   let continuations = 0
+  const deliveryFailed = new Set<string>()
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
   // passed with nothing pending); 'capped' means a round/message/continuation
   // cap forced the exit — the activity feed must tell those apart.
@@ -540,7 +636,9 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
-        (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+        (member: GroupMember) =>
+          !deliveryFailed.has(groupMemberKey(member)) &&
+          !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
       )
 
       let spokeThisRound = 0
@@ -637,7 +735,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
           return r
         })
-        let reply: null | string = null
+        let reply: null | GroupTurnReply = null
 
         try {
           reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
@@ -662,6 +760,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
               : {})
           })
           noteBotAttention(groupMemberKey(member), reason || error?.message || error)
+
+          if (error instanceof GroupFileDeliveryError) {
+            deliveryFailed.add(groupMemberKey(member))
+
+            continue
+          }
+
           reply = null // a failed turn is a pass, never a room error
         }
 
@@ -720,8 +825,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                   }
                 : {})
             },
-            reply,
-            thread
+            groupTurnText(reply),
+            thread,
+            typeof reply === 'object' ? reply.images : undefined,
+            typeof reply === 'object' ? reply.entryId : undefined
           )
           // Its own message counts as seen too.
           updateGroupChat(group, (r: GroupChatRoom) => {
@@ -756,7 +863,9 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
             const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
             const continuationResponders = citedMembers.filter(
-              (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+              (member: GroupMember) =>
+                !deliveryFailed.has(groupMemberKey(member)) &&
+                !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
             )
 
             for (const member of continuationResponders) {
@@ -804,10 +913,16 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
                 return r
               })
-              let continuationReply: null | string = null
+              let continuationReply: null | GroupTurnReply = null
 
               try {
-                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
+                continuationReply = await runGroupChatMemberTurn(
+                  group,
+                  member,
+                  prompt,
+                  thread,
+                  delta.flatMap((entry: GroupMessage) => entry.images || [])
+                )
 
                 if (continuationReply !== null) {
                   clearBotAttention(memberKey)
@@ -819,6 +934,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                   thread
                 })
                 noteBotAttention(memberKey, error?.message || error)
+
+                if (error instanceof GroupFileDeliveryError) {
+                  deliveryFailed.add(memberKey)
+
+                  continue
+                }
+
                 continuationReply = null
               }
 
@@ -844,8 +966,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                         }
                       : {})
                   },
-                  continuationReply,
-                  thread
+                  groupTurnText(continuationReply),
+                  thread,
+                  typeof continuationReply === 'object' ? continuationReply.images : undefined,
+                  typeof continuationReply === 'object' ? continuationReply.entryId : undefined
                 )
                 updateGroupChat(group, (r: GroupChatRoom) => {
                   r.watermarks[markKey] = r.log.length
@@ -954,6 +1078,84 @@ async function harvestStrandedUntilSettled(group: string, members: GroupMember[]
   })
 }
 
+/** Composer send with a durable hosted boundary. File staging and verified
+ * outbox insertion hold the room-order lock; only then is the optimistic
+ * message painted. Classic rooms retain the synchronous round engine. */
+export async function sendToGroupChatDurably(
+  group: string,
+  members: GroupMember[],
+  text: string,
+  thread?: null | string,
+  images?: Attachment[]
+) {
+  const room = $groupChats.get()[group]
+
+  if (!groupChatHostedGateway(room)) {
+    return sendToGroupChat(group, members, text, thread, images)
+  }
+
+  const trimmed = String(text || '').trim()
+  const attached = Array.isArray(images) ? images.filter((image): image is Attachment => Boolean(image?.data)) : []
+
+  if ((!trimmed && !attached.length) || !members.length || room.hostedStatus?.state === 'deleted') {
+    return null
+  }
+
+  if (!groupChatContinuityReady(room)) {
+    updateGroupChat(
+      group,
+      current => ({
+        ...current,
+        continuityIssue: current.continuityIssue || current.hostedStatus?.label || botsText().group.hostedSyncing
+      }),
+      { sync: false }
+    )
+
+    return null
+  }
+
+  const target = thread || mintGroupThreadId()
+  const commandId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const roomId = String(room.roomId || '')
+  const generation = beginHostedRoomMutation(roomId)
+
+  const message: GroupMessage = {
+    at: Date.now(),
+    from: { kind: 'user', name: 'You' },
+    id: commandId,
+    ...(attached.length ? { images: attached } : {}),
+    text: trimmed,
+    thread: target
+  }
+
+  await queueHostedGroupChat(group, message, target)
+
+  if (!hostedRoomMutationIsCurrent(roomId, generation) || !$groupChats.get()[group]) {
+    return target
+  }
+
+  $groupNeedsYou.set({
+    ...$groupNeedsYou.get(),
+    [group]: false
+  })
+  updateGroupChat(group, current => ({
+    ...current,
+    members: durableGroupChatMembers(members),
+    running: true,
+    hostedStatus: {
+      state: 'queued',
+      label: botsText().group.hostedQueued(hostedConnectionName(room))
+    },
+    continuityIssue: null
+  }))
+  const visibleAttachments = attached.map(({ uploadId: _uploadId, ...attachment }) => attachment)
+
+  appendGroupChatEntry(group, message.from, trimmed, target, visibleAttachments, commandId)
+  recordGroupActivity(group, { kind: 'queued', member: 'You', thread: target })
+
+  return target
+}
+
 /** User send into a group room. `thread` continues that thread (its reply
  *  box); omitted/null mints a NEW thread — the main composer's Slack shape.
  *  Appends, bumps the room epoch (supersedes any running loop at its next
@@ -968,8 +1170,31 @@ export function sendToGroupChat(
 ): null | string {
   const trimmed = String(text || '').trim()
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
+  const roomBeforeSend = $groupChats.get()[group]
+  const hosted = groupChatHostedGateway(roomBeforeSend)
 
   if ((!trimmed && !attached.length) || !members.length) {
+    return null
+  }
+
+  if (hosted && roomBeforeSend?.hostedStatus?.state === 'deleted') {
+    return null
+  }
+
+  if (!groupChatContinuityReady(roomBeforeSend)) {
+    updateGroupChat(
+      group,
+      current => ({
+        ...current,
+        continuityIssue: current.continuityIssue || current.hostedStatus?.label || botsText().group.hostedSyncing
+      }),
+      { sync: false }
+    )
+
+    return null
+  }
+
+  if (hosted) {
     return null
   }
 
@@ -997,6 +1222,10 @@ export function sendToGroupChat(
     target,
     attached
   )
+
+  if (!sent) {
+    return null
+  }
 
   const wasRunning = ($groupChats.get()[group] || {}).running === true
   updateGroupChat(group, (room: GroupChatRoom) => {

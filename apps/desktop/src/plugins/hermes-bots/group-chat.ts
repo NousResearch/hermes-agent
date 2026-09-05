@@ -11,7 +11,22 @@
 
 import { atom, host } from '@hermes/plugin-sdk'
 
-import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { $botMeta, $lastRoster } from './data'
+import { mergeMemberProjectionIntoRoom, mergeProjectedMemberLists } from './group-member-projection'
+import {
+  compactGroupMessageAuthor,
+  compatibleGroupMessageCopies,
+  GROUP_CHAT_SYNC_TEXT_CHARS,
+  groupChatSyncSequence,
+  groupMessageAnchors,
+  mergeGroupMessageCopies
+} from './group-message-author'
+import {
+  outgoingHostedUserEvent,
+  projectedGroupMessage,
+  reconcileHostedUserEvents,
+  storedHostedUserEvent
+} from './hosted-user-events'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { getPluginCtx } from './shared'
 import type {
@@ -35,6 +50,9 @@ export const $groupChats = atom<Record<string, GroupChatRoom>>({})
 export const $groupChatWorkspace = atom<null | string>(null)
 /** Groups whose latest room activity mentions @user — the needs-you badge. */
 export const $groupNeedsYou = atom<Record<string, boolean>>({})
+/** Hosted approval attention stays separate from message mentions so resolving
+ * one source cannot erase the other source's unread state. */
+export const $groupHostedNeedsYou = atom<Record<string, boolean>>({})
 // Pending prompts (clarify questions AND command approvals) raised inside
 // hidden group-member sessions, keyed `${group}::${memberKey}` (#90694).
 // Members run in invisible plumbing sessions, so a member's blocking prompt
@@ -49,13 +67,15 @@ const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 // margin below that limit because Python escapes Unicode while JS does not.
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
 const GROUP_CHAT_SYNC_MESSAGES = 16
-const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
+  continuityMode?: 'desktop' | 'distributed' | 'gateway'
+  hosted?: null | string
+  hostedEpoch?: null | number
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
@@ -122,6 +142,95 @@ export function groupChatGatewayJsonSize(value: unknown) {
  *  revision-gated tombstone semantics. */
 export function groupChatRoomKey(name: string, room: GroupChat) {
   return typeof room?.roomId === 'string' && room.roomId ? `id:${room.roomId}` : `name:${String(name)}`
+}
+
+/** Stable authority id for a gateway-hosted room. Presence is an execution
+ * fence: a Desktop that cannot reach that gateway must not start a second
+ * local round driver for the same room. */
+export function groupChatHostedGateway(room: null | Partial<Pick<GroupChat, 'hosted' | 'hostedEpoch'>> | undefined) {
+  return typeof room?.hosted === 'string' ? room.hosted.trim().slice(0, 128) : ''
+}
+
+/** Monotonic authority epoch. Legacy hosted records predate the explicit
+ * field and safely mean epoch 1. */
+export function groupChatHostedEpoch(room: null | Partial<Pick<GroupChat, 'hosted' | 'hostedEpoch'>> | undefined) {
+  const epoch = Number(room?.hostedEpoch || 0)
+
+  if (Number.isSafeInteger(epoch) && epoch >= 1) {
+    return epoch
+  }
+
+  return groupChatHostedGateway(room) ? 1 : 0
+}
+
+export function groupChatContinuityMode(
+  room: null | Partial<Pick<GroupChat, 'continuityMode' | 'hosted' | 'hostedEpoch'>> | undefined
+) {
+  if (!groupChatHostedGateway(room)) {
+    return 'desktop' as const
+  }
+
+  return room?.continuityMode === 'distributed' ? ('distributed' as const) : ('gateway' as const)
+}
+
+/** Apply authority only from `groups.state`, never from the client-writable
+ * ui_meta display projection. A conflicting owner cannot replace an existing
+ * fence without a server-issued authority transfer receipt. */
+export function applyHostedRoomAuthority(room: GroupChat, serverRoom: Record<string, unknown>): GroupChat {
+  const authorityGateway = groupChatHostedGateway({
+    hosted: typeof serverRoom.authority_gateway_id === 'string' ? serverRoom.authority_gateway_id : null
+  })
+
+  const authorityEpoch = Number(serverRoom.authority_epoch || 0)
+  const roomId = typeof room?.roomId === 'string' ? room.roomId : ''
+  const serverRoomId = typeof serverRoom.room_id === 'string' ? serverRoom.room_id : ''
+
+  if (
+    !authorityGateway ||
+    !Number.isSafeInteger(authorityEpoch) ||
+    authorityEpoch < 1 ||
+    (roomId && serverRoomId && roomId !== serverRoomId)
+  ) {
+    return room
+  }
+
+  const currentGateway = groupChatHostedGateway(room)
+  const currentEpoch = groupChatHostedEpoch(room)
+
+  const claim =
+    serverRoom.authority_claim && typeof serverRoom.authority_claim === 'object'
+      ? (serverRoom.authority_claim as Record<string, unknown>)
+      : null
+
+  const actor = claim?.actor && typeof claim.actor === 'object' ? (claim.actor as Record<string, unknown>) : null
+
+  const payload =
+    claim?.payload && typeof claim.payload === 'object' ? (claim.payload as Record<string, unknown>) : null
+
+  const transferProven = Boolean(
+    claim?.kind === 'authority.claimed' &&
+    actor?.kind === 'system' &&
+    actor?.id === 'authority-control' &&
+    Number(claim?.authority_epoch || 0) === authorityEpoch &&
+    payload?.previous_gateway_id === currentGateway &&
+    payload?.authority_gateway_id === authorityGateway &&
+    Number(payload?.authority_epoch || 0) === authorityEpoch
+  )
+
+  if (
+    currentEpoch > authorityEpoch ||
+    (currentGateway && currentGateway !== authorityGateway && !transferProven) ||
+    (currentEpoch === authorityEpoch && currentGateway && currentGateway !== authorityGateway)
+  ) {
+    return room
+  }
+
+  return {
+    ...room,
+    hosted: authorityGateway,
+    hostedEpoch: authorityEpoch,
+    continuityMode: room.continuityMode === 'distributed' ? 'distributed' : 'gateway'
+  }
 }
 
 /** Lift any historical projection shape (v1 wall-clock, v2 name-keyed) to
@@ -214,21 +323,20 @@ export function groupChatSyncSnapshot(
   }
 
   for (const [name, room] of ranked) {
-    const log: GroupMessage[] = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
+    const entries =
+      room.roomId && groupChatHostedGateway(room) ? reconcileHostedUserEvents(room.roomId, room.log) : room.log
+
+    const log: GroupMessage[] = entries.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
       ...(entry?.id
         ? {
             id: String(entry.id).slice(0, 160)
           }
         : {}),
-      from: {
-        kind: entry?.from?.kind === 'member' ? 'member' : 'user',
-        name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
-        ...(entry?.from?.source
-          ? {
-              source: String(entry.from.source).slice(0, 128)
-            }
-          : {})
-      },
+      ...(entry.from?.kind === 'user' && (entry.eventId || (groupChatSyncSequence(entry) !== null && entry.id))
+        ? { eventId: String(entry.eventId || entry.id).slice(0, 160) }
+        : {}),
+      ...(entry.roomId ? { roomId: String(entry.roomId).slice(0, 128) } : {}),
+      from: compactGroupMessageAuthor(entry?.from),
       text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),
       at: Number(entry?.at || 0),
       ...(entry?.thread
@@ -245,10 +353,27 @@ export function groupChatSyncSnapshot(
             roomId: String(room.roomId).slice(0, 128)
           }
         : {}),
+      // Presence is the mixed-version contract. Older clients omit these
+      // fields; hosted-aware clients must preserve an existing non-empty
+      // authority fence instead of interpreting omission as a local takeover.
+      hosted: groupChatHostedGateway(room) || null,
+      hostedEpoch: groupChatHostedEpoch(room) || null,
+      continuityMode: groupChatContinuityMode(room),
       log,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
+        ...(member?.hostedIdentity
+          ? {
+              hostedIdentity: { ...member.hostedIdentity },
+              title: String(member.title || '').slice(0, 256),
+              display_name: String(member.display_name || '').slice(0, 256),
+              targetProfile: member.hostedIdentity.profile,
+              remoteSource: true,
+              sourceMissing: member.sourceMissing,
+              sourceReachable: member.sourceReachable
+            }
+          : {}),
         ...(member?.handle
           ? {
               handle: String(member.handle).slice(0, 128)
@@ -302,10 +427,24 @@ export function groupChatSyncSnapshot(
 }
 
 function groupChatSyncEntryKey(entry: GroupMessage) {
+  const seq = groupChatSyncSequence(entry)
+
+  if (seq !== null) {
+    return `seq:${seq}`
+  }
+
+  if (entry?.eventId) {
+    return `event:${String(entry.eventId)}`
+  }
+
   if (entry?.id) {
     return `id:${String(entry.id)}`
   }
 
+  return `fallback:${groupChatSyncFallbackKey(entry)}`
+}
+
+function groupChatSyncFallbackKey(entry: GroupMessage) {
   return JSON.stringify([
     Number(entry?.at || 0),
     String(entry?.from?.kind || ''),
@@ -323,17 +462,78 @@ function groupChatSyncEntryKey(entry: GroupMessage) {
   ])
 }
 
-/** Members dedupe on durable identity — the same (connectionId, name) pair
- *  botRosterKey seats them by everywhere else. `connectionLabel` and `handle`
- *  are display strings each machine re-derives (a connection rename, an older
- *  build with no handle), so keying on them seats one bot twice; both copies
- *  then answer to a single groupMemberKey in watermarks/sessions/stranded and
- *  the round engine gives that bot two turns. Deliberately unconditional,
- *  unlike groupMemberKey: the projection stamps `remoteSource` onto members it
- *  merges in, so a scoped/unscoped branch would fork a member from its own
- *  previously-merged copy. */
-function groupChatSyncMemberKey(member: GroupMember) {
-  return botRosterKey(member)
+export { groupChatSyncSequence } from './group-message-author'
+
+function compareGroupChatSyncEntries(left: GroupMessage, right: GroupMessage) {
+  const leftSeq = groupChatSyncSequence(left)
+  const rightSeq = groupChatSyncSequence(right)
+
+  if (leftSeq !== null && rightSeq !== null) {
+    return leftSeq - rightSeq || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
+  }
+
+  const byTime = Number(left?.at || 0) - Number(right?.at || 0)
+
+  return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
+}
+
+/** Union a hosted replay with local/compact mirrors without briefly showing
+ * both the optimistic event id and its authoritative sequence twin. */
+export function mergeGroupChatSyncEntries(...logs: GroupMessage[][]) {
+  const entries: GroupMessage[] = []
+  const byAnchor = new Map<string, Set<number>>()
+
+  for (const entry of logs.flat()) {
+    const keys = groupMessageAnchors(entry)
+
+    if (!entry.from?.hostedIdentity && !entry.from?.hostedIdentityEvidence) {
+      keys.push(`fallback:${groupChatSyncFallbackKey(entry)}`)
+    }
+
+    // Keep all candidates for conflicting anchors. Neither insertion order
+    // nor a matching sequence may silently alias two different stable IDs.
+    const candidates = new Set(keys.flatMap(key => [...(byAnchor.get(key) || [])]))
+    const compatible = [...candidates].filter(index => compatibleGroupMessageCopies(entries[index], entry))
+    const scores = compatible.map(index => groupMessageAnchors(entries[index]).filter(key => keys.includes(key)).length)
+    const strongest = Math.max(0, ...scores)
+    const matches = compatible.filter((_, index) => scores[index] === strongest)
+    const index = matches.length === 1 ? matches[0] : entries.length
+
+    if (index === entries.length) {
+      entries.push(entry)
+    } else {
+      entries[index] = mergeGroupMessageCopies(entries[index], entry)
+    }
+
+    for (const key of keys) {
+      const indices = byAnchor.get(key) || new Set<number>()
+      indices.add(index)
+      byAnchor.set(key, indices)
+    }
+  }
+
+  return entries.sort(compareGroupChatSyncEntries)
+}
+
+/** Legacy display rows may lack room/actor metadata. Keep their kinds separate
+ * through import and later room merges, even before room identity is available. */
+export function mergeGroupChatRoomEntries(room: Pick<GroupChat, 'roomId' | 'hosted'>, ...logs: GroupMessage[][]) {
+  const byKind = new Map<GroupMessageAuthor['kind'] | undefined, GroupMessage[]>()
+
+  for (const entry of logs.flat()) {
+    const kind = entry.from?.kind
+    const entries = byKind.get(kind) || []
+    entries.push(entry)
+    byKind.set(kind, entries)
+  }
+
+  return [...byKind.values()]
+    .flatMap(entries =>
+      mergeGroupChatSyncEntries(
+        room.roomId && groupChatHostedGateway(room) ? reconcileHostedUserEvents(room.roomId, entries) : entries
+      )
+    )
+    .sort(compareGroupChatSyncEntries)
 }
 
 /** Merge two bounded projections without treating an absent room/message as
@@ -421,36 +621,65 @@ export function mergeGroupChatSyncSnapshots(
       ? Math.max(0, Number(writeRevision || 0))
       : Math.max(0, Number(localRoom?.revision || 0))
 
-    const entries = new Map<string, GroupMessage>()
+    const keyRoomId = key.startsWith('id:') ? key.slice(3) : undefined
 
-    for (const entry of [...(remoteRoom?.log || []), ...(localRoom?.log || [])]) {
-      entries.set(groupChatSyncEntryKey(entry), entry)
-    }
+    const entries = mergeGroupChatRoomEntries(
+      {},
+      (remoteRoom?.log || []).map(entry =>
+        projectedGroupMessage(entry, groupChatHostedGateway(remoteRoom) ? remoteRoom?.roomId || keyRoomId : undefined)
+      ),
+      (localRoom?.log || []).map(entry =>
+        projectedGroupMessage(entry, groupChatHostedGateway(localRoom) ? localRoom?.roomId || keyRoomId : undefined)
+      )
+    )
 
     // Identity fields (display name, membership, picture) follow the higher
     // revision; a tie unions members and prefers the local writer's fields.
     let identity: GroupChatSyncRoom | undefined
     let members: GroupMember[]
     let image: null | string | undefined
+    let hosted: null | string | undefined
+    let hostedEpoch = 0
+    let hostedPresent = false
+    const remoteHostedPresent = Object.prototype.hasOwnProperty.call(remoteRoom || {}, 'hosted')
+    const localHostedPresent = Object.prototype.hasOwnProperty.call(localRoom || {}, 'hosted')
 
     if (localRevision > remoteRevision) {
       identity = localRoom
       members = [...(localRoom?.members || [])]
       image = localRoom?.image
+      hostedPresent = localHostedPresent || remoteHostedPresent
+      hosted = localHostedPresent ? groupChatHostedGateway(localRoom) : groupChatHostedGateway(remoteRoom)
+      hostedEpoch = localHostedPresent ? groupChatHostedEpoch(localRoom) : groupChatHostedEpoch(remoteRoom)
     } else if (remoteRevision > localRevision) {
       identity = remoteRoom
       members = [...(remoteRoom?.members || [])]
       image = remoteRoom?.image
+      hostedPresent = remoteHostedPresent || localHostedPresent
+      hosted = remoteHostedPresent ? groupChatHostedGateway(remoteRoom) : groupChatHostedGateway(localRoom)
+      hostedEpoch = remoteHostedPresent ? groupChatHostedEpoch(remoteRoom) : groupChatHostedEpoch(localRoom)
     } else {
       identity = localRoom || remoteRoom
-      const byId = new Map<string, GroupMember>()
-
-      for (const member of [...(remoteRoom?.members || []), ...(localRoom?.members || [])]) {
-        byId.set(groupChatSyncMemberKey(member), member)
-      }
-
-      members = [...byId.values()]
+      members = mergeProjectedMemberLists(remoteRoom, localRoom)
       image = Object.prototype.hasOwnProperty.call(localRoom || {}, 'image') ? localRoom.image : remoteRoom?.image
+      hostedPresent = localHostedPresent || remoteHostedPresent
+      hosted = localHostedPresent ? groupChatHostedGateway(localRoom) : groupChatHostedGateway(remoteRoom)
+      hostedEpoch = localHostedPresent ? groupChatHostedEpoch(localRoom) : groupChatHostedEpoch(remoteRoom)
+    }
+
+    // ui_meta is a display cache, not an authority receipt. Preserve any
+    // existing non-empty fence even if a newer legacy writer omitted it.
+    const remoteHosted = groupChatHostedGateway(remoteRoom)
+    const localHosted = groupChatHostedGateway(localRoom)
+
+    if (localHosted) {
+      hostedPresent = true
+      hosted = localHosted
+      hostedEpoch = groupChatHostedEpoch(localRoom)
+    } else if (remoteHosted) {
+      hostedPresent = true
+      hosted = remoteHosted
+      hostedEpoch = groupChatHostedEpoch(remoteRoom)
     }
 
     rooms[key] = {
@@ -464,13 +693,20 @@ export function mergeGroupChatSyncSnapshots(
             roomId: identity?.roomId || key.slice(3)
           }
         : {}),
-      log: [...entries.values()].sort((left, right) => {
-        const byTime = Number(left?.at || 0) - Number(right?.at || 0)
-
-        return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
-      }),
+      log: entries,
       members,
       revision: Math.max(remoteRevision, localRevision),
+      ...(hostedPresent
+        ? {
+            hosted: hosted || null,
+            hostedEpoch: hostedEpoch || null,
+            continuityMode: hosted
+              ? identity?.continuityMode === 'distributed'
+                ? ('distributed' as const)
+                : ('gateway' as const)
+              : ('desktop' as const)
+          }
+        : {}),
       ...(typeof image === 'string' && image
         ? {
             image
@@ -609,50 +845,43 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     const remoteRevision = Math.max(0, Number(projected.revision || 0))
     const localRevision = Math.max(0, Number(existing.syncRevision || 0))
 
-    const entries = new Map<string, GroupMessage>(
-      (Array.isArray(existing.log) ? existing.log : []).map(entry => [groupChatSyncEntryKey(entry), entry])
-    )
-
-    const members = new Map<string, GroupMember>(
-      (Array.isArray(existing.members) ? existing.members : []).map(member => [groupChatSyncMemberKey(member), member])
-    )
-
-    for (const entry of projected.log) {
-      const entryKey = groupChatSyncEntryKey(entry)
-
-      // The projection is COMPACT (truncated text, no images). When the same
-      // entry exists locally, the local rich copy is authoritative — merging
-      // the compact twin over it would strip attachments and retrigger
-      // watermark deltas for members that already saw it (phantom rounds).
-      if (!entries.has(entryKey)) {
-        entries.set(entryKey, entry)
-      }
-    }
-
     const isPreserved = preserved.has(displayName) || (localName && preserved.has(localName))
 
-    if (!isPreserved) {
-      if (remoteRevision > localRevision) {
-        members.clear()
-      }
-
-      for (const member of Array.isArray(projected.members) ? projected.members : []) {
-        members.set(groupChatSyncMemberKey(member), {
-          ...member,
-          remoteSource: true
-        })
-      }
-    }
-
-    const log = assignLegacyThreads(
-      [...entries.values()].sort((left, right) => {
-        const byTime = Number(left?.at || 0) - Number(right?.at || 0)
-
-        return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
-      })
+    const membership = mergeMemberProjectionIntoRoom(
+      existing,
+      projected,
+      Boolean(isPreserved),
+      remoteRevision > localRevision
     )
 
+    // Projection copies are compact and therefore go first: the local rich
+    // twin overlays them while retaining the authoritative hosted sequence.
+    const logRoom = projectedRoomId && existing.roomId === projectedRoomId ? existing : {}
+    const differentRooms = projectedRoomId && existing.roomId && projectedRoomId !== existing.roomId
+    const hostedScope = groupChatHostedGateway(existing) || groupChatHostedGateway(projected)
+
+    // A name fallback cannot make (room, event) IDs global. Scope imported
+    // actors to their container, and fill missing local scope without replacing
+    // explicit canonical evidence already retained in the local cache.
+    const projectedLog = projected.log.map(entry => {
+      const display = projectedGroupMessage(entry, hostedScope ? projectedRoomId : undefined)
+
+      return differentRooms ? { ...display, roomId: projectedRoomId! } : display
+    })
+
+    const localLog = (existing.log || []).map(entry =>
+      existing.roomId && (differentRooms || hostedScope) && !entry.roomId
+        ? { ...entry, roomId: existing.roomId }
+        : entry
+    )
+
+    const log = assignLegacyThreads(mergeGroupChatRoomEntries(logRoom, projectedLog, localLog))
+
     const bounded = trimGroupChatLog(log, existing.watermarks || {})
+    const projectedHosted = groupChatHostedGateway(projected)
+    const existingHosted = groupChatHostedGateway(existing)
+    const cachedHosted = existingHosted || projectedHosted
+    const cachedHostedEpoch = existingHosted ? groupChatHostedEpoch(existing) : groupChatHostedEpoch(projected)
 
     // A remote rename with a higher revision moves the local record to the
     // new display name; local views keyed by the old name follow on the
@@ -669,7 +898,8 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
-      members: [...members.values()],
+      members: membership.members,
+      ...(membership.needsRefresh ? { hostedMembersNeedRefresh: true } : {}),
       ...(projectedRoomId || existing.roomId
         ? {
             roomId: existing.roomId || projectedRoomId
@@ -680,6 +910,13 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         : remoteRevision >= localRevision && Object.prototype.hasOwnProperty.call(projected, 'image')
           ? projected.image || null
           : existing.image || null,
+      hosted: cachedHosted || null,
+      hostedEpoch: cachedHostedEpoch || null,
+      continuityMode: cachedHosted
+        ? existing.continuityMode === 'distributed' || projected.continuityMode === 'distributed'
+          ? 'distributed'
+          : 'gateway'
+        : 'desktop',
       syncRevision: isPreserved ? localRevision : Math.max(remoteRevision, localRevision),
       epoch: Number(existing.epoch || 0),
       running: Boolean(existing.running)
@@ -737,7 +974,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
     }
 
     durable[name] = {
-      log: room.log,
+      log: room.log.map(storedHostedUserEvent),
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
       stranded: room.stranded || {},
@@ -748,6 +985,13 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
       // name-keyed identity — same field updateGroupChat's inline map
       // already carries.
       roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+      hosted: groupChatHostedGateway(room) || null,
+      hostedEpoch: groupChatHostedEpoch(room) || null,
+      hostedConnectionId:
+        typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
+      hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+      hostedMembersVerified: room.hostedMembersVerified === true,
+      continuityMode: groupChatContinuityMode(room),
       image: room.image || null,
       syncRevision: Math.max(0, Number(room.syncRevision || 0))
     }
@@ -1329,7 +1573,7 @@ export function updateGroupChat(
       }
 
       durable[name] = {
-        log: room.log,
+        log: room.log.map(storedHostedUserEvent),
         watermarks: room.watermarks,
         sessions: room.sessions || {},
         sessionOwners: room.sessionOwners || {},
@@ -1346,6 +1590,13 @@ export function updateGroupChat(
         members: Array.isArray(room.members) ? room.members : [],
         // Immutable room identity: the member-session title for new rooms.
         roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
+        hosted: groupChatHostedGateway(room) || null,
+        hostedEpoch: groupChatHostedEpoch(room) || null,
+        hostedConnectionId:
+          typeof room.hostedConnectionId === 'string' && room.hostedConnectionId ? room.hostedConnectionId : null,
+        hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
+        hostedMembersVerified: room.hostedMembersVerified === true,
+        continuityMode: groupChatContinuityMode(room),
         // Room picture (small data URL, same normalization as bot avatars).
         image: room.image || null,
         syncRevision: Math.max(0, Number(room.syncRevision || 0))
@@ -1421,10 +1672,11 @@ export function appendGroupChatEntry(
   from: GroupMessageAuthor,
   text: string,
   thread?: null | string,
-  images?: Attachment[]
+  images?: Attachment[],
+  entryId?: string
 ): GroupMessage {
-  const entry: GroupMessage = {
-    id: groupChatEntryId(),
+  let entry: GroupMessage = {
+    id: entryId || groupChatEntryId(),
     at: Date.now(),
     from,
     text: normalizeGroupChatText(text),
@@ -1442,13 +1694,29 @@ export function appendGroupChatEntry(
   // byte-identical. Drop the echo instead of flooding the room. User
   // entries and non-adjacent repeats are never touched.
   const priorLog = ($groupChats.get()[group] || {}).log || []
+
+  if (entryId?.startsWith('classic-export:')) {
+    const existing = priorLog.find(item => item.id === entryId)
+
+    if (existing) {
+      return existing
+    }
+  }
+
   const lastEntry = priorLog[priorLog.length - 1]
 
-  if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
+  if (!entryId?.startsWith('classic-export:') && isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
     return lastEntry
   }
 
   updateGroupChat(group, (room: GroupChatRoom) => {
+    if (from.kind === 'user' && room.roomId && groupChatHostedGateway(room)) {
+      entry = outgoingHostedUserEvent(entry, room.roomId, entry.id || '')
+      room.log = reconcileHostedUserEvents(room.roomId, room.log, [entry])
+
+      return room
+    }
+
     room.log.push(entry)
 
     return room
@@ -1556,6 +1824,17 @@ export function groupThreadOf(entry: GroupMessage): string {
   return entry?.thread || 'legacy'
 }
 
+/** Count only transcript rows a person can actually see, excluding the
+ * thread head itself. Status-only replay events must not inflate replies. */
+export function groupThreadReplyCount(log: GroupMessage[], thread: string): number {
+  const visible = (log || []).filter(
+    entry =>
+      groupThreadOf(entry) === thread && (Boolean(String(entry?.text || '').trim()) || Boolean(entry?.images?.length))
+  )
+
+  return Math.max(0, visible.length - 1)
+}
+
 export function mintGroupThreadId(): string {
   return `t${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
@@ -1569,14 +1848,25 @@ export function assignLegacyThreads(log: GroupMessage[]): GroupMessage[] {
   let current: null | string = null
   let n = 0
 
-  return (log || []).map((entry, i) => {
+  const normalized = (log || []).map(entry => {
+    const at = Number(entry?.at || 0)
+
+    return at >= 1_000_000_000 && at < 1_000_000_000_000
+      ? {
+          ...entry,
+          at: at * 1000
+        }
+      : entry
+  })
+
+  return normalized.map((entry, i) => {
     if (entry?.thread) {
       current = null
 
       return entry
     }
 
-    const prev = log[i - 1]
+    const prev = normalized[i - 1]
     const lull = !prev || (entry.at || 0) - (prev.at || 0) > GROUP_THREAD_GAP_MS
 
     if (!current || (entry.from?.kind === 'user' && lull)) {

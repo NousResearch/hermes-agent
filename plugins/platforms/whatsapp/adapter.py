@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any
 
 from gateway.platforms._shared import get_scoped_secret
+from gateway.native_document_guard import mark_native_document_guard
 from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -647,6 +648,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
         return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
 
+    @mark_native_document_guard
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
                             reply_to: Optional[str] = None, **kwargs) -> SendResult:
         return await self._send_media_to_bridge(chat_id, file_path, "document", caption, file_name or os.path.basename(file_path))
@@ -790,8 +792,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._should_process_message(data):
                 return None
             msg_type = self._classify_bridge_message(data)
-            source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",
-                                       user_id=data.get("senderId"), user_name=data.get("senderName"))
+            raw_is_group = data.get("isGroup")
+            is_group = raw_is_group is True
+            source = self.build_source(
+                chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if is_group else "dm",
+                user_id=data.get("senderId"), user_name=data.get("senderName"),
+                is_bot=data.get("fromMe") is True and data.get("fromOwner") is not True)
+            source.is_one_to_one = raw_is_group is False
+            source.message_is_edit = bool(
+                data.get("isEdited") is True
+                or str(data.get("nativeType") or "").casefold() in {"editedmessage", "protocolmessage:message_edit"}
+            )
             cached_urls, media_types = await self._collect_bridge_media(data, msg_type)
             body = data.get("body", "")
             if data.get("isGroup"):
@@ -808,6 +819,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
             ) if v}
+            if source.message_is_edit:
+                metadata["message_is_edit"] = True
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.
             if data.get("fromOwner"):

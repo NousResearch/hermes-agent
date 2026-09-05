@@ -279,12 +279,31 @@ test.describe('fleet profile rail — two registered gateways', () => {
       [REMOTE_ID, false],
     ])
 
-    // Fleet pill replaces the default↔all toggle; the single-gateway plug is gone.
-    await expect(rail(page).getByRole('button', { name: 'All profiles on this gateway' })).toBeVisible()
+    // Fleet-wide scope leads the existing current-gateway scope.
+    const allGateways = rail(page).getByRole('button', { name: 'All profiles on all gateways' })
+    const thisGateway = rail(page).getByRole('button', { name: 'All profiles on this gateway' })
+    await expect(allGateways).toBeVisible()
+    await expect(thisGateway).toBeVisible()
+    await allGateways.click()
+    await expect(allGateways).toHaveAttribute('aria-pressed', 'true')
+    await expect(thisGateway).toHaveAttribute('aria-pressed', 'false')
+    await thisGateway.click()
+    await expect(thisGateway).toHaveAttribute('aria-pressed', 'true')
     await expect(rail(page).getByRole('button', { name: 'Manage gateways…' })).toHaveCount(0)
 
     await gatewayGroup(page, REMOTE_ID).getByRole('button', { name: `inbox · ${REMOTE_LABEL}` }).hover()
     await capture(page, '1-on-this-device-hover-inbox-homelab')
+  })
+
+  test('Manage profiles groups profiles from both gateways', async () => {
+    await rail(page).getByRole('button', { name: 'Manage profiles…' }).click()
+
+    await expect(page.getByText('This device', { exact: true }).first()).toBeVisible()
+    await expect(page.getByText(REMOTE_LABEL, { exact: true }).first()).toBeVisible()
+    await expect(page.getByRole('button', { name: 'inbox', exact: true }).first()).toBeVisible()
+    await capture(page, '2-manage-profiles-by-gateway')
+
+    await page.keyboard.press('Escape')
   })
 
   test('clicking an at-rest square re-homes onto that exact gateway and profile', async () => {

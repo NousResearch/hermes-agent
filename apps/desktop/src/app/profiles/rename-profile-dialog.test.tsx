@@ -22,6 +22,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 vi.mock('@/store/gateway', () => ({
+  retireAgentGateways: vi.fn(),
   retireLocalProfileGateways: vi.fn()
 }))
 

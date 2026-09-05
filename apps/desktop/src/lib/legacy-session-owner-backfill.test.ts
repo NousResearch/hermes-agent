@@ -1,6 +1,24 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const api = vi.hoisted(() => ({
+  getApiRequestConnection: vi.fn(() => 'secondary-gateway'),
+  hermesApi: vi.fn(async () => ({ ok: true, profile: 'default', stamped: 0 }))
+}))
+
+vi.mock('@/api/client', () => api)
+vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
+vi.mock('@/store/connection-registry-state', () => ({
+  $connectionsRegistry: { get: () => ({ connections: [{ id: 'local' }, { id: 'secondary-gateway' }] }) },
+  hasRegistryTopology: () => true
+}))
+
+import { maybeBackfillLegacySessionOwners, resetLegacyOwnerBackfillAttempts } from './legacy-session-owner-backfill'
 import { resolveLegacyOwnerBackfillScope } from './session-owner-stamp'
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  resetLegacyOwnerBackfillAttempts()
+})
 
 describe('resolveLegacyOwnerBackfillScope (#94724 single-match owner backfill)', () => {
   it('targets the serving registered connection (the backend that serves a page owns its rows)', () => {
@@ -76,4 +94,13 @@ describe('resolveLegacyOwnerBackfillScope (#94724 single-match owner backfill)',
       })
     ).toBeNull()
   })
+})
+
+it('pins an explicit local primary backfill instead of inheriting the ambient remote', () => {
+  maybeBackfillLegacySessionOwners('local')
+
+  expect(api.hermesApi).toHaveBeenCalledWith(
+    expect.objectContaining({ connectionId: 'local', method: 'POST', path: '/api/sessions/owner-backfill' })
+  )
+  expect(api.getApiRequestConnection).not.toHaveBeenCalled()
 })

@@ -2176,6 +2176,7 @@ export const zh: Translations = {
     manageProfiles: '管理配置档案…',
     connectGateway: '管理网关…',
     fleet: {
+      allOnAllGateways: '所有网关上的全部配置档案',
       allOnGateway: '此网关上的全部配置档案',
       gateway: gateway => `${gateway} 上的配置档案`,
       gatewayUnreachable: gateway => `${gateway} · 无法连接`,

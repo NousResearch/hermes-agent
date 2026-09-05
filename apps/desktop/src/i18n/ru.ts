@@ -2085,6 +2085,7 @@ export const ru = defineLocale({
     switchToConnection: name => `Переключиться на ${name}`,
     switchConnectionFailed: name => `Не удалось подключиться к ${name}`,
     manageProfiles: 'Управлять профилями…',
+    fleet: { allOnAllGateways: 'Все профили на всех шлюзах' },
     connectGateway: 'Управлять шлюзами…',
     actions: 'Действия',
     color: 'Цвет…',

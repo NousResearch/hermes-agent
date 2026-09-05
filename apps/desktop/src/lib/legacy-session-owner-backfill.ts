@@ -44,13 +44,13 @@ function scopeKey(connectionId: null | string, profile: null | string): string {
  * synchronous-cheap on the no-op paths (no registry topology, scope already
  * attempted) and never blocks or fails the list request that triggered it.
  */
-export function maybeBackfillLegacySessionOwners(): void {
+export function maybeBackfillLegacySessionOwners(servingConnectionId = getApiRequestConnection()): void {
   const scope = resolveLegacyOwnerBackfillScope({
     hasRegistryTopology: hasRegistryTopology(),
     registryConnectionIds: ($connectionsRegistry.get()?.connections ?? []).map(
       (connection: { id: string }) => connection.id
     ),
-    servingConnectionId: getApiRequestConnection()
+    servingConnectionId
   })
 
   if (!scope) {
@@ -65,8 +65,10 @@ export function maybeBackfillLegacySessionOwners(): void {
 
   attemptedScopes.add(key)
 
+  const requestConnectionId = String(servingConnectionId ?? '').trim() || scope.connectionId
+
   void hermesApi<{ ok: boolean; profile: string; stamped: number }>({
-    ...(scope.connectionId ? { connectionId: scope.connectionId } : {}),
+    ...(requestConnectionId ? { connectionId: requestConnectionId } : {}),
     ...(scope.profile ? { profile: scope.profile } : {}),
     path: '/api/sessions/owner-backfill',
     method: 'POST',

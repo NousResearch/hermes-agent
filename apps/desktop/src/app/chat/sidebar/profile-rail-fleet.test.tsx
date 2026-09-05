@@ -15,6 +15,7 @@ import { ProfileRail } from './profile-switcher'
 const navigate = vi.fn()
 const selectConnection = vi.fn()
 const selectProfile = vi.fn()
+const setShowAllProfiles = vi.fn()
 const getAgentRoster = vi.fn()
 
 vi.mock('react-router', () => ({
@@ -37,6 +38,7 @@ vi.mock('@/i18n', () => ({
         failedLoadSoul: 'Failed to load SOUL.md',
         failedSaveSoul: 'Failed to save SOUL.md',
         fleet: {
+          allOnAllGateways: 'All profiles on all gateways',
           allOnGateway: 'All profiles on this gateway',
           deleteOn: (gateway: string) => ` on ${gateway}`,
           gateway: (gateway: string) => `Profiles on ${gateway}`,
@@ -73,6 +75,7 @@ vi.mock('@/store/profile', () => ({
   $profileOrder: atom([]),
   $profiles: atom([{ is_default: true, name: 'default' }]),
   $profileScope: atom('default'),
+  $showAllGateways: atom(false),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
   profileLabel: (profile: { display_name?: string; name: string }) =>
@@ -81,7 +84,7 @@ vi.mock('@/store/profile', () => ({
   selectProfile: (name: string) => selectProfile(name),
   setProfileColor: vi.fn(),
   setProfileOrder: vi.fn(),
-  setShowAllProfiles: vi.fn(),
+  setShowAllProfiles: (...args: unknown[]) => setShowAllProfiles(...args),
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
@@ -123,9 +126,10 @@ const connectionsRegistry = connectionsStore.$connectionsRegistry as ReturnType<
   typeof atom<DesktopConnectionsRegistry | null>
 >
 
-const { $profiles, $profileScope } = await import('@/store/profile')
+const { $profiles, $profileScope, $showAllGateways } = await import('@/store/profile')
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
+const showAllGateways = $showAllGateways as ReturnType<typeof atom<boolean>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
 
 const registry: DesktopConnectionsRegistry = {
@@ -208,6 +212,7 @@ afterEach(() => {
   connectionsRegistry.set(null)
   activeConnectionId.set(null)
   profileScope.set('default')
+  showAllGateways.set(false)
   profiles.set([{ is_default: true, name: 'default' }])
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -257,8 +262,14 @@ describe('ProfileRail fleet mode', () => {
     expect(screen.getByRole('button', { name: 'scout' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
 
-    // Fleet pill: "all on this gateway" replaces the default↔all toggle.
-    expect(screen.getByRole('button', { name: 'All profiles on this gateway' })).toBeTruthy()
+    // Fleet scope pills: global first, then the existing current-gateway scope.
+    const global = screen.getByRole('button', { name: 'All profiles on all gateways' })
+    const current = screen.getByRole('button', { name: 'All profiles on this gateway' })
+    expect(global.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(global)
+    expect(setShowAllProfiles).toHaveBeenLastCalledWith(true, 'fleet')
+    fireEvent.click(current)
+    expect(setShowAllProfiles).toHaveBeenLastCalledWith(true)
     expect(screen.queryByRole('button', { name: 'Manage gateways…' })).toBeNull()
   })
 

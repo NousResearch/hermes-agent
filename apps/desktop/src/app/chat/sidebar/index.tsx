@@ -30,7 +30,7 @@ import { resolveProfileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $activeConnectionId } from '@/store/connections'
+import { $activeConnectionId, $connectionsRegistry } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { $bindings } from '@/store/keybinds'
 import {
@@ -78,6 +78,7 @@ import {
   $profileColors,
   $profiles,
   $profileScope,
+  $showAllGateways,
   ALL_PROFILES,
   messagingTotalsKey,
   normalizeProfileKey,
@@ -399,7 +400,9 @@ export function ChatSidebar({
   const profiles = useStore($profiles)
   const profileColors = useStore($profileColors)
   const profileScope = useStore($profileScope)
+  const showAllGateways = useStore($showAllGateways)
   const activeConnectionId = useStore($activeConnectionId)
+  const connectionsRegistry = useStore($connectionsRegistry)
 
   // Toggle the persisted read-state watermark from a row menu. The row's own
   // `unread` prop mirrors what the dot paints; flip it and let the backend
@@ -1271,14 +1274,24 @@ export function ChatSidebar({
     }
 
     const groups = new Map<string, SidebarSessionGroup>()
+    const fleetScope = showAllGateways && profileScope === ALL_PROFILES
+
+    const connectionLabels = new Map(
+      (connectionsRegistry?.connections ?? []).map(connection => [connection.id, connection.label])
+    )
+
+    const primaryConnectionId = connectionsRegistry?.primary || activeConnectionId || 'local'
 
     for (const session of agentSessions) {
-      const key = normalizeProfileKey(session.profile)
+      const profile = normalizeProfileKey(session.profile)
+      const connectionId = session.connection_id || primaryConnectionId
+      const key = fleetScope ? `${connectionId}::${profile}` : profile
+      const gateway = connectionLabels.get(connectionId) || connectionId
 
       const group = groups.get(key) ?? {
-        color: resolveProfileColor(key, profileColors),
+        color: resolveProfileColor(profile, profileColors),
         id: key,
-        label: key,
+        label: fleetScope ? t.profiles.fleet.onGateway(profile, gateway) : profile,
         mode: 'profile',
         path: null,
         sessions: []
@@ -1289,11 +1302,23 @@ export function ChatSidebar({
       groups.set(key, group)
     }
 
-    // default (root) first, then the rest alphabetically.
-    return [...groups.values()].sort((a, b) =>
-      a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)
-    )
-  }, [profileGrouped, agentSessions, profileColors])
+    // Default profiles first, then gateway-qualified labels alphabetically.
+    return [...groups.values()].sort((a, b) => {
+      const aDefault = a.id === 'default' || a.id.endsWith('::default')
+      const bDefault = b.id === 'default' || b.id.endsWith('::default')
+
+      return aDefault !== bDefault ? (aDefault ? -1 : 1) : a.label.localeCompare(b.label)
+    })
+  }, [
+    activeConnectionId,
+    agentSessions,
+    connectionsRegistry,
+    profileColors,
+    profileGrouped,
+    profileScope,
+    showAllGateways,
+    t.profiles.fleet
+  ])
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.
@@ -1361,9 +1386,9 @@ export function ChatSidebar({
   // fetch its own set.
   useEffect(() => {
     if (showArchived) {
-      void loadArchivedSessions()
+      void loadArchivedSessions(profileScope === ALL_PROFILES && showAllGateways)
     }
-  }, [showArchived])
+  }, [profileScope, showAllGateways, showArchived])
 
   // Ranking by size is a question about the whole list ("what did I burn money
   // on"), so it drops the calendar dividers and ranks globally — "Today" above

@@ -766,12 +766,15 @@ export const messagingTotalsKey = (messagingProfile: string, sourceId: string): 
   `${messagingProfile}:${sourceId}`
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
+const SHOW_ALL_GATEWAYS_STORAGE_KEY = 'hermes.desktop.showAllGateways'
 
 // Opt-in unified view. When false, scope follows the live gateway profile, so
 // single-profile users (who never see the switcher) are completely unaffected.
 export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
+export const $showAllGateways = atom<boolean>(storedBoolean(SHOW_ALL_GATEWAYS_STORAGE_KEY, false))
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
+$showAllGateways.subscribe(value => persistBoolean(SHOW_ALL_GATEWAYS_STORAGE_KEY, value))
 
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
@@ -790,7 +793,10 @@ export function selectProfile(name: string): void {
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
-  $showAllProfiles.set(false)
+  batch(() => {
+    $showAllProfiles.set(false)
+    $showAllGateways.set(false)
+  })
   $newChatProfile.set(target)
   $newChatRoute.set(null)
   // Clearing the agent route must NOT discard the registry identity: the pick
@@ -924,12 +930,15 @@ export function newSessionInAgent(route: AgentProfileRoute): void {
   })
 }
 
-export function setShowAllProfiles(value: boolean): void {
-  $showAllProfiles.set(value)
+export function setShowAllProfiles(value: boolean, scope: 'fleet' | 'gateway' = 'gateway'): void {
+  batch(() => {
+    $showAllProfiles.set(value)
+    $showAllGateways.set(value && scope === 'fleet')
+  })
 }
 
 export function toggleShowAllProfiles(): void {
-  $showAllProfiles.set(!$showAllProfiles.get())
+  setShowAllProfiles(!$showAllProfiles.get())
 }
 
 // ── Hotkey-driven profile switching ────────────────────────────────────────

@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+const ownerBackfill = vi.hoisted(() => ({ maybeBackfillLegacySessionOwners: vi.fn() }))
+
+const connectionsRegistry = vi.hoisted(() => ({
+  get: vi.fn(() => ({ connections: [], primary: 'primary-gateway', version: 1 }))
+}))
+
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
+vi.mock('@/lib/legacy-session-owner-backfill', () => ownerBackfill)
+vi.mock('@/store/connection-registry-state', () => ({ $connectionsRegistry: connectionsRegistry }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
   capabilityScoped: vi.fn(),
@@ -11,8 +19,14 @@ vi.mock('./client', () => ({
 
 const client = await import('./client')
 
-const { deleteSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  listAllProfileSessions,
+  listSidebarSessions,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
@@ -153,6 +167,26 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
 })
 
 describe('listSidebarSessions remote ownership', () => {
+  it('drops the ambient source only for the all-gateways scope', async () => {
+    hermesApi.mockResolvedValue({
+      cron: { sessions: [] },
+      messaging: { sessions: [] },
+      recents: { sessions: [] }
+    } as never)
+
+    await listSidebarSessions({
+      allConnections: true,
+      recentsProfile: 'all',
+      recentsLimit: 40,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 40,
+      messagingExclude: []
+    })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({ connectionId: '' })
+  })
+
   it('stamps active remote rows so a later resume stays on their gateway', async () => {
     hermesApi.mockResolvedValue({
       cron: { sessions: [] },
@@ -172,5 +206,51 @@ describe('listSidebarSessions remote ownership', () => {
     })
 
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
+  })
+
+  it('stamps untagged fleet rows with the primary while preserving remote owners', async () => {
+    hermesApi.mockResolvedValue({
+      cron: { sessions: [] },
+      messaging: { sessions: [] },
+      recents: {
+        sessions: [
+          { id: 'primary-session', profile: 'default' },
+          { connection_id: 'remote-gateway', id: 'remote-session', profile: 'default' }
+        ]
+      }
+    } as never)
+
+    const result = await listSidebarSessions({
+      allConnections: true,
+      recentsProfile: 'all',
+      recentsLimit: 40,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 40,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions).toMatchObject([
+      { connection_id: 'primary-gateway', id: 'primary-session' },
+      { connection_id: 'remote-gateway', id: 'remote-session' }
+    ])
+    expect(ownerBackfill.maybeBackfillLegacySessionOwners).toHaveBeenCalledWith('primary-gateway')
+  })
+})
+
+describe('listAllProfileSessions fleet ownership', () => {
+  it('uses the registry primary instead of the ambient foreground connection', async () => {
+    hermesApi.mockResolvedValue({
+      has_more: false,
+      limit: 40,
+      offset: 0,
+      sessions: [{ id: 'primary-session', profile: 'default' }],
+      total: 1
+    } as never)
+
+    const result = await listAllProfileSessions(40, 0, 'exclude', 'recent', 'all', {}, true)
+
+    expect(result.sessions[0]).toMatchObject({ connection_id: 'primary-gateway', id: 'primary-session' })
+    expect(ownerBackfill.maybeBackfillLegacySessionOwners).toHaveBeenCalledWith('primary-gateway')
   })
 })

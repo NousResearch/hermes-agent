@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  type ConnectionScopedProfileRenameDeps,
+  dispatchConnectionScopedProfileRename,
   prepareProfileRenameLifecycle,
   profileRenameFromRequest,
   type ProfileRenameLifecycleDeps
@@ -30,6 +32,41 @@ function lifecycleDeps(events: string[]): ProfileRenameLifecycleDeps {
     },
     writeActiveDesktopProfile: profile => {
       events.push(`write-active:${profile}`)
+    }
+  }
+}
+
+function connectionDeps(events: string[]): ConnectionScopedProfileRenameDeps<string> {
+  return {
+    acquire: profile => {
+      events.push(`gate:${profile}`)
+
+      return () => events.push(`release:${profile}`)
+    },
+    connectionKind: () => 'local',
+    dispatch: async routeProfile => {
+      events.push(`dispatch:${routeProfile ?? 'primary'}`)
+
+      return 'renamed'
+    },
+    isValidProfileName: profile => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(profile),
+    prepareLocal: async request => {
+      events.push(`prepare:${request.connectionId}`)
+
+      return {
+        complete: async () => {
+          events.push('complete')
+        },
+        kind: 'pool',
+        rename: { newName: 'renamed-profile', oldName: 'primary-profile' },
+        rollback: async () => {
+          events.push('rollback')
+        },
+        routeProfile: null
+      }
+    },
+    teardownConnection: async (connectionId, profile) => {
+      events.push(`teardown:${connectionId}:${profile}`)
     }
   }
 }
@@ -129,4 +166,76 @@ test('prepareProfileRenameLifecycle ignores invalid profile names without side e
 
   assert.equal(lifecycle, null)
   assert.deepEqual(events, [])
+})
+
+test('explicit registered local rename runs the local lifecycle under one gate', async () => {
+  const events: string[] = []
+
+  const result = await dispatchConnectionScopedProfileRename(
+    { ...renameRequest, connectionId: 'local', profile: 'primary-profile' },
+    connectionDeps(events)
+  )
+
+  assert.equal(result, 'renamed')
+  assert.deepEqual(events, ['gate:primary-profile', 'prepare:local', 'dispatch:primary', 'complete', 'release:primary-profile'])
+})
+
+test('connection-scoped rename validates its connection and old/new names before side effects', async () => {
+  const events: string[] = []
+  const deps = connectionDeps(events)
+
+  await assert.rejects(dispatchConnectionScopedProfileRename(renameRequest, deps), /requires a connection/i)
+  await assert.rejects(
+    dispatchConnectionScopedProfileRename(
+      { ...renameRequest, body: { new_name: 'not valid!' }, connectionId: 'local' },
+      deps
+    ),
+    /invalid profile rename/i
+  )
+  assert.deepEqual(events, [])
+})
+
+test('explicit registered SSH rename tears down its exact source backend before owner dispatch', async () => {
+  const events: string[] = []
+  const deps = connectionDeps(events)
+  deps.connectionKind = () => 'ssh'
+  deps.prepareLocal = async () => assert.fail('SSH rename must not use the local lifecycle')
+
+  const result = await dispatchConnectionScopedProfileRename(
+    { ...renameRequest, connectionId: 'build-host', profile: 'primary-profile' },
+    deps
+  )
+
+  assert.equal(result, 'renamed')
+  assert.deepEqual(events, [
+    'gate:primary-profile',
+    'teardown:build-host:primary-profile',
+    'dispatch:primary',
+    'release:primary-profile'
+  ])
+})
+
+test('explicit local rename rolls back before releasing its gate when dispatch fails', async () => {
+  const events: string[] = []
+  const deps = connectionDeps(events)
+
+  deps.dispatch = async () => {
+    events.push('dispatch:failed')
+    throw new Error('rename failed')
+  }
+
+  await assert.rejects(
+    dispatchConnectionScopedProfileRename(
+      { ...renameRequest, connectionId: 'local', profile: 'primary-profile' },
+      deps
+    ),
+    /rename failed/
+  )
+  assert.deepEqual(events, [
+    'gate:primary-profile',
+    'prepare:local',
+    'dispatch:failed',
+    'rollback',
+    'release:primary-profile'
+  ])
 })

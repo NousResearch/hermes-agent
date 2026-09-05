@@ -65,6 +65,7 @@ const {
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   retainGatewayForAgent,
+  retireAgentGateways,
   retireLocalProfileGateways,
   setPrimaryGateway
 } = await import('./gateway')
@@ -347,6 +348,24 @@ describe('retireLocalProfileGateways', () => {
     expect(gatewayMocks.instances).toHaveLength(2)
     expect(gatewayMocks.instances[0].close).toHaveBeenCalledOnce()
     expect(gatewayMocks.instances[1].close).not.toHaveBeenCalled()
+  })
+})
+
+describe('retireAgentGateways', () => {
+  it('retires only the owning remote profile and preserves same-named siblings', async () => {
+    installDesktop({
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) =>
+        descriptorFor(connectionId, profile)
+      )
+    })
+
+    await ensureGatewayForAgent('alpha', 'work')
+    await ensureGatewayForAgent('beta', 'work')
+
+    retireAgentGateways('beta', 'work')
+
+    expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+    expect(gatewayMocks.instances[1].close).toHaveBeenCalledOnce()
   })
 })
 

@@ -25,6 +25,8 @@ SEARCH_PRUNE_DIR_NAMES = frozenset({
     "__pycache__", ".cache", ".Trash", ".tox", ".nox", ".mypy_cache",
     ".pytest_cache", ".ruff_cache", ".npm", ".yarn", ".pnpm-store",
     ".gradle", ".m2", ".nuget",
+    # Toolchain and editor caches (multi-GB source trees on developer hosts).
+    ".cargo", ".rustup", ".cursor", ".vscode-server",
     # Backup copies.
     "backups", "backup", ".backups",
 })

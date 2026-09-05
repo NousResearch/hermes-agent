@@ -466,6 +466,7 @@ class TestSpillover:
         assert (spill_dir / "tc_prune_1.txt").exists()
 
 
+
 # ── recovery hint in the persisted preview ────────────────────────────
 
 class TestRecoveryHint:
@@ -483,3 +484,89 @@ class TestRecoveryHint:
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
         assert "read_file" in msg
+
+
+# ── _resolve_storage_dir edge cases ───────────────────────────────────
+
+class TestResolveStorageDirEdgeCases:
+    def test_env_get_temp_dir_raises(self):
+        """When env.get_temp_dir() raises, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        env.get_temp_dir.side_effect = OSError("permission denied")
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_get_temp_dir_returns_empty(self):
+        """When env.get_temp_dir() returns empty string, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = ""
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_get_temp_dir_returns_none(self):
+        """When env.get_temp_dir() returns None, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = None
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_has_no_get_temp_dir(self):
+        """When env has no get_temp_dir attribute, falls back to STORAGE_DIR."""
+        env = MagicMock()
+        del env.get_temp_dir
+        assert _resolve_storage_dir(env) == STORAGE_DIR
+
+    def test_env_temp_dir_trailing_slash_stripped(self):
+        """Trailing slashes are stripped from the temp dir."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = "/var/tmp///"
+        result = _resolve_storage_dir(env)
+        assert result == "/var/tmp/hermes-results"
+
+    def test_env_temp_dir_root_only(self):
+        """When temp dir is just '/', the rstrip-or-slash fallback yields
+        a double-slash path — cosmetic, not a bug."""
+        env = MagicMock()
+        env.get_temp_dir.return_value = "/"
+        result = _resolve_storage_dir(env)
+        assert result.endswith("/hermes-results")
+
+
+# ── enforce_turn_budget edge cases ─────────────────────────────────────
+
+class TestEnforceTurnBudgetEdgeCases:
+    def test_missing_tool_call_id_uses_budget_prefix(self):
+        """Messages without tool_call_id get a budget_ prefix."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "content": "x" * 250_000},
+        ]
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+        # Should be persisted with a budget_ prefix filename
+        assert PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        assert "budget_0" in msgs[0]["content"]
+
+    def test_no_content_key_uses_empty_string(self):
+        """Messages without content key are treated as empty."""
+        msgs = [{"role": "tool", "tool_call_id": "t1"}]
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert result is msgs
+
+    def test_all_already_persisted(self):
+        """When all results are already persisted, no changes."""
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1",
+             "content": f"{PERSISTED_OUTPUT_TAG}\nalready done\n{PERSISTED_OUTPUT_CLOSING_TAG}"},
+        ]
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=100))
+        assert result[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
+
+    def test_budget_enforcement_logs_persisted(self):
+        """Verify the logging path for budget enforcement is exercised."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
+        ]
+        with patch("tools.tool_result_storage.logger") as mock_logger:
+            enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
+            # Logger.info should have been called for the budget enforcement
+            assert mock_logger.info.called

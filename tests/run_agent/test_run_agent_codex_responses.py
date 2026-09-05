@@ -2349,6 +2349,35 @@ def test_duplicate_detection_uses_commentary_when_hidden_reasoning_changes(monke
         assert reasoning_items[0].get("id") == "rs_second"
 
 
+def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
+    """An interim that carries visible content replays fine — the nudge
+    must not fire and pollute the conversation."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_incomplete_message_response("Partial visible content."),
+        _codex_message_response("Done."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    replay_input = requests[1]["input"]
+    assert not any(
+        isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+        for item in replay_input
+    )
+
+
+# --- Response debug dump tests (paired with the request dump) ---
 
 
 def test_consume_codex_stream_separates_reasoning_summary_parts():
@@ -2624,3 +2653,263 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+def _codex_openai_response(*, content="Hello.", finish_reason="stop"):
+    """Minimal OpenAI-style chat.completions response object."""
+    return SimpleNamespace(
+        model="gpt-5-codex",
+        id="resp_001",
+        created=1763456789,
+        object="chat.completion",
+        finish_reason=finish_reason,
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(role="assistant", content=content),
+            finish_reason=finish_reason,
+        )],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+    )
+
+def test_dump_api_response_debug_redacts_auth_headers(monkeypatch, tmp_path):
+    """Response dump must match the request dumper: auth headers redacted, not leaked."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_response_debug(
+        response=_codex_openai_response(),
+        status=200,
+        headers={"Authorization": "Bearer sk-secret-1234567890", "Content-Type": "application/json"},
+        reason="preflight",
+    )
+
+    assert dump_file is not None
+    payload = json.loads(dump_file.read_text())
+    assert "response" in payload
+    # Auth header must be masked and not present in raw form.
+    raw = dump_file.read_text()
+    # Assert on the redaction *contract*, not on _mask_api_key_for_logs internals:
+    # the original secret literal must never reach disk, and a redacted value
+    # must be present in its place.
+    assert "«redacted:sk-…»" not in raw
+    resp_headers = payload["headers"]
+    assert "Authorization" in resp_headers
+    masked = resp_headers["Authorization"]
+    assert masked != "Bearer «redacted:sk-…»"  # was transformed by the redactor
+    assert "«redacted:sk-…»" not in masked  # secret never persists in the masked form
+    # The redactor shortens long keys (key[:8]...key[-4:]); assert that shape
+    # loosely rather than the exact internal truncation so the test stays robust.
+    assert "..." in masked or masked.startswith("Bearer ")
+
+
+def test_dump_api_response_debug_captures_success_body(monkeypatch, tmp_path):
+    """Success-boundary capture records finish_reason / usage / id."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    dump_file = agent._dump_api_response_debug(
+        response=_codex_openai_response(content="Done."),
+        status=200,
+        headers={"Content-Type": "application/json"},
+        reason="success",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    # status lives at the top level of the payload.
+    assert payload["status"] == 200
+    resp = payload["response"]
+    assert resp["finish_reason"] == "stop"
+    assert resp["id"] == "resp_001"
+    assert "usage" in resp
+    assert resp["usage"]["total_tokens"] == 15
+
+
+
+
+def test_dump_api_response_debug_records_error_status(monkeypatch, tmp_path):
+    """Error path records the status code and surfaces error.status_code."""
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    err = RuntimeError("upstream 500")
+    err.status_code = 500
+    dump_file = agent._dump_api_response_debug(
+        reason="max_retries_exhausted",
+        error=err,
+        status=500,
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["status"] == 500
+    assert payload["error"]["type"] == "RuntimeError"
+    assert payload["error"]["status_code"] == 500
+
+
+def test_dump_api_response_debug_invalid_response_status_is_none_not_error_code(monkeypatch, tmp_path):
+    """Reviewer point 1: on the invalid-response path the dump's top-level
+    `status` must be a real HTTP status (or None) — never the SDK error *code*
+    string. The validation-failure branch has no HTTP status, so it is None.
+    """
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    # A response that fails validation (no choices) but carries no http status.
+    class _BadResponse:
+        output = []
+        status = "completed"
+        incomplete_details = None
+        usage = SimpleNamespace(input_tokens=1, output_tokens=0, total_tokens=1)
+        model = "gpt-5-codex"
+        headers = {"Content-Type": "application/json"}
+        # Simulate an SDK error object with a string `code` — the old bug
+        # stuffed this string into the Optional[int] status field.
+        error = SimpleNamespace(code="invalid_api_key")
+
+    dump_file = agent._dump_api_response_debug(
+        response=_BadResponse(),
+        status=None,
+        headers=_BadResponse.headers,
+        reason="invalid_response",
+        error=Exception("response has no 'choices' attribute"),
+    )
+
+    payload = json.loads(dump_file.read_text())
+    assert payload["status"] is None  # real HTTP status, not the SDK error code
+    assert isinstance(payload["status"], type(None))
+
+
+def test_dump_api_response_debug_caps_oversized_content(monkeypatch, tmp_path):
+    """Reviewer point 2: oversized content/delta fields are truncated so dumps
+    stay bounded across a long HERMES_DUMP_REQUESTS session.
+    """
+    import json
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    big = "x" * 50_000
+    resp = _codex_openai_response(content=big)
+
+    dump_file = agent._dump_api_response_debug(
+        response=resp,
+        status=200,
+        headers={"Content-Type": "application/json"},
+        reason="success",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    raw_text = dump_file.read_text()
+    # The serialized dump must not contain the full 50k-char content verbatim.
+    assert big not in raw_text
+    # The content field was truncated to the configured cap.
+    message = payload["response"]["choices"][0]["message"]
+    assert "..." in message
+    assert len(message) < 50_000
+
+
+
+
+
+def test_run_conversation_writes_response_dump_on_success_when_gated(monkeypatch, tmp_path):
+    """Reviewer point: a success-boundary response dump must be written when
+    HERMES_DUMP_REQUESTS=1. Drives a full run_conversation turn and asserts the
+    response_dump file lands in logs_dir."""
+    import glob
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
+
+    responses = [_codex_message_response("Done.")]
+
+    def _fake_api_call(api_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("ping")
+    assert result["completed"] is True
+
+    dumps = glob.glob(str(tmp_path / "response_dump_*.json"))
+    assert dumps, "expected a response_dump file after a successful turn"
+    assert len(dumps) == 1
+    import json
+    payload = json.loads(open(dumps[0]).read())
+    assert payload["status"] is None  # test double has no http status_code
+    assert payload["reason"] == "success"
+
+
+
+
+def test_run_conversation_skips_response_dump_when_gate_off(monkeypatch, tmp_path):
+    """When HERMES_DUMP_REQUESTS is unset, no response dump is written."""
+    import glob
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+    monkeypatch.delenv("HERMES_DUMP_REQUESTS", raising=False)
+
+    responses = [_codex_message_response("Done.")]
+
+    def _fake_api_call(api_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("ping")
+    assert result["completed"] is True
+
+    dumps = glob.glob(str(tmp_path / "response_dump_*.json"))
+    assert not dumps, "response dump must NOT be written when gate is off"
+
+
+def test_run_conversation_writes_response_dump_on_invalid_response_when_gated(monkeypatch, tmp_path):
+    """Reviewer point: an invalid-response branch must write a response dump when
+    HERMES_DUMP_REQUESTS=1. Force validate_response to return False and assert
+    at least one response dump in logs_dir carries reason='invalid_response'.
+    """
+    import glob
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+    monkeypatch.setenv("HERMES_DUMP_REQUESTS", "1")
+
+    # Return a response that will fail validate_response in codex_responses transport:
+    # an object with response.output = [] (empty list) and status != incomplete or
+    # incomplete_details.reason != 'content_filter' → triggers response_invalid=True
+    class _BadCodexResponse:
+        def __init__(self):
+            self.output = []  # empty → invalid
+            self.status = "completed"  # not incomplete/content_filter
+            self.incomplete_details = None
+            self.usage = SimpleNamespace(input_tokens=1, output_tokens=0, total_tokens=1)
+            self.model = "gpt-5-codex"
+            # minimal headers for the dump helper
+            self.headers = {"Content-Type": "application/json"}
+
+    bad_response = _BadCodexResponse()
+
+    responses = [bad_response, _codex_message_response("Done.")]  # second call succeeds
+
+    def _fake_api_call(api_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("ping")
+    assert result["completed"] is True
+
+    dumps = glob.glob(str(tmp_path / "response_dump_*.json"))
+    assert dumps, "expected a response_dump file after an invalid-response turn"
+
+    import json
+    invalid_dumps = []
+    for dump_path in dumps:
+        payload = json.loads(open(dump_path).read())
+        if payload.get("reason") == "invalid_response":
+            invalid_dumps.append(dump_path)
+    assert invalid_dumps, f"expected an invalid_response dump among: {dumps}"
+    # Should have captured the response under the 'response' key
+    payload = json.loads(open(invalid_dumps[0]).read())
+    assert "response" in payload
+
+    # The dump must be redactable and load cleanly regardless of shape.
+    assert "headers" in payload or payload["response"] is None

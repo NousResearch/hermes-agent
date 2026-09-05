@@ -334,23 +334,12 @@ class GatewayBusySessionMixin:
         )
         return (enriched_text or text).strip() if successful_transcripts else text
 
-    @staticmethod
-    def _busy_reply_to(event: MessageEvent, reply_anchor):
-        # Telegram DM topics anchor on the thread; other Telegram threads send unanchored.
-        return (
-            reply_anchor
-            if event.source.platform == Platform.TELEGRAM
-            and event.source.chat_type == "dm"
-            and event.source.thread_id
-            else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
-        )
-
     async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
         """Send a busy-path reply anchored to the event (thread metadata included)."""
         reply_anchor = self._reply_anchor_for_event(event)
         await adapter._send_with_retry(
             chat_id=event.source.chat_id, content=content,
-            reply_to=reply_anchor if plain_anchor else self._busy_reply_to(event, reply_anchor),
+            reply_to=reply_anchor,
             metadata=self._thread_metadata_for_source(event.source, reply_anchor),
         )
 

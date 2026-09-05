@@ -1489,6 +1489,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        summary_instructions=cfg.get("summary_instructions", ""),
     )
 
 
@@ -1848,6 +1849,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
+            summary_instructions=cs.summary_instructions,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -1872,6 +1874,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     ):
         if hasattr(_cc, _attr):
             setattr(_cc, _attr, _value)
+    if _cc is not None and hasattr(_cc, "summary_instructions"):
+        _cc.summary_instructions = cs.summary_instructions
     agent.compression_checkpoint_required = cs.checkpoint_required
     agent.codex_app_server_auto_compaction = cs.codex_app_server_auto
     agent.codex_responses_native_compaction = cs.codex_responses_native

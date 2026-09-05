@@ -2260,10 +2260,13 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        summary_instructions: str = "",
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
+        # Optional summarizer outcome instructions (compression.summary_instructions).
+        self.summary_instructions = summary_instructions
         # Per-model overrides (longest substring match wins); floor applied on top.
         self.model_thresholds = model_thresholds or {}
         # Raw config value, before override/floor; fallback when switching to a model with no override.
@@ -3246,6 +3249,19 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             )
         return content
 
+    def _effective_summary_instructions(self) -> str:
+        """Return configured summarizer guidance, or "" when unset.
+
+        Empty string, whitespace-only, None, and non-string values all mean
+        unset so the default structured compact template stays in place. The
+        value is returned verbatim (no interpolation) when set and replaces
+        the entire batch template (and micro merge prose).
+        """
+        raw = getattr(self, "summary_instructions", "")
+        if not isinstance(raw, str) or not raw.strip():
+            return ""
+        return raw
+
     def _generate_summary(
         self, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str] = None,
         memory_context: str = "", bypass_cooldown: bool = False,
@@ -3323,11 +3339,33 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         )
         # Lean mode folds the session log into this SAME single request (one aux call).
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
-        _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
+        _custom_instructions = self._effective_summary_instructions()
+        if _custom_instructions:
+            _outcome_instructions = _custom_instructions + self._temporal_anchoring_rule()
+        else:
+            _outcome_instructions = self._summary_template_sections(_section, summary_budget, _session_log_section)
         if self._previous_summary:
             # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
             _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
-            prompt = f"""{_summarizer_preamble}
+            if _custom_instructions:
+                prompt = (
+                    f"""{_summarizer_preamble}
+
+You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
+
+PREVIOUS SUMMARY:
+{_bounded_previous_summary}
+
+NEW TURNS TO INCORPORATE:
+{content_to_summarize}{_memory_section}
+
+Update the previous summary using these rules:
+
+"""
+                    + _outcome_instructions
+                )
+            else:
+                prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
@@ -3339,9 +3377,22 @@ NEW TURNS TO INCORPORATE:
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
-{_template_sections}"""
+{_outcome_instructions}"""
         else:
-            prompt = f"""{_summarizer_preamble}
+            if _custom_instructions:
+                prompt = (
+                    f"""{_summarizer_preamble}
+
+Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
+
+TURNS TO SUMMARIZE:
+{content_to_summarize}{_memory_section}
+
+"""
+                    + _outcome_instructions
+                )
+            else:
+                prompt = f"""{_summarizer_preamble}
 
 Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
 
@@ -3350,7 +3401,7 @@ TURNS TO SUMMARIZE:
 
 Use this exact structure:
 
-{_template_sections}"""
+{_outcome_instructions}"""
 
         # Focus guidance goes last so it takes precedence.
         if focus_topic:

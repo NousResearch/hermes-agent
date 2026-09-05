@@ -2674,12 +2674,57 @@ def _resolve_deferred_platform_cli_command(command_name: str | None) -> None:
         )
 
 
-_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+# Commands that can run an agent turn, and therefore need plugins + shell
+# hooks registered before they start.
+#
+# `serve` / `dashboard` are on this list because they are the backend the
+# Electron desktop app spawns (see cmd_dashboard + web_server.py); they run
+# full agent turns over JSON-RPC. Omitting them meant a user's config.yaml
+# shell hooks silently never fired on the desktop surface, while
+# `hermes hooks doctor` -- a separate short-lived process that re-reads the
+# config -- reported them healthy. Same class of gap as the cron scheduler,
+# which already needs an explicit ticker inside the dashboard backend
+# (web_server.py::_start_desktop_cron_ticker) for exactly this reason.
+#
+# Introspection/management commands (hooks list, gateway status, mcp add, ...)
+# stay off the list on purpose: they must not pay discovery cost, and must
+# never trigger a consent prompt for a hook the user is only inspecting.
+#
+# `serve` / `dashboard` carry their own management invocations as flags and a
+# nested subcommand rather than as separate commands, so membership here is
+# necessary but NOT sufficient -- see _is_server_management_invocation().
+_AGENT_COMMANDS = {None, "chat", "acp", "rl", "serve", "dashboard"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),
     "mcp": ("mcp_action", {"serve"}),
 }
+
+# The two commands that are an agent surface AND their own process manager.
+_SERVER_LIFECYCLE_COMMANDS = {"serve", "dashboard"}
+
+
+def _is_server_management_invocation(args) -> bool:
+    """True for `serve`/`dashboard` invocations that never start a server.
+
+    ``--status`` lists running servers and ``--stop`` SIGTERMs them; both exit
+    from ``cmd_dashboard`` before a server -- and therefore before any agent
+    turn -- can exist.  ``hermes dashboard register`` writes an OAuth client id
+    and exits via ``cmd_dashboard_register``.  All three are management
+    commands in exactly the sense the gate above cares about, so they belong on
+    the cheap path alongside ``hooks list`` and ``gateway status``: no discovery
+    cost, and no consent prompt for a hook the user only meant to inspect.
+
+    Scoped to these two commands on purpose.  ``--status`` is not a reserved
+    name in this CLI -- ``hermes kanban list --status <state>`` takes a *value*
+    -- so a namespace-wide ``getattr(args, "status", False)`` check would be a
+    latent trap for the next command that grows a ``--status`` flag.
+    """
+    if args.command not in _SERVER_LIFECYCLE_COMMANDS:
+        return False
+    if getattr(args, "status", False) or getattr(args, "stop", False):
+        return True
+    return getattr(args, "dashboard_subcommand", None) == "register"
 
 
 def _is_tui_chat_launch(args) -> bool:
@@ -2729,6 +2774,10 @@ def _prepare_agent_startup(args) -> None:
     _guard_noninteractive_user_config(args)
 
     if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
+        return
+    # main() calls this before dispatch, so `serve`/`dashboard` reach here even
+    # for the invocations that exit inside cmd_dashboard without ever serving.
+    if _is_server_management_invocation(args):
         return
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))

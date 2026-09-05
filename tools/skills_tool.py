@@ -4,6 +4,7 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+from collections import Counter
 import json
 import logging
 import os
@@ -127,8 +128,8 @@ def check_skills_requirements() -> bool:
 
 
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
-    """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
-    (respects test monkeypatching), then skills.external_dirs."""
+    """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; nested categories retain
+    every directory component. Active profile dir first (respects test monkeypatching), then external dirs."""
     dirs_to_check = [_skills_dir()]
     with suppress(Exception):
         from agent.skill_utils import get_external_skills_dirs
@@ -136,7 +137,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     for skills_dir in dirs_to_check:
         with suppress(ValueError):
             if len(parts := skill_path.relative_to(skills_dir).parts) >= 3:
-                return parts[0]
+                return "/".join(parts[:-2])
     return None
 
 
@@ -252,12 +253,14 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})
+        category_counts = Counter(s.get("category") or "general" for s in all_skills)
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
         all_skills = _sort_skills(all_skills)
         categories = sorted({s.get("category") for s in all_skills if s.get("category")})
         return _json({
             "success": True, "skills": all_skills, "categories": categories,
+            "category_counts": dict(sorted(category_counts.items())),
             "count": len(all_skills),
             "hint": "Use skill_view(name) to see full content, tags, and linked files"})
     except Exception as e:
@@ -599,7 +602,10 @@ def skill_view(
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": (
+        "List available skills by category (name + description). Use category to drill into large "
+        "category-only skill indexes, then skill_view(name) to load full content."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

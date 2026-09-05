@@ -40,7 +40,7 @@ description: Description for {name}.
 
 {body}
 """
-    (skill_dir / "SKILL.md").write_text(content)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir
 
 
@@ -169,6 +169,26 @@ class TestGetCategoryFromPath:
             top_level.touch()
             assert _get_category_from_path(top_level) is None
 
+    def test_nested_categorized_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_md = (
+                tmp_path
+                / "foundations"
+                / "runtime"
+                / "explore-codebase"
+                / "SKILL.md"
+            )
+            skill_md.parent.mkdir(parents=True)
+            skill_md.touch()
+            assert _get_category_from_path(skill_md) == "foundations/runtime"
+
+    def test_uncategorized_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_md = tmp_path / "my-skill" / "SKILL.md"
+            skill_md.parent.mkdir(parents=True)
+            skill_md.touch()
+            assert _get_category_from_path(skill_md) is None
+
         # Paths outside SKILLS_DIR have no category.
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
             assert _get_category_from_path(tmp_path / "other" / "SKILL.md") is None
@@ -277,6 +297,7 @@ class TestSkillsList:
         assert all_result["count"] == 2
         assert filtered["count"] == 1
         assert filtered["skills"][0]["name"] == "skill-a"
+        assert filtered["category_counts"] == {"devops": 1, "mlops": 1}
 
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"
@@ -363,7 +384,7 @@ class TestSkillView:
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
-            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.", encoding="utf-8")
 
             existing = json.loads(skill_view("my-skill", file_path="references/api.md"))
             missing = json.loads(skill_view("my-skill", file_path="references/nope.md"))
@@ -390,7 +411,7 @@ class TestSkillView:
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
-            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.", encoding="utf-8")
 
             result = json.loads(skill_view("my-skill", file_path="references"))
 
@@ -935,7 +956,7 @@ class TestSkillViewCollisionDetection:
             / "sketch.md"
         )
         support_file.parent.mkdir(parents=True, exist_ok=True)
-        support_file.write_text("# Sketch style support doc\n")
+        support_file.write_text("# Sketch style support doc\n", encoding="utf-8")
         _make_skill(local_dir, "sketch", category="creative", body="REAL SKETCH SKILL")
 
         p1, p2 = self._patch_dirs(local_dir, [external_dir])

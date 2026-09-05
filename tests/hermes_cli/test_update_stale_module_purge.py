@@ -161,3 +161,14 @@ def test_stale_symbol_scenario_end_to_end():
         sys.modules.pop(name, None)
         if real is not None:
             sys.modules[name] = real
+
+
+def test_purge_keeps_plan_record_class_identity():
+    # The pre-update plan is built BEFORE the purge; reconciliation after it filters with
+    # ``isinstance(r, RuntimeRecord)``. An evicted ``update_inventory`` yields a fresh class,
+    # every record fails the check, and the plan-vs-execution report goes silently empty.
+    from hermes_cli.update_inventory import RuntimeRecord as before
+
+    cli_main._purge_stale_hermes_modules()
+    from hermes_cli.update_inventory import RuntimeRecord as after
+    assert after is before

@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_cli.cli_output import line_input
 from hermes_cli.config import load_config, save_config
 from hermes_cli.inventory import build_models_payload, load_picker_context
 from hermes_cli.moa_config import DEFAULT_MOA_PRESET_NAME, normalize_moa_config
+
+# Fixed canonical scale rather than a per-model "supported efforts" list: the
+# latter under-reports (see _apply_capabilities in inventory.py — a route can
+# serve a level its catalog doesn't advertise), so the picker always offers
+# the full scale on any model whose capabilities mark it reasoning-capable.
+_REASONING_EFFORT_SCALE = ("low", "medium", "high")
 
 
 def _prompt_choice(title: str, rows: list[str], default: int = 0) -> int:
@@ -46,7 +53,65 @@ def _model_options() -> list[dict[str, Any]]:
     return [p for p in providers if p.get("slug") and str(p.get("slug")).strip().lower() != "moa" and p.get("models")]
 
 
-def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
+def _model_supports_reasoning(provider: dict[str, Any], model: str) -> bool:
+    entry = (provider.get("capabilities") or {}).get(model) or {}
+    return bool(entry.get("reasoning", True))
+
+
+def _prompt_slot_tuning(
+    provider_slug: str,
+    model: str,
+    current: dict[str, Any] | None,
+    *,
+    supports_reasoning: bool,
+) -> dict[str, Any]:
+    """Prompt for the optional per-slot ``reasoning_effort`` / ``max_tokens`` overrides."""
+    current = current or {}
+    tuning: dict[str, Any] = {}
+
+    if supports_reasoning:
+        from hermes_cli.main import _prompt_reasoning_effort_selection
+
+        current_effort = str(current.get("reasoning_effort") or "")
+        selected = _prompt_reasoning_effort_selection(_REASONING_EFFORT_SCALE, current_effort=current_effort)
+        effort = current_effort if selected is None else selected
+        if effort:
+            tuning["reasoning_effort"] = effort
+
+    current_tokens = current.get("max_tokens")
+    default = str(current_tokens) if current_tokens else ""
+    raw = line_input(
+        f"Max tokens for {provider_slug}:{model} (blank = no per-slot cap) [{default}]: "
+    ).strip()
+    tokens = raw or default
+    if tokens:
+        tuning["max_tokens"] = tokens
+
+    return tuning
+
+
+def _pick_slot(current: dict[str, Any] | None = None) -> dict[str, Any]:
+    if current and current.get("provider") and current.get("model"):
+        choice = _prompt_choice(
+            "Edit slot",
+            [
+                "Keep provider/model — edit max_tokens / reasoning effort only",
+                "Change provider/model",
+            ],
+            0,
+        )
+        if choice == 0:
+            providers = _model_options()
+            provider = next((p for p in providers if p.get("slug") == current.get("provider")), {})
+            supports_reasoning = _model_supports_reasoning(provider, current["model"])
+            slot: dict[str, Any] = {"provider": current["provider"], "model": current["model"]}
+            slot.update(
+                _prompt_slot_tuning(
+                    current["provider"], current["model"], current, supports_reasoning=supports_reasoning
+                )
+            )
+            return slot
+
     providers = _model_options()
     if not providers:
         raise RuntimeError("No configured model providers found. Run `hermes model` first.")
@@ -60,13 +125,22 @@ def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
     current_model = (current or {}).get("model", "")
     model_default = models.index(current_model) if current_model in models else 0
     model = models[_prompt_choice(f"Select model for {provider.get('slug')}", models, model_default)]
-    return {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    supports_reasoning = _model_supports_reasoning(provider, model)
+    slot: dict[str, Any] = {"provider": str(provider.get("slug") or ""), "model": str(model)}
+    slot.update(_prompt_slot_tuning(provider.get("slug") or "", model, current, supports_reasoning=supports_reasoning))
+    return slot
 
 
 def _format_slot(slot: dict[str, Any]) -> str:
     label = f"{slot['provider']}:{slot['model']}"
+    extras = []
     effort = str(slot.get("reasoning_effort") or "").strip()
-    return f"{label} [reasoning={effort}]" if effort else label
+    if effort:
+        extras.append(f"reasoning={effort}")
+    max_tokens = slot.get("max_tokens")
+    if max_tokens:
+        extras.append(f"max_tokens={max_tokens}")
+    return f"{label} [{', '.join(extras)}]" if extras else label
 
 
 def _print_config(config: dict[str, Any]) -> None:

@@ -708,6 +708,7 @@ from hermes_cli.personality import (  # noqa: E402,F401
 
 # Env vars introduced per config version; migration only mentions vars new since the user's
 # previous version.
+
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],

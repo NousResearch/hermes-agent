@@ -764,7 +764,12 @@ class TurnRunner:
         ctx = self._ctx
         if not self._status_live():
             return
-        prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
+        prepared = _prepare_gateway_status_message(
+            ctx.source.platform,
+            event_type,
+            message,
+            diagnostic_status="all" if ctx._diagnostic_status_enabled else "off",
+        )
         if prepared is None:
             logger.debug(
                 "status_callback suppressed for %s/%s: %s",
@@ -1102,7 +1107,10 @@ class TurnRunner:
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
         agent.stream_delta_callback = stream_delta_cb
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
-        agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
+        # Always wire the callback. Recovery-class statuses are filtered in
+        # ``_prepare_gateway_status_message`` when diagnostic_status is off.
+        agent.status_callback = ctx._status_callback_sync
+        agent.notice_callback = self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted
         agent.event_callback = ctx._event_callback_sync
         agent.reasoning_config, agent.service_tier = reasoning_config, runner._service_tier

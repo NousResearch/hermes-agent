@@ -449,6 +449,86 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_rename_thread_accepts_relay_lane_kwargs(adapter):
+    # run.py's semantic-rename lane calls rename_thread polymorphically and
+    # passes the relay sibling's kwargs (prefer_connector_created,
+    # parent_chat_id) unconditionally. The native adapter must accept and
+    # ignore them — otherwise it raised TypeError, swallowed by the caller's
+    # except/logger.debug, so native auto-thread renames silently stopped
+    # applying (#78487).
+    thread = SimpleNamespace(
+        id=999,
+        name="raw user prompt",
+        edit=AsyncMock(),
+    )
+    adapter._client.get_channel = lambda _id: thread
+
+    result = await adapter.rename_thread(
+        "999",
+        "Semantic Session Title",
+        only_if_current_name="raw user prompt",
+        prefer_connector_created=False,
+        parent_chat_id=None,
+    )
+
+    assert result is True
+    thread.edit.assert_awaited_once_with(
+        name="Semantic Session Title",
+        reason="Hermes semantic session title",
+    )
+
+
+# The exact keyword set gateway/run.py's semantic-rename lane
+# (_rename_discord_auto_thread_for_session_title) passes to whichever adapter
+# it resolved rename_thread from. If either adapter's signature drifts out of
+# parity with this call site, the native lane raises TypeError that the caller
+# swallows into logger.debug — a silent regression like #78487. Binding the
+# signature (no call, no I/O) pins the contract for BOTH lanes at once.
+_RENAME_CALL_SITE_KWARGS = dict(
+    prefer_connector_created=False,
+    only_if_current_name="raw user prompt",
+    parent_chat_id=None,
+)
+
+
+def _rename_thread_adapters():
+    """(id, unbound rename_thread) for every adapter the shared lane may call.
+
+    RelayAdapter is imported lazily and skipped if its heavier deps are absent,
+    so this stays a pure-signature unit test with no import-time coupling.
+    """
+    import inspect
+
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    adapters = [("native", DiscordAdapter.rename_thread)]
+    try:
+        from gateway.relay.adapter import RelayAdapter
+    except Exception:  # pragma: no cover - relay optional in some envs
+        pass
+    else:
+        adapters.append(("relay", RelayAdapter.rename_thread))
+    # Guard against the lazy import silently reducing coverage to one lane.
+    assert inspect.signature(adapters[0][1])  # sanity: it's introspectable
+    return adapters
+
+
+@pytest.mark.parametrize("lane,method", _rename_thread_adapters())
+def test_rename_thread_signature_matches_shared_call_site(lane, method):
+    import inspect
+
+    sig = inspect.signature(method)
+    # Bind exactly as run.py does: self + the two positionals + the relay-lane
+    # kwargs. bind() raises TypeError if the signature cannot accept them.
+    sig.bind(
+        object(),  # self
+        "999",  # target_thread_id
+        "Semantic Session Title",  # thread_name
+        **_RENAME_CALL_SITE_KWARGS,
+    )
+
+
 # ------------------------------------------------------------------
 # Auto-thread integration in _handle_message
 # ------------------------------------------------------------------

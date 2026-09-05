@@ -306,8 +306,7 @@ class GatewayStartupMixin:
         if not claimed:
             return 0
         try:
-            from gateway.delivery_ledger import (
-                RECOVERED_MARKER, mark_delivered, mark_failed, mark_failed_with_content)
+            from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed_from_result
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
             return 0
@@ -334,14 +333,9 @@ class GatewayStartupMixin:
                         row["platform"], row["chat_id"], row["obligation_id"], row["attempts"],
                     )
                 else:
-                    error = str(getattr(result, "error", "") or "send failed")
-                    raw = getattr(result, "raw_response", None)
-                    undelivered = raw.get("undelivered_content") if isinstance(raw, dict) else None
-                    if isinstance(undelivered, str) and undelivered:
-                        await asyncio.to_thread(
-                            mark_failed_with_content, row["obligation_id"], undelivered, error)
-                    else:
-                        await asyncio.to_thread(mark_failed, row["obligation_id"], error)
+                    await asyncio.to_thread(
+                        mark_failed_from_result, row["obligation_id"], result,
+                        str(getattr(result, "error", "") or "send failed"))
         return redelivered
 
     async def _obligation_adapter(self, row: dict):

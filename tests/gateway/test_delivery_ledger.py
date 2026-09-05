@@ -134,7 +134,13 @@ class TestStateMachine:
     def test_partial_failure_persists_only_undelivered_suffix(self):
         _record(content="first\n\nsecond")
 
-        dl.mark_failed_with_content("ob-1", "second", "connection reset")
+        from gateway.platforms.base import SendResult
+
+        dl.mark_failed_from_result(
+            "ob-1",
+            SendResult(success=False, error="connection reset",
+                       raw_response={"undelivered_content": "second"}),
+            "connection reset")
 
         row = _row("ob-1")
         assert row is not None
@@ -561,7 +567,7 @@ class TestGatewayRedeliverySweep:
 
     @pytest.mark.parametrize(
         ("send_success", "ledger_method"),
-        [(True, "mark_delivered"), (False, "mark_failed")],
+        [(True, "mark_delivered"), (False, "mark_failed_from_result")],
     )
     @pytest.mark.asyncio
     async def test_slow_state_update_does_not_block_event_loop(

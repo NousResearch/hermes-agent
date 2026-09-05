@@ -3494,13 +3494,30 @@ class GatewayTurnMixin:
         if pending_event is not None and adapter is not None:
             await adapter._run_processing_hook("on_processing_start", pending_event)
 
-        followup_result = await self._run_agent(
-            message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-            source=next_source, session_id=session_id, session_key=next_session_key,
-            run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, channel_prompt=next_channel_prompt,
-            message_type=next_message_type,
-        )
+        # Once on_processing_start has fired above, on_processing_complete MUST fire no matter how
+        # the recursive call below ends — including an unhandled exception from the follow-up turn
+        # or a CancelledError from the surrounding task (gateway shutdown/restart) — or the platform
+        # reaction it drives (e.g. Telegram's 👀) is left stuck forever. Mirrors the outcome
+        # classification BasePlatformAdapter._process_message_background uses for the analogous case.
+        try:
+            followup_result = await self._run_agent(
+                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                source=next_source, session_id=session_id, session_key=next_session_key,
+                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                event_message_id=next_message_id, channel_prompt=next_channel_prompt,
+                message_type=next_message_type,
+            )
+        except asyncio.CancelledError:
+            if pending_event is not None and adapter is not None:
+                _expected = asyncio.current_task() in getattr(adapter, "_expected_cancelled_tasks", ())
+                await adapter._run_processing_hook(
+                    "on_processing_complete", pending_event,
+                    ProcessingOutcome.CANCELLED if _expected else ProcessingOutcome.FAILURE)
+            raise
+        except BaseException:
+            if pending_event is not None and adapter is not None:
+                await adapter._run_processing_hook("on_processing_complete", pending_event, ProcessingOutcome.FAILURE)
+            raise
         if pending_event is not None and adapter is not None:
             _outcome = (
                 ProcessingOutcome.FAILURE if isinstance(followup_result, dict) and followup_result.get("failed")

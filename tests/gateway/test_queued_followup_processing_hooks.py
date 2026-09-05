@@ -24,6 +24,7 @@ class _StubAdapter:
     def __init__(self):
         self.hook_calls = []
         self._active_sessions = {}
+        self._expected_cancelled_tasks = set()
 
     async def _run_processing_hook(self, hook_name, *args, **kwargs):
         self.hook_calls.append((hook_name, args, kwargs))
@@ -33,9 +34,10 @@ class _FakeGatewayRunner(GatewayRunner):
     """Overrides every collaborator of ``_run_agent_queued_followup`` except the
     method under test, so the real recursion/hook-firing logic runs unmodified."""
 
-    def __init__(self, adapter, followup_result):
+    def __init__(self, adapter, followup_result=None, followup_exception=None):
         self._adapter = adapter
         self._followup_result = followup_result
+        self._followup_exception = followup_exception
         self.run_agent_calls = []
 
     def _adapter_for_source(self, source):
@@ -55,6 +57,8 @@ class _FakeGatewayRunner(GatewayRunner):
 
     async def _run_agent(self, **kwargs):
         self.run_agent_calls.append(kwargs)
+        if self._followup_exception is not None:
+            raise self._followup_exception
         return self._followup_result
 
 
@@ -109,3 +113,46 @@ class TestQueuedFollowupFiresProcessingHooks:
 
         complete_call = adapter.hook_calls[1]
         assert complete_call[1] == (pending_event, ProcessingOutcome.FAILURE)
+
+    def test_unhandled_exception_still_fires_processing_complete(self):
+        """A raised exception from the recursive turn must not leave on_processing_start unpaired
+        (else the platform reaction it drives, e.g. Telegram's 👀, is stuck forever)."""
+        pending_event = _plain_dm_pending_event()
+        adapter = _StubAdapter()
+        turn_ctx = _make_turn_ctx(pending_event)
+        runner = _FakeGatewayRunner(adapter, followup_exception=RuntimeError("boom"))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(runner._run_agent_queued_followup(
+                turn_ctx, adapter, pending="second message", pending_event=pending_event,
+                response={}, result={"messages": []}, stream_task=None,
+            ))
+
+        hook_names = [name for name, _args, _kwargs in adapter.hook_calls]
+        assert hook_names == ["on_processing_start", "on_processing_complete"]
+        complete_call = adapter.hook_calls[1]
+        assert complete_call[1] == (pending_event, ProcessingOutcome.FAILURE)
+
+    def test_cancelled_error_still_fires_processing_complete(self):
+        """A CancelledError (e.g. gateway shutdown/restart) from the recursive turn must still pair
+        with on_processing_complete, classified as CANCELLED when the cancellation was expected."""
+        pending_event = _plain_dm_pending_event()
+        adapter = _StubAdapter()
+        turn_ctx = _make_turn_ctx(pending_event)
+        runner = _FakeGatewayRunner(adapter, followup_exception=asyncio.CancelledError())
+
+        async def _run():
+            task = asyncio.current_task()
+            adapter._expected_cancelled_tasks.add(task)
+            with pytest.raises(asyncio.CancelledError):
+                await runner._run_agent_queued_followup(
+                    turn_ctx, adapter, pending="second message", pending_event=pending_event,
+                    response={}, result={"messages": []}, stream_task=None,
+                )
+
+        asyncio.run(_run())
+
+        hook_names = [name for name, _args, _kwargs in adapter.hook_calls]
+        assert hook_names == ["on_processing_start", "on_processing_complete"]
+        complete_call = adapter.hook_calls[1]
+        assert complete_call[1] == (pending_event, ProcessingOutcome.CANCELLED)

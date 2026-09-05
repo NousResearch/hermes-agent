@@ -118,6 +118,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     ),
     "display.resume_display": _select("How resumed sessions display history", "minimal", "full", "off"),
     "display.busy_input_mode": _select("Input behavior while agent is running", "interrupt", "queue", "steer"),
+    "display.double_enter_continue": {
+        "type": "boolean",
+        "description": (
+            "Desktop: pressing Enter again immediately after sending (composer empty, "
+            "turn running or just finished) submits a filler \"Continue\" message. "
+            "When off, an empty Enter never sends anything."
+        ),
+    },
     "approvals.mode": _select("Dangerous command approval mode", "manual", "smart", "off"),
     "context.engine": _select("Context management engine", "default", "custom"),
     "human_delay.mode": _select("Simulated typing delay mode", "off", "typing", "fixed"),

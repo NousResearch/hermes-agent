@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   acceptsTriggerCompletion,
+  DOUBLE_ENTER_WINDOW_MS,
   implicitSlashAcceptIndex,
+  isDoubleEnter,
   isPendingDraftPersistCurrent,
   type PendingDraftPersist,
   pickPlaceholder,
@@ -175,5 +177,23 @@ describe('isPendingDraftPersistCurrent (#54527 integrity guard)', () => {
 
   it('rejects when nothing was ever captured', () => {
     expect(isPendingDraftPersistCurrent(null, null)).toBe(false)
+  })
+})
+
+describe('isDoubleEnter (double-Enter Continue gesture)', () => {
+  it('fires when the previous empty Enter is within the window', () => {
+    expect(isDoubleEnter(1_000, 1_000 + DOUBLE_ENTER_WINDOW_MS)).toBe(true)
+  })
+
+  it('never fires without a previous empty Enter', () => {
+    expect(isDoubleEnter(null, 1_000)).toBe(false)
+  })
+
+  it('stays silent after the window lapses', () => {
+    expect(isDoubleEnter(1_000, 1_000 + DOUBLE_ENTER_WINDOW_MS + 1)).toBe(false)
+  })
+
+  it('does not travel backwards in time', () => {
+    expect(isDoubleEnter(2_000, 1_000)).toBe(false)
   })
 })

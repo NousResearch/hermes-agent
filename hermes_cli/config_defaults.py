@@ -754,6 +754,10 @@ DEFAULT_CONFIG = {
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # Desktop only: an empty Enter right after the composer emptied (a double
+        # Enter) submits a filler "Continue" instead of doing nothing. Off keeps
+        # the deliberate empty-Enter no-op.
+        "double_enter_continue": False,
         # steer mode: false hides only the "Steered into current run" bubble; steering itself still
         # happens.
         "busy_steer_ack_enabled": True,

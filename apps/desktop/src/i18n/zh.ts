@@ -2677,6 +2677,7 @@ export const zh: Translations = {
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
+    continueNudge: '继续',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',

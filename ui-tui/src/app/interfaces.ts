@@ -611,6 +611,7 @@ export interface AppLayoutStatusProps {
 }
 
 export interface AppLayoutTranscriptProps {
+  bindScrollRef: (handle: null | ScrollBoxHandle) => void
   historyItems: Msg[]
   scrollRef: RefObject<null | ScrollBoxHandle>
   virtualHistory: VirtualHistoryState

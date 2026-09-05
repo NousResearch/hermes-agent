@@ -14,7 +14,7 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync, ScrollBox, type ScrollBoxHandle, Text } from '@hermes/ink'
-import React, { useLayoutEffect, useRef } from 'react'
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
 import { useVirtualHistory } from '../src/hooks/useVirtualHistory.js'
 
@@ -129,8 +129,14 @@ function makeItems(count: number): BenchItem[] {
 
 function Harness({ expose, items }: { expose: React.MutableRefObject<Exposed | null>; items: readonly BenchItem[] }) {
   const scrollRef = useRef<ScrollBoxHandle | null>(null)
+  const [scrollHandle, setScrollHandle] = useState<ScrollBoxHandle | null>(null)
 
-  const virtual = useVirtualHistory(scrollRef, items, COLUMNS, {
+  const bindScrollRef = useCallback((next: ScrollBoxHandle | null) => {
+    scrollRef.current = next
+    setScrollHandle(current => (current === next ? current : next))
+  }, [])
+
+  const virtual = useVirtualHistory(scrollHandle, items, COLUMNS, {
     coldStartCount: 30,
     estimateHeight: index => items[index]?.height ?? 1,
     maxMounted: MAX_MOUNTED,
@@ -142,7 +148,7 @@ function Harness({ expose, items }: { expose: React.MutableRefObject<Exposed | n
   })
 
   return (
-    <ScrollBox flexDirection="column" height={ROWS} ref={scrollRef} stickyScroll>
+    <ScrollBox flexDirection="column" height={ROWS} ref={bindScrollRef} stickyScroll>
       <Box flexDirection="column" width="100%">
         {virtual.topSpacer > 0 ? <Box height={virtual.topSpacer} /> : null}
         {items.slice(virtual.start, virtual.end).map(item => (

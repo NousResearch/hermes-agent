@@ -300,7 +300,15 @@ class TurnRunner:
 
         def fallback_text(self) -> str:
             labels = {"in_progress": "running", "complete": "complete", "error": "error"}
-            lines = [f"- {t['title']} - {labels.get(t['status'], t['status'])}" for t in self.visible_tasks()]
+            lines = []
+            for t in self.visible_tasks():
+                line = f"- {t['title']} - {labels.get(t['status'], t['status'])}"
+                # Surface the failure reason inline (risk text) so the
+                # fallback rail carries the same signal as the card.
+                detail = str(t.get("details") or "").strip()
+                if t["status"] == "error" and detail:
+                    line += f" ({detail})"
+                lines.append(line)
             return "Hermes is working\n" + "\n".join(lines)
 
         def _upsert(self, call_id: str, title: str) -> Dict[str, str]:
@@ -325,7 +333,18 @@ class TurnRunner:
             # Completion-only events are rare but valid on some runtimes; keep their real ID instead
             # of guessing a same-name pending call.
             task = self.tasks.get(call_id) or self._upsert(call_id, tool_name)
-            task["status"] = "error" if raw.get("is_error") else "complete"
+            is_error = bool(raw.get("is_error"))
+            task["status"] = "error" if is_error else "complete"
+            # Failure suffix (the concrete "risk text": exit codes, error
+            # messages) rides the details field of the task_update chunk.
+            # Only present while failed: a retried call id that now succeeds
+            # must not keep a stale failure reason on the card, and clean
+            # tasks carry no details key at all.
+            detail = self._compact(raw.get("details"), 256)
+            if is_error and detail:
+                task["details"] = detail
+            else:
+                task.pop("details", None)
             return True
 
     async def _task_card_send_or_edit_fallback(self, st) -> None:
@@ -683,9 +702,14 @@ class TurnRunner:
             return
         from agent.display import _detect_tool_failure
         name = str(tool_name or "tool")
-        is_error, _ = _detect_tool_failure(name, result)
+        is_error, suffix = _detect_tool_failure(name, result)
+        # The failure suffix is the "risk text": the concrete reason a tool
+        # failed ("exit 1", "File not found: ..."). Surface it on the card
+        # (details field) instead of hiding it behind a bare "error" badge.
+        details = suffix.strip().strip("[]").strip() if is_error else ""
         self._ctx.progress_queue.put({
-            "type": "tool.completed", "tool_call_id": str(call_id or ""), "tool_name": name, "is_error": bool(is_error),
+            "type": "tool.completed", "tool_call_id": str(call_id or ""), "tool_name": name,
+            "is_error": bool(is_error), "details": details,
         })
 
     def combined_tool_start_callback(self, call_id, tool_name, args):

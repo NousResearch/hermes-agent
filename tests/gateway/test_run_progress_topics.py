@@ -308,6 +308,33 @@ class DuplicateNativeToolsAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class RetryNativeToolsAgent:
+    """Fails a call once, then retries the same call id to success — the
+    stale failure reason must clear off the card."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_start_callback = kwargs.get("tool_start_callback")
+        self.tool_complete_callback = kwargs.get("tool_complete_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.tool_start_callback("call-1", "web_search", {"query": "alpha"})
+        time.sleep(0.15)
+        self.tool_complete_callback(
+            "call-1", "web_search", {"query": "alpha"}, '{"error": "rate limited"}'
+        )
+        time.sleep(0.15)
+        # Retry under the same call id; success must drop the stale reason.
+        self.tool_start_callback("call-1", "web_search", {"query": "alpha"})
+        time.sleep(0.15)
+        self.tool_complete_callback(
+            "call-1", "web_search", {"query": "alpha"}, '{"success": true}'
+        )
+        time.sleep(0.15)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 class ThinkingAgent:
     """Agent that emits _thinking scratch text (no tool calls).
 
@@ -1097,6 +1124,9 @@ async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id
             "id": "call-b",
             "title": "web_search - beta",
             "status": "error",
+            # Failed tools carry the concrete failure reason (risk text) so
+            # the red card says WHY, not just THAT.
+            "details": "boom",
         },
     ]
     assert adapter.sent == []
@@ -1126,9 +1156,48 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
     assert adapter.sent[0]["content"].endswith("web_search - alpha - running")
     assert len(adapter.edits) >= 2
     assert {edit["message_id"] for edit in adapter.edits} == {"progress-1"}
-    assert adapter.edits[-1]["content"].endswith("web_search - beta - error")
+    # The fallback rail carries the same failure reason (risk text) as the
+    # native card would.
+    assert adapter.edits[-1]["content"].endswith("web_search - beta - error (boom)")
     assert "web_search - alpha - complete" in adapter.edits[-1]["content"]
     assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_slack_native_retry_clears_stale_failure_details(
+    monkeypatch, tmp_path
+):
+    """A retried call id that now succeeds must not keep the stale failure
+    reason on the card — details ride the failure, not the call id."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        RetryNativeToolsAgent,
+        session_id="sess-native-retry",
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    # Mid-turn the failed attempt surfaces its reason on the card...
+    failed = next(
+        update
+        for update in adapter.native_updates
+        if update["tasks"] and update["tasks"][-1].get("details") == "rate limited"
+    )
+    assert failed["tasks"][-1]["status"] == "error"
+    # ...and the final snapshot shows the successful retry with no stale reason.
+    assert adapter.native_updates[-1]["tasks"] == [
+        {
+            "id": "call-1",
+            "title": "web_search - alpha",
+            "status": "complete",
+        },
+    ]
 
 
 @pytest.mark.asyncio

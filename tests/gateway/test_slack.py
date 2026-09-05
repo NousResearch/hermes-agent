@@ -5143,6 +5143,92 @@ class TestNativeTaskCardProgress:
         ]
         assert adapter._native_task_card_streams == {}
 
+    @pytest.mark.asyncio
+    async def test_append_stream_never_mixes_markdown_text_and_chunks(self, adapter):
+        """Slack rejects appendStream payloads carrying both top-level
+        ``markdown_text`` and ``chunks``
+        (``cannot_provide_both_markdown_text_and_chunks``). The fallback text
+        belongs to the editable-text fallback rail only."""
+        team_client = AsyncMock()
+
+        async def api_call(method, *, json):
+            if method == "chat.startStream":
+                return {"ts": "stream-1"}
+            return {"ok": True}
+
+        team_client.api_call.side_effect = api_call
+        adapter._team_clients["T1"] = team_client
+        tasks = [{"id": "call-1", "title": "terminal", "status": "in_progress"}]
+
+        result = await adapter.send_native_task_card_progress(
+            "C1", tasks, metadata={"thread_id": "thread-1", "slack_team_id": "T1"},
+            fallback_text="Hermes is working\n- terminal - running",
+        )
+
+        assert result.success
+        appends = [
+            call.kwargs["json"]
+            for call in team_client.api_call.await_args_list
+            if call.args[0] == "chat.appendStream"
+        ]
+        assert appends, "expected an appendStream call"
+        for payload in appends:
+            assert "chunks" in payload
+            assert "markdown_text" not in payload
+
+    @pytest.mark.asyncio
+    async def test_stop_stream_marks_session_closed(self, adapter):
+        """stopStream must carry ``session_status: closed`` so the card's
+        session closes with the turn instead of lingering in a live/typing
+        state after we stop appending."""
+        team_client = AsyncMock()
+
+        async def api_call(method, *, json):
+            if method == "chat.startStream":
+                return {"ts": "stream-1"}
+            return {"ok": True}
+
+        team_client.api_call.side_effect = api_call
+        adapter._team_clients["T1"] = team_client
+        metadata = {"thread_id": "thread-1", "slack_team_id": "T1"}
+        await adapter.send_native_task_card_progress(
+            "C1",
+            [{"id": "call-1", "title": "terminal", "status": "in_progress"}],
+            metadata=metadata,
+        )
+
+        await adapter.stop_native_task_card_progress("C1", metadata=metadata)
+
+        stop_call = team_client.api_call.await_args
+        assert stop_call.args[0] == "chat.stopStream"
+        assert stop_call.kwargs["json"]["session_status"] == "closed"
+
+    def test_task_update_chunk_carries_failure_details_and_caps(self):
+        """Failed tools render WHY on the card: ``details`` carries the
+        concrete failure reason and ``output`` a result summary, both capped
+        at the 256-char spec limit."""
+        chunk = SlackAdapter._task_update_chunk(
+            {
+                "id": "call-1",
+                "title": "terminal - ls",
+                "status": "error",
+                "details": "ls: cannot access: No such file or directory",
+            }
+        )
+        assert chunk["details"] == "ls: cannot access: No such file or directory"
+        assert "output" not in chunk
+
+        long_reason = "x" * 300
+        capped = SlackAdapter._task_update_chunk(
+            {"id": "call-2", "title": "t", "status": "error", "details": long_reason}
+        )
+        assert capped["details"] == "x" * 256
+
+        clean = SlackAdapter._task_update_chunk(
+            {"id": "call-3", "title": "t", "status": "complete"}
+        )
+        assert "details" not in clean and "output" not in clean
+
 
 # ---------------------------------------------------------------------------
 # TestSlackAuthoredTextDeduplication

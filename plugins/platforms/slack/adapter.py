@@ -1895,7 +1895,14 @@ class SlackAdapter(BasePlatformAdapter):
         self, chat_id: str, tasks: List[Dict[str, str]], *, title: str = "Hermes is working",
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
         fallback_text: Optional[str] = None) -> SendResult:
-        """Start or update a Slack-native plan/task progress stream."""
+        """Start or update a Slack-native plan/task progress stream.
+
+        ``fallback_text`` is accepted for caller compatibility but must never
+        be mixed into the chunk payload — Slack rejects appendStream calls
+        that carry both top-level ``markdown_text`` and ``chunks``. The text
+        fallback belongs to the editable-text fallback rail only.
+        """
+        del fallback_text
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if not tasks:
@@ -1934,8 +1941,13 @@ class SlackAdapter(BasePlatformAdapter):
                 chunks.extend(self._task_update_chunk(task) for task in tasks)
                 append_payload: Dict[str, Any] = {
                     "channel": chat_id, "ts": stream.stream_ts, "chunks": chunks}
-                if fallback_text:
-                    append_payload["markdown_text"] = fallback_text
+                # Slack rejects appendStream calls that carry both top-level
+                # ``markdown_text`` and ``chunks``
+                # (``cannot_provide_both_markdown_text_and_chunks``). The
+                # plan/task chunks are the primary payload here; the text
+                # fallback belongs to the gateway's editable-text fallback
+                # rail for when the native rail fails, so it must not be
+                # sent alongside the chunks.
                 await client.api_call("chat.appendStream", json=append_payload)
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging
@@ -1948,9 +1960,20 @@ class SlackAdapter(BasePlatformAdapter):
         status = str(task.get("status") or "in_progress")
         status = status if status in {"in_progress", "complete", "error"} else "in_progress"
         task_id = str(task.get("id") or task.get("task_id") or "task")
-        return {
-            "type": "task_update", "id": task_id, "title": str(task.get("title") or task_id)[:256],
-            "status": status}
+        chunk: Dict[str, Any] = {
+            "type": "task_update", "id": task_id,
+            "title": str(task.get("title") or task_id)[:256], "status": status}
+        # Rich card fields: ``details`` carries the concrete failure reason
+        # (exit codes, error messages) so a red card says WHY; ``output``
+        # carries a result summary when the caller provides one. Slack caps
+        # both at 256 chars.
+        details = str(task.get("details") or "").strip()
+        if details:
+            chunk["details"] = details[:256]
+        output = str(task.get("output") or "").strip()
+        if output:
+            chunk["output"] = output[:256]
+        return chunk
 
     async def _stop_native_task_card_stream(
         self, key: Tuple[str, str, str], stream: _NativeTaskCardStream) -> None:
@@ -1961,7 +1984,15 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 if self._app and stream.stream_ts:
                     await self._get_client(stream.channel, team_id=stream.team_id).api_call(
-                        "chat.stopStream", json={"channel": stream.channel, "ts": stream.stream_ts})
+                        "chat.stopStream",
+                        json={
+                            "channel": stream.channel,
+                            "ts": stream.stream_ts,
+                            # Mark the card's session closed once the turn is
+                            # done — otherwise Slack keeps the card in a
+                            # live/typing session state after we stop appending.
+                            "session_status": "closed",
+                        })
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.debug("[Slack] Native task-card stopStream failed: %s", exc)
             finally:

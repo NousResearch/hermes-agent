@@ -669,9 +669,16 @@ def _append_unconfigured_rows(
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
+    # Honor model_catalog.excluded_providers here too: without this the
+    # include_unconfigured path re-adds providers the operator explicitly
+    # hid, undoing the picker-path filtering one function earlier (#102893).
+    # Same case-insensitive normalization as list_authenticated_providers.
+    _excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
         if entry.slug.lower() in seen:
+            continue
+        if entry.slug.lower() in _excluded:
             continue
         if current_only and entry.slug.lower() != cur:
             continue

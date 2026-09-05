@@ -6183,6 +6183,35 @@ async def _standalone_upload_file(
     return {"success": True, "message_id": message_id, "raw": result}
 
 
+# ASCII digits only: Python's ``\d`` also matches Unicode decimal digits, so a
+# value like "١٧١٨٠٠٠٠٠٠.١٢٣٤٥٦" would pass and reach Slack (which rejects it)
+# instead of falling back to the channel root.
+_SLACK_THREAD_TS_RE = re.compile(r"^[0-9]+\.[0-9]+$")
+
+
+def _coerce_slack_thread_ts(thread_id):
+    """Return a valid Slack ``thread_ts`` or ``None``.
+
+    A Slack thread anchor is always a ``<seconds>.<microseconds>`` (dotted)
+    timestamp. A bare numeric id — e.g. a Telegram topic ``15900`` left in a
+    cron delivery target after a cross-platform migration — is not a valid
+    ``thread_ts``: ``chat.postMessage`` rejects it with ``invalid_thread_ts``
+    and the whole delivery fails while the job still reports ``ok`` (#86264).
+    Drop an unparseable anchor and post to the channel root instead of erroring.
+    """
+    if thread_id is None:
+        return None
+    ts = str(thread_id).strip()
+    if _SLACK_THREAD_TS_RE.fullmatch(ts):
+        return ts
+    logger.warning(
+        "[Slack] dropping invalid thread_ts %r (not a dotted Slack ts); "
+        "delivering to channel root instead",
+        thread_id,
+    )
+    return None
+
+
 async def _standalone_send_media(
     token: str, chat_id: str, media_files: list, thread_id: Optional[str], formatted: Optional[str],
     formatted_caption: Optional[str], unfurl_kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -6274,6 +6303,11 @@ async def _standalone_send(
     with the gateway: text via ``chat.postMessage`` (aiohttp), media via ``files_upload_v2``."""
     del force_document  # signature parity with other standalone senders
     media_files = media_files or []
+    # A cross-platform delivery target (Telegram topic, Discord thread, …) can leak a bare numeric
+    # id into ``thread_id``; Slack only accepts a dotted ``thread_ts``. Coerce here — the single
+    # entry point feeding both the media and text dispatch below — so every postMessage/upload path
+    # fails open to the channel root instead of erroring the whole delivery (#86264).
+    thread_id = _coerce_slack_thread_ts(thread_id)
     # Under multiplex os.environ may hold ANOTHER profile's token: read via the secret scope.
     raw_token = getattr(pconfig, "token", None) or get_secret("SLACK_BOT_TOKEN", "")
     # Comma-separated multi-workspace list plus slack_tokens.json; no team map, so try each.

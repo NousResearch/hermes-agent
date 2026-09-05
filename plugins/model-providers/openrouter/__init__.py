@@ -143,6 +143,17 @@ class OpenRouterProfile(ProviderProfile):
         if prefs:
             body["provider"] = prefs
 
+        # Ask OpenRouter for usage accounting on every call (2026-09-05).
+        # Without this the response carries no `usage.cost` and no
+        # `usage.cost_details`, so the fleet could never record what a call
+        # ACTUALLY cost or which upstream host served it — all 5,387 usage rows
+        # read provider "openrouter" and $0. That blindness is precisely why an
+        # upstream provider overcharging 11x went uncaught: `cache-hit-watch`
+        # averaged a 96.8%-discount host together with a 0%-discount host and
+        # stayed silent. Costs nothing (no extra tokens, no extra request) and
+        # is scoped to this profile, so no other provider sees the field.
+        body["usage"] = {"include": True}
+
         # Pareto Code router — model-gated. The plugins block is only
         # meaningful for openrouter/pareto-code; sending it on any other
         # model has no documented effect and would be confusing in logs.

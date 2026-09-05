@@ -85,6 +85,20 @@ class Usage:
     total_tokens: int = 0
     cached_tokens: int = 0
 
+    # ── Aggregator billing accounting (2026-09-05) ──────────────────
+    # OpenRouter (and other aggregators) return the REAL billed cost and the
+    # upstream token split when the request asks for it. `hermes_state` has had
+    # columns for all four since 2026-09-01 and `conversation_loop` has always
+    # passed them through — but nothing ever populated them, so 5,387 usage
+    # rows carried zeros. That is the blindness that let one upstream provider
+    # overcharge 11x uncaught: every record said "openrouter" and none said
+    # which host actually served the call. Defaults keep every non-aggregator
+    # provider a no-op.
+    native_tokens_prompt: int = 0
+    native_tokens_cached: int = 0
+    cache_discount: float = 0.0
+    total_cost: float = 0.0
+
 
 @dataclass
 class NormalizedResponse:
@@ -106,6 +120,12 @@ class NormalizedResponse:
     finish_reason: str  # "stop", "tool_calls", "length", "content_filter"
     reasoning: str | None = None
     usage: Usage | None = None
+    # The UPSTREAM host that actually served this call, as reported by the
+    # aggregator ("Z.AI", "Novita", "DeepInfra", …) — NOT the account we billed
+    # through, which is `billing_provider`. Empty for direct providers, where
+    # the two are the same thing. Read by conversation_loop's usage-recording
+    # call, which has always asked for `response.provider_name`. (2026-09-05)
+    provider_name: str = ""
     provider_data: dict[str, Any] | None = field(default=None, repr=False)
 
     # ── Backward compatibility ──────────────────────────────────

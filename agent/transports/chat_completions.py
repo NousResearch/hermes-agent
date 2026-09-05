@@ -83,6 +83,118 @@ def _rename_tool_search_bridge_for_xai(
     return rewritten, alias_map
 
 
+def _model_extra(obj: Any) -> dict:
+    """Unknown fields the OpenAI SDK preserved on a pydantic response model.
+
+    Aggregators return fields the OpenAI schema does not define (OpenRouter's
+    top-level ``provider``, ``usage.cost``, ``usage.cost_details``). The SDK
+    keeps them in ``model_extra`` rather than discarding them. Returns ``{}``
+    for plain objects, dicts-as-responses and anything unexpected, so every
+    caller can treat this as "extras, if any".
+    """
+    extra = getattr(obj, "model_extra", None)
+    if isinstance(extra, dict):
+        return extra
+    if isinstance(obj, dict):
+        return obj
+    return {}
+
+
+def _aggregator_provider_name(response: Any) -> str:
+    """The UPSTREAM host that served this call, as the aggregator reports it.
+
+    OpenRouter returns ``provider`` at the top level of the response body
+    ("Z.AI", "Novita", "DeepInfra", …). This is NOT the account we billed
+    through — that is ``billing_provider`` and it always reads "openrouter".
+    Conflating the two is what left 5,387 usage rows unable to say which host
+    served them, and is why an 11x overcharge went uncaught. (2026-09-05)
+
+    Returns "" for every direct provider — there is no upstream to attribute.
+    """
+    for source in (response, _model_extra(response)):
+        if source is None:
+            continue
+        value = (source.get("provider") if isinstance(source, dict)
+                 else getattr(source, "provider", None))
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _aggregator_usage_extras(usage: Any) -> dict[str, Any]:
+    """Billed cost and upstream token split from an aggregator's usage block.
+
+    OpenRouter returns these only when the request asks for them
+    (``extra_body["usage"] = {"include": True}``, added to the OpenRouter
+    profile in the same change). Shapes handled:
+
+      usage.cost                                  -> total_cost   (real $ billed)
+      usage.cost_details.upstream_inference_cost  -> total_cost   (fallback)
+      usage.prompt_tokens_details.cached_tokens   -> native_tokens_cached
+      usage.prompt_tokens                         -> native_tokens_prompt
+
+    ``cache_discount`` is the money the cache actually saved, which is NOT the
+    same as the cached-token count: providers exist that report ~100% cached
+    tokens and bill every one at full input rate. Only a value the aggregator
+    states itself is recorded — it is never inferred from token counts.
+
+    Every field defaults to 0, so a provider that returns none of this is
+    recorded exactly as it is today.
+    """
+    out: dict[str, Any] = {}
+    if usage is None:
+        return out
+    extra = _model_extra(usage)
+
+    def _get(name: str) -> Any:
+        v = getattr(usage, name, None)
+        return extra.get(name) if v is None else v
+
+    cost = _get("cost")
+    if cost is None:
+        details = _get("cost_details")
+        if details is not None:
+            d_extra = _model_extra(details)
+            cost = (getattr(details, "upstream_inference_cost", None)
+                    or d_extra.get("upstream_inference_cost"))
+    try:
+        if cost is not None:
+            out["total_cost"] = float(cost)
+    except (TypeError, ValueError):
+        pass
+
+    discount = _get("cache_discount")
+    try:
+        if discount is not None:
+            out["cache_discount"] = float(discount)
+    except (TypeError, ValueError):
+        pass
+
+    details = _get("prompt_tokens_details")
+    if details is not None:
+        d_extra = _model_extra(details)
+        cached = (getattr(details, "cached_tokens", None)
+                  if not isinstance(details, dict) else d_extra.get("cached_tokens"))
+        if cached is None:
+            cached = d_extra.get("cached_tokens")
+        try:
+            if cached is not None:
+                out["native_tokens_cached"] = int(cached)
+        except (TypeError, ValueError):
+            pass
+
+    native_prompt = _get("native_tokens_prompt")
+    if native_prompt is None:
+        native_prompt = _get("prompt_tokens")
+    try:
+        if native_prompt is not None:
+            out["native_tokens_prompt"] = int(native_prompt)
+    except (TypeError, ValueError):
+        pass
+
+    return out
+
+
 def _static_prompt_instructions(messages: list[dict[str, Any]]) -> str:
     """Return the stable system/developer prefix used for cache routing.
 
@@ -733,6 +845,13 @@ class ChatCompletionsTransport(ProviderTransport):
         if provider_prefs and is_openrouter:
             extra_body["provider"] = provider_prefs
 
+        # Usage accounting — mirrors the OpenRouter profile's build_extra_body.
+        # This legacy branch runs only when that profile is NOT loaded, and
+        # without it those calls would silently keep recording $0 and no
+        # upstream provider. (2026-09-05)
+        if is_openrouter:
+            extra_body["usage"] = {"include": True}
+
         # Pareto Code router plugin — model-gated. Same shape as the
         # profile path in plugins/model-providers/openrouter/__init__.py;
         # this branch only runs when the OpenRouter profile isn't loaded.
@@ -1063,7 +1182,15 @@ class ChatCompletionsTransport(ProviderTransport):
                 prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
                 completion_tokens=getattr(u, "completion_tokens", 0) or 0,
                 total_tokens=getattr(u, "total_tokens", 0) or 0,
+                **_aggregator_usage_extras(u),
             )
+
+        # Which UPSTREAM host served this call. OpenRouter returns it as a
+        # top-level ``provider`` field; the OpenAI SDK keeps unknown fields in
+        # ``model_extra``. Empty string for every direct provider, where the
+        # serving host and the billing account are the same and there is
+        # nothing to attribute. (2026-09-05 — see Usage above.)
+        provider_name = _aggregator_provider_name(response)
 
         # Preserve reasoning fields separately.  DeepSeek/Moonshot use
         # ``reasoning_content``; others use ``reasoning``.  Downstream code
@@ -1123,6 +1250,7 @@ class ChatCompletionsTransport(ProviderTransport):
             finish_reason=finish_reason,
             reasoning=reasoning,
             usage=usage,
+            provider_name=provider_name,
             provider_data=provider_data or None,
         )
 

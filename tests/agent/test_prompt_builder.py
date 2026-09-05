@@ -12,6 +12,8 @@ import pytest
 
 from agent.prompt_builder import (
     _scan_context_content,
+    _expand_context_includes,
+    load_soul_md,
     _truncate_content,
     _parse_skill_file,
     _skill_should_show,
@@ -1191,3 +1193,131 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+
+class TestExpandContextIncludes:
+    """`@path` include directives in context files (SOUL.md, AGENTS.md, ...)."""
+
+    def test_no_directive_returns_content_unchanged(self, tmp_path):
+        content = "# Identity\n\nPlain content, no includes.\n"
+        assert _expand_context_includes(content, tmp_path) == content
+
+    def test_includes_a_sibling_file(self, tmp_path):
+        (tmp_path / "role.md").write_text("You are the assistant.", encoding="utf-8")
+        content = "# Identity\n\n@role.md\n"
+        out = _expand_context_includes(content, tmp_path)
+        assert "You are the assistant." in out
+        assert "@role.md" not in out
+
+    def test_directive_must_be_alone_on_the_line(self, tmp_path):
+        # An email-like token or inline @ is NOT an include directive.
+        (tmp_path / "role.md").write_text("SHOULD NOT APPEAR", encoding="utf-8")
+        content = "Contact me at foo@role.md for details.\n"
+        out = _expand_context_includes(content, tmp_path)
+        assert "Contact me at foo@role.md for details." in out
+        assert "SHOULD NOT APPEAR" not in out
+
+    def test_leading_whitespace_allowed(self, tmp_path):
+        (tmp_path / "role.md").write_text("INCLUDED", encoding="utf-8")
+        out = _expand_context_includes("   @role.md\n", tmp_path)
+        assert "INCLUDED" in out
+
+    def test_nested_includes_resolve_relative_to_each_file(self, tmp_path):
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (tmp_path / "a.md").write_text("A\n@sub/b.md\n", encoding="utf-8")
+        (sub / "b.md").write_text("B\n@c.md\n", encoding="utf-8")
+        (sub / "c.md").write_text("C", encoding="utf-8")
+        out = _expand_context_includes("@a.md\n", tmp_path)
+        assert "A" in out and "B" in out and "C" in out
+        assert "@" not in out
+
+    def test_missing_target_leaves_a_marker_not_crash(self, tmp_path):
+        out = _expand_context_includes("@nope.md\n", tmp_path)
+        assert "nope.md" in out  # a visible marker names the missing file
+        # the whole load must not raise and must not silently vanish
+        assert out.strip() != ""
+
+    def test_cycle_is_broken(self, tmp_path):
+        (tmp_path / "a.md").write_text("A\n@b.md\n", encoding="utf-8")
+        (tmp_path / "b.md").write_text("B\n@a.md\n", encoding="utf-8")
+        out = _expand_context_includes("@a.md\n", tmp_path)
+        # both bodies appear once; the back-reference is stopped, not infinite
+        assert "A" in out and "B" in out
+
+    def test_depth_is_bounded(self, tmp_path):
+        # A long chain must terminate rather than recurse without bound.
+        for i in range(30):
+            (tmp_path / f"f{i}.md").write_text(f"L{i}\n@f{i + 1}.md\n", encoding="utf-8")
+        (tmp_path / "f30.md").write_text("END", encoding="utf-8")
+        out = _expand_context_includes("@f0.md\n", tmp_path)
+        assert "L0" in out  # starts expanding
+        # terminates and leaves a visible marker rather than a dangling directive
+        assert "depth limit reached" in out
+        assert "END" not in out  # never reached the bottom of the over-deep chain
+
+    def test_diamond_includes_each_file_once(self, tmp_path):
+        # root -> a, b; both -> shared. shared must appear once, not twice.
+        (tmp_path / "a.md").write_text("A\n@shared.md\n", encoding="utf-8")
+        (tmp_path / "b.md").write_text("B\n@shared.md\n", encoding="utf-8")
+        (tmp_path / "shared.md").write_text("SHARED_BODY", encoding="utf-8")
+        out = _expand_context_includes("@a.md\n@b.md\n", tmp_path)
+        assert out.count("SHARED_BODY") == 1
+        assert "already included" in out  # the second reference is marked
+
+    def test_unreadable_target_leaves_a_marker(self, tmp_path):
+        # A directory (not a file) is not a valid include target.
+        (tmp_path / "adir").mkdir()
+        out = _expand_context_includes("@adir\n", tmp_path)
+        assert "adir" in out
+        assert out.strip() != ""
+
+
+class TestExpandContextIncludesConfinement:
+    """confine=True refuses escapes; confine=False (SOUL) allows cross-tree."""
+
+    def test_confined_rejects_absolute_path(self, tmp_path):
+        outside = tmp_path / "secret.md"
+        outside.write_text("TOP SECRET", encoding="utf-8")
+        base = tmp_path / "repo"
+        base.mkdir()
+        out = _expand_context_includes(f"@{outside}\n", base, confine=True)
+        assert "TOP SECRET" not in out
+        assert "outside base dir" in out
+
+    def test_confined_rejects_parent_traversal(self, tmp_path):
+        (tmp_path / "secret.md").write_text("TOP SECRET", encoding="utf-8")
+        base = tmp_path / "repo"
+        base.mkdir()
+        out = _expand_context_includes("@../secret.md\n", base, confine=True)
+        assert "TOP SECRET" not in out
+        assert "outside base dir" in out
+
+    def test_confined_allows_in_tree_include(self, tmp_path):
+        base = tmp_path / "repo"
+        base.mkdir()
+        (base / "role.md").write_text("IN TREE", encoding="utf-8")
+        out = _expand_context_includes("@role.md\n", base, confine=True)
+        assert "IN TREE" in out
+
+    def test_unconfined_allows_absolute_path(self, tmp_path):
+        # SOUL.md (confine=False) may compose files anywhere - e.g. a vault.
+        outside = tmp_path / "vault" / "global.md"
+        outside.parent.mkdir()
+        outside.write_text("VAULT GLOBAL", encoding="utf-8")
+        base = tmp_path / "home"
+        base.mkdir()
+        out = _expand_context_includes(f"@{outside}\n", base, confine=False)
+        assert "VAULT GLOBAL" in out
+
+
+class TestSoulMdIncludes:
+    """load_soul_md expands @ includes relative to HERMES_HOME."""
+
+    def test_soul_expands_includes(self, tmp_path, monkeypatch):
+        (tmp_path / "SOUL.md").write_text("# Soul\n\n@global.md\n", encoding="utf-8")
+        (tmp_path / "global.md").write_text("GLOBAL RULES", encoding="utf-8")
+        out = load_soul_md(home_override=tmp_path)
+        assert out is not None
+        assert "GLOBAL RULES" in out
+        assert "@global.md" not in out

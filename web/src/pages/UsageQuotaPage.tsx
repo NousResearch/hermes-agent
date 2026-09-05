@@ -4,6 +4,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 import { api, type UsageQuotaResponse, type UsageQuotaSnapshot } from "@/lib/api";
 
 function formatDate(value: string | null): string {
@@ -95,7 +96,12 @@ export default function UsageQuotaPage() {
       {loading && !data && <div className="flex justify-center py-24"><Spinner className="text-2xl text-primary" /></div>}
       {error && <Card><CardContent className="py-6"><p className="text-center text-sm text-destructive">{error}</p></CardContent></Card>}
       {data && data.providers.length === 0 && <Card><CardContent className="py-12 text-center text-sm text-muted-foreground">No supported providers are configured.</CardContent></Card>}
-      {data && data.providers.length > 0 && <div className="grid gap-6 lg:grid-cols-2">{data.providers.map((snapshot) => <ProviderCard key={snapshot.provider} snapshot={snapshot} />)}</div>}
+      {data && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          {data.providers.map((snapshot) => <ProviderCard key={snapshot.provider} snapshot={snapshot} />)}
+          <PluginSlot name="usage-quota:providers" />
+        </div>
+      )}
     </div>
   );
 }

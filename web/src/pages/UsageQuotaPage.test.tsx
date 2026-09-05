@@ -3,6 +3,7 @@ import { act, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerSlot, unregisterPluginSlots } from "@/plugins/slots";
 
 const apiMocks = vi.hoisted(() => ({
   getUsageQuota: vi.fn(),
@@ -132,5 +133,20 @@ describe("UsageQuotaPage", () => {
     expect(container.textContent).not.toContain("Scope:");
     // The current backend contract provides source/fetched_at only; the UI must
     // not invent a scope, stale flag, or partial-data claim when absent.
+  });
+
+  it("renders the provider diagnostics slot for additive plugin cards", async () => {
+    const { default: UsageQuotaPage } = await import("./UsageQuotaPage");
+    function DiagnosticsCard() {
+      return <div data-testid="provider-diagnostics-slot">AGY summary</div>;
+    }
+    registerSlot("agy-usage", "usage-quota:providers", DiagnosticsCard);
+    try {
+      await render(<MemoryRouter><UsageQuotaPage /></MemoryRouter>);
+      await vi.waitFor(() => expect(container.querySelector("[data-testid=provider-diagnostics-slot]")).not.toBeNull());
+      expect(container.textContent).toContain("AGY summary");
+    } finally {
+      unregisterPluginSlots("agy-usage");
+    }
   });
 });

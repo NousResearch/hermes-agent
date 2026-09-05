@@ -175,3 +175,41 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     expect(gatewayMocks.closed).toEqual(['wss://homelab.invalid/api/ws?profile=bot'])
   })
 })
+
+describe('foreground retention for route-less (Sessions-list) tiles', () => {
+  // A session of a SECONDARY profile opened from the Sessions list persists as
+  // a tile with NO ownerRoute (the stored tile only carries
+  // anchor/dir/storedSessionId/workspaceMode). Neither foreground pin rung
+  // applies — addRouteScope needs an ownerRoute, addRuntimeScope needs the
+  // runtime in the connectionId-scoped event ledger — so a mounted tile pins
+  // nothing and the resume lease's finally disposes the socket it just dialed
+  // → backend reaps the runtime → reclaim → re-dial → … forever.
+
+  it('keeps the socket a tile dialed when the tile carries no ownerRoute (opened from the Sessions list)', async () => {
+    $sessionTiles.set([{ storedSessionId: 'stored-mara', runtimeId: undefined }])
+
+    await requestGatewayForAgent('local', 'mara', 'session.resume', { session_id: 'stored-mara' })
+
+    expect(gatewayMocks.closed).toEqual([])
+
+    // …and the live-work pruner agrees: an idle route-less tile is still a
+    // mounted foreground surface.
+    pruneSecondaryGateways(liveSessionScopes())
+    expect(gatewayMocks.closed).toEqual([])
+
+    // Tile gone: the pin does not latch — the next lease releases the socket.
+    $sessionTiles.set([])
+    await requestGatewayForAgent('local', 'mara', 'session.usage', { session_id: 'stored-mara' })
+    expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=mara'])
+  })
+
+  it('does not let a route-less tile of one profile pin another profile’s socket', async () => {
+    // Only the mara tile is mounted; a request for otto must not inherit mara's
+    // pin — the otto socket is idle garbage and closes on lease release.
+    $sessionTiles.set([{ storedSessionId: 'stored-mara', runtimeId: undefined }])
+
+    await requestGatewayForAgent('local', 'otto', 'session.usage', {})
+
+    expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=otto'])
+  })
+})

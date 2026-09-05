@@ -7,6 +7,7 @@ import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
+import { recordSessionOwnerScope } from '@/store/session-owner-ledger'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -942,9 +943,17 @@ export async function requestGatewayForAgent<T>(
       await openSecondary(entry)
     }
 
-    return await (timeoutMs === undefined && signal === undefined
+    const result = await (timeoutMs === undefined && signal === undefined
       ? entry.gateway.request<T>(method, params)
       : entry.gateway.request<T>(method, params, timeoutMs, signal))
+
+    // Route-less tile rung — see session-owner-ledger. Only a resume carries
+    // the stored id a tile pins on (other RPCs key runtimes).
+    if (method === 'session.resume' && typeof params.session_id === 'string') {
+      recordSessionOwnerScope(params.session_id, scope)
+    }
+
+    return result
   } finally {
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 

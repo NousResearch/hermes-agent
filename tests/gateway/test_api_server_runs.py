@@ -249,6 +249,54 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @pytest.mark.asyncio
+    async def test_start_binds_session_id_for_subprocess_env(self, adapter):
+        """/v1/runs must bind HERMES_SESSION_ID so a tool subprocess spawned
+        during the run sees the run's session id, not an empty or foreign value.
+
+        Without passing ``session_id`` to ``_bind_api_server_session``,
+        ``set_session_vars`` leaves ``_SESSION_ID`` unset (later cleared to ``""``)
+        and ``tools.environments.local.build_subprocess_env`` produces an empty
+        ``HERMES_SESSION_ID`` for every command the run executes."""
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def _capture_run(user_message=None, conversation_history=None, task_id=None):
+                    from tools.environments.local import build_subprocess_env
+
+                    env = build_subprocess_env()
+                    captured["hermes_session_id"] = env.get("HERMES_SESSION_ID")
+                    captured["task_id"] = task_id
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = _capture_run
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "runs-raw-sid"},
+                )
+                assert resp.status == 202
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(40):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert captured.get("hermes_session_id") == "runs-raw-sid", (
+            "runs route must bind session_id so tool subprocesses see HERMES_SESSION_ID"
+        )
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):

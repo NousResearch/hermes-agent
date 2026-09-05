@@ -845,13 +845,6 @@ def _tenv_read(name: str, default: str = "") -> str:
 
 _BACKEND_IMAGE_KEYS = {b: f"{b}_image" for b in ("docker", "singularity", "modal", "daytona")}
 # (config key, default) pairs forwarded to _create_environment's container_config.
-_CONTAINER_CONFIG_DEFAULTS = (
-    ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200), ("container_persistent", True),
-    ("modal_mode", "auto"), ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False),
-    ("docker_forward_env", []), ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
-    ("docker_shm_size", "1g"), ("docker_persist_across_processes", True), ("docker_shared_container_key", ""),
-    ("docker_orphan_reaper", True),
-)
 # Single-line POSIX probe; `2>/dev/null` keeps a missing binary from polluting output.
 _BACKEND_PROBE_CMD = (
     "printf 'os=%s\\nkernel=%s\\nhome=%s\\ncwd=%s\\nuser=%s\\n' \"$(uname -s 2>/dev/null || echo unknown)\" "
@@ -862,16 +855,17 @@ _BACKEND_PROBE_CMD = (
 
 def _run_backend_probe(env_type: str, terminal_tool) -> str:
     """Execute the probe command inside a freshly built backend; "" when it yields nothing."""
-    from tools.terminal_tool_backends import _create_environment, _ssh_config_from_config
+    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool_lifecycle import _cleanup_env
 
     config = terminal_tool._get_env_config()
-    # Mirrors tools/terminal_tool.py's live-command assembly (`_create_environment` is the factory).
+    # Same container_config shaper as the live terminal path: a private copy of the key table here
+    # drifted (no docker_network) and gave the probe a bridge-networked container under lockdown.
     env = _create_environment(
         env_type=env_type, image=config.get(_BACKEND_IMAGE_KEYS[env_type], "") if env_type in _BACKEND_IMAGE_KEYS else "", cwd=config.get("cwd", ""),
         timeout=config.get("timeout", 180),
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
-        container_config=({k: config.get(k, d) for k, d in _CONTAINER_CONFIG_DEFAULTS}
+        container_config=(_container_config_from_config(config)
                           if terminal_tool._is_container_backend(env_type) else None),
         task_id="prompt-backend-probe", host_cwd=config.get("host_cwd"),
     )

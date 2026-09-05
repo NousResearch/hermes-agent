@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.error_classifier import FailoverReason
+from agent._truncation_boost_cap import resolve_truncation_boost_cap
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import is_repetition_dominated
@@ -278,7 +279,12 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
         if _tc_requested_cap is not None:
             _tc_boost = max(_tc_boost, _tc_requested_cap)
-        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
+        agent._ephemeral_max_output_tokens = min(
+            _tc_boost,
+            resolve_truncation_boost_cap(
+                requested_cap=_tc_requested_cap, provider=agent.provider, model=agent.model,
+            ),
+        )
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
     if st.is_stub:

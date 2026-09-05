@@ -1,21 +1,21 @@
 ---
-title: "Merge Reconciler — Neutral third-party resolution of agent merge conflicts"
-sidebar_label: "Merge Reconciler"
-description: "Neutral third-party resolution of agent merge conflicts"
+title: "Agent Merge Conflict Arbiter — Neutral arbiter for merge conflicts between two agents"
+sidebar_label: "Agent Merge Conflict Arbiter"
+description: "Neutral arbiter for merge conflicts between two agents"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Merge Reconciler
+# Agent Merge Conflict Arbiter
 
-Neutral third-party resolution of agent merge conflicts.
+Neutral arbiter for merge conflicts between two agents.
 
 ## Skill metadata
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/autonomous-ai-agents\merge-reconciler` |
+| Source | Optional — install with `hermes skills install official/autonomous-ai-agents/agent-merge-conflict-arbiter` |
+| Path | `optional-skills/autonomous-ai-agents/agent-merge-conflict-arbiter` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -29,7 +29,7 @@ Neutral third-party resolution of agent merge conflicts.
 The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
-# Merge Reconciler
+# Agent Merge-Conflict Arbiter
 
 Resolve a git merge conflict between two AGENTS' branches as an impartial third
 party. Agents resolving conflicts against a peer's work reliably either

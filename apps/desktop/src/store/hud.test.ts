@@ -79,6 +79,16 @@ describe('openHud profile targeting (#82285)', () => {
     expect(open).toHaveBeenCalledWith({ connectionId: 'vultr-gateway', sessionId: null, profile: 'thanos' })
   })
 
+  it('carries the active gateway route for a legacy profile-only session', () => {
+    $sessions.set([session({ id: 'abc', profile: 'thanos' })])
+    $activeGatewayProfile.set('thanos')
+    setPrimaryGatewayConnectionId('vultr-gateway')
+
+    openHud('abc')
+
+    expect(open).toHaveBeenCalledWith({ connectionId: 'vultr-gateway', sessionId: 'abc', profile: 'thanos' })
+  })
+
   it('normalizes to default for single-profile users', () => {
     openHud()
 

@@ -669,6 +669,42 @@ def _venv_core_imports_healthy() -> tuple[bool, str]:
     return True, ""
 
 
+def _remove_stale_legacy_venv(project_root: Path | None = None) -> bool:
+    """Remove an inactive ``.venv`` left by a managed install after canonical ``venv`` is usable."""
+    from hermes_cli.update_cmd import _m
+
+    root = Path(project_root) if project_root is not None else _m().PROJECT_ROOT
+    current = root / "venv"
+    legacy = root / ".venv"
+    managed = (root / ".hermes-bootstrap-complete").is_file()
+    if not managed:
+        try:
+            managed = (root / ".install_method").read_text(encoding="utf-8").strip().lower() == "git"
+        except OSError:
+            pass
+    current_python = venv_python_path(current, windows=_m()._is_windows())
+    if not managed or not current_python.is_file() or not legacy.is_dir():
+        return False
+
+    try:
+        legacy_resolved = legacy.resolve()
+        active_envs = [Path(sys.prefix)]
+        if os.environ.get("VIRTUAL_ENV"):
+            active_envs.append(Path(os.environ["VIRTUAL_ENV"]))
+        if any(path.resolve() == legacy_resolved for path in active_envs):
+            return False
+    except OSError:
+        return False
+
+    try:
+        shutil.rmtree(legacy)
+    except OSError as exc:
+        logger.warning("Could not remove stale legacy venv %s: %s", legacy, exc)
+        return False
+    print("  ✓ Removed stale legacy virtual environment (.venv)")
+    return True
+
+
 # Native extensions that pin venv files once imported: if the updater holds one, Windows blocks
 # REPLACE on the mapped ``.pyd`` and the sync dies with ``os error 5``. PyYAML's ``_yaml`` is in
 # every CLI process, so the guard must be HONEST: fire only when the sync would actually REWRITE
@@ -1050,3 +1086,5 @@ def _sync_python_dependencies_after_pull(
         print(f"      {import_error}")
         print("    Run `hermes update` again — if it persists, reinstall:")
         print("    https://hermes-agent.nousresearch.com")
+    else:
+        _m()._remove_stale_legacy_venv()

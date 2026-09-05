@@ -15,6 +15,17 @@ import hermes_cli.gateway as gateway
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
+def test_managed_venv_precedes_stale_legacy_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.prefix", str(tmp_path / "system"))
+    monkeypatch.setattr("sys.base_prefix", str(tmp_path / "system"))
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "venv").mkdir()
+    (tmp_path / ".venv").mkdir()
+
+    assert gateway._detect_venv_dir() == tmp_path / "venv"
+
+
 def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway

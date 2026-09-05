@@ -59,6 +59,8 @@ class ProfileRoute:
     max_iterations: Optional[int] = None
     fallback: Tuple[FallbackTarget, ...] = ()
     supports_tools: bool = True
+    request_overrides: Optional[dict] = None     # provider request personality (runtime provider)
+    max_output_tokens: Optional[int] = None
 
 
 def _profiles_section(cfg: Optional[dict]) -> Any:
@@ -93,6 +95,10 @@ def _parse_fallback(name: str, raw: Any) -> Tuple[FallbackTarget, ...]:
 
 
 def _parse_profile(name: str, raw: Any) -> ProfileSpec:
+    if not str(name).strip():
+        raise ValueError(
+            "delegation.profiles contains an empty or whitespace-only profile name; "
+            "every profile needs a non-empty name")
     if not isinstance(raw, dict):
         raise ValueError(
             f"delegation.profiles.{name} must be a mapping (provider/model/...), "
@@ -236,4 +242,6 @@ def resolve_profile_route(name: str, cfg: Optional[dict], parent_agent: Any = No
         max_iterations=spec.max_iterations,
         fallback=spec.fallback,
         supports_tools=supports_tools,
+        request_overrides=dict(runtime.get("request_overrides") or {}) or None,
+        max_output_tokens=runtime.get("max_output_tokens"),
     )

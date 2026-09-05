@@ -108,3 +108,35 @@ def test_no_profile_keeps_construction_kwargs_unchanged(captured, fake_routing):
     assert kwargs["model"] == "raw-model"
     assert not any(k.startswith("override_") for k in kwargs)
     assert "requested_profile" not in kwargs
+
+
+@pytest.mark.parametrize("profile_iter,budget,expected", [
+    (100, 50, 50),  # profile can never WIDEN the configured budget
+    (7, 50, 7),     # profile may tighten it
+])
+def test_profile_max_iterations_clamps_against_configured_budget(
+        captured, monkeypatch, profile_iter, budget, expected):
+    """The lifecycle path clamps min(profile, delegation.max_iterations) — the CONFIGURED
+    budget, same as delegate_task, not the DEFAULT_MAX_ITERATIONS constant. Both directions
+    are asserted so a min→max mutation cannot survive."""
+    from types import SimpleNamespace as _NS
+    cfg = {
+        "max_iterations": budget,
+        "profiles": {"small": {
+            "provider": "openrouter", "model": "prof/small-model", "max_iterations": profile_iter,
+        }},
+    }
+    import hermes_cli.runtime_provider as rp
+    import agent.models_dev as md
+    monkeypatch.setattr(rp, "resolve_runtime_provider", lambda **kw: {
+        "provider": kw.get("requested"), "model": kw.get("target_model"),
+        "base_url": "https://api.example.test/v1", "api_key": "sk-test",
+        "api_mode": "chat_completions",
+    })
+    monkeypatch.setattr(md, "get_model_capabilities", lambda *a, **k: _NS(supports_tools=True))
+    monkeypatch.setattr("tools.delegate_tool_config._load_config", lambda: cfg)
+
+    service, calls = captured
+    service.launch(SubagentLaunchRequest(goal="budget", model_profile="small"))
+    assert len(calls) == 1
+    assert calls[0]["max_iterations"] == expected

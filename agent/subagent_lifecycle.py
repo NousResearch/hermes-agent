@@ -291,13 +291,19 @@ class SubagentLifecycleService:
             # delegation config, then map the bundle to override_* child-construction kwargs.
             from tools.delegate_tool import _profile_task_overrides
             from tools.delegate_tool_config import _load_config, _resolve_profile_credentials
+            cfg = _load_config()
             try:
-                creds = _resolve_profile_credentials(request.model_profile, _load_config())
+                creds = _resolve_profile_credentials(request.model_profile, cfg)
             except ValueError as exc:
                 raise SubagentLifecycleError(str(exc)) from exc
             model, overrides = creds["model"], _profile_task_overrides(creds)
+            # A profile may only TIGHTEN the budget (#25752) — clamp against the CONFIGURED
+            # delegation budget (delegation.max_iterations), same as delegate_task, not the constant.
+            configured_budget = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+            if isinstance(configured_budget, int) and not isinstance(configured_budget, bool):
+                max_iterations = configured_budget
             profile_max_iter = creds.get("max_iterations")
-            if isinstance(profile_max_iter, int):  # a profile may only TIGHTEN the budget (#25752)
+            if isinstance(profile_max_iter, int):
                 max_iterations = min(profile_max_iter, max_iterations)
         child = _build_child_preserving_parent_tools(
             task_index=0, goal=request.goal, context=request.context,

@@ -72,3 +72,25 @@ class TestDelegationProfileValidation:
     def test_malformed_fallback_is_an_error(self):
         issues = _issues({"profiles": {"small": {"model": "m", "fallback": "openrouter/big"}}})
         assert any(i.severity == "error" and "fallback" in i.message for i in issues)
+
+
+class TestAgentRoutingWithoutProfiles:
+    WARNING_TEXT = "agent_routing is enabled but no delegation.profiles are configured"
+
+    def test_agent_routing_on_with_no_profiles_warns(self):
+        issues = _issues({"agent_routing": True})
+        assert any(i.severity == "warning" and self.WARNING_TEXT in i.message for i in issues)
+
+    def test_agent_routing_on_with_empty_profiles_mapping_warns(self):
+        issues = _issues({"agent_routing": True, "profiles": {}, "default_profile": "x"})
+        assert any(i.severity == "warning" and self.WARNING_TEXT in i.message for i in issues)
+
+    def test_agent_routing_off_with_no_profiles_stays_silent(self):
+        assert _issues({"agent_routing": False}) == []
+
+    def test_agent_routing_on_with_profiles_stays_silent(self):
+        issues = _issues({
+            "agent_routing": True,
+            "profiles": {"small": {"provider": "anthropic", "model": "m"}},
+        })
+        assert not any(self.WARNING_TEXT in i.message for i in issues)

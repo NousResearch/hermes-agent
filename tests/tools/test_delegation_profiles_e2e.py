@@ -266,7 +266,7 @@ def test_e2e_lifecycle_launch_resolves_same_route_as_delegate_task(real_home, mo
     assert cap.built[0]["model"] == SMALL_MODEL  # same route as E2E-1's small task
     assert cap.built[0]["api_key"] == "sk-or-e2e-test-key"
     assert not cap.built[0]["fallback_model"]  # small's fallback: [] honored here too
-    assert handle.requested_profile in ("small", None)  # provenance when stamped
+    assert handle.requested_profile == "small"  # spawn-time provenance must be stamped
 
 
 # ── E2E-6: unresolvable profile provider → clean tool_error, no child spawned ─

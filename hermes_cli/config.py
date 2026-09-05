@@ -1224,11 +1224,30 @@ def _validate_delegation_profiles(config: Dict[str, Any], issues: List[ConfigIss
     if not isinstance(delegation_cfg, dict):
         return
     if not (delegation_cfg.get("profiles") or delegation_cfg.get("default_profile")):
-        return  # legacy config — nothing profile-shaped to validate
+        # legacy config — nothing profile-shaped to validate, but a routing gate with no menu
+        # behind it silently exposes nothing: warn instead of staying quiet.
+        if delegation_cfg.get("agent_routing"):
+            _issue(issues, "warning",
+                   "delegation.agent_routing is enabled but no delegation.profiles are configured; "
+                   "model_profile will not be exposed.",
+                   "Add at least one profile under delegation.profiles in config.yaml, or set "
+                   "delegation.agent_routing: false")
+        return
     try:
-        from agent.delegation_model_routing import profile_config_errors
+        from agent.delegation_model_routing import profile_config_errors, parse_profiles
     except Exception:
         return
+    if delegation_cfg.get("agent_routing"):
+        try:
+            routable = parse_profiles(delegation_cfg)
+        except ValueError:
+            routable = None  # malformed — the error issues below already tell the story
+        if routable == {}:
+            _issue(issues, "warning",
+                   "delegation.agent_routing is enabled but no delegation.profiles are configured; "
+                   "model_profile will not be exposed.",
+                   "Add at least one profile under delegation.profiles in config.yaml, or set "
+                   "delegation.agent_routing: false")
     for message in profile_config_errors(delegation_cfg):
         _issue(issues, "error", message,
                "Fix the entry under delegation.profiles in config.yaml — each profile needs at "

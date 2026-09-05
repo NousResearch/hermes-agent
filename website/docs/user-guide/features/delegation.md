@@ -238,7 +238,7 @@ A profile's `max_iterations` can only tighten the configured delegation budget, 
 | `resolved_model` | The model pinned at spawn time (frozen; never updated afterward) |
 | `fallback_policy` | `"none"` (empty profile fallback chain) or `"profile:<name>"` (the profile's own chain) |
 
-All four are `None` on legacy profile-less children. The existing `model` key stays live: when it diverges from `resolved_model`, a fallback fired, which is the requested-versus-effective audit signal.
+All four are omitted on legacy profile-less children, so profile-free result entries keep their original shape. The existing `model` key stays live: when it diverges from `resolved_model`, a fallback fired, which is the requested-versus-effective audit signal.
 
 ## The `/review` Command
 

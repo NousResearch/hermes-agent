@@ -303,3 +303,30 @@ def test_gate_on_handler_unknown_profile_clean_error_no_spawn():
         )
     assert "bogus" in result
     assert h.built == []
+
+
+# ── request_overrides / max_output_tokens passthrough on the profile branch ──
+
+def test_profile_bundle_carries_runtime_overrides_and_explicit_config_overrides():
+    """FIX: _resolve_profile_credentials hardcoded request_overrides/max_output_tokens to None.
+    The profile branch must carry the runtime provider's request personality AND merge explicit
+    delegation.request_overrides, identically to the legacy provider branch."""
+    from tools.delegate_tool_config import _resolve_profile_credentials
+
+    def _runtime(requested=None, target_model=None, **_kw):
+        return {
+            "provider": requested, "base_url": "https://rt.example/v1", "api_key": "rt-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"extra_body": {"provider_flag": 1}},
+            "max_output_tokens": 4096,
+        }
+
+    cfg = {
+        "profiles": {"small": {"provider": "openrouter", "model": "prof/small-model"}},
+        "request_overrides": {"temperature": 0.1},
+    }
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_runtime):
+        bundle = _resolve_profile_credentials("small", cfg)
+    assert bundle["max_output_tokens"] == 4096
+    assert bundle["request_overrides"]["temperature"] == 0.1          # explicit config override
+    assert bundle["request_overrides"]["extra_body"] == {"provider_flag": 1}  # runtime personality

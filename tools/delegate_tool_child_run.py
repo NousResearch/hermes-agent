@@ -31,10 +31,14 @@ def _str_or_none(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
 
 def _route_telemetry(child: Any) -> Dict[str, Any]:
-    """Route provenance stamped at spawn time (see _build_child_preserving_parent_tools). All four are None for
-    legacy (profile-less) children. NOTE: ``resolved_model`` is the SPAWN-TIME route model, while the sibling
-    ``model`` key stays the child's LIVE model — divergence between the two IS the requested-vs-effective signal
-    when a fallback fires mid-run, so both must survive verbatim."""
+    """Route provenance stamped at spawn time (see _build_child_preserving_parent_tools). Legacy
+    (profile-less) children carry no stamp and get an EMPTY dict, so their result entries stay
+    byte-identical to main (no null provenance keys). NOTE: ``resolved_model`` is the SPAWN-TIME
+    route model, while the sibling ``model`` key stays the child's LIVE model — divergence between
+    the two IS the requested-vs-effective signal when a fallback fires, so both must survive
+    verbatim."""
+    if _str_or_none(getattr(child, "_route_requested_profile", None)) is None:
+        return {}
     return {
         "requested_profile": _str_or_none(getattr(child, "_route_requested_profile", None)),
         "resolved_provider": _str_or_none(getattr(child, "_route_resolved_provider", None)),

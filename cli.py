@@ -968,8 +968,77 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _ensure_kanban_worker_lifecycle(
+    task_id: str,
+    run_id: int,
+    *,
+    clean_exit: bool,
+    retry_delays: tuple[float, ...] = (0.0, 0.05, 0.2),
+) -> bool:
+    """Verify a clean Kanban worker exit has a durable terminal run record.
+
+    Returns ``True`` when the run was already finalized (including review
+    handoffs) or this is not a clean exit.  A missing handoff is durably
+    recorded as a protocol violation and returns ``False`` so the process
+    cannot report nominal success.  Transient DB failures are retried; every
+    successful write is read back through a fresh connection before success is
+    reported.
+    """
+    if not clean_exit:
+        return True
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    delays = retry_delays or (0.0,)
+    for attempt, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            with kbc.connect_closing() as conn:
+                disposition = kbd.finalize_clean_worker_exit(conn, task_id, run_id)
+            with kbc.connect_closing() as verify_conn:
+                run = kb.get_run(verify_conn, run_id)
+                durable = bool(
+                    run is not None
+                    and run.task_id == task_id
+                    and run.outcome is not None
+                    and run.ended_at is not None
+                )
+            if not durable:
+                raise RuntimeError(
+                    f"Kanban run {run_id} has no durable terminal lifecycle transition"
+                )
+            return disposition != "protocol_violation"
+        except Exception:
+            if attempt + 1 == len(delays):
+                logger.error(
+                    "Kanban worker lifecycle finalization failed for %s run %s",
+                    task_id,
+                    run_id,
+                    exc_info=True,
+                )
+            else:
+                logger.debug(
+                    "retrying Kanban worker lifecycle finalization for %s run %s",
+                    task_id,
+                    run_id,
+                    exc_info=True,
+                )
+    return False
+
+
 def _finalize_single_query(cli) -> None:
     """Close one-shot CLI resources before releasing the active session lease."""
+    active_exception = sys.exc_info()[1]
+    clean_exit = active_exception is None or (
+        isinstance(active_exception, SystemExit)
+        and active_exception.code in (None, 0)
+    )
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    lifecycle_ok = True
     try:
         # Order matters: linger for spawned background work BEFORE any teardown (the
         # parent owns those children's stdout pipes); then the durable flush, since
@@ -984,9 +1053,37 @@ def _finalize_single_query(cli) -> None:
             except Exception:
                 logger.debug("one-shot %s failed", what, exc_info=True)
         _notify_single_query_session_finalize(cli)
+        if task_id:
+            if not raw_run_id:
+                lifecycle_ok = False
+                logger.error(
+                    "missing HERMES_KANBAN_RUN_ID for worker %s",
+                    task_id,
+                )
+            else:
+                try:
+                    run_id = int(raw_run_id)
+                except ValueError:
+                    lifecycle_ok = False
+                    logger.error(
+                        "invalid HERMES_KANBAN_RUN_ID=%r for worker %s",
+                        raw_run_id,
+                        task_id,
+                    )
+                else:
+                    lifecycle_ok = _ensure_kanban_worker_lifecycle(
+                        task_id,
+                        run_id,
+                        clean_exit=clean_exit,
+                    )
+        # Lifecycle verification precedes cleanup because cleanup's watchdog may
+        # terminate a wedged process with os._exit(0). A Kanban worker must have
+        # durably closed its exact run before that fail-safe can report success.
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
+    if not lifecycle_ok:
+        raise SystemExit(1)
 
 
 def _reset_terminal_input_modes_on_exit() -> None:

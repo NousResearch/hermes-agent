@@ -80,11 +80,39 @@ class ChronosCronScheduler(CronScheduler):
         """Arm the first one-shot for a new job; may raise so creation can report it."""
         self._arm_one_shot(job)
 
+    def _effective_fire_at(self, job: Dict[str, Any]) -> str:
+        """Return the remote fire time without changing the stored cadence."""
+        fire_at = str(job.get("next_run_at") or "")
+        if not fire_at:
+            return ""
+        if (
+            job.get("manual_run_at")
+            and job.get("manual_run_at") == job.get("next_run_at")
+        ):
+            return fire_at
+
+        from datetime import datetime
+
+        from cron.jobs import _ensure_aware, _hermes_now
+        from cron.rate_limit_backoff import provider_backoff_active
+
+        now = _hermes_now()
+        if not provider_backoff_active(job, now=now):
+            return fire_at
+        until = str((job.get("provider_backoff") or {}).get("until") or "")
+        try:
+            if _ensure_aware(datetime.fromisoformat(until)) > _ensure_aware(
+                datetime.fromisoformat(fire_at)
+            ):
+                return until
+        except (TypeError, ValueError):
+            pass
+        return fire_at
+
     def _arm_one_shot(self, job: Dict[str, Any]) -> None:
-        """Arm one one-shot at next_run_at (agent computes the time; NAS executes).
-        dedup_key=(job_id, fire_at) makes re-arming the same fire a no-op."""
+        """Arm one one-shot at the effective fire time without changing its cadence."""
         job_id = job["id"]
-        fire_at = job.get("next_run_at")
+        fire_at = self._effective_fire_at(job)
         if not fire_at:
             return
         self._get_client().provision(
@@ -127,7 +155,7 @@ class ChronosCronScheduler(CronScheduler):
         """Converge NAS one-shots toward jobs.json: arm missing/changed, cancel orphans."""
         from cron.jobs import get_job, load_jobs
         desired: Dict[str, str] = {
-            j["id"]: j["next_run_at"] for j in load_jobs()
+            j["id"]: self._effective_fire_at(j) for j in load_jobs()
             if j.get("enabled") and j.get("next_run_at") and j.get("state") != "paused"}
         observed = self._list_armed()
         for job_id, fire_at in desired.items():

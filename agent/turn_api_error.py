@@ -111,6 +111,23 @@ def handle_api_error(
         model=getattr(agent, "model", "") or "", approx_tokens=approx_tokens,
         context_length=_ctx_len, num_messages=len(api_messages) if api_messages else 0,
     )
+    if classified.reason in {
+        FailoverReason.billing,
+        FailoverReason.rate_limit,
+        FailoverReason.upstream_rate_limit,
+    }:
+        try:
+            from agent.provider_health import record_agent_failure
+
+            record_agent_failure(
+                agent,
+                str(api_error),
+                reason=classified.reason.value,
+            )
+        except Exception:
+            # Health bookkeeping must never hide the provider's real error or
+            # interfere with the existing credential-rotation/fallback path.
+            logger.warning("Provider-health failure recording failed", exc_info=True)
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
         classified.reason.value, classified.status_code,

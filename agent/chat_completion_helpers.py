@@ -2032,6 +2032,31 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     fb_model = (fb.get("model") or "").strip()
     if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
         return agent._try_activate_fallback(reason)
+    try:
+        from agent.provider_health import ProviderRoute, agent_route_decision
+
+        health = agent_route_decision(
+            agent,
+            ProviderRoute(
+                fb_provider,
+                fb_model,
+                credential_scope=str(fb.get("credential_scope") or "default"),
+                reasoning_effort=fb.get("reasoning_effort"),
+            ),
+        )
+        if health.route is None:
+            logger.info(
+                "Skipping fallback %s/%s: provider-health circuit open until %s",
+                fb_provider,
+                fb_model,
+                health.deferred_until.isoformat() if health.deferred_until else "unknown",
+            )
+            unavailable.add(fb_key)
+            return agent._try_activate_fallback(reason)
+    except Exception:
+        # A corrupt/unwritable health store must not disable otherwise healthy
+        # fallback behavior.
+        logger.warning("Fallback provider-health preflight failed", exc_info=True)
 
     try:
         from agent.auxiliary_client import resolve_provider_client

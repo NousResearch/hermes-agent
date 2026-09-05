@@ -1,0 +1,86 @@
+--- /home/sireggy/.hermes/scripts/coder-fallback-watch.py
++++ ops/coder-fallback-watch.py
+@@ -14,6 +14,7 @@
+ import sqlite3
+ import subprocess
+ import time
++from datetime import datetime, timezone
+ from pathlib import Path
+ from typing import Any
+ 
+@@ -35,6 +36,7 @@
+ }
+ DEFAULT_DB = Path.home() / ".hermes/kanban/boards/engineering/kanban.db"
+ DEFAULT_STATE = Path.home() / ".hermes/engineering/coder-fallback-state.json"
++DEFAULT_CODER_HOME = Path.home() / ".hermes/profiles/coder"
+ 
+ 
+ def _run_hermes(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+@@ -68,13 +70,13 @@
+ def _write_state(path: Path, state: dict[str, Any]) -> None:
+     path.parent.mkdir(parents=True, exist_ok=True)
+     tmp = path.with_suffix(path.suffix + ".tmp")
+-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
++    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+     tmp.replace(path)
+ 
+ 
+ def _read_state(path: Path) -> dict[str, Any]:
+     try:
+-        value = json.loads(path.read_text())
++        value = json.loads(path.read_text(encoding="utf-8"))
+         return value if isinstance(value, dict) else {}
+     except (FileNotFoundError, json.JSONDecodeError):
+         return {}
+@@ -153,12 +155,51 @@
+             _write_state(state_path, state)
+ 
+         if state.get("mode") == "fallback":
++            # Provider-declared reset windows outrank the legacy one-hour
++            # watchdog timer.  Consult the same profile-scoped circuit used by
++            # cron and Kanban; at reset this invocation atomically owns the one
++            # bounded primary probe before restoring the route.
++            primary = state.get("primary") or {}
++            claimed_probe = None
++            if primary.get("provider") and primary.get("model"):
++                from agent.provider_health import ProviderHealthStore, ProviderRoute
++
++                coder_home = Path(
++                    os.environ.get("CODER_FALLBACK_PROFILE_HOME", str(DEFAULT_CODER_HOME))
++                )
++                store = ProviderHealthStore(coder_home)
++                primary_route = ProviderRoute(str(primary["provider"]), str(primary["model"]))
++                probe_owner = f"watchdog:coder-fallback:{os.getpid()}:{now}"
++                decision = store.decide(
++                    [primary_route],
++                    owner=probe_owner,
++                    now=datetime.fromtimestamp(now, tz=timezone.utc),
++                )
++                if decision.probe:
++                    claimed_probe = (store, primary_route, probe_owner)
++                if decision.route is None and decision.deferred_until is not None:
++                    state["fallback_until"] = max(
++                        int(state.get("fallback_until", 0)),
++                        int(decision.deferred_until.timestamp()),
++                    )
++                    state["provider_deferred_until"] = int(
++                        decision.deferred_until.timestamp()
++                    )
++                    state["consecutive_failures"] = failures
++                    state["latest_run_id"] = latest_run_id
++                    _write_state(state_path, state)
++                    return 0
+             if now < int(state.get("fallback_until", 0)):
+                 state["consecutive_failures"] = failures
+                 state["latest_run_id"] = latest_run_id
+                 _write_state(state_path, state)
+                 return 0
+             _restore_primary(state["primary"])
++            if claimed_probe is not None:
++                # The watchdog only restores configuration; the first actual
++                # Kanban task after reset must own the bounded model probe.
++                probe_store, probe_route, probe_owner = claimed_probe
++                probe_store.release_probe(probe_route, owner=probe_owner)
+             retried = _retry_auto_blocked(conn)
+             state.update({
+                 "mode": "primary",

@@ -921,11 +921,18 @@ PLATFORM_HINTS = {
         "contextually appropriate."
     ),
     "cron": (
-        "You are running as a scheduled cron job. There is no user present — you "
-        "cannot ask questions, request clarification, or wait for follow-up. Execute "
-        "the task fully and autonomously, making reasonable decisions where needed. "
-        "Your final response is automatically delivered to the job's configured "
-        "destination — put the primary content directly in your response."
+        # No blanket "no user present / cannot ask questions": cron jobs
+        # delivered to messaging channels ARE read by a user, and the old
+        # wording forced those runs to skip confirmations and guess answers
+        # (#102887). Autonomy stays the default for unattended destinations.
+        "You are running as a scheduled cron job. Your final response is "
+        "automatically delivered to the job's configured destination — put "
+        "the primary content directly in your response. When nobody can "
+        "reply there (unattended batch run), execute the task fully and "
+        "autonomously, making reasonable decisions where needed. When the "
+        "destination is conversational (a messaging channel where the user "
+        "reads replies), you may end with questions for the user instead "
+        "of guessing at their answers."
     ),
     "cli": (
         # Maintainer-verified 2026-08-29 (live screenshot): the CLI prints

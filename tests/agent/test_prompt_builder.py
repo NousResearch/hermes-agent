@@ -704,6 +704,19 @@ class TestPromptBuilderConstants:
             assert "do not use markdown" not in hint.lower()
             assert "markdown" in hint.lower()
 
+    def test_cron_hint_does_not_forbid_user_questions(self):
+        """#102887 — the cron hint told the agent no user is present and it
+        cannot ask questions, which forced messaging-delivered jobs
+        (standups, report questionnaires) to skip confirmations, guess
+        answers, and loop for tens of minutes. The hint must keep
+        autonomous batch behavior as the default while allowing questions
+        when the destination is conversational."""
+        hint = PLATFORM_HINTS["cron"]
+        assert "cannot ask questions" not in hint.lower()
+        assert "no user present" not in hint.lower()
+        assert "autonomously" in hint.lower()
+        assert "question" in hint.lower()
+
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging
         # gateway platforms. On the CLI they render as literal text and

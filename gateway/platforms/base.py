@@ -2848,11 +2848,29 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path, session_key=session_key)
 
     @staticmethod
+    def partition_media_delivery_paths(
+        media_files, session_key: str = "",
+    ) -> Tuple[List[Tuple[str, bool]], List[Tuple[str, bool]]]:
+        """Split MEDIA paths into accepted and rejected delivery paths."""
+        safe_media: List[Tuple[str, bool]] = []
+        dropped_media: List[Tuple[str, bool]] = []
+        for media_path, is_voice in media_files or []:
+            safe_path = _validated_delivery_path(
+                media_path, session_key, "MEDIA directive path"
+            )
+            if safe_path:
+                safe_media.append((safe_path, bool(is_voice)))
+            else:
+                dropped_media.append((str(media_path), bool(is_voice)))
+        return safe_media, dropped_media
+
+    @staticmethod
     def filter_media_delivery_paths(media_files, session_key: str = "") -> List[Tuple[str, bool]]:
         """Drop unsafe MEDIA paths and normalize accepted paths."""
-        return [
-            (safe_path, bool(is_voice)) for media_path, is_voice in media_files or []
-            if (safe_path := _validated_delivery_path(media_path, session_key, "MEDIA directive path"))]
+        safe_media, _dropped_media = BasePlatformAdapter.partition_media_delivery_paths(
+            media_files, session_key=session_key
+        )
+        return safe_media
 
     @staticmethod
     def filter_local_delivery_paths(file_paths, session_key: str = "") -> List[str]:

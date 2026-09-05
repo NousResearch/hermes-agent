@@ -120,7 +120,7 @@ def _handle_send(args):
     # Capture [[as_document]] before extract_media strips it (images keep original bytes via send_document).
     force_document_attachments = "[[as_document]]" in message
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files, dropped_media = BasePlatformAdapter.partition_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
     if used_home_channel:
@@ -146,6 +146,17 @@ def _handle_send(args):
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+            if dropped_media:
+                dropped_paths = [path for path, _is_voice in dropped_media]
+                warning = (
+                    f"{len(dropped_paths)} MEDIA attachment(s) were dropped because the path is outside "
+                    "the gateway's allowed delivery roots; only text was delivered. Move the file under a "
+                    "Hermes-managed cache or add its directory to gateway.media_delivery_allow_dirs. "
+                    "Alternatively, when gateway.strict is enabled, set gateway.trust_recent_files to true "
+                    "to allow recently produced files."
+                )
+                result["warnings"] = [*result.get("warnings", []), warning]
+                result["media_dropped"] = dropped_paths
             if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
                 result["mirrored"] = True
         if isinstance(result, dict) and "error" in result:

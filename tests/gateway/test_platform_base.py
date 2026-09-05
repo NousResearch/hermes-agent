@@ -33,7 +33,7 @@ def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(base, "_HERMES_ROOT", hermes_home)
     path = hermes_home / "cache" / "bws_cache.enc.json"
     path.parent.mkdir()
-    path.write_text("encrypted-secret-cache")
+    path.write_text("encrypted-secret-cache", encoding="utf-8")
 
     assert path in base._media_delivery_denied_paths()
     assert base.validate_media_delivery_path(str(path)) is None
@@ -517,6 +517,27 @@ class TestMediaDeliveryPathValidation:
 
         assert filtered == [(str(safe.resolve()), True)]
 
+    def test_partition_returns_dropped_paths_so_caller_can_warn(self, tmp_path, monkeypatch):
+        """``partition_media_delivery_paths`` is the silent-drop fix: the
+        caller needs both the safe and the dropped list so a text-only send
+        does not silently report success on a stripped attachment
+        (issue #32644).
+        """
+        root = tmp_path / "media-cache"
+        safe = root / "speech.ogg"
+        unsafe = tmp_path / "outside.ogg"
+        safe.parent.mkdir(parents=True)
+        safe.write_bytes(b"OggS")
+        unsafe.write_bytes(b"OggS")
+        self._patch_roots(monkeypatch, root)
+
+        safe_list, dropped_list = BasePlatformAdapter.partition_media_delivery_paths([
+            (str(unsafe), False),
+            (str(safe), True),
+        ])
+
+        assert safe_list == [(str(safe.resolve()), True)]
+        assert dropped_list == [(str(unsafe), False)]
 
     def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
         self, tmp_path, monkeypatch,
@@ -596,7 +617,7 @@ class TestMediaDeliveryDefaultMode:
         self._patch_roots(monkeypatch)
 
         notes = tmp_path / "notes.md"
-        notes.write_text("# Old notes\n")
+        notes.write_text("# Old notes\n", encoding="utf-8")
         old_mtime = time.time() - 7200  # 2 hours ago — far outside any window
         os.utime(notes, (old_mtime, old_mtime))
 
@@ -622,7 +643,7 @@ class TestMediaDeliveryDefaultMode:
         hermes_dir = fake_home / ".hermes"
         (hermes_dir / "mcp-tokens").mkdir(parents=True)
         secret = hermes_dir / rel
-        secret.write_text('{"access_token": "live-bearer-abc123"}')
+        secret.write_text('{"access_token": "live-bearer-abc123"}', encoding="utf-8")
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(
             "gateway.platforms.base._HERMES_HOME",
@@ -649,7 +670,9 @@ class TestMediaDeliveryDefaultMode:
         hermes_dir = fake_home / ".hermes"
         hermes_dir.mkdir(parents=True)
         token = hermes_dir / "google_token.json"
-        token.write_text('{"access_token": "***", "refresh_token": "***"}')
+        token.write_text(
+            '{"access_token": "***", "refresh_token": "***"}', encoding="utf-8"
+        )
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
@@ -931,7 +954,7 @@ class TestDockerContainerMediaPathTranslation:
         home = sandbox / "docker" / "default" / "home"
         secret = home / ".hermes"
         secret.mkdir(parents=True)
-        (secret / "auth.json").write_text('{"token": "SECRET"}')
+        (secret / "auth.json").write_text('{"token": "SECRET"}', encoding="utf-8")
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -1434,7 +1457,7 @@ class TestDockerProfileSandboxMediaTranslation:
         home = self._sandbox_dir() / "home"
         home.mkdir(parents=True, exist_ok=True)
         produced = home / "note.txt"
-        produced.write_text("hi")
+        produced.write_text("hi", encoding="utf-8")
 
         assert BasePlatformAdapter.validate_media_delivery_path(
             "/root/note.txt", session_key=self.SESSION_KEY
@@ -1448,7 +1471,7 @@ class TestDockerProfileSandboxMediaTranslation:
         for task in ("default", f"session:{self.SESSION_KEY}"):
             secrets = self._sandbox_dir(task) / "home" / ".hermes"
             secrets.mkdir(parents=True, exist_ok=True)
-            (secrets / "auth.json").write_text("{}")
+            (secrets / "auth.json").write_text("{}", encoding="utf-8")
 
         assert (
             BasePlatformAdapter.validate_media_delivery_path(

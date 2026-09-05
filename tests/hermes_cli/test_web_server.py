@@ -247,6 +247,62 @@ class TestSessionTokenInjection:
         assert ws._SESSION_TOKEN == original_token
 
 
+class TestMountSpaSessionTokenLookup:
+    """Regression guard for the Desktop SSH 401 loop.
+
+    ``mount_spa`` runs at ``web_server`` module-import time, but
+    ``start_server`` rebinds ``web_server._SESSION_TOKEN`` to the Desktop SSH
+    spawn token afterwards (``_apply_ssh_session_token``). The injected
+    ``window.__HERMES_SESSION_TOKEN__`` must therefore be read through the
+    module object at request time — a ``from ... import _SESSION_TOKEN``
+    capture inside ``mount_spa`` freezes the boot-time random token, and the
+    API middleware (which validates against the rebound value) then 401s
+    every sensitive endpoint with the very token the page itself served.
+    """
+
+    def test_headless_root_injects_token_applied_after_mount(self, monkeypatch):
+        pytest.importorskip("fastapi")
+        import hermes_cli.web_server as ws
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server_dashboard import mount_spa
+
+        monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+        app = FastAPI()
+        mount_spa(app)
+        # Simulate start_server adopting the Desktop SSH spawn token AFTER mount.
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "spawned-after-mount")
+
+        response = TestClient(app).get("/")
+
+        assert response.status_code == 200
+        assert 'window.__HERMES_SESSION_TOKEN__="spawned-after-mount";' in response.text
+
+    def test_spa_index_injects_token_applied_after_mount(self, monkeypatch):
+        pytest.importorskip("fastapi")
+        import hermes_cli.web_server as ws
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server_dashboard import mount_spa
+
+        # mount_spa captures WEB_DIST by value at mount time (static config,
+        # never rebound in production), so this test needs the real built SPA.
+        if not (ws.WEB_DIST / "index.html").is_file():
+            pytest.skip("web SPA build (web_dist/index.html) not present")
+
+        monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+        app = FastAPI()
+        mount_spa(app)
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", "spawned-after-mount")
+
+        response = TestClient(app).get("/")
+
+        assert response.status_code == 200
+        assert 'window.__HERMES_SESSION_TOKEN__="spawned-after-mount";' in response.text
+
+
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ import asyncio
 import array
 import inspect
 from contextlib import suppress
+import io
 import logging
 import mimetypes
 import os
@@ -133,6 +134,22 @@ def _matrix_transcode_voice_to_ogg(path: str) -> Optional[str]:
 
 
 _MATRIX_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
+
+
+def _image_dimensions(data: bytes) -> Optional[tuple[int, int]]:
+    """Display width/height of an image, honoring EXIF orientation; None when unreadable.
+
+    Clients (Element X on phones and watches especially) size an ``m.image`` from
+    ``info.w``/``info.h``; without them a full-width card renders as a thumbnail.
+    """
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as img:
+            w, h = ImageOps.exif_transpose(img).size
+        return (w, h) if w and h else None
+    except Exception as exc:
+        logger.debug("Matrix: could not measure image dimensions: %s", exc)
+        return None
 
 
 def _resolve_matrix_bang_command(name: str) -> str | None:
@@ -1673,6 +1690,8 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
         msg_content: Dict[str, Any] = {
             "msgtype": msgtype, "body": caption or filename, "info": {"mimetype": content_type, "size": len(data)}}
+        if msgtype == "m.image" and (dims := _image_dimensions(data)):
+            msg_content["info"]["w"], msg_content["info"]["h"] = dims
         if encrypted_file is not None:
             msg_content["file"] = {**encrypted_file.serialize(), "url": str(mxc_url)}
         else:

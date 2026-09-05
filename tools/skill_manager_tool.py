@@ -712,6 +712,8 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
     # Curator telemetry: only the background review fork marks a skill agent-created
     # (foreground creates belong to the user). A recoverable curator archive keeps its
     # record as STATE_ARCHIVED (`hermes curator status`/`restore`); only a hard delete forgets.
+    # ``provenance`` is a separate authorship field, set to "agent" on every create so the
+    # learning graph can identify agent-created skills without touching curator policy.
     with suppress(Exception):
         from tools.skill_usage import bump_patch, forget, record_created
         # During the curator consolidation pass, a verified consolidation must be RECOVERABLE: archival into
@@ -721,7 +723,7 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         # Foreground, user-directed deletes keep their existing hard-delete semantics.
         from tools.skill_provenance import is_background_review
         if action == "create":
-            record_created(name, agent_created=is_background_review(),
+            record_created(name, agent_created=is_background_review(), provenance="agent",
                            task_id=task_id, session_id=session_id)
         elif action in {"patch", "edit", "write_file", "remove_file"}:
             bump_patch(name, action=action, task_id=task_id, session_id=session_id)

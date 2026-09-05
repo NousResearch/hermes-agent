@@ -3527,6 +3527,10 @@ class GatewayTurnMixin:
             # Release the slot only if this run's generation still owns it (/stop or /new may have
             # installed its own state).
             self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
+            # A turn that unwound without reaching _run_agent_drain_pending leaves FIFO overflow
+            # stranded until the next inbound (#99882's lazy rescue). Promote the head now so the
+            # adapter's late-arrival drain runs it. No-op on the normal path (slot already staged).
+            self._promote_orphaned_overflow_on_unwind(session_key, turn_ctx.source)
         if self._draining:
             self._update_runtime_status("draining")
 

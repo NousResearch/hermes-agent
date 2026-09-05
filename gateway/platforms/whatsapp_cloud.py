@@ -371,6 +371,81 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             rich_sent_store.record(chat_id, last_message_id, formatted)
         return SendResult(success=True, message_id=last_message_id)
 
+    # ------------------------------------------------------------------ edit message
+    #
+    # Meta's Cloud API uses the same ``/messages`` endpoint for editing.
+    # When the ``text`` payload includes a ``message_id``, the API edits
+    # that existing message (same phone number scope) instead of sending
+    # a new one.  Edits are supported for up to 30 days after the original
+    # send and the new content must still comply with the original type
+    # constraints (text → text only, etc.).
+    #
+    # https://developers.facebook.com/docs/whatsapp/cloud-api/reference/messages
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit a previously sent message via the Graph API /messages endpoint.
+
+        Meta's Cloud API supports editing text messages for up to 30 days
+        after the original send.  The edit must be the same type as the
+        original message (text → text); other types (image, video, etc.)
+        cannot be edited into a different type.
+
+        ``chat_id`` is the recipient's WhatsApp ID (``wa_id``); it is
+        required by the base contract but is not sent to Meta's edit
+        endpoint — Meta identifies the target message by ``message_id``
+        alone within our phone-number scope.
+        """
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+        if not content or not content.strip():
+            return SendResult(success=False, error="Empty content")
+
+        url = self._graph_url("messages")
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": chat_id,
+            "type": "text",
+            "text": {
+                "body": content,
+                "preview_url": True,
+                "message_id": message_id,
+            },
+        }
+
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            logger.exception("[whatsapp_cloud] edit_message failed")
+            return SendResult(success=False, error=str(exc))
+
+        if resp.status_code == 200:
+            return SendResult(success=True, message_id=message_id)
+        else:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            error_msg = self._format_graph_error(body, resp.status_code)
+            logger.warning(
+                "[whatsapp_cloud] edit_message rejected (status=%d): %s",
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(success=False, error=error_msg)
+
     # ------------------------------------------------------------------ typing indicator + read receipts
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Mark the latest inbound message read AND show a typing indicator. Meta couples

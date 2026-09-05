@@ -360,6 +360,81 @@ def test_run_one_job_refreshes_fire_claim_in_profile_store(tmp_path, monkeypatch
     assert refreshed["by"] == original_claim["by"]
 
 
+def test_slow_owned_delivery_does_not_false_interrupt_completed_run(
+    tmp_path, monkeypatch
+):
+    """An owner-fenced delivery may outlast one heartbeat lock attempt.
+
+    The worker still owns the unchanged fire claim throughout. A transient
+    failure to acquire its own delivery fence must not become ownership loss.
+    """
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", profile_home / "cron" / "executions.db"
+    )
+
+    with jobs.use_cron_store(profile_home):
+        job = jobs.create_job(prompt="x", schedule="every 5m", name="slow delivery")
+        assert jobs.claim_job_for_fire(job["id"]) is True
+        claimed_job = jobs.get_job(job["id"])
+        assert claimed_job is not None
+        execution = executions.create_execution(job["id"], source="builtin")
+        claimed_job["execution_id"] = execution["id"]
+
+        monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", execution["id"])
+        monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+        monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+        monkeypatch.setattr(
+            scheduler,
+            "run_job",
+            lambda *_args, **_kwargs: (True, "output", "completed", None),
+        )
+        monkeypatch.setattr(
+            scheduler, "save_job_output", lambda *_args, **_kwargs: tmp_path / "output.md"
+        )
+
+        false_heartbeat_seen = threading.Event()
+        real_heartbeat = jobs.heartbeat_fire_claim
+
+        expected_owner = claimed_job["fire_claim"]["by"]
+
+        def _observed_heartbeat(job_id: str, *, expected_owner: str) -> bool:
+            renewed = real_heartbeat(job_id, expected_owner=expected_owner)
+            if not renewed:
+                false_heartbeat_seen.set()
+            return renewed
+
+        def _slow_delivery(*_args, **_kwargs):
+            assert false_heartbeat_seen.wait(timeout=2)
+            still_owned = jobs.get_job(job["id"])
+            assert still_owned is not None
+            assert still_owned["fire_claim"]["by"] == expected_owner
+            return None
+
+        monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _observed_heartbeat)
+        monkeypatch.setattr(scheduler, "_deliver_result", _slow_delivery)
+
+        assert scheduler.run_one_job(claimed_job) is True
+
+        finished = executions.get_execution(execution["id"])
+        persisted_job = jobs.get_job(job["id"])
+        assert finished is not None
+        assert persisted_job is not None
+
+    assert (
+        finished["status"],
+        finished["error"],
+        persisted_job["last_status"],
+    ) == ("completed", None, "ok")
+
+
 def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     """A runner that loses its durable owner must not deliver its stale result."""
     import cron.scheduler as scheduler
@@ -599,3 +674,494 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
         success=False,
         error="Fire claim ownership lost before terminal completion.",
     )
+
+
+def test_heartbeat_lock_contention_is_unconfirmed_not_ownership_loss(monkeypatch):
+    """Fence contention (None) is unconfirmed ownership, not a loss (c-027).
+
+    During slow fenced delivery the worker's own heartbeat thread cannot
+    acquire the process-local fire fence. That must not become an
+    authoritative ownership-loss cancellation: None rides the grace window
+    while only an explicit False interrupts immediately.
+    """
+    import cron.scheduler as scheduler
+
+    calls = []
+
+    def heartbeat(*_args, **_kwargs):
+        # Initial validation renews (True); afterwards the fence stays
+        # contended for the whole run: never False, never raises.
+        calls.append("none" if calls else "true")
+        return True if len(calls) == 1 else None
+
+    ran = threading.Event()
+
+    def run_body(_job, **kwargs):
+        # Far beyond several heartbeat ticks, well under the grace window.
+        assert not kwargs["fire_claim_lost"].wait(timeout=0.08)
+        ran.set()
+        return True
+
+    job = {
+        "id": "fence-contended",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+    }
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
+    monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+
+    assert scheduler.run_one_job(job) is True
+
+    assert ran.is_set()
+    assert calls, "heartbeat loop never probed the fire claim"
+
+
+def test_pre_delivery_ownership_probe_treats_none_as_not_lost(tmp_path, monkeypatch):
+    """A contended (None) post-run probe must not discard a completed run (c-027).
+
+    Between run_job returning and delivery, ``_fire_claim_ownership_lost()``
+    probes the claim. A None probe (fence contended, likely by our own
+    fenced save) is not a loss: delivery must proceed and the run completes.
+    """
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", profile_home / "cron" / "executions.db"
+    )
+
+    with jobs.use_cron_store(profile_home):
+        job = jobs.create_job(prompt="x", schedule="every 5m", name="probe none")
+        assert jobs.claim_job_for_fire(job["id"]) is True
+        claimed_job = jobs.get_job(job["id"])
+        execution = executions.create_execution(job["id"], source="builtin")
+        claimed_job["execution_id"] = execution["id"]
+
+        monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", execution["id"])
+        monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+        monkeypatch.setattr(
+            scheduler,
+            "run_job",
+            lambda *_args, **_kwargs: (True, "output", "done", None),
+        )
+        monkeypatch.setattr(
+            scheduler, "save_job_output", lambda *_args, **_kwargs: "output.md"
+        )
+
+        real_probe = jobs.heartbeat_fire_claim
+        probes = []
+
+        def _contended_probe(job_id: str, *, expected_owner: str):
+            outcome = real_probe(job_id, expected_owner=expected_owner)
+            probes.append(outcome)
+            # First probe (initial validation) is clean; post-run probes hit
+            # a contended fence.
+            return True if len(probes) == 1 else None
+
+        monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _contended_probe)
+        delivered = []
+
+        def _deliver(*_args, **_kwargs):
+            delivered.append(True)
+            return None
+
+        monkeypatch.setattr(scheduler, "_deliver_result", _deliver)
+
+        assert scheduler.run_one_job(claimed_job) is True
+
+        assert delivered, "completed run was not delivered"
+
+    finished = executions.get_execution(execution["id"])
+    persisted_job = jobs.get_job(job["id"])
+    assert finished is not None and persisted_job is not None
+    assert (
+        finished["status"],
+        finished["error"],
+        persisted_job["last_status"],
+    ) == ("completed", None, "ok")
+
+
+def test_post_delivery_ownership_probe_treats_none_as_not_lost(tmp_path, monkeypatch):
+    """A contended (None) probe after delivery must not overwrite the result (c-027)."""
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", profile_home / "cron" / "executions.db"
+    )
+
+    with jobs.use_cron_store(profile_home):
+        job = jobs.create_job(prompt="x", schedule="every 5m", name="post none")
+        assert jobs.claim_job_for_fire(job["id"]) is True
+        claimed_job = jobs.get_job(job["id"])
+        execution = executions.create_execution(job["id"], source="builtin")
+        claimed_job["execution_id"] = execution["id"]
+
+        monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", execution["id"])
+        monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+        monkeypatch.setattr(
+            scheduler,
+            "run_job",
+            lambda *_args, **_kwargs: (True, "output", "done", None),
+        )
+        monkeypatch.setattr(
+            scheduler, "save_job_output", lambda *_args, **_kwargs: "output.md"
+        )
+
+        real_probe = jobs.heartbeat_fire_claim
+        probes = []
+
+        def _contended_probe(job_id: str, *, expected_owner: str):
+            outcome = real_probe(job_id, expected_owner=expected_owner)
+            probes.append(outcome)
+            return True if len(probes) == 1 else None
+
+        monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _contended_probe)
+
+        def _deliver(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(scheduler, "_deliver_result", _deliver)
+
+        assert scheduler.run_one_job(claimed_job) is True
+
+    finished = executions.get_execution(execution["id"])
+    persisted_job = jobs.get_job(job["id"])
+    assert finished is not None and persisted_job is not None
+    assert (
+        finished["status"],
+        finished["error"],
+        persisted_job["last_status"],
+    ) == ("completed", None, "ok")
+
+
+def test_sustained_fence_contention_does_not_consume_store_error_grace(monkeypatch):
+    """Known fence contention cannot manufacture cancellation by duration."""
+    import cron.scheduler as scheduler
+
+    calls = []
+
+    def heartbeat(*_args, **_kwargs):
+        calls.append(1)
+        return True if len(calls) == 1 else None
+
+    def run_body(_job, **kwargs):
+        # Stay contended well beyond the shortened grace window. Because every
+        # takeover also needs this fence, returned None is safe to defer until
+        # the side effect releases it; only exceptions consume error grace.
+        assert not kwargs["fire_claim_lost"].wait(timeout=0.12)
+        return True
+
+    job = {
+        "id": "grace-none",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+    }
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
+    monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
+
+    assert scheduler.run_one_job(job) is True
+    assert len(calls) >= 4
+
+
+def test_interrupted_path_none_probe_does_not_claim_confirmed_loss(monkeypatch):
+    """Grace-exhausted stop + contended probe must not claim a confirmed loss (c-027)."""
+    import cron.scheduler as scheduler
+
+    calls = []
+
+    def heartbeat(*_args, **_kwargs):
+        calls.append(1)
+        return True if len(calls) == 1 else None
+
+    def run_body(_job, **kwargs):
+        # Stay contended well beyond the shortened grace window. Because every
+        # takeover also needs this fence, returned None is safe to defer until
+        # the side effect releases it; only exceptions consume error grace.
+        assert not kwargs["fire_claim_lost"].wait(timeout=0.12)
+        return True
+
+    job = {
+        "id": "grace-none",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+    }
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
+    monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
+
+    assert scheduler.run_one_job(job) is True
+    assert len(calls) >= 4
+
+
+def test_terminal_write_none_does_not_mark_ownership_lost(monkeypatch):
+    """An unconfirmed (None) terminal write must not be read as CAS loss (c-027)."""
+    import cron.scheduler as scheduler
+
+    @contextlib.contextmanager
+    def owned_fence(*_args, **_kwargs):
+        yield True
+
+    finish = MagicMock()
+    job = {
+        "id": "terminal-none",
+        "execution_id": "terminal-none-exec",
+        "name": "terminal-none",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": "owner"},
+    }
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_a: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_a: {})
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda *_a, **_k: (True, "output", "response", None),
+    )
+    monkeypatch.setattr(scheduler, "fire_claim_fence", owned_fence, raising=False)
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_a: "output.md")
+    monkeypatch.setattr(scheduler, "_deliver_result", lambda *_a, **_k: None)
+    # Terminal write hits a contended fence -> None (unconfirmed, not a CAS loss).
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *_a, **_k: None)
+    monkeypatch.setattr(scheduler, "finish_execution", finish)
+
+    with patch("agent.secret_scope.set_secret_scope", return_value=None), \
+         patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+         patch("agent.secret_scope.reset_secret_scope"):
+        assert scheduler.run_one_job(job) is True
+
+    finish.assert_called_once_with(
+        "terminal-none-exec",
+        success=False,
+        error=(
+            "Fire claim fence unavailable before terminal completion; "
+            "outcome uncertain."
+        ),
+    )
+
+
+def test_recovery_execution_fails_closed_while_original_delivery_settles(
+    tmp_path, monkeypatch
+):
+    """RSI-loop case (c-027): a recovery dispatch of the same job while the
+    original holds the fence in slow delivery must (a) fail closed without
+    starting a duplicate run and (b) not disturb the original's claim.
+    """
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", profile_home / "cron" / "executions.db"
+    )
+
+    with jobs.use_cron_store(profile_home):
+        job = jobs.create_job(prompt="x", schedule="every 5m", name="rsi loop")
+        assert jobs.claim_job_for_fire(job["id"]) is True
+        claimed_job = jobs.get_job(job["id"])
+        original_owner = claimed_job["fire_claim"]["by"]
+        execution = executions.create_execution(job["id"], source="builtin")
+        claimed_job["execution_id"] = execution["id"]
+
+        monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", execution["id"])
+        monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+        monkeypatch.setattr(
+            scheduler,
+            "run_job",
+            lambda *_args, **_kwargs: (True, "output", "done", None),
+        )
+        monkeypatch.setattr(
+            scheduler, "save_job_output", lambda *_args, **_kwargs: "output.md"
+        )
+
+        in_delivery = threading.Event()
+        release_delivery = threading.Event()
+
+        def _slow_delivery(*_args, **_kwargs):
+            in_delivery.set()
+            assert release_delivery.wait(timeout=5)
+            return None
+
+        monkeypatch.setattr(scheduler, "_deliver_result", _slow_delivery)
+        # Short fence timeout so the recovery dispatch's contended validation
+        # resolves as None quickly instead of blocking on the real 30s wait.
+        monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.02)
+
+        runner_done = threading.Event()
+        runner_result = []
+
+        def _original_runner():
+            runner_result.append(scheduler.run_one_job(dict(claimed_job)))
+            runner_done.set()
+
+        runner = threading.Thread(target=_original_runner, daemon=True)
+        runner.start()
+        assert in_delivery.wait(timeout=5)
+
+        # A recovery execution of the SAME job (new execution id, no
+        # external-worker marker) attempts to start while the fence is held.
+        monkeypatch.delenv("_HERMES_CRON_EXTERNAL_WORKER", raising=False)
+        recovery_execution = executions.create_execution(job["id"], source="builtin")
+        recovery_job = dict(claimed_job)
+        recovery_job["execution_id"] = recovery_execution["id"]
+        recovery_job["fire_claim"] = dict(claimed_job["fire_claim"])
+
+        recovery_ran = []
+
+        def _must_not_run(*_args, **_kwargs):
+            recovery_ran.append(True)
+            return True, "duplicate", "duplicate", None
+
+        monkeypatch.setattr(scheduler, "run_job", _must_not_run)
+
+        assert scheduler.run_one_job(recovery_job) is True
+        assert not recovery_ran, "recovery dispatch ran a duplicate side effect"
+        recovery_row = executions.get_execution(recovery_execution["id"])
+        assert recovery_row is not None
+        assert recovery_row["status"] == "failed"
+
+        # The original must be untouched and still complete its delivery.
+        current = jobs.get_job(job["id"])
+        assert current is not None
+        assert current["fire_claim"]["by"] == original_owner
+
+        release_delivery.set()
+        assert runner_done.wait(timeout=5)
+        assert runner_result == [True]
+
+    finished = executions.get_execution(execution["id"])
+    persisted_job = jobs.get_job(job["id"])
+    assert finished is not None and persisted_job is not None
+    assert (
+        finished["status"],
+        finished["error"],
+        persisted_job["last_status"],
+    ) == ("completed", None, "ok")
+
+
+def test_terminal_write_after_slow_owned_delivery_succeeds(tmp_path, monkeypatch):
+    """TrustMRR case (c-027): the terminal write runs after fenced delivery
+    releases and must record the successful run, not a false loss.
+    """
+    import cron.executions as executions
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.setattr(
+        executions, "EXECUTIONS_FILE", profile_home / "cron" / "executions.db"
+    )
+
+    with jobs.use_cron_store(profile_home):
+        job = jobs.create_job(prompt="x", schedule="every 5m", name="trustmrr")
+        assert jobs.claim_job_for_fire(job["id"]) is True
+        claimed_job = jobs.get_job(job["id"])
+        execution = executions.create_execution(job["id"], source="builtin")
+        claimed_job["execution_id"] = execution["id"]
+
+        monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", execution["id"])
+        monkeypatch.setattr(scheduler, "claim_dispatch", lambda _job_id: True)
+        monkeypatch.setattr(
+            scheduler,
+            "run_job",
+            lambda *_args, **_kwargs: (True, "output", "done", None),
+        )
+        monkeypatch.setattr(
+            scheduler, "save_job_output", lambda *_args, **_kwargs: "output.md"
+        )
+
+        def _slow_delivery(*_args, **_kwargs):
+            # Hold the fence past several heartbeat intervals so the real
+            # heartbeat thread contends on the lock the delivery itself
+            # holds (the production shape).
+            time.sleep(0.08)
+            return None
+
+        monkeypatch.setattr(scheduler, "_deliver_result", _slow_delivery)
+
+        mark_calls = []
+
+        real_mark = jobs.mark_job_run
+
+        def _observed_mark(job_id, success, error=None, **kwargs):
+            result = real_mark(job_id, success, error, **kwargs)
+            mark_calls.append((success, error, result))
+            return result
+
+        monkeypatch.setattr(scheduler, "mark_job_run", _observed_mark)
+
+        assert scheduler.run_one_job(claimed_job) is True
+
+    finished = executions.get_execution(execution["id"])
+    persisted_job = jobs.get_job(job["id"])
+    assert finished is not None and persisted_job is not None
+    assert finished["status"] == "completed"
+    assert persisted_job["last_status"] == "ok"
+    terminal = [call for call in mark_calls if call[2] is not None]
+    assert terminal and terminal[-1][0] is True, (
+        f"terminal write never recorded success: {mark_calls!r}"
+    )
+
+
+def test_none_probe_cannot_authorize_unfenced_exception_delivery(
+    tmp_path, monkeypatch
+):
+    """A contended ownership probe is unconfirmed; only the side-effect
+    fence may authorize the exception-path failure notification."""
+    import cron.scheduler as scheduler
+
+    probes = iter([True, None])
+    delivered = MagicMock(return_value=None)
+    fence = MagicMock(
+        side_effect=lambda *a, **k: contextlib.nullcontext(False)
+    )
+    monkeypatch.setattr(
+        scheduler, "heartbeat_fire_claim", lambda *a, **k: next(probes)
+    )
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 60.0)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *a, **k: {})
+    monkeypatch.setattr(
+        scheduler, "run_job", MagicMock(side_effect=RuntimeError("run failure"))
+    )
+    monkeypatch.setattr(scheduler, "_deliver_result", delivered)
+    monkeypatch.setattr(scheduler, "fire_claim_fence", fence)
+    monkeypatch.setattr(scheduler, "mark_job_run", lambda *a, **k: True)
+    monkeypatch.setattr(scheduler, "finish_execution", MagicMock())
+    monkeypatch.setattr(
+        scheduler, "_upsert_incident_for_failure", lambda *a, **k: (False, None)
+    )
+    monkeypatch.setattr(scheduler, "_mark_incident_alerted", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+
+    job = {
+        "id": "stale-worker",
+        "name": "stale worker",
+        "execution_id": "exec-stale",
+        "prompt": "x",
+        "schedule_display": "manual",
+        "deliver": "telegram:123",
+        "fire_claim": {"by": "old-owner"},
+    }
+
+    with patch("agent.secret_scope.set_secret_scope", return_value=None), \
+         patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+         patch("agent.secret_scope.reset_secret_scope"), \
+         patch("tools.terminal_scope.install_profile_terminal_scope", return_value=None):
+        assert scheduler.run_one_job(job) is False
+
+    fence.assert_called_once_with("stale-worker", expected_owner="old-owner")
+    delivered.assert_not_called()

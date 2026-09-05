@@ -922,14 +922,32 @@ class GatewayInboundMixin:
             return await getattr(self, f"_hm_cmd_{canonical}")(event, source, _quick_key)
         return False, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
+    async def _hm_run_exec_quick_command(
+        self, command: str, exec_cmd: str, event: "MessageEvent"
+    ) -> str:
         """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
         gateway process has every API key in os.environ; output is redacted too)."""
         try:
             from tools.environments.local import build_subprocess_env
+            sanitized_env = build_subprocess_env()
+            sanitized_env["HERMES_COMMAND_NAME"] = command
+            sanitized_env["HERMES_COMMAND_ARGS"] = event.get_command_args().strip()
+            source = event.source
+            source_platform = getattr(source, "platform", "")
+            origin_platform = getattr(source_platform, "value", source_platform)
+            origin_values = {
+                "HERMES_ORIGIN_PLATFORM": origin_platform,
+                "HERMES_ORIGIN_CHAT_ID": getattr(source, "chat_id", None),
+                "HERMES_ORIGIN_THREAD_ID": getattr(source, "thread_id", None),
+            }
+            for env_name, value in origin_values.items():
+                if value is None or value == "":
+                    sanitized_env.pop(env_name, None)
+                else:
+                    sanitized_env[env_name] = str(value)
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(),
+                env=sanitized_env,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
             output = (stdout or stderr).decode().strip()
@@ -966,7 +984,7 @@ class GatewayInboundMixin:
                 exec_cmd = qcmd.get("command", "")
                 if not exec_cmd:
                     return True, f"Quick command '/{command}' has no command defined.", command
-                return True, await self._hm_run_exec_quick_command(command, exec_cmd), command
+                return True, await self._hm_run_exec_quick_command(command or "", exec_cmd, event), command
             if qtype != "alias":
                 return True, f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias').", command
             new_command = self._hm_expand_alias_quick_command(event, qcmd)

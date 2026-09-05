@@ -618,7 +618,211 @@ class TestOSSBackend:
         assert raw == before
 
 
+class TestOSSBackendLockRetry:
+    """OSSBackend must survive transient qdrant local-storage lock contention.
+
+    Qdrant local mode (vector_store.path) is guarded by an exclusive file
+    lock that the gateway holds for its whole lifetime; a second opener gets
+    ``RuntimeError: ... already accessed by another instance`` at open. The
+    constructor now retries briefly so the restart-overlap window self-heals
+    instead of failing this backend for the rest of the process's life.
+    """
+
+    def _raw_config(self):
+        return {
+            "llm": {"provider": "ollama", "config": {"model": "ollama3.1", "api_base": "http://ollama:11434"}},
+            "embedder": {"provider": "ollama", "config": {"model": "nomic-embed-text"}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+
+    def _inject_mem0(self, fail_first, monkeypatch):
+        """Stub mem0.Memory.from_config: lock error for the first `fail_first` calls."""
+        import sys
+        import types
+
+        import plugins.memory.mem0._backend as backend_mod
+
+        calls = {"n": 0}
+
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                calls["n"] += 1
+                if calls["n"] <= fail_first:
+                    raise RuntimeError(
+                        "Storage folder /x/mem0_qdrant is already accessed by "
+                        "another instance of Qdrant client. If you require "
+                        "concurrent access, use Qdrant server instead."
+                    )
+                return FakeOSSMemory()
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+        # Don't actually sleep in tests.
+        monkeypatch.setattr(backend_mod.time, "sleep", lambda s: None)
+        return calls
+
+    def test_retries_then_succeeds_once_lock_released(self, monkeypatch):
+        calls = self._inject_mem0(fail_first=2, monkeypatch=monkeypatch)
+        backend = OSSBackend(self._raw_config())
+        assert calls["n"] == 3  # 2 lock failures + 1 success
+        assert isinstance(backend._memory, FakeOSSMemory)
+
+    def test_raises_after_retry_budget_exhausted(self, monkeypatch):
+        import plugins.memory.mem0._backend as backend_mod
+
+        calls = self._inject_mem0(fail_first=10**6, monkeypatch=monkeypatch)
+        with pytest.raises(RuntimeError, match="already accessed by another instance"):
+            OSSBackend(self._raw_config())
+        assert calls["n"] == backend_mod._LOCK_RETRY_ATTEMPTS
+
+    def test_non_lock_errors_raise_immediately(self, monkeypatch):
+        import sys
+        import types
+
+        import plugins.memory.mem0._backend as backend_mod
+
+        calls = {"n": 0}
+
+        class Memory:
+            @staticmethod
+            def from_config(config):
+                calls["n"] += 1
+                raise ValueError("boom")
+
+        stub_mem0 = types.ModuleType("mem0")
+        stub_mem0.Memory = Memory  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "mem0", stub_mem0)
+        monkeypatch.setattr(backend_mod.time, "sleep", lambda s: None)
+
+        with pytest.raises(ValueError, match="boom"):
+            OSSBackend(self._raw_config())
+        assert calls["n"] == 1  # no retry for non-lock errors
+
+
 httpx = pytest.importorskip("httpx")
+
+
+def _status_error(status_code: int) -> RuntimeError:
+    """RuntimeError carrying OpenAI-style ``status_code`` (and empty headers)."""
+    exc = RuntimeError(f"transient status {status_code}")
+    exc.status_code = status_code  # type: ignore[attr-defined]
+    return exc
+
+
+class TestDirectOpenAIResilience:
+    """DirectOpenAILLM must retry transient router statuses and raise on hard ones."""
+
+    def _adapter(self, monkeypatch):
+        state, _, factory = _install_fake_mem0(monkeypatch)
+        module = importlib.import_module("plugins.memory.mem0._openai_llm")
+        config = factory.provider_to_class["openai"][1](
+            model="gpt-5-mini",
+            api_key="retry-sentinel",
+            openai_base_url="https://openai.example/v1",
+        )
+        adapter = module.DirectOpenAILLM(config)
+        # No real sleeps in tests.
+        monkeypatch.setattr(module._time, "sleep", lambda s: None)
+        return state, adapter
+
+    def test_retries_transient_status_then_succeeds(self, monkeypatch):
+        state, adapter = self._adapter(monkeypatch)
+        calls = {"n": 0}
+        client = state.clients[0]
+
+        def flaky_create(**params):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _status_error(429)
+            return client._create(**params)
+
+        client.chat.completions.create = flaky_create
+
+        result = adapter.generate_response([{"role": "user", "content": "remember tea"}])
+
+        assert calls["n"] == 2  # 1 failure + 1 success
+        assert result == "direct answer"
+        assert len(state.requests) == 1  # only the successful attempt reaches the wire
+
+    def test_hard_status_raises_immediately(self, monkeypatch):
+        state, adapter = self._adapter(monkeypatch)
+        calls = {"n": 0}
+        client = state.clients[0]
+
+        def failing_create(**params):
+            calls["n"] += 1
+            raise _status_error(400)
+
+        client.chat.completions.create = failing_create
+
+        with pytest.raises(RuntimeError, match="transient status 400"):
+            adapter.generate_response([{"role": "user", "content": "remember tea"}])
+        assert calls["n"] == 1  # no retry for client errors
+
+
+class TestOSSBackendKeysAndDims:
+    """OSSBackend must resolve keys per vendor and confine embedder dims to the store."""
+
+    def test_env_api_key_injection_and_max_tokens_for_openai_llm(self, monkeypatch):
+        state, Memory, _ = _install_fake_mem0(monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        monkeypatch.setenv("MEM0_LLM_API_KEY", "llm-env-sentinel")
+        raw = {
+            "llm": {
+                "provider": "openai",
+                "config": {"model": "gpt-5-mini", "openai_base_url": "https://llm.example/v1"},
+            },
+            "embedder": {"provider": "ollama", "config": {}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+        before = copy.deepcopy(raw)
+
+        OSSBackend(raw)
+
+        captured = Memory.instances[0].config
+        assert captured.llm.config["api_key"] == "llm-env-sentinel"
+        assert captured.llm.config["max_tokens"] == 2000
+        assert raw == before  # inputs are never mutated
+
+    def test_siliconflow_uses_same_vendor_key_not_mismatched_fallback(self, monkeypatch):
+        state, Memory, _ = _install_fake_mem0(monkeypatch)
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        monkeypatch.setenv("MEM0_LLM_API_KEY", "mismatched-router-sentinel")
+        monkeypatch.setenv("MEM0_EMBEDDER_API_KEY", "siliconflow-sentinel")
+        raw = {
+            "llm": {
+                "provider": "openai",
+                "config": {"model": "deepseek-v3.2", "openai_base_url": "https://api.siliconflow.cn/v1"},
+            },
+            "embedder": {"provider": "ollama", "config": {}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+
+        OSSBackend(raw)
+
+        captured = Memory.instances[0].config
+        assert captured.llm.config["api_key"] == "siliconflow-sentinel"
+        assert "mismatched-router-sentinel" not in captured.llm.config.values()
+
+    def test_embedder_dims_are_moved_to_vector_store_not_leaked_to_api(self, monkeypatch):
+        state, Memory, _ = _install_fake_mem0(monkeypatch)
+        raw = {
+            "llm": {"provider": "ollama", "config": {}},
+            "embedder": {
+                "provider": "openai",
+                "config": {"model": "BAAI/bge-m3", "openai_base_url": "https://api.siliconflow.cn/v1", "embedding_dims": 1024},
+            },
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+
+        OSSBackend(raw)
+
+        captured = Memory.instances[0].config
+        assert captured.vector_store.config["embedding_model_dims"] == 1024
+        assert "embedding_dims" not in captured.embedder.config
+        assert raw["embedder"]["config"]["embedding_dims"] == 1024  # caller's dict untouched
 
 
 class _StubServer:

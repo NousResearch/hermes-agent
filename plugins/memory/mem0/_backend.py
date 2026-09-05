@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from abc import ABC, abstractmethod
 from contextlib import closing, suppress
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Qdrant local mode (vector_store.path) serializes access with an exclusive
+# flock on ``<path>/.lock``, held by the first opener for its whole lifetime.
+# A second opener fails instantly with "already accessed by another instance";
+# OSSBackend.__init__ retries briefly so transient contention (e.g. the
+# gateway-restart overlap window) self-heals instead of permanently failing.
+_LOCK_RETRY_ATTEMPTS = 10
+_LOCK_RETRY_WAIT_SECS = 3
 
 
 def _add_kwargs(user_id: str, agent_id: str, infer: bool, metadata: dict | None) -> dict[str, Any]:
@@ -127,6 +139,31 @@ class OSSBackend(Mem0Backend):
             canonical_key = registry.get(str(block.get("provider") or "").strip().lower(), {}).get("base_url_key")
             if legacy_base and canonical_key:
                 provider_config.setdefault(canonical_key, legacy_base)
+            if name == "embedder":
+                # Embedding dims move to the vector-store config (embedding_model_dims);
+                # keep them out of the API call — SiliconFlow rejects ``dimensions=``.
+                provider_config.pop("embedding_dims", None)
+            # Inject API key from environment if not already in config.
+            provider = str(block.get("provider") or "").strip().lower()
+            if "api_key" not in provider_config:
+                env_var = registry.get(provider, {}).get("env_var", "")
+                env_key = os.environ.get(env_var, "") if env_var else ""
+                # Also check the Hermes-specific MEM0_<section>_API_KEY fallback
+                fallback_key = os.environ.get(f"MEM0_{name.upper()}_API_KEY", "")
+                base = str(provider_config.get("openai_base_url", ""))
+                if provider == "openai" and "siliconflow" in base:
+                    # Same-vendor reuse: on this deployment SiliconFlow hosts
+                    # both the embedder and the extraction LLM under one key;
+                    # never fall through to a mismatched vendor's key.
+                    api_key = os.environ.get("SILICONFLOW_API_KEY") or os.environ.get("MEM0_EMBEDDER_API_KEY", "")
+                else:
+                    api_key = env_key or fallback_key
+                if api_key:
+                    provider_config["api_key"] = api_key
+            # Ensure max_tokens is set for LLM (OpenAI SDK default of 16384+
+            # can exceed provider credit budgets).
+            if name == "llm" and "max_tokens" not in provider_config:
+                provider_config["max_tokens"] = 2000
             block["config"] = provider_config
             return block
 
@@ -141,18 +178,35 @@ class OSSBackend(Mem0Backend):
             self._recreate_collection_if_dims_changed(vector_store.get("provider", "qdrant"), vs_config, dims)
         vector_store["config"] = vs_config
         config = {"vector_store": vector_store, "llm": _provider_block("llm", LLM_PROVIDERS), "embedder": _provider_block("embedder", EMBEDDER_PROVIDERS), "version": "v1.1"}
-        if str(config["llm"].get("provider") or "").strip().lower() == "openai":
-            # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
-            _register_direct_openai_provider()
-            from mem0.configs.base import MemoryConfig
-            memory_config = MemoryConfig(**config)
+        # See _LOCK_RETRY_* above: local qdrant storage is single-opener.
+        # Retry only the lock-conflict error — everything else raises
+        # immediately, preserving prior behavior.
+        for attempt in range(1, _LOCK_RETRY_ATTEMPTS + 1):
             try:
-                memory_config.llm.provider = _DIRECT_OPENAI_PROVIDER
-            except (AttributeError, TypeError) as exc:
-                raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
-            self._memory = Memory(memory_config)
-        else:
-            self._memory = Memory.from_config(config)
+                if str(config["llm"].get("provider") or "").strip().lower() == "openai":
+                    # mem0 validates LlmConfig.provider before its factory lookup: build the supported OpenAI config, then swap the provider.
+                    _register_direct_openai_provider()
+                    from mem0.configs.base import MemoryConfig
+                    memory_config = MemoryConfig(**config)
+                    try:
+                        memory_config.llm.provider = _DIRECT_OPENAI_PROVIDER
+                    except (AttributeError, TypeError) as exc:
+                        raise RuntimeError("mem0 MemoryConfig does not expose a mutable llm.provider for the Hermes OpenAI OSS backend") from exc
+                    self._memory = Memory(memory_config)
+                else:
+                    self._memory = Memory.from_config(config)
+                break
+            except Exception as exc:
+                if "already accessed by another instance" not in str(exc).lower():
+                    raise
+                if attempt >= _LOCK_RETRY_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "mem0 qdrant storage lock held by another instance "
+                    "(attempt %d/%d, retrying in %ds)",
+                    attempt, _LOCK_RETRY_ATTEMPTS, _LOCK_RETRY_WAIT_SECS,
+                )
+                time.sleep(_LOCK_RETRY_WAIT_SECS)
 
     @staticmethod
     def _recreate_collection_if_dims_changed(provider: str, vs_config: dict, expected_dims: int) -> None:

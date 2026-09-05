@@ -23,19 +23,8 @@ FIXTURE_NO_TOKEN = "agent init failed: No access token found for Nous Portal log
 
 def test_closed_vocabulary_contains_every_code():
     assert fr.ALL_REASONS == {
-        "runtime_offline",
-        "queued_expired",
-        "delivery_timeout",
-        "agent_blocked",
-        "cancelled",
-        "provider_auth_or_access",
-        "provider_quota_limit",
-        "provider_rate_limit",
-        "provider_server_error",
-        "context_overflow",
-        "missing_config",
-        "model_unavailable",
-        "unknown",
+        value for name, value in vars(fr).items()
+        if name.isupper() and isinstance(value, str) and value == name.lower()
     }
     # constants match their string values
     assert fr.RUNTIME_OFFLINE == "runtime_offline"

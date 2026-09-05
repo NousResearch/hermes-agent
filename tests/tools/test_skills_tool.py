@@ -906,10 +906,63 @@ class TestSkillViewCollisionDetection:
         assert "Ambiguous skill name 'explore-codebase'" in result["error"]
         assert "matches" in result
         assert len(result["matches"]) == 2
-        # Both paths surfaced
-        assert any("foundations/runtime" in p for p in result["matches"])
-        assert any("external" in p for p in result["matches"])
+        # Both paths surfaced, each tagged with which root it came from
+        assert any("foundations/runtime" in m["path"] and m["source"] == "local" for m in result["matches"])
+        assert any("external" in m["path"] and m["source"] == "external" for m in result["matches"])
         assert "hint" in result
+        # Same relative path in each root would make "pass the full path" impossible advice;
+        # here the local copy is nested and the external one isn't, so that hint still applies.
+        assert "full relative path" in result["hint"]
+
+    def test_identical_relative_path_hints_source_param(self, tmp_path):
+        """When local and external collide on the SAME relative path, "pass the full
+        path" can't disambiguate them — the hint must point at source= instead."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "local-llm-bench", category="mlops", body="LOCAL VERSION")
+        _make_skill(external_dir, "local-llm-bench", category="mlops", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("mlops/local-llm-bench")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert len(result["matches"]) == 2
+        assert {m["source"] for m in result["matches"]} == {"local", "external"}
+        assert 'source="local"' in result["hint"] and 'source="external"' in result["hint"]
+
+    def test_source_local_and_external_each_resolve_the_collision(self, tmp_path):
+        """Once source disambiguates, each call resolves to its own root's content —
+        the actual unblock for the guardrail-halt scenario this guards against."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "local-llm-bench", category="mlops", body="LOCAL VERSION")
+        _make_skill(external_dir, "local-llm-bench", category="mlops", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            local_result = json.loads(skill_view("mlops/local-llm-bench", source="local"))
+            external_result = json.loads(skill_view("mlops/local-llm-bench", source="external"))
+
+        assert local_result["success"] is True and "LOCAL VERSION" in local_result["content"]
+        assert external_result["success"] is True and "EXTERNAL VERSION" in external_result["content"]
+
+    def test_invalid_source_rejected(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("anything", source="bogus")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Invalid source" in result["error"]
 
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
@@ -969,3 +1022,7 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is False
         assert "Ambiguous" in result["error"]
         assert len(result["matches"]) == 2
+        # Both candidates are external — source= can't disambiguate two externals,
+        # so this must fall back to the "pass the full path" hint, not source=.
+        assert {m["source"] for m in result["matches"]} == {"external"}
+        assert "full relative path" in result["hint"]

@@ -31,7 +31,7 @@ def _skill_view_fingerprint(payload: dict) -> tuple | None:
         return None
 
 
-def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
+def _record_skill_view(task_id, name, file_path, payload: dict, source=None) -> None:
     """Record a served skill_view so an identical repeat can be deduped."""
     # Never dedup setup-needed views: readiness depends on config/env state that
     # changes without the file changing; the model must see the refreshed status.
@@ -40,7 +40,7 @@ def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
         return
     if (fp := _skill_view_fingerprint(payload)) is None:
         return
-    key = (str(payload.get("name") or name), file_path or "")
+    key = (str(payload.get("name") or name), file_path or "", source or "")
     with _skill_view_tracker_lock:
         cache = _skill_view_tracker.setdefault(str(task_id), {})
         cache[key] = fp
@@ -48,9 +48,11 @@ def _record_skill_view(task_id, name, file_path, payload: dict) -> None:
             del cache[next(iter(cache))]
 
 
-def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
+def _check_skill_view_dedup(task_id, name, file_path, source=None) -> str | None:
     """Dedup stub when this exact skill file was already served to this task and
-    is unchanged on disk; None otherwise."""
+    is unchanged on disk; None otherwise. ``source`` ("local"/"external") must match the
+    recorded view too — a colliding name resolves to a different on-disk file per source, so
+    switching source must never coalesce with the other root's cached view."""
     if not task_id:
         return None
     n = str(name)
@@ -60,8 +62,8 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
         # Record key is the RESOLVED name; match raw and resolved forms so
         # 'category/skill' and bare-name views coalesce.
         for key, (src, mtime_ns, size) in list(cache.items()):
-            rec_name, rec_fp = key
-            if rec_fp != (file_path or "") or (
+            rec_name, rec_fp, rec_source = key
+            if rec_fp != (file_path or "") or rec_source != (source or "") or (
                     rec_name != n and not n.endswith("/" + rec_name)
                     and not rec_name.endswith("/" + n) and n.split(":")[-1] != rec_name):
                 continue

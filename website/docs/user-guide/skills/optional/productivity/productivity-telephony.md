@@ -15,7 +15,7 @@ Provision Twilio numbers, SMS/MMS, and AI outbound calls.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/productivity/telephony` |
-| Path | `optional-skills/productivity\telephony` |
+| Path | `optional-skills/productivity/telephony` |
 | Version | `1.0.0` |
 | Author | Nous Research |
 | License | MIT |

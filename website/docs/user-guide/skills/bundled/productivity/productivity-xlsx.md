@@ -15,7 +15,7 @@ Create, read, edit Excel .xlsx workbooks and CSVs.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\xlsx` |
+| Path | `skills/productivity/xlsx` |
 | Version | `1.1.0` |
 | Author | Nous Research |
 | License | MIT |

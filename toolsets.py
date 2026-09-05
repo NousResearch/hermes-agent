@@ -68,6 +68,7 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
     # Basic toolsets - individual tool categories
+
     "web": _ts("Web research and content extraction tools", ["web_search", "web_extract"]),
     "search": _ts("Web search only (no content extraction/scraping)", ["web_search"]),
     "x_search": _ts(
@@ -114,6 +115,21 @@ TOOLSETS = {
         "File manipulation tools: read, write, patch (with fuzzy matching), and "
         "search (content + files)",
         ["read_file", "write_file", "patch", "search_files"],
+    ),
+
+    # Read-only file/skill bundles for least-privilege role pins (report-only
+    # monitors, researchers, coordinators): the composite `file`/`skills`
+    # toolsets mix read and mutation tools, so granting them hands a
+    # restricted session write/patch/skill_manage as well. These bundles are
+    # read-only by construction and are NOT in CONFIGURABLE_TOOLSETS —
+    # they're selected via an explicit per-profile allowlist pin.
+    "file_readonly": _ts(
+        "Read-only file access: read files and search (content + names), no writes or patches",
+        ["read_file", "search_files"],
+    ),
+    "skills_readonly": _ts(
+        "Read-only skill access: list and view skills without authoring or editing",
+        ["skills_list", "skill_view"],
     ),
     "tts": _ts("Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI", ["text_to_speech"]),
     "todo": _ts("Task planning and tracking for multi-step work", ["todo_list"]),

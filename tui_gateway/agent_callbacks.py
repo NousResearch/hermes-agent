@@ -263,13 +263,20 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
                     else _load_fallback_model())
     # Detached tasks declare platform="tui" (no UI sid for renderer-routed events), so resolve
     # toolsets against it — never GUI schema they can't use.
+    # F1 (v4/v5): inherit the parent's scope with `is not None` semantics — an
+    # intentional [] ("no tools") must be preserved, never reopened from the
+    # profile surface. D8 parity: the profile's disabled_toolsets reach
+    # background agents too, or tool-level denials apply everywhere EXCEPT
+    # background execution.
+    _inherited = g("enabled_toolsets")
     return {
         **{k: g(k) or None for k in ("base_url", "api_key", "provider", "api_mode", "acp_command",
                                      "acp_args", "ephemeral_system_prompt")},
         **{k: g(k) for k in ("providers_allowed", "providers_ignored", "providers_order", "provider_sort",
                              "provider_data_collection", "openrouter_min_coding_score")},
         "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg, 25),
-        "enabled_toolsets": g("enabled_toolsets") or _load_enabled_toolsets("tui"),
+        "enabled_toolsets": list(_inherited) if _inherited is not None else _load_enabled_toolsets("tui"),
+        "disabled_toolsets": _resolve_disabled_toolsets(cfg),
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),
@@ -279,8 +286,19 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
-    return {**_background_agent_kwargs(agent, task_id),
-            "enabled_toolsets": ["terminal", "file"], "session_db": None, "skip_memory": True}
+    kwargs = _background_agent_kwargs(agent, task_id)
+    # F1 (v5): the preview terminal+file selection must resolve to EXACTLY
+    # ``surface ∩ {terminal, file}`` — never a widening. On an unpinned profile
+    # the resolved surface is the broad default (None), yielding exactly the
+    # historical [terminal, file] default. On a pinned profile the
+    # intersection can only narrow; an intentional [] inherits [].
+    inherited = kwargs.get("enabled_toolsets")
+    kwargs["enabled_toolsets"] = (
+        ["terminal", "file"] if inherited is None
+        else [t for t in inherited if t in {"terminal", "file"}]
+    )
+    kwargs.update({"session_db": None, "skip_memory": True})
+    return kwargs
 
 
 def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_chars: int = 1200) -> list[dict]:

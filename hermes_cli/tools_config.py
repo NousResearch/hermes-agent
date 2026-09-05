@@ -460,6 +460,85 @@ def _enable_recently_shipped_toolsets(enabled_toolsets: Set[str], config: dict, 
         enabled_toolsets.add(ts_key)
 
 
+def _profile_has_pin(config: dict) -> bool:
+    """Whether the config carries a profile tools.enabled_toolsets pin.
+
+    Distinguishes "pinned profile" from "unpinned" for fail-closed decisions:
+    callers that cannot resolve a pinned profile's surface must deny all
+    rather than degrade to a broad default (frozen-spec I4/D6). An empty list
+    IS a pin (it pins the profile to nothing).
+    """
+    tools_cfg = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    return isinstance(tools_cfg.get("enabled_toolsets"), list)
+
+
+def _resolve_profile_pin(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> Set[str] | None:
+    """Authoritative profile-pin selection, or None when the profile is unpinned.
+
+    When the active profile saves ``tools.enabled_toolsets`` (the per-profile
+    editor's allowlist), that list is the AUTHORITATIVE toolset selection for
+    every session built from this config — CLI, Desktop/TUI gateway, and
+    messaging platforms alike. Semantics:
+      * names are validated (built-in/plugin toolsets or MCP servers) —
+        any unknown name fails CLOSED (empty set, error logged) rather
+        than degrading to "all tools" (I4);
+      * no platform-default expansion, posture recovery, or default-off
+        filtering runs — the pin is the whole selection;
+      * ``agent.disabled_toolsets`` is still subtracted last (D8).
+    """
+    from toolsets import validate_toolset
+
+    tools_cfg = config.get("tools") if isinstance(config.get("tools"), dict) else {}
+    profile_pin = tools_cfg.get("enabled_toolsets") if isinstance(tools_cfg, dict) else None
+    if not isinstance(profile_pin, list):
+        return None
+    try:
+        pin_names = [str(t).strip() for t in profile_pin if str(t).strip()]
+        enabled_mcp = enabled_mcp_server_names(config)
+        enabled_toolsets: Set[str] = set()
+        unknown: List[str] = []
+        for name in pin_names:
+            if name == "no_mcp":
+                # Legacy sentinel: accepted as "no MCP servers" and ignored —
+                # MCP servers are only present if the pin lists them.
+                continue
+            elif validate_toolset(name) or name in enabled_mcp:
+                enabled_toolsets.add(name)
+            else:
+                unknown.append(name)
+    except Exception as exc:
+        # Fail closed (D6): a resolver error mid-build under a pinned
+        # profile must not widen to any partial or broad surface.
+        logger.error(
+            "profile tools.enabled_toolsets resolution failed (%s) — "
+            "failing closed with NO tools enabled",
+            exc,
+        )
+        return set()
+    if unknown:
+        # Fail closed: refuse to widen the surface when the pin names a
+        # toolset (or MCP server) this build doesn't know.
+        logger.error(
+            "profile tools.enabled_toolsets contains unknown name(s): %s — "
+            "failing closed with NO tools enabled. Fix the profile allowlist "
+            "(profile editor / config.yaml tools.enabled_toolsets).",
+            ", ".join(sorted(unknown)),
+        )
+        return set()
+    # Exact-allowlist semantics (F1): the pin must name EVERYTHING the
+    # profile gets, including MCP servers. Nothing is auto-added.
+    agent_cfg = config.get("agent") or {}
+    disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+    if disabled_toolsets:
+        from agent.skill_utils import parse_config_string_list
+
+        disabled_set = {
+            name.strip() for name in parse_config_string_list(disabled_toolsets) if name.strip()
+        }
+        enabled_toolsets -= disabled_set
+    return enabled_toolsets
+
+
 def _configurable_subset_of(tool_names: Set[str], platform: str) -> Set[str]:
     """Configurable toolsets whose STATIC membership is within ``tool_names`` (``include_registry=False``: a
     runtime-registered tool the composite never listed must not drop the whole toolset)."""
@@ -549,6 +628,12 @@ def _context_engine_active(config: dict) -> bool:
 
 def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_servers: bool = True) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
+    # F1 profile pin (role enforcement): an explicit tools.enabled_toolsets
+    # allowlist is authoritative for every surface; the platform-default
+    # expansion below runs only for unpinned profiles.
+    pinned = _resolve_profile_pin(config, platform, include_default_mcp_servers=include_default_mcp_servers)
+    if pinned is not None:
+        return pinned
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
     # An explicitly saved list (even a composite like ``hermes-discord``) is an opt-in to the platform's

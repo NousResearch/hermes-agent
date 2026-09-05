@@ -187,15 +187,26 @@ def _joined_output(r) -> str:
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    # F1 v5.1: display must agree with the model-facing schema — resolve the
+    # session's effective scope (built-agent scope, lazy-session pin surface,
+    # per-session source authority) instead of the raw agent attribute.
+    enabled, disabled = _session_effective_tool_scope(session)
+    enabled_set = set(enabled) if enabled is not None else None
+    denied_tools, explicitly_disabled = _denied_tool_names(disabled)
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
+            visible = (
+                [t for t in (info["resolved_tools"] or []) if t not in denied_tools]
+                if enabled_set is None or name in enabled_set
+                else []
+            )
             row = {
-                "name": name, "description": info["description"], "tool_count": info["tool_count"],
-                "enabled": name in enabled if enabled else True}
+                "name": name, "description": info["description"], "tool_count": len(visible),
+                "enabled": (name in enabled_set if enabled_set is not None else True)
+                and name not in explicitly_disabled}
             if with_tools:
-                row["tools"] = info["resolved_tools"]
+                row["tools"] = visible
             items.append(row)
     return items
 
@@ -980,9 +991,13 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+    # F1 v5.1: display must agree with the model-facing schema — same
+    # effective scope as the agent build (incl. denials), not the raw agent
+    # attribute or an unscoped fallback.
+    enabled, disabled = _session_effective_tool_scope(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
-    tools = mt.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True, skip_tool_search_assembly=True)
+    tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled,
+                                    quiet_mode=True, skip_tool_search_assembly=True)
     sections = {}
     for tool in sorted(tools, key=lambda t: t["function"]["name"]):
         name = tool["function"]["name"]
@@ -992,6 +1007,99 @@ def _(rid, params: dict) -> dict:
         sections.setdefault(mt.get_toolset_for_tool(name) or "unknown", []).append({"name": name, "description": desc})
     sections_out = [{"name": n, "tools": rows} for n, rows in sorted(sections.items())]
     return _ok(rid, {"sections": sections_out, "total": len(tools)})
+
+
+def _session_effective_tool_scope(session: dict | None) -> tuple:
+    """Effective toolset scope for the tools.show / tools.list display paths.
+
+    Resolution order (F1 v5.1 — display must agree with the model-facing
+    schema):
+      1. A session with a BUILT agent: the agent's own scope (``is not None``
+         semantics — an intentional ``[]`` stays ``[]`` and must never be
+         reopened), with the agent's own denials applied on top.
+      2. A session whose agent is None (lazy — created but never prompted):
+         the session's PINNED profile surface resolved exactly as the agent
+         build will resolve it, NOT the broad fallback. A lazy session must
+         never advertise tools its profile pin denies.
+      3. No session: the same profile-surface resolution.
+
+    The session's PLATFORM comes from its own ``source`` via
+    ``_resolve_agent_platform`` (F1 v5.1r7): a lazy Desktop-sourced session on
+    a remote gateway must resolve the Desktop surface even though the gateway
+    process has no ``HERMES_DESKTOP`` env. The process env is only the
+    fallback when the session carries no source at all.
+
+    Returns ``(enabled_toolsets, disabled_toolsets)`` — the disabled list
+    carries tool-level denials too (``agent.disabled_toolsets`` may name
+    individual tools inside composites), so display paths can filter exactly
+    like ``get_tool_definitions`` does.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    toolsets = _tools_mod("toolsets")
+    server = _tools_mod("tui_gateway.server")
+
+    disabled = []
+    session = session or {}
+    agent = session.get("agent")
+
+    # A session may be bound to a non-launch profile (multi-profile gateway).
+    # Display must resolve THAT profile's surface, not the process-level one —
+    # otherwise a lazy session bound to profile B advertises profile A's pin.
+    #
+    # Scoping uses the ContextVar override (set_hermes_home_override), NOT an
+    # os.environ swap: ContextVars are async-context-local, so concurrent RPC
+    # handlers each see their own home and nothing process-global races
+    # (F1 v5.1r3 — replaces the r2 environment mutation).
+    profile_home = session.get("profile_home")
+    token = set_hermes_home_override(profile_home) if profile_home else None
+    try:
+        cfg = _tools_mod("hermes_cli.config").load_config()
+        disabled = server._resolve_disabled_toolsets(cfg)
+
+        if agent is not None:
+            inherited = getattr(agent, "enabled_toolsets", None)
+            if inherited is not None:
+                # The agent's OWN runtime denials are authoritative even when
+                # its enabled scope was passed explicitly — a builder may
+                # narrow a composite at runtime (tool-level denials inside
+                # composites) beyond what profile config says (F1 v5.1r4).
+                agent_disabled = getattr(agent, "disabled_toolsets", None)
+                if agent_disabled is not None:
+                    disabled = list(agent_disabled)
+                return list(inherited), disabled
+            agent_disabled = getattr(agent, "disabled_toolsets", None)
+            if agent_disabled is not None:
+                disabled = list(agent_disabled)
+        # r7: the session's own source is the platform authority — a lazy
+        # Desktop-sourced session on a remote gateway must resolve the Desktop
+        # surface even though the gateway process has no HERMES_DESKTOP env
+        # (the process env is not authoritative for remote/URL gateways).
+        # The process env is only the fallback when no session source exists.
+        platform = server._resolve_agent_platform(session.get("source"))
+        return server._load_enabled_toolsets(platform), disabled
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def _denied_tool_names(disabled) -> tuple:
+    """(denied_tools, explicitly_disabled_toolsets) from a disabled_toolsets list.
+
+    Entries that ARE toolset names subtract wholesale; other entries are
+    individual tool names (F1 tool-level denials inside composites).
+    """
+    toolsets = _tools_mod("toolsets")
+    denied_tools: set = set()
+    explicitly_disabled_toolsets: set = set()
+    for entry in disabled or []:
+        entry = str(entry).strip()
+        if entry and toolsets.validate_toolset(entry):
+            explicitly_disabled_toolsets.add(entry)
+            denied_tools.update(toolsets.resolve_toolset(entry))
+        elif entry:
+            denied_tools.add(entry)
+    return denied_tools, explicitly_disabled_toolsets
 
 
 @_rpc("tools.configure", 5035)
@@ -1381,4 +1489,9 @@ def _(rid, params: dict) -> dict:
 
 def register(server) -> None:
     """Rebind this module's helpers + handlers onto ``server`` and register the handlers."""
+    # v5.1: handler bodies call _session_effective_tool_scope/_denied_tool_names,
+    # which start with "_" and would be skipped by bind_module — bind them
+    # explicitly so they resolve after the __globals__ rebind.
     bind_module(globals(), server, skip=("_",))
+    server._session_effective_tool_scope = _session_effective_tool_scope
+    server._denied_tool_names = _denied_tool_names

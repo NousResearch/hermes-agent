@@ -1815,6 +1815,70 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
     session_platform = platform or _resolve_session_platform()
     explicit = [item.strip() for item in os.environ.get("HERMES_TUI_TOOLSETS", "").split(",") if item.strip()]
     fallback_notice = None
+
+    # Profile pin (F1 role enforcement): a profile-saved tools.enabled_toolsets
+    # allowlist is authoritative for desktop/TUI sessions too. Resolve it
+    # through the same _get_platform_tools path as every other surface so the
+    # pin, fail-closed validation, MCP layering, and the final
+    # agent.disabled_toolsets subtraction all behave identically. GUI surface
+    # toolsets (project/desktop_ui) are folded in ONLY when the pin itself
+    # includes them — a role pin must never be silently widened by the client
+    # on the other end. coding_selection() below reads config lazily too, so
+    # the pin check must come FIRST or the coding posture would override an
+    # explicitly pinned profile in code workspaces.
+    try:
+        from hermes_cli.config import load_config as _pin_load
+        from hermes_cli.tools_config import _get_platform_tools as _gpt
+
+        pin_cfg = _pin_load()
+        tools_cfg = pin_cfg.get("tools") if isinstance(pin_cfg.get("tools"), dict) else {}
+        pin = tools_cfg.get("enabled_toolsets") if isinstance(tools_cfg, dict) else None
+        # An EXPLICIT empty list is a real pin: "no tools" — it must not fall
+        # through to the coding posture or the "all toolsets" fallback path
+        # (frozen-spec contract: an explicit empty pin disables everything).
+        if isinstance(pin, list):
+            resolved_pin = _gpt(pin_cfg, "cli", include_default_mcp_servers=True)
+            # Only fold in client-surface toolsets the pin explicitly allows:
+            # a pinned profile gets exactly what it lists, never an implicit
+            # project/desktop_ui bundle.
+            pin_names = {str(t).strip() for t in pin}
+            surfaces = {
+                s for s in _gui_surface_toolsets(session_platform)
+                if s in pin_names
+            }
+            return sorted({*resolved_pin, *surfaces})
+    except Exception:
+        # Fail closed (I4): a resolver/config error under a pinned profile
+        # must NOT degrade to the broad default surface. Distinguish "pin
+        # present but unreadable" (return no tools) from "no pin" (fall
+        # through) by re-reading the raw config without the resolver.
+        try:
+            from hermes_cli.config import load_config as _raw_load
+
+            raw_tools = (_raw_load() or {}).get("tools")
+            raw_pin = (
+                raw_tools.get("enabled_toolsets")
+                if isinstance(raw_tools, dict)
+                else None
+            )
+            if isinstance(raw_pin, list):
+                logger.error(
+                    "profile tools.enabled_toolsets pin could not be resolved "
+                    "(resolver error); failing closed with no toolsets",
+                    exc_info=True,
+                )
+                return []
+        except Exception:
+            pass
+        # No pin (or even the raw read failed — e.g. no config file at all):
+        # continue to the unpinned coding-posture/default paths.
+
+    # Coding posture (base Hermes): with no explicit pin, collapse to the
+    # coding toolset (+ enabled MCP servers) when sitting in a code workspace.
+    # The desktop app and `hermes --tui` both land here. See
+    # agent/coding_context.py. No config is loaded yet at this point, so we let
+    # coding_selection() load it lazily (cli.py passes its already-resolved
+    # CLI_CONFIG instead, purely to avoid a redundant read).
     if not explicit:
         with contextlib.suppress(Exception):
             from agent.coding_context import coding_selection
@@ -1847,6 +1911,26 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         if fallback_notice is not None:
             _tui_notice("[tui] no valid HERMES_TUI_TOOLSETS entries and configured CLI toolsets could not be loaded; enabling all toolsets")
         return None
+
+
+def _resolve_disabled_toolsets(cfg: dict | None) -> list[str]:
+    """agent.disabled_toolsets for TUI/desktop agent builds (D8 parity).
+
+    CLI parses this from CLI_CONFIG at HermesCLI init and cron layers it in
+    _resolve_cron_disabled_toolsets; the desktop/TUI was silently omitting
+    it, so tool-level and toolset-level denials never applied on this
+    surface. Resolution errors deny nothing extra (an empty list) but never
+    fail the agent build — the toolset-side fail-closed behavior owns
+    denial-of-service semantics.
+    """
+    try:
+        from agent.skill_utils import parse_config_string_list
+
+        agent_cfg = (cfg or {}).get("agent") or {}
+        return parse_config_string_list(agent_cfg.get("disabled_toolsets") or [])
+    except Exception:
+        logger.warning("Could not resolve agent.disabled_toolsets for TUI agent", exc_info=True)
+        return []
 
 
 def _session_tool_progress_mode(sid: str) -> str:
@@ -2288,6 +2372,10 @@ def _make_agent(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(platform),
+        # D8 parity with CLI/cron (F1): agent.disabled_toolsets must reach the
+        # agent builder too, or tool-level denials apply on every surface
+        # EXCEPT the desktop/TUI.
+        disabled_toolsets=_resolve_disabled_toolsets(cfg),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),

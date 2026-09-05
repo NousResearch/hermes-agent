@@ -4268,14 +4268,40 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
     elif not toolsets:
         # Coding posture inside a code workspace, else the shared platform resolver.
+        # F1: the profile pin is authoritative — a pinned profile's surface is
+        # resolved through the shared resolver and focus may only NARROW it.
+        _coding = None
         try:
             from agent.coding_context import coding_selection
-            toolsets_list = coding_selection(platform="cli", config=CLI_CONFIG)
+            _coding = coding_selection(platform="cli", config=CLI_CONFIG)
         except Exception:
-            toolsets_list = None
-        if toolsets_list is None:
+            _coding = None
+        if _coding is not None:
+            # Focus narrows: intersect the posture's selection with the
+            # profile's authoritative surface. A pinned profile therefore
+            # keeps its exact allowlist (minus anything focus strips); an
+            # unpinned profile keeps the historical coding behavior.
+            from hermes_cli.tools_config import _get_platform_tools, _profile_has_pin
+            profile_surface = _get_platform_tools(CLI_CONFIG, "cli")
+            if _profile_has_pin(CLI_CONFIG):
+                toolsets_list = sorted(set(_coding) & set(profile_surface)) if profile_surface else []
+            else:
+                toolsets_list = _coding
+        else:
             from hermes_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+
+    # F1 (round-2 finding 2/3): explicit --toolsets and the focus posture may
+    # NARROW the profile pin, never widen it. Intersect whatever was selected
+    # with the profile's authoritative surface when a pin exists. Unpinned
+    # profiles keep the historical behavior exactly.
+    if toolsets_list:
+        from hermes_cli.tools_config import _get_platform_tools, _profile_has_pin
+
+        if _profile_has_pin(CLI_CONFIG):
+            profile_surface = _get_platform_tools(CLI_CONFIG, "cli")
+            allowed = set(profile_surface)
+            toolsets_list = sorted({t for t in toolsets_list if t in allowed})
 
     parsed_skills = _parse_skills_argument(skills)
 

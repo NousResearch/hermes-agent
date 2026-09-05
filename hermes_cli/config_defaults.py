@@ -1195,9 +1195,16 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
-        # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
-        # "mem0", "hindsight", "holographic", "retaindb", "byterover".
+        # External memory provider plugin (empty = built-in only); only ONE at a time: "honcho",
+        # "openviking", "mem0", "hindsight", "holographic", "retaindb", "byterover", "supermemory".
         "provider": "",
+        # Optional host-side recall router. "shadow" evaluates without changing provider queries;
+        # "active" may skip/reuse or rewrite a query using bounded recent conversation. The planner
+        # is pinned to the active main-model route and never falls back to another model provider.
+        "recall_planner": {
+            "mode": "off",  # off | shadow | active
+            "timeout_seconds": 2.0,
+        },
     },
     # Subagent delegation — override the provider:model used by delegate_task so children run on a
     # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so

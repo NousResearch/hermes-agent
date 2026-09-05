@@ -731,7 +731,12 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
+  recall_planner:
+    mode: "off"             # "off" (default) | "shadow" | "active"
+    timeout_seconds: 2.0
 ```
+
+`memory.recall_planner` applies only to automatic recall providers that retrieve against the current turn's query. `shadow` evaluates routing while preserving the raw provider query. `active` may skip recall when visible context is sufficient or replace the raw prompt with one standalone historical search question; planner failures fall back to the legacy raw query. Planner context is sent only through the active main-model route, with cross-provider fallback disabled. Hermes strips injected memory/file context and force-redacts recognized secrets before that side call. Providers that already rewrite queries, background-only providers, and unknown third-party providers are excluded.
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 

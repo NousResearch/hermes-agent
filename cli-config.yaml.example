@@ -907,6 +907,16 @@ memory:
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)
 
+  # Optional host-side routing before an external provider's automatic recall.
+  # "off" preserves legacy current-query recall. "shadow" asks the planner but
+  # still sends the raw query. "active" may skip recall or send a rewritten,
+  # standalone historical question. Only current-query providers opt in.
+  # The planner uses the active main-model route with cross-provider fallback
+  # disabled; injected context is stripped and secrets are force-redacted.
+  recall_planner:
+    mode: "off"             # "off" (default), "shadow", or "active"
+    timeout_seconds: 2.0    # finite positive deadline; failures use raw recall
+
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================

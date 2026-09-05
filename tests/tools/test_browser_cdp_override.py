@@ -343,3 +343,46 @@ class TestRedactCdpErrorText:
         out = _redact_cdp_error_text(err)
         assert "127.0.0.1:9222" in out
         assert "refused" in out
+
+
+class TestCdpSessionCommandArgs:
+    """_run_browser_command() with a CDP session must pass both --session and --cdp.
+
+    Without --session, agent-browser does not persist the accessibility tree's
+    ref map across CLI invocations, causing subsequent ref actions (e.g. browser_click
+    with '@e4') to fail with locator.click CSS syntax errors.
+    """
+
+    def test_passes_session_and_cdp_flags(self, monkeypatch):
+        from tools import browser_tool_session as bt_session
+
+        captured_cmd = []
+
+        def fake_spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout):
+            captured_cmd.extend(cmd_parts)
+            return {"success": True, "data": {}}
+
+        session_info = {
+            "session_name": "cdp_test_123",
+            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/abc",
+        }
+
+        monkeypatch.setattr(bt_session, "_browser_command_preflight", lambda: {"browser_cmd": "/usr/bin/agent-browser"})
+        monkeypatch.setattr(bt_session, "_get_session_info", lambda task_id: session_info)
+        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda task_id: None)
+        monkeypatch.setattr(bt_session, "_spawn_and_collect", fake_spawn_and_collect)
+
+        res = bt_session._run_browser_command("test-task", "click", ["@e4"])
+        assert res["success"] is True
+
+        assert "--session" in captured_cmd
+        session_idx = captured_cmd.index("--session")
+        assert captured_cmd[session_idx + 1] == "cdp_test_123"
+
+        assert "--cdp" in captured_cmd
+        cdp_idx = captured_cmd.index("--cdp")
+        assert captured_cmd[cdp_idx + 1] == "ws://127.0.0.1:9222/devtools/browser/abc"
+
+        assert "click" in captured_cmd
+        assert "@e4" in captured_cmd
+

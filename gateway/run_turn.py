@@ -1491,6 +1491,7 @@ class GatewayTurnMixin:
                 account_label=_account_label,
                 account_usage=_account_usage,
                 reasoning_effort=_reasoning_effort,
+                resolved_config=_footer_cfg,
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)

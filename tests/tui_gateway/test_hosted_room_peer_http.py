@@ -194,6 +194,56 @@ def test_scoped_peer_runs_client_stops_exact_run(peer_server):
     assert FakePeer.runs["run-1"]["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("scoped", [False, True])
+def test_named_profile_prefixes_every_roomlink_request(monkeypatch, scoped):
+    captured = {}
+
+    class Response:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            if captured.get("read"):
+                return b""
+            captured["read"] = True
+            return b'{"ok":true}'
+
+    def opened(request, **_kwargs):
+        captured["url"] = request.full_url
+        captured["read"] = False
+        return Response()
+
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url",
+        opened,
+    )
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test/hermes" + ("/p/reviewer%3Awest" if scoped else ""),
+        api_key="",
+        target_profile="reviewer:west",
+    )
+
+    assert client.probe(grant="signed.room.grant") == {"ok": True}
+    assert captured["url"] == (
+        "https://peer.example.test/hermes/p/reviewer%3Awest/"
+        "v1/room-members/capabilities"
+    )
+
+
+@pytest.mark.parametrize("profile", ["default", "reviewer"])
+def test_profile_scoped_endpoint_cannot_select_another_profile(profile):
+    with pytest.raises(ValueError, match="profile.*match"):
+        PeerRunsHTTPClient(
+            base_url="https://peer.example.test/hermes/p/someone-else",
+            api_key="", target_profile=profile,
+        )
+
+
 def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
     db = tmp_path / "state.db"
     first = PeerRunsHTTPClient(
@@ -907,11 +957,16 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
         api_key="",
     )
 
+    requests = []
+
     def request(path, **_kwargs):
+        requests.append(path)
         if path == "/v1/room-members/grants/refresh":
             return {"grant": "replacement.room.grant"}
-        assert path == "/v1/room-members/capabilities"
-        return {"catalog": refreshed}
+        if path == "/v1/room-members/capabilities":
+            return {"catalog": refreshed}
+        assert path == "/v1/room-members/grants/revoke-exact"
+        return {"revoked": True}
 
     client._request = request
     with pytest.raises(PeerRunsHTTPError) as caught:
@@ -924,6 +979,7 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
     assert caught.value.error_code == error_code
     assert caught.value.needs_reauthorization is True
     assert caught.value.not_admitted is True
+    assert requests[-1] == "/v1/room-members/grants/revoke-exact"
 
 
 def test_grant_refresh_preserves_unchanged_catalog_and_policy():

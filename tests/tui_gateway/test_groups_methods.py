@@ -234,6 +234,7 @@ def test_roomlink_endpoint_absence_has_machine_reason(home, monkeypatch):
 
 
 def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
+    from gateway import hosted_rooms
     from gateway.hosted_room_peer import (
         HostedRoomGrantError,
         decode_room_grant,
@@ -268,12 +269,38 @@ def test_multiplexed_invitation_uses_exact_profile_secret(home, monkeypatch):
         permission="status",
     )
     assert claims["target_profile"] == "reviewer"
+    assert hosted_rooms.peer_room_is_reserved(
+        home / "state.db",
+        room_id="room-1",
+        target_profile="reviewer",
+    )
+    assert hosted_rooms.peer_room_is_reserved(
+        reviewer_home / "state.db",
+        room_id="room-1",
+        target_profile="reviewer",
+    )
     with pytest.raises(HostedRoomGrantError, match="signature"):
         decode_room_grant(
             derive_room_grant_secret(default_key),
             invitation["grant"],
             permission="status",
         )
+
+    revoked = _result(
+        srv._methods["groups.peer.revoke"](
+            4,
+            {"grant": invitation["grant"], "profile": "reviewer"},
+        )
+    )
+    assert revoked == {"revoked": True}
+    assert hosted_rooms.room_grant_is_revoked(
+        reviewer_home / "state.db",
+        claims=claims,
+    )
+    assert hosted_rooms.room_grant_is_revoked(
+        home / "state.db",
+        claims=claims,
+    )
 
 
 def test_named_profile_needs_no_copied_api_key_for_roomlink(home, monkeypatch):

@@ -388,3 +388,49 @@ async def test_cookie_is_not_a_credential(monkeypatch):
             assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
         finally:
             await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_uses_voice_system_prompt(monkeypatch):
+    # Spoken replies must stay short: converse runs the turn with the voice-brevity
+    # ephemeral system prompt, while the user_message (transcript) is passed CLEAN.
+    from tools.voice_converse_loop import VOICE_SYSTEM_PROMPT
+
+    adapter = _adapter()
+    streamer = _FakeStreamer([b"\x01\x02"])
+    _patch_converse(monkeypatch, streamer, transcript="what time is it")
+
+    seen: dict = {}
+
+    async def _fake_run_agent(user_message, conversation_history, *,
+                              ephemeral_system_prompt=None, stream_delta_callback=None,
+                              session_id=None, **_):
+        seen["prompt"] = ephemeral_system_prompt
+        seen["user_message"] = user_message
+        if stream_delta_callback is not None:
+            stream_delta_callback("It's noon.")
+        return {"final_response": "It's noon."}, {"input_tokens": 0, "output_tokens": 0}
+
+    monkeypatch.setattr(adapter, "_run_agent", _fake_run_agent)
+
+    async with TestClient(TestServer(_app(adapter))) as client:
+        ws = await client.ws_connect(
+            "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            assert (await ws.receive_json())["type"] == "ready"
+            for frame in _speech_then_silence_pcm():
+                await ws.send_bytes(frame)
+            while True:
+                msg = await ws.receive()
+                if msg.type == web.WSMsgType.TEXT:
+                    if json.loads(msg.data)["type"] == "turn_done":
+                        break
+                elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED,
+                                  web.WSMsgType.ERROR):
+                    break
+        finally:
+            await ws.send_str(json.dumps({"stop": True}))
+            await ws.close()
+
+    assert seen["prompt"] == VOICE_SYSTEM_PROMPT
+    assert seen["user_message"] == "what time is it"  # transcript is clean; prompt is separate

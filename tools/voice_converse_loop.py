@@ -332,6 +332,20 @@ _HISTORY_MAX_MESSAGES = 40
 
 _IDLE_INTERVAL_MAX = 3600.0
 
+# Voice replies are spoken aloud — keep them short and speakable. Passed as an ephemeral
+# system prompt for each converse turn (mirrors the CLI voice mode's brevity prefix in
+# hermes_cli.cli_chat_turn_mixin), so spoken replies don't balloon to full chat length.
+VOICE_SYSTEM_PROMPT = (
+    "You are in a live voice conversation and your reply is spoken aloud. Answer concisely and "
+    "conversationally — at most 2-3 short sentences of plain spoken text, with no code blocks, "
+    "markdown, lists, or URLs. If the request is unclear or you only caught fragments, ask one "
+    "short clarifying question instead of guessing or rambling."
+)
+# Safety cap on how much of ONE reply is ever synthesized to speech, so a runaway reply (a
+# model ignoring the brevity prompt, or a tool result read aloud) can't play for minutes.
+# Normal replies sit far under this; it only bounds the pathological case.
+_MAX_TTS_CHARS_PER_TURN = 1500
+
 
 def parse_idle_interval(raw: Optional[str]) -> float:
     """Parse the ``idle_interval`` query param → seconds of quiet between turns before an
@@ -486,6 +500,7 @@ async def drive_converse_turns(
                         return
                     yield from chunker.feed(delta)
 
+            spoken_chars = 0
             try:
                 for sentence in _sentences():
                     cleaned = _strip_markdown_for_tts(sentence)
@@ -496,6 +511,13 @@ async def drive_converse_turns(
                             if tts_stop.is_set() or session.stopped:
                                 return
                             loop.call_soon_threadsafe(pcm_q.put_nowait, chunk)
+                    spoken_chars += len(cleaned)
+                    if spoken_chars >= _MAX_TTS_CHARS_PER_TURN:
+                        # Safety cap: stop speaking a runaway reply. The agent turn still
+                        # completes and the full reply is recorded in history; only the
+                        # spoken audio is bounded (see _MAX_TTS_CHARS_PER_TURN).
+                        _log.debug("converse: TTS output capped at %d chars", spoken_chars)
+                        break
             except Exception as exc:  # noqa: BLE001
                 _log.warning("converse synthesis failed: %s", exc)
             finally:

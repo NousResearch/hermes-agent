@@ -368,3 +368,19 @@ def test_drive_converse_turns_stop_word_ignored_in_continuous_mode(monkeypatch):
     types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
     assert "stop_word" not in types
     assert types == ["transcript", "speaking", "bytes", "turn_done"]
+
+
+def test_drive_converse_turns_caps_tts_output():
+    # A runaway reply must not be spoken in full: the driver caps the synthesized audio
+    # near _MAX_TTS_CHARS_PER_TURN, while the full reply is still recorded in history.
+    from tools.voice_converse_loop import _MAX_TTS_CHARS_PER_TURN
+
+    long_reply = "This is a spoken sentence. " * 120  # ~3200 chars, well over the cap
+    session = _FakeConverseSession(["say a lot."])
+    history: list = []
+    sent = _run_driver(session, history, [long_reply])
+
+    pcm = b"".join(d[1] for d in sent if isinstance(d, tuple) and d[0] == "bytes")
+    assert len(pcm) < len(long_reply)                       # actually capped
+    assert len(pcm) <= _MAX_TTS_CHARS_PER_TURN + 200        # bounded near the cap
+    assert history[-1] == {"role": "assistant", "content": long_reply}  # full reply kept

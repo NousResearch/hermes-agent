@@ -287,8 +287,10 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         # NOTE: `interrupted` is accepted for the shared driver's signature but the
         # gateway does not plumb a barge-in note into _run_agent (dashboard parity is
         # dashboard-only), so it is intentionally unused here.
+        from tools.voice_converse_loop import VOICE_SYSTEM_PROMPT
         result, _usage = await self._run_agent(
             user_message=transcript, conversation_history=list(conversation_history),
+            ephemeral_system_prompt=VOICE_SYSTEM_PROMPT,
             stream_delta_callback=on_delta, session_id=session_id)
         if isinstance(result, dict) and result.get("failed"):
             return "", str(result.get("error") or "agent run failed")

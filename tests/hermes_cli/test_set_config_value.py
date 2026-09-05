@@ -119,6 +119,23 @@ class TestConfigYamlRouting:
         assert "not a recognized config key" not in capsys.readouterr().out
         assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
 
+    def test_nested_open_mapping_key_is_recognized_and_resolved(
+        self, _isolated_hermes_home, capsys
+    ):
+        """Declared empty mappings accept runtime-owned nested fields."""
+        set_config_value(
+            "auxiliary.compression.extra_body.reasoning.effort",
+            "low",
+        )
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+        from agent.auxiliary_client import _get_task_extra_body
+
+        assert _get_task_extra_body("compression") == {
+            "reasoning": {"effort": "low"}
+        }
+
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
         config = _read_config(_isolated_hermes_home)
@@ -547,6 +564,7 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        "terminal.docker_env.PYTHONUNBUFFERED",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key

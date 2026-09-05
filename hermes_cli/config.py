@@ -3267,6 +3267,14 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     for seg in segments[1:]:
         if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict):
             return True, None
+        if not node:
+            # An empty mapping in DEFAULT_CONFIG declares the container but
+            # cannot enumerate its runtime-owned children. Treat it as open,
+            # just like the named open-dict roots above. This covers nested
+            # shapes such as auxiliary.<task>.extra_body.* and
+            # terminal.docker_env.* without weakening validation in populated
+            # schema mappings.
+            return True, None
         if seg not in node:
             sibling = _suggest_closest_key(seg, set(node.keys()))
             return False, ".".join(consumed + [sibling]) if sibling is not None else None

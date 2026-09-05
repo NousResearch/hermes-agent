@@ -19,7 +19,9 @@ boundaries (/new -> session_reset / user_exit) stay terminal.
 """
 
 import asyncio
-from types import SimpleNamespace
+import concurrent.futures
+import threading
+from collections import OrderedDict
 
 import pytest
 
@@ -53,7 +55,7 @@ def _consumer(adapter):
     return GatewayStreamConsumer(adapter, "C1", config=cfg)
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_skip_redundant_finalize_records_acked_payload_not_accumulated():
     """The delivered record must reflect the last ACKED edit, so a stale
     preview cannot masquerade as the delivered final (incident class:
@@ -83,7 +85,7 @@ async def test_skip_redundant_finalize_records_acked_payload_not_accumulated():
     )
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_finalize_edit_success_still_reconciles_true():
     """Control: when the finalize edit actually delivered the full final
     text, reconciliation must remain True (no dup sends regression)."""
@@ -118,8 +120,8 @@ def _classify_runner(row):
     return runner
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("end_reason", ["idle_timeout", "timeout", None, ""])
+@ pytest.mark.asyncio
+@ pytest.mark.parametrize("end_reason", ["idle_timeout", "timeout", None, ""])
 async def test_idle_ended_parent_classifies_deliver(end_reason):
     """Relay-plane norm: session ended on idle, chat still routable ->
     the completion must be deliverable, not terminally dropped."""
@@ -134,8 +136,8 @@ async def test_idle_ended_parent_classifies_deliver(end_reason):
     )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("end_reason", ["session_reset", "user_exit", "session_switch"])
+@ pytest.mark.asyncio
+@ pytest.mark.parametrize("end_reason", ["session_reset", "user_exit", "session_switch"])
 async def test_user_boundary_still_terminal(end_reason):
     """Explicit user boundaries remain terminal — /new means the user
     closed the thread of work on purpose."""
@@ -146,7 +148,129 @@ async def test_user_boundary_still_terminal(end_reason):
     assert verdict == "terminal"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_unknown_session_still_terminal():
     runner = _classify_runner(None)
     assert await runner._classify_completion_target("gone") == "terminal"
+
+
+# ---------------------------------------------------------------------------
+# Issue #82703: gateway should not claim async_delegation/completion
+# when it has no adapter route. Claiming burns a delivery attempt;
+# if no route exists (e.g. raw CLI session with no api_server adapter),
+# the row should stay pending for a CLI/TUI/api_server consumer.
+# ---------------------------------------------------------------------------
+
+def _make_no_route_runner():
+    """Runner with no adapters and no session store entries -> no route."""
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._draining = False
+    runner._restart_requested = False
+    runner._restart_detached = False
+    runner._restart_via_service = False
+    runner._stop_task = None
+    runner._exit_cleanly = False
+    runner._exit_with_failure = False
+    runner._exit_reason = None
+    runner._exit_code = None
+    runner._restart_drain_timeout = 0.01
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._agent_cache = OrderedDict()
+    runner._agent_cache_lock = threading.Lock()
+    runner.adapters = {}  # NO adapters -> no route
+    runner._background_tasks = set()
+    runner._failed_platforms = []
+    runner._shutdown_event = asyncio.Event()
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._busy_ack_ts = {}
+    runner._executor_lock = threading.Lock()
+    runner._executor_closing = False
+    runner._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    runner._session_db = None
+    runner.session_store = type("Store", (), {"_entries": {}})()
+    runner._completion_delivery_lock = threading.Lock()
+    runner._completion_deliveries_inflight = set()
+    runner._completion_deliveries_delivered = OrderedDict()
+    runner._completion_delivery_retention = 100
+    runner._completion_notification_batch_window = 0.01
+    runner._completion_notification_batches = {}
+    runner._completion_notification_batch_tasks = {}
+    return runner
+
+
+@ pytest.mark.asyncio
+async def test_async_delegation_no_route_does_not_claim():
+    """Gateway with no route should return None without claiming the durable row."""
+    from tools.async_delegation import claim_completion_delivery
+
+    runner = _make_no_route_runner()
+    calls = []
+
+    original_claim = claim_completion_delivery
+
+    def tracked_claim(delegation_id, claim_id):
+        calls.append((delegation_id, claim_id))
+        return original_claim(delegation_id, claim_id)
+
+    import tools.async_delegation as ad_mod
+    ad_mod.claim_completion_delivery = tracked_claim
+
+    try:
+        evt = {
+            "type": "async_delegation",
+            "delegation_id": "test-delegation-123",
+            "session_key": "raw-session-no-route",  # not in session_store
+            "platform": "",
+            "chat_type": "",
+            "chat_id": "",
+        }
+        result = await runner._deliver_completion_notification("test output", evt)
+        assert result is None, f"expected None (no route), got {result}"
+        assert calls == [], f"claim_completion_delivery was called: {calls}"
+    finally:
+        ad_mod.claim_completion_delivery = original_claim
+
+
+@ pytest.mark.asyncio
+async def test_completion_no_route_does_not_claim():
+    """Completion events with no route should also not be claimed."""
+    from tools.async_delegation import claim_completion_delivery
+
+    runner = _make_no_route_runner()
+    calls = []
+
+    original_claim = claim_completion_delivery
+
+    def tracked_claim(delegation_id, claim_id):
+        calls.append((delegation_id, claim_id))
+        return original_claim(delegation_id, claim_id)
+
+    import tools.async_delegation as ad_mod
+    ad_mod.claim_completion_delivery = tracked_claim
+
+    try:
+        evt = {
+            "type": "completion",
+            "delegation_id": "",
+            "session_id": "raw-session-no-route",
+            "session_key": "raw-session-no-route",
+            "platform": "",
+            "chat_type": "",
+            "chat_id": "",
+        }
+        result = await runner._deliver_completion_notification("test output", evt)
+        assert result is None, f"expected None (no route), got {result}"
+        assert calls == [], f"claim_completion_delivery was called: {calls}"
+    finally:
+        ad_mod.claim_completion_delivery = original_claim
+
+
+# Need imports for the new tests
+import asyncio
+import concurrent.futures
+import threading
+from collections import OrderedDict
+from types import SimpleNamespace

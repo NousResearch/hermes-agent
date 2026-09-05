@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import type { Msg } from '../types.js'
 
-import { appendToolShelfMessage, canHoldToolShelf, isTodoDone, mergeToolShelfInto } from './liveProgress.js'
+import {
+  appendToolShelfMessage,
+  canHoldToolShelf,
+  compactToolTimeline,
+  isTodoDone,
+  mergeToolShelfInto
+} from './liveProgress.js'
 
 describe('isTodoDone', () => {
   it('only treats non-empty all-completed/cancelled lists as done', () => {
@@ -112,5 +118,21 @@ describe('appendToolShelfMessage', () => {
     )
 
     expect(merged).toHaveLength(3)
+  })
+})
+
+describe('compactToolTimeline', () => {
+  it('restores the compact tool shelf without mutating chronological source segments', () => {
+    const chronological: Msg[] = [
+      { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
+      { kind: 'trail', role: 'system', text: '', thinking: 'inspect result', tools: ['two ✓'] }
+    ]
+
+    expect(compactToolTimeline(chronological)).toEqual([
+      { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓', 'two ✓'] },
+      { kind: 'trail', role: 'system', text: '', thinking: 'inspect result' }
+    ])
+    expect(chronological[0]?.tools).toEqual(['one ✓'])
+    expect(chronological[1]?.tools).toEqual(['two ✓'])
   })
 })

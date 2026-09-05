@@ -776,6 +776,9 @@ DEFAULT_CONFIG = {
         # Stream reasoning live before the response; otherwise thinking models show only a spinner
         # for tens of seconds.
         "show_reasoning": True,
+        # Keep the compact thinking/tools panels by default. Set true in the TUI to retain each
+        # reasoning block beside the tool it led to.
+        "interleave_thinking": False,
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
         # is always full).
         "reasoning_full": False,

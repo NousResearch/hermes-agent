@@ -109,11 +109,16 @@ def message_agent_tool_schema() -> dict:
 
 
 def ensure_message_agent_tool(agent: Any) -> bool:
-    """Inject the ``message_agent`` schema into a Bot Chat agent's tool list (once per turn).
-    Idempotent and deterministic for the session's life (the gate is stable from the
-    first turn), so the tool list is byte-identical across turns — prompt-cache safe. Never raises."""
+    """Inject the ``message_agent`` schema into a routed Bot Mode session.
+    The shared frozen gate keeps the tool list byte-identical across turns."""
     try:
-        if not getattr(agent, "_bot_mode_protocol", True):
+        from tools.bot_mode_probe import bot_mode_session_state
+
+        if not bot_mode_session_state(agent)["session_kind"]:
+            if isinstance(getattr(agent, "tools", None), list):
+                agent.tools[:] = [t for t in agent.tools if t.get("function", {}).get("name") != MESSAGE_AGENT_TOOL_NAME]
+            if isinstance(getattr(agent, "valid_tool_names", None), set):
+                agent.valid_tool_names.discard(MESSAGE_AGENT_TOOL_NAME)
             return False
         tools = getattr(agent, "tools", None)
         if tools and any(
@@ -121,12 +126,6 @@ def ensure_message_agent_tool(agent: Any) -> bool:
             for t in tools
         ):
             return True
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
-
-        # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
-        # legacy protocol text gets an empty section but must still get the tool.
-        if _session_title(agent) != BOT_CHAT_TITLE or not is_bot_mode_managed(_agent_home(agent)):
-            return False
         if agent.tools is None:
             agent.tools = []
         agent.tools.append(message_agent_tool_schema())
@@ -147,10 +146,15 @@ def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
     return next((name for name in roster if name.lower() == want), None) if want else None
 
 
-def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
+def _err(
+    message: str, *, roster: list[str] | None = None, peers: list[str] | None = None
+) -> str:
     from tools.bot_failure_reasons import classify_agent_error
 
-    payload: dict[str, Any] = {"error": message, "reason": classify_agent_error(message)}
+    payload: dict[str, Any] = {
+        "error": message,
+        "reason": classify_agent_error(message),
+    }
     if roster is not None:
         payload["teammates"] = roster
     if peers is not None:
@@ -164,24 +168,31 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
-            is_bot_mode_managed,
+            _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
+            bot_mode_dispatch_authorized, bot_mode_session_state,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS
 
-        if _session_title(agent) != BOT_CHAT_TITLE:
-            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
-                        "This session is not one; do not retry.")
-        if not is_bot_mode_managed(home):
-            return _err("This install is not Bot-Mode-managed (no bot roster); "
-                        "message_agent is unavailable. Do not retry.")
+        state = bot_mode_session_state(agent)
+        if not state["session_kind"] or not bot_mode_dispatch_authorized(agent, home):
+            return _err(
+                "message_agent is not available in this session. It requires a Bot Mode session — a canonical "
+                "'Bot Chat' or a classified human messaging chat bound to a real profile. "
+                "This session is not one; do not retry."
+            )
     except Exception as exc:  # pragma: no cover — defensive
         return _err(f"Bot Mode gate check failed: {exc}")
 
     root, me = _hermes_root(Path(home)), _self_profile_name(Path(home))
     roster = [name for name, _dir in _roster(root)]
     peers = _peers(root)
-    teammates = [_handle(n) for n in roster if n != me]
+    try:
+        from tools.bot_mode_probe import allowed_local_profile_names
+
+        allowed_local = allowed_local_profile_names(home)
+    except Exception:
+        allowed_local = []
+    teammates = [_handle(n) for n in allowed_local]
 
     def _roster_err(msg: str) -> str:
         return _err(msg, roster=teammates, peers=peers)
@@ -193,7 +204,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
 
-    raw_target = str(target or "").strip().lstrip("@")
+    raw_target = str(target or "").strip().lstrip("@$")
     if not raw_target:
         return _roster_err("target is required.")
     content = f"Message from 🤖 {_handle(me)} (@{_handle(me)}): " + body
@@ -217,6 +228,9 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     if not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")
     resolved = _resolve_local_name(raw_target, roster) if is_local_shape else None
+    if resolved is not None and resolved != me and resolved not in allowed_local:
+        return _roster_err(f"'{raw_target}' is not callable from this profile: bot.disabled, "
+                           "unreadable metadata, or configured roster restriction.")
     if resolved is None or resolved == me:
         # Unknown locally, or same-name target on ANOTHER connection (this gateway's 'default'
         # messaging the cloud 'default'): every Desktop-connected gateway is reachable via the
@@ -480,7 +494,14 @@ def _delivery_main(args: list[str]) -> int:
 
 
 def _agent_home(agent: Any) -> str:
-    """The calling agent's OWN home (session-db derived), not ambient env."""
+    """The routed profile home: ContextVar first, shared DB as fallback."""
+    try:
+        from hermes_constants import get_hermes_home_override
+        override = get_hermes_home_override()
+        if override:
+            return override
+    except Exception:
+        pass
     with contextlib.suppress(Exception):
         db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
         if db_path:

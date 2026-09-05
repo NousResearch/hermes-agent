@@ -129,6 +129,59 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
+def test_telegram_user_session_gets_bot_mode_message_agent_guidance(
+    tmp_path, monkeypatch
+):
+    from tools import bot_mode_probe
+
+    home = tmp_path / ".hermes"
+    teammate = home / "profiles" / "researcher"
+    teammate.mkdir(parents=True)
+    (teammate / "profile.yaml").write_text(
+        "description: Research and fact checking\nbot:\n  enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    bot_mode_probe._reset_cache_for_tests()
+
+    agent = _make_agent(
+        platform="telegram",
+        _gateway_session_key="agent:main:telegram:dm:test",
+        _bot_mode_protocol=True,
+        _session_title_hint="Project discussion",
+    )
+    parts = _prompt_parts(agent)
+    prompt = "\n\n".join(parts.values())
+
+    assert "This session can use Bot Mode" in prompt
+    assert "message_agent directly" in prompt
+    # Telegram renders teammates with the inert $ sigil: @word would resolve
+    # to a real Telegram username in the bot's visible replies (#100758).
+    assert "`$researcher`" in prompt
+    assert "`@researcher`" not in prompt
+    assert "NEVER write @-handles" in prompt
+    assert "Capability epoch:" in prompt
+
+
+def test_ordinary_desktop_session_keeps_bot_mode_prompt_gate(tmp_path, monkeypatch):
+    from tools import bot_mode_probe
+
+    home = tmp_path / ".hermes"
+    (home / "profiles" / "researcher").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    bot_mode_probe._reset_cache_for_tests()
+
+    agent = _make_agent(
+        platform="desktop",
+        _bot_mode_protocol=True,
+        _session_title_hint="Ordinary desktop chat",
+    )
+    prompt = "\n\n".join(_prompt_parts(agent).values())
+
+    assert "This session can use Bot Mode" not in prompt
+    assert "Capability epoch:" not in prompt
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""
@@ -762,4 +815,3 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(agent)
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
-

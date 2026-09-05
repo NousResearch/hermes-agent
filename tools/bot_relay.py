@@ -371,9 +371,16 @@ def _hermes_cli() -> str:
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 
 
-def local_delivery_command(profile: str, query_file: str) -> list[str]:
-    """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
+def local_delivery_command(
+    profile: str, query_file: str, *, conversation_name: str = "Bot Chat",
+) -> list[str]:
+    """Deliver to canonical Bot Chat, or an explicitly isolated chain conversation."""
+    conversation_name = str(conversation_name or "").strip()
+    if not conversation_name:
+        raise ValueError("conversation_name cannot be empty")
+    turn_args = list(BOT_CHAT_TURN_ARGS)
+    turn_args[turn_args.index("-c") + 1] = conversation_name
+    return [_hermes_cli(), "-p", profile, *turn_args, "--query-file", query_file]
 
 
 # Two deliveries into the SAME profile must never run Bot Chat turns concurrently.

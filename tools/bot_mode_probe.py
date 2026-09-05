@@ -12,10 +12,15 @@ helpers shared by ``bot_mode_dm`` and ``bot_relay``.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
+from typing import Any
 
 _PROTOCOL_HEADING = "## Messaging other agents"
+_USER_PROTOCOL_HEADING = "## Bot Mode: messaging other agents"
+_user_surface_cached: dict[str, str] = {}
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # The only session title that receives the protocol section. Must match the
 # desktop plugin's createCanonicalChat title and the `-c "Bot Chat"` resume target.
@@ -23,6 +28,9 @@ BOT_CHAT_TITLE = "Bot Chat"
 
 _lock = threading.Lock()
 _cached: dict[str, str] = {}
+_session_state_lock = threading.Lock()
+_SESSION_STATE_CACHE_MAX = 1024
+_session_state_cache: dict[tuple[str, str, str], dict] = {}
 
 
 # ── shared path / roster helpers ─────────────────────────────────────────────
@@ -54,16 +62,117 @@ def _profile_name(home: Path) -> str:
     return home.name if home.parent.name == "profiles" else "default"
 
 
+def _bot_mode_config(root: Path) -> dict[str, Any] | None:
+    """Root declarative policy; missing is legacy, unreadable is denied."""
+    import yaml
+    from hermes_cli.config import InvalidUserConfigError
+    from hermes_cli.config_bot_mode import load_bot_mode_config
+
+    try:
+        return load_bot_mode_config(root)
+    except (OSError, UnicodeError, yaml.YAMLError, InvalidUserConfigError):
+        return None
+
+
+def _configured_targets(root: Path, me: str) -> set[str] | None:
+    """Absent roster is unrestricted; malformed or empty roster denies all."""
+    cfg = _bot_mode_config(root)
+    if cfg is None or cfg.get("enabled") is False:
+        return set()
+    if "roster" not in cfg:
+        return None
+    roster = cfg["roster"]
+    if not isinstance(roster, list):
+        return set()
+    targets: set[str] = set()
+    for row in roster:
+        if not isinstance(row, dict) or not isinstance(row.get("from"), str):
+            return set()
+        source = row["from"].strip()
+        if not _PROFILE_ID_RE.fullmatch(source):
+            return set()
+        raw_targets = row.get("to")
+        if isinstance(raw_targets, str):
+            raw_targets = [raw_targets]
+        if not isinstance(raw_targets, list) or any(
+            not isinstance(target, str) or not _PROFILE_ID_RE.fullmatch(target.strip())
+            for target in raw_targets
+        ):
+            return set()
+        if ("default" if source == "hermes" else source) == me:
+            targets.update("default" if t.strip() == "hermes" else t.strip() for t in raw_targets)
+    return targets
+
+
+def _is_bot_enabled(profile_dir: Path) -> bool:
+    from hermes_cli.profile_bot_policy import read_bot_enabled
+
+    return read_bot_enabled(profile_dir)
+
+
+def allowed_local_profile_names(home: str | os.PathLike | None = None) -> list[str]:
+    """Live intersection of real profiles, bot.enabled and declarative roster."""
+    try:
+        resolved = _resolve_home(home)
+        root, me = _hermes_root(resolved), _profile_name(resolved)
+        allowed = _configured_targets(root, me)
+        return [
+            name for name, directory in _roster(root)
+            if name != me and _is_bot_enabled(directory)
+            and (allowed is None or name in allowed)
+        ]
+    except Exception:
+        return []
+
+
 def _handle(name: str) -> str:
     # The mention middleware aliases the default profile as @hermes.
     return "hermes" if name == "default" else name
 
 
+def _absolute_without_symlink_resolution(path: Path) -> Path:
+    """Absolute lexical path, preserving ``profiles/<name>`` containment."""
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _is_roster_profile_dir(root: Path, candidate: Path) -> bool:
+    """Validate a live profile-roster directory and reject symlink escapes."""
+    try:
+        root = _absolute_without_symlink_resolution(root)
+        candidate = _absolute_without_symlink_resolution(candidate)
+        if candidate == root:
+            return root.is_dir()
+        profiles = root / "profiles"
+        if (
+            candidate.parent != profiles
+            or not _PROFILE_ID_RE.fullmatch(candidate.name)
+            or candidate.is_symlink()
+            or profiles.is_symlink()
+            or not candidate.is_dir()
+            or (profiles / ".deleted" / candidate.name).exists()
+        ):
+            return False
+        profiles_real = profiles.resolve(strict=True)
+        return candidate.resolve(strict=True) == profiles_real / candidate.name
+    except (OSError, RuntimeError):
+        return False
+
+
 def _roster(root: Path) -> list[tuple[str, Path]]:
-    """(name, dir) for the default profile + every named profile, sorted."""
-    profiles = root / "profiles"
-    named = _swallow(lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if c.is_dir()] if profiles.is_dir() else [], [])
-    return [("default", root), *named]
+    """Valid default + named profile directories, with symlinks denied."""
+    root = _absolute_without_symlink_resolution(root)
+    entries: list[tuple[str, Path]] = []
+    if _is_roster_profile_dir(root, root):
+        entries.append(("default", root))
+    try:
+        profiles = root / "profiles"
+        if profiles.is_dir() and not profiles.is_symlink():
+            for child in sorted(profiles.iterdir()):
+                if child.name != "default" and _is_roster_profile_dir(root, child):
+                    entries.append((child.name, child))
+    except OSError:
+        pass
+    return entries
 
 
 def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
@@ -95,7 +204,10 @@ def _is_bot_managed(profile_dir: Path) -> bool:
 
 
 def _any_managed(root: Path) -> bool:
-    return any(_is_bot_managed(d) for _n, d in _roster(root))
+    cfg = _bot_mode_config(root)
+    if cfg is None or cfg.get("enabled") is False:
+        return False
+    return cfg.get("enabled") is True or any(_is_bot_managed(d) for _n, d in _roster(root))
 
 
 def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
@@ -103,6 +215,168 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     ``message_agent`` injection gate — deliberately independent of the protocol section's
     emptiness: a SOUL.md carrying the legacy protocol gets an empty section but still gets the tool."""
     return _swallow(lambda: _any_managed(_hermes_root(_resolve_home(home))), False)
+
+
+def is_bot_mode_roster_profile(home: str | os.PathLike | None = None) -> bool:
+    """True when ``home`` is a real profile in a participating install's roster."""
+    try:
+        candidate = _absolute_without_symlink_resolution(_resolve_home(home))
+        root = _hermes_root(candidate)
+        return _is_roster_profile_dir(root, candidate)
+    except Exception:
+        return False
+
+
+_CANONICAL_BOT_CHAT_SESSION_SOURCES = frozenset({"", "cli", "tui", "desktop"})
+_MESSAGING_GATEWAY_SESSION_SOURCES = frozenset({
+    "telegram", "discord", "whatsapp", "whatsapp_cloud", "slack", "signal",
+    "mattermost", "matrix", "email", "sms", "dingtalk", "feishu", "wecom",
+    "wecom_callback", "weixin", "bluebubbles", "qqbot", "yuanbao",
+    "buzz", "google_chat", "irc", "line", "photon", "simplex", "teams",
+})
+
+
+def _session_source(agent: object) -> str:
+    try:
+        from gateway.session_context import resolve_session_source
+        return str(resolve_session_source(getattr(agent, "platform", None))).strip().lower()
+    except Exception:
+        return "__untrusted__"
+
+
+def is_messaging_gateway_session(agent: object) -> bool:
+    """True only for classified human messaging-gateway conversations."""
+    try:
+        return _session_source(agent) in _MESSAGING_GATEWAY_SESSION_SOURCES
+    except Exception:
+        return False
+
+
+def _agent_home(agent: object) -> str:
+    """The routed profile home: ContextVar first, shared DB as fallback."""
+    try:
+        from hermes_constants import get_hermes_home_override
+        override = get_hermes_home_override()
+        if override:
+            return override
+    except Exception:
+        pass
+    try:
+        db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
+        if db_path:
+            return str(Path(db_path).parent)
+    except Exception:
+        pass
+    return _default_home()
+
+
+def _session_title(agent: object) -> str:
+    title = str(getattr(agent, "_session_title_hint", "") or "").strip()
+    if title:
+        return title
+    try:
+        sdb = getattr(agent, "_session_db", None)
+        sid = getattr(agent, "session_id", None)
+        if sdb and sid:
+            return str(sdb.get_session_title(sid) or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def bot_mode_dispatch_authorized(agent: object, home: str | os.PathLike | None = None) -> bool:
+    """Live, fail-closed authorization for a ``message_agent`` delivery."""
+    try:
+        resolved = _absolute_without_symlink_resolution(
+            Path(home if home is not None else _agent_home(agent))
+        )
+        return _live_session_state(agent, resolved)["session_kind"] is not None
+    except Exception:
+        return False
+
+
+def _internal_or_finite_session(agent: object) -> bool:
+    from agent.delegation_context import is_delegated_child_process_context
+    from gateway.session_context import get_session_env
+    from utils import is_truthy_value
+
+    return (
+        _session_title(agent).startswith("Bot Chain ")
+        or (_session_title(agent).startswith("Group: ") and _session_source(agent) not in _MESSAGING_GATEWAY_SESSION_SOURCES)
+        or (_session_source(agent) == "telegram" and not getattr(agent, "_gateway_session_key", None))
+        or is_truthy_value(get_session_env("HERMES_SINGLE_QUERY_SESSION", ""))
+        or is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
+        or is_delegated_child_process_context()
+    )
+
+
+def _live_session_state(agent: object, home: Path) -> dict:
+    source, title = _session_source(agent), _session_title(agent)
+    managed = is_bot_mode_managed(home)
+    state = {"managed": managed, "session_kind": None}
+    if not getattr(agent, "_bot_mode_protocol", True) or _internal_or_finite_session(agent):
+        return state
+    if not is_bot_mode_roster_profile(home) or not _is_bot_enabled(home):
+        return state
+    if managed and title == BOT_CHAT_TITLE and source in _CANONICAL_BOT_CHAT_SESSION_SOURCES:
+        state["session_kind"] = "bot_chat"
+    elif managed and source in _MESSAGING_GATEWAY_SESSION_SOURCES:
+        state["session_kind"] = "gateway"
+    elif title != BOT_CHAT_TITLE and (source == "cli" or source == "telegram" and getattr(agent, "_gateway_session_key", None)):
+        if allowed_local_profile_names(home):
+            state["session_kind"] = "user"
+    return state
+
+
+def bot_mode_session_state(agent: object, home: str | os.PathLike | None = None) -> dict:
+    """Return the frozen Bot Mode classification shared by prompt, schema and dispatch."""
+    cache_key = None
+    source = ""
+    try:
+        if not getattr(agent, "_bot_mode_protocol", True) or _internal_or_finite_session(agent):
+            return {"managed": False, "session_kind": None}
+        resolved = str(_absolute_without_symlink_resolution(
+            Path(home if home is not None else _agent_home(agent))
+        ))
+        session_id = str(getattr(agent, "session_id", "") or "")
+        source = _session_source(agent)
+        identity = (resolved, session_id, source)
+        if home is None:
+            agent_cached = getattr(agent, "_bot_mode_session_state", None)
+            if (
+                isinstance(agent_cached, tuple)
+                and len(agent_cached) == 2
+                and isinstance(agent_cached[1], dict)
+                and "session_kind" in agent_cached[1]
+                and agent_cached[0] == identity
+            ):
+                return agent_cached[1]
+
+        if home is None and session_id:
+            cache_key = identity
+            with _session_state_lock:
+                cached = _session_state_cache.pop(cache_key, None)
+                if cached is not None:
+                    _session_state_cache[cache_key] = cached
+            if cached is not None:
+                setattr(agent, "_bot_mode_session_state", (identity, cached))
+                return cached
+
+        state = _live_session_state(agent, Path(resolved))
+    except Exception:
+        state = {"managed": False, "session_kind": None}
+
+    if home is None:
+        if cache_key is not None:
+            with _session_state_lock:
+                state = _session_state_cache.setdefault(cache_key, state)
+                while len(_session_state_cache) > max(1, int(_SESSION_STATE_CACHE_MAX)):
+                    _session_state_cache.pop(next(iter(_session_state_cache)), None)
+        try:
+            setattr(agent, "_bot_mode_session_state", (identity, state))
+        except Exception:
+            pass
+    return state
 
 
 def _soul_has_protocol(profile_dir: Path) -> bool:
@@ -152,7 +426,7 @@ def _remote_roster(root: Path) -> list[dict]:
     return _swallow(_read, [])
 
 
-def _remote_paragraph(root: Path) -> str:
+def _remote_paragraph(root: Path, *, telegram: bool = False) -> str:
     """Addendum for agents on OTHER connected machines; only when the relay roster is non-empty."""
     roster = _remote_roster(root)
     if not roster:
@@ -160,7 +434,7 @@ def _remote_paragraph(root: Path) -> str:
     from tools.bot_relay import remote_target_forms
 
     lines = [
-        _bullet(f"@{form}", f"on {row['connection_label'] or row['connection_id']}", row["title"], row["description"])
+        _bullet(f"{_sigil(telegram)}{form}", f"on {row['connection_label'] or row['connection_id']}", row["title"], row["description"])
         for row, form in zip(roster, remote_target_forms(roster))
     ]
     return (
@@ -195,20 +469,22 @@ def _build_section(home: Path) -> str:
     if _soul_has_protocol(home if me == "default" else root / "profiles" / me):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    allowed = allowed_local_profile_names(home)
+    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name in allowed]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
         f"{_PROTOCOL_HEADING}\n"
         "This install runs Bot Mode: each Hermes profile is an agent teammate with "
         'one canonical "Bot Chat" conversation, and you have the `message_agent` '
-        "tool to DM any of them. It is FIRE-AND-FORGET: it delivers your message "
-        "with your attribution prefixed automatically and returns an acknowledgement "
-        "immediately — it never returns the reply. Send it, finish your turn, and "
-        "the reply arrives later as a background-process completion notification "
-        "that wakes you; relay it to the user then, attributed to that agent. "
-        "COMPOSE every message yourself — say what YOU need from that agent; never "
-        "forward the user's words verbatim, and never reveal private 1:1 chat "
+        "tool to DM any of them — from this messaging chat (Discord, Telegram, "
+        "Slack, ...) or from your Bot Chat. It is FIRE-AND-FORGET: it delivers your "
+        "message with your attribution prefixed automatically and returns an "
+        "acknowledgement immediately — it never returns the reply. Send it, finish "
+        "your turn, and the reply arrives later as a background-process completion "
+        "notification that wakes you; relay it to the user then, attributed to that "
+        "agent. COMPOSE every message yourself — say what YOU need from that agent; "
+        "never forward the user's words verbatim, and never reveal private 1:1 chat "
         "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "
         "a handoff: pick the right teammate from the roster below, message them "
         "with message_agent, and report back naming which agent replied. Message "
@@ -221,9 +497,7 @@ def _build_section(home: Path) -> str:
         "acknowledgements.\n"
         f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
-        f"{roster_block}"
-        + _remote_paragraph(root)
-        + _peer_paragraph(root)
+        f"{roster_block}" + _remote_paragraph(root) + _peer_paragraph(root)
     )
 
 
@@ -263,7 +537,10 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
         from hermes_cli.config import load_config_readonly
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
 
         token = set_hermes_home_override(str(resolved))
         try:
@@ -275,7 +552,11 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["disabled_skills"] = sorted(str(s).lower() for s in (skills_cfg.get("disabled") or []))
         surface["enabled_toolsets"] = sorted(str(t) for t in (tools_cfg.get("enabled_toolsets") or []))
         mcp = cfg.get("mcp_servers")
-        surface["mcp"] = json.dumps(mcp, sort_keys=True, default=str) if isinstance(mcp, dict) else ""
+        surface["mcp"] = (
+            json.dumps(mcp, sort_keys=True, default=str)
+            if isinstance(mcp, dict)
+            else ""
+        )
     except Exception:
         pass
 
@@ -293,6 +574,9 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     surface["skills"] = _swallow(_skills, [])
     try:
         roster = _roster(root)
+        surface["bot_mode_config"] = _bot_mode_config(root)
+        surface["callable_roster"] = allowed_local_profile_names(resolved)
+        surface["sender_enabled"] = _is_bot_enabled(resolved)
         surface["roster"] = sorted(n for n, d in roster if _is_bot_managed(d))
         # Roles are part of the messaging surface: renaming a bot or editing a
         # description must refresh the roster block teammates pick recipients from.
@@ -301,7 +585,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["roster"] = []
     # Protocol-text version salt: bumping it refreshes every eternal Bot Chat
     # prompt ONCE so existing bots adopt a new protocol section.
-    surface["protocol_version"] = 2
+    surface["protocol_version"] = 4
     # Peer gateways and the Desktop relay roster are part of the messaging
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
@@ -317,6 +601,17 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
 def epoch_line(home: str | os.PathLike | None = None) -> str:
     """The epoch stamp appended to a Bot Chat prompt."""
     return f"{_EPOCH_PREFIX}{capability_fingerprint(home)}"
+
+
+def stored_prompt_has_bot_mode_protocol(stored_prompt: str) -> bool:
+    """True only for prompts stamped with the generated Bot Mode protocol."""
+    try:
+        prompt = stored_prompt or ""
+        return _EPOCH_PREFIX in prompt and any(
+            heading in prompt for heading in (_PROTOCOL_HEADING, _USER_PROTOCOL_HEADING)
+        )
+    except Exception:
+        return False
 
 
 def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
@@ -344,6 +639,143 @@ def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.Path
     return _swallow(lambda: bool(get_bot_mode_protocol_section(home)), False)
 
 
+def _soul_has_user_protocol(profile_dir: Path) -> bool:
+    """True only for the CLI/Telegram Bot Mode protocol introduced by core."""
+    try:
+        soul = profile_dir / "SOUL.md"
+        return soul.is_file() and _USER_PROTOCOL_HEADING in soul.read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except Exception:
+        return False
+
+
+def _sigil(telegram: bool) -> str:
+    """Mention sigil for user-visible teammate handles.
+
+    ``@`` is the canonical Bot Mode form. On Telegram it is unsafe: Telegram
+    resolves ``@word`` as a real username (possibly a stranger's/scam one) and
+    unsolicited mentions can get the bot restricted, so Telegram sessions get
+    the inert ``$`` alias instead.
+    """
+    return "$" if telegram else "@"
+
+
+def _user_surface_roster_lines(root: Path, me: str, *, telegram: bool = False) -> list[str]:
+    """Enabled Bot Mode teammates exposed to CLI/Telegram user sessions."""
+    lines = []
+    sigil = _sigil(telegram)
+    allowed = allowed_local_profile_names(root if me == "default" else root / "profiles" / me)
+    for name, profile_dir in _roster(root):
+        if name not in allowed:
+            continue
+        role = _profile_role(profile_dir)
+        handle = _handle(name)
+        lines.append(f"- `{sigil}{handle}`" + (f" — {role}" if role else ""))
+    return lines
+
+
+def _build_user_surface_section(home: Path, platform: str = "") -> str:
+    """Bot Mode protocol for interactive CLI and Telegram user chats."""
+    telegram = str(platform or "").strip().lower() == "telegram"
+    root = _hermes_root(home)
+    me = _profile_name(home)
+    my_dir = home if me == "default" else root / "profiles" / me
+    # The legacy plugin used the generic ``Messaging other agents`` heading
+    # for Bot Chat shellout instructions. That text is not sufficient for the
+    # CLI/Telegram natural-language ``message_agent`` contract, so dedupe only
+    # against this surface's own explicit Bot Mode heading.
+    if _soul_has_user_protocol(my_dir):
+        return ""
+
+    roster_lines = _user_surface_roster_lines(root, me, telegram=telegram)
+    if not roster_lines:
+        return ""
+    handle = _handle(me)
+    sigil = _sigil(telegram)
+    roster_block = "\n".join(roster_lines)
+    telegram_rule = (
+        " This chat is on Telegram: NEVER write @-handles in your visible "
+        "replies. Telegram resolves @word as a REAL username — it may belong "
+        "to a stranger or a scam account, and unsolicited mentions can get "
+        "the bot restricted. Refer to teammates as $name in text (e.g. "
+        "`$hermes`); the message_agent tool accepts the same $name form as "
+        "its target."
+        if telegram
+        else ""
+    )
+    return (
+        f"{_USER_PROTOCOL_HEADING}\n"
+        "This session can use Bot Mode: named Hermes profiles are agent "
+        "teammates, and you have the `message_agent` tool to contact them. "
+        "It is FIRE-AND-FORGET: it delivers your message with your attribution "
+        "prefixed automatically and returns an acknowledgement immediately — "
+        "it never returns the reply. Send it, finish your turn, and the reply "
+        "arrives later as a background-process completion notification that "
+        "wakes you; relay it to the user then, attributed to that agent. "
+        "COMPOSE every message yourself — say what YOU need from that agent; "
+        "never forward the user's words verbatim, and never reveal private "
+        "1:1 chat content. When the user says \"ask <name>\", \"tell <name> "
+        "...\", or otherwise asks to involve a named teammate, call "
+        "message_agent directly; do not ask the user to retype special syntax. "
+        "Message ONE clearly relevant teammate; don't fan out to several "
+        "unless the user explicitly asked."
+        f"{telegram_rule}\n"
+        f"You are `{sigil}{handle}`. Your Bot Mode teammates (live roster; roles "
+        "from their profiles):\n"
+        f"{roster_block}"
+        + _remote_paragraph(root, telegram=telegram)
+        + _peer_paragraph(root)
+    )
+
+
+def get_bot_mode_user_protocol_section(
+    home: str | os.PathLike | None = None,
+    *,
+    force_refresh: bool = False,
+    platform: str = "",
+) -> str:
+    """Cached Bot Mode protocol for interactive CLI/Telegram sessions.
+
+    ``platform`` selects the mention sigil: Telegram sessions get the inert
+    ``$`` form because Telegram resolves ``@word`` as a real username. The
+    cache is keyed per surface variant so a gateway process serving both CLI
+    and Telegram sessions never mixes them.
+    """
+    resolved = str(home) if home else (
+        os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    )
+    telegram = str(platform or "").strip().lower() == "telegram"
+    cache_key = f"{resolved}\ttelegram" if telegram else resolved
+    with _lock:
+        if force_refresh or cache_key not in _user_surface_cached:
+            try:
+                _user_surface_cached[cache_key] = _build_user_surface_section(
+                    Path(resolved), platform=platform
+                )
+            except Exception:
+                _user_surface_cached[cache_key] = ""
+        return _user_surface_cached[cache_key]
+
+
+def stored_bot_mode_user_prompt_needs_upgrade(
+    stored_prompt: str,
+    home: str | os.PathLike | None = None,
+) -> bool:
+    """True when an eligible CLI/Telegram prompt predates Bot Mode messaging."""
+    try:
+        if _EPOCH_PREFIX in (stored_prompt or ""):
+            return False
+        if _USER_PROTOCOL_HEADING in (stored_prompt or ""):
+            return False
+        return bool(get_bot_mode_user_protocol_section(home))
+    except Exception:
+        return False
+
+
 def _reset_cache_for_tests() -> None:
     with _lock:
         _cached.clear()
+        _user_surface_cached.clear()
+    with _session_state_lock:
+        _session_state_cache.clear()

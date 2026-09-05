@@ -229,6 +229,31 @@ def _durable_session_exists(db, session_id: str) -> bool:
         return True
 
 
+def _stale_bot_chat_tip(agent, db, session_id, history):
+    """Detect externally appended Bot Chat history AFTER acquiring the turn lease."""
+    canonical = getattr(agent, "_session_title_hint", "") == "Bot Chat"
+    try:
+        row = db.get_session(session_id) or {}
+        canonical = canonical or row.get("title") == "Bot Chat"
+        if not canonical:
+            return None
+        tip = session_id
+        if callable(getattr(type(db), "get_compression_tip", None)):
+            tip = db.get_compression_tip(session_id) or session_id
+        latest = db.get_session(tip) or {}
+        persisted = sum(
+            1 for message in (history or [])
+            if isinstance(message, dict) and message.get("_db_persisted")
+        )
+        if tip != session_id or int(latest.get("message_count") or 0) != persisted:
+            return tip
+    except Exception:
+        # A canonical cache we cannot validate must be reloaded, not trusted.
+        if canonical:
+            return session_id
+    return None
+
+
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
@@ -281,11 +306,11 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        if waited:
+        canonical_tip = _stale_bot_chat_tip(agent, db, session_id, conversation_history)
+        if waited or canonical_tip:
             agent._emit_status("Session is free; loading the latest transcript...")
-            # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
-            latest_session_id = db.resolve_resume_session_id(session_id)
+            # Matching immediate turns retain their in-memory prompt-cache prefix.
+            latest_session_id = canonical_tip or db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id
                 task_context["session_id"] = latest_session_id

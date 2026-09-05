@@ -13,6 +13,7 @@ handling, like other coding agents.
 
 import sys
 import types
+from unittest.mock import Mock
 
 import pytest
 
@@ -96,6 +97,19 @@ class TestSeededQueryMessage:
         msg = cli_mod._SeededQueryMessage("hi", imgs)
         assert msg.images == imgs
         assert msg.images is not imgs
+
+    def test_seeded_bot_chain_reaches_chat_router(self, cli_mod):
+        cli = object.__new__(cli_mod.HermesCLI)
+        cli._try_run_bot_chain = Mock(return_value=True)
+        cli.chat = Mock()
+        message = cli_mod._SeededQueryMessage("$test1 $test2 finish this")
+
+        cli._dispatch_chat_turn(message, seeded_query=True)
+
+        cli._try_run_bot_chain.assert_called_once_with(
+            "$test1 $test2 finish this", images=None
+        )
+        cli.chat.assert_not_called()
 
 
 class TestChatParserOneshotFlag:

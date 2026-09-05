@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import json
+
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -589,3 +591,101 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
+
+
+def test_gateway_runtime_reads_snapshot():
+    """The status/usage snapshot reader delegates to the canonical resume parser.
+
+    ``_gateway_runtime`` takes a session ROW and returns the persisted live-routing
+    snapshot via ``SessionDB.session_gateway_runtime`` — the same parser ``/model``
+    resume uses — so the two surfaces cannot drift (#75535).
+    """
+    from gateway.slash_commands_status import _gateway_runtime
+
+    runtime = {"provider": "custom:freellmapi", "base_url": "https://x/v1"}
+    # model_config as a JSON string (the raw column shape) and as a decoded dict.
+    assert _gateway_runtime({"model_config": json.dumps({"gateway_runtime": runtime})}) == runtime
+    assert _gateway_runtime({"model_config": {"gateway_runtime": runtime}}) == runtime
+    # Absent / malformed / wrong-typed model_config all yield an empty dict.
+    assert _gateway_runtime(None) == {}
+    assert _gateway_runtime({}) == {}
+    assert _gateway_runtime({"model_config": ""}) == {}
+    assert _gateway_runtime({"model_config": "not json"}) == {}
+    assert _gateway_runtime({"model_config": {"gateway_runtime": "nope"}}) == {}
+    # Canonical fallbacks the private parser lacked: top-level route keys and a
+    # None-filtered snapshot are now honored for status/usage too.
+    assert _gateway_runtime({"model_config": {"provider": "openrouter", "base_url": None}}) == {"provider": "openrouter"}
+    assert _gateway_runtime(
+        {"model_config": {"gateway_runtime": {"provider": "p", "base_url": "u", "api_mode": None}}}
+    ) == {"provider": "p", "base_url": "u"}
+
+
+@pytest.mark.asyncio
+async def test_status_command_uses_active_fallback_route_over_config_default():
+    """When a session runs on a fallback provider, billing_provider is often
+    still empty; /status must surface the persisted live route rather than
+    falling through to the configured default (#75535)."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    # No live/cached agent and no billing_provider yet — only the persisted
+    # gateway_runtime snapshot records the active fallback route.
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "model": "custom/free-model",
+        "billing_provider": None,
+        "model_config": json.dumps(
+            {
+                "gateway_runtime": {
+                    "provider": "custom:freellmapi",
+                    "base_url": "https://freellmapi.example/v1",
+                    "fallback_active": True,
+                }
+            }
+        ),
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "(custom:freellmapi)" in result
+    # It must NOT be left provider-less nor show a stale configured default.
+    assert "`custom/free-model`" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_falls_back_to_configured_default_without_snapshot():
+    """Negative path: with no live agent, no billing_provider, and no
+    gateway_runtime snapshot, /status must fall through to the configured
+    default provider — never crash, and never invent a fallback route (#75535)."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-2",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "model": "cfg/model",
+        "billing_provider": None,
+        "model_config": json.dumps({"model": "cfg/model"}),  # no gateway_runtime, no top-level route
+    }
+
+    with patch("gateway.run._load_gateway_config",
+               return_value={"model": {"provider": "configured-default", "default": "cfg/model"}}):
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert "(configured-default)" in result
+    assert "`cfg/model`" in result

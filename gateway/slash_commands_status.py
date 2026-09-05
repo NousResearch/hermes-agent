@@ -36,6 +36,27 @@ def _int_value(value: Any) -> int:
         return 0
 
 
+def _gateway_runtime(session_row: Any) -> dict:
+    """Persisted live-routing snapshot for a session row, via the canonical parser.
+
+    The gateway records the route actually serving a session — including any
+    active fallback provider — into ``model_config.gateway_runtime`` on every
+    provider switch (``provider``/``base_url``/``api_mode``/``fallback_active``).
+    ``billing_provider`` can lag that route (no accounting has landed yet, or an
+    upstream proxy omits streaming usage), so status/usage read this snapshot to
+    reflect the live provider rather than the configured default (#75535).
+
+    Delegates to ``SessionDB.session_gateway_runtime`` — the same parser used by
+    ``/model`` resume — so the two surfaces cannot drift: it decodes the
+    ``model_config`` column (JSON string or dict), tolerates malformed input,
+    None-filters the snapshot, and adds the top-level/``billing_provider``
+    fallbacks. Always returns a dict, empty when absent or unparseable.
+    """
+    from hermes_state import SessionDB
+
+    return SessionDB.session_gateway_runtime(session_row if isinstance(session_row, dict) else None)
+
+
 def _n(obj, attr: str):
     return getattr(obj, attr, 0) or 0
 
@@ -100,6 +121,12 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
     model_name, provider_name = next((r for r in routes if r[0] and r[1]), row_route)
+    # Before the configured default, fall back to the persisted live-routing
+    # snapshot: when a session runs on a fallback provider, billing_provider is
+    # often still empty, so /status would otherwise show the configured default
+    # instead of the provider actually serving the session (#75535).
+    if not provider_name:
+        provider_name = _clean_str(_gateway_runtime(session_row).get("provider"))
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
     if not model_name or not provider_name or not context_total:
@@ -519,8 +546,13 @@ class GatewayStatusCommandsMixin:
         provider, base_url, api_key = (
             getattr(agent, k, None) if agent else None for k in ("provider", "base_url", "api_key")
         )
-        if not provider and getattr(self, "_session_db", None) is not None:
-            provider, base_url = await self._persisted_billing_route(source)
+        # Fill gaps only: a live agent may carry the provider while missing just
+        # the base_url (fallback routes often persist base_url before billing
+        # lands), so widen the guard but never clobber a resolved value (#75535).
+        if (not provider or not base_url) and getattr(self, "_session_db", None) is not None:
+            p_provider, p_base_url = await self._persisted_billing_route(source)
+            provider = provider or p_provider
+            base_url = base_url or p_base_url
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
@@ -589,7 +621,15 @@ class GatewayStatusCommandsMixin:
             return persisted, route if isinstance(route, dict) else {}
         persisted, dominant = await _quiet(_rows, ({}, {}))
         row = dominant if dominant.get("billing_provider") else persisted
-        return row.get("billing_provider"), row.get("billing_base_url")
+        provider = row.get("billing_provider")
+        base_url = row.get("billing_base_url")
+        # A fallback provider persists its live route into gateway_runtime before
+        # any billing metadata lands; use it to fill either gap (#75535).
+        if not provider or not base_url:
+            runtime = _gateway_runtime(persisted)
+            provider = provider or runtime.get("provider")
+            base_url = base_url or runtime.get("base_url")
+        return provider, base_url
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights [N | --days N] [--source S] -- usage insights and analytics."""

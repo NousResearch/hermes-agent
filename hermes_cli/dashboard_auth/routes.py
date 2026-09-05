@@ -17,6 +17,7 @@ allowlists the public ones.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -349,6 +350,64 @@ def _reset_password_rate_limit() -> None:
         _pw_attempts.clear()
 
 
+# --- Native refresh throttle -------------------------------------------------
+# Same sliding-window shape as the password limiter above, but keyed by
+# SHA-256 of the presented refresh token instead of client IP: one looping
+# client with a dead token must not be able to storm the Portal token endpoint
+# (#98338: 3,338 rejected refreshes at 3 req/s for 17h45m), while other devices
+# behind the same NAT IP keep their own budget. The raw token never leaves this
+# module as a dict key — only its hash. Best-effort and process-local (resets
+# on restart), same as the password limiter.
+_REFRESH_RATE_MAX_ATTEMPTS = 10
+_REFRESH_RATE_WINDOW_SEC = 60.0
+# Distinct-credential buckets are never evicted by the sliding window (only their
+# timestamps expire), so cap the table: beyond this, purge expired buckets, then
+# drop oldest-inserted. Best-effort bounds memory under token-rotation abuse.
+_REFRESH_RATE_MAX_BUCKETS = 4096
+_refresh_attempts: Dict[str, Deque[float]] = defaultdict(deque)
+_refresh_attempts_lock = threading.Lock()
+
+
+def _refresh_token_bucket(refresh_token: str) -> str:
+    """Bucket key for a presented refresh token: hex SHA-256, never the token."""
+    return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+def _prune_refresh_buckets(cutoff: float) -> None:
+    """Drop expired buckets first, then oldest-inserted, until back under the cap.
+    Caller must hold ``_refresh_attempts_lock``."""
+    for key in [k for k, bucket in _refresh_attempts.items()
+                if not bucket or bucket[-1] < cutoff]:
+        del _refresh_attempts[key]
+        if len(_refresh_attempts) <= _REFRESH_RATE_MAX_BUCKETS:
+            return
+    while len(_refresh_attempts) > _REFRESH_RATE_MAX_BUCKETS:
+        _refresh_attempts.pop(next(iter(_refresh_attempts)))
+
+
+def _native_refresh_rate_limited(refresh_token: str) -> tuple[bool, float]:
+    """``(limited, retry_after_sec)``; records the attempt when allowed. An empty
+    token shares one bucket — fail-safe toward throttling."""
+    now = time.monotonic()
+    cutoff = now - _REFRESH_RATE_WINDOW_SEC
+    with _refresh_attempts_lock:
+        if len(_refresh_attempts) > _REFRESH_RATE_MAX_BUCKETS:
+            _prune_refresh_buckets(cutoff)
+        bucket = _refresh_attempts[_refresh_token_bucket(refresh_token)]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _REFRESH_RATE_MAX_ATTEMPTS:
+            return True, max(1.0, _REFRESH_RATE_WINDOW_SEC - (now - bucket[0]))
+        bucket.append(now)
+        return False, 0.0
+
+
+def _reset_native_refresh_rate_limit() -> None:
+    """Test-only: clear all native-refresh rate-limit buckets."""
+    with _refresh_attempts_lock:
+        _refresh_attempts.clear()
+
+
 class _PasswordLoginBody(BaseModel):
     provider: str
     username: str
@@ -484,9 +543,22 @@ class _NativeRefreshBody(BaseModel):
 async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     """Rotate a desktop-held refresh token (mirrors the gate's ``_attempt_refresh``): every
     provider rejecting the RT -> 401 ``session_expired`` (desktop re-logs); none rotated and one
-    unreachable -> 503."""
+    unreachable -> 503. Attempts are throttled per credential-hash (429 +
+    ``Retry-After`` once over budget) so one looping client cannot storm the
+    upstream token endpoint."""
     if not body.refresh_token:
         raise _http(400, "refresh_token required")
+    limited, retry_after = _native_refresh_rate_limited(body.refresh_token)
+    if limited:
+        _audit(request, AuditEvent.REFRESH_FAILURE, reason="rate_limited")
+        return JSONResponse(
+            {
+                "error": "rate_limited",
+                "detail": "Too many refresh attempts. Try again shortly.",
+            },
+            status_code=429,
+            headers={"Retry-After": str(int(retry_after))},
+        )
     try:
         session = scan_session_providers(
             body.provider, lambda p: p.refresh_session(refresh_token=body.refresh_token),

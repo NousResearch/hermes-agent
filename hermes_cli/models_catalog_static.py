@@ -165,7 +165,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "openai-codex": _codex_curated_models(),
     "xai-oauth": list(_XAI_MODELS),
     "copilot-acp": ["copilot-acp"],
-    "copilot": _OPENAI_CHAT_MODELS + [
+    "copilot": ["gpt-6-astra"] + _OPENAI_CHAT_MODELS + [
         "claude-sonnet-4.6", "claude-sonnet-5", "claude-sonnet-4", "claude-sonnet-4.5", "claude-haiku-4.5",
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro",
     ],

@@ -76,6 +76,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope } from './scope'
+import { statusStackSessionKey } from './status-session-key'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { SuggestionPills } from './suggestion-pills'
@@ -175,10 +176,11 @@ export function ChatBar({
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
-  // Status items (subagents, background processes) are keyed by the RUNTIME
-  // session id — gateway events and process.list both speak that id. Only the
-  // queue uses the stored-session fallback key (prompts can queue pre-resume).
-  const statusSessionId = sessionId ?? null
+  // Status items (subagents, background processes) key off the RUNTIME session
+  // id — gateway events and a live process.list both speak that one — falling
+  // back to the durable conversation key when nothing is bound, so a stored
+  // messaging chat still discovers background work started on the gateway side.
+  const statusSessionId = statusStackSessionKey(sessionId, queueSessionKey)
 
   const composerTourMarker = useTourMarker('composer')
 

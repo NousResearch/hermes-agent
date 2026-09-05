@@ -5,6 +5,7 @@ returns the JSON result. Lazy ``tools.terminal_tool`` imports keep the origin's
 monkeypatch points authoritative.
 """
 
+import contextlib
 import json
 import logging
 from typing import Any, List, Optional
@@ -60,10 +61,6 @@ _ROUTING_FIELDS = (
     ("watcher_user_name", "HERMES_SESSION_USER_NAME"),
     ("watcher_thread_id", "HERMES_SESSION_THREAD_ID"),
     ("watcher_message_id", "HERMES_SESSION_MESSAGE_ID"),
-    # The spawning conversation's session-db id lets the gateway's completion
-    # pre-flight drop the notification if the user closed this session (/new)
-    # before the process finished, instead of injecting it into the NEW one.
-    ("parent_session_id", "HERMES_SESSION_ID"),
 )
 
 
@@ -72,6 +69,23 @@ def _looks_like_homebrew_ci_poller(command: str) -> bool:
     has_jq = " jq " in command or "| jq" in command or "$(jq" in command
     # `gh pr checks` doesn't emit JSON, so piping it to jq is confused intent.
     return "statusCheckRollup" in command or (has_gh and has_jq)
+
+
+def _stamp_session_lineage(proc_session) -> None:
+    """Record the spawning conversation's durable session-db id on the process.
+
+    Identity, not routing, so it is stamped for EVERY background job — including a
+    plain ``terminal(background=true)`` with no notification flags. Two things read
+    it: the gateway's completion pre-flight, which drops a notification whose session
+    the user closed at a ``/new`` boundary rather than injecting it into the new one;
+    and cross-surface ownership, which is how Hermes Desktop recognises a job started
+    from Telegram as belonging to the conversation on screen. Stamping it only while
+    configuring an async notification left every silent job unattributable.
+    """
+    with contextlib.suppress(Exception):
+        from gateway.session_context import get_session_env
+
+        proc_session.parent_session_id = get_session_env("HERMES_SESSION_ID", "") or ""
 
 
 def _stamp_gateway_routing(proc_session, get_session_env) -> None:
@@ -121,7 +135,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
         "session_id": proc_session.id, "check_interval": 5, "session_key": session_key,
         "platform": proc_session.watcher_platform,
         **{attr.removeprefix("watcher_"): getattr(proc_session, attr)
-           for attr, _ in _ROUTING_FIELDS[:-1]},
+           for attr, _ in _ROUTING_FIELDS},
         "notify_on_complete": True, "parent_session_id": proc_session.parent_session_id,
     })
 
@@ -151,6 +165,9 @@ def spawn_background_process(
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty,
         )
+        # Before any notification decision: identity belongs to every job, not just
+        # the ones that will report back.
+        _stamp_session_lineage(proc_session)
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
         if approval_note:
@@ -180,6 +197,13 @@ def spawn_background_process(
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
+        # The registry checkpointed this session when it registered it — before the
+        # lineage, routing and notification stamps above, all of which are checkpoint
+        # fields. A quiet process never emits output, so nothing would rewrite that
+        # stale row for its whole life and no other surface could attribute it.
+        # Suppressed: backends and test doubles need not offer a checkpoint at all.
+        with contextlib.suppress(Exception):
+            process_registry.publish_checkpoint()
         return json.dumps(result_data, ensure_ascii=False)
     except Exception as e:
         return json.dumps({

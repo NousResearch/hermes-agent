@@ -160,7 +160,7 @@ export async function reconcileTileTranscripts({
     const signatureKey = tileTranscriptSignatureKey(tile)
 
     try {
-      const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+      const latest = await getLatestSessionMessages(storedSessionId, profileScope, true)
 
       if (
         requestId !== requestSequenceRef.current ||

@@ -16425,6 +16425,32 @@ async function dispatchRegistryApiRequest(
   routeProfile = request?.profile,
   requestProfile = request?.profile
 ) {
+  // Passive tile reconcile must never cold-start a pooled backend (#103375):
+  // fail fast when no warm entry exists instead of spawning a child and
+  // starving the pool. Interactive opens (passive:false) keep the normal spawn.
+  if (request?.passive) {
+    const poolKey = backendScopeKey(registryConnectionId, routeProfile)
+    const entry = backendPool.get(poolKey)
+
+    if (!entry) {
+      throw new Error(`Passive read: no warm backend for "${poolKey}"`)
+    }
+
+    const connection = await entry.connectionPromise
+    const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
+
+    const response = await fetchJsonForBackend(connection, requestPath, {
+      method: request?.method,
+      body: request?.body,
+      upload: request?.upload,
+      timeoutMs: resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    })
+
+    return (request?.method || 'GET').toUpperCase() === 'GET'
+      ? tagRegistrySessionResponse(requestPath, response, registryConnectionId)
+      : response
+  }
+
   // Claim-guarded (#90812): every registry-scoped REST call funnels through
   // here, so it can race a renderer's own WS reconnect dial for the same
   // (connectionId, profile) scope; coalescing avoids bootstrapping a second
@@ -16516,7 +16542,26 @@ async function handleHermesApiRequest(request) {
   let response
 
   try {
-    const connection = await ensureBackend(routeProfile)
+    // Passive reads (tile reconciles) must not spawn pool backends (#103375).
+    // If the target is pooled and has no warm entry, fail fast without
+    // consuming a slot; interactive reads keep the normal ensureBackend path.
+    // Primary route (backendProfile === null) always has a backend (startHermes).
+    const isPassivePooled = Boolean(request?.passive && routeProfile && apiRoute.backendProfile)
+
+    let connection
+
+    if (isPassivePooled) {
+      const key = String(routeProfile).trim()
+      const entry = backendPool.get(key) || backendPool.get(backendScopeKey(null, key))
+
+      if (!entry) {
+        throw new Error(`Passive read: no warm backend for profile "${key}"`)
+      }
+
+      connection = await entry.connectionPromise
+    } else {
+      connection = await ensureBackend(routeProfile)
+    }
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const url = `${connection.baseUrl}${apiRoute.requestPath}`

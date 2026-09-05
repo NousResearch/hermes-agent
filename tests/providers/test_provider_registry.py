@@ -1,6 +1,6 @@
 import pytest
 
-from providers.base import ProviderProfile
+from providers import ProviderProfile
 import providers
 
 

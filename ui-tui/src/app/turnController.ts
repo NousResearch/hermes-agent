@@ -66,14 +66,10 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
-      const id = String(row.id ?? '').trim()
-      const parent = String(row.parent ?? '').trim()
-
       return {
         content: String(row.content ?? '').trim(),
-        id,
-        status,
-        ...(parent && parent !== id ? { parent } : {})
+        id: String(row.id ?? '').trim(),
+        status
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))
@@ -297,7 +293,7 @@ class TurnController {
       tools: [],
       turnTrail: []
     })
-    patchUiState({ busy: false, compacting: false })
+    patchUiState({ busy: false })
     resetFlowOverlays()
   }
 
@@ -1040,7 +1036,6 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
-        delegationId: p.delegation_id,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
@@ -1072,7 +1067,6 @@ class TurnController {
         ...base,
         apiCalls: p.api_calls ?? base.apiCalls,
         costUsd: p.cost_usd ?? base.costUsd,
-        delegationId: p.delegation_id ?? base.delegationId,
         depth: p.depth ?? base.depth,
         filesRead: p.files_read ?? base.filesRead,
         filesWritten: p.files_written ?? base.filesWritten,

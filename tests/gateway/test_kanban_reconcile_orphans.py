@@ -27,8 +27,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -47,7 +45,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def conn(kanban_home):
-    with kbc.connect() as c:
+    with kb.connect() as c:
         yield c
 
 
@@ -68,7 +66,7 @@ class TestReconcileOrphanedRunning:
         tid = kb.create_task(conn, title="zombie", assignee="w")
         _orphan_running(conn, tid)
 
-        reconciled = kbd.reconcile_orphaned_running(conn)
+        reconciled = kb.reconcile_orphaned_running(conn)
 
         assert reconciled == [tid]
         row = conn.execute(
@@ -87,7 +85,7 @@ class TestReconcileOrphanedRunning:
         tid = kb.create_task(conn, title="half-claim", assignee="w")
         _orphan_running(conn, tid, claim_lock=f"{host}:dead")
 
-        reconciled = kbd.reconcile_orphaned_running(conn)
+        reconciled = kb.reconcile_orphaned_running(conn)
 
         assert reconciled == [tid]
         assert conn.execute(
@@ -98,7 +96,7 @@ class TestReconcileOrphanedRunning:
         tid = kb.create_task(conn, title="zombie", assignee="w")
         _orphan_running(conn, tid)
 
-        kbd.reconcile_orphaned_running(conn)
+        kb.reconcile_orphaned_running(conn)
 
         events = kb.list_events(conn, tid)
         recon = [e for e in events if e.kind == "reconciled"]
@@ -112,7 +110,7 @@ class TestReconcileOrphanedRunning:
         tid = kb.create_task(conn, title="healthy", assignee="w")
         kb.claim_task(conn, tid)
 
-        assert kbd.reconcile_orphaned_running(conn) == []
+        assert kb.reconcile_orphaned_running(conn) == []
         assert conn.execute(
             "SELECT status FROM tasks WHERE id=?", (tid,)
         ).fetchone()["status"] == "running"
@@ -124,7 +122,7 @@ class TestReconcileOrphanedRunning:
         sleeper = subprocess.Popen(["sleep", "30"])
         try:
             _orphan_running(conn, tid, worker_pid=sleeper.pid)
-            assert kbd.reconcile_orphaned_running(conn) == []
+            assert kb.reconcile_orphaned_running(conn) == []
             assert conn.execute(
                 "SELECT status FROM tasks WHERE id=?", (tid,)
             ).fetchone()["status"] == "running"
@@ -139,7 +137,7 @@ class TestReconcileOrphanedRunning:
         dead.wait()
         _orphan_running(conn, tid, worker_pid=dead.pid)
 
-        assert kbd.reconcile_orphaned_running(conn) == [tid]
+        assert kb.reconcile_orphaned_running(conn) == [tid]
 
     def test_non_running_statuses_ignored(self, conn):
         for status in ("todo", "ready", "blocked", "done"):
@@ -149,7 +147,7 @@ class TestReconcileOrphanedRunning:
                 "claim_expires=NULL WHERE id=?", (status, tid),
             )
         conn.commit()
-        assert kbd.reconcile_orphaned_running(conn) == []
+        assert kb.reconcile_orphaned_running(conn) == []
 
 
 class TestDispatchOnceReconciles:
@@ -157,7 +155,7 @@ class TestDispatchOnceReconciles:
         tid = kb.create_task(conn, title="zombie", assignee="w")
         _orphan_running(conn, tid)
 
-        result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (True, ""),
+        result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: (True, ""),
                                   dry_run=True)
 
         assert tid in result.reconciled_orphans
@@ -171,7 +169,7 @@ class TestDispatchOnceReconciles:
         tid = kb.create_task(conn, title="zombie", assignee="w")
         _orphan_running(conn, tid)
 
-        result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: (True, ""),
+        result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: (True, ""),
                                   dry_run=True, reconcile_orphans=False)
 
         assert result.reconciled_orphans == []

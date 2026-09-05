@@ -1,5 +1,4 @@
 import type {
-  OfficialSkillInfo,
   SkillHubPreview,
   SkillHubScanResult,
   SkillHubSearchResponse,
@@ -96,16 +95,6 @@ export function editLearningNode(
 
 const HUB_REQUEST_TIMEOUT_MS = 45_000
 
-/** The full built-in optional-skills catalog (local checkout scan — fast),
- *  with per-profile installed flags. Feeds the Capabilities Skills list's
- *  "available to install" rows. */
-export function getOfficialSkills(profile?: ProfileScope): Promise<{ skills: OfficialSkillInfo[] }> {
-  return window.hermesDesktop.api<{ skills: OfficialSkillInfo[] }>({
-    ...capabilityScoped(profile),
-    path: '/api/skills/hub/official'
-  })
-}
-
 export function getSkillHubSources(profile?: null | string): Promise<SkillHubSourcesResponse> {
   return hermesApi<SkillHubSourcesResponse>({
     ...profileScoped(profile),
@@ -129,9 +118,9 @@ export function searchSkillsHub(
   })
 }
 
-export function previewSkillHub(identifier: string, profile?: ProfileScope): Promise<SkillHubPreview> {
-  return window.hermesDesktop.api<SkillHubPreview>({
-    ...capabilityScoped(profile),
+export function previewSkillHub(identifier: string, profile?: null | string): Promise<SkillHubPreview> {
+  return hermesApi<SkillHubPreview>({
+    ...profileScoped(profile),
     path: `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
     timeoutMs: HUB_REQUEST_TIMEOUT_MS
   })

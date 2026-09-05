@@ -7,7 +7,6 @@ import { memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useStat
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
-import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
@@ -32,9 +31,8 @@ import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $profiles } from '@/store/profile'
 import {
-  $connection,
   $contextSuggestions,
   $freshDraftReady,
   $gatewayState,
@@ -42,14 +40,13 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
-  getSessionOwnerHint,
   resolveComposerSessionKey,
   sessionMatchesStoredId,
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
 import { $focusedStoredSessionId, sessionTileDelegate } from '@/store/session-states'
-import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
+import { $transcriptTailBySessionId } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
@@ -57,7 +54,7 @@ import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
-import { ChatSwapOverlay, ChatSyncBadge } from './chat-swap-overlay'
+import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
@@ -72,20 +69,17 @@ import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
-import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
+import { threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
   mergeOlderTranscriptPage,
   transcriptBackfillAvailable
 } from './transcript-backfill'
-import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
+import { advanceTranscriptWindow, type TranscriptWindowState } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
-  modelOptionsOwnerConnectionId?: string
-  modelOptionsProfile?: string
   modelMenuContent?: React.ReactNode
-  requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
@@ -247,37 +241,22 @@ function ChatRuntimeBoundary({
 
   const [windowPages, setWindowPages] = useState(1)
   const [windowSessionKey, setWindowSessionKey] = useState(runtimeId)
-  // Per-session sticky-cut continuity (advanceSessionTranscriptWindow). A ref,
-  // not state: it is derived from `messages` and must never trigger a render.
-  // Keyed by runtime id so a warm switch back to a session whose transcript
-  // is unchanged reuses the previous windowed slice BY REFERENCE — no window
-  // re-index, no runtime-repository rebuild, no per-row re-parse/re-highlight
-  // (#95595). Bounded internally (oldest session evicted).
-  const windowStateRef = useRef(new Map<string, SessionWindowMemo>())
-  // The memo below intentionally skips `runtimeId` in its deps (a switch
-  // always changes the messages array too, which re-runs it), so the current
-  // value must come from a ref rather than the stale render closure.
-  const runtimeIdRef = useRef(runtimeId)
-  runtimeIdRef.current = runtimeId
+  // Sticky-cut continuity across flushes (advanceTranscriptWindow). A ref, not
+  // state: it is derived from `messages` and must never trigger a render.
+  const windowStateRef = useRef<null | TranscriptWindowState>(null)
 
   // Reset the window on session swap during RENDER, so a large expand from the
-  // previous chat can't leak into the next one's first paint (#55191). The
-  // per-session map above keeps each session's own cut; only the page count
-  // resets on a switch.
+  // previous chat can't leak into the next one's first paint (#55191).
   if (windowSessionKey !== runtimeId) {
     setWindowSessionKey(runtimeId)
     setWindowPages(1)
+    windowStateRef.current = null
   }
 
   const { messages: windowedMessages, windowed } = useMemo(() => {
-    const next = advanceSessionTranscriptWindow(
-      windowStateRef.current,
-      // Draft state has no runtime id yet; a single shared slot is fine there
-      // (mirrors the old single-slot behaviour for the no-runtime case).
-      runtimeIdRef.current ?? '',
-      messages,
-      windowPages
-    )
+    const next = advanceTranscriptWindow(windowStateRef.current, messages, windowPages)
+
+    windowStateRef.current = next
 
     return next.window
   }, [messages, windowPages])
@@ -285,23 +264,10 @@ function ChatRuntimeBoundary({
   const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
 
   const storedId = useStore(view.$storedId)
-  const connection = useStore($connection)
-  const activeProfile = useStore($activeGatewayProfile)
   // Subscribed (not read imperatively) so the "Show earlier" affordance
   // appears/retires as tail hydrations and backfill pages record their state.
   const transcriptTailStates = useStore($transcriptTailBySessionId)
-  const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
-
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
-    : undefined
-
-  const tailProfile = ownerRoute
-    ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
-    : undefined
-
-  const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
-  const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
+  const restBackfillAvailable = Boolean(storedId && transcriptTailStates[storedId]?.possiblyTruncated)
 
   const expandWindow = useCallback(() => {
     // The store window still holds older messages: growing pages is enough.
@@ -310,15 +276,9 @@ function ChatRuntimeBoundary({
     // PREPEND it to the session store before growing, so the grown window has
     // something older to show. Fire-and-forget: the prepend lands through the
     // session-state write path and re-renders this boundary.
-    if (
-      !windowStateRef.current.get(runtimeIdRef.current ?? '')?.state.window.windowed &&
-      runtimeId &&
-      storedId &&
-      transcriptBackfillAvailable(storedId, tailProfile)
-    ) {
+    if (!windowStateRef.current?.window.windowed && runtimeId && storedId && transcriptBackfillAvailable(storedId)) {
       void backfillOlderTranscriptPage({
         storedSessionId: storedId,
-        profile: tailProfile,
         // Stale-response guard: a session switch remounts/re-keys this view;
         // checking the live atoms (not captured props) discards a page that
         // resolves after the user moved on — same pattern as isCurrentResume.
@@ -334,7 +294,7 @@ function ChatRuntimeBoundary({
     }
 
     setWindowPages(pages => pages + 1)
-  }, [runtimeId, storedId, tailProfile, view])
+  }, [runtimeId, storedId, view])
 
   const olderAvailable = windowed || restBackfillAvailable
 
@@ -376,10 +336,7 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
 const ChatViewContent = memo(function ChatViewContent({
   className,
   gateway,
-  modelOptionsOwnerConnectionId,
-  modelOptionsProfile,
   modelMenuContent,
-  requestModelOptionsForOwner,
   onToggleSelectedPin,
   onDeleteSelectedSession,
   onCancel,
@@ -441,7 +398,6 @@ const ChatViewContent = memo(function ChatViewContent({
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
-  const hydrationSyncProfile = useStore($hydrationSyncProfile)
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -524,11 +480,10 @@ const ChatViewContent = memo(function ChatViewContent({
   })
 
   // Session is still loading if the route references a session we haven't
-  // resumed yet. Brand-new routed drafts are empty on purpose once a runtime
-  // is bound. A session the list already knows has history must keep the
-  // loader up until a display-authoritative transcript arrives — including
-  // the unproven warm-cache hold, where the runtime is bound but messages
-  // are still suppressed.
+  // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
+  // session exists — even if it has zero messages (a brand-new routed
+  // session). The flicker where `busy` flips true briefly during hydrate
+  // is handled by `threadLoadingState`'s last-visible-user gate.
   //
   // resumeExhausted: the bounded auto-retry in use-route-resume gave up on this
   // routed session (gateway RPC + REST fallback failed through every attempt).
@@ -537,19 +492,8 @@ const ChatViewContent = memo(function ChatViewContent({
   // session can't blank the current one.
   const resumeExhausted = isPrimary && isRoutedSessionView && resumeExhaustedSessionId === routedSessionId
 
-  const routedHasHistory = Boolean(
-    routedSessionId &&
-    sessions.some(session => sessionMatchesStoredId(session, routedSessionId) && sessionShouldHaveTranscript(session))
-  )
-
-  const loadingSession = routedSessionIsLoading({
-    activeSessionId,
-    knownHistory: routedHasHistory,
-    messagesEmpty,
-    resumeExhausted,
-    routeSessionMismatch,
-    routedSessionView: isRoutedSessionView
-  })
+  const loadingSession =
+    !resumeExhausted && isRoutedSessionView && (routeSessionMismatch || (messagesEmpty && !activeSessionId))
 
   const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
   // Hide the composer in the exhausted error state too: there's no live runtime
@@ -559,18 +503,8 @@ const ChatViewContent = memo(function ChatViewContent({
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: modelOptionsQueryKey(
-      modelOptionsProfile || activeGatewayProfile,
-      activeSessionId,
-      modelOptionsOwnerConnectionId
-    ),
-    queryFn: () =>
-      requestModelOptions({
-        gateway: gateway || undefined,
-        profile: modelOptionsProfile || activeGatewayProfile,
-        request: requestModelOptionsForOwner,
-        sessionId: activeSessionId
-      }),
+    queryKey: modelOptionsQueryKey(activeGatewayProfile, activeSessionId),
+    queryFn: () => requestModelOptions({ gateway: gateway || undefined, sessionId: activeSessionId }),
     enabled: gatewayOpen
   })
 
@@ -713,7 +647,7 @@ const ChatViewContent = memo(function ChatViewContent({
               </ErrorState>
             </div>
           )}
-          {showChatBar && <ScrollToBottomButton sessionId={activeSessionId} />}
+          {showChatBar && <ScrollToBottomButton />}
           {/* Vibe hearts rise from the composer only when no pet is out (else
               they play on the pet). Fired by the core `reaction` event. */}
           {!petPresent && (
@@ -730,9 +664,6 @@ const ChatViewContent = memo(function ChatViewContent({
               target; the link overlay shows only for the center region. */}
           <ChatDropOverlay kind={overlayKind} />
           <ChatSwapOverlay profile={gatewaySwapTarget} />
-          {/* Paint-first wake (#89843): transcript is live, profile gate still
-              settling in the background — subtle badge, not an overlay. */}
-          {isPrimary && !gatewaySwapTarget && <ChatSyncBadge profile={hydrationSyncProfile} />}
         </div>
         {/* Composer renders OUTSIDE the contain:[layout paint] wrapper above:
             that wrapper is a containing block for — and clips — position:fixed

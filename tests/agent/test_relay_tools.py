@@ -78,10 +78,7 @@ def test_request_rewrite_reaches_authorized_callback_once(relay_turn):
 
     async def wrap_execution(_name, args, next_call):
         result = await next_call(args)
-        return relay.ToolExecutionInterceptOutcome(
-            {**result.result, "wrapped": True},
-            annotation={"audit": "annotation-canary"},
-        )
+        return relay.ToolExecutionInterceptOutcome({**result, "wrapped": True})
 
     relay.intercepts.register_tool_request(
         "hermes-test-tool-request", 1, False, rewrite_request
@@ -105,33 +102,10 @@ def test_request_rewrite_reaches_authorized_callback_once(relay_turn):
     assert observed_args == {"path": "/approved/path"}
     assert isinstance(result, str)
     assert json.loads(result) == {"ok": True, "wrapped": True}
-    assert "annotation-canary" not in result
 
 
-def test_tool_call_id_uses_canonical_relay_argument(relay_turn, monkeypatch):
-    relay = relay_turn
-    captured = {}
 
-    async def capture_execute(_name, args, callback, **kwargs):
-        captured.update(kwargs)
-        result = callback(args)
-        assert isinstance(result, relay.ToolExecutionResult)
-        return result
 
-    monkeypatch.setattr(relay.tools, "execute", capture_execute)
-    original_result = {"ok": True}
-
-    result, observed_args = relay_tools.execute(
-        "write_file",
-        {"path": "/tmp/output"},
-        lambda _args: original_result,
-        session_id="session-1",
-        tool_call_id="call-42",
-    )
-
-    assert result is original_result
-    assert observed_args == {"path": "/tmp/output"}
-    assert captured["tool_call_id"] == "call-42"
 
 
 def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypatch):
@@ -161,3 +135,8 @@ def test_tool_error_is_preserved_from_relay_wrapper_suffix(relay_turn, monkeypat
         )
 
     assert caught.value is tool_error
+
+
+
+
+

@@ -117,15 +117,15 @@ class TestSpawnAsyncDiagnostic:
 
 
 # ---------------------------------------------------------------------------
-# parse_systemd_duration_to_us
+# _parse_systemd_duration_to_us
 # ---------------------------------------------------------------------------
 
 class TestParseSystemdDuration:
     def test_seconds(self):
-        assert sf.parse_systemd_duration_to_us("90s") == 90 * 1_000_000
+        assert sf._parse_systemd_duration_to_us("90s") == 90 * 1_000_000
 
     def test_minutes(self):
-        assert sf.parse_systemd_duration_to_us("3min") == 180 * 1_000_000
+        assert sf._parse_systemd_duration_to_us("3min") == 180 * 1_000_000
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from tools import approval as approval_mod
-from tools import approval_context
 
 
 def _capture_hook(captured):
@@ -29,7 +28,7 @@ def _capture_hook(captured):
 class TestApprovalHookSessionId:
     def test_session_id_forwarded_when_bound(self):
         captured = []
-        tokens = approval_context.set_current_observability_context(
+        tokens = approval_mod.set_current_observability_context(
             turn_id="turn-1",
             tool_call_id="call-1",
             session_id="20260810_test_session",
@@ -39,14 +38,14 @@ class TestApprovalHookSessionId:
                 "hermes_cli.lifecycle.invoke_hook",
                 side_effect=_capture_hook(captured),
             ):
-                approval_context._fire_approval_hook(
+                approval_mod._fire_approval_hook(
                     "pre_approval_request",
                     command="rm -rf /etc/hosts",
                     description="dangerous",
                     surface="gateway",
                 )
         finally:
-            approval_context.reset_current_observability_context(tokens)
+            approval_mod.reset_current_observability_context(tokens)
 
         assert captured, "hook must dispatch"
         _, kwargs = captured[0]
@@ -56,7 +55,7 @@ class TestApprovalHookSessionId:
 
     def test_explicit_session_id_not_clobbered(self):
         captured = []
-        tokens = approval_context.set_current_observability_context(
+        tokens = approval_mod.set_current_observability_context(
             session_id="context-session",
         )
         try:
@@ -64,13 +63,13 @@ class TestApprovalHookSessionId:
                 "hermes_cli.lifecycle.invoke_hook",
                 side_effect=_capture_hook(captured),
             ):
-                approval_context._fire_approval_hook(
+                approval_mod._fire_approval_hook(
                     "post_approval_response",
                     session_id="explicit-session",
                     choice="approved",
                 )
         finally:
-            approval_context.reset_current_observability_context(tokens)
+            approval_mod.reset_current_observability_context(tokens)
 
         _, kwargs = captured[0]
         assert kwargs.get("session_id") == "explicit-session"
@@ -81,7 +80,7 @@ class TestApprovalHookSessionId:
             "hermes_cli.lifecycle.invoke_hook",
             side_effect=_capture_hook(captured),
         ):
-            approval_context._fire_approval_hook(
+            approval_mod._fire_approval_hook(
                 "pre_approval_request",
                 command="x",
                 description="y",

@@ -21,8 +21,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -41,7 +39,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def conn(kanban_home):
-    with kbc.connect() as c:
+    with kb.connect() as c:
         yield c
 
 
@@ -55,7 +53,7 @@ def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     dead = subprocess.Popen(["true"])
     dead.wait()
-    kbd._set_worker_pid(conn, tid, dead.pid)
+    kb._set_worker_pid(conn, tid, dead.pid)
     old = conn.execute(
         "SELECT claim_lock, worker_pid FROM tasks WHERE id=?", (tid,)
     ).fetchone()
@@ -70,7 +68,7 @@ def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:B")
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
-        kbd._set_worker_pid(conn, tid, sleeper.pid)
+        kb._set_worker_pid(conn, tid, sleeper.pid)
 
         # The stale reset for worker A — same shape as the guarded UPDATE in
         # detect_crashed_workers — must reject (rowcount 0) because B owns it.
@@ -100,16 +98,16 @@ def test_genuine_crash_still_reclaims(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     dead = subprocess.Popen(["true"])
     dead.wait()
-    kbd._set_worker_pid(conn, tid, dead.pid)
+    kb._set_worker_pid(conn, tid, dead.pid)
     # Rewind started_at so the launch grace window doesn't skip the check.
     conn.execute("UPDATE tasks SET started_at = started_at - 9999 WHERE id=?", (tid,))
     conn.execute(
         "UPDATE task_runs SET started_at = started_at - 9999 WHERE task_id=?", (tid,)
     )
     conn.commit()
-    kbd._record_worker_exit(dead.pid, 1 << 8)  # nonzero exit → crash
+    kb._record_worker_exit(dead.pid, 1 << 8)  # nonzero exit → crash
 
-    crashed = kbd.detect_crashed_workers(conn)
+    crashed = kb.detect_crashed_workers(conn)
     assert tid in crashed
     final = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
     assert final["status"] in ("ready", "blocked", "todo")

@@ -14,7 +14,6 @@ const buildUiState = (): UiState => ({
   busy: false,
   busyInputMode: 'queue',
   compact: false,
-  compacting: false,
   destructiveSlashConfirm: true,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
@@ -33,7 +32,6 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',
-  statusBarFields: null,
   streaming: true,
   timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like

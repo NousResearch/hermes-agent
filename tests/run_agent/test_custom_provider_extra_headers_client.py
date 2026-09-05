@@ -26,7 +26,7 @@ _PROXY_CONFIG = {
 }
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("run_agent.OpenAI")
 def test_custom_provider_extra_headers_applied_at_construction(mock_openai):
     mock_openai.return_value = MagicMock()
     with patch("hermes_cli.config.load_config", return_value=_PROXY_CONFIG):

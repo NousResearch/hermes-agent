@@ -19,14 +19,8 @@ export const MEDIA_PROTOCOL = 'hermes-media'
 type MediaProtocolMode = 'remote' | 'stream'
 
 interface MediaProtocolTarget {
-  connectionId?: string
   filePath: string
   mode: MediaProtocolMode
-  profile?: string
-}
-
-export interface MediaRemoteScope {
-  connectionId?: string
   profile?: string
 }
 
@@ -35,7 +29,6 @@ export interface MediaRemoteConnection {
   baseUrl: string
   mode?: 'local' | 'remote'
   token?: null | string
-  sharedRemote?: boolean
 }
 
 type MediaRequestMethod = 'GET' | 'HEAD'
@@ -46,7 +39,7 @@ export interface MediaProtocolDependencies {
   fetchRemote: (url: string, headers: Headers, method: MediaRequestMethod) => Promise<Response>
   fetchRemoteWithCookies: (url: string, headers: Headers, method: MediaRequestMethod) => Promise<Response>
   resolveLocalFile: (filePath: string) => Promise<string>
-  resolveRemoteConnection: (scope: MediaRemoteScope) => Promise<MediaRemoteConnection>
+  resolveRemoteConnection: (profile?: string) => Promise<MediaRemoteConnection>
 }
 
 function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
@@ -63,10 +56,9 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
     throw new Error('Missing media path')
   }
 
-  const connectionId = url.searchParams.get('connectionId')?.trim() || undefined
   const profile = url.searchParams.get('profile')?.trim() || undefined
 
-  return { connectionId, filePath, mode, profile }
+  return { filePath, mode, profile }
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {
@@ -89,7 +81,7 @@ export function mediaRequestHeaders(source: Headers): Headers {
   return forwarded
 }
 
-export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?: string): string {
+export function remoteMediaEndpoint(baseUrl: string, filePath: string): string {
   const normalizedBase = baseUrl.replace(/\/+$/, '')
   const url = new URL(`${normalizedBase}/api/files/stream`)
 
@@ -98,10 +90,6 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
   }
 
   url.searchParams.set('path', filePath)
-
-  if (profile) {
-    url.searchParams.set('profile', profile)
-  }
 
   return url.toString()
 }
@@ -145,20 +133,13 @@ export function createMediaProtocolHandler(dependencies: MediaProtocolDependenci
     }
 
     try {
-      const connection = await dependencies.resolveRemoteConnection({
-        connectionId: target.connectionId,
-        profile: target.profile
-      })
+      const connection = await dependencies.resolveRemoteConnection(target.profile)
 
       if (connection.mode !== 'remote') {
         return new Response('Remote media backend unavailable', { status: 404 })
       }
 
-      const endpoint = remoteMediaEndpoint(
-        connection.baseUrl,
-        target.filePath,
-        connection.sharedRemote ? target.profile : undefined
-      )
+      const endpoint = remoteMediaEndpoint(connection.baseUrl, target.filePath)
 
       if (connection.authMode === 'oauth') {
         const bearer = await dependencies.ensureRemoteBearer(connection.baseUrl)

@@ -311,9 +311,6 @@ function toolName(message: SessionMessage): string {
 }
 
 function isArtifactProducerTool(name: string): boolean {
-  // `bfl_flux3_*` tools were removed from the core toolset, but sessions
-  // recorded while they existed still carry their tool messages — keep
-  // matching so those artifacts stay visible in history.
   return ARTIFACT_PRODUCER_TOOL_RE.test(name) || name.startsWith('bfl_flux3_')
 }
 

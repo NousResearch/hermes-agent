@@ -53,7 +53,7 @@ class TestCleanupFailedWorktreeAdd:
         return wt
 
     def test_sweeps_dir_admin_entry_and_branch(self, repo):
-        from hermes_cli.worktree_ops import _cleanup_failed_worktree_add
+        from cli import _cleanup_failed_worktree_add
 
         wt = self._simulate_timed_out_add(repo)
         admin = repo / ".git" / "worktrees" / "hermes-dead00"
@@ -68,7 +68,7 @@ class TestCleanupFailedWorktreeAdd:
 
     def test_retry_succeeds_after_cleanup(self, repo):
         """The whole point: the same worktree name is creatable again."""
-        from hermes_cli.worktree_ops import _cleanup_failed_worktree_add
+        from cli import _cleanup_failed_worktree_add
 
         wt = self._simulate_timed_out_add(repo)
         _cleanup_failed_worktree_add(str(repo), wt, "hermes/hermes-dead00")
@@ -80,7 +80,7 @@ class TestCleanupFailedWorktreeAdd:
 
     def test_noop_when_nothing_exists(self, repo):
         """Fail-soft on an error path where git never created anything."""
-        from hermes_cli.worktree_ops import _cleanup_failed_worktree_add
+        from cli import _cleanup_failed_worktree_add
 
         _cleanup_failed_worktree_add(
             str(repo), repo / ".worktrees" / "never-existed", "hermes/never-existed"
@@ -111,7 +111,6 @@ class TestMaintainPackHealth:
 
     def test_repacks_at_threshold(self, repo, monkeypatch):
         import cli
-        from hermes_cli import worktree_ops
 
         made = self._make_packs(repo, 6)
         # Behavior contract, not a snapshot: different git builds consolidate
@@ -120,7 +119,7 @@ class TestMaintainPackHealth:
         # strictly more packs than the threshold we set — so the maintenance
         # pass has something real to consolidate.
         threshold = 2
-        monkeypatch.setattr(worktree_ops, "_PACK_SPRAWL_THRESHOLD", threshold)
+        monkeypatch.setattr(cli, "_PACK_SPRAWL_THRESHOLD", threshold)
         assert made > threshold, f"fixture failed to produce sprawl (made={made})"
 
         cli._maintain_pack_health(str(repo))
@@ -131,10 +130,9 @@ class TestMaintainPackHealth:
 
     def test_noop_below_threshold(self, repo, monkeypatch):
         import cli
-        from hermes_cli import worktree_ops
 
         made = self._make_packs(repo, 2)
-        monkeypatch.setattr(worktree_ops, "_PACK_SPRAWL_THRESHOLD", 50)
+        monkeypatch.setattr(cli, "_PACK_SPRAWL_THRESHOLD", 50)
 
         cli._maintain_pack_health(str(repo))
 

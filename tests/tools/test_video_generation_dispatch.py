@@ -97,16 +97,11 @@ class TestUnifiedDispatch:
 
 
     def test_upscale_in_schema_and_forwarded(self):
-        """`upscale` is advertised per-capability by the dynamic builder
-        (#95681 diet — static schema no longer carries it) and forwarded
-        to providers when set, omitted (not None) when unset."""
-        from tools.video_generation_tool import (
-            VIDEO_GENERATE_SCHEMA,
-            _build_dynamic_video_schema,
-        )
-        # Static placeholder: capability args live in the dynamic override.
+        """`upscale` is an agent-facing param, forwarded to providers when
+        set and omitted (not None) when unset."""
+        from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
         props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-        assert "upscale" not in props
+        assert props["upscale"]["type"] == "boolean"
 
         provider = _RecordingProvider()
         video_gen_registry.register_provider(provider)

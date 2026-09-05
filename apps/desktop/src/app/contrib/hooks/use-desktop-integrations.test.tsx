@@ -80,8 +80,6 @@ describe('useDesktopIntegrations', () => {
     locationPathname = '/',
     profileReady = false,
     resumeExhaustedSessionId = null as string | null,
-    // null = config record still loading (the hook takes undefined; null dodges the destructuring default).
-    resumeLastSession = true as boolean | null,
     routedSessionId = null as string | null,
     sessions = [] as readonly SessionInfo[]
   } = {}) {
@@ -91,7 +89,6 @@ describe('useDesktopIntegrations', () => {
         locationPathname,
         profileReady,
         resumeExhaustedSessionId,
-        resumeLastSession,
         routedSessionId,
         sessions
       }: {
@@ -99,7 +96,6 @@ describe('useDesktopIntegrations', () => {
         locationPathname: string
         profileReady: boolean
         resumeExhaustedSessionId: string | null
-        resumeLastSession: boolean | null
         routedSessionId: string | null
         sessions: readonly SessionInfo[]
       }) =>
@@ -112,7 +108,6 @@ describe('useDesktopIntegrations', () => {
           profileReady,
           refreshSessions: vi.fn(),
           resumeExhaustedSessionId,
-          resumeLastSession: resumeLastSession ?? undefined,
           routedSessionId,
           runtimeIdByStoredSessionId: { current: new Map() },
           sessions
@@ -123,7 +118,6 @@ describe('useDesktopIntegrations', () => {
           locationPathname,
           profileReady,
           resumeExhaustedSessionId,
-          resumeLastSession,
           routedSessionId,
           sessions
         }
@@ -177,56 +171,8 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/',
         profileReady: true,
         resumeExhaustedSessionId: null,
-        resumeLastSession: true,
         routedSessionId: null,
         sessions: [session({ id: 'remembered-session', profile: 'default' })]
-      })
-
-      expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
-    })
-  })
-
-  describe('display.resume_last_session', () => {
-    it('stays on the fresh chat when the setting is off, and keeps remembering the open chat', () => {
-      window.localStorage.setItem('hermes.desktop.lastRoute.profile.default', '/remembered-session')
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
-
-      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
-      const result = render({ profileReady: true, resumeLastSession: false, sessions })
-
-      expect(navigate).not.toHaveBeenCalled()
-
-      // The user opens another chat: it is still remembered for the next launch
-      // (and for notifications), so flipping the switch back on resumes it.
-      result.rerender({
-        activeProfile: 'default',
-        locationPathname: '/other-session',
-        profileReady: true,
-        resumeExhaustedSessionId: null,
-        resumeLastSession: false,
-        routedSessionId: 'other-session',
-        sessions: [...sessions, session({ id: 'other-session', profile: 'default' })]
-      })
-
-      expect(window.localStorage.getItem('hermes.desktop.lastSessionId.profile.default')).toBe('other-session')
-    })
-
-    it('holds the restore until the config record answers, then restores when on', () => {
-      window.localStorage.setItem('hermes.desktop.lastSessionId.profile.default', 'remembered-session')
-
-      const sessions = [session({ id: 'remembered-session', profile: 'default' })]
-      const result = render({ profileReady: true, resumeLastSession: null, sessions })
-
-      expect(navigate).not.toHaveBeenCalled()
-
-      result.rerender({
-        activeProfile: 'default',
-        locationPathname: '/',
-        profileReady: true,
-        resumeExhaustedSessionId: null,
-        resumeLastSession: true,
-        routedSessionId: null,
-        sessions
       })
 
       expect(navigate).toHaveBeenCalledWith('/remembered-session', { replace: true })
@@ -383,7 +329,6 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/ops-session',
         profileReady: true,
         resumeExhaustedSessionId: null,
-        resumeLastSession: true,
         routedSessionId: 'ops-session',
         sessions
       })
@@ -450,7 +395,6 @@ describe('useDesktopIntegrations', () => {
         locationPathname: '/settings',
         profileReady: true,
         resumeExhaustedSessionId: null,
-        resumeLastSession: true,
         routedSessionId: null,
         sessions: []
       })

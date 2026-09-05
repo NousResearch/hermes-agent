@@ -1,8 +1,8 @@
-"""Regression tests for classic-CLI mid-run /bg and /btw dispatch.
+"""Regression tests for classic-CLI mid-run /background dispatch.
 
 Background
 ----------
-``/bg`` (formerly ``/background``) exists to start independent work while
+``/background`` (``/bg``, ``/btw``) exists to start independent work while
 the current turn keeps running. Typed while the agent was busy it went into
 ``self._pending_input`` like ordinary input, and ``process_loop`` is blocked
 inside ``self.chat()`` for the whole run, so the background task only started
@@ -72,22 +72,14 @@ class TestBackgroundInlineDetector:
         cli = _make_cli()
         cli._agent_running = True
         assert cli._should_handle_background_command_inline(
-            "/bg inspect the test failures"
+            "/background inspect the test failures"
         ) is True
 
-    def test_detects_both_commands(self):
+    def test_detects_both_aliases(self):
         cli = _make_cli()
         cli._agent_running = True
         assert cli._should_handle_background_command_inline("/bg do work") is True
         assert cli._should_handle_background_command_inline("/btw do work") is True
-
-    def test_background_alias_still_resolves_to_bg(self):
-        """The retired /background spelling no longer resolves to a command."""
-        cli = _make_cli()
-        cli._agent_running = True
-        assert cli._should_handle_background_command_inline(
-            "/background do work"
-        ) is False
 
     def test_ignores_background_when_agent_idle(self):
         """Idle input falls through to the normal process_loop dispatch."""
@@ -125,16 +117,16 @@ class TestBackgroundInlineDetector:
 class TestBackgroundBusyPolicyContract:
     """The registry already declares the intent this detector implements."""
 
-    def test_bg_and_btw_declare_dispatch_while_busy(self):
+    def test_background_declares_dispatch_while_busy(self):
         from hermes_cli.commands import resolve_command
 
-        for name in ("bg", "btw"):
-            cmd = resolve_command(name)
-            assert cmd is not None
-            assert cmd.name == name
-            assert cmd.busy_policy == "dispatch"
+        cmd = resolve_command("background")
+        assert cmd is not None
+        assert cmd.busy_policy == "dispatch"
 
-    def test_background_name_is_retired(self):
+    def test_aliases_resolve_to_background(self):
         from hermes_cli.commands import resolve_command
 
-        assert resolve_command("background") is None
+        for alias in ("bg", "btw"):
+            cmd = resolve_command(alias)
+            assert cmd is not None and cmd.name == "background"

@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -34,7 +33,7 @@ def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=No
 
 
 def test_decompose_creates_children_and_promotes_root(kanban_home):
-    with kbc.connect() as conn:
+    with kb.connect() as conn:
         tid = _create_triage(conn, title="ship a feature")
         assert kb.get_task(conn, tid).status == "triage"
 
@@ -42,7 +41,7 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
         {"title": "research", "body": "look at prior art", "assignee": "researcher", "parents": []},
         {"title": "build it", "body": "write code", "assignee": "engineer", "parents": [0]},
     ]
-    with kbc.connect() as conn:
+    with kb.connect() as conn:
         child_ids = kb.decompose_triage_task(
             conn,
             tid,
@@ -53,7 +52,7 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert child_ids is not None
     assert len(child_ids) == 2
 
-    with kbc.connect() as conn:
+    with kb.connect() as conn:
         root = kb.get_task(conn, tid)
         c0 = kb.get_task(conn, child_ids[0])
         c1 = kb.get_task(conn, child_ids[1])
@@ -70,7 +69,7 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
 
 
 def test_decompose_records_audit_comment_and_event(kanban_home):
-    with kbc.connect() as conn:
+    with kb.connect() as conn:
         tid = _create_triage(conn)
         child_ids = kb.decompose_triage_task(
             conn,
@@ -81,7 +80,7 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
         )
     assert child_ids is not None
 
-    with kbc.connect() as conn:
+    with kb.connect() as conn:
         comments = kb.list_comments(conn, tid)
         events = kb.list_events(conn, tid)
 

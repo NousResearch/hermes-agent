@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.file_safety import is_write_denied as _is_write_denied
+from tools.file_operations import _is_write_denied
 
 
 class TestWriteDenyExactPaths:

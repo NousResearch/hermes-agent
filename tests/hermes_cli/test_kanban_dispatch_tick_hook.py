@@ -17,8 +17,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 
@@ -50,10 +48,10 @@ def test_active_tick_fires_hook_with_outcome_ok(
     kanban_home, all_assignees_spawnable, captured_ticks,
 ):
     """A tick that spawns a worker fires the hook with outcome='ok'."""
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
-        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
+        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
     finally:
         conn.close()
     ok_events = [kw for kw in captured_ticks if kw["outcome"] == "ok"]
@@ -75,14 +73,14 @@ def test_tick_hook_fires_after_dispatch_lock_released(kanban_home):
     acquired: list[bool] = []
 
     def _probe_lock(**kw):
-        with kbc._dispatch_tick_lock(db_path) as held:
+        with kb._dispatch_tick_lock(db_path) as held:
             acquired.append(held)
 
     mgr._hooks.setdefault("on_kanban_dispatch_tick", []).append(_probe_lock)
     try:
-        conn = kbc.connect()
+        conn = kb.connect()
         try:
-            kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+            kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
         finally:
             conn.close()
     finally:
@@ -100,9 +98,9 @@ def test_misbehaving_subscriber_does_not_break_dispatcher(kanban_home):
 
     mgr._hooks.setdefault("on_kanban_dispatch_tick", []).append(_boom)
     try:
-        conn = kbc.connect()
+        conn = kb.connect()
         try:
-            result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+            result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
             assert isinstance(result, kb.DispatchResult)
         finally:
             conn.close()
@@ -122,9 +120,9 @@ def test_no_subscriber_short_circuits_tick_hook(kanban_home, monkeypatch):
         return real_invoke(hook_name, **kw)
 
     monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
-        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
     finally:
         conn.close()
     assert "on_kanban_dispatch_tick" not in invoked

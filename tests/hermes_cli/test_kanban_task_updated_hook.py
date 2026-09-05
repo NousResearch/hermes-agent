@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 
@@ -60,7 +59,7 @@ def test_assign_fires_updated_with_changed_fields(kanban_home, captured_updates)
     mgr = get_plugin_manager()
     mgr._hooks.setdefault("on_kanban_task_updated", []).append(_read_assignee)
 
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
         captured_updates.clear()  # create-time bookkeeping is not under test
@@ -87,7 +86,7 @@ def test_raising_callback_does_not_break_assign(kanban_home):
 
     mgr._hooks.setdefault("on_kanban_task_updated", []).append(_boom)
     try:
-        conn = kbc.connect()
+        conn = kb.connect()
         try:
             tid = kb.create_task(conn, title="t", assignee="alice")
             assert kb.assign_task(conn, tid, "bob") is True
@@ -109,7 +108,7 @@ def test_no_subscriber_short_circuits_task_updated(kanban_home, monkeypatch):
         return real_invoke(hook_name, **kw)
 
     monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
         assert kb.assign_task(conn, tid, "bob") is True

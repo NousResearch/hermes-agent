@@ -172,9 +172,9 @@ def _coherent_compressor() -> MagicMock:
 @pytest.fixture()
 def agent():
     with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -229,7 +229,7 @@ def _run_marathon_turn(
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(
-            "model_tools.handle_function_call",
+            "run_agent.handle_function_call",
             lambda name, args, task_id=None, **kwargs: json.dumps(
                 {"ok": True, "payload": BIG_TOOL_RESULT}
             ),

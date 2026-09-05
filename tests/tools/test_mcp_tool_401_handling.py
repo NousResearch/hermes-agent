@@ -14,11 +14,10 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
-from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
 
 
 def test_is_auth_error_detects_oauth_flow_error():
-    from tools.mcp_tool_errors import _is_auth_error
+    from tools.mcp_tool import _is_auth_error
     from mcp.client.auth import OAuthFlowError
 
     assert _is_auth_error(OAuthFlowError("expired")) is True
@@ -29,7 +28,7 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
     handler returns a structured needs_reauth error (not a generic failure)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from tools.mcp_tool import _make_tool_handler
     from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
     from mcp.client.auth import OAuthFlowError
 
@@ -54,7 +53,7 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
     mcp_tool._server_error_counts.pop("srv", None)
 
     # Ensure the MCP loop exists (run_on_mcp_loop needs it)
-    _mcp_loop._ensure_mcp_loop()
+    mcp_tool._ensure_mcp_loop()
 
     # Force handle_401 to return False (no recovery available)
     mgr = get_manager()
@@ -79,7 +78,7 @@ def test_call_tool_handler_returns_needs_reauth_on_unrecoverable_401(monkeypatch
 def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
     """Non-auth exceptions still surface via the generic error path, not needs_reauth."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from tools.mcp_tool import _make_tool_handler
 
     server = MagicMock()
     server.name = "srv"
@@ -92,10 +91,9 @@ def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
     server.session = session
 
     from tools import mcp_tool
-    from tools import mcp_tool_loop as _mcp_loop
     mcp_tool._servers["srv"] = server
     mcp_tool._server_error_counts.pop("srv", None)
-    _mcp_loop._ensure_mcp_loop()
+    mcp_tool._ensure_mcp_loop()
 
     try:
         handler = _make_tool_handler("srv", "tool1", 10.0)

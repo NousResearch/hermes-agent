@@ -10,7 +10,6 @@ import pytest
 
 from hermes_cli.slack_cli import _build_full_manifest, slack_manifest_command
 from hermes_cli.subcommands.slack import build_slack_parser
-from hermes_cli import main_platform_setup
 
 
 def _parse_slack_args(argv):

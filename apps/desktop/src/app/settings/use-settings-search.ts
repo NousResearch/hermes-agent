@@ -153,15 +153,6 @@ export function useSettingsSearchCatalog(enabled: boolean) {
       : []),
     {
       context: appearanceContext,
-      description: appearance.userBubbleDesc,
-      icon: Palette,
-      id: `setting:${APPEARANCE_SETTING_IDS.userBubble}`,
-      keywords: ['opacity', 'transparent', 'message', 'bubble'],
-      label: appearance.userBubbleTitle,
-      target: { setting: APPEARANCE_SETTING_IDS.userBubble, view: 'config:appearance' }
-    },
-    {
-      context: appearanceContext,
       description: appearance.backdropDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.backdrop}`,

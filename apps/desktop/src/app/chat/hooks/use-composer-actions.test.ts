@@ -308,7 +308,7 @@ describe('useComposerActions native image drops', () => {
     })
 
     expect(attached).toBe(true)
-    expect(saveImageBuffer).toHaveBeenCalledWith(expect.any(Uint8Array), '.png', 'Screen Shot 2026-08-11.png')
+    expect(saveImageBuffer).toHaveBeenCalledOnce()
     expect(readFileDataUrl).toHaveBeenCalledWith(durablePath)
     expect(readFileDataUrl).not.toHaveBeenCalledWith(transientPath)
     // The bounded-preview pipeline no longer retains the full-resolution data

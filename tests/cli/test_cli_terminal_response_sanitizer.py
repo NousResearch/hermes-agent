@@ -5,12 +5,7 @@ leak into the input buffer after terminal resize storms or multiplexer
 tab switches — see issue #14692.
 """
 
-from cli import _strip_leaked_terminal_responses_with_meta
-
-
-def _strip_leaked_terminal_responses(text: str) -> str:
-    cleaned, _ = _strip_leaked_terminal_responses_with_meta(text)
-    return cleaned
+from cli import _strip_leaked_terminal_responses
 
 
 class TestStripLeakedTerminalResponses:

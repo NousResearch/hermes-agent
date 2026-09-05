@@ -6,7 +6,6 @@ import pytest
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
-import hermes_cli.web_routers.files as _rt_files
 
 
 def _client_with_app_state():
@@ -250,7 +249,7 @@ def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
-            _rt_files.upload_managed_file_stream(
+            web_server.upload_managed_file_stream(
                 request=request,
                 file=_AbortingUpload(),
                 path=str(target),

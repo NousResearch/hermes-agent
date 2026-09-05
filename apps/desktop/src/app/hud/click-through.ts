@@ -68,16 +68,10 @@ export function hudIgnoresMouse(
  * decision, a different courier.
  *
  * It follows that nothing in HUD mode may declare `-webkit-app-region: drag`
- * on macOS/Windows: a draggable region swallows the page's mouse events, so
- * the moves never arrive and the window is stranded on whatever it last
- * decided — usually transparent, which is also why pressing the handle fell
- * through to the app behind. Dragging there is `useHudComposerDrag` instead.
- *
- * Linux is the exception: the solidity decision is fed from MAIN's cursor
- * poll (`startHudCursorFeed`), which a drag region cannot starve — so the
- * HUD composer root declares `-webkit-app-region: drag` (input carved out
- * as no-drag) and the compositor moves the window natively. That is also
- * the only move that works on Wayland, where `setBounds` position is a no-op.
+ * at all: a draggable region swallows the page's mouse events, so the moves
+ * never arrive and the window is stranded on whatever it last decided —
+ * usually transparent, which is also why pressing the handle fell through to
+ * the app behind. Dragging is `useHudComposerDrag` instead.
  */
 export function useHudClickThrough(rootRef: RefObject<HTMLElement | null>): void {
   useEffect(() => {

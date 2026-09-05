@@ -1,237 +1,263 @@
-"""Skills dashboard routes.
+"""Skills dashboard routes (extracted verbatim from web_server.py).
 
-Two routers because global route order matters: ``hub_router`` (skills-hub
-install/search/scan) was registered before the profiles router include in
-web_server, the plain skills CRUD ``router`` after it — each is mounted at its
-original registration point.  Shared helpers are reached via the late-binding
-seam so ``monkeypatch.setattr(<owning module>, ...)`` keeps working.
+Two routers because the original registration points are far apart and global
+route order matters: ``hub_router`` (the skills-hub install/search/scan
+endpoints) was registered before the profiles ``router`` include in
+web_server, the plain skills CRUD ``router`` after it - each is mounted at
+its original registration point.
+
+Handler bodies are byte-identical; web_server-owned helpers are reached via
+the late-binding seam in :mod:`hermes_cli.web_deps` so tests that
+``monkeypatch.setattr(web_server, "_spawn_hermes_action", ...)`` keep
+working.
 """
 
-import asyncio
-from typing import Optional
+import asyncio  # noqa: F401 — used by handlers
+import logging
+from typing import Optional  # noqa: F401
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException  # noqa: F401
 
-from hermes_cli.web_deps import late
-from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
+from hermes_cli.web_deps import late, LateState
 from hermes_cli.web_models import (
-    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
-    SkillsUpdateRequest)
-from hermes_cli.web_routers._common import (
-    _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
-    spawn_profile_action)
+    SkillContentUpdate,
+    SkillCreate,
+    SkillInstallRequest,
+    SkillToggle,
+    SkillUninstallRequest,
+    SkillsUpdateRequest,
+)
+
+# Same logger the handlers used before extraction (identical logger object).
+_log = logging.getLogger("hermes_cli.web_server")
 
 hub_router = APIRouter()
 router = APIRouter()
 
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
-load_config = late("load_config", "hermes_cli.config")
-# Labels per hub source id (matches `hermes skills search` provenance); keep in
-# sync with create_source_router()'s source list.
-_SKILL_HUB_SOURCE_LABELS = {
-    "official": "Official (Nous)",
-    "hermes-index": "Hermes Index",
-    "skills-sh": "skills.sh",
-    "well-known": "Well-Known",
-    "url": "Direct URL",
-    "github": "GitHub",
-    "clawhub": "ClawHub",
-    "lobehub": "LobeHub",
-    "browse-sh": "browse.sh",
-}
+# Late-bound web_server helpers (resolved at call time; cycle-safe,
+# monkeypatch-transparent).
+_clear_skills_prompt_cache = late("_clear_skills_prompt_cache")
+_config_profile_scope = late("_config_profile_scope")
+_hub_action_name = late("_hub_action_name")
+_installed_hub_identifiers = late("_installed_hub_identifiers")
+_profile_cli_args = late("_profile_cli_args")
+_profile_scope = late("_profile_scope")
+_skill_meta_to_payload = late("_skill_meta_to_payload")
+_spawn_hermes_action = late("_spawn_hermes_action")
+load_config = late("load_config")
 
-
-def _hub_sources(profile: Optional[str]):
-    """Source router built under ``profile``'s config scope."""
-    from tools.skills_hub_search import create_source_router
-
-    with _config_profile_scope(profile):
-        return create_source_router()
-
-
-def _resolve_hub_skill(ident: str, profile: Optional[str]):
-    """``(meta, bundle)`` for a hub identifier, resolved under ``profile``'s scope."""
-    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
-    from tools.skills_hub_search import create_source_router
-
-    with _config_profile_scope(profile):
-        sources = create_source_router()
-        meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
-    return meta, bundle
-
-
-# Sources subsumed by an available hermes-index (progressive per-source fan-out
-# skips them: ~70 GitHub calls per keystroke saved). Keep in sync with
-# parallel_search_sources' _api_source_ids.
-_API_SOURCE_IDS = frozenset({"github", "skills-sh", "clawhub", "lobehub", "well-known"})
-
-
-def _flag(obj, attr: str) -> bool:
-    """``bool(getattr(obj, attr, False))``; a raising property reads as False."""
-    try:
-        return bool(getattr(obj, attr, False))
-    except Exception:
-        return False
-
-
-def _skill_meta_to_payload(m) -> dict:
-    return {
-        "name": m.name, "description": m.description, "source": m.source,
-        "identifier": m.identifier, "trust_level": m.trust_level, "repo": m.repo,
-        "tags": list(m.tags or [])}
-
-
-def _clear_skills_prompt_cache() -> None:
-    """Best-effort: invalidate the skills system-prompt snapshot after a write.
-
-    Mirrors what ``skill_manage`` does so a dashboard-authored skill is picked
-    up by the next session without a manual cache reset.
-    """
-    try:
-        from agent.prompt_builder import clear_skills_system_prompt_cache
-        clear_skills_system_prompt_cache(clear_snapshot=True)
-    except Exception:
-        pass
+# Live proxies for web_server-owned module state (mutations/monkeypatches
+# on web_server remain authoritative; resolved at operation time).
+_SKILL_HUB_SOURCE_LABELS = LateState("_SKILL_HUB_SOURCE_LABELS")
+# Config read-modify-write serialization for off-loop handlers (see the
+# definition in web_server.py). LateState supports ``with``-blocks, so this
+# is the live lock object, not a frozen import-time copy.
+_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 
 @hub_router.post("/api/skills/hub/install")
 async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = None):
-    identifier = require(body.identifier, "identifier is required")
-    return spawn_profile_action(
-        body.profile or profile, ["skills", "install", identifier, "--yes"],
-        _hub_action_name("install", identifier), log_msg="Failed to spawn skills install",
-        prefix="Failed to install skill")
+    identifier = (body.identifier or "").strip()
+    if not identifier:
+        raise HTTPException(status_code=400, detail="identifier is required")
+    name = _hub_action_name("install", identifier)
+    try:
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile or profile)
+            + ["skills", "install", identifier, "--yes"],
+            name,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn skills install")
+        raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": name}
 
 
 @hub_router.post("/api/skills/hub/uninstall")
 async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str] = None):
-    name = require(body.name, "name is required")
-    return spawn_profile_action(
-        body.profile or profile, ["skills", "uninstall", name, "--yes"],
-        _hub_action_name("uninstall", name), log_msg="Failed to spawn skills uninstall",
-        prefix="Failed to uninstall skill")
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    action = _hub_action_name("uninstall", name)
+    try:
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile or profile) + ["skills", "uninstall", name, "--yes"],
+            action,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn skills uninstall")
+        raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": action}
 
 
 @hub_router.post("/api/skills/hub/update")
 async def update_skills_hub(
-    body: Optional[SkillsUpdateRequest] = None, profile: Optional[str] = None):
-    return spawn_profile_action(
-        (body.profile if body else None) or profile, ["skills", "update"], "skills-update",
-        log_msg="Failed to spawn skills update", prefix="Failed to update skills")
-
-
-@hub_router.get("/api/skills/hub/official")
-async def list_official_skills(profile: Optional[str] = None):
-    """The ENTIRE optional-skills catalog (local scan), marked installed for ``profile``."""
-
-    def _run():
-        from tools.skills_hub_official import OptionalSkillSource
-
-        installed = _installed_hub_identifiers(profile)
-        out = []
-        for m in OptionalSkillSource().list_local():
-            payload = _skill_meta_to_payload(m)
-            ident = payload.get("identifier") or ""
-            # identifier format: official/<category>/<skill> — surface the
-            # category for row subtitles.
-            rel = ident.split("/", 1)[-1] if "/" in ident else ident
-            payload["category"] = rel.split("/", 1)[0] if "/" in rel else "general"
-            payload["installed"] = ident in installed
-            out.append(payload)
-        return {"skills": out}
-
-    with http_failure("official skills catalog listing failed", 502, "Official catalog failed"):
-        return await asyncio.to_thread(_run)
+    body: Optional[SkillsUpdateRequest] = None, profile: Optional[str] = None
+):
+    try:
+        effective = (body.profile if body else None) or profile
+        proc = _spawn_hermes_action(
+            _profile_cli_args(effective) + ["skills", "update"], "skills-update"
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn skills update")
+        raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
+    return {"ok": True, "pid": proc.pid, "name": "skills-update"}
 
 
 @hub_router.get("/api/skills/hub/sources")
 async def list_skills_hub_sources(profile: Optional[str] = None):
-    """Configured skill-hub sources + installed-skill provenance (scoped to
-    ``profile``), so the Browse-hub tab has something before a search runs."""
+    """List the configured skill-hub sources and installed-skill provenance.
+
+    Gives the dashboard something to show BEFORE a search runs — which hubs
+    are wired up, their trust tier, and a set of featured skills pulled from
+    the centralized index (zero extra API calls).  Without this the Browse-hub
+    tab is a blank page with no indication it's even connected to anything.
+    ``profile`` scopes the installed-skill provenance to that profile.
+    """
 
     def _run():
-        sources = _hub_sources(profile)
+        from tools.skills_hub import create_source_router
+
+        with _config_profile_scope(profile):
+            sources = create_source_router()
         out = []
         index_available = False
         featured = []
         for src in sources:
             sid = src.source_id()
-            entry = {"id": sid, "label": _SKILL_HUB_SOURCE_LABELS.get(sid, sid)}
+            entry = {
+                "id": sid,
+                "label": _SKILL_HUB_SOURCE_LABELS.get(sid, sid),
+            }
             # GitHub exposes a rate-limit flag; the index an availability flag.
             if sid == "github":
-                entry["rate_limited"] = _flag(src, "is_rate_limited")
+                try:
+                    entry["rate_limited"] = bool(getattr(src, "is_rate_limited", False))
+                except Exception:
+                    entry["rate_limited"] = False
             if sid == "hermes-index":
-                index_available = _flag(src, "is_available")
+                try:
+                    index_available = bool(getattr(src, "is_available", False))
+                except Exception:
+                    index_available = False
                 entry["available"] = index_available
                 # Empty-query search on the index returns featured/popular skills.
                 if index_available:
                     try:
                         featured = [
-                            _skill_meta_to_payload(m) for m in src.search("", limit=12)]
+                            _skill_meta_to_payload(m) for m in src.search("", limit=12)
+                        ]
                     except Exception:
                         featured = []
             out.append(entry)
-        # Which sources are worth searching individually (see _API_SOURCE_IDS).
+        # Tell the UI which sources are worth searching individually (for its
+        # progressive per-source fan-out). Mirror parallel_search_sources: when
+        # the centralized index is available it already subsumes the external
+        # API sources, so they're redundant — skipping them avoids ~70 GitHub
+        # calls per keystroke. Keep this set in sync with that function's
+        # ``_api_source_ids``.
+        _api_source_ids = frozenset(
+            {"github", "skills-sh", "clawhub", "lobehub", "well-known"}
+        )
         for entry in out:
-            entry["searchable"] = not (index_available and entry["id"] in _API_SOURCE_IDS)
+            entry["searchable"] = not (index_available and entry["id"] in _api_source_ids)
         return {
-            "sources": out, "index_available": index_available, "featured": featured,
-            "installed": _installed_hub_identifiers(profile)}
+            "sources": out,
+            "index_available": index_available,
+            "featured": featured,
+            "installed": _installed_hub_identifiers(profile),
+        }
 
-    with http_failure("skills hub sources listing failed", 502, "Hub sources failed"):
+    try:
         return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("skills hub sources listing failed")
+        raise HTTPException(status_code=502, detail=f"Hub sources failed: {exc}")
 
 
 @hub_router.get("/api/skills/hub/search")
 async def search_skills_hub(
-    q: str = "", source: str = "all", limit: int = 20, profile: Optional[str] = None):
-    """Search the skill hub across all configured sources (network-bound)."""
+    q: str = "", source: str = "all", limit: int = 20, profile: Optional[str] = None
+):
+    """Search the skill hub across all configured sources.
+
+    Network-bound (parallel source search); runs in a thread so the FastAPI
+    loop isn't blocked.  Returns structured results the UI installs by
+    identifier via POST /api/skills/hub/install, previews via
+    /api/skills/hub/preview, and scans via /api/skills/hub/scan.
+    """
     query = (q or "").strip()
     if not query:
         return {"results": [], "source_counts": {}, "timed_out": [], "installed": {}}
 
     def _run():
-        from tools.skills_hub_search import parallel_search_sources
+        from tools.skills_hub import create_source_router, parallel_search_sources
 
-        sources = _hub_sources(profile)
+        with _config_profile_scope(profile):
+            sources = create_source_router()
         capped = min(max(limit, 1), 50)
         all_results, source_counts, timed_out = parallel_search_sources(
-            sources, query=query, source_filter=source or "all", overall_timeout=30)
+            sources, query=query, source_filter=source or "all", overall_timeout=30
+        )
 
         # Dedupe by identifier, preferring higher trust (mirrors unified_search).
         _rank = {"builtin": 2, "trusted": 1, "community": 0}
         seen = {}
         for r in all_results:
-            prev = seen.get(r.identifier)
-            if prev is None or _rank.get(r.trust_level, 0) > _rank.get(prev.trust_level, 0):
+            if r.identifier not in seen:
+                seen[r.identifier] = r
+            elif _rank.get(r.trust_level, 0) > _rank.get(seen[r.identifier].trust_level, 0):
                 seen[r.identifier] = r
         deduped = list(seen.values())[:capped]
 
         return {
-            "results": [_skill_meta_to_payload(m) for m in deduped], "source_counts": source_counts,
-            "timed_out": timed_out, "installed": _installed_hub_identifiers(profile)}
+            "results": [_skill_meta_to_payload(m) for m in deduped],
+            "source_counts": source_counts,
+            "timed_out": timed_out,
+            "installed": _installed_hub_identifiers(profile),
+        }
 
-    with http_failure("skills hub search failed", 502, "Hub search failed"):
+    try:
         return await asyncio.to_thread(_run)
-
-
-async def _hub_lookup(fn, ident: str, log_msg: str, prefix: str):
-    """Run ``fn`` off-loop; any failure -> 502 ``"<prefix>: <exc>"``, None -> 404."""
-    with http_failure(log_msg, 502, prefix):
-        result = await asyncio.to_thread(fn)
-    if result is None:
-        raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
-    return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("skills hub search failed")
+        raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}")
 
 
 @hub_router.get("/api/skills/hub/preview")
 async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None):
-    """A hub skill's SKILL.md + file manifest WITHOUT installing it; scoped to
-    ``profile`` so different hub taps resolve against THAT source router."""
-    ident = require(identifier, "identifier is required")
+    """Fetch a hub skill's SKILL.md content + metadata for in-dashboard reading.
+
+    Resolves the identifier across configured sources (same path the CLI
+    installer uses), then returns the rendered SKILL.md text and the file
+    manifest WITHOUT installing anything.  This is the 'read the actual skill
+    before installing' affordance the Browse-hub tab was missing.
+
+    Scoped to ``profile`` so a non-default profile with different hub taps
+    resolves against ITS source router, not the default profile's.
+    """
+    ident = (identifier or "").strip()
+    if not ident:
+        raise HTTPException(status_code=400, detail="identifier is required")
 
     def _run():
-        meta, bundle = _resolve_hub_skill(ident, profile)
+        from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+        from tools.skills_hub import create_source_router
+
+        with _config_profile_scope(profile):
+            sources = create_source_router()
+            meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
         if not bundle and not meta:
             return None
 
@@ -240,8 +266,9 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
         if bundle:
             for rel, content in (bundle.files or {}).items():
                 if isinstance(content, bytes):
-                    # Some sources store every file as bytes; decode text so
-                    # SKILL.md renders, placeholder only for genuinely-binary data.
+                    # Some sources (e.g. official optional skills) store every
+                    # file as bytes.  Decode text so SKILL.md / docs render;
+                    # only fall back to a placeholder for genuinely-binary data.
                     try:
                         files[rel] = content.decode("utf-8")
                     except UnicodeDecodeError:
@@ -252,30 +279,54 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
 
         m = meta or bundle
         return {
-            "name": getattr(m, "name", ident), "description": getattr(m, "description", "") or "",
+            "name": getattr(m, "name", ident),
+            "description": getattr(m, "description", "") or "",
             "source": getattr(m, "source", "") or "",
             "identifier": getattr(m, "identifier", ident) or ident,
             "trust_level": getattr(m, "trust_level", "community") or "community",
-            "repo": getattr(m, "repo", None), "tags": list(getattr(m, "tags", None) or []),
-            "skill_md": skill_md, "files": sorted(files.keys())}
+            "repo": getattr(m, "repo", None),
+            "tags": list(getattr(m, "tags", None) or []),
+            "skill_md": skill_md,
+            "files": sorted(files.keys()),
+        }
 
-    return await _hub_lookup(_run, ident, "skills hub preview failed", "Hub preview failed")
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.exception("skills hub preview failed")
+        raise HTTPException(status_code=502, detail=f"Hub preview failed: {exc}")
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
+    return result
 
 
 @hub_router.get("/api/skills/hub/scan")
 async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
-    """Install-time security scan of a hub skill WITHOUT installing it (the CLI's
-    ``scan_skill`` / ``should_allow_install`` pipeline on a quarantined bundle);
-    scoped to ``profile`` so the bundle resolves where an install would."""
-    ident = require(identifier, "identifier is required")
+    """Run the install-time security scan on a hub skill WITHOUT installing it.
+
+    Fetches the bundle, quarantines it, and runs the same `scan_skill` /
+    `should_allow_install` pipeline the CLI installer uses — then cleans up the
+    quarantine.  Returns the verdict, per-finding detail, trust tier, and the
+    install-policy decision so the dashboard can show a visual safety result
+    on demand (the 'scan' button the Browse-hub tab was missing).
+
+    Scoped to ``profile`` so the bundle resolves against that profile's hub
+    source router, matching where an install would pull it from.
+    """
+    ident = (identifier or "").strip()
+    if not ident:
+        raise HTTPException(status_code=400, detail="identifier is required")
 
     def _run():
         import shutil as _shutil
 
-        from tools.skills_hub_install import quarantine_bundle
+        from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+        from tools.skills_hub import create_source_router, quarantine_bundle
         from tools.skills_guard import scan_skill, should_allow_install
 
-        meta, bundle = _resolve_hub_skill(ident, profile)
+        with _config_profile_scope(profile):
+            sources = create_source_router()
+            meta, bundle, _src = _resolve_source_meta_and_bundle(ident, sources)
         if not bundle:
             return None
 
@@ -283,16 +334,23 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             scan_source = "official"
         else:
             scan_source = (
-                getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or ident)
+                getattr(bundle, "identifier", "")
+                or getattr(meta, "identifier", "")
+                or ident
+            )
 
+        q_path = None
         tier1 = None
-        q_path = quarantine_bundle(bundle)
         try:
+            q_path = quarantine_bundle(bundle)
             result = scan_skill(q_path, source=scan_source)
-            # Advisory SkillEvaluator Tier 1 second opinion: optional binary,
-            # never blocks, errors degrade to no data (same as the CLI installer).
+            # Advisory SkillEvaluator Tier 1 second opinion (same contract
+            # as the CLI installer: optional binary, never blocks, errors
+            # degrade to no data).
             try:
-                from tools.skillevaluator_scan import run_tier1_scan, tier1_advisory_enabled
+                from tools.skillevaluator_scan import (
+                    run_tier1_scan, tier1_advisory_enabled,
+                )
                 if tier1_advisory_enabled():
                     t1 = run_tier1_scan(q_path)
                     if t1.available:
@@ -301,24 +359,44 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
                             "incomplete_checks": t1.incomplete_checks,
                             "findings": [
                                 {
-                                    "check": f.check, "validator": f.validator,
-                                    "severity": f.severity, "message": f.message,
-                                    "file": f.file, "line": f.line,
-                                    "secrets_class": f.is_secrets_class}
-                                for f in t1.findings]}
+                                    "check": f.check,
+                                    "validator": f.validator,
+                                    "severity": f.severity,
+                                    "message": f.message,
+                                    "file": f.file,
+                                    "line": f.line,
+                                    "secrets_class": f.is_secrets_class,
+                                }
+                                for f in t1.findings
+                            ],
+                        }
             except Exception:
                 _log.debug("Tier 1 advisory scan skipped", exc_info=True)
         finally:
-            _shutil.rmtree(q_path, ignore_errors=True)
+            if q_path is not None:
+                _shutil.rmtree(q_path, ignore_errors=True)
 
-        # `allowed` may be None ("ask") for agent-created/dangerous gates.
         allowed, reason = should_allow_install(result, force=False)
+        # `allowed` may be None ("ask") for agent-created/dangerous gates.
+        if allowed is True:
+            policy = "allow"
+        elif allowed is None:
+            policy = "ask"
+        else:
+            policy = "block"
+
         findings = [
             {
-                "severity": f.severity, "category": f.category, "file": f.file,
-                "line": f.line, "description": f.description}
-            for f in result.findings]
-        counts = {sev: 0 for sev in ("critical", "high", "medium", "low")}
+                "severity": f.severity,
+                "category": f.category,
+                "file": f.file,
+                "line": f.line,
+                "description": f.description,
+            }
+            for f in result.findings
+        ]
+        # Per-severity tally for an at-a-glance summary.
+        counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
         for f in result.findings:
             if f.severity in counts:
                 counts[f.severity] += 1
@@ -330,14 +408,23 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             "trust_level": result.trust_level,
             "verdict": result.verdict,
             "summary": result.summary,
-            "policy": "allow" if allowed is True else "ask" if allowed is None else "block",
+            "policy": policy,
             "policy_reason": reason,
             "findings": findings,
             "severity_counts": counts,
-            "tier1": tier1,  # None when the optional scanner isn't installed/enabled
+            # Advisory SkillEvaluator Tier 1 block, or None when the
+            # optional scanner isn't installed/enabled.
+            "tier1": tier1,
         }
 
-    return await _hub_lookup(_run, ident, "skills hub scan failed", "Hub scan failed")
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as exc:
+        _log.exception("skills hub scan failed")
+        raise HTTPException(status_code=502, detail=f"Hub scan failed: {exc}")
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
+    return result
 
 
 @router.get("/api/skills")
@@ -345,8 +432,11 @@ async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
-        _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
-
+        _read_bundled_manifest_names,
+        _read_hub_installed_names,
+        activity_count,
+        load_usage,
+    )
     def _run():
         with _profile_scope(profile):
             config = load_config()
@@ -365,7 +455,8 @@ async def get_skills(profile: Optional[str] = None):
             s["provenance"] = (
                 "hub" if s["name"] in hub_names
                 else "bundled" if s["name"] in bundled_names
-                else "agent")
+                else "agent"
+            )
         return skills
 
     return await asyncio.to_thread(_run)
@@ -376,14 +467,15 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
 
     def _run():
-        with config_write_scope(body.profile or profile):
-            config = load_config()
-            disabled = get_disabled_skills(config)
-            if body.enabled:
-                disabled.discard(body.name)
-            else:
-                disabled.add(body.name)
-            save_disabled_skills(config, disabled)
+        with _profile_scope(body.profile or profile):
+            with _CONFIG_MUTATION_LOCK:
+                config = load_config()
+                disabled = get_disabled_skills(config)
+                if body.enabled:
+                    disabled.discard(body.name)
+                else:
+                    disabled.add(body.name)
+                save_disabled_skills(config, disabled)
         return {"ok": True, "name": body.name, "enabled": body.enabled}
 
     return await asyncio.to_thread(_run)
@@ -391,33 +483,42 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
 
 @router.get("/api/skills/content")
 async def get_skill_content(name: str, profile: Optional[str] = None):
-    """Raw SKILL.md text for the dashboard editor."""
+    """Return the raw SKILL.md text for a skill, for the dashboard editor."""
     from tools.skill_manager_tool import _find_skill
 
-    def _read():
-        found = _find_skill(name)
-        if not found:
-            raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
-        skill_md = found["path"] / "SKILL.md"
-        if not skill_md.exists():
-            raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
-        try:
-            content = skill_md.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return {"name": name, "content": content, "path": str(skill_md)}
+    def _run():
+        with _profile_scope(profile):
+            found = _find_skill(name)
+            if not found:
+                raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
+            skill_md = found["path"] / "SKILL.md"
+            if not skill_md.exists():
+                raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            return {"name": name, "content": content, "path": str(skill_md)}
 
-    return await scoped_to_thread(profile, _read)
+    return await asyncio.to_thread(_run)
 
 
 @router.post("/api/skills")
 async def create_skill(body: SkillCreate):
-    """Create a skill via the agent's ``skill_manage`` write path, minus the
-    write-approval gate — an authenticated dashboard write IS the user."""
+    """Create a new custom skill (SKILL.md) from the dashboard editor.
+
+    Calls the same validated write path as the agent's ``skill_manage``
+    tool (frontmatter validation, name/category validation, size limit,
+    optional security scan) — but bypasses the agent write-approval gate:
+    a write from the authenticated dashboard IS the user acting directly.
+    """
     from tools.skill_manager_tool import _create_skill
 
-    result = await scoped_to_thread(
-        body.profile, lambda: _create_skill(body.name, body.content, body.category or None))
+    def _run():
+        with _profile_scope(body.profile):
+            return _create_skill(body.name, body.content, body.category or None)
+
+    result = await asyncio.to_thread(_run)
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
     _clear_skills_prompt_cache()
@@ -429,33 +530,14 @@ async def update_skill_content(body: SkillContentUpdate):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
     from tools.skill_manager_tool import _edit_skill
 
-    result = await scoped_to_thread(body.profile, lambda: _edit_skill(body.name, body.content))
+    def _run():
+        with _profile_scope(body.profile):
+            return _edit_skill(body.name, body.content)
+
+    result = await asyncio.to_thread(_run)
     if not result.get("success"):
         err = result.get("error", "Failed to update skill.")
         status = 404 if "not found" in str(err).lower() else 400
         raise HTTPException(status_code=status, detail=err)
     _clear_skills_prompt_cache()
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import logging  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'LateState': ('hermes_cli.web_deps', 'LateState'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

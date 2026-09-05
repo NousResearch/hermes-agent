@@ -7,13 +7,10 @@ from tools.registry import registry
 
 
 def test_lives_in_the_gui_surface_toolset(monkeypatch):
-    import tools.preview_tool  # noqa: F401 — registers desktop_preview
-    """Consolidated (#95681): this module's tool became an action of the
-    single `desktop_preview` tool in desktop_ui; the old registration is gone and
-    `preview` reaches a desktop client on ANY backend (no env gate)."""
+    """Mirrors read_terminal: scoped by toolset, not by the backend's env."""
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert registry.get_entry("read_preview") is None
-    entry = registry.get_entry("desktop_preview")
+    entry = registry.get_entry("read_preview")
+
     assert entry is not None
     assert entry.toolset == "desktop_ui"
     assert entry.check_fn is None

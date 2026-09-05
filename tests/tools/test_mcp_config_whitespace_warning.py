@@ -10,15 +10,14 @@ import logging
 import pytest
 
 from tools import mcp_tool
-from tools import mcp_tool_config as _mcp_config
-from tools.mcp_tool_config import _warn_hidden_whitespace
+from tools.mcp_tool import _warn_hidden_whitespace
 
 
 @pytest.fixture(autouse=True)
 def _reset_dedupe():
-    _mcp_config._whitespace_warned.clear()
+    mcp_tool._whitespace_warned.clear()
     yield
-    _mcp_config._whitespace_warned.clear()
+    mcp_tool._whitespace_warned.clear()
 
 
 def test_clean_config_no_warnings(caplog):
@@ -117,7 +116,7 @@ def test_load_mcp_config_emits_warning(tmp_path, monkeypatch, caplog):
     with mock_patch("hermes_cli.config.load_config",
                     return_value={"mcp_servers": servers}), \
          caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
-        result = _mcp_config._load_mcp_config()
+        result = mcp_tool._load_mcp_config()
 
     assert "pasted" in result
     # Value passes through unmutated.

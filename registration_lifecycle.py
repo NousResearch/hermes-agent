@@ -1,7 +1,8 @@
 """Ownership leases for replaceable runtime registrations.
 
-The coordinator models registration *generations*, not just value identity: the same provider
-singleton may be registered again after an older ownership generation was unloaded.
+The coordinator models registration *generations*, not just value identity.
+That distinction matters when the same provider singleton is registered again
+after an older ownership generation was unloaded.
 """
 
 from __future__ import annotations
@@ -14,9 +15,11 @@ from typing import Any
 
 
 def same_registration(left: Any, right: Any) -> bool:
-    """Compare opaque registry snapshots using identity only (element-wise for tuples)."""
+    """Compare opaque registry snapshots using identity only."""
     if isinstance(left, tuple) and isinstance(right, tuple):
-        return len(left) == len(right) and all(same_registration(a, b) for a, b in zip(left, right))
+        return len(left) == len(right) and all(
+            same_registration(a, b) for a, b in zip(left, right)
+        )
     return left is right
 
 
@@ -50,46 +53,76 @@ class ReplacementCoordinator:
         with self._lock:
             yield
 
-    def acquire(self, slot: Hashable, *, current: Any, previous: Any, restore: Callable[[Any], bool],
-                finalize: Callable[[], None] | None = None) -> ReplacementLease:
+    def acquire(
+        self,
+        slot: Hashable,
+        *,
+        current: Any,
+        previous: Any,
+        restore: Callable[[Any], bool],
+        finalize: Callable[[], None] | None = None,
+    ) -> ReplacementLease:
         """Attach a new live generation to the matching active predecessor."""
         with self._lock:
             leases = self._active.setdefault(slot, [])
-            predecessor = next((c for c in reversed(leases) if c.active and same_registration(c.current, previous)), None)
-            lease = ReplacementLease(self, slot, current, previous, restore, finalize, predecessor)
+            predecessor = next(
+                (
+                    lease
+                    for lease in reversed(leases)
+                    if lease.active and same_registration(lease.current, previous)
+                ),
+                None,
+            )
+            lease = ReplacementLease(
+                coordinator=self,
+                slot=slot,
+                current=current,
+                previous=previous,
+                restore=restore,
+                finalize=finalize,
+                predecessor=predecessor,
+            )
             leases.append(lease)
             return lease
 
     def dispose(self, lease: ReplacementLease) -> None:
-        """Remove *lease*, restoring the nearest still-live predecessor.
-
-        ``restore`` -> ``finalize`` -> slot pruning each run even when an earlier step raises.
-        """
+        """Remove *lease*, restoring the nearest still-live predecessor."""
         with self._lock:
             if not lease.active:
                 return
             leases = self._active.get(lease.slot, [])
-            latest = next((c for c in reversed(leases) if c.active), None)
+            latest = next(
+                (candidate for candidate in reversed(leases) if candidate.active),
+                None,
+            )
             lease.active = False
-            # An older generation can share the exact object identity of a newer one; registry-level
-            # CAS cannot tell them apart, so only the latest live generation may mutate the slot.
+
+            # An older generation can share the exact same object identity as
+            # a newer one. Registry-level CAS cannot distinguish those leases,
+            # so only the latest live generation is allowed to mutate the slot.
             try:
                 try:
                     if latest is lease:
-                        # Restore the nearest still-live predecessor, else the last dead generation's previous.
-                        replacement, predecessor = lease.previous, lease.predecessor
-                        while predecessor is not None and not predecessor.active:
-                            replacement, predecessor = predecessor.previous, predecessor.predecessor
-                        lease.restore(predecessor.current if predecessor is not None else replacement)
+                        replacement = lease.previous
+                        predecessor = lease.predecessor
+                        while predecessor is not None:
+                            if predecessor.active:
+                                replacement = predecessor.current
+                                break
+                            replacement = predecessor.previous
+                            predecessor = predecessor.predecessor
+
+                        lease.restore(replacement)
                 finally:
                     if lease.finalize is not None:
                         lease.finalize()
             finally:
-                live = [item for item in leases if item.active]
-                if live:
-                    self._active[lease.slot] = live
-                elif leases:
-                    self._active.pop(lease.slot, None)
+                if leases:
+                    self._active[lease.slot] = [
+                        item for item in leases if item.active
+                    ]
+                    if not self._active[lease.slot]:
+                        self._active.pop(lease.slot, None)
 
 
 replacement_coordinator = ReplacementCoordinator()

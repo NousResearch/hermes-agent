@@ -15,7 +15,6 @@ def test_register_wakes_stale_cached_server(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
 
     woken: list[str] = []
 
@@ -49,7 +48,7 @@ def test_register_wakes_stale_cached_server(monkeypatch, tmp_path):
     monkeypatch.setitem(mcp_tool._servers, "healthy-srv", alive)
 
     try:
-        result = _mcp_discovery.register_mcp_servers({
+        result = mcp_tool.register_mcp_servers({
             "parked-srv": {"url": "http://127.0.0.1:9/mcp"},
             "healthy-srv": {"url": "http://127.0.0.1:9/mcp"},
         })

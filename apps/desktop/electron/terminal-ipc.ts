@@ -10,18 +10,17 @@ import path from 'node:path'
 import { app, ipcMain } from 'electron'
 import nodePty from 'node-pty'
 
-import { resolveTerminalConnectionForSender } from './connection-apply'
+import { resolveTerminalConnection } from './connection-apply'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { buildInteractiveSshArgs } from './ssh-connection'
-import { createTerminalOutputGate } from './terminal-output-gate'
 import { buildWindowsInteractiveCommand } from './windows-remote-lifecycle'
 
 export interface TerminalIpcDeps {
   isWindows: boolean
   findOnPath: (command: string) => null | string
   rememberLog: (line: string) => void
-  activeSshTerminalTarget: (webContentsId: number) => unknown
-  ensureBackend: (webContentsId: number) => Promise<unknown>
+  activeSshTerminalTarget: () => unknown
+  ensureBackend: () => Promise<unknown>
   getSshConnectionState: (scope: string) => undefined | { remotePlatform?: string }
 }
 
@@ -293,8 +292,7 @@ export function registerTerminalIpc({
     const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
     const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
-    const sshTarget = await resolveTerminalConnectionForSender(event.sender.id, activeSshTerminalTarget, ensureBackend)
-
+    const sshTarget = await resolveTerminalConnection(activeSshTerminalTarget, ensureBackend)
     const remote = Boolean(sshTarget)
     const remoteState = remote ? getSshConnectionState(sshTarget.scope) : null
 
@@ -313,6 +311,12 @@ export function registerTerminalIpc({
         )
       : nodePty.spawn(command, args, { cols, cwd, env: terminalShellEnv(), name: 'xterm-256color', rows })
 
+    terminalSessions.set(id, {
+      pty: ptyProcess,
+      webContentsId: event.sender.id,
+      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
+    })
+
     const send = (suffix, payload) => {
       if (event.sender.isDestroyed()) {
         return
@@ -321,38 +325,14 @@ export function registerTerminalIpc({
       event.sender.send(terminalChannel(id, suffix), payload)
     }
 
-    const outputGate = createTerminalOutputGate({
-      onExitFlushed: () => terminalSessions.delete(id),
-      sendData: data => send('data', data),
-      sendExit: payload => send('exit', payload)
-    })
-
-    terminalSessions.set(id, {
-      outputGate,
-      pty: ptyProcess,
-      webContentsId: event.sender.id,
-      ...(remote ? { sshScope: sshTarget.scope, remoteCwd: String(payload?.cwd || '') } : {})
-    })
-
-    ptyProcess.onData(data => outputGate.data(data))
+    ptyProcess.onData(data => send('data', data))
     ptyProcess.onExit(({ exitCode, signal }) => {
-      outputGate.exit({ code: exitCode, signal: signal == null ? null : String(signal) })
+      terminalSessions.delete(id)
+      send('exit', { code: exitCode, signal: signal || null })
     })
     event.sender.once('destroyed', () => disposeTerminalSession(id))
 
     return { cwd: remote ? null : cwd, id, shell: remote ? 'ssh' : name }
-  })
-
-  ipcMain.handle('hermes:terminal:attach', (event, id) => {
-    const sessionInfo = terminalSessions.get(String(id || ''))
-
-    if (!sessionInfo || sessionInfo.webContentsId !== event.sender.id) {
-      return false
-    }
-
-    sessionInfo.outputGate.attach()
-
-    return true
   })
 
   ipcMain.handle('hermes:terminal:write', (_event, id, data) => {

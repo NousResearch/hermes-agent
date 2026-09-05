@@ -2,8 +2,7 @@
 
 Covers wire-up from tools.delegate_tool.delegate_task:
   * fires once per child in both single-task and batch modes
-  * is dispatched from the parent thread (no child-pool re-entrancy)
-    and callback bodies stay on that caller thread
+  * runs on the parent thread (no re-entrancy for hook authors)
   * carries child_role when the agent exposes _delegate_role
   * carries child_role=None when _delegate_role is not set (pre-M3)
   * exposes a detached, metadata-only tool_call_history
@@ -109,19 +108,10 @@ class TestSingleTask:
         assert payload["duration_ms"] == 5000
 
     def test_fires_on_parent_thread(self):
-        """Dispatch and callback body stay on the parent/caller thread."""
         captured = _register_capturing_hook()
         main_thread = threading.current_thread()
-        dispatch_threads = []
-        real_invoke = plugins.invoke_hook
 
-        def _tracking_invoke(hook_name, **kwargs):
-            if hook_name == "subagent_stop":
-                dispatch_threads.append(threading.current_thread())
-            return real_invoke(hook_name, **kwargs)
-
-        with patch("tools.delegate_tool._run_single_child") as mock_run, \
-             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
@@ -129,9 +119,7 @@ class TestSingleTask:
             }
             delegate_task(goal="go", parent_agent=_make_parent())
 
-        assert dispatch_threads and all(t is main_thread for t in dispatch_threads)
-        cb_thread = captured[0]["_thread"]
-        assert cb_thread is main_thread
+        assert captured[0]["_thread"] is main_thread
 
     def test_payload_includes_parent_session_id(self):
         captured = _register_capturing_hook()
@@ -183,19 +171,10 @@ class TestBatchMode:
         assert roles == ["role-a", "role-b", "role-c"]
 
     def test_all_fires_on_parent_thread(self):
-        """Batch stop hooks are dispatched from the parent, not child workers."""
         captured = _register_capturing_hook()
         main_thread = threading.current_thread()
-        dispatch_threads = []
-        real_invoke = plugins.invoke_hook
 
-        def _tracking_invoke(hook_name, **kwargs):
-            if hook_name == "subagent_stop":
-                dispatch_threads.append(threading.current_thread())
-            return real_invoke(hook_name, **kwargs)
-
-        with patch("tools.delegate_tool._run_single_child") as mock_run, \
-             patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
             mock_run.side_effect = [
                 {"task_index": 0, "status": "completed",
                  "summary": "A", "api_calls": 1, "duration_seconds": 1.0,

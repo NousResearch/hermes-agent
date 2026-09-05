@@ -21,7 +21,6 @@ if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
 import tools.kanban_tools as kt
 
 
@@ -67,7 +66,7 @@ def test_noop_without_worker_env(worker_home, monkeypatch):
 
 
 def test_seed_then_inject_new_comment(worker_home, monkeypatch):
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="live task")
         kb.add_comment(conn, tid, author="desktop", body="pre-existing note")
@@ -83,7 +82,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
     assert kt.inject_new_comments_from_env(agent) is False
     assert agent.steers == []
 
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         kb.add_comment(conn, tid, author="desktop", body="actually use the v2 API")
     finally:
@@ -101,7 +100,7 @@ def test_seed_then_inject_new_comment(worker_home, monkeypatch):
 
 
 def test_skips_own_authored_comments(worker_home, monkeypatch):
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="echo guard")
     finally:
@@ -114,7 +113,7 @@ def test_skips_own_authored_comments(worker_home, monkeypatch):
     _unthrottle()
     kt.inject_new_comments_from_env(agent)  # seed
 
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         kb.add_comment(conn, tid, author="worker-bot", body="i did a thing")
     finally:

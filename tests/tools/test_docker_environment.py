@@ -54,7 +54,6 @@ def _make_dummy_env(**kwargs):
         run_as_host_user=kwargs.get("run_as_host_user", False),
         extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
-        shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
     )
 
@@ -185,12 +184,9 @@ def test_init_env_args_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    assert "-e" in args and "DATABASE_URL" in args
-    # Value must NOT be in argv (world-readable /proc/*/cmdline, #96268) —
-    # it travels via the docker client subprocess env instead.
-    assert not any("value_from_dotenv" in a for a in args)
-    assert env._init_env_values["DATABASE_URL"] == "value_from_dotenv"
+    assert "DATABASE_URL=value_from_dotenv" in args_str
 
 
 def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
@@ -201,10 +197,10 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    assert "DATABASE_URL" in args
-    assert env._init_env_values["DATABASE_URL"] == "value_from_shell"
-    assert not any("value_from_dotenv" in a for a in args)
+    assert "DATABASE_URL=value_from_shell" in args_str
+    assert "value_from_dotenv" not in args_str
 
 
 def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
@@ -222,9 +218,9 @@ def test_init_env_args_uses_hermes_dotenv_for_empty_shell_env(monkeypatch):
     args = env._build_init_env_args()
 
     # Assert on the resolved value, not the printed -e flag: the disk value
-    # must win and a blank value must never be forwarded.
-    assert "MY_SECRET" in args
-    assert env._init_env_values["MY_SECRET"] == "value_from_dotenv"
+    # must win and a blank "MY_SECRET=" flag must never be emitted.
+    assert "MY_SECRET=value_from_dotenv" in args
+    assert "MY_SECRET=" not in args
 
 
 def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
@@ -242,9 +238,8 @@ def test_init_env_args_uses_active_profile_for_forwarded_env(monkeypatch):
         ss.reset_secret_scope(token)
         ss.set_multiplex_active(False)
 
-    assert "SERVICE_TOKEN" in args
-    assert env._init_env_values["SERVICE_TOKEN"] == "token-for-routed-profile"
-    assert not any("token-for-default" in a for a in args)
+    assert "SERVICE_TOKEN=token-for-routed-profile" in args
+    assert "SERVICE_TOKEN=token-for-default" not in args
 
 
 def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
@@ -262,9 +257,8 @@ def test_init_env_args_omits_missing_scoped_forwarded_env(monkeypatch):
         ss.reset_secret_scope(token)
         ss.set_multiplex_active(False)
 
-    assert not any("token-for-default" in a for a in args)
+    assert "SERVICE_TOKEN=token-for-default" not in args
     assert "SERVICE_TOKEN" not in args
-    assert "SERVICE_TOKEN" not in env._init_env_values
 
 
 def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
@@ -278,7 +272,7 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
     monkeypatch.setattr(
         docker_env,
         "_popen_bash",
-        lambda cmd, stdin_data=None, **kw: calls.append((cmd, stdin_data, kw)) or object(),
+        lambda cmd, stdin_data=None: calls.append((cmd, stdin_data)) or object(),
     )
     ss.set_multiplex_active(True)
     token = ss.set_secret_scope({"SERVICE_TOKEN": "token-for-profile-a"})
@@ -295,16 +289,9 @@ def test_runtime_exec_tracks_scope_and_clears_missing_value(monkeypatch):
         ss.set_multiplex_active(False)
 
     first_cmd = calls[0][0]
-    # Name-only flag in argv; the value rides in the client subprocess env
-    # (issue #96268: keep secrets out of world-readable /proc/*/cmdline).
-    assert "SERVICE_TOKEN" in first_cmd
-    assert not any("token-for-profile-a" in str(a) for a in first_cmd)
-    first_env = calls[0][2].get("env") or {}
-    assert first_env.get("SERVICE_TOKEN") == "token-for-profile-a"
+    assert "SERVICE_TOKEN=token-for-profile-a" in first_cmd
     second_cmd = calls[1][0]
-    second_env = (calls[1][2].get("env") or {})
-    assert second_env.get("SERVICE_TOKEN") != "token-for-profile-a"
-    assert not any("token-for-profile-a" in str(a) for a in second_cmd)
+    assert "SERVICE_TOKEN=token-for-profile-a" not in second_cmd
     assert "unset SERVICE_TOKEN" in second_cmd[-1]
 
 
@@ -324,19 +311,15 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
     monkeypatch.setenv("EXPLICIT_TOKEN", "token-for-default")
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
 
-    def _run_fake_docker_exec(cmd, stdin_data=None, **kwargs):
+    def _run_fake_docker_exec(cmd, stdin_data=None):
         """Execute the generated docker exec command in a real local bash."""
         container_index = cmd.index(env._container_id)
-        # Name-only -e flags (#96268): values come from the client env kwarg.
-        client_env = kwargs.get("env") or os.environ
         child_env = os.environ.copy()
         index = 2
         while index < container_index:
             assert cmd[index] == "-e"
-            key = cmd[index + 1]
-            assert "=" not in key, f"secret value leaked into argv: {key}"
-            if key in client_env:
-                child_env[key] = client_env[key]
+            key, value = cmd[index + 1].split("=", 1)
+            child_env[key] = value
             index += 2
         assert cmd[container_index + 1 : container_index + 3] == ["bash", "-c"]
         return subprocess.Popen(
@@ -378,7 +361,7 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
 
 
 def test_docker_env_appears_in_run_command(monkeypatch):
-    """Explicit docker_env values pass via name-only -e + client env (#96268)."""
+    """Explicit docker_env values should be passed via -e at docker run time."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 
@@ -386,23 +369,19 @@ def test_docker_env_appears_in_run_command(monkeypatch):
 
     run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
     assert run_calls, "docker run should have been called"
-    run_args, run_kwargs = run_calls[0]
+    run_args = run_calls[0][0]
     run_args_str = " ".join(run_args)
-    # Names in argv, values ONLY in the client subprocess env (#96268).
-    assert "SSH_AUTH_SOCK" in run_args and "GNUPGHOME" in run_args
-    assert "/run/user/1000/ssh-agent.sock" not in run_args_str
-    assert "/root/.gnupg" not in run_args_str
-    client_env = run_kwargs.get("env") or {}
-    assert client_env.get("SSH_AUTH_SOCK") == "/run/user/1000/ssh-agent.sock"
-    assert client_env.get("GNUPGHOME") == "/root/.gnupg"
+    assert "SSH_AUTH_SOCK=/run/user/1000/ssh-agent.sock" in run_args_str
+    assert "GNUPGHOME=/root/.gnupg" in run_args_str
 
 
 def _node_options_from_run(calls):
     run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
     assert run_calls, "docker run should have been called"
-    args, kwargs = run_calls[0]
-    if "NODE_OPTIONS" in args and "-e" in args:
-        return (kwargs.get("env") or {}).get("NODE_OPTIONS")
+    args = run_calls[0][0]
+    for i, a in enumerate(args):
+        if a == "-e" and i + 1 < len(args) and args[i + 1].startswith("NODE_OPTIONS="):
+            return args[i + 1].split("=", 1)[1]
     return None
 
 
@@ -435,10 +414,10 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
 
     args = env._build_init_env_args()
+    args_str = " ".join(args)
 
-    assert "MY_KEY" in args
-    assert env._init_env_values["MY_KEY"] == "dynamic_value"
-    assert not any("static_value" in a for a in args)
+    assert "MY_KEY=dynamic_value" in args_str
+    assert "MY_KEY=static_value" not in args_str
 
 
 def test_normalize_env_dict_filters_invalid_keys():
@@ -611,113 +590,6 @@ def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     )
 
 
-def _bind_mount_specs(run_args):
-    """Return every spec string passed via ``-v``."""
-    return [
-        run_args[i + 1]
-        for i, flag in enumerate(run_args[:-1])
-        if flag == "-v"
-    ]
-
-
-def test_persistent_bind_mounts_survive_a_session_key_task_id(monkeypatch, tmp_path):
-    """A gateway session key reaches the persistent sandbox path as-is, and it
-    carries colons (``session:agent:main:telegram:dm:<chat_id>``). Docker reads
-    every colon in a ``-v`` spec as a field separator, so the raw key made
-    ``docker run`` fail with "invalid spec ... too many colons" (exit 125) and
-    no tool call could run for any Telegram DM session."""
-    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path))
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = _mock_subprocess_run(monkeypatch)
-
-    _make_dummy_env(
-        task_id="session:agent:main:telegram:dm:8439114563",
-        persistent_filesystem=True,
-    )
-
-    specs = _bind_mount_specs(_run_args_from_calls(calls))
-    mounts = [s for s in specs if s.endswith((":/root", ":/workspace"))]
-    assert len(mounts) == 2, f"expected /root and /workspace binds; got {specs}"
-    for spec in mounts:
-        source, _, target = spec.rpartition(":")
-        assert ":" not in source, (
-            f"bind source still contains a colon, docker run would fail with "
-            f"'too many colons': {spec}"
-        )
-        # Docker splits on ':' — a sane spec has exactly source:target.
-        assert spec.count(":") == 1, f"spec is not a two-field bind: {spec}"
-        assert target in {"/root", "/workspace"}
-
-
-def test_distinct_session_keys_get_distinct_sandbox_dirs(monkeypatch, tmp_path):
-    """Sanitizing colons to underscores is not injective on its own: two
-    different chats must not be collapsed onto one persistent sandbox, or one
-    DM's ``/root`` (shell history, credentials, installed packages) shows up in
-    another's container."""
-    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path))
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-
-    sources = []
-    for task_id in (
-        "session:agent:main:telegram:dm:111",
-        "session:agent:main:telegram:dm:222",
-        # Collides with the first key under a plain ':' -> '_' rewrite.
-        "session_agent_main_telegram_dm_111",
-    ):
-        calls = _mock_subprocess_run(monkeypatch)
-        _make_dummy_env(task_id=task_id, persistent_filesystem=True)
-        specs = _bind_mount_specs(_run_args_from_calls(calls))
-        sources.append(
-            next(s.rpartition(":")[0] for s in specs if s.endswith(":/root"))
-        )
-
-    assert len(set(sources)) == 3, f"sandbox sources collided: {sources}"
-
-
-def test_sandbox_dir_name_keeps_existing_names_verbatim():
-    """The shared container and RL/benchmark rollouts must keep resolving to the
-    directory they already use — renaming those strands a user's installed
-    packages and /root state in an orphaned sandbox."""
-    for value in ("default", "bench-env", "astropy__astropy-12907", "v1.2.3_x"):
-        assert docker_env._sandbox_dir_name(value) == value
-
-
-def test_sandbox_dir_name_drops_separators_docker_and_the_fs_reserve():
-    """':' is what docker's -v parser splits on; '/' and '\\' would place the
-    sandbox outside its root entirely."""
-    for value in (
-        "session:agent:main:telegram:dm:8439114563",
-        "task/with:weird*chars",
-        "..\\..\\escape",
-        "../../etc",
-    ):
-        name = docker_env._sandbox_dir_name(value)
-        assert not (set(name) & set(':/\\')), name
-
-
-def test_sandbox_dir_name_is_stable_across_calls():
-    """Cross-process container reuse resolves the sandbox by name, so the
-    mapping must be a pure function of the id — no randomness, no pid."""
-    value = "session:agent:main:discord:guild:1:2"
-    assert docker_env._sandbox_dir_name(value) == docker_env._sandbox_dir_name(value)
-
-
-def test_sandbox_dir_name_bounds_pathological_ids():
-    """Long keys (a Matrix room plus thread id) must stay inside the
-    per-component filesystem limit."""
-    name = docker_env._sandbox_dir_name("session:" + "x:" * 500)
-    assert 0 < len(name) <= 128
-
-
-def test_sandbox_dir_name_never_resolves_to_the_sandbox_root():
-    """'.'/'..' would mount the docker sandbox root, and an empty component
-    would bind every task's state into one container."""
-    for value in ("", ".", "..", "  ", None):
-        name = docker_env._sandbox_dir_name(value)
-        assert name not in {"", ".", ".."}, repr(value)
-        assert not (set(name) & set(':/\\')), name
-
-
 def test_labels_attribute_populated_after_init(monkeypatch):
     """``self._labels`` must be set to the same key/value pairs that went onto
     docker run, so subsequent reuse / reaper paths can match without re-running
@@ -736,61 +608,16 @@ def test_labels_attribute_populated_after_init(monkeypatch):
     }
 
 
-def test_shared_container_key_replaces_profile_identity(monkeypatch):
-    """Trusted profiles using the same explicit key share the reuse label."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "research")
-    _mock_subprocess_run(monkeypatch)
-
-    a = _make_dummy_env(task_id="abc", shared_container_key="team/workspace")
-    b = _make_dummy_env(task_id="abc", shared_container_key="team/workspace")
-
-    # Deterministic across processes/profiles, not the profile label, and
-    # digest-suffixed (label sanitization alone is lossy).
-    assert a._labels["hermes-profile"] == b._labels["hermes-profile"]
-    assert a._labels["hermes-profile"] != "research"
-    assert a._labels["hermes-profile"].startswith("team_workspace-")
-
-
-def test_distinct_shared_keys_never_collide(monkeypatch):
-    """Label sanitization is lossy — different raw keys MUST NOT resolve to
-    one container identity, or two 'isolated' teams silently attach to the
-    same running container (filesystem, processes, env)."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "research")
-    _mock_subprocess_run(monkeypatch)
-
-    # Sanitize-collision pair: both stems clean to "team_workspace".
-    a = _make_dummy_env(task_id="abc", shared_container_key="team/workspace")
-    b = _make_dummy_env(task_id="abc", shared_container_key="team_workspace")
-    assert a._labels["hermes-profile"] != b._labels["hermes-profile"]
-
-    # Truncation pair: identical first 63 chars, differ after.
-    long_a = "x" * 70 + "A"
-    long_b = "x" * 70 + "B"
-    c = _make_dummy_env(task_id="abc", shared_container_key=long_a)
-    d = _make_dummy_env(task_id="abc", shared_container_key=long_b)
-    assert c._labels["hermes-profile"] != d._labels["hermes-profile"]
-    # Both stay within Docker's 63-char label-value bound.
-    assert len(c._labels["hermes-profile"]) <= 63
-    assert len(d._labels["hermes-profile"]) <= 63
-
-
-def test_empty_shared_container_key_preserves_profile_isolation(monkeypatch):
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "research")
-    _mock_subprocess_run(monkeypatch)
-
-    env = _make_dummy_env(task_id="abc", shared_container_key="")
-
-    assert env._labels["hermes-profile"] == "research"
-
-
 # ── Cross-process container reuse (issue #20561) ──────────────────
 
 
-def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
-                                     start_succeeds: bool = True):
+def _mock_subprocess_run_with_reuse(
+    monkeypatch,
+    ps_state: str | None,
+    start_succeeds: bool = True,
+    exec_alive: bool = True,
+    exec_error: str = "",
+):
     """Reuse-aware subprocess.run mock.
 
     ``ps_state`` controls what ``docker ps -a --filter ...`` returns:
@@ -799,6 +626,11 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
         path picks it up. ``"running"`` skips ``docker start``; other states
         trigger ``docker start`` (which can be forced to fail via
         ``start_succeeds=False``).
+
+    ``exec_alive`` controls the rootfs liveness probe (``docker exec <cid>
+    true``, issue #77301): ``True`` → rc 0 (healthy, reuse proceeds);
+    ``False`` → rc 125 with ``exec_error`` (dead mount → container removed and
+    recreated).
 
     Returns the captured call list so the test can verify which docker
     commands actually ran.
@@ -828,6 +660,20 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
                     # mirror that so the production code's except clause fires.
                     raise subprocess.CalledProcessError(1, cmd, output="", stderr="no such container")
                 return subprocess.CompletedProcess(cmd, 0, stdout="reused-cid\n", stderr="")
+            if sub == "exec":
+                # Rootfs liveness probe (docker exec <cid> true, issue #77301).
+                if not exec_alive:
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        125,
+                        stdout="",
+                        stderr=exec_error
+                        or (
+                            "Error: lstat .../overlay/<hash>/merged//etc/passwd: "
+                            "transport endpoint is not connected"
+                        ),
+                    )
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
             if sub == "run":
                 return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -860,6 +706,70 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     start_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "start"]
     assert not start_invocations, (
         f"docker start should be skipped when container already running, got: {start_invocations}"
+    )
+
+
+def test_reuse_probes_running_container(monkeypatch):
+    """The reuse path must liveness-probe a ``running`` container with
+    ``docker exec true`` before attaching. A container whose main process is
+    alive can still have a dead rootfs mount (fuse-overlayfs daemon killed by a
+    gateway restart) — ``docker ps`` state alone cannot detect that (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(monkeypatch, ps_state="running")
+
+    env = _make_dummy_env(task_id="reuse-probe")
+
+    exec_invocations = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "exec"
+    ]
+    assert exec_invocations, "reuse must probe the container's rootfs liveness"
+    assert "true" in exec_invocations[0][0], (
+        f"probe must run `docker exec <cid> true`, got: {exec_invocations[0][0]}"
+    )
+    assert env._container_id == "reused-cid"
+
+
+def test_reuse_detects_dead_rootfs_and_recreates(monkeypatch):
+    """A container that reports ``running`` but whose rootfs is dead must NOT
+    be reused — Hermes must remove it and start a fresh container, or every
+    tool call fails with ``transport endpoint is not connected`` for the whole
+    session (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        exec_alive=False,
+        exec_error=(
+            "Error: lstat /home/x/.local/share/containers/storage/overlay/"
+            "abc123/merged//etc/passwd: transport endpoint is not connected"
+        ),
+    )
+
+    env = _make_dummy_env(task_id="reuse-dead")
+
+    # The dead container must be removed...
+    rm_invocations = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
+    ]
+    assert rm_invocations, "the dead container must be removed"
+    assert "reused-cid" in rm_invocations[0][0], (
+        f"rm must target the dead container, got: {rm_invocations[0][0]}"
+    )
+    # ...and a fresh container created in its place.
+    run_invocations = [
+        c
+        for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_invocations, "a fresh docker run must replace the dead container"
+    assert env._container_id == "fresh-cid", (
+        f"expected the fresh container id, got {env._container_id!r}"
     )
 
 
@@ -1149,7 +1059,6 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     _install_fake_thread(monkeypatch)
 
     from tools import terminal_tool
-    from tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
     container_id = env._container_id
@@ -1165,7 +1074,7 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     monkeypatch.setattr(docker_env.subprocess, "run", _capturing_run)
 
     try:
-        cleanup_vm("session-close-test")
+        terminal_tool.cleanup_vm("session-close-test")
     finally:
         terminal_tool._active_environments.pop("session-close-test", None)
 
@@ -1599,6 +1508,90 @@ def test_execute_does_not_recover_on_ordinary_failure(monkeypatch):
     assert "command not found" in result.get("output", "")
 
 
+def test_execute_recovers_from_enotconn_dead_rootfs(monkeypatch):
+    """An exec failing with ``transport endpoint is not connected`` means the
+    container's rootfs mount is dead (fuse-overlayfs daemon killed by its
+    cgroup teardown). The container still exists, so Hermes must ``rm -f`` it
+    before recreating — label-based recreation alone would reuse the same
+    corpse — then retry the command once (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    subprocess_calls = _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=True,
+    )
+    env._container_id = "dead-cid"
+
+    exec_calls = []
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        exec_calls.append(command)
+        if len(exec_calls) == 1:
+            return {
+                "output": (
+                    "Error: lstat /home/x/.local/share/containers/storage/"
+                    "overlay/abc123/merged//etc/passwd: transport endpoint "
+                    "is not connected"
+                ),
+                "returncode": 125,
+            }
+        return {"output": "hello\n", "returncode": 0}
+
+    def _fake_recreate(self):
+        self._container_id = "fresh-cid"
+        self._snapshot_ready = True
+        return True
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fake_recreate
+    )
+
+    result = env.execute("echo hi")
+
+    assert result.get("returncode") == 0
+    assert result.get("output") == "hello\n"
+    assert len(exec_calls) == 2, "the command must be retried once after recreation"
+    rm_invocations = [
+        c
+        for c in subprocess_calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "rm"
+    ]
+    assert rm_invocations, "the dead container must be removed before recreation"
+    assert "dead-cid" in rm_invocations[0][0], (
+        f"rm must target the dead container, got: {rm_invocations[0][0]}"
+    )
+
+
+def test_execute_does_not_recover_from_enotconn_when_not_persistent(monkeypatch):
+    """Dead-rootfs recovery is only meaningful for the persistent, cross-process
+    container — a non-persistent session must pass the ENOTCONN error through
+    unchanged (#77301)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    _mock_subprocess_run(monkeypatch)
+    env = _make_dummy_env(
+        persistent_filesystem=True,
+        persist_across_processes=False,
+    )
+    env._container_id = "dead-cid"
+
+    def _fake_super_execute(self, command, cwd="", **kwargs):
+        return {"output": "transport endpoint is not connected", "returncode": 125}
+
+    def _fail_recreate(self):
+        pytest.fail("recreation must not run when persist_across_processes is False")
+
+    monkeypatch.setattr(docker_env.BaseEnvironment, "execute", _fake_super_execute)
+    monkeypatch.setattr(
+        docker_env.DockerEnvironment, "_recreate_container", _fail_recreate
+    )
+
+    result = env.execute("echo hi")
+    assert result.get("returncode") == 125, (
+        "the original ENOTCONN error must pass through unchanged"
+    )
+
+
 # ── /dev/shm size tests (ported from nanocoai/nanoclaw#2748) ─────────────────
 
 
@@ -1667,62 +1660,3 @@ def test_extra_args_set_shm_size_helper():
     assert docker_env._extra_args_set_shm_size(None) is False
     # non-string entries must not crash (config.yaml can be malformed)
     assert docker_env._extra_args_set_shm_size([42, None, "--shm-size=1g"]) is True
-
-
-# ── issue #96268: secrets must never appear in docker argv ────────────
-
-
-def test_forwarded_secret_values_never_in_argv(monkeypatch):
-    """Regression #96268: values must not ride in `-e KEY=VALUE` argv.
-
-    /proc/<pid>/cmdline is world-readable on Linux, so any forwarded secret
-    placed in the docker client's argv is visible to every local user via
-    plain `ps`. Names go in argv (`-e KEY`); values go in the client
-    subprocess env (owner-only /proc/<pid>/environ).
-    """
-    secret = "s3cr3t-gitlab-token-value"
-    env = _make_execute_only_env(["GITLAB_TOKEN"])
-    monkeypatch.setenv("GITLAB_TOKEN", secret)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
-
-    # init path
-    init_args = env._build_init_env_args()
-    assert "GITLAB_TOKEN" in init_args
-    assert all(secret not in a for a in init_args)
-    assert env._init_env_values["GITLAB_TOKEN"] == secret
-
-    # runtime path
-    run_args, _unsets, values = env._build_runtime_env_args_with_unsets()
-    assert "GITLAB_TOKEN" in run_args
-    assert all(secret not in a for a in run_args)
-    assert values["GITLAB_TOKEN"] == secret
-
-    # _run_bash must put the value into the spawned client's env kwarg
-    calls = []
-    monkeypatch.setattr(
-        docker_env,
-        "_popen_bash",
-        lambda cmd, stdin_data=None, **kw: calls.append((cmd, kw)) or object(),
-    )
-    env._init_env_args = init_args
-    env._init_env_values = dict(env._init_env_values)
-    env._run_bash("true", login=True)
-    cmd, kw = calls[0]
-    assert all(secret not in str(a) for a in cmd)
-    assert (kw.get("env") or {}).get("GITLAB_TOKEN") == secret
-
-
-def test_docker_run_secret_values_never_in_argv(monkeypatch):
-    """Regression #96268 for the `docker run -d` container-start path."""
-    secret = "run-time-secret-value"
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    calls = _mock_subprocess_run(monkeypatch)
-
-    _make_dummy_env(env={"MY_TOKEN": secret})
-
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
-    assert run_calls, "docker run should have been called"
-    args, kwargs = run_calls[0]
-    assert "MY_TOKEN" in args
-    assert all(secret not in str(a) for a in args)
-    assert (kwargs.get("env") or {}).get("MY_TOKEN") == secret

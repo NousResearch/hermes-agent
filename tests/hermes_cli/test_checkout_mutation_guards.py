@@ -18,9 +18,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import hermes_cli.main as main_mod
-import hermes_cli.main_install_repair as hermes_cli_main_install_repair
-from hermes_cli import main_install_repair
-from hermes_cli import update_cmd
 from hermes_cli import _early_recovery as er
 
 CHECKOUT_ROOT = Path(er.__file__).resolve().parent.parent
@@ -50,7 +47,7 @@ class TestMarkerWrites:
         # the contract is content-unchanged, not never-exists.
         before = target.read_text(encoding="utf-8") if target.exists() else None
         try:
-            update_cmd._write_marker_file(target, label="lazy-refresh-incomplete")
+            main_mod._write_marker_file(target, label="lazy-refresh-incomplete")
             after = (
                 target.read_text(encoding="utf-8") if target.exists() else None
             )
@@ -67,7 +64,7 @@ class TestMarkerWrites:
 
     def test_still_writes_sandboxed(self, tmp_path):
         target = tmp_path / ".lazy-refresh-incomplete"
-        update_cmd._write_marker_file(target, label="lazy-refresh-incomplete")
+        main_mod._write_marker_file(target, label="lazy-refresh-incomplete")
         assert target.exists()
         assert "pid=" in target.read_text(encoding="utf-8")
 
@@ -108,5 +105,4 @@ class TestLaunchRecovery:
             raise AssertionError("launch recovery ran against the live checkout")
 
         monkeypatch.setattr(main_mod, "_update_marker_path", _boom)
-        monkeypatch.setattr(hermes_cli_main_install_repair, "_update_marker_path", _boom)
         main_mod._recover_from_interrupted_install()

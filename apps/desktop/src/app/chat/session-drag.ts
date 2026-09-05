@@ -28,6 +28,7 @@
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { queryAllVisible } from '@/components/pane-shell/pane-visibility'
+import { findGroup } from '@/components/pane-shell/tree/model'
 import {
   rectContains,
   slotBefore,
@@ -37,13 +38,20 @@ import {
   type StripSnapshot,
   subZonePosition
 } from '@/components/pane-shell/tree/renderer/drag-session'
-import { $treeDragging, type DropHint, revealTreePane, SESSION_TILE_DRAG } from '@/components/pane-shell/tree/store'
+import {
+  $layoutTree,
+  $treeDragging,
+  type DropHint,
+  isMainStripPane,
+  isSessionStripPane,
+  revealTreePane,
+  SESSION_TILE_DRAG
+} from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
 import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './composer/inline-refs'
-import { tileZoneHost } from './tile-zone-host'
 
 /** A chat surface's drag-start geometry: the anchor pane id it advertises
  *  (`data-session-anchor`) and the composer a link drop routes to
@@ -72,9 +80,16 @@ function snapshotSurfaces(): SurfaceSnapshot[] {
 }
 
 /** A session may land in any zone hosting a MAIN tile — another chat stack, a
- *  Browser tile, a page — never the sidebar/terminal zones. Resolves via the
- *  shared {@link tileZoneHost} (tile-zone-host.ts) so the eligibility answer
- *  is byte-identical to what the zone overlay paints. */
+ *  Browser tile, a page — never the sidebar/terminal zones. Returns the pane a
+ *  stack anchors to, plus whether the zone hosts a CHAT surface (only those
+ *  offer the link-to-composer center; a preview zone's center stacks). */
+function tileZoneHost(groupId: string): { chat: boolean; pane: string } | null {
+  const tree = $layoutTree.get()
+  const panes = tree ? (findGroup(tree, groupId)?.panes ?? []) : []
+  const pane = panes.find(isSessionStripPane) ?? panes.find(isMainStripPane)
+
+  return pane ? { chat: panes.some(isSessionStripPane), pane } : null
+}
 
 /**
  * Begin dragging a session — a sidebar row OR a tile's own tab (same drop

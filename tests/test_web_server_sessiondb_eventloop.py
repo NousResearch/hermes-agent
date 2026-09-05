@@ -4,11 +4,6 @@ import threading
 from pathlib import Path
 
 from hermes_cli import web_server
-import hermes_cli.web_models as _web_models
-import hermes_cli.web_routers.sessions as _rt_sessions
-import hermes_cli.web_server_sessions as _web_server_sessions
-from hermes_cli import web_server_sessions
-from hermes_cli.web_routers import analytics as web_analytics
 from hermes_cli.web_routers import sessions as web_sessions
 
 
@@ -35,13 +30,12 @@ def _call_name(call: ast.Call) -> str | None:
 
 
 def test_sessiondb_handlers_open_connections_inside_executor_helpers():
-    # The session and analytics route handlers were extracted to
-    # web_routers/{sessions,analytics}.py; the executor helpers live in
-    # web_server_sessions.py (and any left in web_server.py) — scan all
-    # four modules' top-level bodies.
+    # The session route handlers were extracted to web_routers/sessions.py
+    # (wave 2); the analytics handlers and the executor helpers still live in
+    # web_server.py — scan both modules' top-level bodies.
     handlers: dict[str, ast.AsyncFunctionDef] = {}
     top_level_helpers: dict[str, ast.FunctionDef] = {}
-    for mod in (web_server, web_server_sessions, web_sessions, web_analytics):
+    for mod in (web_server, web_sessions):
         tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, ast.AsyncFunctionDef) and node.name in TARGET_HANDLERS:
@@ -81,7 +75,7 @@ def test_sessiondb_handlers_open_connections_inside_executor_helpers():
 
 
 def test_sessiondb_opens_declare_access_mode():
-    for mod in (web_server_sessions, web_sessions):
+    for mod in (web_server, web_sessions):
         tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
         calls = [
             node
@@ -113,11 +107,11 @@ def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
         db_modes.append(read_only)
         return _DB()
 
-    monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
+    monkeypatch.setattr(web_server, "_open_session_db_for_profile", _open_db)
 
     result = asyncio.run(
-        _rt_sessions.bulk_delete_sessions_endpoint(
-            _web_models.BulkDeleteSessions(ids=["one", "two"])
+        web_server.bulk_delete_sessions_endpoint(
+            web_server.BulkDeleteSessions(ids=["one", "two"])
         )
     )
 

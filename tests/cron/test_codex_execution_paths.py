@@ -17,7 +17,8 @@ from gateway.session import SessionSource
 
 def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(
-        "model_tools.get_tool_definitions",
+        run_agent,
+        "get_tool_definitions",
         lambda **kwargs: [
             {
                 "type": "function",
@@ -29,7 +30,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
 
 
 def _codex_message_response(text: str):
@@ -93,7 +94,7 @@ class _Codex401ThenSuccessAgent(run_agent.AIAgent):
 
 def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -124,7 +125,7 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
 
 def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(
         gateway_run,

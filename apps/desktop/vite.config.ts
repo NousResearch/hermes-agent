@@ -139,20 +139,7 @@ export default defineConfig(({ command }) => ({
             // the heavy chunk, and the entry then statically imports 19 MB of
             // shiki just to reach react/hast utils — putting the heavy chunk
             // right back on the boot path.
-            //
-            // @tanstack/react-query is here for the same reason react-router
-            // is: it carries MODULE-LEVEL context (QueryClientContext) that
-            // the entry's QueryClientProvider and every lazy chunk's useQuery
-            // must share. Left to rolldown's merge heuristics, an unmatched
-            // shared module can be inlined into a lazy chunk — the packaged
-            // app then runs TWO react-query runtimes, the provider's context
-            // is invisible to the other copy, and useQuery throws "No
-            // QueryClient set, use QueryClientProvider to set one" on the
-            // launch path (#95560). Grouping it forces one shared instance.
-            {
-              name: 'vendor-react',
-              test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack[\\/]react-query)[\\/]/
-            },
+            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler|react-router)[\\/]/ },
             {
               name: 'vendor-md',
               test: /node_modules[\\/](property-information|hast-util-[^\\/]+|mdast-util-[^\\/]+|micromark[^\\/]*|unist-util-[^\\/]+|vfile[^\\/]*|unified|stringify-entities|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|devlop|style-to-js|style-to-object|clsx)[\\/]/
@@ -222,7 +209,7 @@ export default defineConfig(({ command }) => ({
       'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
       'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
-    dedupe: ['react', 'react-dom', 'react-router', '@tanstack/react-query']
+    dedupe: ['react', 'react-dom', 'react-router']
   },
   server: {
     host: '127.0.0.1',

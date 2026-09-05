@@ -487,7 +487,7 @@ function SessionRow({
     if (!isExpanded || messages !== null) return;
     let cancelled = false;
     api
-      .getSessionMessages(session.id, session.profile)
+      .getSessionMessages(session.id)
       .then((resp) => {
         if (!cancelled) setMessages(resp.messages);
       })
@@ -497,7 +497,7 @@ function SessionRow({
     return () => {
       cancelled = true;
     };
-  }, [isExpanded, session.id, session.profile, messages]);
+  }, [isExpanded, session.id, messages]);
 
   const sourceKey = session.source?.split(":")[0];
   const sourceInfo = (session.source
@@ -1274,22 +1274,11 @@ export default function SessionsPage() {
     };
   }, [search, sessionQueryOptions]);
 
-  // The profile a listed row was read from — the store that owns it. Every
-  // per-row request (delete, rename, export, messages) must go there, not to
-  // the global management profile, which lags the row (it stays "" while the
-  // sticky active profile equals the dashboard process's own, so the request
-  // hits the process store — a delete then "succeeds" as already_absent).
-  // Search rows carry no stamp: undefined falls back to the management profile.
-  const rowProfile = useCallback(
-    (id: string) => sessions.find((s) => s.id === id)?.profile,
-    [sessions],
-  );
-
   const sessionDelete = useConfirmDelete({
     onDelete: useCallback(
       async (id: string) => {
         try {
-          await api.deleteSession(id, rowProfile(id));
+          await api.deleteSession(id);
           setSessions((prev) => prev.filter((s) => s.id !== id));
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
@@ -1315,7 +1304,6 @@ export default function SessionsPage() {
       [
         expandedId,
         refreshEmptyCount,
-        rowProfile,
         showToast,
         loadStats,
         t.sessions.sessionDeleted,
@@ -1385,13 +1373,7 @@ export default function SessionsPage() {
     }
     setDeletingSelected(true);
     try {
-      // The selection comes from one listed page, so its rows share one
-      // owning profile; a mixed selection falls back to the management profile.
-      const owners = new Set(ids.map(rowProfile));
-      const resp = await api.bulkDeleteSessions(
-        ids,
-        owners.size === 1 ? [...owners][0] : undefined,
-      );
+      const resp = await api.bulkDeleteSessions(ids);
       showToast(
         t.sessions.selectedSessionsDeleted.replace(
           "{count}",
@@ -1422,7 +1404,6 @@ export default function SessionsPage() {
     loadSessions,
     page,
     refreshEmptyCount,
-    rowProfile,
     selectedIds,
     showToast,
     t.sessions.failedToDeleteSelected,
@@ -1468,7 +1449,7 @@ export default function SessionsPage() {
   const handleRename = useCallback(
     async (id: string, title: string) => {
       try {
-        await api.renameSession(id, title, rowProfile(id));
+        await api.renameSession(id, title);
         setSessions((prev) =>
           prev.map((s) => (s.id === id ? { ...s, title } : s)),
         );
@@ -1481,13 +1462,13 @@ export default function SessionsPage() {
         showToast("Failed to rename session", "error");
       }
     },
-    [rowProfile, showToast, loadStats],
+    [showToast, loadStats],
   );
 
   const handleExport = useCallback(
     async (id: string) => {
       try {
-        const res = await fetch(api.exportSessionUrl(id, rowProfile(id)), {
+        const res = await fetch(api.exportSessionUrl(id), {
           credentials: "include",
           headers: {
             "X-Hermes-Session-Token":
@@ -1507,7 +1488,7 @@ export default function SessionsPage() {
         showToast("Failed to export session", "error");
       }
     },
-    [rowProfile, showToast],
+    [showToast],
   );
 
   const handlePrune = useCallback(async () => {

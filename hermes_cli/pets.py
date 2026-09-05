@@ -1,4 +1,12 @@
-"""CLI subcommand: ``hermes pets <subcommand>``."""
+"""CLI subcommand: ``hermes pets <subcommand>``.
+
+Thin shell around :mod:`agent.pet`.  Browses the public petdex gallery,
+installs pets into the profile's ``pets/`` directory, selects the active
+mascot (writes ``display.pet.*`` to config.yaml), and runs a doctor check.
+
+No side effects at import time — ``main.py`` wires the argparse subparsers on
+demand via :func:`register_cli`.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +14,10 @@ import argparse
 import sys
 
 from utils import is_truthy_value
+
+
+def _print(msg: str = "") -> None:
+    print(msg)
 
 
 def _err(msg: str) -> None:
@@ -16,14 +28,14 @@ def _cmd_list(args) -> int:
     """List gallery pets (or only installed ones with ``--installed``)."""
     from agent.pet import store
 
-    if args.installed:
+    if getattr(args, "installed", False):
         pets = store.installed_pets()
         if not pets:
-            print("No pets installed. Try: hermes pets install boba")
+            _print("No pets installed. Try: hermes pets install boba")
             return 0
-        print(f"Installed pets ({len(pets)}):")
+        _print(f"Installed pets ({len(pets)}):")
         for pet in pets:
-            print(f"  {pet.slug:<24} {pet.display_name}")
+            _print(f"  {pet.slug:<24} {pet.display_name}")
         return 0
 
     from agent.pet.manifest import ManifestError, fetch_manifest
@@ -34,21 +46,25 @@ def _cmd_list(args) -> int:
         _err(f"✗ {exc}")
         return 1
 
-    query = (args.query or "").strip().lower()
+    query = (getattr(args, "query", "") or "").strip().lower()
     if query:
-        entries = [e for e in entries if query in e.slug.lower() or query in e.display_name.lower()]
+        entries = [
+            e
+            for e in entries
+            if query in e.slug.lower() or query in e.display_name.lower()
+        ]
 
-    limit = args.limit or 0
+    limit = getattr(args, "limit", 0) or 0
     shown = entries[:limit] if limit > 0 else entries
     installed = {p.slug for p in store.installed_pets()}
 
-    print(f"petdex gallery — {len(entries)} pet(s){' matching ' + repr(query) if query else ''}:")
+    _print(f"petdex gallery — {len(entries)} pet(s){' matching ' + repr(query) if query else ''}:")
     for entry in shown:
         mark = "✓" if entry.slug in installed else " "
-        print(f"  {mark} {entry.slug:<28} {entry.display_name}  ({entry.kind})")
+        _print(f"  {mark} {entry.slug:<28} {entry.display_name}  ({entry.kind})")
     if limit and len(entries) > limit:
-        print(f"  … {len(entries) - limit} more (use --limit 0 or --query to filter)")
-    print("\nInstall one with: hermes pets install <slug>")
+        _print(f"  … {len(entries) - limit} more (use --limit 0 or --query to filter)")
+    _print("\nInstall one with: hermes pets install <slug>")
     return 0
 
 
@@ -58,18 +74,18 @@ def _cmd_install(args) -> int:
 
     slug = args.slug.strip()
     try:
-        pet = store.install_pet(slug, force=args.force)
+        pet = store.install_pet(slug, force=getattr(args, "force", False))
     except (store.PetStoreError, ManifestError) as exc:
         _err(f"✗ install failed: {exc}")
         return 1
 
-    print(f"✓ installed {pet.display_name} → {pet.directory}")
+    _print(f"✓ installed {pet.display_name} → {pet.directory}")
 
-    if args.select or not _has_active_pet():
+    if getattr(args, "select", False) or not _has_active_pet():
         _set_active(slug)
-        print(f"✓ {pet.display_name} is now the active pet (display.pet.slug={slug}, enabled)")
+        _print(f"✓ {pet.display_name} is now the active pet (display.pet.slug={slug}, enabled)")
     else:
-        print(f"  Make it active with: hermes pets select {slug}")
+        _print(f"  Make it active with: hermes pets select {slug}")
     return 0
 
 
@@ -78,7 +94,7 @@ def _cmd_remove(args) -> int:
 
     slug = args.slug.strip()
     if store.remove_pet(slug):
-        print(f"✓ removed {slug}")
+        _print(f"✓ removed {slug}")
         return 0
     _err(f"✗ '{slug}' is not installed")
     return 1
@@ -87,7 +103,7 @@ def _cmd_remove(args) -> int:
 def _cmd_select(args) -> int:
     from agent.pet import store
 
-    slug = (args.slug or "").strip()
+    slug = (getattr(args, "slug", "") or "").strip()
     if not slug:
         pets = store.installed_pets()
         if not pets:
@@ -103,13 +119,13 @@ def _cmd_select(args) -> int:
         return 1
 
     _set_active(slug)
-    print(f"✓ active pet set to {pet.display_name} (display.pet.slug={slug}, enabled)")
+    _print(f"✓ active pet set to {pet.display_name} (display.pet.slug={slug}, enabled)")
     return 0
 
 
 def _cmd_off(args) -> int:
     _set_enabled(False)
-    print("✓ pet disabled (display.pet.enabled=false)")
+    _print("✓ pet disabled (display.pet.enabled=false)")
     return 0
 
 
@@ -119,14 +135,17 @@ def _cmd_scale(args) -> int:
     if err:
         _err(f"✗ {err}")
         return 1
-    print(f"✓ pet scale set to {scale:g} (display.pet.scale)")
+    _print(f"✓ pet scale set to {scale:g} (display.pet.scale)")
     return 0
 
 
 def _cmd_show(args) -> int:
-    """Animate the active (or named) pet in the terminal via the shared PetRenderer
-    (kitty/iTerm2/sixel when supported, else truecolor half-block fallback). Ctrl+C stops."""
-    import shutil
+    """Animate the active (or named) pet in the terminal.
+
+    Uses the shared :class:`~agent.pet.render.PetRenderer` — full graphics
+    protocol (kitty/iTerm2/sixel) when the terminal supports it, else a
+    truecolor Unicode half-block fallback.  Ctrl+C to stop.
+    """
     import time
 
     from agent.pet import store
@@ -134,26 +153,34 @@ def _cmd_show(args) -> int:
     from agent.pet.render import build_renderer
 
     cfg = _pet_config()
-    slug = (args.slug or "").strip() or str(cfg.get("slug", "") or "")
+    slug = (getattr(args, "slug", "") or "").strip() or str(cfg.get("slug", "") or "")
     pet = store.resolve_active_pet(slug)
     if pet is None:
         _err("✗ no pet to show — run: hermes pets install boba")
         return 1
 
-    mode_cfg = args.mode or str(cfg.get("render_mode", "auto") or "auto")
-    scale = float(args.scale or cfg.get("scale", DEFAULT_SCALE) or DEFAULT_SCALE)
+    mode_cfg = getattr(args, "mode", None) or str(cfg.get("render_mode", "auto") or "auto")
+    scale = float(getattr(args, "scale", 0) or cfg.get("scale", DEFAULT_SCALE) or DEFAULT_SCALE)
     cols = resolve_cols(scale, cfg.get("unicode_cols", 0))
 
-    renderer = build_renderer(pet.spritesheet, configured_mode=mode_cfg, scale=scale, unicode_cols=cols)
+    renderer = build_renderer(
+        pet.spritesheet,
+        configured_mode=mode_cfg,
+        scale=scale,
+        unicode_cols=cols,
+    )
     if not renderer.available:
-        _err(f"✗ cannot render here (no TTY / graphics disabled). Effective mode: {renderer.mode}.")
+        _err(
+            "✗ cannot render here (no TTY / graphics disabled). "
+            f"Effective mode: {renderer.mode}."
+        )
         return 1
 
     # Which states to play: one named state, or cycle the driveable rows.
-    requested = (args.state or "").strip().lower()
+    requested = (getattr(args, "state", "") or "").strip().lower()
     if requested:
         states = [requested]
-    elif args.cycle:
+    elif getattr(args, "cycle", False):
         states = [s for s in STATE_ROWS if s in {e.value for e in PetState}]
     else:
         states = [PetState.IDLE.value]
@@ -161,22 +188,31 @@ def _cmd_show(args) -> int:
     is_unicode = renderer.mode == "unicode"
     frame_delay = max(0.05, (LOOP_MS / 1000.0) / max(1, renderer.frame_count(states[0]) or 1))
 
-    # Right-align against the terminal's right edge — half-blocks by indenting each row, graphics
-    # protocols by padding the cursor (kitty/iTerm/sixel all render at the cursor).
+    # Right-align the sprite against the terminal's right edge — half-blocks by
+    # indenting each row, graphics protocols by padding the cursor to the right
+    # column before the image draws (kitty/iTerm/sixel all render at the cursor).
+    import shutil
+
     term_cols = shutil.get_terminal_size((80, 24)).columns
-    sprite_cols = cols if is_unicode else max(1, int(renderer.frame_w * renderer.scale) // 8)
-    indent = " " * max(0, term_cols - sprite_cols - 1)
+    indent = ""
+    g_indent = ""
+    if is_unicode:
+        indent = " " * max(0, term_cols - cols - 1)
+    else:
+        cell_cols = max(1, int(renderer.frame_w * renderer.scale) // 8)
+        g_indent = " " * max(0, term_cols - cell_cols - 1)
 
     out = sys.stdout
     out.write("\x1b[?25l")  # hide cursor
     out.flush()
     prev_lines = 0
     try:
-        print(f"{pet.display_name} — mode={renderer.mode}  (Ctrl+C to stop)")
+        _print(f"{pet.display_name} — mode={renderer.mode}  (Ctrl+C to stop)")
         loops = 0
         while True:
             for state in states:
-                for i in range(renderer.frame_count(state) or 1):
+                count = renderer.frame_count(state) or 1
+                for i in range(count):
                     encoded = renderer.frame(state, i)
                     if is_unicode:
                         if indent:
@@ -185,16 +221,20 @@ def _cmd_show(args) -> int:
                             out.write(f"\x1b[{prev_lines}F")  # cursor up to redraw in place
                         out.write(encoded)
                         out.write("\x1b[0m\n")
-                        # Lines drawn = sprite rows + trailing newline; the next frame overwrites.
+                        # Lines drawn = sprite rows + the trailing newline; move
+                        # back up exactly that many so the next frame overwrites.
                         prev_lines = encoded.count("\n") + 1
                     else:
                         out.write("\x1b[2J\x1b[3J\x1b[H")  # clear for image protocols
                         out.write(f"{pet.display_name} [{state}]\n")
-                        out.write(indent + encoded + "\n")
+                        if g_indent:
+                            out.write(g_indent)
+                        out.write(encoded)
+                        out.write("\n")
                     out.flush()
                     time.sleep(frame_delay)
             loops += 1
-            if args.once and loops >= len(states):
+            if getattr(args, "once", False) and loops >= len(states):
                 break
     except KeyboardInterrupt:
         pass
@@ -211,44 +251,46 @@ def _cmd_doctor(args) -> int:
     from agent.pet.render import detect_terminal_graphics, resolve_mode
 
     cfg = _pet_config()
-    enabled = _pet_enabled(cfg)
+    enabled = is_truthy_value(cfg.get("enabled"), default=False)
     configured_slug = str(cfg.get("slug", "") or "")
     mode_cfg = str(cfg.get("render_mode", "auto") or "auto")
 
     pets = store.installed_pets()
     active = store.resolve_active_pet(configured_slug)
 
-    print("petdex doctor")
-    print(f"  pets dir:        {store.pets_dir()}")
-    print(f"  installed:       {len(pets)} ({', '.join(p.slug for p in pets) or 'none'})")
-    print(f"  display.pet.enabled:     {enabled}")
-    print(f"  display.pet.slug:        {configured_slug or '(unset)'}")
-    print(f"  active (resolved):       {active.slug if active else '(none)'}")
-    print(f"  display.pet.render_mode: {mode_cfg}")
-    print(f"  detected graphics:       {detect_terminal_graphics()}")
-    print(f"  effective mode (TTY):    {resolve_mode(mode_cfg)}")
+    _print("petdex doctor")
+    _print(f"  pets dir:        {store.pets_dir()}")
+    _print(f"  installed:       {len(pets)} ({', '.join(p.slug for p in pets) or 'none'})")
+    _print(f"  display.pet.enabled:     {enabled}")
+    _print(f"  display.pet.slug:        {configured_slug or '(unset)'}")
+    _print(f"  active (resolved):       {active.slug if active else '(none)'}")
+    _print(f"  display.pet.render_mode: {mode_cfg}")
+    _print(f"  detected graphics:       {detect_terminal_graphics()}")
+    _print(f"  effective mode (TTY):    {resolve_mode(mode_cfg)}")
 
     ok = True
     if not pets:
-        print("  → no pets installed. Run: hermes pets install boba")
+        _print("  → no pets installed. Run: hermes pets install boba")
         ok = False
     elif active is None:
-        print("  → active pet unresolved. Run: hermes pets select <slug>")
+        _print("  → active pet unresolved. Run: hermes pets select <slug>")
         ok = False
     elif not enabled:
-        print("  → pet display is disabled. Run: hermes pets select " + active.slug)
+        _print("  → pet display is disabled. Run: hermes pets select " + active.slug)
 
     try:
         import PIL  # noqa: F401
     except ImportError:
-        print("  ✗ Pillow not importable — sprite decoding will be unavailable")
+        _print("  ✗ Pillow not importable — sprite decoding will be unavailable")
         ok = False
 
-    print("  ✓ ready" if ok and enabled else "  (run the suggestions above to finish setup)")
+    _print("  ✓ ready" if ok and enabled else "  (run the suggestions above to finish setup)")
     return 0
 
 
-# ── config helpers ────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
+# config helpers
+# ─────────────────────────────────────────────────────────────────────────
 
 def _pet_config() -> dict:
     from hermes_cli.config import load_config
@@ -260,43 +302,49 @@ def _pet_config() -> dict:
 
 
 def _has_active_pet() -> bool:
-    cfg = _pet_config()
-    return _pet_enabled(cfg) and bool(cfg.get("slug"))
-
-
-def _pet_enabled(cfg: dict) -> bool:
-    return is_truthy_value(cfg.get("enabled"), default=False)
-
-
-def _update_pet_config(when_slug: str | None = None, **values) -> bool:
-    """Write ``display.pet.*`` keys and save config; returns whether anything was written.
-
-    With ``when_slug`` the write only happens when the configured slug equals it (remove/rename
-    must never disturb a different active pet).
-    """
-    from hermes_cli.config import load_config, save_config
-
-    cfg = load_config()
-    pet = cfg.setdefault("display", {}).setdefault("pet", {})
-    if when_slug is not None and (not isinstance(pet, dict) or str(pet.get("slug", "") or "") != when_slug):
-        return False
-    pet.update(values)
-    save_config(cfg)
-    return True
+    return is_truthy_value(_pet_config().get("enabled"), default=False) and bool(
+        _pet_config().get("slug")
+    )
 
 
 def _set_active(slug: str) -> None:
-    _update_pet_config(slug=slug, enabled=True)
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    display = cfg.setdefault("display", {})
+    pet = display.setdefault("pet", {})
+    pet["slug"] = slug
+    pet["enabled"] = True
+    save_config(cfg)
 
 
 def _set_enabled(enabled: bool) -> None:
-    _update_pet_config(enabled=enabled)
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    display = cfg.setdefault("display", {})
+    pet = display.setdefault("pet", {})
+    pet["enabled"] = enabled
+    save_config(cfg)
+
+
+def _set_scale(scale: float) -> None:
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    display = cfg.setdefault("display", {})
+    pet = display.setdefault("pet", {})
+    pet["scale"] = scale
+    save_config(cfg)
 
 
 def set_pet_scale(value: float | str) -> tuple[float, str | None]:
-    """Set ``display.pet.scale`` (clamped). Returns ``(applied, error)``; *error* is set (and
-    nothing written) only when *value* isn't a number. Single write path behind ``/pet scale``
-    and the desktop slider."""
+    """Set ``display.pet.scale`` (clamped to bounds). Returns ``(applied, error)``.
+
+    The single write path behind ``/pet scale`` and the desktop slider, so every
+    surface that resolves scale from config picks it up identically. *error* is
+    set (and nothing written) only when *value* isn't a number.
+    """
     from agent.pet.constants import clamp_scale
 
     try:
@@ -304,18 +352,23 @@ def set_pet_scale(value: float | str) -> tuple[float, str | None]:
     except (TypeError, ValueError):
         return 0.0, f"not a number: {value!r} — try a value like 0.5"
 
-    _update_pet_config(scale=scale)
+    _set_scale(scale)
     return scale, None
 
 
 def toggle_pet_display() -> tuple[bool, str | None, str | None]:
-    """Toggle ``display.pet.enabled``."""
+    """Toggle ``display.pet.enabled``.
+
+    Returns ``(enabled, display_name, error_message)``. *error_message* is set
+    when turning on but nothing is installed to show.
+    """
     from agent.pet import store
 
     cfg = _pet_config()
-    pet = store.resolve_active_pet(str(cfg.get("slug", "") or ""))
+    slug = str(cfg.get("slug", "") or "")
+    pet = store.resolve_active_pet(slug)
 
-    if _pet_enabled(cfg):
+    if is_truthy_value(cfg.get("enabled"), default=False):
         _set_enabled(False)
         return False, pet.display_name if pet else None, None
 
@@ -351,25 +404,50 @@ def print_pet_gallery(*, limit: int = 20) -> None:
 
 
 def _clear_active_if(slug: str) -> bool:
-    """Disable + unset the active pet iff it's ``slug`` (e.g. after removal)."""
-    return _update_pet_config(when_slug=slug, slug="", enabled=False)
+    """Disable + unset the active pet iff it's ``slug`` (e.g. after removal).
+
+    Returns whether anything changed, so callers don't write config needlessly.
+    """
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    pet = cfg.setdefault("display", {}).setdefault("pet", {})
+    if not isinstance(pet, dict) or str(pet.get("slug", "") or "") != slug:
+        return False
+    pet["slug"] = ""
+    pet["enabled"] = False
+    save_config(cfg)
+    return True
 
 
 def _rename_active_if(old_slug: str, new_slug: str) -> bool:
-    """Repoint the active pet from ``old_slug`` to ``new_slug`` iff it's active (a rename moves
-    the dir; config must follow). Preserves ``enabled``."""
+    """Repoint the active pet from ``old_slug`` to ``new_slug`` iff it's active.
+
+    Used when a rename realigns a pet's slug/dir: if the renamed pet was the
+    active one, the config must follow or surfaces point at a now-missing dir.
+    Preserves the ``enabled`` flag. Returns whether anything changed.
+    """
     if not new_slug or old_slug == new_slug:
         return False
-    return _update_pet_config(when_slug=old_slug, slug=new_slug)
+    from hermes_cli.config import load_config, save_config
+
+    cfg = load_config()
+    pet = cfg.setdefault("display", {}).setdefault("pet", {})
+    if not isinstance(pet, dict) or str(pet.get("slug", "") or "") != old_slug:
+        return False
+    pet["slug"] = new_slug
+    save_config(cfg)
+    return True
 
 
 def _interactive_pick(pets) -> str:
     """Minimal numbered picker (avoids curses dep for a tiny list)."""
-    print("Installed pets:")
+    _print("Installed pets:")
     for i, pet in enumerate(pets, 1):
-        print(f"  {i}. {pet.slug:<24} {pet.display_name}")
+        _print(f"  {i}. {pet.slug:<24} {pet.display_name}")
     try:
-        idx = int(input("Select a pet [1]: ").strip() or "1") - 1
+        choice = input("Select a pet [1]: ").strip() or "1"
+        idx = int(choice) - 1
     except (EOFError, KeyboardInterrupt, ValueError):
         _err("✗ cancelled")
         return ""
@@ -379,49 +457,50 @@ def _interactive_pick(pets) -> str:
     return ""
 
 
-# ── argparse wiring ───────────────────────────────────────────────────────
-
-# (name, help, handler, [((flags...), add_argument kwargs), ...]) — registration order is menu order.
-_SUBCOMMANDS = (
-    ("list", "Browse the petdex gallery", _cmd_list, (
-        (("query",), dict(nargs="?", default="", help="Filter by slug/name substring")),
-        (("--installed",), dict(action="store_true", help="Only show installed pets")),
-        (("--limit",), dict(type=int, default=40, help="Max rows (0 = all)")),
-    )),
-    ("install", "Install a pet from the gallery", _cmd_install, (
-        (("slug",), dict(help="Pet slug (e.g. boba)")),
-        (("--force",), dict(action="store_true", help="Re-download even if present")),
-        (("--select",), dict(action="store_true", help="Make it the active pet")),
-    )),
-    ("select", "Set the active pet (writes display.pet.*)", _cmd_select, (
-        (("slug",), dict(nargs="?", default="", help="Pet slug (omit for picker)")),
-    )),
-    ("show", "Animate the active pet in the terminal", _cmd_show, (
-        (("slug",), dict(nargs="?", default="", help="Pet slug (default: active)")),
-        (("--state",), dict(default="", help="Single state: idle/run/review/failed/wave/jump")),
-        (("--cycle",), dict(action="store_true", help="Cycle through all states")),
-        (("--once",), dict(action="store_true", help="Play once instead of looping")),
-        (("--mode",), dict(default=None, help="Override render mode (kitty/iterm/sixel/unicode/auto)")),
-        (("--scale",), dict(type=float, default=0, help="Override scale (0 = config)")),
-    )),
-    ("off", "Disable the pet display", _cmd_off, ()),
-    ("scale", "Resize the pet everywhere (display.pet.scale)", _cmd_scale, (
-        (("factor",), dict(help="Scale factor, e.g. 0.5 (clamped 0.1–3.0)")),
-    )),
-    ("remove", "Delete an installed pet", _cmd_remove, (
-        (("slug",), dict(help="Pet slug")),
-    )),
-    ("doctor", "Check pet setup + terminal graphics support", _cmd_doctor, ()),
-)
-
+# ─────────────────────────────────────────────────────────────────────────
+# argparse wiring
+# ─────────────────────────────────────────────────────────────────────────
 
 def register_cli(parent: argparse.ArgumentParser) -> None:
     """Attach ``pets`` subcommands to *parent* (called by main.py)."""
     parent.set_defaults(func=lambda a: (parent.print_help(), 0)[1])
     subs = parent.add_subparsers(dest="pets_command")
 
-    for name, help_text, func, arguments in _SUBCOMMANDS:
-        sub = subs.add_parser(name, help=help_text)
-        for flags, kwargs in arguments:
-            sub.add_argument(*flags, **kwargs)
-        sub.set_defaults(func=func)
+    p_list = subs.add_parser("list", help="Browse the petdex gallery")
+    p_list.add_argument("query", nargs="?", default="", help="Filter by slug/name substring")
+    p_list.add_argument("--installed", action="store_true", help="Only show installed pets")
+    p_list.add_argument("--limit", type=int, default=40, help="Max rows (0 = all)")
+    p_list.set_defaults(func=_cmd_list)
+
+    p_install = subs.add_parser("install", help="Install a pet from the gallery")
+    p_install.add_argument("slug", help="Pet slug (e.g. boba)")
+    p_install.add_argument("--force", action="store_true", help="Re-download even if present")
+    p_install.add_argument("--select", action="store_true", help="Make it the active pet")
+    p_install.set_defaults(func=_cmd_install)
+
+    p_select = subs.add_parser("select", help="Set the active pet (writes display.pet.*)")
+    p_select.add_argument("slug", nargs="?", default="", help="Pet slug (omit for picker)")
+    p_select.set_defaults(func=_cmd_select)
+
+    p_show = subs.add_parser("show", help="Animate the active pet in the terminal")
+    p_show.add_argument("slug", nargs="?", default="", help="Pet slug (default: active)")
+    p_show.add_argument("--state", default="", help="Single state: idle/run/review/failed/wave/jump")
+    p_show.add_argument("--cycle", action="store_true", help="Cycle through all states")
+    p_show.add_argument("--once", action="store_true", help="Play once instead of looping")
+    p_show.add_argument("--mode", default=None, help="Override render mode (kitty/iterm/sixel/unicode/auto)")
+    p_show.add_argument("--scale", type=float, default=0, help="Override scale (0 = config)")
+    p_show.set_defaults(func=_cmd_show)
+
+    subs.add_parser("off", help="Disable the pet display").set_defaults(func=_cmd_off)
+
+    p_scale = subs.add_parser("scale", help="Resize the pet everywhere (display.pet.scale)")
+    p_scale.add_argument("factor", help="Scale factor, e.g. 0.5 (clamped 0.1–3.0)")
+    p_scale.set_defaults(func=_cmd_scale)
+
+    p_remove = subs.add_parser("remove", help="Delete an installed pet")
+    p_remove.add_argument("slug", help="Pet slug")
+    p_remove.set_defaults(func=_cmd_remove)
+
+    subs.add_parser("doctor", help="Check pet setup + terminal graphics support").set_defaults(
+        func=_cmd_doctor
+    )

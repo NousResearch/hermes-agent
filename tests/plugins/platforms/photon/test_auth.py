@@ -340,17 +340,16 @@ def test_credential_summary_no_secret_leak(
         project_secret="secret-bbbbbbbbbbb",
         dashboard_project_id="dash-uuid",
     )
-    lines: list[str] = []
-    photon_auth.print_credential_summary(lines.append)
-    blob = "\n".join(lines)
+    summary = photon_auth.credential_summary()
+    blob = "\n".join(summary.values())
     assert "token-aaaa" not in blob
     assert "secret-bbbb" not in blob
-    assert "device token        : ✓" in blob
-    assert "project secret      : ✓" in blob
+    assert summary["device_token"].startswith("✓")
+    assert summary["project_key"].startswith("✓")
     # Unified id: dashboard id == Spectrum id, surfaced as one project id.
-    assert "project id          : sp-uuid" in blob
-    assert "my number           : ✗ missing" in blob
-    assert "assigned number     : ✗ missing" in blob
+    assert summary["project_id"] == "sp-uuid"
+    assert summary["phone_number"].startswith("✗ missing")
+    assert summary["assigned_phone_number"].startswith("✗ missing")
 
 
 # ---------------------------------------------------------------------------

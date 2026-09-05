@@ -6,14 +6,10 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from tools import mcp_tool_discovery as _mcp_discovery
-from tools import mcp_tool_lifecycle as _mcp_lifecycle
-from tools import mcp_tool_loop as _mcp_loop
 
 
 def _reset_mcp_state(mcp_tool) -> None:
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers()
+    mcp_tool.shutdown_mcp_servers()
     with mcp_tool._lock:
         mcp_tool._servers.clear()
         mcp_tool._server_connecting.clear()
@@ -21,16 +17,14 @@ def _reset_mcp_state(mcp_tool) -> None:
 
 
 def _cleanup_mcp_state(mcp_tool, extra_servers=()) -> None:
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    from tools.mcp_tool_loop import _run_on_mcp_loop
     with mcp_tool._lock:
         loop = mcp_tool._mcp_loop
     if loop is not None and loop.is_running():
         for server in extra_servers:
             task = getattr(server, "_task", None)
             if task is not None and not task.done():
-                _run_on_mcp_loop(server.shutdown, timeout=5)
-    shutdown_mcp_servers()
+                mcp_tool._run_on_mcp_loop(server.shutdown, timeout=5)
+    mcp_tool.shutdown_mcp_servers()
     with mcp_tool._lock:
         mcp_tool._servers.clear()
         mcp_tool._server_connecting.clear()
@@ -59,7 +53,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 0)
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 3600)
 
-    real_stop = _mcp_loop._stop_mcp_loop
+    real_stop = mcp_tool._stop_mcp_loop
     pending_at_stop = []
 
     async def _pending_tasks():
@@ -72,14 +66,14 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
 
     def _observed_stop(*, only_if_idle=False):
         pending_at_stop.extend(
-            _mcp_loop._run_on_mcp_loop(_pending_tasks, timeout=5)
+            mcp_tool._run_on_mcp_loop(_pending_tasks, timeout=5)
         )
         return real_stop(only_if_idle=only_if_idle)
 
-    monkeypatch.setattr(_mcp_loop, "_stop_mcp_loop", _observed_stop)
+    monkeypatch.setattr(mcp_tool, "_stop_mcp_loop", _observed_stop)
 
     try:
-        assert _mcp_discovery.register_mcp_servers({
+        assert mcp_tool.register_mcp_servers({
             "initial-failure": {"command": "unused", "connect_timeout": 5}
         }) == []
 
@@ -93,7 +87,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
         assert server._task is not None
         assert not server._task.done(), "recoverable initial failure was not parked"
 
-        _mcp_lifecycle.shutdown_mcp_servers()
+        mcp_tool.shutdown_mcp_servers()
 
         assert pending_at_stop == [], (
             "shutdown left MCP tasks pending at loop stop: "
@@ -104,7 +98,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
             assert mcp_tool._mcp_loop is None
             assert mcp_tool._mcp_thread is None
     finally:
-        monkeypatch.setattr(_mcp_loop, "_stop_mcp_loop", real_stop)
+        monkeypatch.setattr(mcp_tool, "_stop_mcp_loop", real_stop)
         _cleanup_mcp_state(mcp_tool, created)
 
 
@@ -170,7 +164,7 @@ def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp
     }
 
     try:
-        assert _mcp_discovery.register_mcp_servers(config) == []
+        assert mcp_tool.register_mcp_servers(config) == []
         assert len(created) == 1
         server = created[0]
         with mcp_tool._lock:
@@ -181,7 +175,7 @@ def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp
         assert not server._task.done()
 
         backend_up.set()
-        _mcp_discovery.register_mcp_servers(config)
+        mcp_tool.register_mcp_servers(config)
 
         assert revived.wait(timeout=5), "cached parked server did not revive"
         assert len(created) == 1, "revival created a duplicate server task"
@@ -214,8 +208,6 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools import mcp_tool_errors as _mcp_errors
-    from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
     _reset_mcp_state(mcp_tool)
     created = []
@@ -231,10 +223,10 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_tool, "MCPServerTask", _AuthFailingServerTask)
     monkeypatch.setattr(mcp_tool, "_MCP_AVAILABLE", True)
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 3600)
-    monkeypatch.setattr(_mcp_errors, "_is_auth_error", lambda exc: True)
+    monkeypatch.setattr(mcp_tool, "_is_auth_error", lambda exc: True)
 
     try:
-        assert _mcp_discovery.register_mcp_servers({
+        assert mcp_tool.register_mcp_servers({
             "auth-failure": {"command": "unused", "connect_timeout": 5}
         }) == []
         assert len(created) == 1
@@ -248,7 +240,7 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
                 mcp_tool._server_connect_errors["auth-failure"]
             )
 
-        _mcp_lifecycle.shutdown_mcp_servers()
+        mcp_tool.shutdown_mcp_servers()
         assert server._task.done()
     finally:
         _cleanup_mcp_state(mcp_tool, created)
@@ -259,8 +251,6 @@ def test_standalone_failed_connect_is_reaped_without_global_owner(monkeypatch, t
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_loop as _mcp_loop
 
     _reset_mcp_state(mcp_tool)
     created = []
@@ -276,12 +266,12 @@ def test_standalone_failed_connect_is_reaped_without_global_owner(monkeypatch, t
     monkeypatch.setattr(mcp_tool, "MCPServerTask", _ProbeServerTask)
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 0)
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 3600)
-    _mcp_loop._ensure_mcp_loop()
+    mcp_tool._ensure_mcp_loop()
 
     try:
         with pytest.raises(ConnectionError, match="probe target unavailable"):
-            _mcp_loop._run_on_mcp_loop(
-                lambda: _mcp_discovery._connect_server(
+            mcp_tool._run_on_mcp_loop(
+                lambda: mcp_tool._connect_server(
                     "probe-only", {"command": "unused"}
                 ),
                 timeout=5,

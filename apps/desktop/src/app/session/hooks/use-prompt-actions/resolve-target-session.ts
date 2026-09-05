@@ -1,6 +1,5 @@
 import { resolveSessionProfile } from '../use-session-actions/utils'
 
-import { singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
 import type { GatewayRequest } from './utils'
 
 /**
@@ -90,22 +89,12 @@ export async function resolveTargetSessionId(deps: ResolveTargetSessionDeps): Pr
 
   if (storedTarget) {
     try {
-      // Reuse a runtime an aborted recovery already minted for this stored
-      // session; otherwise resume once, shared across concurrent callers.
-      const cachedRuntimeId = takeRecoveredRuntime(storedTarget)
+      const profile = await resolveSessionProfile(storedTarget)
 
-      if (cachedRuntimeId) {
-        return cachedRuntimeId
-      }
-
-      const resumed = await singleFlightSessionResume(storedTarget, async () => {
-        const profile = await resolveSessionProfile(storedTarget)
-
-        return requestGateway<{ session_id?: string }>('session.resume', {
-          session_id: storedTarget,
-          source: 'desktop',
-          ...(profile ? { profile } : {})
-        })
+      const resumed = await requestGateway<{ session_id?: string }>('session.resume', {
+        session_id: storedTarget,
+        source: 'desktop',
+        ...(profile ? { profile } : {})
       })
 
       return resumed?.session_id || null

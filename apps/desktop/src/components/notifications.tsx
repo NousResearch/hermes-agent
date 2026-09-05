@@ -236,9 +236,9 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
                 notification.action?.onClick()
                 dismissNotification(notification.id)
               }}
-              size="sm"
+              size="xs"
               type="button"
-              variant="default"
+              variant="textStrong"
             >
               {notification.action.label}
             </Button>

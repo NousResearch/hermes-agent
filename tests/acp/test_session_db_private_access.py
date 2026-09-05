@@ -63,9 +63,9 @@ class TestUpdateSessionMeta:
         call_count = [0]
         original = db._execute_write
 
-        def patched(fn, *args, **kwargs):
+        def patched(fn):
             call_count[0] += 1
-            return original(fn, *args, **kwargs)
+            return original(fn)
 
         db._execute_write = patched
         db.update_session_meta("s4", json.dumps({"cwd": "."}), model="m")

@@ -14,15 +14,12 @@
  *   - `window` (⇧⌘-click) — pop into its own window; falls back to `tab` when
  *     the bridge has no session-window support.
  */
-import type { WorkspaceMode } from '@/contrib/types'
 import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
-import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
   focusOpenSession,
   openSessionTile,
-  reuseBlankDraftTile,
-  setSessionTileWorkspaceScope
+  reuseBlankDraftTile
 } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
@@ -31,13 +28,6 @@ import { $workspaceIsPage, sessionRoute } from './routes'
 export type OpenSessionIntent = 'in-place' | 'main' | 'stack' | 'tab' | 'window'
 
 export type OpenSessionNavigate = (to: string, options?: { replace?: boolean }) => void
-
-export interface OpenSessionWorkspaceScope {
-  ownerRoute?: SessionProfileRoute
-  workspaceMode: WorkspaceMode
-  workspaceOwnerKey?: string
-  workspaceTabTitle?: string
-}
 
 /**
  * Is the main tab holding a conversation worth preserving?
@@ -82,8 +72,7 @@ export function openSessionIntentFromModifiers(
 export function openSession(
   storedSessionId: string,
   navigate: OpenSessionNavigate,
-  intent: OpenSessionIntent = 'in-place',
-  workspaceScope: OpenSessionWorkspaceScope = { workspaceMode: 'sessions' }
+  intent: OpenSessionIntent = 'in-place'
 ): void {
   if (!storedSessionId) {
     return
@@ -94,8 +83,6 @@ export function openSession(
   // already on screen (open tile, or the main session) would otherwise return
   // at focusOpenSession and never clear its unread dot.
   markSessionRead(storedSessionId)
-  setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
-  const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 
   let resolved: OpenSessionIntent = intent
 
@@ -134,29 +121,18 @@ export function openSession(
     // Already on screen? Front it. openSessionTile would no-op on main without
     // focusing, or try to relocate an existing tile — neither is right for a
     // soft "open beside" link.
-    const focused = focusOpenSession(storedSessionId, workspaceScope)
-
-    if (focused) {
+    if (focusOpenSession(storedSessionId)) {
       return
     }
 
     // Nothing to jump to, but an open tab may still be an empty "New session" —
     // that's the tab the user would have typed into, so spend it rather than
     // stacking a second blank one beside it.
-    if (
-      spendBlankDraft &&
-      (botWorkspaceScope
-        ? reuseBlankDraftTile(storedSessionId, botWorkspaceScope)
-        : reuseBlankDraftTile(storedSessionId))
-    ) {
+    if (spendBlankDraft && reuseBlankDraftTile(storedSessionId)) {
       return
     }
 
-    if (botWorkspaceScope) {
-      openSessionTile(storedSessionId, 'center', undefined, undefined, botWorkspaceScope)
-    } else {
-      openSessionTile(storedSessionId, 'center')
-    }
+    openSessionTile(storedSessionId, 'center')
 
     return
   }
@@ -165,7 +141,7 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId), $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

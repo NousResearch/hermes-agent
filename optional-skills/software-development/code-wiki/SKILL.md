@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Documentation, Mermaid, Architecture, Diagrams, Wiki, Code-Analysis]
-    related_skills: [codebase-inspection, github]
+    related_skills: [codebase-inspection, github-repo-management]
 ---
 
 # Code Wiki Skill

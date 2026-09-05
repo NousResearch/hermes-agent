@@ -6,7 +6,7 @@ import certifi
 import pytest
 
 from agent.errors import SSLConfigurationError
-from agent.ssl_guard import verify_ca_bundle
+from agent.ssl_guard import verify_ca_bundle, verify_ca_bundle_with_fallback
 
 
 def test_healthy_bundle_passes(monkeypatch):
@@ -71,3 +71,4 @@ def test_truststore_get_ca_certs_not_implemented_is_accepted(monkeypatch, tmp_pa
 
     # Must not raise on the explicit env bundle nor the certifi check.
     verify_ca_bundle()
+    verify_ca_bundle_with_fallback()

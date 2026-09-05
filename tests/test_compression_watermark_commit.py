@@ -233,25 +233,11 @@ class TestRotationPathWatermark:
     the concurrent tail must follow the rotation instead of stranding in
     the closed parent."""
 
-    @pytest.mark.parametrize(
-        "tail_content",
-        [
-            "mid-rotation steer",
-            [
-                {"type": "text", "text": "inspect this"},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,AA=="},
-                },
-            ],
-        ],
-        ids=["text", "multimodal"],
-    )
-    def test_tail_clones_into_the_child(self, db: SessionDB, tail_content) -> None:
+    def test_tail_clones_into_the_child(self, db: SessionDB) -> None:
         _seed(db)
         watermark = db.get_active_message_watermark("sess1")
         assert db.try_acquire_compression_lock("sess1", "rotator") is True
-        db.append_message("sess1", role="user", content=tail_content)
+        db.append_message("sess1", role="user", content="mid-rotation steer")
         # Ceiling captured AFTER the foreign append, BEFORE the rotation
         # path's own pre-publish flush (which this test has none of).
         ceiling = db.get_active_message_watermark("sess1")
@@ -271,20 +257,8 @@ class TestRotationPathWatermark:
         assert [m["content"] for m in child] == [
             SUMMARY[0]["content"],
             SUMMARY[1]["content"],
-            tail_content,
+            "mid-rotation steer",
         ]
-        model_history, display_history = db.get_resume_conversations("child1")
-        visible_steers = [
-            message
-            for message in display_history
-            if message.get("content") == tail_content
-        ]
-        assert len(visible_steers) == 1
-        assert visible_steers[0]["_row_id"] == model_history[-1]["_row_id"]
-        assert all(
-            message.get("content") != tail_content
-            for message in db.get_ancestor_display_prefix("child1")
-        )
         info = db.get_session("child1")
         assert info["message_count"] == 3
         # Parent keeps its copy for lineage recovery; parent is closed.

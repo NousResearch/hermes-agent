@@ -26,7 +26,6 @@ import types
 from unittest.mock import MagicMock, patch
 
 from hermes_cli import main as cli_main
-from hermes_cli import update_cmd
 
 
 class _FakeNoSuchProcess(Exception):

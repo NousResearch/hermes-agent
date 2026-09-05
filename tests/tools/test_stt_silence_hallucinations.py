@@ -12,7 +12,7 @@ three-layer fix at every local whisper call site:
 
 from types import SimpleNamespace
 
-from tools.transcription_local import (
+from tools.transcription_tools import (
     _LOGPROB_THRESHOLD_DEFAULT,
     _NO_SPEECH_PROB_THRESHOLD_DEFAULT,
     _is_hallucinated_segment,

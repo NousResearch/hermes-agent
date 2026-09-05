@@ -21,8 +21,6 @@ import ast
 import inspect
 
 from gateway import run as gateway_run
-from gateway import run_turn as gateway_run_turn
-from gateway import run_turn as gateway_run_turn
 
 
 def _calls(node: ast.AST) -> set[str]:
@@ -55,7 +53,7 @@ def test_auto_reset_cleanup_evicts_cached_agent():
     conversation's cached agent (and its leaked
     ``context_compressor._previous_summary``) — the cache is keyed on the
     stable ``session_key`` (#10710)."""
-    tree = ast.parse(inspect.getsource(gateway_run_turn))
+    tree = ast.parse(inspect.getsource(gateway_run))
 
     # Fingerprint the cleanup branch: the `if <was_auto_reset>:` block that
     # clears the conversation scope via the funnel (post-#64934 refactor:

@@ -18,7 +18,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import goals
 
 
@@ -80,7 +79,7 @@ def test_legacy_db_migrates_goal_columns(tmp_path, monkeypatch):
 
     # init_db runs the additive migration.
     kb.init_db()
-    with kbc.connect() as conn:
+    with kb.connect() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
         assert "goal_mode" in cols
         assert "goal_max_turns" in cols
@@ -173,7 +172,7 @@ class TestCLIJudgeGate:
 
         monkeypatch.setattr("hermes_cli.kanban.kb.get_task", lambda conn, tid: fake_task)
         monkeypatch.setattr("hermes_cli.kanban.kb.complete_task", fake_complete_task)
-        monkeypatch.setattr("hermes_cli.kanban.kbc.connect_closing", fake_connect_closing)
+        monkeypatch.setattr("hermes_cli.kanban.kb.connect_closing", fake_connect_closing)
         monkeypatch.setattr("hermes_cli.kanban._worker_run_id_for", lambda _: None)
 
         _aux_client = (object(), "judge-model") if judge_available else (None, None)
@@ -206,21 +205,3 @@ class TestCLIJudgeGate:
         rc, complete_calls = self._run(monkeypatch, goal_mode=False)
         assert rc == 0
         assert complete_calls == ["t1"]
-
-    def test_judge_blocked_verdict_rejects_completion(self, monkeypatch, capsys):
-        """#100954: an unachievable goal must not complete silently.
-
-        The judge's ``blocked`` verdict is a refusal, not a completion —
-        ``complete_task`` must never run and stderr must steer the user
-        toward re-scoping / recording the block.
-        """
-        rc, complete_calls = self._run(
-            monkeypatch,
-            verdict="blocked",
-            reason="the target repository does not exist",
-        )
-        err = capsys.readouterr().err
-        assert rc != 0, "blocked verdict must reject the completion"
-        assert complete_calls == [], "an unachievable goal must never reach complete_task"
-        assert "unachievable" in err.lower()
-        assert "kanban block" in err.lower()

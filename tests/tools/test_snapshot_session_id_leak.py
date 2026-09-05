@@ -21,7 +21,7 @@ import sys
 
 import pytest
 
-from tools.environments.base_session_env import (
+from tools.environments.base import (
     _SNAPSHOT_EXCLUDED_ENV_REGEX,
     _export_dump_excluding_session_vars,
 )

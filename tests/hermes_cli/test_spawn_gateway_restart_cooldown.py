@@ -13,7 +13,6 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
-import hermes_cli.web_server_gateway as _web_server_gateway
 
 
 @pytest.fixture(autouse=True)
@@ -38,11 +37,11 @@ class TestRepeatRestartWithinCooldown:
     """Repeats within the window ride the previous spawn."""
 
     @patch(
-        "hermes_cli.web_server_gateway._gateway_subcommand",
+        "hermes_cli.web_server._gateway_subcommand",
         return_value=["gateway", "restart"],
     )
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
-    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
+    @patch("hermes_cli.web_server._spawn_hermes_action")
+    @patch("hermes_cli.web_server._ACTION_PROCS", {})
     def test_second_request_after_the_child_exits_is_coalesced(
         self, mock_spawn, mock_subcmd
     ):
@@ -65,11 +64,11 @@ class TestRepeatRestartWithinCooldown:
         assert second is proc and second_reused is True
 
     @patch(
-        "hermes_cli.web_server_gateway._gateway_subcommand",
+        "hermes_cli.web_server._gateway_subcommand",
         return_value=["gateway", "restart"],
     )
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
-    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
+    @patch("hermes_cli.web_server._spawn_hermes_action")
+    @patch("hermes_cli.web_server._ACTION_PROCS", {})
     def test_a_storm_of_requests_produces_exactly_one_restart(
         self, mock_spawn, mock_subcmd
     ):
@@ -93,11 +92,11 @@ class TestRepeatRestartWithinCooldown:
         assert mock_spawn.call_count == 1
 
     @patch(
-        "hermes_cli.web_server_gateway._gateway_subcommand",
+        "hermes_cli.web_server._gateway_subcommand",
         return_value=["gateway", "restart"],
     )
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
-    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
+    @patch("hermes_cli.web_server._spawn_hermes_action")
+    @patch("hermes_cli.web_server._ACTION_PROCS", {})
     def test_cooldown_survives_the_action_table_being_cleared(
         self, mock_spawn, mock_subcmd
     ):
@@ -115,8 +114,8 @@ class TestRepeatRestartWithinCooldown:
             "hermes_cli.web_server.time.monotonic", side_effect=[100.0, 102.0]
         ):
             _spawn_gateway_restart()
-            _web_server_gateway._ACTION_PROCS.clear()
-            _web_server_gateway._ACTION_COMMANDS.clear()
+            web_server._ACTION_PROCS.clear()
+            web_server._ACTION_COMMANDS.clear()
             _, reused = _spawn_gateway_restart()
 
         assert mock_spawn.call_count == 1
@@ -127,11 +126,11 @@ class TestCooldownReleases:
     """The window always expires; it never wedges the restart action."""
 
     @patch(
-        "hermes_cli.web_server_gateway._gateway_subcommand",
+        "hermes_cli.web_server._gateway_subcommand",
         return_value=["gateway", "restart"],
     )
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
-    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
+    @patch("hermes_cli.web_server._spawn_hermes_action")
+    @patch("hermes_cli.web_server._ACTION_PROCS", {})
     def test_request_after_the_window_starts_a_real_restart(
         self, mock_spawn, mock_subcmd
     ):
@@ -150,8 +149,8 @@ class TestCooldownReleases:
         assert reused is False
         assert second.pid == 2
 
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
-    @patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
+    @patch("hermes_cli.web_server._spawn_hermes_action")
+    @patch("hermes_cli.web_server._ACTION_PROCS", {})
     def test_a_different_profile_is_never_coalesced(self, mock_spawn):
         """Two profiles are two services; one's restart is not the other's."""
         from hermes_cli.web_server import _spawn_gateway_restart
@@ -162,7 +161,7 @@ class TestCooldownReleases:
             "hermes_cli.web_server.time.monotonic",
             side_effect=[100.0, 101.0],
         ), patch(
-            "hermes_cli.web_server_gateway._gateway_subcommand",
+            "hermes_cli.web_server._gateway_subcommand",
             side_effect=[["gateway", "restart"], ["-p", "coder", "gateway", "restart"]],
         ):
             _spawn_gateway_restart()
@@ -177,10 +176,10 @@ class TestExistingBehaviourIsPreserved:
     """Regression guards on the pre-existing in-flight reuse."""
 
     @patch(
-        "hermes_cli.web_server_gateway._gateway_subcommand",
+        "hermes_cli.web_server._gateway_subcommand",
         return_value=["gateway", "restart"],
     )
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
+    @patch("hermes_cli.web_server._spawn_hermes_action")
     def test_live_child_is_still_reused_without_consulting_the_clock(
         self, mock_spawn, mock_subcmd
     ):
@@ -191,9 +190,9 @@ class TestExistingBehaviourIsPreserved:
         live.pid = 7
 
         with patch(
-            "hermes_cli.web_server_gateway._ACTION_PROCS", {"gateway-restart": live}
+            "hermes_cli.web_server._ACTION_PROCS", {"gateway-restart": live}
         ), patch(
-            "hermes_cli.web_server_gateway._ACTION_COMMANDS",
+            "hermes_cli.web_server._ACTION_COMMANDS",
             {"gateway-restart": ("gateway", "restart")},
         ), patch(
             "hermes_cli.gateway._reap_unsupervised_gateway_orphans"
@@ -205,10 +204,10 @@ class TestExistingBehaviourIsPreserved:
         mock_spawn.assert_not_called()
 
     @patch(
-        "hermes_cli.web_server_gateway._gateway_subcommand",
+        "hermes_cli.web_server._gateway_subcommand",
         return_value=["gateway", "restart"],
     )
-    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
+    @patch("hermes_cli.web_server._spawn_hermes_action")
     def test_live_child_for_another_profile_still_raises(self, mock_spawn, mock_subcmd):
         from hermes_cli.web_server import _spawn_gateway_restart
 
@@ -216,9 +215,9 @@ class TestExistingBehaviourIsPreserved:
         live.poll.return_value = None
 
         with patch(
-            "hermes_cli.web_server_gateway._ACTION_PROCS", {"gateway-restart": live}
+            "hermes_cli.web_server._ACTION_PROCS", {"gateway-restart": live}
         ), patch(
-            "hermes_cli.web_server_gateway._ACTION_COMMANDS",
+            "hermes_cli.web_server._ACTION_COMMANDS",
             {"gateway-restart": ("-p", "coder", "gateway", "restart")},
         ), patch(
             "hermes_cli.gateway._reap_unsupervised_gateway_orphans"

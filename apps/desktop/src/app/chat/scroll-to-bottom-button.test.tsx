@@ -23,14 +23,14 @@ afterEach(() => {
 // control's hidden (parked-at-bottom) state.
 describe('ScrollToBottomButton', () => {
   it('stays hidden while parked at the bottom', () => {
-    render(<ScrollToBottomButton sessionId={null} />)
+    render(<ScrollToBottomButton />)
 
     expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('is a plain jump-to-bottom control when scrolled up with no approval', () => {
     setThreadAtBottom(false)
-    render(<ScrollToBottomButton sessionId={null} />)
+    render(<ScrollToBottomButton />)
 
     expect(screen.getByRole('button', { name: 'Scroll to bottom' })).toBeTruthy()
     expect(screen.queryByText('Approval needed')).toBeNull()
@@ -39,7 +39,7 @@ describe('ScrollToBottomButton', () => {
   it('morphs into the approval pill when scrolled up with a pending approval', () => {
     pendingApproval()
     setThreadAtBottom(false)
-    render(<ScrollToBottomButton sessionId={null} />)
+    render(<ScrollToBottomButton />)
 
     expect(screen.getByRole('button', { name: 'Approval needed' })).toBeTruthy()
     expect(screen.getByText('Approval needed')).toBeTruthy()
@@ -47,7 +47,7 @@ describe('ScrollToBottomButton', () => {
 
   it('does not morph while a pending approval is still in view (at bottom)', () => {
     pendingApproval()
-    render(<ScrollToBottomButton sessionId={null} />)
+    render(<ScrollToBottomButton />)
 
     // Parked at bottom → control hidden, so it can't claim "approval needed".
     expect(screen.queryByRole('button')).toBeNull()
@@ -55,9 +55,9 @@ describe('ScrollToBottomButton', () => {
 
   it('re-arms sticky-bottom on click', () => {
     const handler = vi.fn()
-    const stop = onScrollToBottomRequest(handler, 'sess-1')
+    const stop = onScrollToBottomRequest(handler)
     setThreadAtBottom(false)
-    render(<ScrollToBottomButton sessionId="sess-1" />)
+    render(<ScrollToBottomButton />)
 
     fireEvent.click(screen.getByRole('button'))
 

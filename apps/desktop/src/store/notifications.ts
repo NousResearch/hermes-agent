@@ -129,10 +129,6 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
   {
     test: msg => /microphone permission/i.test(msg),
     summarize: () => translateNow('notifications.errors.microphonePermission')
-  },
-  {
-    test: msg => /Restart required:/i.test(msg),
-    summarize: () => translateNow('notifications.errors.codeSkewRestartRequired')
   }
 ]
 

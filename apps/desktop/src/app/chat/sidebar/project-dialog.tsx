@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
-import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -21,10 +20,8 @@ import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-ide
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import {
-  $newProjectDropPlacement,
   $projectDialog,
   addProjectFolder,
-  clearNewProjectDropPlacement,
   closeProjectDialog,
   createProject,
   generateProjectIdea,
@@ -50,22 +47,6 @@ export function ProjectDialog() {
   const [submitting, setSubmitting] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
 
-  // A "New project" DRAG arms where the project should start (tab-strip slot /
-  // pane edge / pane center) before the dialog opens. Snapshot it per open —
-  // the submit forwards it as `dropPlacement`, and closing clears the store's
-  // arm so a later plain-click create never inherits a stale placement.
-  let dropPlacement: NewSessionPlacement | undefined
-
-  if (open) {
-    dropPlacement = $newProjectDropPlacement.get() ?? undefined
-  }
-
-  useEffect(() => {
-    if (!open) {
-      clearNewProjectDropPlacement()
-    }
-  }, [open])
-
   useEffect(() => {
     if (open) {
       setName(state?.name ?? '')
@@ -88,11 +69,8 @@ export function ProjectDialog() {
   }
 
   // One submit beat for every flow: guard re-entry, run the write, close on
-  // success, surface a toast on failure. Callers pass only the write, plus an
-  // optional hook that runs exactly when the write SUCCEEDS (before the close)
-  // — the New-project drop arm is consumed there, so a failed attempt keeps
-  // its placement for the retry while a successful one can't leak it forward.
-  const runSubmit = async (write: () => Promise<unknown>, onSuccess?: () => void) => {
+  // success, surface a toast on failure. Callers pass only the write.
+  const runSubmit = async (write: () => Promise<unknown>) => {
     if (submitting) {
       return
     }
@@ -101,7 +79,6 @@ export function ProjectDialog() {
 
     try {
       await write()
-      onSuccess?.()
       closeProjectDialog()
     } catch (err) {
       notifyError(err, p.createFailed)
@@ -147,13 +124,7 @@ export function ProjectDialog() {
     // A project owns sessions by folder (cwd-prefix), so creation requires at
     // least one — a folder-less project couldn't hold a session anyway.
     if (mode === 'create' && trimmed && folders.length) {
-      // The arm is consumed exactly on SUCCESS (before the close): a failed
-      // create leaves the dialog open for a retry that still lands where it
-      // was dropped; the open-state effect discards it on cancel/teardown.
-      await runSubmit(
-        () => createProject({ dropPlacement, folders, idea: idea.trim() || undefined, name: trimmed, use: true }),
-        clearNewProjectDropPlacement
-      )
+      await runSubmit(() => createProject({ folders, idea: idea.trim() || undefined, name: trimmed, use: true }))
     }
   }
 

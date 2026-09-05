@@ -539,10 +539,7 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
             json.dumps({"installed": {name: {}}}), encoding="utf-8",
         )
     elif kind == "protected":
-        # Shipped set is currently empty (plan graduated to a built-in
-        # command) — stage a sentinel to exercise the mechanism.
-        name = "sentinel-protected-skill"
-        monkeypatch.setattr(skill_usage, "PROTECTED_BUILTIN_SKILLS", {name})
+        name = sorted(skill_usage.PROTECTED_BUILTIN_SKILLS)[0]
         _write_skill(skills_dir, name)
     else:
         name = "no-such-skill"

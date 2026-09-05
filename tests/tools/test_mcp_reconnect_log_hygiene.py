@@ -16,8 +16,7 @@ import logging
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
-from tools.mcp_tool_common import _jittered
+from tools.mcp_tool import MCPServerTask, _jittered
 
 
 # ── Jitter ───────────────────────────────────────────────────────────────────
@@ -69,7 +68,6 @@ def test_retry_attempts_log_debug_transitions_warn(monkeypatch, tmp_path, caplog
                 if state["transport_calls"] == 1:
                     self.session = object()
                     self._ready.set()
-                    self._ever_connected = True
                     self.session = None
                 raise ConnectionError("backend down")
 

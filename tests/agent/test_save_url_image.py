@@ -123,10 +123,9 @@ class TestSaveUrlImage:
     def test_oversize_raises_and_cleans_up(self, http_server, tmp_path):
         """Oversize downloads must NOT leak a partial file into the cache."""
         base, _ = http_server
-        from agent import provider_media
-        from agent.image_gen_provider import save_url_image
+        from agent.image_gen_provider import save_url_image, _images_cache_dir
 
-        cache_dir = provider_media.cache_dir("images")
+        cache_dir = _images_cache_dir()
         before = set(cache_dir.glob("*"))
         with pytest.raises(ValueError, match="exceeds"):
             save_url_image(f"{base}/oversize", max_bytes=1024 * 1024)

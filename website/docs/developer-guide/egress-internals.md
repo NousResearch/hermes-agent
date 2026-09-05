@@ -22,8 +22,7 @@ hermes_cli/proxy_cli.py               Wizard + slash command handlers.
                                        status,disable,config}`.  Wires the
                                        core module into argparse.
 
-hermes_cli/subcommands/egress.py:_dispatch_egress
-                                       Top-level subparser dispatcher.
+hermes_cli/main.py:_dispatch_egress   Top-level subparser dispatcher.
                                        dest='egress_command' (intentionally
                                        disjoint from the inbound OAuth
                                        `hermes proxy` subparser, which uses

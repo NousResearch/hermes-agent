@@ -1,4 +1,8 @@
-"""WeCom callback-mode AES-CBC crypto, wire-compatible with Tencent's official ``WXBizMsgCrypt`` SDK."""
+"""WeCom BizMsgCrypt-compatible AES-CBC encryption for callback mode.
+
+Implements the same wire format as Tencent's official ``WXBizMsgCrypt``
+SDK so that WeCom can verify, encrypt, and decrypt callback payloads.
+"""
 
 from __future__ import annotations
 
@@ -19,13 +23,16 @@ class WeComCryptoError(Exception):
     pass
 
 
-class SignatureError(WeComCryptoError): pass
+class SignatureError(WeComCryptoError):
+    pass
 
 
-class DecryptError(WeComCryptoError): pass
+class DecryptError(WeComCryptoError):
+    pass
 
 
-class EncryptError(WeComCryptoError): pass
+class EncryptError(WeComCryptoError):
+    pass
 
 
 class PKCS7Encoder:
@@ -33,8 +40,11 @@ class PKCS7Encoder:
 
     @classmethod
     def encode(cls, text: bytes) -> bytes:
-        amount_to_pad = cls.block_size - (len(text) % cls.block_size) or cls.block_size
-        return text + bytes([amount_to_pad]) * amount_to_pad
+        amount_to_pad = cls.block_size - (len(text) % cls.block_size)
+        if amount_to_pad == 0:
+            amount_to_pad = cls.block_size
+        pad = bytes([amount_to_pad]) * amount_to_pad
+        return text + pad
 
     @classmethod
     def decode(cls, decrypted: bytes) -> bytes:
@@ -49,45 +59,54 @@ class PKCS7Encoder:
 
 
 def _sha1_signature(token: str, timestamp: str, nonce: str, encrypt: str) -> str:
-    return hashlib.sha1("".join(sorted([token, timestamp, nonce, encrypt])).encode("utf-8")).hexdigest()
+    parts = sorted([token, timestamp, nonce, encrypt])
+    return hashlib.sha1("".join(parts).encode("utf-8")).hexdigest()
 
 
 class WXBizMsgCrypt:
     """Minimal WeCom callback crypto helper compatible with BizMsgCrypt semantics."""
 
     def __init__(self, token: str, encoding_aes_key: str, receive_id: str):
-        for bad, message in (
-            (not token, "token is required"), (not encoding_aes_key, "encoding_aes_key is required"),
-            (len(encoding_aes_key) != 43, "encoding_aes_key must be 43 chars"), (not receive_id, "receive_id is required"),
-        ):
-            if bad:
-                raise ValueError(message)
-        self.token, self.receive_id = token, receive_id
+        if not token:
+            raise ValueError("token is required")
+        if not encoding_aes_key:
+            raise ValueError("encoding_aes_key is required")
+        if len(encoding_aes_key) != 43:
+            raise ValueError("encoding_aes_key must be 43 chars")
+        if not receive_id:
+            raise ValueError("receive_id is required")
+
+        self.token = token
+        self.receive_id = receive_id
         self.key = base64.b64decode(encoding_aes_key + "=")
         self.iv = self.key[:16]
 
-    def _cipher(self) -> Cipher:
-        return Cipher(algorithms.AES(self.key), modes.CBC(self.iv), backend=default_backend())
-
     def verify_url(self, msg_signature: str, timestamp: str, nonce: str, echostr: str) -> str:
-        return self.decrypt(msg_signature, timestamp, nonce, echostr).decode("utf-8")
+        plain = self.decrypt(msg_signature, timestamp, nonce, echostr)
+        return plain.decode("utf-8")
 
     def decrypt(self, msg_signature: str, timestamp: str, nonce: str, encrypt: str) -> bytes:
-        if _sha1_signature(self.token, timestamp, nonce, encrypt) != msg_signature:
+        expected = _sha1_signature(self.token, timestamp, nonce, encrypt)
+        if expected != msg_signature:
             raise SignatureError("signature mismatch")
         try:
             cipher_text = base64.b64decode(encrypt)
         except Exception as exc:
             raise DecryptError(f"invalid base64 payload: {exc}") from exc
         try:
-            decryptor = self._cipher().decryptor()
-            content = PKCS7Encoder.decode(decryptor.update(cipher_text) + decryptor.finalize())[16:]  # skip 16-byte random prefix
+            cipher = Cipher(algorithms.AES(self.key), modes.CBC(self.iv), backend=default_backend())
+            decryptor = cipher.decryptor()
+            padded = decryptor.update(cipher_text) + decryptor.finalize()
+            plain = PKCS7Encoder.decode(padded)
+            content = plain[16:]  # skip 16-byte random prefix
             xml_length = socket.ntohl(struct.unpack("I", content[:4])[0])
-            xml_content, receive_id = content[4:4 + xml_length], content[4 + xml_length:].decode("utf-8")
+            xml_content = content[4:4 + xml_length]
+            receive_id = content[4 + xml_length:].decode("utf-8")
         except WeComCryptoError:
             raise
         except Exception as exc:
             raise DecryptError(f"decrypt failed: {exc}") from exc
+
         if receive_id != self.receive_id:
             raise DecryptError("receive_id mismatch")
         return xml_content
@@ -96,19 +115,28 @@ class WXBizMsgCrypt:
         nonce = nonce or self._random_nonce()
         timestamp = timestamp or str(int(__import__("time").time()))
         encrypt = self._encrypt_bytes(plaintext.encode("utf-8"))
+        signature = _sha1_signature(self.token, timestamp, nonce, encrypt)
         root = ET.Element("xml")
-        for tag, text in (("Encrypt", encrypt), ("MsgSignature", _sha1_signature(self.token, timestamp, nonce, encrypt)), ("TimeStamp", timestamp), ("Nonce", nonce)):
-            ET.SubElement(root, tag).text = text
+        ET.SubElement(root, "Encrypt").text = encrypt
+        ET.SubElement(root, "MsgSignature").text = signature
+        ET.SubElement(root, "TimeStamp").text = timestamp
+        ET.SubElement(root, "Nonce").text = nonce
         return ET.tostring(root, encoding="unicode")
 
     def _encrypt_bytes(self, raw: bytes) -> str:
         try:
-            payload = os.urandom(16) + struct.pack("I", socket.htonl(len(raw))) + raw + self.receive_id.encode("utf-8")
-            encryptor = self._cipher().encryptor()
-            return base64.b64encode(encryptor.update(PKCS7Encoder.encode(payload)) + encryptor.finalize()).decode("utf-8")
+            random_prefix = os.urandom(16)
+            msg_len = struct.pack("I", socket.htonl(len(raw)))
+            payload = random_prefix + msg_len + raw + self.receive_id.encode("utf-8")
+            padded = PKCS7Encoder.encode(payload)
+            cipher = Cipher(algorithms.AES(self.key), modes.CBC(self.iv), backend=default_backend())
+            encryptor = cipher.encryptor()
+            encrypted = encryptor.update(padded) + encryptor.finalize()
+            return base64.b64encode(encrypted).decode("utf-8")
         except Exception as exc:
             raise EncryptError(f"encrypt failed: {exc}") from exc
 
     @staticmethod
     def _random_nonce(length: int = 10) -> str:
-        return "".join(secrets.choice("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") for _ in range(length))
+        alphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        return "".join(secrets.choice(alphabet) for _ in range(length))

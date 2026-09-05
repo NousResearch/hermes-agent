@@ -17,8 +17,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -36,7 +34,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def conn(kanban_home):
-    with kbc.connect() as c:
+    with kb.connect() as c:
         yield c
 
 
@@ -55,9 +53,9 @@ def test_held_lock_skips_the_tick_without_writes(conn):
         return 999999
 
     # Hold the lock, then attempt a contended tick.
-    with kbc._dispatch_tick_lock(db_path) as held:
+    with kb._dispatch_tick_lock(db_path) as held:
         assert held is True  # we genuinely acquired it
-        result = kbd.dispatch_once(conn, spawn_fn=spy_spawn)
+        result = kb.dispatch_once(conn, spawn_fn=spy_spawn)
 
     assert result.skipped_locked is True
     assert result.spawned == []
@@ -73,9 +71,9 @@ def test_lock_is_board_scoped(conn):
     db_other = db_default.with_name("other-board-kanban.db")
 
     # Two different lock files → both acquirable simultaneously.
-    with kbc._dispatch_tick_lock(db_default) as held_a:
+    with kb._dispatch_tick_lock(db_default) as held_a:
         assert held_a is True
-        with kbc._dispatch_tick_lock(db_other) as held_b:
+        with kb._dispatch_tick_lock(db_other) as held_b:
             assert held_b is True, "a lock on a different board must be independent"
 
 

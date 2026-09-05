@@ -26,7 +26,6 @@ import os
 import pytest
 
 from hermes_cli import web_server
-import hermes_cli.web_server_chat as _web_server_chat
 
 
 # ---------------------------------------------------------------------------
@@ -82,20 +81,20 @@ def _netloc(ws_url: str) -> str:
 class TestResolveClientWsHost:
     def test_wildcard_ipv4_uses_loopback(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "0.0.0.0")
-        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
+        assert web_server._resolve_client_ws_host() == "127.0.0.1"
 
     def test_wildcard_ipv6_uses_loopback(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "::")
-        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
+        assert web_server._resolve_client_ws_host() == "127.0.0.1"
 
     def test_loopback_bind_unchanged(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "127.0.0.1")
-        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
+        assert web_server._resolve_client_ws_host() == "127.0.0.1"
 
 
     def test_public_dns_bind_preserved(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "fly-app.example.dev")
-        assert _web_server_chat._resolve_client_ws_host() == "fly-app.example.dev"
+        assert web_server._resolve_client_ws_host() == "fly-app.example.dev"
 
 
 
@@ -108,7 +107,7 @@ class TestResolveClientWsHost:
         an intent. Treat whitespace-only as absent and fall through."""
         monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "   ")
         _set_bound(saved_app_state, "0.0.0.0")
-        assert _web_server_chat._resolve_client_ws_host() == "127.0.0.1"
+        assert web_server._resolve_client_ws_host() == "127.0.0.1"
 
 
     def test_bind_host_unchanged_after_wildcard_resolution(
@@ -118,7 +117,7 @@ class TestResolveClientWsHost:
         ``app.state`` (used by the listener and host-header middleware) is
         NOT mutated."""
         _set_bound(saved_app_state, "0.0.0.0")
-        _web_server_chat._resolve_client_ws_host()
+        web_server._resolve_client_ws_host()
         assert web_server.app.state.bound_host == "0.0.0.0"
 
 
@@ -133,7 +132,7 @@ class TestGatewayWsUrlHost:
         self, saved_app_state, clear_ws_host_env
     ):
         _set_bound(saved_app_state, "::", port=9119)
-        url = _web_server_chat._build_gateway_ws_url()
+        url = web_server._build_gateway_ws_url()
         assert url is not None
         assert url.startswith("ws://127.0.0.1:9119/api/ws")
         # The ``::`` must not leak into the client URL.
@@ -163,7 +162,7 @@ class TestSidecarUrlHost:
     ):
         web_server.app.state.bound_host = None
         web_server.app.state.bound_port = None
-        assert _web_server_chat._build_sidecar_url("ch-1") is None
+        assert web_server._build_sidecar_url("ch-1") is None
 
 
 # ---------------------------------------------------------------------------

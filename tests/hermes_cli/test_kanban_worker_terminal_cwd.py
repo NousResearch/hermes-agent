@@ -38,9 +38,7 @@ def _make_task(kb, *, assignee: str = "w"):
 
 
 def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
-    from hermes_cli import kanban_db_dispatch as kbd
-
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
 
     captured: dict = {}
 
@@ -54,7 +52,7 @@ def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    kbd._default_spawn(_make_task(kb), workspace)
+    kb._default_spawn(_make_task(kb), workspace)
     return captured
 
 

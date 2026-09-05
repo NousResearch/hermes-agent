@@ -721,11 +721,11 @@ export function TaskDrawer({
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={mutate(() => patchTask(task.id, { status: 'archived' }), onClose)}>
                     <Codicon name="archive" size="0.85rem" />
-                    {k.archive}
+                    {k.archiveTask}
                   </DropdownMenuItem>
                   <DropdownMenuItem className="text-destructive" onSelect={mutate(() => deleteTask(task.id), onClose)}>
                     <Codicon name="trash" size="0.85rem" />
-                    {k.delete}
+                    {k.deleteTask}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>

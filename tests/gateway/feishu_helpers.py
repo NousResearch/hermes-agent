@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import threading
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -35,7 +34,6 @@ def make_adapter_skeleton(
     allow_bots: str = "none",
     require_mention: bool = True,
     group_policy: str = "allowlist",
-    allow_all_dm: bool = False,
 ) -> Any:
     from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -50,7 +48,6 @@ def make_adapter_skeleton(
     adapter._default_group_policy = group_policy
     adapter._allowed_group_users = frozenset()
     adapter._allow_bots = allow_bots
-    adapter._allow_all_dm = allow_all_dm
     adapter._require_mention = require_mention
     return adapter
 
@@ -60,7 +57,6 @@ def install_dedup_state(adapter: Any, seen: Optional[dict] = None) -> None:
     adapter._seen_message_order = list((seen or {}).keys())
     adapter._dedup_cache_size = 100
     adapter._dedup_lock = threading.Lock()
-    adapter._dedup_persist_lock = asyncio.Lock()
     adapter._dedup_state_path = None
     adapter._persist_seen_message_ids = lambda: None
 

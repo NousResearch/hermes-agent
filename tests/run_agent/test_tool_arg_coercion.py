@@ -8,8 +8,7 @@ against the tool's JSON Schema before dispatch.
 
 from unittest.mock import patch
 
-import model_tools  # noqa: F401 — populates the tool registry the "real schema" tests read
-from tools.arg_coercion import (
+from model_tools import (
     coerce_tool_args,
     _coerce_value,
     _coerce_number,
@@ -112,7 +111,7 @@ class TestCoerceToolArgs:
 
     def test_coerces_integer_arg(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("model_tools.registry.get_schema", return_value=schema):
             args = {"limit": "10"}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == 10
@@ -123,7 +122,7 @@ class TestCoerceToolArgs:
 
     def test_leaves_already_correct_types(self):
         schema = self._mock_schema({"limit": {"type": "integer"}})
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("model_tools.registry.get_schema", return_value=schema):
             args = {"limit": 10}
             result = coerce_tool_args("test_tool", args)
             assert result["limit"] == 10
@@ -225,7 +224,7 @@ class TestCoerceToolArgsNested:
 
     def test_array_elements_as_json_strings_are_parsed(self):
         schema = self._array_of_objects_schema()
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("model_tools.registry.get_schema", return_value=schema):
             args = {"items": ['{"id": "1", "content": "x"}']}
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == [{"id": "1", "content": "x"}]
@@ -234,7 +233,7 @@ class TestCoerceToolArgsNested:
     def test_string_subfield_with_json_content_preserved(self):
         """A string-typed sub-field whose value looks like JSON must NOT be parsed."""
         schema = self._array_of_objects_schema()
-        with patch("tools.arg_coercion.registry.get_schema", return_value=schema):
+        with patch("model_tools.registry.get_schema", return_value=schema):
             args = {"items": [{"id": "1", "content": '{"not": "parsed"}'}]}
             result = coerce_tool_args("test_tool", args)
             assert result["items"][0]["content"] == '{"not": "parsed"}'
@@ -245,5 +244,5 @@ class TestCoerceToolArgsNested:
         """Against the real todo schema from the registry."""
         import json as _json
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
-        result = coerce_tool_args("todo_list", args)
+        result = coerce_tool_args("todo", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}

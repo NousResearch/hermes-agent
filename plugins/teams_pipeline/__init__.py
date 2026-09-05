@@ -1,6 +1,7 @@
 """Teams meeting pipeline plugin.
 
-Registers only operator-facing CLI surfaces (invoked by the agent via the terminal tool); no model tools.
+Registers only operator-facing CLI surfaces. The agent should invoke these via
+the terminal tool; no model tools are added by this plugin.
 """
 
 from __future__ import annotations

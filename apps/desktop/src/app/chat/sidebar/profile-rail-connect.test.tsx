@@ -27,10 +27,6 @@ vi.mock('@/i18n', () => ({
         importProfile: 'Import profile…',
         manageProfiles: 'Manage profiles…',
         newProfile: 'New profile',
-        remoteOverride: {
-          badge: (host: string) => `Runs on ${host}`,
-          menuItem: 'Connect to a remote host…'
-        },
         saveSoul: 'Save',
         saving: 'Saving…',
         showAllProfiles: 'Show all profiles',
@@ -61,12 +57,7 @@ vi.mock('@/store/profile', () => ({
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))
 
-vi.mock('@/store/connections', () => ({
-  $activeConnectionId: atom(null),
-  $connectionsRegistry: atom(null),
-  $hasMultipleConnections: atom(false),
-  selectConnection: vi.fn()
-}))
+vi.mock('@/store/connections', () => ({ $hasMultipleConnections: atom(false) }))
 
 vi.mock('@/store/profile-share', () => ({
   runExportProfileFlow: vi.fn(),

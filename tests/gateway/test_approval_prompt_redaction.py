@@ -63,8 +63,7 @@ class TestRedactApprovalCommand:
 class TestApprovalCommandWiring:
     """Guard the production wiring on BOTH approval-notify transports:
     1. the chat-platform path (_approval_notify_sync in gateway/run.py), and
-    2. the SSE/API path (_approval_notify in
-       gateway/platforms/api_server_runs.py),
+    2. the SSE/API path (_approval_notify in gateway/platforms/api_server.py),
     each of which must route the command through _redact_approval_command and
     REASSIGN the redacted value before any send/enqueue (so the raw command
     cannot reach a client). Uses AST (not char-offset string slicing) so a
@@ -112,16 +111,14 @@ class TestApprovalCommandWiring:
         )
 
     def test_chat_platform_path_redacts_before_send(self):
-        import gateway.run_turn_runner as run
+        import gateway.run as run
 
         self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
 
     def test_sse_api_path_redacts_before_enqueue(self):
-        from gateway.platforms import api_server_runs
+        from gateway.platforms import api_server
 
-        self._assert_redacts_then_uses(
-            api_server_runs, "_approval_notify", "put_nowait"
-        )
+        self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
 
 
 class TestApprovalTextFallbackContract:
@@ -137,4 +134,5 @@ class TestApprovalTextFallbackContract:
         assert "`/approve`" in text
         assert "approve session" not in text
         assert "approve always" not in text
+
 

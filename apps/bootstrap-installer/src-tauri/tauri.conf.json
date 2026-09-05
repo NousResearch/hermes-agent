@@ -57,8 +57,7 @@
     },
     "macOS": {
       "minimumSystemVersion": "11.0",
-      "hardenedRuntime": true,
-      "entitlements": "entitlements.plist"
+      "hardenedRuntime": true
     }
   },
   "plugins": {

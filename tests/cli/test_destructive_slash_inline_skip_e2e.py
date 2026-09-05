@@ -47,8 +47,6 @@ def _make_cli_stub():
     self_._confirm_destructive_slash = HermesCLI._confirm_destructive_slash.__get__(
         self_, type(self_)
     )
-    self_._slash_handler = HermesCLI._slash_handler
-    self_._cmd_new = HermesCLI._cmd_new.__get__(self_, type(self_))
     self_.process_command = HermesCLI.process_command.__get__(self_, type(self_))
     return self_, new_session_calls
 
@@ -119,8 +117,6 @@ def test_new_without_skip_token_still_consults_modal():
     self_._confirm_destructive_slash = HermesCLI._confirm_destructive_slash.__get__(
         self_, type(self_)
     )
-    self_._slash_handler = HermesCLI._slash_handler
-    self_._cmd_new = HermesCLI._cmd_new.__get__(self_, type(self_))
     self_.process_command = HermesCLI.process_command.__get__(self_, type(self_))
 
     with patch(

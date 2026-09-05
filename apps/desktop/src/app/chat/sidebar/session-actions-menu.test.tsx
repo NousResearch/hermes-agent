@@ -100,13 +100,11 @@ vi.mock('@/store/session-color', () => ({
 }))
 vi.mock('@/store/session-states', () => ({
   $sessionTiles: atom<unknown[]>([]),
-  closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()
 }))
 vi.mock('@/store/windows', () => ({
   canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
-  isBrowserWindow: () => false,
   isSecondaryWindow: () => false,
   openSessionInNewWindow: vi.fn(),
   openSessionInTerminal: vi.fn()

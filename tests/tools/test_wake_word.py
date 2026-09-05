@@ -55,10 +55,9 @@ def test_wake_surface_enabled_gate():
 
 
 def test_looks_like_path():
-    from tools.wake_word_engines import _looks_like_path
-    assert _looks_like_path("models/hey_hermes.onnx")
-    assert _looks_like_path("custom.ppn")
-    assert not _looks_like_path("hey_jarvis")
+    assert ww._looks_like_path("models/hey_hermes.onnx")
+    assert ww._looks_like_path("custom.ppn")
+    assert not ww._looks_like_path("hey_jarvis")
 
 
 def test_load_wake_word_config_is_a_dict_with_defaults():

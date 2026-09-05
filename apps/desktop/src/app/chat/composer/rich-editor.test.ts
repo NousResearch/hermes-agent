@@ -1,6 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-
-import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { describe, expect, it } from 'vitest'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
@@ -14,16 +12,6 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { placeCaretAtEnd } from './test-utils'
-
-beforeEach(() => {
-  rememberDesktopCommandsCatalog({
-    commands: { '/goal': { argument_mode: 'mixed', desktop: null } }
-  })
-})
-
-afterEach(() => {
-  rememberDesktopCommandsCatalog(undefined)
-})
 
 describe('renderComposerContents', () => {
   it('renders refs and raw text without interpreting user text as HTML', () => {

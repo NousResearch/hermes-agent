@@ -724,8 +724,7 @@ class TestMicroCompaction:
 
         from agent import turn_finalizer
 
-        # The micro-compaction gate lives in the helper finalize_turn calls.
-        src = inspect.getsource(turn_finalizer._micro_compact_after_turn)
+        src = inspect.getsource(turn_finalizer.finalize_turn)
         micro_block = src.split("Post-turn micro-compaction", 1)[1]
         # Scope to the micro block only: stop at the persist call that follows.
         micro_block = micro_block.split("agent._persist_session", 1)[0]
@@ -811,8 +810,7 @@ class TestDefragFlushCursorInvalidation:
 
         from agent import turn_finalizer
 
-        # The micro-compaction gate lives in the helper finalize_turn calls.
-        src = inspect.getsource(turn_finalizer._micro_compact_after_turn)
+        src = inspect.getsource(turn_finalizer.finalize_turn)
         micro_block = src.split("Post-turn micro-compaction", 1)[1]
         micro_block = micro_block.split("agent._persist_session", 1)[0]
         assert "_flush_scan_cursor_invalidated" in micro_block, (

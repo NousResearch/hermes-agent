@@ -38,7 +38,6 @@ import {
   edgeFixedZone,
   fixedTrackSize,
   MIN_PANE_PX,
-  MINIMIZED_TRACK,
   paneChrome,
   type PaneSizing,
   resolveCssPx,
@@ -590,7 +589,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
               collapsed
                 ? { display: 'none' }
                 : minimized
-                  ? { flex: `0 0 ${MINIMIZED_TRACK}` }
+                  ? { flex: '0 0 auto' }
                   : {
                       // One flexbox formula for everything: a sized zone is
                       // grow-0 shrink-1 from its preferred basis (it yields

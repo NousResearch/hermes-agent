@@ -7,12 +7,11 @@ import {
   resolveGatewayEventSessionId,
   UNSCOPED_STREAM_EVENT_TYPES
 } from '@/lib/gateway-events'
-import { reconcileSessionCompacting } from '@/store/compaction'
+import { setSessionCompacting } from '@/store/compaction'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
-import { isSessionGone } from '@/store/session-gone-latch'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -196,10 +195,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
-      const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId, {
-        explicit: Boolean(explicitSid),
-        isGone: isSessionGone
-      })
+      const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId)
 
       if (replaySessionId) {
         void replayPendingApproval($gateway.get(), replaySessionId).catch(() => undefined)
@@ -210,7 +206,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // turn has resumed, so retire the phase label without waiting for the
       // whole turn to complete.
       if (sessionId && COMPACTION_RESUME_EVENT_TYPES.has(event.type) && compactedTurnRef.current.has(sessionId)) {
-        reconcileSessionCompacting(sessionId, 'resumed')
+        setSessionCompacting(sessionId, false)
       }
 
       if (sessionId && DRAFT_SUPERSEDING_EVENT_TYPES.has(event.type)) {

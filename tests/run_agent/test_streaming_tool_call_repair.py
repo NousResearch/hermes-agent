@@ -13,7 +13,9 @@ unclosed brackets, Python None) don't kill the session.
 
 import json
 
-from agent.message_sanitization import _repair_tool_call_arguments
+from run_agent import _repair_tool_call_arguments
+
+
 class TestStreamingAssemblyRepair:
     """Verify that _repair_tool_call_arguments is applied to streaming tool
     call arguments before they're assembled into mock_tool_calls.

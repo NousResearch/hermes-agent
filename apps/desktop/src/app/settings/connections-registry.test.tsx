@@ -161,16 +161,13 @@ describe('ConnectionsRegistrySection', () => {
     await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
   })
 
-  it('offers the launch preference even for a single source', async () => {
-    // A local-only registry is the drift state from #90174, and the launch
-    // toggle is the control that lets a user out of it. Hiding it there left
-    // hand-editing connections.json as the only recourse.
+  it('keeps the launch preference out of the way for a single source', async () => {
     list.mockResolvedValueOnce({ ...registry, connections: [registry.connections[0]] })
 
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
-    expect(screen.getByText('At startup, return to Sessions on the last-used gateway')).toBeTruthy()
+    expect(screen.queryByText('At startup, return to Sessions on the last-used gateway')).toBeNull()
   })
 
   it('keeps search out of the way for a small registry', async () => {

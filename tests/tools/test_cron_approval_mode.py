@@ -3,11 +3,13 @@
 import pytest
 
 import tools.approval as approval_module
-from tools import approval_context
-from tools import approval_context
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
-from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command
-from tools.approval_context import _get_cron_approval_mode
+from tools.approval import (
+    _get_cron_approval_mode,
+    check_all_command_guards,
+    check_dangerous_command,
+    detect_dangerous_command,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -96,11 +98,7 @@ class TestCronContextVarDetection:
     def test_explicit_blank_masks_leaked_cron_env_for_gateway_classification(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        # A chat platform: unattended programmatic platforms (webhook,
-        # msgraph_webhook, api_server) are intentionally NOT gateway
-        # approval contexts anymore (#37284/#87509) — this test's subject
-        # is the blank-cron-ContextVar masking, not platform policy.
-        tokens = set_session_vars(platform="telegram", cron_session="")
+        tokens = set_session_vars(platform="api_server", cron_session="")
         try:
             assert approval_module._is_cron_approval_context() is False
             assert approval_module._is_gateway_approval_context() is True
@@ -113,8 +111,8 @@ class TestCronContextVarDetection:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
-        monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
 
         tokens = set_session_vars(cron_session="1")
         try:
@@ -135,8 +133,8 @@ class TestCronContextVarDetection:
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
-        monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
+        monkeypatch.setattr(approval_module, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval_module, "_get_cron_approval_mode", lambda: "deny")
 
         tokens = set_session_vars(cron_session="")
         try:
@@ -161,7 +159,7 @@ class TestCronDenyMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
@@ -175,7 +173,7 @@ class TestCronDenyMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             result = check_dangerous_command("ls -la", "local")
             assert result["approved"]
 
@@ -194,7 +192,7 @@ class TestCronDenyMode:
         ]
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             for cmd in dangerous_commands:
                 is_dangerous, _, _ = detect_dangerous_command(cmd)
                 if is_dangerous:
@@ -210,7 +208,7 @@ class TestCronDenyMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert not result["approved"]
             # Should contain the description of what was flagged
@@ -227,7 +225,7 @@ class TestCronApproveMode:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="approve"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
             result = check_dangerous_command("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
@@ -247,7 +245,7 @@ class TestCronDenyModeAllGuards:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             result = check_all_command_guards("rm -rf /tmp/stuff", "local")
             assert not result["approved"]
             assert "BLOCKED" in result["message"]
@@ -260,7 +258,7 @@ class TestCronDenyModeAllGuards:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             result = check_all_command_guards("echo hello", "local")
             assert result["approved"]
 
@@ -272,7 +270,7 @@ class TestCronDenyModeAllGuards:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="approve"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
             result = check_all_command_guards("rm -rf /tmp/stuff", "local")
             assert result["approved"]
 
@@ -297,7 +295,7 @@ class TestCronDenyModeAllGuards:
             "summary": "homograph url",
         }
         with (
-            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
             mock_patch("tools.approval.detect_dangerous_command",
                        return_value=(False, None, None)),
             mock_patch("tools.tirith_security.check_command_security",
@@ -327,7 +325,7 @@ class TestCronDenyModeAllGuards:
             return _real_import(name, *a, **k)
 
         with (
-            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
             mock_patch("tools.approval.detect_dangerous_command",
                        return_value=(False, None, None)),
             mock_patch("hermes_cli.config.load_config_readonly",
@@ -358,7 +356,7 @@ class TestCronDenyModeAllGuards:
             return _real_import(name, *a, **k)
 
         with (
-            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
             mock_patch("tools.approval.detect_dangerous_command",
                        return_value=(False, None, None)),
             mock_patch("hermes_cli.config.load_config_readonly",
@@ -385,7 +383,7 @@ class TestCronModeInteractions:
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
         from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+        with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
             result = check_dangerous_command("rm -rf /", "docker")
             assert result["approved"]
 
@@ -406,7 +404,7 @@ class TestCronModeInteractions:
         import tools.approval
         with (
             mock_patch.object(tools.approval, "_YOLO_MODE_FROZEN", True),
-            mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"),
+            mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"),
         ):
             # Use a dangerous-but-not-hardline command — `rm -rf /` is now
             # hardline-blocked regardless of yolo (see test_hardline_blocklist.py).
@@ -447,7 +445,7 @@ class TestCronWithGatewayOrigin:
         tokens = set_session_vars(platform="telegram", chat_id="123")
         try:
             from unittest.mock import patch as mock_patch
-            with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+            with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
                 result = check_dangerous_command("rm -rf /tmp/stuff", "local")
                 # Cron-mode path: BLOCKED message, NOT pending/approval_required.
                 assert not result["approved"]
@@ -469,7 +467,7 @@ class TestCronWithGatewayOrigin:
         tokens = set_session_vars(platform="discord", chat_id="456")
         try:
             from unittest.mock import patch as mock_patch
-            with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="approve"):
+            with mock_patch("tools.approval._get_cron_approval_mode", return_value="approve"):
                 result = check_dangerous_command("rm -rf /tmp/stuff", "local")
                 assert result["approved"]
                 # Should NOT be a gateway-approval response.

@@ -1,14 +1,25 @@
-"""Durable interrupted-turn markers for the desktop/TUI auto-continue path. A running turn's progress
-lives only in process memory (the agent flushes to SQLite at turn end), so a marker is written at turn
-start and cleared on any conclusion — only a process death leaves one behind, and ``session.resume``
-reads it (``_maybe_schedule_auto_continue``). Stored per ``HERMES_HOME`` (profile-aware); writes prune
-entries older than ``_MAX_AGE_SECS`` and cap the count so a crash streak can't grow the file. Every
-function is best-effort — marker bookkeeping must never break a turn — so I/O errors degrade to "no
-marker" instead of raising."""
+"""Durable interrupted-turn markers for the desktop/TUI auto-continue path.
+
+A running turn's progress lives only in process memory (the agent flushes to
+SQLite at turn end, not mid-turn), so an app/backend/machine death mid-turn
+leaves no durable trace of the interrupted prompt. This sidecar is that
+trace: a marker is written when a turn starts running and cleared when the
+turn concludes — success, handled error, or interrupt all clear it, so only
+a process death leaves one behind. ``session.resume`` reads the marker to
+decide whether to auto-continue the interrupted turn (see
+``_maybe_schedule_auto_continue`` in ``tui_gateway/server.py``).
+
+Markers are stored per ``HERMES_HOME`` (callers pass the session's home so
+profile sessions keep their state in their own profile directory) and the
+file is bounded: writes prune entries older than ``_MAX_AGE_SECS`` and cap
+the total count, so an unlucky streak of crashes can't grow it unboundedly.
+
+Every function is best-effort by design — marker bookkeeping must never
+break a turn — so I/O errors degrade to "no marker" instead of raising.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -20,20 +31,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_MARKER_DIR = "desktop"
+_MARKER_FILE = "interrupted_turns.json"
 _MAX_AGE_SECS = 24 * 3600
 _MAX_ENTRIES = 32
-# Enough to re-submit any realistic prompt; guards against a multi-megabyte paste being journaled.
+# Enough to re-submit any realistic prompt; guards the sidecar against a
+# pathological multi-megabyte paste being journaled on every turn.
 _MAX_PROMPT_CHARS = 64_000
 
 _lock = threading.Lock()
 
 
 def _marker_path(home: Path | str) -> Path:
-    return Path(home) / "desktop" / "interrupted_turns.json"
-
-
-def _started_at(entry: dict) -> float:
-    return float(entry.get("started_at") or 0)
+    return Path(home) / _MARKER_DIR / _MARKER_FILE
 
 
 def _load(path: Path) -> dict[str, dict]:
@@ -45,14 +55,25 @@ def _load(path: Path) -> dict[str, dict]:
     except Exception:
         logger.debug("unreadable turn-marker file %s; starting fresh", path, exc_info=True)
         return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)}
 
 
 def _prune(entries: dict[str, dict], now: float) -> dict[str, dict]:
-    fresh = {k: e for k, e in entries.items() if now - _started_at(e) <= _MAX_AGE_SECS}
+    fresh = {
+        key: entry
+        for key, entry in entries.items()
+        if now - float(entry.get("started_at") or 0) <= _MAX_AGE_SECS
+    }
     if len(fresh) <= _MAX_ENTRIES:
         return fresh
-    return dict(sorted(fresh.items(), key=lambda item: _started_at(item[1]), reverse=True)[:_MAX_ENTRIES])
+    newest = sorted(
+        fresh.items(),
+        key=lambda item: float(item[1].get("started_at") or 0),
+        reverse=True,
+    )[:_MAX_ENTRIES]
+    return dict(newest)
 
 
 def _store(path: Path, entries: dict[str, dict]) -> None:
@@ -66,37 +87,54 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
             json.dump(entries, f)
         os.replace(tmp, path)
     except Exception:
-        with contextlib.suppress(OSError):
+        try:
             os.unlink(tmp)
+        except OSError:
+            pass
         raise
 
 
-def _update(home: Path | str, session_key: str, mutate, what: str) -> None:
-    """Load → ``mutate(entries)`` → store under the lock; ``mutate`` returns None to skip the write."""
-    try:
-        with _lock:
-            path = _marker_path(home)
-            entries = mutate(_load(path))
-            if entries is not None:
-                _store(path, entries)
-    except Exception:
-        logger.debug("failed to %s turn marker for %s", what, session_key, exc_info=True)
+def record_turn_start(
+    home: Path | str, session_key: str, prompt: str, *, attempts: int = 0
+) -> None:
+    """Persist the marker for a turn that is about to run.
 
-
-def record_turn_start(home: Path | str, session_key: str, prompt: str, *, attempts: int = 0) -> None:
-    """Persist the marker for a turn that is about to run. ``attempts`` = how many auto-continues led to
-    this run (0 for a user-initiated turn); the crash-loop breaker reads it back on the next resume."""
+    ``attempts`` counts how many auto-continues led to this run: 0 for a
+    user-initiated turn, N for the Nth automatic re-run — the crash-loop
+    breaker reads it back on the next resume.
+    """
     if not session_key or not prompt:
         return
     now = time.time()
-    entry = {"attempts": max(0, int(attempts)), "prompt": prompt[:_MAX_PROMPT_CHARS], "started_at": now}
-    _update(home, session_key, lambda entries: {**_prune(entries, now), session_key: entry}, "record")
+    entry = {
+        "attempts": max(0, int(attempts)),
+        "prompt": prompt[:_MAX_PROMPT_CHARS],
+        "started_at": now,
+    }
+    try:
+        with _lock:
+            path = _marker_path(home)
+            entries = _prune(_load(path), now)
+            entries[session_key] = entry
+            _store(path, entries)
+    except Exception:
+        logger.debug("failed to record turn marker for %s", session_key, exc_info=True)
 
 
 def clear_turn_marker(home: Path | str, session_key: str) -> None:
     """Remove the marker once its turn concluded (any outcome the client saw)."""
-    if session_key:
-        _update(home, session_key, lambda e: {k: v for k, v in e.items() if k != session_key} if session_key in e else None, "clear")
+    if not session_key:
+        return
+    try:
+        with _lock:
+            path = _marker_path(home)
+            entries = _load(path)
+            if session_key not in entries:
+                return
+            del entries[session_key]
+            _store(path, entries)
+    except Exception:
+        logger.debug("failed to clear turn marker for %s", session_key, exc_info=True)
 
 
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
@@ -106,9 +144,16 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
     try:
         with _lock:
             entry = _load(_marker_path(home)).get(session_key)
-        prompt = str(entry.get("prompt") or "") if isinstance(entry, dict) else ""
-        if not prompt.strip():
-            return None
-        return {"attempts": max(0, int(entry.get("attempts") or 0)), "prompt": prompt, "started_at": _started_at(entry)}
     except Exception:
         return None
+    if not isinstance(entry, dict):
+        return None
+    prompt = str(entry.get("prompt") or "")
+    if not prompt.strip():
+        return None
+    try:
+        started_at = float(entry.get("started_at") or 0)
+        attempts = max(0, int(entry.get("attempts") or 0))
+    except (TypeError, ValueError):
+        return None
+    return {"attempts": attempts, "prompt": prompt, "started_at": started_at}

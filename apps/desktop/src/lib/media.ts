@@ -139,15 +139,9 @@ export function mediaGatewayStreamUrl(path: string): string {
 
   if (isRemoteGateway()) {
     const file = encodeURIComponent(filePathFromMediaPath(path))
+    const profile = conn?.profile ? `?profile=${encodeURIComponent(conn.profile)}` : ''
 
-    const scope = [
-      conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
-      conn?.profile ? `profile=${encodeURIComponent(conn.profile)}` : ''
-    ]
-      .filter(Boolean)
-      .join('&')
-
-    return `hermes-media://remote/${file}${scope ? `?${scope}` : ''}`
+    return `hermes-media://remote/${file}${profile}`
   }
 
   return mediaExternalUrl(path)
@@ -214,7 +208,6 @@ export async function downloadGatewayMediaFile(
   }
 
   return window.hermesDesktop.saveGatewayFile({
-    connectionId: conn?.connectionId,
     path: file,
     profile: conn?.profile,
     suggestedName: mediaName(file)

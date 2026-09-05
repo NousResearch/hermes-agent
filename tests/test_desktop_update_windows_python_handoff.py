@@ -37,10 +37,7 @@ WINDOWS_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
 def _read() -> str:
-    # windows.ps1 is eol=crlf in .gitattributes, so checkouts materialize
-    # CRLF on disk (CI included). Normalize so the SelfTest-block strip's
-    # `\n}\n` anchors match regardless of the working-copy line endings.
-    return WINDOWS_PS1.read_text(encoding="utf-8").replace("\r\n", "\n")
+    return WINDOWS_PS1.read_text(encoding="utf-8")
 
 
 def _handoff_source() -> str:

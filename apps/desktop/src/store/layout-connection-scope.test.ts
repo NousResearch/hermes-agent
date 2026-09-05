@@ -87,9 +87,10 @@ describe('connection-scoped sidebar lists (#77318)', () => {
     // The bare key still belongs to the local connection.
     expect(readKey('hermes.desktop.pinnedSessions')).toBe(JSON.stringify(['local-1']))
 
-    // The remote pin landed under its own gateway scope, not the shared key
-    // and not a per-profile fragment.
-    const scoped = readKey(`hermes.desktop.pinnedSessions.remote.${encodeURIComponent('https://vps-a.example:8443')}`)
+    // The remote pin landed under its own scope, not the shared key.
+    const scoped = readKey(
+      `hermes.desktop.pinnedSessions.remote.${encodeURIComponent('https://vps-a.example:8443')}.default`
+    )
 
     expect(scoped).toBe(JSON.stringify(['a-1']))
   })
@@ -114,19 +115,6 @@ describe('connection-scoped sidebar lists (#77318)', () => {
     // the remote window must not repaint the local scope's lists.
     setConnection(null)
     expect($pinnedSessionIds.get()).toEqual(['a-1'])
-  })
-
-  it('keeps pins across a profile switch on the same gateway, but not session order', () => {
-    setConnection(remoteA)
-    pinSession('a-1')
-    $sidebarSessionOrderIds.set(['s1'])
-    $sidebarSessionOrderManual.set(true)
-
-    setConnection({ ...remoteA, profile: 'k9' } as unknown as HermesConnection)
-
-    expect($pinnedSessionIds.get()).toEqual(['a-1'])
-    expect($sidebarSessionOrderIds.get()).toEqual([])
-    expect($sidebarSessionOrderManual.get()).toBe(false)
   })
 
   it('scopes the manual session order and its flag per connection', () => {

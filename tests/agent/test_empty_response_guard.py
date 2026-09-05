@@ -5,8 +5,7 @@ deterministic empties (unsignaled provider refusals with zero output
 tokens) while never tightening behaviour on ambiguous evidence.
 
 Fail-open contract under test:
-- Missing usage + no observed generation -> deterministic after two attempts.
-- Missing usage + observed reasoning -> never deterministic.
+- Missing usage -> never deterministic, default budget.
 - Any generated tokens (output or reasoning) -> never deterministic.
 - Different model/provider/finish_reason across attempts -> not deterministic.
 - Guard disabled via config (agent.empty_response_guard.enabled: false) ->
@@ -43,21 +42,11 @@ def _response(prompt_tokens=25_900, completion_tokens=0, usage_present=True):
     return SimpleNamespace(usage=usage)
 
 
-def _record_streak(
-    agent, responses, finish_reasons=None, observed_generations=None
-):
+def _record_streak(agent, responses, finish_reasons=None):
     """Record attempts the way the loop does: record, then increment."""
     finish_reasons = finish_reasons or ["stop"] * len(responses)
-    observed_generations = observed_generations or [False] * len(responses)
-    for resp, reason, observed_generation in zip(
-        responses, finish_reasons, observed_generations
-    ):
-        guard.record_empty_attempt(
-            agent,
-            finish_reason=reason,
-            response=resp,
-            observed_generation=observed_generation,
-        )
+    for resp, reason in zip(responses, finish_reasons):
+        guard.record_empty_attempt(agent, finish_reason=reason, response=resp)
         agent._empty_content_retries += 1
 
 
@@ -73,20 +62,11 @@ class TestDeterministicEmpty:
         _record_streak(agent, [_response()])
         assert guard.deterministic_empty(agent) is False
 
-    def test_missing_usage_without_observed_generation_is_deterministic(self):
+    def test_missing_usage_fails_open(self):
         agent = _agent()
         _record_streak(
             agent,
             [_response(usage_present=False), _response(usage_present=False)],
-        )
-        assert guard.deterministic_empty(agent) is True
-
-    def test_missing_usage_with_observed_reasoning_fails_open(self):
-        agent = _agent()
-        _record_streak(
-            agent,
-            [_response(usage_present=False), _response(usage_present=False)],
-            observed_generations=[True, True],
         )
         assert guard.deterministic_empty(agent) is False
 

@@ -13,6 +13,7 @@ import { Streamdown } from 'streamdown'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
@@ -31,7 +32,6 @@ import {
 } from '@/lib/desktop-fs'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
-import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import { cn } from '@/lib/utils'
@@ -347,7 +347,19 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
 
   const code = String(children).replace(/\n$/, '')
 
-  const highlighted = <ShikiHighlighter code={code} language={language} theme={SHIKI_THEME} />
+  const highlighted = (
+    <ShikiHighlighter
+      addDefaultStyles={false}
+      as="div"
+      defaultColor="light-dark()"
+      delay={80}
+      language={language}
+      showLanguage={false}
+      theme={SHIKI_THEME}
+    >
+      {code}
+    </ShikiHighlighter>
+  )
 
   // ```mermaid / ```svg fences route to the shared lazy renderers (same
   // registry the chat transcript uses); everything else stays on Shiki.
@@ -593,7 +605,7 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isComposerChord(event)) {
+      if (!isAddSelectionShortcut(event)) {
         return
       }
 
@@ -649,7 +661,17 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
               })}
             </div>
             <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
-              <ShikiHighlighter code={chunk.text} language={language || 'text'} theme={SHIKI_THEME} />
+              <ShikiHighlighter
+                addDefaultStyles={false}
+                as="div"
+                defaultColor="light-dark()"
+                delay={80}
+                language={language || 'text'}
+                showLanguage={false}
+                theme={SHIKI_THEME}
+              >
+                {chunk.text}
+              </ShikiHighlighter>
             </div>
           </Fragment>
         ))}

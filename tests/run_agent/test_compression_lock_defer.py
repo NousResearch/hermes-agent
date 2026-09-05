@@ -44,8 +44,7 @@ def _no_compression_sleep(monkeypatch):
     import time as _time
 
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    from agent import retry_utils as _retry_utils
-    monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -92,9 +91,9 @@ def _make_overflow_error():
 @pytest.fixture()
 def agent():
     with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -287,11 +286,11 @@ class TestPreApiLockDeferDoesNotBurnBudget:
                 return_value=10,
             ),
             patch(
-                "agent.model_metadata.estimate_request_tokens_rough",
+                "agent.conversation_loop.estimate_request_tokens_rough",
                 return_value=500_000,
             ),
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "agent.conversation_loop.estimate_messages_tokens_rough",
                 return_value=500_000,
             ),
             patch.object(agent, "_compress_context", side_effect=_lock_then_success),

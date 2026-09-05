@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
-from tools.mcp_tool_registration import _register_server_tools
+from tools.mcp_tool import MCPServerTask, _register_server_tools
 from tools.registry import ToolRegistry
 
 

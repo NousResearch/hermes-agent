@@ -233,10 +233,8 @@ interface DiskRoot {
   /** Root-level enable posture, forwarded to the loader (see LoadOptions). */
   defaultEnabled?: boolean
   dir: string
-  /** Path segments below each scanned package folder. Discovery walks
-   *  directory metadata to this file instead of throwing a content read for
-   *  every ordinary package that has no Desktop half. */
-  entrySegments: readonly string[]
+  /** Resolve a scanned folder to its candidate plugin entry file. */
+  entry: (folderPath: string) => string
 }
 
 /** Both scan roots, resolved fresh each pass (Electron-local, never the
@@ -253,7 +251,7 @@ async function diskRoots(): Promise<DiskRoot[]> {
   const standalone = await desktop.desktopPluginsRoot?.()
 
   if (standalone) {
-    roots.push({ dir: standalone, entrySegments: ['plugin.js'] })
+    roots.push({ dir: standalone, entry: folder => `${folder}/plugin.js` })
   }
 
   const unified = await desktop.agentPluginsRoot?.()
@@ -263,7 +261,7 @@ async function diskRoots(): Promise<DiskRoot[]> {
     // user allowlists the Python half (plugins.enabled), so the desktop half
     // matches that posture — inventoried in Settings → Plugins, off until
     // toggled. The standalone desktop-plugins door keeps its default-on trust.
-    roots.push({ defaultEnabled: false, dir: unified, entrySegments: ['desktop', 'plugin.js'] })
+    roots.push({ defaultEnabled: false, dir: unified, entry: folder => `${folder}/desktop/plugin.js` })
   }
 
   return roots
@@ -299,40 +297,12 @@ function dropOriginRecord(origin: string, except: DiskPlugin): void {
   dropPlugin(origin)
 }
 
-/** A plugin source that could not be read in FULL. Evaluating a truncated
- *  file is never acceptable — half a module can still parse. */
-class PluginSourceOversizeError extends Error {}
-
-/** Read a plugin entry file in full. Prefers the dedicated readPluginSource
- *  IPC (16 MiB cap, no truncation). Older shells predate it and only offer
- *  the preview read, which silently truncates at 512 KiB — there the read
- *  fails loudly instead of handing a partial file to the evaluator. */
-async function readPluginSourceText(file: string): Promise<string> {
+async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
   const desktop = window.hermesDesktop!
-
-  if (desktop.readPluginSource) {
-    return (await desktop.readPluginSource(file)).text
-  }
-
-  const result = await desktop.readFileText(file)
-
-  if (result.truncated) {
-    throw new PluginSourceOversizeError(
-      "plugin.js exceeds this shell's 512 KiB read limit — update Hermes Desktop to load larger plugins"
-    )
-  }
-
-  return result.text
-}
-
-/** Returns false when the entry file could not be read (vanished mid-read) so
- *  the caller can reconcile/unload the registration instead of retaining a
- *  live ghost for a missing entry. */
-async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
   const prevId = entry.id
 
   try {
-    const text = await readPluginSourceText(entry.file)
+    const { text } = await desktop.readFileText(entry.file)
 
     const id = await loadRuntimePlugin(text, entry.origin, {
       defaultEnabled: entry.defaultEnabled,
@@ -354,62 +324,9 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<boolean> {
     if (id && id !== entry.origin) {
       dropOriginRecord(entry.origin, entry)
     }
-
-    return true
-  } catch (error) {
-    // An oversize source is a REAL failure the user must see (the silent
-    // shape was the bug: a truncated file evaluated as a syntax error, or
-    // worse, as half a plugin). It is a completed read of an existing file,
-    // so report it and keep the registration (true) — everything else is a
-    // file vanishing mid-read, where false lets the caller reconcile/unload.
-    if (error instanceof PluginSourceOversizeError) {
-      console.error(`[plugins] ${entry.origin}: ${error.message}`)
-      notifyError(error, `Plugin "${entry.origin}" failed to load`)
-      publishPlugin({
-        id: entry.origin,
-        name: entry.origin,
-        kind: 'disk',
-        file: entry.file,
-        status: 'error',
-        error: error.message
-      })
-
-      return true
-    }
-
-    return false
+  } catch {
+    // File vanished mid-read — the next scan reconciles.
   }
-}
-
-async function resolveDiskPluginEntry(
-  desktop: Window['hermesDesktop'],
-  folderPath: string,
-  segments: readonly string[]
-): Promise<string | null> {
-  let currentDir = folderPath
-
-  for (let index = 0; index < segments.length; index += 1) {
-    const { entries } = await desktop.readDir(currentDir)
-    const entry = entries.find(candidate => candidate.name === segments[index])
-
-    if (!entry) {
-      return null
-    }
-
-    const last = index === segments.length - 1
-
-    if (last) {
-      return entry.isDirectory ? null : entry.path
-    }
-
-    if (!entry.isDirectory) {
-      return null
-    }
-
-    currentDir = entry.path
-  }
-
-  return null
 }
 
 async function scanDiskPlugins(): Promise<void> {
@@ -442,22 +359,17 @@ async function scanDiskPlugins(): Promise<void> {
       }
 
       for (const dir of entries.filter(e => e.isDirectory)) {
-        let file: string | null
-
-        try {
-          file = await resolveDiskPluginEntry(desktop, dir.path, root.entrySegments)
-        } catch {
-          continue // Folder changed during the metadata walk; the next tick reconciles.
-        }
-
-        if (!file) {
-          continue // Ordinary agent package with no Desktop half — not an error.
-        }
-
+        const file = root.entry(dir.path)
         seen.add(file)
 
         if (disk.has(file)) {
           continue
+        }
+
+        try {
+          await desktop.readFileText(file)
+        } catch {
+          continue // No entry file (yet) — not a plugin folder for this root.
         }
 
         const record: DiskPlugin = {
@@ -469,12 +381,7 @@ async function scanDiskPlugins(): Promise<void> {
         }
 
         disk.set(file, record)
-
-        if (!(await loadDiskPlugin(record))) {
-          disk.delete(file)
-
-          continue
-        }
+        await loadDiskPlugin(record)
 
         try {
           record.watchId = (await desktop.watchPreviewFile(file)).id
@@ -538,11 +445,7 @@ export function watchRuntimePlugins(): void {
 
     for (const record of disk.values()) {
       if (record.watchId === id) {
-        void loadDiskPlugin(record).then(readable => {
-          if (!readable) {
-            void scanDiskPlugins()
-          }
-        })
+        void loadDiskPlugin(record)
 
         return
       }

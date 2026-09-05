@@ -19,8 +19,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 WORKER_HOOKS = (
@@ -78,10 +76,10 @@ def test_dispatch_spawn_fires_worker_spawned(
     mgr = get_plugin_manager()
     mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(_read_pid)
 
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="alice")
-        result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
+        result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 4242)
         assert any(row[0] == tid for row in result.spawned)
     finally:
         conn.close()
@@ -100,13 +98,13 @@ def test_dispatch_spawn_fires_worker_spawned(
 
 def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypatch):
     """A dead-PID reclaim fires the exit observer with the exit facts."""
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
         kb.claim_task(conn, tid)
-        kbd._set_worker_pid(conn, tid, 98765)
+        kb._set_worker_pid(conn, tid, 98765)
         monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
-        assert kbd.detect_crashed_workers(conn) == [tid]
+        assert kb.detect_crashed_workers(conn) == [tid]
     finally:
         conn.close()
 
@@ -126,7 +124,7 @@ def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypa
 
 def test_stale_claim_reclaim_fires_hook(kanban_home, captured_hooks):
     """A TTL-expired reclaim fires the stale-claim observer post-commit."""
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
         kb.claim_task(conn, tid)
@@ -164,14 +162,14 @@ def test_raising_callbacks_never_break_worker_lifecycle(
     for hook in WORKER_HOOKS:
         mgr._hooks.setdefault(hook, []).append(_boom)
     try:
-        conn = kbc.connect()
+        conn = kb.connect()
         try:
             tid = kb.create_task(conn, title="t", assignee="alice")
-            result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 111)
+            result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 111)
             assert any(row[0] == tid for row in result.spawned)
 
             monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
-            assert kbd.detect_crashed_workers(conn) == [tid]
+            assert kb.detect_crashed_workers(conn) == [tid]
 
             kb.claim_task(conn, tid)
             conn.execute(
@@ -201,10 +199,10 @@ def test_no_subscriber_short_circuits_worker_hooks(
         return real_invoke(hook_name, **kw)
 
     monkeypatch.setattr(lifecycle, "invoke_hook", _spy)
-    conn = kbc.connect()
+    conn = kb.connect()
     try:
         kb.create_task(conn, title="t", assignee="alice")
-        kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 222)
+        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 222)
     finally:
         conn.close()
     assert "on_kanban_worker_spawned" not in invoked

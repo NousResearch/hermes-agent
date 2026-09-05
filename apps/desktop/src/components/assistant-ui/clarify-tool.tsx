@@ -24,7 +24,6 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
-import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import {
   bareChoice,
@@ -38,7 +37,6 @@ import {
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { requestForOwnedSession } from '@/store/session-states'
 
 import { selectMessageRunning } from './tool/fallback-model'
 import { parseMaybeObject } from './tool/fallback-model/format'
@@ -288,6 +286,17 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
     return <ClarifyToolSettled {...props} />
   }
 
+  return <ClarifyToolLive {...props} />
+}
+
+function ClarifyToolLive(props: ToolCallMessagePartProps) {
+  const messageRunning = useAuiState(selectMessageRunning)
+
+  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
+  if (!messageRunning) {
+    return <ToolFallback {...props} />
+  }
+
   return <ClarifyToolPending {...props} />
 }
 
@@ -375,38 +384,17 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
   const request = useStore($request)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
-  const messageRunning = useAuiState(selectMessageRunning)
-  // Answering clears the request a beat before `tool.complete` swaps in the
-  // settled card. Latch submit so that gap doesn't demote; Stop also clears
-  // the request and must still collapse an unanswered card.
-  const [answered, setAnswered] = useState(false)
-
-  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
-  // `session.info` reports running=false while clarify is blocking, so the
-  // running flag alone would remount the question as a tool row. Keep the
-  // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
-    return <ToolFallback {...props} />
-  }
 
   // Batch: the gateway request carries qid-keyed questions. Args alone can't
   // drive the form (no qids to respond with), so batch waits for the request.
   if (request?.questions?.length || fromArgs.questions) {
-    return <ClarifyToolBatchPending onAnswered={() => setAnswered(true)} request={request} />
+    return <ClarifyToolBatchPending request={request} />
   }
 
-  return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+  return <ClarifyToolSinglePending fromArgs={fromArgs} request={request} />
 }
 
-function ClarifyToolSinglePending({
-  fromArgs,
-  onAnswered,
-  request
-}: {
-  fromArgs: ClarifyArgs
-  onAnswered: () => void
-  request: ClarifyRequest | null
-}) {
+function ClarifyToolSinglePending({ fromArgs, request }: { fromArgs: ClarifyArgs; request: ClarifyRequest | null }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
@@ -445,17 +433,13 @@ function ClarifyToolSinglePending({
   const [activeIndex, setActiveIndex] = useState(0)
   const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
-  // Identity for the visible-card check below — this is the element carrying
-  // `data-clarify-choices`, i.e. the one `visibleClarifyCard()` resolves.
-  const formRef = useRef<HTMLFormElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
-  // arrives slightly after the tool block mounts. If the question text is
-  // already in the tool args, paint the card immediately (disabled until
-  // the request is wired) — a spinner→question swap is a layout jump for
-  // no reason. Only spin when we have nothing to show yet.
+  // arrives slightly after the tool block mounts. Hold the whole panel on a
+  // spinner until the gateway request is wired — showing disabled choices or
+  // a "loading question" stub is worse than a brief wait.
   const ready = Boolean(matchingRequest?.requestId)
-  const loading = !ready && !submitting && !question
+  const loading = !ready && !submitting
 
   const respond = useCallback(
     async (answer: string) => {
@@ -474,24 +458,11 @@ function ClarifyToolSinglePending({
       setSubmitting(true)
 
       try {
-        // Route through the session's OWNER (tile route → hint → tagged row);
-        // legacy ambient is allowed only when it is provably the sole backend.
-        // The ambient socket follows foreground focus, so after a profile / Bot
-        // Chat switch it can point at a backend that never held this clarify —
-        // and the owner stays blocked (#91684 client half, like approval.respond).
-        await requestForOwnedSession<{ ok?: boolean }>(
-          matchingRequest.sessionId,
-          // Bound (not wrapped) so the ambient fallback keeps the exact 2-arg
-          // call shape gateway.request callers assert on.
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.respond',
-          {
-            request_id: matchingRequest.requestId,
-            answer
-          }
-        )
+        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+          request_id: matchingRequest.requestId,
+          answer
+        })
         triggerHaptic('submit')
-        onAnswered()
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
         // tool.complete lands next → ClarifyToolSettled.
       } catch (error) {
@@ -499,7 +470,7 @@ function ClarifyToolSinglePending({
         setSubmitting(false)
       }
     },
-    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, onAnswered, ready]
+    [copy.gatewayDisconnected, copy.notReady, copy.sendFailed, gateway, matchingRequest, ready]
   )
 
   const trimmedDraft = draft.trim()
@@ -615,8 +586,7 @@ function ClarifyToolSinglePending({
   // confirms the current answer (or acts on the highlighted row). Stands down
   // whenever a focusable control (a field, a choice button, the action bar) is
   // focused, so it never eats keystrokes meant for the composer, the Other box,
-  // or a button the user tabbed to — and whenever this card is not the visible
-  // one, since the binding is window-wide but the answer is session-specific.
+  // or a button the user tabbed to.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -624,17 +594,6 @@ function ClarifyToolSinglePending({
 
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) {
-        return
-      }
-
-      // Not the visible card ⇒ not our keystroke. Inactive tabs stay MOUNTED,
-      // so every parked clarify keeps a live `window` listener; without this the
-      // card that acts is whichever mounted first, and answering the question in
-      // front of you silently answers a background session's question instead —
-      // resuming an agent turn the user never saw. Same resolver the composer's
-      // `clarifyCardOwnsKey` yields to, so the two cannot disagree about which
-      // card is live.
-      if (visibleClarifyCard() !== formRef.current) {
         return
       }
 
@@ -733,7 +692,6 @@ function ClarifyToolSinglePending({
       className="my-1.5 grid gap-4"
       data-clarify-choices={hasChoices ? choices.length : undefined}
       onSubmit={handleSubmit}
-      ref={formRef}
     >
       <ClarifyShell className="grid gap-2">
         <div className="flex items-start gap-2">
@@ -750,7 +708,7 @@ function ClarifyToolSinglePending({
                 active={activeIndex === index}
                 char={letterFor(index)}
                 choice={choice}
-                disabled={submitting || !ready}
+                disabled={submitting}
                 key={`${index}-${choice}`}
                 keyShortcuts={`${letterFor(index)} ${index + 1}`}
                 onClick={() => selectChoice(choice, index)}
@@ -774,7 +732,7 @@ function ClarifyToolSinglePending({
                 aria-current={activeIndex === choices.length || undefined}
                 aria-keyshortcuts={`${letterFor(choices.length)} ${choices.length + 1}`}
                 className={CLARIFY_TEXTAREA_CLASS}
-                disabled={submitting || !ready}
+                disabled={submitting}
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
                 onFocus={() => {
@@ -794,7 +752,7 @@ function ClarifyToolSinglePending({
         ) : (
           <Textarea
             className={CLARIFY_TEXTAREA_CLASS}
-            disabled={submitting || !ready}
+            disabled={submitting}
             onChange={event => onDraftChange(event.target.value)}
             onKeyDown={handleTextareaKey}
             placeholder={copy.placeholder}
@@ -807,10 +765,10 @@ function ClarifyToolSinglePending({
       </ClarifyShell>
 
       <div className="flex items-center justify-end gap-1">
-        <Button disabled={submitting || !ready} onClick={() => void respond('')} size="xs" type="button" variant="text">
+        <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        <Button disabled={submitting || !ready || !pendingAnswer} size="xs" type="submit">
+        <Button disabled={submitting || !pendingAnswer} size="xs" type="submit">
           {submitting ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
@@ -949,7 +907,7 @@ const emptyStage = { choices: [] as string[], draft: '' }
  * back-to-back and completes the batch. Staged answers stay editable up to
  * that moment. The per-question wire protocol is unchanged (the TUI/CLI
  * still lock incrementally); this card just batches its locks at the end. */
-function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => void; request: ClarifyRequest | null }) {
+function ClarifyToolBatchPending({ request }: { request: ClarifyRequest | null }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
@@ -982,24 +940,8 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
           continue
         }
 
-        const options = question.choices ?? []
-        let replayedAnswers = [answer]
-
-        if (question.multiSelect) {
-          try {
-            const parsed = JSON.parse(answer)
-
-            if (Array.isArray(parsed) && parsed.every(value => typeof value === 'string')) {
-              replayedAnswers = parsed
-            }
-          } catch {
-            // Older/non-JSON replies remain a one-value replay below.
-          }
-        }
-
-        const matchedChoices = options.filter(choice => replayedAnswers.includes(bareChoice(choice)))
-        next[question.qid] =
-          matchedChoices.length > 0 ? { choices: matchedChoices, draft: '' } : { choices: [], draft: answer }
+        const asChoice = (question.choices ?? []).find(choice => bareChoice(choice) === answer)
+        next[question.qid] = asChoice ? { choices: [asChoice], draft: '' } : { choices: [], draft: answer }
       }
 
       return next
@@ -1041,34 +983,24 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
       // server-side, so every earlier lock must already be accepted when it
       // lands — a reordered burst could complete the batch with a missing
       // answer.
-      //
-      // Each lock rides the session's OWNER socket, not the ambient one: a
-      // profile / Bot Chat switch re-points ambient at a backend that never
-      // held this batch, which would leave the owner blocked.
       for (const question of questions) {
         const answer = stagedAnswer(question)
 
-        await requestForOwnedSession<{ ok?: boolean }>(
-          request.sessionId,
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.respond',
-          {
-            answer: answer ?? '',
-            question_id: question.qid,
-            request_id: request.requestId
-          }
-        )
+        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+          answer: answer ?? '',
+          question_id: question.qid,
+          request_id: request.requestId
+        })
       }
 
       triggerHaptic('submit')
-      onAnswered()
       // tool.complete lands next → ClarifyToolBatchSettled.
       clearClarifyRequest(request.requestId, request.sessionId)
     } catch (error) {
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
+  }, [copy, gateway, questions, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
     setStaged(current => {
@@ -1093,24 +1025,14 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
       return
     }
 
-    onAnswered()
     clearClarifyRequest(request.requestId, request.sessionId)
 
     try {
-      if (gateway) {
-        // Owner-routed like the locks above — a skip sent to the wrong backend
-        // is a silent no-op that leaves the agent waiting out its timeout.
-        await requestForOwnedSession(
-          request.sessionId,
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.respond',
-          { answer: '', request_id: request.requestId }
-        )
-      }
+      await gateway?.request('clarify.respond', { answer: '', request_id: request.requestId })
     } catch {
       // The tool times out on its own; a failed skip must never block the UI.
     }
-  }, [gateway, onAnswered, request])
+  }, [gateway, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {

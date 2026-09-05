@@ -16,8 +16,6 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_notify as kbn
-from hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -33,48 +31,48 @@ def kanban_home(tmp_path, monkeypatch):
 def test_missing_db_counts_zero_and_creates_nothing(kanban_home):
     db_path = kb.kanban_db_path(board="default")
     assert not db_path.exists()
-    assert kbn.count_notify_subs(board="default") == 0
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(board="default") == 0
+    assert kb.count_notify_subs(
         board="default", platform="tui", chat_id="session-1"
     ) == 0
     assert not db_path.exists(), "read-only probe must not create the DB"
 
 
 def test_optional_filters_narrow_count_without_changing_unfiltered_count(kanban_home):
-    conn = kbc.connect(board="default")
+    conn = kb.connect(board="default")
     try:
         tid = kb.create_task(conn, title="t", assignee="w")
-        kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="session-1")
-        kbn.add_notify_sub(
+        kb.add_notify_sub(conn, task_id=tid, platform="tui", chat_id="session-1")
+        kb.add_notify_sub(
             conn,
             task_id=tid,
             platform="TUI",
             chat_id="session-2",
             thread_id="thread-2",
         )
-        kbn.add_notify_sub(
+        kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="session-1"
         )
     finally:
         conn.close()
 
-    assert kbn.count_notify_subs(board="default") == 3
-    assert kbn.count_notify_subs(board="default", platform="tui") == 2
-    assert kbn.count_notify_subs(board="default", chat_id="session-1") == 2
-    assert kbn.count_notify_subs(board="default", thread_id="thread-2") == 1
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(board="default") == 3
+    assert kb.count_notify_subs(board="default", platform="tui") == 2
+    assert kb.count_notify_subs(board="default", chat_id="session-1") == 2
+    assert kb.count_notify_subs(board="default", thread_id="thread-2") == 1
+    assert kb.count_notify_subs(
         board="default", platform="tui", chat_id="session-1"
     ) == 1
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(
         board="default", platform="tui", chat_id="session-1", thread_id=""
     ) == 1
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(
         board="default",
         platform="tui",
         chat_id="session-2",
         thread_id="thread-2",
     ) == 1
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(
         board="default", platform="tui", chat_id="other-session"
     ) == 0
 
@@ -87,8 +85,8 @@ def test_legacy_db_without_subs_table_counts_zero_and_stays_unmigrated(tmp_path)
         conn.commit()
     finally:
         conn.close()
-    assert kbn.count_notify_subs(db_path=legacy) == 0
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(db_path=legacy) == 0
+    assert kb.count_notify_subs(
         db_path=legacy, platform="tui", chat_id="session-1"
     ) == 0
     # The probe must not have run schema init on the foreign/legacy DB.
@@ -109,11 +107,11 @@ def test_legacy_db_without_subs_table_counts_zero_and_stays_unmigrated(tmp_path)
 def test_count_notify_subs_filters_profile_owners(tmp_path):
     db_path = tmp_path / "owners.db"
     kb.init_db(db_path)
-    conn = kbc.connect(db_path)
+    conn = kb.connect(db_path)
     try:
         for profile in ("default", "writer", None):
             task_id = kb.create_task(conn, title=f"owned by {profile}")
-            kbn.add_notify_sub(
+            kb.add_notify_sub(
                 conn,
                 task_id=task_id,
                 platform="telegram",
@@ -123,10 +121,10 @@ def test_count_notify_subs_filters_profile_owners(tmp_path):
     finally:
         conn.close()
 
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(
         db_path=db_path, notifier_profiles={"writer"},
     ) == 1
-    assert kbn.count_notify_subs(
+    assert kb.count_notify_subs(
         db_path=db_path,
         notifier_profiles={"default"},
         include_unowned=True,

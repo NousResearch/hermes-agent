@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { $backendThemes, $pendingSkinApply, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 
@@ -8,10 +8,7 @@ const skin = (name: string) => ({
 })
 
 describe('ingestBackendSkin', () => {
-  beforeEach(() => {
-    window.localStorage.clear()
-    __resetBackendSkinSync()
-  })
+  beforeEach(() => __resetBackendSkinSync())
 
   it('registers a converted skin without applying when apply=false', () => {
     ingestBackendSkin(skin('neon'), { apply: false })
@@ -108,26 +105,5 @@ describe('ingestBackendSkin', () => {
     ingestBackendSkin({ name: '' }, { apply: true })
 
     expect($pendingSkinApply.get()).toBeNull()
-  })
-
-  it('hydrates the registry from storage on load, so a persisted pick resolves before the gateway connects', async () => {
-    ingestBackendSkin(skin('neon'), { apply: false })
-    expect(JSON.parse(window.localStorage.getItem('hermes-desktop-backend-themes-v1') ?? '{}').neon?.name).toBe('neon')
-
-    // Relaunch: a fresh module instance with the same storage.
-    vi.resetModules()
-    const fresh = await import('./backend-sync')
-
-    expect(fresh.$backendThemes.get().neon?.name).toBe('neon')
-  })
-
-  it('drops junk and built-in names from the cached registry', async () => {
-    const mono = { name: 'mono', label: 'x', colors: { background: '#000', foreground: '#fff', primary: '#f0f' } }
-    window.localStorage.setItem('hermes-desktop-backend-themes-v1', JSON.stringify({ mono, bad: { name: 'bad' } }))
-
-    vi.resetModules()
-    const fresh = await import('./backend-sync')
-
-    expect(fresh.$backendThemes.get()).toEqual({})
   })
 })

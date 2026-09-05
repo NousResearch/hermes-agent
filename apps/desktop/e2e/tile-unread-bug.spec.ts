@@ -36,18 +36,6 @@ const BG_DOT_LABEL = 'Background task running'
 /** Foreground turn-running dot aria-label. */
 const SESSION_RUNNING_DOT_LABEL = 'Session running'
 
-/**
- * The auto-title auxiliary call hits the SAME mock provider as the chat turn,
- * and its request carries the user's message — trigger keyword included. The
- * mock's trigger matching is text-based, so the title call consumes a script
- * index: the real chat turn then gets turn 2 (final answer, NO tool calls),
- * the background process is never spawned, and the bg dot never appears.
- * Whether that happens depends on which request lands first — the CI flake
- * this spec had. Disable auto-title so script indices line up with real chat
- * turns (same fix as interim-messages.spec.ts).
- */
-const DISABLE_AUTO_TITLE = 'auxiliary:\n  title_generation:\n    enabled: false'
-
 /** Locate a session's sidebar row by its preview text. */
 function sessionRow(page: import('@playwright/test').Page, text: string) {
   return page.locator('[data-slot="sidebar"] button').filter({ hasText: text }).first()
@@ -71,13 +59,13 @@ async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
     { timeout: 15_000 },
   )
 
-  // NOTE: while the turn is busy the dot-state priority paints the session as
-  // "working" ('Session running'), which OUTRANKS the background claim — the
-  // 'Background task running' dot only appears once the turn completes while
-  // the (sentinel-held) process is still alive. Polling for the bg dot mid-turn
-  // races the turn length (two model trips + a real subagent spawn) against
-  // the poll budget, which is exactly the flake this spec had on CI. So: wait
-  // for the turn to END first, then assert the bg dot as a stable state.
+  // Wait for the background dot — confirms the turn is running.
+  await expect
+    .poll(
+      () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
+      { timeout: 30_000, message: 'background dot should appear' },
+    )
+    .toBeGreaterThan(0)
 
   // The final answer text streams before message.complete, so text visibility
   // alone is not a completion barrier. Wait for the foreground-running state
@@ -94,17 +82,11 @@ async function startTurnAndSwitchAway(page: import('@playwright/test').Page) {
     )
     .toBe(0)
 
-  // The background dot must be visible now: the turn is done but the process
-  // is held open by the sentinel, so this is a stable state rather than a
-  // window we have to catch in time. Poll rather than sampling once — the
-  // dot flip is event-driven off the busy=false publish and can land a tick
-  // after the running dot clears.
-  await expect
-    .poll(
-      () => page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count(),
-      { timeout: 30_000, message: 'background dot should be visible after turn completes' },
-    )
-    .toBeGreaterThan(0)
+  // The background dot must still be visible: the turn is done but the
+  // process is held open by the sentinel, so this is a stable state rather
+  // than a window we have to catch in time.
+  const bgDuringTurn = await page.locator(`[aria-label="${BG_DOT_LABEL}"]`).count()
+  expect(bgDuringTurn, 'background dot should still be visible after turn completes').toBeGreaterThan(0)
 
   // Switch to a new session — session A is no longer $selectedStoredSessionId.
   // This is required: openSessionTile bails if the session is already selected.
@@ -139,7 +121,6 @@ test.describe('sidebar states — tab (hidden) unread is correct', () => {
   test.beforeAll(async () => {
     restartMockServer()
     fixture = await setupMockBackend({
-      extraConfig: DISABLE_AUTO_TITLE,
       mockServer: { backgroundReleasePath: bgRelease.path },
     })
     await waitForAppReady(fixture, 120_000)
@@ -161,10 +142,7 @@ test.describe('sidebar states — tab (hidden) unread is correct', () => {
 
     // ⌃-click opens the session as a TAB (center dock = stacked, not visible
     // unless it's the active tab). The session is NOT on screen.
-    //
-    // With auto-title disabled the sidebar row is titled by the user's
-    // message (the trigger keyword), not the assistant's final text.
-    const row = sessionRow(page, 'E2E_SIDEBAR_CROSS')
+    const row = sessionRow(page, SIDEBAR_CROSS_TEXTS.finalText)
     await row.click({ modifiers: ['Control'] })
     await page.waitForTimeout(2000)
 
@@ -204,7 +182,6 @@ test.describe.skip('sidebar states — split (visible) unread bug (RED)', () => 
   test.beforeAll(async () => {
     restartMockServer()
     fixture = await setupMockBackend({
-      extraConfig: DISABLE_AUTO_TITLE,
       mockServer: { backgroundReleasePath: bgRelease.path },
     })
     await waitForAppReady(fixture, 120_000)
@@ -227,8 +204,7 @@ test.describe.skip('sidebar states — split (visible) unread bug (RED)', () => 
     // Drag the session row from the sidebar to the right edge of the workspace
     // zone to create a SPLIT (side-by-side) tile. This triggers the real
     // startSessionDrag → onCommit → openSessionTile(id, 'right', anchor) path.
-    // With auto-title disabled the sidebar row is titled by the user's message.
-    const row = sessionRow(page, 'E2E_SIDEBAR_CROSS')
+    const row = sessionRow(page, SIDEBAR_CROSS_TEXTS.finalText)
     const rowBox = await row.boundingBox()
     expect(rowBox, 'session row must be visible').not.toBeNull()
 

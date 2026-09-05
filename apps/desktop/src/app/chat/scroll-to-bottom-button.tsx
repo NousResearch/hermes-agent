@@ -28,7 +28,7 @@ import { $threadJumpButtonVisible, requestScrollToBottom } from '@/store/thread-
  * `data-state`. `idle` (never-shown) stays silent so it can't flash on mount;
  * `in`/`out` only swap once it has actually appeared.
  */
-export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }) {
+export function ScrollToBottomButton() {
   const { t } = useI18n()
   const visible = useStore($threadJumpButtonVisible)
   const request = useStore($approvalRequest)
@@ -59,7 +59,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       data-state={state}
       onClick={() => {
         triggerHaptic('selection')
-        requestScrollToBottom(sessionId)
+        requestScrollToBottom()
       }}
       style={{
         bottom: 'calc(var(--composer-measured-height) + 0.625rem)'

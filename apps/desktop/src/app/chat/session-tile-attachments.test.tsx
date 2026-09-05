@@ -17,6 +17,10 @@ import { deferred } from '../../test/deferred'
 
 const requestGateway = vi.fn()
 
+vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
+  useGatewayRequest: () => ({ requestGateway })
+}))
+
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
@@ -148,7 +152,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -194,7 +198,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -232,7 +236,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -269,7 +273,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     let submitted!: Promise<boolean>
@@ -310,7 +314,7 @@ describe('session tile attachment occurrence ownership', () => {
     scope.attachments.add(original)
 
     const { result } = renderHook(() =>
-      useSessionTileActions({ requestGateway, runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
     )
 
     await act(async () => {

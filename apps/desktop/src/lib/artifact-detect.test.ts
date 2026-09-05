@@ -78,13 +78,6 @@ describe('detectArtifact', () => {
     expect(detectArtifact('markdown', longCode(80))).toBeNull()
     expect(detectArtifact('mermaid', longCode(80))).toBeNull()
   })
-
-  it('leaves rich-renderer fences alone however long they get', () => {
-    // Detection runs before the rich-fence registry, so a long `listing` set
-    // (or any renderer-owned language) would otherwise be stolen by the code
-    // card and never render as its own component.
-    expect(detectArtifact('listing', longCode(200))).toBeNull()
-  })
 })
 
 describe('artifactSlug', () => {

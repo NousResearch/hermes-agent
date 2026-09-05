@@ -20,8 +20,9 @@ def stamp_message_timestamp(
 ) -> _Message:
     """Attach a creation timestamp without replacing source-provided time.
 
-    Gateway adapters can supply the platform event time; all other callers use
-    the local wall clock. Returns the same mapping for use at append sites.
+    Gateway adapters can supply the platform event time. All other callers use
+    the local wall clock at the point the message enters the live transcript.
+    Returning the same mapping keeps the helper convenient at append sites.
     """
     if message.get("timestamp") is None:
         message["timestamp"] = wall_time() if timestamp is None else timestamp
@@ -35,5 +36,6 @@ def append_message(
     timestamp: Optional[float] = None,
 ) -> _Message:
     """Stamp and append one live transcript message."""
-    messages.append(stamp_message_timestamp(message, timestamp=timestamp))
+    stamp_message_timestamp(message, timestamp=timestamp)
+    messages.append(message)
     return message

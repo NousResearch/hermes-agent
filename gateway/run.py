@@ -93,6 +93,19 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
+    # Provider stall-watchdog kill notices buffered by _buffer_status in
+    # agent/chat_completion_helpers.py and replayed through _emit_status when
+    # a turn exhausts its attempts. The retry loop reconnects on its own, so
+    # these belong in logs, not in a chat bubble. The mandatory "\d+s" duration
+    # keeps ordinary assistant prose about providers/timeouts from matching.
+    # All four shapes of the same watchdog family are listed together: which
+    # one fires depends only on WHEN the provider goes silent (before the first
+    # byte, mid-stream, non-streaming, Bedrock), so covering a subset would
+    # make chat noise depend on provider timing.
+    r"|no\s+response\s+from\s+provider\s+for\s+\d+s\b"  # (non-)streaming stale kill
+    r"|no\s+first\s+byte\s+from\s+provider\s+in\s+\d+s\b"  # codex TTFB kill
+    r"|codex\s+stream\s+sent\s+no\s+events\s+for\s+\d+s\b"  # codex post-TTFB idle kill
+    r"|no\s+events\s+from\s+bedrock\s+for\s+\d+s\b"  # bedrock stream stale kill
     rf"|{re.escape(COMPACTION_DONE_STATUS)}"
     r")",
     re.IGNORECASE | re.DOTALL)

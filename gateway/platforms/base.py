@@ -1555,8 +1555,11 @@ class MessageEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
-    # so untrusted payload text stays conversational. Kept last for positional compat.
+    # so untrusted payload text stays conversational.
     allow_gateway_control: bool = True
+    # Trusted adapters may request one skill-command expansion before generic busy routing.
+    # This is not serialized and stays last for positional compatibility.
+    preprocess_skill_command_before_busy: bool = False
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
@@ -3527,8 +3530,14 @@ class BasePlatformAdapter(ABC):
         # races with the running task (split-brain, see PR #4926).
         # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
         # runner. Without this, they are queued as pending messages and either: See #4926.
-        cmd = event.get_command()
+        # Trusted adapters may synthesize a skill command that must reach the
+        # runner before generic busy routing, where it is expanded into the
+        # configured skill prompt. User text cannot set this event flag.
+        if event.preprocess_skill_command_before_busy:
+            await self._dispatch_inline_reply(event)
+            return
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
+        cmd = event.get_command()
         if should_bypass_active_session(cmd):
             try:
                 # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.

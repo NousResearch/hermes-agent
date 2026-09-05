@@ -87,6 +87,33 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
         )
 
 
+def test_update_via_zip_refuses_to_overwrite_git_checkout(tmp_path, monkeypatch, capsys):
+    """A ZIP fallback must leave a source checkout and its local work intact."""
+    fake_root = tmp_path / "install_dir"
+    fake_root.mkdir()
+    (fake_root / ".git").mkdir()
+    (fake_root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    local_file = fake_root / "local-change.txt"
+    local_file.write_text("keep me\n", encoding="utf-8")
+
+    from hermes_cli import main as hermes_main
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
+    args = type("Args", (), {})()
+
+    with patch("urllib.request.urlretrieve") as download:
+        with pytest.raises(SystemExit) as exc_info:
+            update_cmd._update_via_zip(args)
+
+    assert exc_info.value.code == 1
+    assert local_file.read_text(encoding="utf-8") == "keep me\n"
+    download.assert_not_called()
+
+    output = capsys.readouterr().out
+    assert "The ZIP fallback did not modify source files" in output
+    assert "Git checkout" in output
+
+
 def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     """A ZIP with only regular file members must extract without raising.
 
@@ -135,4 +162,4 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # The fake README from the ZIP should have landed in our sandbox root,
     # confirming the extraction + copy phases ran past the validation gate.
     assert (fake_root / "README.md").exists()
-    assert (fake_root / "README.md").read_text() == "ok\n"
+    assert (fake_root / "README.md").read_text(encoding="utf-8") == "ok\n"

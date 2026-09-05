@@ -4,8 +4,10 @@
 Two backends, chosen automatically:
 
 * **OAuth API** (preferred when ``REDDIT_CLIENT_ID`` + ``REDDIT_CLIENT_SECRET`` are set):
-  a free "script" app from https://www.reddit.com/prefs/apps; ~100 requests/minute,
-  full JSON including scores and nested comments.
+  app-only ``client_credentials`` grant for a free "script" app registered at
+  https://www.reddit.com/prefs/apps. No username, password or cookie is ever used and
+  the script never acts as a user. ~100 requests/minute, full JSON including scores
+  and nested comments.
 * **Anonymous Atom feeds** (``.rss`` endpoints): the only unauthenticated path Reddit
   still serves to server IPs (``.json`` and old.reddit return 403 / an empty shell).
   Roughly ONE request per minute per IP; the script sleeps until the window resets
@@ -181,7 +183,8 @@ def atom_thread(sub: str, post_id: str, limit: int) -> dict:
         raise SystemExit("thread feed returned no entries")
     post, comments = entries[0], entries[1:]
     post["comments"] = [{"author": c["author"], "created": c["created"], "body": c["body"], "url": c["url"]} for c in comments]
-    post["note"] = "anonymous feed: scores and nesting unavailable; set REDDIT_CLIENT_ID/SECRET for full data"
+    post["note"] = ("anonymous feed: scores and nesting unavailable; register a free Reddit script app and set "
+                    "REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET (no user login) for full data")
     return post
 
 
@@ -241,9 +244,10 @@ def cmd_doctor(a, token):
     except urllib.error.HTTPError as exc:
         report["anonymous_feed"] = f"HTTP {exc.code}"
     report["notes"] = [
-        "anonymous .rss: ~1 request/minute per IP (x-ratelimit-remaining drops to 0 after each call)",
+        "anonymous .rss needs no account, login, cookie or key; ~1 request/minute per IP",
         "www.reddit.com .json, api.reddit.com and old.reddit are 403 / an empty shell for server IPs",
-        "for more than a few calls per task create a free script app and export REDDIT_CLIENT_ID/SECRET",
+        "for more than a few calls per task register a free 'script' app at reddit.com/prefs/apps and set "
+        "REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET in .env (app-only credentials; Hermes never logs in as the user)",
     ]
     return report
 

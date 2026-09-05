@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agent.conversation_compression import recover_rotated_compression_session
@@ -25,6 +25,7 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.model_metadata import (
     anchored_context_tokens, estimate_messages_tokens_rough, estimate_request_tokens_rough
 )
+from agent.runtime_override import validate_runtime_override
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +342,7 @@ class TurnContext:
     current_turn_user_idx: int  # index of the current user turn within ``messages``
     should_review_memory: bool = False  # post-turn memory review should fire
     plugin_user_context: str = ""  # ``pre_llm_call`` context (appended to user message)
+    runtime_override: dict = field(default_factory=dict)  # ``pre_llm_call`` route override
     ext_prefetch_cache: str = ""  # external-memory prefetch, reused across iterations
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
 
@@ -578,10 +580,19 @@ def _ensure_session_row(agent: Any, pending_cli_message: Any) -> None:
 def _collect_pre_llm_call_context(
     agent: Any, *, effective_task_id: str, turn_id: str, original_user_message: Any,
     messages: List[Any], conversation_history: Optional[List[Any]],
-) -> str:
+) -> Tuple[str, Dict[str, str]]:
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
-    (never the system prompt). Oversized per-hook context is spilled to disk so a
-    runaway plugin can't inflate every subsequent turn's prompt."""
+    (never the system prompt), and their validated ``runtime_override``
+    (model only; later hooks win per key) is staged for the turn's API calls.
+    Oversized per-hook context is spilled to disk so a runaway plugin
+    can't inflate every subsequent turn's prompt.
+
+    Returns ``(context, runtime_override)``.  ``runtime_override`` is also stored on
+    ``agent._runtime_override`` — the single source the API-call scope reads — and is
+    never written into the user message / session history."""
+    # Reset first: a turn whose hooks return no override must not inherit a stale one.
+    agent._runtime_override = {}
+    runtime_override: Dict[str, str] = {}
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -624,10 +635,24 @@ def _collect_pre_llm_call_context(
                 except Exception as _spill_exc:
                     logger.warning("hook context spill failed: %s", _spill_exc)
             _ctx_parts.append(_piece)
-        return "\n\n".join(_ctx_parts)
+        # Runtime override: merge every hook's dict, later hooks win per key.
+        # validate_runtime_override type-checks and drops unsupported keys (logged,
+        # never crash); the surviving keys are only model.
+        for r in _pre_results:
+            if not isinstance(r, dict):
+                continue
+            _ro_piece = r.get("runtime_override")
+            if _ro_piece is None:
+                continue
+            _valid_ro = validate_runtime_override(_ro_piece)
+            if _valid_ro:
+                runtime_override.update(_valid_ro)
+        if runtime_override:
+            agent._runtime_override = dict(runtime_override)
+        return "\n\n".join(_ctx_parts), runtime_override
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
-    return ""
+    return "", runtime_override
 
 
 def _merge_gateway_notes(
@@ -855,7 +880,7 @@ def build_turn_context(
     conversation_history = compaction.conversation_history
     current_turn_user_idx = compaction.current_turn_user_idx
 
-    plugin_user_context = _collect_pre_llm_call_context(
+    plugin_user_context, plugin_runtime_override = _collect_pre_llm_call_context(
         agent, effective_task_id=effective_task_id, turn_id=turn_id,
         original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history,
@@ -890,7 +915,8 @@ def build_turn_context(
         conversation_history=conversation_history, active_system_prompt=active_system_prompt,
         effective_task_id=effective_task_id, turn_id=turn_id,
         current_turn_user_idx=current_turn_user_idx, should_review_memory=should_review_memory,
-        plugin_user_context=plugin_user_context, ext_prefetch_cache=ext_prefetch_cache,
+        plugin_user_context=plugin_user_context, runtime_override=plugin_runtime_override,
+        ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=compaction.blocked,
     )
 

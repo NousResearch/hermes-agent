@@ -2105,6 +2105,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         from agent.native_compaction import resolve_native_compaction_capabilities
         agent.runtime_capabilities = resolve_native_compaction_capabilities(
             model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+        # A proactive runtime_override owns only the primary attempt: once the
+        # fallback chain takes over the route, clear the turn-scoped override so
+        # retries stay on the fallback route (and supersede any open scope).
+        from agent.runtime_override import consume_runtime_override
+        consume_runtime_override(agent)
         return True
     except Exception as e:
         if fb_provider == "nous":

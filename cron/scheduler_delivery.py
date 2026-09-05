@@ -1614,38 +1614,51 @@ def _deliver_result(
 
         return enqueue_and_wait(external_execution, job, content, for_failure=for_failure)
 
-    from gateway.config import load_gateway_config
+    from gateway.config import load_gateway_config, Platform
 
-    # Wrap with header/footer unless cron.wrap_response: false.
+    # Optionally wrap the content with cron identity metadata. Wrapping is on
+    # by default; set cron.wrap_response: false in config.yaml for clean output.
+    # The generic management footer is separately opt-in via
+    # cron.include_management_footer so user-facing reports can keep a clean
+    # action line without losing task-name/job-id context.
     wrap_response = True
+    include_management_footer = False
     user_cfg = None
     with contextlib.suppress(Exception):
         user_cfg = _sched.load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {}) or {}
+        wrap_response = cron_cfg.get("wrap_response", True)
+        include_management_footer = cron_cfg.get("include_management_footer", False)
     # Mark live sends FINAL so the platform pushes them (Telegram "important" mode mutes otherwise).
     notify_delivery = _cron_delivery_notify_enabled(user_cfg)
     # Targets acked with NO evidence (bare SendResult(success=True) — Slack/Matrix/Mattermost);
     # persisted as ``last_delivery_unverified`` so `hermes cron list` shows it.
     unverified_targets: list = []
-    if wrap_response:
-        task_name = job.get("name", job["id"])
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job.get('id', '')})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            "To stop or manage this job, send me a new message "
-            f"(e.g. \"stop reminder {task_name}\")."
-        )
-    else:
-        delivery_content = content
-
     from gateway.platforms.base import BasePlatformAdapter
     # Bridge media-policy config into the env vars the path validator reads. The gateway does this
     # at boot; standalone runs (`hermes cron run`) did not, silently dropping files. Idempotent.
     from gateway.media_policy import apply_media_policy_env
     apply_media_policy_env(user_cfg)
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    # MEDIA directives belong to the agent-produced body, not scheduler metadata.
+    # Extract them before wrapping so a task name or job ID containing MEDIA-like
+    # text cannot be rewritten or interpreted as an attachment.
+    media_files, cleaned_content = BasePlatformAdapter.extract_media(content)
+    task_name = job.get("name", job["id"])
+    job_id = job.get("id", "")
+    if wrap_response:
+        cleaned_delivery_content = (
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job_id})\n"
+            f"-------------\n\n"
+            f"{cleaned_content}"
+        )
+        if include_management_footer:
+            cleaned_delivery_content += (
+                "\n\nTo stop or manage this job, send me a new message "
+                f"(e.g. \"stop reminder {task_name}\")."
+            )
+    else:
+        cleaned_delivery_content = cleaned_content
     requested_media = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
@@ -1690,15 +1703,28 @@ def _deliver_result(
             mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
         if t is None:
             continue
+        target_delivery_content = cleaned_delivery_content
+        if t.platform == Platform.YUANBAO and wrap_response:
+            # Only the scheduler knows whether it appended the opt-in footer.
+            # Strip Yuanbao's wrapper here instead of asking the adapter to
+            # guess from body text that may legitimately match the footer.
+            from gateway.platforms.yuanbao import MessageSender
+
+            target_delivery_content = MessageSender.strip_cron_wrapper(
+                cleaned_delivery_content,
+                task_name=task_name,
+                job_id=job_id,
+                include_management_footer=include_management_footer,
+            )
         target_errors: list = []
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
-            t, cleaned_delivery_content, media_files,
+            t, target_delivery_content, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
         )
         if not delivered:
             _deliver_standalone(
-                t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+                t, target_delivery_content, media_files, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once.
     delivery_errors.extend(policy_drop_errors)

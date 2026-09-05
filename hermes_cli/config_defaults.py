@@ -1636,9 +1636,12 @@ DEFAULT_CONFIG = {
             # tokens (never an unsigned decode).
             "nas_jwks_url": "",
         },
-        # Wrap delivered cron responses with a task-name header and "The agent cannot see this
-        # message" footer. False = clean output.
+        # Wrap delivered cron responses with a provenance header containing the
+        # task name and job ID. Set to false for completely clean output.
         "wrap_response": True,
+        # Generic management guidance appended to wrapped cron deliveries.
+        # Default off keeps user-facing reports focused on the job's own action.
+        "include_management_footer": False,
         "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
             # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
             # otherwise sends with disable_notification=True and briefs look undelivered). False =

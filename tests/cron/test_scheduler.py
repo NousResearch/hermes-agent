@@ -342,6 +342,12 @@ class TestRoutingIntents:
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
 
+    def test_default_config_keeps_header_and_disables_management_footer(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["cron"]["wrap_response"] is True
+        assert DEFAULT_CONFIG["cron"]["include_management_footer"] is False
+
     def _safe_media_path(self, tmp_path, monkeypatch, name, data=b"media"):
         root = tmp_path / "media-cache"
         media_file = root / name
@@ -353,8 +359,8 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_wraps_content_with_header_without_management_footer_by_default(self):
+        """Delivered content should keep cron identity metadata but omit the generic management footer by default."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -363,7 +369,8 @@ class TestDeliverResultWrapping:
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
             job = {
                 "id": "test-job",
                 "name": "daily-report",
@@ -378,7 +385,140 @@ class TestDeliverResultWrapping:
         assert "(job_id: test-job)" in sent_content
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
+        assert "To stop or manage this job" not in sent_content
+
+    def test_delivery_can_include_management_footer_when_config_enabled(self):
+        """An explicit cron.include_management_footer opt-in preserves the legacy footer."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True, "include_management_footer": True}}):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: daily-report" in sent_content
         assert "To stop or manage this job" in sent_content
+
+    def test_yuanbao_delivery_preserves_footer_sentence_in_header_only_body(self):
+        """Yuanbao receives raw cron content without guessing whether body text is a footer."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.YUANBAO: pconfig}
+        body = (
+            "Daily report.\n\n"
+            'To stop or manage this job, send me a new message '
+            '(e.g. "stop reminder daily-report").'
+        )
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_response": True}},
+            ),
+        ):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "yuanbao", "chat_id": "direct:123"},
+            }
+            _deliver_result(job, body)
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == body
+
+    def test_yuanbao_strips_wrapper_before_media_extraction_from_task_name(self):
+        """Media-like text in a valid task name must not corrupt wrapper removal."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.YUANBAO: pconfig}
+        body = "Daily report."
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={
+                    "cron": {
+                        "wrap_response": True,
+                        "include_management_footer": True,
+                    }
+                },
+            ),
+        ):
+            job = {
+                "id": "test-job",
+                "name": "report\nMEDIA:/tmp/task-name.png",
+                "deliver": "origin",
+                "origin": {"platform": "yuanbao", "chat_id": "direct:123"},
+            }
+            result = _deliver_result(job, body)
+
+        assert result is None
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == body
+
+    def test_wrap_response_false_overrides_management_footer_opt_in(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value={"success": True}),
+            ) as send_mock,
+            patch(
+                "cron.scheduler.load_config",
+                return_value={
+                    "cron": {
+                        "wrap_response": False,
+                        "include_management_footer": True,
+                    }
+                },
+            ),
+        ):
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Clean output only.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert sent_content == "Clean output only."
 
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):

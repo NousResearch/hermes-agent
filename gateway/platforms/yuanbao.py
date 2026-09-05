@@ -2410,7 +2410,7 @@ class MessageSender:
             return SendResult(success=False, error="Not connected", retryable=True)
         adapter._outbound.slow_notifier.cancel(chat_id)
         async with self.get_chat_lock(chat_id):
-            content_to_send = self.strip_cron_wrapper(content)
+            content_to_send = content
             chunks = self.truncate_message(content_to_send, adapter.MAX_TEXT_CHUNK)
             logger.info("[%s] truncate_message: input=%d chars, max=%d, output=%d chunk(s) sizes=%s",
                         adapter.name, len(content_to_send), adapter.MAX_TEXT_CHUNK, len(chunks), [len(c) for c in chunks])
@@ -2563,17 +2563,34 @@ class MessageSender:
         return chunks or [content]
 
     @staticmethod
-    def strip_cron_wrapper(content: str) -> str:
-        """Strip the scheduler's cron header/footer wrapper; unchanged when the shape doesn't match."""
-        if not content.startswith("Cronjob Response: "):
+    def strip_cron_wrapper(
+        content: str,
+        *,
+        task_name: str,
+        job_id: str,
+        include_management_footer: bool,
+    ) -> str:
+        """Strip a scheduler cron wrapper using its known footer contract."""
+        wrapper_prefix = (
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job_id})\n"
+            "-------------\n\n"
+        )
+        if not content.startswith(wrapper_prefix):
             return content
-        divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
-        divider_pos = content.find(divider)
-        footer_pos = content.rfind(footer_prefix)
-        if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos or "\n(job_id: " not in content[:divider_pos]:
-            return content
-        return content[divider_pos + len(divider):footer_pos].strip() or content
+
+        body_start = len(wrapper_prefix)
+        body_end = len(content)
+        if include_management_footer:
+            legacy_footer = (
+                "\n\nTo stop or manage this job, send me a new message "
+                f'(e.g. "stop reminder {task_name}").'
+            )
+            if content.endswith(legacy_footer):
+                footer_start = len(content) - len(legacy_footer)
+                if footer_start >= body_start:
+                    body_end = footer_start
+        return content[body_start:body_end].strip()
 
     async def close(self) -> None:
         self._chat_locks.clear()

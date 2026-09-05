@@ -196,6 +196,12 @@ def _project_override_model_state(agent: Any, overrides: Dict[str, str]) -> None
             str(overrides.get("model") or getattr(agent, "model", "") or ""),
             snapshot=None,  # the scope owns rollback; no provider-switch snapshot
         )
+        agent._cached_system_prompt = None
+        # The cached system prompt's context-file caps are scaled by the model's
+        # context window (build_system_prompt_parts reads
+        # context_compressor.context_length). Invalidate so the next build
+        # re-scales them — mirrors switch_model's `_cached_system_prompt = None`.
+        # Snapshot/restore via _DERIVED_ATTRS makes this a no-leak transaction.
     except Exception as _moe_exc:  # noqa: BLE001
         # Back to the session compressor for the scope (the projection may have
         # partially mutated the copy); the exit restore is still exact.
@@ -259,6 +265,7 @@ class _RuntimeOverrideScope:
         "_use_native_cache_layout",
         "_config_context_length",
         "_custom_providers",
+        "_cached_system_prompt",
     )
 
     def __init__(self, agent: Any, overrides: Dict[str, str]) -> None:

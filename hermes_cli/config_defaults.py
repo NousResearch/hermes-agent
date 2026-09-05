@@ -2296,7 +2296,9 @@ DEFAULT_CONFIG = {
         "region": "global",
     },
     # Managed llama.cpp runtime (docs: user-guide/local-models): official binaries, one supervised
-    # llama-server in router mode. No context/VRAM knobs by design.
+    # llama-server in router mode. No per-model context/VRAM knobs by design — per-model fit
+    # lives in presets; server_extra_args is the bounded escape hatch for machine-topology
+    # flags presets cannot express (e.g. which GPU serves on multi-GPU boxes).
     "local_runtime": {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
@@ -2309,6 +2311,10 @@ DEFAULT_CONFIG = {
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
+        # Extra llama-server flags, e.g. ["--main-gpu", "1"]. Appended verbatim after the
+        # managed flags; --host/--port/--api-key/--models-dir are refused (endpoint
+        # identity). Takes effect on the next server start (Stop, then Start). [] = stock.
+        "server_extra_args": [],
     },
     "_config_version": 40,  # Config schema version - bump this when adding new required fields
 }

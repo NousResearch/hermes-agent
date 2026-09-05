@@ -90,6 +90,53 @@ def _stable_api_key() -> str:
     return key
 
 
+# Flags the supervisor itself manages — accepting them from user config would desync
+# supervised endpoint identity (base_url/api_key) or the models directory the router
+# serves, stranding resumed sessions the same way a rotated port/key does.
+_MANAGED_SERVER_FLAGS = frozenset({"--host", "--port", "--api-key", "--models-dir"})
+
+_MAX_SERVER_EXTRA_ARGS = 32
+_MAX_SERVER_EXTRA_ARG_LEN = 512
+
+
+def normalize_server_extra_args(value) -> list[str]:
+    """Sanitize the ``local_runtime.server_extra_args`` config value into the argv tail
+    appended after the supervisor's managed flags (last-wins on duplicates).
+
+    Keeps non-empty string items; drops non-list values, non-string/blank items, and
+    managed-identity flags (``--flag`` and ``--flag=value`` forms, plus a following
+    bare value such as the ``8080`` in ``["--port", "8080"]``). Bounds keep a typo
+    from becoming a fork-bomb-length command line. Never raises — a bad config value
+    must degrade to stock flags, never break boot.
+    """
+    if not isinstance(value, list):
+        if value not in (None, [], ""):
+            logger.warning("local_runtime.server_extra_args ignored: expected a list of flags")
+        return []
+    cleaned: list[str] = []
+    skip_next = False
+    for item in value:
+        if skip_next:
+            skip_next = False
+            if isinstance(item, str) and not item.strip().startswith("-"):
+                continue
+        if not isinstance(item, str):
+            continue
+        text = item.strip()
+        if not text or len(text) > _MAX_SERVER_EXTRA_ARG_LEN:
+            continue
+        head = text.split("=", 1)[0]
+        if head in _MANAGED_SERVER_FLAGS:
+            logger.warning("local_runtime.server_extra_args refused managed flag: %s", head)
+            if "=" not in text:
+                skip_next = True
+            continue
+        cleaned.append(text)
+        if len(cleaned) >= _MAX_SERVER_EXTRA_ARGS:
+            break
+    return cleaned
+
+
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 

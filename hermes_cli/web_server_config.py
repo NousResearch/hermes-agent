@@ -112,6 +112,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "OpenAI transcription model", "whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"
     ),
     "stt.elevenlabs.model_id": _select("ElevenLabs Scribe model", "scribe_v2", "scribe_v1"),
+    "local_runtime.server_extra_args": {
+        "type": "list",
+        "description": (
+            "Extra llama-server flags, e.g. --main-gpu 1 on multi-GPU machines. "
+            "Appended to the managed server argv; host/port/api-key/models-dir are refused. "
+            "Takes effect on the next server start (Stop, then Start in Local Models)."
+        ),
+    },
     "display.skin": _select("CLI visual theme", "default", "ares", "mono", "slate"),
     "dashboard.theme": _select(
         "Web dashboard visual theme", "default", "midnight", "ember", "mono", "cyberpunk", "rose"

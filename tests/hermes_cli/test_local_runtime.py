@@ -811,3 +811,120 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+# ── server_extra_args contracts (#103270) ────────────────────
+
+
+def test_normalize_server_extra_args_passthrough():
+    """Ordinary device/tuning flags survive verbatim (whitespace trimmed)."""
+    from hermes_cli.local_runtime.supervisor import normalize_server_extra_args
+
+    assert normalize_server_extra_args(["--main-gpu", "1"]) == ["--main-gpu", "1"]
+    assert normalize_server_extra_args(["  --ctx-size  ", "8192"]) == ["--ctx-size", "8192"]
+    assert normalize_server_extra_args(None) == []
+    assert normalize_server_extra_args([]) == []
+
+
+def test_normalize_server_extra_args_drops_managed_identity():
+    """--host/--port/--api-key/--models-dir would desync supervised endpoint
+    identity (the round-7 contract above) — refused in both --flag value and
+    --flag=value forms, including a following bare value."""
+    from hermes_cli.local_runtime.supervisor import normalize_server_extra_args
+
+    assert normalize_server_extra_args(["--port", "8080"]) == []
+    assert normalize_server_extra_args(["--api-key=hunter2"]) == []
+    assert normalize_server_extra_args(["--host", "0.0.0.0", "--main-gpu", "1"]) == ["--main-gpu", "1"]
+    assert normalize_server_extra_args(["--models-dir", "/tmp/x"]) == []
+
+
+def test_normalize_server_extra_args_hygiene_and_bounds():
+    """Non-lists degrade to stock; junk items drop; runaway lengths cap."""
+    from hermes_cli.local_runtime.supervisor import normalize_server_extra_args
+
+    assert normalize_server_extra_args("--main-gpu 1") == []
+    assert normalize_server_extra_args(42) == []
+    assert normalize_server_extra_args(["--main-gpu", 1, "", "   ", None]) == ["--main-gpu"]
+    assert normalize_server_extra_args(["--ok", "x" * 600]) == ["--ok"]
+    many = [f"--flag-{i}" for i in range(100)]
+    assert normalize_server_extra_args(many) == many[:32]
+
+
+def test_spawn_appends_extra_args_after_managed(tmp_path, monkeypatch):
+    """argv contract: managed flags first, user tail last (last-wins), no shell."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import supervisor as sup_mod
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        assert isinstance(cmd, list)  # list-args, never a shell string
+        return _FakeProc()
+
+    monkeypatch.setattr(sup_mod.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(sup_mod, "server_binary", lambda install_dir: tmp_path / "llama-server")
+
+    sup = sup_mod.LlamaServerSupervisor(
+        tmp_path / "i", tmp_path / "m", port=18434, extra_args=["--main-gpu", "1"])
+    sup._spawn()
+    cmd = captured["cmd"]
+    assert cmd[:3] == [str(tmp_path / "llama-server"), "--host", "127.0.0.1"]
+    assert cmd[-2:] == ["--main-gpu", "1"]
+    assert "--port" in cmd and "18434" in cmd
+
+
+def test_ensure_local_runtime_passes_extra_args(tmp_path, monkeypatch):
+    """Boot plumbing: config server_extra_args reaches the supervisor normalized."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime import bootstrap
+
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: "nvidia")
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.select_backend", lambda vendor: "cuda")
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.default_tag", lambda: "b10679")
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10679"])
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        lambda tag, backend, **k: tmp_path / "rt")
+    monkeypatch.setattr(bootstrap, "_generate_presets", lambda mdir, path: None)
+    monkeypatch.setattr(bootstrap, "_start_idle_sweeper", lambda sup: None)
+
+    seen = {}
+
+    class _FakeSupervisor:
+        base_url = "http://127.0.0.1:18434/v1"
+
+        def __init__(self, *a, **k):
+            seen.update(k)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", _FakeSupervisor)
+    result = bootstrap.ensure_local_runtime({
+        "local_runtime": {"enabled": True, "server_extra_args": ["--main-gpu", "1", "--port", "9"]}},
+        force=True)
+    assert result is not None
+    assert seen.get("extra_args") == ["--main-gpu", "1"]
+
+
+def test_config_default_declares_server_extra_args():
+    """Relationship (not snapshot): the local_runtime section declares a list-typed
+    server_extra_args that the schema surfaces to Settings as a list field."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.web_server_config import CONFIG_SCHEMA
+
+    section = DEFAULT_CONFIG["local_runtime"]
+    assert isinstance(section.get("server_extra_args"), list)
+    assert CONFIG_SCHEMA["local_runtime.server_extra_args"]["type"] == "list"

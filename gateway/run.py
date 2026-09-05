@@ -2128,7 +2128,10 @@ _CONVERSATION_SCOPED_STATE: tuple = (
     "_session_stall_notified",
     # Sidecar notes staged but never consumed (turn aborted before run_sync) must not leak into a
     # future conversation's first user message — session keys are source-derived and REUSED.
-    "_pending_turn_sidecar_notes")
+    "_pending_turn_sidecar_notes",
+    # Inline /model payloads retained across a pending selection-guard confirmation (routed once
+    # after /approve); also dropped by cancel, a failed switch, or the next successful switch.
+    "_pending_model_inline_payloads")
 
 
 def _resolve_runtime_agent_kwargs() -> dict:

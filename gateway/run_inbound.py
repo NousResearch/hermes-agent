@@ -378,6 +378,8 @@ class GatewayInboundMixin:
         None when it falls through — a stale pending confirm does NOT block other commands. A pending
         dangerous-command approval takes precedence: /approve there unblocks the waiting tool thread."""
         from tools import slash_confirm as _slash_confirm_mod
+        from gateway.slash_commands_model import RoutedModelSwitchConfirmation
+
         _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
         if not _pending_confirm:
             return None
@@ -397,6 +399,13 @@ class GatewayInboundMixin:
             _resolved = await _slash_confirm_mod.resolve(
                 _quick_key, _pending_confirm.get("confirm_id"), _confirm_choice,
             )
+            if isinstance(_resolved, RoutedModelSwitchConfirmation):
+                # Approval-path model switch: deliver the confirmation out-of-band and run the
+                # retained inline payload as this turn (exactly once — the confirm handler
+                # popped the stash before committing).
+                await self._send_command_ack(event.source, str(_resolved), "model")
+                event.text = _resolved.payload
+                return None
             return _resolved or ""
         # Stale pending + unrelated command: the user moved on, so drop the pending state rather
         # than let the confirm block normal usage indefinitely.
@@ -673,6 +682,10 @@ class GatewayInboundMixin:
         The running-agent path deliberately does NOT fire these — a slow or hostile plugin must not
         interfere with the operator's escape hatches for a live agent."""
         raw_args = event.get_command_args().strip()
+        if canonical == "model":
+            # /model may carry an inline payload after a newline; hooks see command-line args only
+            # — the payload is routed to the agent after a successful switch (see _hm_cmd_model).
+            raw_args = self._split_inline_command_payload(event)[0].get_command_args().strip()
         platform = source.platform.value if source.platform else ""
         try:
             from hermes_cli.plugins import fire_pre_command_hook
@@ -839,6 +852,35 @@ class GatewayInboundMixin:
             return True, _text or None
         return False, None
 
+    # /model: on a successful typed switch with an inline payload (``/model <name>\n<prompt>``),
+    # deliver the confirmation out-of-band and run the payload as the user turn on the new model.
+    async def _hm_cmd_model(self, event, source, _quick_key):
+        from gateway.slash_commands_model import ModelSwitchConfirmation
+
+        _model_event, _inline_payload = self._split_inline_command_payload(event)
+        _response = await self._handle_model_command(_model_event)
+        if not isinstance(_response, ModelSwitchConfirmation):
+            if _inline_payload.strip():
+                # The guard prompt is a plain string (or None on button adapters), so the pending
+                # confirm registry — not response text — decides retention for /approve; every
+                # other non-routing reply (error, picker, help) drops the payload.
+                from tools import slash_confirm as _slash_confirm_mod
+
+                _pending = _slash_confirm_mod.get_pending(_quick_key)
+                if _pending and _pending.get("command") == "model":
+                    self._model_inline_payload_stash()[_quick_key] = _inline_payload.strip()
+                else:
+                    self._model_inline_payload_stash().pop(_quick_key, None)
+            return True, _response
+        # A successful switch supersedes any approval-path stash; a single-line /model keeps
+        # returning the confirmation as the reply (no payload → no routing).
+        self._model_inline_payload_stash().pop(_quick_key, None)
+        if not _inline_payload.strip():
+            return True, _response
+        await self._send_command_ack(source, str(_response), "model")
+        event.text = _inline_payload
+        return False, None
+
     async def _hm_cmd_undo(self, event, source, _quick_key):
         _undo_n = 1
         _undo_raw = event.get_command_args().strip()
@@ -912,6 +954,10 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str]]:
         """Dispatch built-in idle-path commands → ``(handled, result)``; prompt-rewriting commands
         mutate ``event.text`` and return ``(False, None)`` to fall through to the agent."""
+        if canonical == "model":
+            # Bespoke: /model stays in the idle table for the busy path, but the idle path needs
+            # the inline-payload routing wrapper (see _hm_cmd_model).
+            return await self._hm_cmd_model(event, source, _quick_key)
         plain_handler = (
             self._gateway_plain_command_handlers().get(canonical)
             or self._gateway_idle_command_handlers().get(canonical)

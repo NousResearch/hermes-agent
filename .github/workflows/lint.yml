@@ -188,8 +188,15 @@ jobs:
       # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
       # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.
+      # Advisory: it never fails the job. The checkout above is depth-1, so deepen both sides until
+      # a merge-base exists (the script refuses to report a clean diff without one, by design).
       - name: Public-surface diff vs base (advisory)
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         run: |
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git fetch --no-tags --deepen=200 origin "${{ github.base_ref }}" HEAD
+          for i in 1 2 3; do
+            git merge-base "origin/${{ github.base_ref }}" HEAD >/dev/null 2>&1 && break
+            git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" HEAD
+          done
           python scripts/ci/check_public_surface.py --base "origin/${{ github.base_ref }}" --head HEAD

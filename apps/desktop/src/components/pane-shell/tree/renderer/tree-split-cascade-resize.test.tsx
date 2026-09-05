@@ -285,6 +285,65 @@ describe('TreeSplit cascading expansion', () => {
     expect(terminalColumn.style.minWidth).toBe('80px')
   })
 
+  it('commits a regular cascade when an unrelated tool rail is already minimized', () => {
+    markCollapsePane('terminal')
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { maxWidth: '600px', minWidth: '160px', placement: 'right', width: '200px' },
+        id: 'browser',
+        render: () => null,
+        title: 'Browser'
+      }),
+      registry.register({
+        area: 'panes',
+        data: { placement: 'bottom' },
+        id: 'terminal',
+        render: () => null,
+        title: 'Terminal'
+      })
+    )
+
+    const tree = split(
+      'row',
+      [
+        group(['chat'], { id: 'chat-zone' }),
+        group(['cron'], { id: 'cron-zone' }),
+        group(['browser'], { id: 'browser-zone' }),
+        group(['terminal'], { id: 'terminal-zone' })
+      ],
+      [5, 1, 2, 0.28],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+    $paneStates.set({ browser: { open: true, widthOverride: 200 } })
+    setTreeGroupMinimized('terminal-zone', true)
+
+    render(<TreeSplit node={row()} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [chat, cron, browser, terminal] = [...container.children] as HTMLElement[]
+    setWidth(container, 828)
+    setWidth(chat, 500)
+    setWidth(cron, 100)
+    setWidth(browser, 200)
+    setWidth(terminal, 28)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="cron-zone"]')!, 100)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!, 200)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')!, 28)
+
+    const browserSash = document.querySelectorAll('[role="separator"]')[1]!
+    fireEvent.pointerDown(browserSash, { button: 0, clientX: 600, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientX: 300, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientX: 300, pointerId: 1, pointerType: 'mouse' })
+
+    expect($paneStates.get().cron?.widthOverride).toBe(80)
+    expect($paneStates.get().browser?.widthOverride).toBe(500)
+    expect(row().weights[0]).toBeCloseTo(2.2)
+    expect(row().children[3]).toMatchObject({ id: 'terminal-zone', minimized: true })
+  })
+
   it('does not let an unrelated collapsible rail disable a regular seam cascade', () => {
     markCollapsePane('bot')
     disposers.push(registry.register({ area: 'panes', data: { placement: 'main' }, id: 'bot', render: () => null, title: 'Bot' }))

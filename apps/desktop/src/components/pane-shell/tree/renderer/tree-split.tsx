@@ -440,7 +440,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
         if (lastPlan && lastPlan.moved !== 0) {
           const collapsedSide = sashTracks.find(
-            (track, index) => track.collapseId && lastPlan!.sizes[index] <= track.floor
+            (track, index) =>
+              track.collapseId && track.initial > track.floor && lastPlan!.sizes[index] <= track.floor
           )?.collapseId
 
           if (collapsedSide) {

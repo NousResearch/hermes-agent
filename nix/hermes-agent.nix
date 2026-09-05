@@ -114,49 +114,23 @@ let
   # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
   # Without this, a plugin listing e.g. requests as a dep would fail at runtime
   # if requests isn't already in the sealed uv2nix venv.
-  allExtraPythonPackages = python312.pkgs.requiredPythonModules extraPythonPackages;
+  #
+  # Expand every resolved module to ALL of its outputs. Multi-output Python
+  # derivations (notably torch: out, dev, lib, cxxdev, dist) ship their
+  # site-packages only in the `out` output, but a dependent package may
+  # propagate a *different* output — e.g. torchaudio depends on torch's `dev`
+  # output for headers/linking. In that case requiredPythonModules yields only
+  # `torch.dev`, which has no site-packages dir, so resolve-plugin-pythonpath.py
+  # silently drops torch from PYTHONPATH and `import torch` fails at runtime.
+  # Emitting every output lets the resolver find the `out` output that actually
+  # carries site-packages; outputs without one are skipped harmlessly there.
+  allExtraPythonPackages = lib.concatMap
+    (drv: map (output: drv.${output}) (drv.outputs or [ "out" ]))
+    (python312.pkgs.requiredPythonModules extraPythonPackages);
 
-  pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
+  # External Python script for filtering (avoids Nix string escaping hell)
+  resolvePluginScript = ./resolve-plugin-pythonpath.py;
 
-  checkPackageCollisions = ''
-    import pathlib, sys, re
-
-    def canonical(name):
-        return re.sub(r'[-_.]+', '-', name).lower()
-
-    # Collect core venv package names
-    core = set()
-    venv_sp = pathlib.Path('${hermesVenv}/${sitePackagesPath}')
-    for di in venv_sp.glob('*.dist-info'):
-        meta = di / 'METADATA'
-        if meta.exists():
-            for line in meta.read_text().splitlines():
-                if line.startswith('Name:'):
-                    core.add(canonical(line.split(':', 1)[1].strip()))
-                    break
-
-    # Check each extra package for collisions
-    extras_dirs = [${lib.concatMapStringsSep ", " (p: "'${toString p}'") allExtraPythonPackages}]
-    for edir in extras_dirs:
-        sp = pathlib.Path(edir) / '${sitePackagesPath}'
-        if not sp.exists():
-            continue
-        for di in sp.glob('*.dist-info'):
-            meta = di / 'METADATA'
-            if not meta.exists():
-                continue
-            for line in meta.read_text().splitlines():
-                if line.startswith('Name:'):
-                    pkg = canonical(line.split(':', 1)[1].strip())
-                    if pkg in core:
-                        print(f'ERROR: plugin package \"{pkg}\" collides with a package in hermes sealed venv', file=sys.stderr)
-                        print(f'  from: {di}', file=sys.stderr)
-                        print(f'  Remove this dependency from extraPythonPackages.', file=sys.stderr)
-                        sys.exit(1)
-                    break
-
-    print('No collisions found.')
-  '';
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "hermes-agent";
@@ -164,7 +138,10 @@ stdenv.mkDerivation (finalAttrs: {
 
   dontUnpack = true;
   dontBuild = true;
-  nativeBuildInputs = [ makeWrapper ];
+  nativeBuildInputs = [
+    makeWrapper
+    python312
+  ];
 
   installPhase = ''
     runHook preInstall
@@ -180,6 +157,13 @@ stdenv.mkDerivation (finalAttrs: {
     ln -s ${bundledOptionalMcps} $out/share/hermes-agent/optional-mcps
     ln -s ${hermesWeb} $out/share/hermes-agent/web_dist
     ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
+
+    ${lib.optionalString (extraPythonPackages != [ ]) ''
+      echo "=== Resolving plugin PYTHONPATH (filtering deps already in sealed venv) ==="
+      ${hermesVenv}/bin/python3 ${resolvePluginScript} \
+        ${hermesVenv} ${sitePackagesPath} \
+        ${lib.concatMapStringsSep " " (p: "${toString p}") allExtraPythonPackages}
+    ''}
 
     ${lib.concatMapStringsSep "\n"
       (name: ''
@@ -202,9 +186,8 @@ stdenv.mkDerivation (finalAttrs: {
             # not found`). Only reproduces when rev == null (dirty trees).
             lib.optionalString (rev != null) " \\\n          --set HERMES_REVISION ${rev}"
           }${
-            lib.optionalString (
-              extraPythonPackages != [ ]
-            ) " \\\n          --suffix PYTHONPATH : \"${pythonPath}\""
+            lib.optionalString (extraPythonPackages != [ ])
+              " \\\n          --suffix PYTHONPATH : \"$(cat $TMPDIR/hermes-plugin-pythonpath 2>/dev/null || echo '')\""
           }
       '')
       [
@@ -213,12 +196,6 @@ stdenv.mkDerivation (finalAttrs: {
         "hermes-acp"
       ]
     }
-
-    ${lib.optionalString (extraPythonPackages != [ ]) ''
-      echo "=== Checking for plugin/core package collisions ==="
-      ${hermesVenv}/bin/python3 -c "${checkPackageCollisions}"
-      echo "=== No collisions ==="
-    ''}
 
     runHook postInstall
   '';

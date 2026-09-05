@@ -663,12 +663,18 @@ def _status_5xx(c: _Ctx) -> Verdict:
     return _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_SERVER_ERROR
 
 
-def _classify_402(error_msg: str, result_fn: Callable[..., Any]) -> Any:
-    """Disambiguate 402: "usage limit, try again in 5 minutes" is a periodic quota, not billing."""
-    transient = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and any(
-        p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
-    )
-    return result_fn(**(_V_RATE_LIMIT if transient else _V_BILLING))
+def _classify_402(
+    error_msg: str, result_fn: Callable[..., Any], body: Optional[dict] = None, response_headers=None,
+) -> Any:
+    """A reset/retry signal distinguishes temporary 402 throttles from exhausted credits."""
+    # Message-text signals keep the historical conjunction (usage-limit wording AND a
+    # transient marker): "try again"/"wait" alone is ordinary billing copy, not a reset
+    # promise. Body/header signals cannot rely on wording, so they pass an empty message
+    # to isolate the payload/header scan from the (already checked) message path.
+    msg_signal = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS) and any(
+        p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+    payload_signal = _has_usage_limit_transient_signal("", body or {}, response_headers)
+    return result_fn(**(_V_RATE_LIMIT if msg_signal or payload_signal else _V_BILLING))
 
 
 def _classify_400(c: _Ctx) -> Verdict:
@@ -722,7 +728,8 @@ def _classify_400(c: _Ctx) -> Verdict:
 # retry-safe (RFC 9110 §15.5.9; proxies emit it when generation outruns the
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
-    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
+    400: _classify_400, 401: lambda c: _V_AUTH_ROTATE,
+    402: lambda c: _classify_402(c.msg, dict, c.body, c.headers),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,
@@ -741,11 +748,21 @@ def _has_usage_limit_transient_signal(error_msg: str, body: dict, response_heade
     if any(pattern in error_msg for pattern in _USAGE_LIMIT_TRANSIENT_SIGNALS):
         return True
     payloads = [p for p in (body, _error_obj(body)) if isinstance(p, dict)]
+    # OpenRouter can wrap its payload in error.body and preserve HTTP headers
+    # only in metadata.headers; SDKs may also expose the unwrapped payload.
+    payloads += [p["body"] for p in payloads if isinstance(p.get("body"), dict)]
     if any(payload.get(f) not in (None, "") for payload in payloads for f in _RESET_FIELDS):
         return True
-    if response_headers and hasattr(response_headers, "get"):
-        return any(response_headers.get(h) not in (None, "") for h in _RESET_HEADERS)
-    return False
+    header_sources = [response_headers]
+    for payload in payloads:
+        metadata = payload.get("metadata")
+        if isinstance(metadata, dict):
+            header_sources.append(metadata.get("headers"))
+    return any(
+        headers.get(h) not in (None, "")
+        for headers in header_sources if headers and hasattr(headers, "get")
+        for h in _RESET_HEADERS
+    )
 
 
 def _model_id_missing_known_prefix(model: str, provider: str) -> bool:

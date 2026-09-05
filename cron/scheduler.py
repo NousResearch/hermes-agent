@@ -1275,7 +1275,15 @@ def _run_no_agent_job(
     _job_workdir = _resolve_job_workdir(job, job_id)
     try:
         ok, output = _run_job_script_with_claim_heartbeat(
-            job, script_path, workdir=_job_workdir, cancel_event=cancel_event)
+            job,
+            script_path,
+            workdir=_job_workdir,
+            cancel_event=cancel_event,
+            job_env={
+                "HERMES_CRON_JOB_ID": str(job_id),
+                "HERMES_CRON_OCCURRENCE_AT": str(job.get("next_run_at") or ""),
+            },
+        )
     except Exception as exc:
         logger.exception("Job '%s': script execution raised unexpectedly", job_id)
         ok, output = False, f"Script execution failed: {exc}"
@@ -2043,7 +2051,15 @@ def _prepare_job_prompt(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path, cancel_event=cancel_event)
+        prerun_script = _run_job_script_with_claim_heartbeat(
+            job,
+            script_path,
+            cancel_event=cancel_event,
+            job_env={
+                "HERMES_CRON_JOB_ID": str(job_id),
+                "HERMES_CRON_OCCURRENCE_AT": str(job.get("next_run_at") or ""),
+            },
+        )
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)

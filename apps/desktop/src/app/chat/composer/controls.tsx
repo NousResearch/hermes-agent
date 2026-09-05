@@ -74,8 +74,11 @@ export function ComposerControls({
 
   const showVoicePrimary = !busy && !hasComposerPayload
   // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
-  // only when the composer is empty and a turn is running.
-  const showStop = busy && !hasComposerPayload
+  // only when the composer is empty and a turn is running for a stoppable
+  // action; queue (e.g. forced by compaction) presents as Queue instead, even
+  // with an empty composer.
+  const showStop = busy && !hasComposerPayload && busyAction === 'stop'
+  const showQueuePrimary = busy && !hasComposerPayload && busyAction === 'queue'
   const showQueueButton = busyAction !== 'stop' && hasComposerPayload
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
@@ -147,19 +150,23 @@ export function ComposerControls({
           label={
             showStop ? (
               <TipKeybindLabel actionId="composer.send" text={c.stop} />
+            ) : showQueuePrimary ? (
+              <TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />
             ) : (
               <TipKeybindLabel actionId="composer.send" text={c.send} />
             )
           }
         >
           <Button
-            aria-label={showStop ? c.stop : c.send}
+            aria-label={showStop ? c.stop : showQueuePrimary ? c.queueMessage : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
           >
             {showStop ? (
               <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
+            ) : showQueuePrimary ? (
+              <Layers3 className={iconSize.sm} />
             ) : (
               <Codicon name="arrow-up" size="0.875rem" />
             )}

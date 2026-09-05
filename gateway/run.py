@@ -2236,11 +2236,19 @@ def _best_effort(fn: Callable[[], Any], debug_msg: Optional[str] = None) -> Any:
 _EXECUTOR_QUIESCE_TIMEOUT = 2.0
 
 
-def _own_policy_open_startup_violation(config) -> Optional[str]:
-    """Return a startup-abort reason when open policy lacks allow-all opt-in."""
+def _own_policy_open_violations(config) -> list[tuple["Platform", Optional[str]]]:
+    """Return every enabled platform whose open policy lacks an allow-all opt-in.
+
+    Reports *all* offenders instead of short-circuiting on the first, so the caller can quarantine
+    them individually: one misconfigured platform — including one that is enabled but cannot even
+    connect, e.g. an unpaired WhatsApp — must not decide the fate of every other platform. Each
+    entry pairs the platform with the allow-all env var that would re-enable it, so the caller can
+    name the flag in its error.
+    """
     with suppress(Exception):  # idempotent; callers may hand in a config load_gateway_config never built
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
+    violations: list[tuple[Platform, Optional[str]]] = []
     for platform, platform_config in getattr(config, "platforms", {}).items():
         if not getattr(platform_config, "enabled", False):
             continue
@@ -2260,8 +2268,21 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         if gateway_allow_all or (
                 allow_all_env and _getenv(allow_all_env, "").lower() in {"true", "1", "yes"}):
             continue
-        return f"{platform.value}: open policy without allow-all opt-in"
-    return None
+        violations.append((platform, allow_all_env))
+    return violations
+
+
+def _own_policy_open_startup_violation(config) -> Optional[str]:
+    """Return a startup-abort reason when open policy lacks allow-all opt-in.
+
+    Single-offender view of :func:`_own_policy_open_violations`, kept for the per-profile multiplex
+    path, where refusing just that profile is already the correct scope — there the profile *is*
+    the unit of isolation. Behavior and signature are unchanged.
+    """
+    violations = _own_policy_open_violations(config)
+    if not violations:
+        return None
+    return f"{violations[0][0].value}: open policy without allow-all opt-in"
 
 
 # Placed into _running_agents *before* any await so a second message can't slip past the "already

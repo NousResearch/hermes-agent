@@ -583,6 +583,19 @@ class SessionMessagesMixin:
             ") AND content IS ?",
             (_scrub_surrogates(api_content), session_id, self._encode_content(content)))
 
+    def set_message_api_content(self, session_id: str, row_id: int, content: Any, api_content: str) -> int:
+        """Backfill only the durable user row stamped on the live turn dictionary.
+
+        Content alone cannot identify a turn: repeated prompts must never rewrite
+        a preceding turn's cached bytes. Archived or rewritten rows stay untouched.
+        """
+        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+            return 0
+        return self._write_rowcount(
+            "UPDATE messages SET api_content = ? WHERE id = ? AND session_id = ? "
+            "AND role = 'user' AND active = 1 AND content IS ?",
+            (_scrub_surrogates(api_content), row_id, session_id, self._encode_content(content)))
+
     def _dedupe_display_generations(self, rows):
         """Collapse compaction generations so each logical message appears once (the protected tail is copied
         into each generation: same role/content/timestamp, different ``active``/id); prefer the live row, then

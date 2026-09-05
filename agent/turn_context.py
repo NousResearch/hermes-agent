@@ -704,24 +704,25 @@ def _stamp_api_content_sidecar(
     if _api_content is None or _api_content == _turn_user_msg.get("content"):
         return
     _turn_user_msg["api_content"] = _api_content
-    # In-place preflight compaction already inserted this turn's user row and the
-    # crash persist identity-skips compacted dicts, so backfill the stamp onto the row
-    # directly. Rotation mode flushes to the child session later.
-    if not (preflight_compressed and getattr(agent, "_last_compaction_in_place", False)):
+    # Early CLI flushes and in-place compaction stamp the committed row identity.
+    # A positional search on ordinary turns can overwrite an older identical prompt.
+    row_id = _turn_user_msg.get("_row_id")
+    has_row_id = isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0
+    in_place = preflight_compressed and getattr(agent, "_last_compaction_in_place", False)
+    if not (has_row_id or in_place):
         return
-    _db = getattr(agent, "_session_db", None)
-    if _db is not None:
+    db = getattr(agent, "_session_db", None)
+    if db is not None:
         try:
-            _db.set_latest_user_api_content(
-                agent.session_id, _turn_user_msg.get("content"), _api_content
-            )
+            if has_row_id:
+                db.set_message_api_content(agent.session_id, row_id, _turn_user_msg.get("content"), _api_content)
+            else:
+                # Legacy compaction adapters may not expose row identities. Only
+                # this path proves the newest row already belongs to this turn.
+                db.set_latest_user_api_content(agent.session_id, _turn_user_msg.get("content"), _api_content)
         except Exception:
-            logger.warning(
-                "in-place compaction api_content backfill failed "
-                "for session=%s",
-                agent.session_id or "none",
-                exc_info=True,
-            )
+            logger.warning("api_content backfill failed for session=%s", agent.session_id or "none", exc_info=True)
+
 
 
 def _persist_turn_start(

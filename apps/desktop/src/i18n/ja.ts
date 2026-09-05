@@ -2019,7 +2019,17 @@ export const ja = defineLocale({
     noWorkspace: 'ワークスペースなし',
     projectEmpty: 'セッションはまだありません',
     noSessions: 'セッションはまだありません',
-    noFilterMatches: 'このフィルターに一致するセッションはありません',
+    noFilterMatches: '有効なフィルターに一致するセッションはありません。',
+    clearFilters: 'フィルターをクリア',
+    activeFilters: labels => `有効: ${labels}`,
+    filtersAria: count => (count > 0 ? `フィルター、${count} 件有効` : 'フィルター'),
+    filterKinds: {
+      archived: 'アーカイブ',
+      pr: 'プルリクエスト',
+      profile: 'プロファイル',
+      project: 'プロジェクト',
+      status: 'ステータス'
+    },
     projects: {
       sectionLabel: 'プロジェクト',
       home: 'ホーム',

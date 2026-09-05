@@ -1719,7 +1719,17 @@ export const ar = defineLocale({
     noWorkspace: 'بدون مساحة عمل',
     projectEmpty: 'لا توجد جلسات بعد',
     noSessions: 'لا توجد جلسات بعد',
-    noFilterMatches: 'لا توجد جلسات تطابق عوامل التصفية هذه',
+    noFilterMatches: 'لا توجد جلسات تطابق عوامل التصفية النشطة.',
+    clearFilters: 'مسح عوامل التصفية',
+    activeFilters: labels => `نشط: ${labels}`,
+    filtersAria: count => (count > 0 ? `عوامل التصفية، ${count} نشطة` : 'عوامل التصفية'),
+    filterKinds: {
+      archived: 'مؤرشف',
+      pr: 'طلب سحب',
+      profile: 'الملف الشخصي',
+      project: 'المشروع',
+      status: 'الحالة'
+    },
     projects: {
       sectionLabel: 'المشاريع',
       home: 'الرئيسية',

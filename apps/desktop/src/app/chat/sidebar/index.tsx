@@ -174,7 +174,12 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
-import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import {
+  SidebarBlankState,
+  SidebarFilterEmptyState,
+  SidebarPinnedEmptyState,
+  SidebarSessionSkeletons
+} from './section-states'
 import { buildSessionByAnyId, resolvePinnedSessions } from './session-index'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import { CONTEXT_SPLIT_KIT, SplitSubmenu } from './split-submenu'
@@ -1715,15 +1720,11 @@ export function ChatSidebar({
                 emptyState={
                   showSessionSkeletons ? (
                     <SidebarSessionSkeletons />
+                  ) : filtersActive && !inProject ? (
+                    <SidebarFilterEmptyState />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                      {inProject
-                        ? s.projectEmpty
-                        : filtersActive
-                          ? s.noFilterMatches
-                          : pinnedSessions.length > 0
-                            ? s.allPinned
-                            : s.noSessions}
+                      {inProject ? s.projectEmpty : pinnedSessions.length > 0 ? s.allPinned : s.noSessions}
                     </div>
                   )
                 }

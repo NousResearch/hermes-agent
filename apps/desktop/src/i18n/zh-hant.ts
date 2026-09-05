@@ -1944,7 +1944,17 @@ export const zhHant = defineLocale({
     noWorkspace: '無工作區',
     projectEmpty: '尚無工作階段',
     noSessions: '尚無工作階段',
-    noFilterMatches: '沒有工作階段符合這些篩選條件',
+    noFilterMatches: '沒有工作階段符合目前的篩選條件。',
+    clearFilters: '清除篩選',
+    activeFilters: labels => `目前篩選：${labels}`,
+    filtersAria: count => (count > 0 ? `篩選，${count} 項已啟用` : '篩選'),
+    filterKinds: {
+      archived: '已封存',
+      pr: '拉取請求',
+      profile: '設定檔',
+      project: '專案',
+      status: '狀態'
+    },
     projects: {
       sectionLabel: '專案',
       home: '主頁',

@@ -1993,6 +1993,16 @@ export interface Translations {
     projectEmpty: string
     noSessions: string
     noFilterMatches: string
+    clearFilters: string
+    activeFilters: (labels: string) => string
+    filtersAria: (count: number) => string
+    filterKinds: {
+      archived: string
+      pr: string
+      profile: string
+      project: string
+      status: string
+    }
     projects: {
       sectionLabel: string
       home: string

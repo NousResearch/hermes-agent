@@ -2344,7 +2344,17 @@ export const en: Translations = {
     noWorkspace: 'No workspace',
     projectEmpty: 'No sessions yet',
     noSessions: 'No sessions yet',
-    noFilterMatches: 'No sessions match these filters',
+    noFilterMatches: 'No sessions match the active filters.',
+    clearFilters: 'Clear filters',
+    activeFilters: labels => `Active: ${labels}`,
+    filtersAria: count => (count > 0 ? `Filters, ${count} active` : 'Filters'),
+    filterKinds: {
+      archived: 'Archived',
+      pr: 'Pull request',
+      profile: 'Profile',
+      project: 'Project',
+      status: 'Status'
+    },
     projects: {
       sectionLabel: 'Projects',
       home: 'Home',

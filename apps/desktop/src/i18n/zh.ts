@@ -2511,7 +2511,17 @@ export const zh: Translations = {
     noWorkspace: '无工作区',
     projectEmpty: '暂无会话',
     noSessions: '暂无会话',
-    noFilterMatches: '没有会话符合这些筛选条件',
+    noFilterMatches: '没有会话符合当前筛选条件。',
+    clearFilters: '清除筛选',
+    activeFilters: labels => `当前筛选：${labels}`,
+    filtersAria: count => (count > 0 ? `筛选，${count} 项已启用` : '筛选'),
+    filterKinds: {
+      archived: '已归档',
+      pr: '拉取请求',
+      profile: '配置',
+      project: '项目',
+      status: '状态'
+    },
     projects: {
       sectionLabel: '项目',
       home: '主页',

@@ -2380,7 +2380,17 @@ export const ru = defineLocale({
     noWorkspace: 'Без рабочего пространства',
     projectEmpty: 'Сеансов пока нет',
     noSessions: 'Сеансов пока нет',
-    noFilterMatches: 'Нет сеансов по этим фильтрам',
+    noFilterMatches: 'Нет сеансов по активным фильтрам.',
+    clearFilters: 'Сбросить фильтры',
+    activeFilters: labels => `Активны: ${labels}`,
+    filtersAria: count => (count > 0 ? `Фильтры, активно ${count}` : 'Фильтры'),
+    filterKinds: {
+      archived: 'В архиве',
+      pr: 'Запрос на слияние',
+      profile: 'Профиль',
+      project: 'Проект',
+      status: 'Статус'
+    },
     projects: {
       sectionLabel: 'Проекты',
       home: 'Главная',

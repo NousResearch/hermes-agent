@@ -162,3 +162,42 @@ async def test_watcher_retries_cancelled_terminal_without_losing_decision(monkey
     await asyncio.wait_for(delivered.wait(), timeout=1)
     assert prompt.terminal_visible
     assert "$card" not in adapter._approval_prompts_by_event
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_ambiguous_text_ack_keeps_waiter_for_late_resolution(monkeypatch, background):
+    from gateway import approval_bridge
+    class LateAck:
+        def result(self, timeout):
+            raise TimeoutError("ack late; delivery unknown")
+    def schedule(coro, *args, **kwargs):
+        coro.close()
+        return LateAck()
+    adapter = SimpleNamespace(send=AsyncMock(), pause_typing_for_chat=lambda _: None,
+                              typed_command_prefix="!", approval_fallback_single_event=True)
+    runner = foreground(adapter, None)
+    runner._schedule = schedule
+    monkeypatch.setattr(approval_bridge, "safe_schedule_threadsafe", schedule)
+    monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 1)
+    notify = (approval_bridge._make_gateway_approval_notifier(
+        adapter=adapter, chat_id="!room:example.org", session_key="late-ack",
+        metadata={}, requester_user_id="@owner:example.org", loop=None, pause_typing=False)
+        if background else runner._approval_notify_sync)
+    def callback(data):
+        notify(data)
+        assert approval.has_blocking_approval("late-ack")
+        assert approval.resolve_gateway_approval("late-ack", "deny", approval_id=data["approval_id"]) == 1
+    try:
+        result = _await_gateway_decision("late-ack", callback, {"command": "echo late"})
+        assert result["choice"] == "deny"
+        assert not result.get("notify_failed")
+    finally:
+        approval.unregister_gateway_notify("late-ack")
+
+
+def test_deadline_clock_import_survives_plugin_compat_removal():
+    import ast
+    from pathlib import Path
+    module = ast.parse(Path(approval.__file__).read_text())
+    assert any(isinstance(node, ast.Import) and any(alias.name == "time" for alias in node.names)
+               for node in module.body)

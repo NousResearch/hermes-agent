@@ -1562,6 +1562,9 @@ class TurnRunner:
             # No card to edit on the text path: the prompt has no buttons to drop and carries
             # the /approve instructions, so the timeout notice is posted as a new message.
             register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+        except TimeoutError:
+            # A late acknowledgement does not prove the text was undelivered.
+            logger.warning("Approval text send timed out; keeping the waiter armed for a late response")
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
             raise

@@ -112,6 +112,9 @@ def _make_gateway_approval_notifier(
                 raise RuntimeError(
                     str(getattr(result, "error", "") or "approval fallback send failed")
                 )
+        except TimeoutError:
+            # A late acknowledgement does not prove the text was undelivered.
+            logger.warning("Approval text send timed out; keeping the waiter armed for a late response")
         except Exception as exc:
             logger.error("Failed to send approval request: %s", exc)
             # The core approval guard catches notifier failures and denies the

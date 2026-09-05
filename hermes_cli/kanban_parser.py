@@ -198,6 +198,10 @@ _SPECS = [
              help="Initial card status. Use 'blocked' for cards "
                   "that require immediate human ops (R3 gate) "
                   "to skip the brief running-to-blocked transition."),
+        _arg("--dispatch-after", metavar="ISO_TIMESTAMP",
+             help="Do not dispatch before this timezone-aware ISO timestamp."),
+        _arg("--dispatch-window", metavar="WINDOW",
+             help="Dispatch only in a daily 'HH:MM-HH:MM IANA/Timezone' window."),
         _json_flag(help="Emit JSON output"),
     ], help="Create a new task"),
     _cmd("swarm", [
@@ -238,6 +242,14 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
+    _cmd("gate", [
+        _TASK_ID,
+        _arg("--after", dest="dispatch_after", metavar="ISO_TIMESTAMP",
+             help="Replace the gate with a not-before instant."),
+        _arg("--window", dest="dispatch_window", metavar="WINDOW",
+             help="Replace the gate with a daily timezone window."),
+        _arg("--clear", action="store_true", help="Remove the task's dispatch gate."),
+    ], help="Set or clear a scheduler-side task time gate"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,

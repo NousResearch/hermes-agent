@@ -4865,3 +4865,133 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+class TestCodexAdapterAzureFoundryReasoningReplay:
+    """Auxiliary Codex adapter must apply the Azure Foundry wire shape (#63257).
+
+    Auxiliary calls (compression, flush_memories, MoA) bypass
+    ``ResponsesApiTransport.build_kwargs()``, so Foundry detection has to happen here
+    too — by client host OR by the live main runtime provider (a registered
+    ``azure-foundry`` provider behind a proxy URL).
+    """
+
+    _HISTORY = [
+        {"role": "system", "content": "You are helpful."},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "thinking"}],
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob",
+                    "summary": [{"type": "summary_text", "text": "brief"}],
+                    "status": "completed", "response_id": "resp_123",
+                }
+            ],
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+    @staticmethod
+    def _build_adapter(base_url):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        message_item = SimpleNamespace(
+            type="message", role="assistant", status="completed",
+            content=[SimpleNamespace(type="output_text", text="ok")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed", id="resp_test", usage=None),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter(events)
+
+            def close(self):
+                pass
+
+        captured = {}
+
+        def _create(**kwargs):
+            captured.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.base_url = base_url
+        real_client.responses.create = _create
+        return _CodexCompletionsAdapter(real_client, "gpt-5.5"), captured
+
+    @staticmethod
+    def _wire_input(captured):
+        # ``_bypass_sdk_request_transform`` may route bulk ``input`` via ``extra_body``;
+        # the wire body is identical either way.
+        if "input" in captured:
+            return captured["input"]
+        return captured["extra_body"]["input"]
+
+    @classmethod
+    def _reasoning(cls, captured):
+        return next(item for item in cls._wire_input(captured) if item.get("type") == "reasoning")
+
+    @classmethod
+    def _assistant_text_part(cls, captured):
+        msg = next(
+            i for i in cls._wire_input(captured)
+            if i.get("role") == "assistant" and isinstance(i.get("content"), list)
+        )
+        return msg["content"][0]
+
+    @pytest.mark.parametrize(
+        "base_url",
+        ["https://paperclip.services.ai.azure.com/models", "https://paperclip.openai.azure.com/openai/v1"],
+    )
+    def test_keeps_reasoning_id_for_azure_foundry_host(self, base_url):
+        from agent.auxiliary_client import clear_runtime_main
+
+        clear_runtime_main()
+        adapter, captured = self._build_adapter(base_url=base_url)
+        adapter.create(messages=list(self._HISTORY))
+
+        assert self._reasoning(captured) == {
+            "type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+        assert self._assistant_text_part(captured)["annotations"] == []
+
+    def test_keeps_reasoning_id_for_azure_foundry_runtime_provider_behind_proxy(self):
+        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
+
+        token = set_runtime_main("azure-foundry", "gpt-5.5", base_url="https://gateway.corp.example/v1")
+        try:
+            adapter, captured = self._build_adapter(base_url="https://gateway.corp.example/v1")
+            adapter.create(messages=list(self._HISTORY))
+        finally:
+            reset_runtime_main(token)
+
+        assert self._reasoning(captured)["id"] == "rs_123"
+        assert self._assistant_text_part(captured)["annotations"] == []
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.openai.com/v1",
+            "https://api.githubcopilot.com",
+            "https://evil.com/services.ai.azure.com/v1",
+            "https://openai.azure.com.evil.net/v1",
+        ],
+    )
+    def test_non_foundry_host_keeps_default_shape(self, base_url):
+        from agent.auxiliary_client import clear_runtime_main
+
+        clear_runtime_main()
+        adapter, captured = self._build_adapter(base_url=base_url)
+        adapter.create(messages=list(self._HISTORY))
+
+        assert "id" not in self._reasoning(captured)
+        assert "annotations" not in self._assistant_text_part(captured)

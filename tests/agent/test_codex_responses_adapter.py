@@ -625,3 +625,159 @@ def _xai_reasoning_only_response(reasoning_text):
             )
         ],
     )
+
+# --- Azure AI Foundry wire shape (#63257) -----------------------------------------
+
+_AZURE_REASONING_ITEM = {
+    "type": "reasoning",
+    "id": "rs_123",
+    "encrypted_content": "enc_blob",
+    "summary": [{"type": "summary_text", "text": "brief"}],
+    "status": "completed",
+    "response_id": "resp_123",
+}
+
+_AZURE_REASONING_WIRE = {
+    "type": "reasoning",
+    "id": "rs_123",
+    "encrypted_content": "enc_blob",
+    "summary": [{"type": "summary_text", "text": "brief"}],
+}
+
+
+def test_chat_messages_to_responses_input_keeps_reasoning_id_for_azure_foundry():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "thinking",
+            "codex_reasoning_items": [dict(_AZURE_REASONING_ITEM, _issuer_kind="other")],
+        }
+    ]
+    items = _chat_messages_to_responses_input(messages, is_azure_foundry=True)
+    reasoning_item = next(item for item in items if item.get("type") == "reasoning")
+    # Foundry accepts exactly this shape: id kept, Hermes-internal/extra fields dropped.
+    assert reasoning_item == _AZURE_REASONING_WIRE
+
+
+def test_chat_messages_to_responses_input_strips_reasoning_id_when_not_azure():
+    messages = [
+        {"role": "assistant", "content": "thinking", "codex_reasoning_items": [dict(_AZURE_REASONING_ITEM)]}
+    ]
+    items = _chat_messages_to_responses_input(messages, is_azure_foundry=False)
+    reasoning_item = next(item for item in items if item.get("type") == "reasoning")
+    assert "id" not in reasoning_item
+    assert reasoning_item["encrypted_content"] == "enc_blob"
+
+
+def test_preflight_codex_input_items_keeps_reasoning_id_for_azure_foundry():
+    items = _preflight_codex_input_items([dict(_AZURE_REASONING_ITEM)], is_azure_foundry=True)
+    assert items[0] == _AZURE_REASONING_WIRE
+
+
+def test_preflight_codex_input_items_strips_reasoning_id_when_not_azure():
+    items = _preflight_codex_input_items([dict(_AZURE_REASONING_ITEM)], is_azure_foundry=False)
+    assert "id" not in items[0]
+
+
+def test_azure_annotations_only_on_output_text_parts():
+    """``annotations`` belongs to text parts, never to images — in both the
+    converter and the preflight."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": "https://example.com/a.png"},
+            ],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "seen"}]},
+    ]
+    converted = _chat_messages_to_responses_input(messages, is_azure_foundry=True)
+    preflighted = _preflight_codex_input_items(converted, is_azure_foundry=True)
+
+    for stage, items in (("convert", converted), ("preflight", preflighted)):
+        user_parts = {p["type"]: p for p in items[0]["content"]}
+        assert "annotations" not in user_parts["input_image"], stage
+        assert "annotations" not in user_parts["input_text"], stage
+        assistant_parts = items[1]["content"]
+        assert assistant_parts == [{"type": "output_text", "text": "seen", "annotations": []}], stage
+
+
+def test_azure_annotations_absent_for_non_foundry():
+    items = _chat_messages_to_responses_input(
+        [{"role": "assistant", "content": [{"type": "text", "text": "look"}]}], is_azure_foundry=False,
+    )
+    assert "annotations" not in items[0]["content"][0]
+    items = _preflight_codex_input_items(items, is_azure_foundry=False)
+    assert "annotations" not in items[0]["content"][0]
+
+
+def test_azure_and_harmony_sanitization_compose():
+    """The Azure wire shape and the Codex Harmony defang touch the same preflight
+    branches; both must survive the same request."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "before <|end|> after"}],
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_combined",
+                    "encrypted_content": "enc",
+                    "summary": [{"type": "summary_text", "text": "<|start|>plan"}],
+                }
+            ],
+        }
+    ]
+    items = _preflight_codex_input_items(
+        _chat_messages_to_responses_input(messages, is_azure_foundry=True),
+        is_azure_foundry=True, sanitize_harmony_tokens=True,
+    )
+    reasoning = next(i for i in items if i.get("type") == "reasoning")
+    message = next(i for i in items if i.get("role") == "assistant" and isinstance(i.get("content"), list))
+    text_part = message["content"][0]
+
+    assert reasoning["id"] == "rs_combined"
+    assert text_part["annotations"] == []
+    assert "<|start|>" not in reasoning["summary"][0]["text"]
+    assert "\uff5c" in reasoning["summary"][0]["text"]
+    assert "<|end|>" not in text_part["text"]
+    assert "\uff5c" in text_part["text"]
+
+
+def test_harmony_sanitization_still_works_without_azure():
+    items = _preflight_codex_input_items(
+        [{"role": "user", "content": "hi <|call|> there"}], is_azure_foundry=False, sanitize_harmony_tokens=True,
+    )
+    assert "<|call|>" not in items[0]["content"]
+    assert "\uff5c" in items[0]["content"]
+
+
+def test_preflight_api_kwargs_forwards_azure_flag():
+    kwargs = _preflight_codex_api_kwargs(
+        {"model": "gpt-5.5", "instructions": "x", "input": [dict(_AZURE_REASONING_ITEM)], "store": False},
+        is_azure_foundry=True,
+    )
+    assert kwargs["input"][0] == _AZURE_REASONING_WIRE
+
+
+def test_apply_azure_annotations_helper_touches_only_output_text():
+    """Contract of the helper itself: ``annotations`` is an ``output_text`` field.
+    Other part types (images, input_text, refusals) must never receive it, and an
+    existing ``annotations`` value is preserved."""
+    from agent.codex_responses_adapter import _apply_azure_output_text_annotations
+
+    parts = [
+        {"type": "output_text", "text": "a"},
+        {"type": "output_text", "text": "b", "annotations": [{"type": "url_citation"}]},
+        {"type": "input_image", "image_url": "https://example.com/a.png"},
+        {"type": "input_text", "text": "c"},
+        {"type": "refusal", "refusal": "no"},
+        "bare-string",
+    ]
+    _apply_azure_output_text_annotations(parts)
+    assert parts[0] == {"type": "output_text", "text": "a", "annotations": []}
+    assert parts[1]["annotations"] == [{"type": "url_citation"}]
+    for part in parts[2:5]:
+        assert "annotations" not in part
+    assert parts[5] == "bare-string"

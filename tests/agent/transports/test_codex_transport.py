@@ -1543,3 +1543,177 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+class TestAzureFoundryWireShape:
+    """Azure AI Foundry Responses wire-shape normalization (#63257).
+
+    Foundry re-validates replayed items against a stricter schema than OpenAI/Codex:
+    encrypted ``reasoning`` items must keep their ``id``, and assistant ``output_text``
+    parts must carry an ``annotations`` array. These pin the *behaviour contract* —
+    which items get Foundry-only fields, and which endpoints count as Foundry.
+    """
+
+    @staticmethod
+    def _reasoning_history():
+        return [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "codex_reasoning_items": [
+                    {
+                        "type": "reasoning", "id": "rs_1", "encrypted_content": "enc",
+                        "summary": [{"type": "summary_text", "text": "brief"}],
+                        "status": "completed", "response_id": "resp_1",
+                    }
+                ],
+            },
+            {"role": "user", "content": "next"},
+        ]
+
+    @staticmethod
+    def _reasoning_item(kwargs):
+        items = [i for i in kwargs["input"] if isinstance(i, dict) and i.get("type") == "reasoning"]
+        assert items, "expected a replayed reasoning item on the wire"
+        return items[0]
+
+    @staticmethod
+    def _assistant_text_part(kwargs):
+        msg = next(
+            i for i in kwargs["input"]
+            if isinstance(i, dict) and i.get("role") == "assistant" and isinstance(i.get("content"), list)
+        )
+        return msg["content"][0]
+
+    # ── Detection: provider id and host must agree ────────────────────
+
+    @pytest.mark.parametrize(
+        "base_url,provider",
+        [
+            # Host-detected, both Foundry hostnames.
+            ("https://r.services.ai.azure.com/openai/v1", None),
+            ("https://r.openai.azure.com/openai/v1", None),
+            ("https://R.OPENAI.AZURE.COM/openai/v1", None),
+            # Provider-detected: a registered azure-foundry entry behind a gateway/proxy
+            # URL is still Foundry and still needs the id. Regression guard for the
+            # two-predicate drift where post-tool suppression saw Foundry but the wire
+            # shape did not.
+            ("https://gateway.corp.example/v1", "azure-foundry"),
+            ("", "azure-foundry"),
+        ],
+    )
+    def test_reasoning_id_and_annotations_for_foundry(self, transport, base_url, provider):
+        kw = transport.build_kwargs(
+            "gpt-5.5", self._reasoning_history(), [], base_url=base_url, provider=provider,
+        )
+        assert self._reasoning_item(kw) == {
+            "type": "reasoning", "id": "rs_1", "encrypted_content": "enc",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+        assert self._assistant_text_part(kw)["annotations"] == []
+
+    @pytest.mark.parametrize(
+        "base_url,provider",
+        [
+            ("https://api.openai.com/v1", "openai"),
+            ("https://chatgpt.com/backend-api/codex", "openai-codex"),
+            ("https://api.githubcopilot.com", "copilot"),
+            ("https://api.x.ai/v1", "xai"),
+            ("https://my-proxy.example/v1/responses", "custom"),
+            # Substring look-alikes must NOT be treated as Foundry: with store=False a
+            # non-Foundry surface 404s on a replayed item id.
+            ("https://evil.com/services.ai.azure.com/v1", None),
+            ("https://openai.azure.com.evil.net/v1", None),
+        ],
+    )
+    def test_non_foundry_wire_shape_unchanged(self, transport, base_url, provider):
+        kw = transport.build_kwargs(
+            "gpt-5.5", self._reasoning_history(), [], base_url=base_url, provider=provider,
+        )
+        assert "id" not in self._reasoning_item(kw)
+        assert "annotations" not in self._assistant_text_part(kw)
+
+    @pytest.mark.parametrize(
+        "params,expected",
+        [
+            ({"base_url": "https://r.services.ai.azure.com/openai/v1"}, True),
+            ({"base_url": "https://r.openai.azure.com/openai/v1"}, True),
+            ({"base_url": "https://gateway.corp.example/v1", "provider": "azure-foundry"}, True),
+            ({"provider": "Azure-Foundry"}, True),
+            ({"base_url": "https://api.openai.com/v1"}, False),
+            ({"base_url": "https://evil.com/openai.azure.com/v1"}, False),
+            ({"base_url": "https://openai.azure.com.evil.net/v1"}, False),
+            ({"base_url": ""}, False),
+            ({}, False),
+        ],
+    )
+    def test_foundry_predicate(self, params, expected):
+        from agent.transports.codex import _is_azure_foundry_responses
+
+        assert _is_azure_foundry_responses(params) is expected
+
+    def test_post_tool_suppression_and_wire_shape_agree(self, transport):
+        """Suppression and wire shape key off the same predicate: a Foundry provider
+        behind a proxy gets BOTH behaviours (id on non-tool turns, no encrypted
+        reasoning replay on the post-tool turn)."""
+        params = {"base_url": "https://gateway.corp.example/v1", "provider": "azure-foundry"}
+        kw = transport.build_kwargs("gpt-5.5", self._reasoning_history(), [], **params)
+        assert self._reasoning_item(kw)["id"] == "rs_1"
+
+        post_tool = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "call_1", "type": "function",
+                                "function": {"name": "t", "arguments": "{}"}}],
+                "codex_reasoning_items": [{"type": "reasoning", "id": "rs_2", "encrypted_content": "enc"}],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+        ]
+        kw = transport.build_kwargs("gpt-5.5", post_tool, [], **params)
+        assert not [i for i in kw["input"] if i.get("type") == "reasoning"]
+
+    # ── preflight ─────────────────────────────────────────────────────
+
+    _PREFLIGHT_KW = {
+        "model": "gpt-5.5", "instructions": "You are Hermes.", "store": False,
+        "input": [
+            {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob",
+             "summary": [{"type": "summary_text", "text": "brief"}],
+             "status": "completed", "response_id": "resp_123"},
+            {"type": "message", "role": "assistant", "status": "completed",
+             "content": [{"type": "output_text", "text": "ok"}]},
+        ],
+    }
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"is_azure_foundry": True},
+            {"provider": "azure-foundry"},
+            {"base_url": "https://r.services.ai.azure.com/openai/v1"},
+            {"base_url": "https://r.openai.azure.com/openai/v1"},
+        ],
+    )
+    def test_preflight_keeps_foundry_shape(self, transport, kwargs):
+        pre = transport.preflight_kwargs(self._PREFLIGHT_KW, **kwargs)
+        assert pre["input"][0] == {
+            "type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob",
+            "summary": [{"type": "summary_text", "text": "brief"}],
+        }
+        assert pre["input"][1]["content"][0]["annotations"] == []
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},
+            {"provider": "openai", "base_url": "https://api.openai.com/v1"},
+            {"is_github_responses": True, "base_url": "https://api.githubcopilot.com"},
+            {"base_url": "https://openai.azure.com.evil.net/v1"},
+        ],
+    )
+    def test_preflight_non_foundry_unchanged(self, transport, kwargs):
+        pre = transport.preflight_kwargs(self._PREFLIGHT_KW, **kwargs)
+        assert "id" not in pre["input"][0]
+        assert "annotations" not in pre["input"][1]["content"][0]

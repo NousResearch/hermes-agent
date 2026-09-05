@@ -3597,19 +3597,26 @@ def _insert_decomposed_child(
     the dispatcher only ever sees a coherent graph); returns its id.
 
     Workspace: per-child override wins, else inherit the root's kind. Path
-    inherits only when kinds match (a 'dir' child must not point at the
-    root's worktree) and NEVER for worktrees — siblings dispatch concurrently
-    and one shared checkout would put them all on the first sibling's branch
-    with no lock; leaving it unset makes dispatch materialize a fresh
-    ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
+    inherits only for ``dir`` (a shared directory is that kind's contract) and
+    NEVER for worktrees or scratch — siblings dispatch concurrently, and one
+    shared checkout would put them all on the first sibling's branch with no
+    lock, while a shared scratch path contradicts the kind's fresh-per-task,
+    auto-deleted-on-completion contract and pins every sibling to the root's
+    dir. Leaving the path unset lets dispatch materialize a fresh
+    ``<repo>/.worktrees/<child-id>`` / ``workspaces/<child-id>`` per child.
     """
     root_ws_kind = root_row["workspace_kind"] or "scratch"
     child_ws_kind = child.get("workspace_kind") or root_ws_kind
     if child.get("workspace_path"):
         child_ws_path = child.get("workspace_path")
-    elif child_ws_kind == "worktree":
+    elif child_ws_kind in ("worktree", "scratch"):
+        # Never share one workspace between siblings: both kinds are
+        # per-child by contract and siblings can be promoted and dispatched
+        # concurrently. Inheriting the root's literal path here (the old
+        # `child_ws_kind == root_ws_kind` arm) pinned all scratch siblings to
+        # the root's directory (#103303).
         child_ws_path = None
-    elif child_ws_kind == root_ws_kind:
+    elif child_ws_kind == root_ws_kind and root_ws_kind == "dir":
         child_ws_path = root_row["workspace_path"]
     else:
         child_ws_path = None

@@ -103,6 +103,77 @@ def test_decompose_worktree_children_get_own_workspace(kanban_home):
 
 
 
+def test_decompose_scratch_children_get_own_workspace(kanban_home):
+    """Scratch siblings must not inherit the root's literal workspace_path.
+
+    Scratch is a fresh per-task dir under ``workspaces/<id>/`` auto-deleted
+    on completion; inheriting the root's path pinned every concurrently-
+    dispatched sibling into one shared directory (#103303).
+    """
+    with kbc.connect() as conn:
+        root = kb.create_task(conn, title="triage the batch", triage=True)
+        # A root that was ALREADY claimed materialized its scratch dir.
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='scratch', "
+            "workspace_path='/tmp/workspaces/root' WHERE id = ?",
+            (root,),
+        )
+        conn.commit()
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "part one", "assignee": "alice", "parents": []},
+                {"title": "part two", "assignee": "bob", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None and len(child_ids) == 2
+
+        for cid in child_ids:
+            row = conn.execute(
+                "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            assert row["workspace_kind"] == "scratch"
+            # Path unset: dispatch materializes workspaces/<child-id> per child.
+            assert row["workspace_path"] is None
+            # And resolve_workspace must derive the per-child dir, not reuse
+            # the root's literal path.
+            task = kb.get_task(conn, cid)
+            resolved = kbw.resolve_workspace(task)
+            assert str(resolved).endswith(cid)
+
+
+def test_decompose_dir_children_still_share_root_path(kanban_home):
+    """dir-kind inheritance is intentional (a shared directory is the contract)."""
+    with kbc.connect() as conn:
+        root = kb.create_task(conn, title="operate on the shared dir", triage=True)
+        conn.execute(
+            "UPDATE tasks SET workspace_kind='dir', "
+            "workspace_path='C:/shared/ops' WHERE id = ?",
+            (root,),
+        )
+        conn.commit()
+
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "step a", "assignee": "alice", "parents": []}],
+            author="decomposer",
+        )
+        assert child_ids is not None
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (child_ids[0],),
+        ).fetchone()
+        assert row["workspace_kind"] == "dir"
+        assert row["workspace_path"] == "C:/shared/ops"
+
+
 def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     repo = _make_repo(tmp_path)
     occupied = _add_worktree(repo, repo / ".worktrees" / "sibling", "wt/sibling")

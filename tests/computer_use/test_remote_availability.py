@@ -8,7 +8,7 @@ Behaviour contracts (not change-detectors):
 - _empty_discovery_reason: remote-active reports the host-bridge hint and never
   probes the local loginctl/DISPLAY session; inactive engages the local probing path.
 - DEFAULT_CONFIG ships computer_use.remote disabled (opt-in) with an empty URL.
-- `hermes computer-use bridge` parses with safe defaults, requires --allowed-hosts,
+- `hermes computer-use host-bridge` parses with safe defaults, requires --allowed-hosts,
   and dispatches exactly the kwargs run_host_bridge owns today.
 """
 import argparse
@@ -89,6 +89,36 @@ class TestBackendIsAvailable:
         assert self._backend().is_available() is True
 
 
+class TestRemoteCfgSuppressionScope:
+    """_remote_cfg must suppress only RuntimeError (the 'not configured' signal from
+    resolve_remote_cua_config) and let unexpected exceptions propagate so a config-loading
+    bug surfaces instead of silently selecting the local desktop."""
+
+    def test_runtime_error_suppressed_to_none(self, monkeypatch):
+        # RuntimeError = legitimate 'not configured / misconfigured' signal → suppressed.
+        _patch_backend_cfg(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("HERMES_CUA_REMOTE_TOKEN must contain at least 32 bytes")))
+        assert cua_backend._remote_cfg() is None
+
+    def test_unexpected_exception_not_silenced(self, monkeypatch):
+        # TypeError / KeyError / ImportError etc. = config-loading BUG, not 'not configured'.
+        # It must propagate — _remote_cfg must NOT convert it to None (→ local-available).
+        _patch_backend_cfg(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(
+            TypeError("config dict is actually a list")))
+        with pytest.raises(TypeError, match="config dict is actually a list"):
+            cua_backend._remote_cfg()
+
+    def test_unexpected_exception_does_not_select_local_available(self, monkeypatch):
+        # The availability signal: is_available calls _remote_cfg(); an unexpected exception
+        # from the resolver must NOT be swallowed into a local-available True.
+        _patch_backend_cfg(monkeypatch, lambda *a, **k: (_ for _ in ()).throw(
+            KeyError("remote")))
+        monkeypatch.setattr(cua_backend, "cua_driver_binary_available", lambda: True)
+        backend = object.__new__(CuaDriverBackend)
+        with pytest.raises(KeyError):
+            backend.is_available()
+
+
 class TestEmptyDiscoveryReason:
     def test_remote_active_skips_local_probing(self, monkeypatch):
         _patch_backend_cfg(monkeypatch, lambda *a, **k: _remote_stub())
@@ -130,8 +160,8 @@ class TestBridgeSubcommand:
         return parser.parse_args(argv)
 
     def test_bridge_defaults(self):
-        args = self._parse(["computer-use", "bridge", "--allowed-hosts", "desktop.example.com"])
-        assert args.computer_use_action == "bridge"
+        args = self._parse(["computer-use", "host-bridge", "--allowed-hosts", "desktop.example.com"])
+        assert args.computer_use_action == "host-bridge"
         assert args.port == 8765
         assert args.bind == "127.0.0.1"
         assert args.allowed_origins == ""
@@ -140,10 +170,10 @@ class TestBridgeSubcommand:
     def test_allowed_hosts_required(self):
         # An empty allowlist must not be silently accepted at the CLI layer either.
         with pytest.raises(SystemExit):
-            self._parse(["computer-use", "bridge"])
+            self._parse(["computer-use", "host-bridge"])
 
     def test_dispatch_passes_only_current_run_host_bridge_kwargs(self, monkeypatch):
-        # Signature-drift guard: new bridge options default host-side, the CLI forwards four.
+        # Signature-drift guard: new bridge options default host-side, the CLI forwards five.
         captured = {}
 
         def _fake_bridge(**kw):
@@ -151,7 +181,7 @@ class TestBridgeSubcommand:
 
         monkeypatch.setattr("tools.computer_use.host_bridge_cli.run_host_bridge", _fake_bridge)
         args = argparse.Namespace(allowed_hosts="a.com,b.com", allowed_origins="",
-                                  port=9000, bind="0.0.0.0")
-        assert cu_cli._cu_bridge(args) == 0
+                                  port=9000, bind="0.0.0.0", session_idle_timeout=1800)
+        assert cu_cli._cu_host_bridge(args) == 0
         assert captured == {"allowed_hosts": ["a.com", "b.com"], "allowed_origins": [],
-                            "port": 9000, "bind": "0.0.0.0"}
+                            "port": 9000, "bind": "0.0.0.0", "session_idle_timeout": 1800}

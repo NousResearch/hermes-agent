@@ -25,7 +25,10 @@ _CUA_BYPASS_APPROVALS_ENV = "CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"
 # the env var is the explicit "I accept the risk" acknowledgement.
 _BRIDGE_ALLOW_PLAINTEXT_ENV = "HERMES_CUA_BRIDGE_ALLOW_PLAINTEXT"
 _LOOPBACK_BINDS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
-_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 300
+# MCP recommendation for interactive sessions: long model turns must not be
+# reaped mid-call (screenshots, UI waits). Matches create_host_bridge_app's
+# default so the bridge behaves the same however it is launched.
+_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 1800
 
 
 def _validate_standard_permission_environment() -> None:
@@ -147,6 +150,7 @@ def run_host_bridge(
     allowed_origins: Sequence[str],
     port: int,
     bind: str = "127.0.0.1",
+    session_idle_timeout: int = _DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
 ) -> None:
     """Run the authenticated CUA host bridge on the local machine.
 
@@ -180,6 +184,6 @@ def run_host_bridge(
         bearer_token=token,
         allowed_hosts=hosts,
         allowed_origins=origins,
-        session_idle_timeout=_DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
+        session_idle_timeout=session_idle_timeout,
     )
     _serve_app(app, bind, int(port))

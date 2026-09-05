@@ -141,7 +141,32 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")
+    def test_matches_direct_hermes_dashboard_launcher(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(
+                    12345,
+                    "/opt/hermes/venv/bin/python3 /opt/hermes/bin/hermes-dashboard",
+                ) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")
+    def test_lifecycle_helper_invocations_are_ignored(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(11111, "/bin/bash -lc hermes dashboard --status"),
+                    _ps_line(22222, "python3 /opt/hermes/bin/hermes dashboard --stop"),
+                    _ps_line(33333, "python3 -m hermes_cli.main dashboard --port 9119"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [33333]
 
     @pytest.mark.skipif(sys.platform == "win32", reason="ps-based scan path")
     def test_self_pid_excluded(self):

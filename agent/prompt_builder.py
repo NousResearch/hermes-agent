@@ -6,6 +6,7 @@ with memory and ephemeral prompts.
 
 import contextvars
 import json
+import hashlib
 import logging
 import os
 import queue
@@ -1055,6 +1056,7 @@ _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
 # v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
 _SKILLS_SNAPSHOT_VERSION = 2
+_SKILLS_SOURCE_MARKER = "<!-- hermes-skills-sources:"
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1101,6 +1103,115 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             except OSError:
                 pass
     return manifest
+
+
+def _skills_sources_fingerprint(
+    skills_dir: Path,
+    external_dirs: list[Path],
+    project_dirs: list[Path],
+    *,
+    disabled: set[str] | None = None,
+    platform: str = "",
+    compact_categories: frozenset[str] | None = None,
+) -> str:
+    """Return a stable fingerprint of every configured skill source.
+
+    This is intentionally metadata-only (path, mtime, and size), matching the
+    local snapshot manifest.  It is cheap enough to run at a resume boundary
+    and covers external and trusted project roots, which are not represented
+    by the disk snapshot.
+    """
+    from agent.skill_utils import iter_project_skill_files
+
+    sources: list[tuple[str, dict[str, list[int]]]] = []
+    for label, root in [("local", skills_dir), *[("external", p) for p in external_dirs]]:
+        sources.append((label + ":" + str(root), _build_skills_manifest(root)))
+    for root in project_dirs:
+        manifest: dict[str, list[int]] = {}
+        if root.exists():
+            project_skill_paths = set(iter_project_skill_files(root))
+            for filename in ("SKILL.md", "DESCRIPTION.md"):
+                for path in iter_skill_index_files(root, filename):
+                    if filename == "SKILL.md" and path not in project_skill_paths:
+                        continue
+                    try:
+                        st = path.stat()
+                        manifest[str(path.relative_to(root))] = [st.st_mtime_ns, st.st_size]
+                    except OSError:
+                        continue
+        sources.append(("project:" + str(root), manifest))
+    payload = json.dumps(
+        {
+            "sources": sources,
+            "disabled": sorted(disabled or set()),
+            "platform": platform,
+            "compact_categories": sorted(compact_categories or frozenset()),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def skills_source_fingerprint(
+    *,
+    skills_dir_override: "Path | None" = None,
+    compact_categories: frozenset[str] | None = None,
+) -> str:
+    """Fingerprint local, external, and project skill roots for resume checks."""
+    if skills_dir_override is not None:
+        skills_dir = Path(skills_dir_override)
+        token = set_hermes_home_override(str(skills_dir.parent))
+    else:
+        skills_dir = get_skills_dir()
+        token = None
+    try:
+        external_dirs = get_all_skills_dirs()[1:]
+        from agent.skill_utils import get_project_skills_dirs
+        platform = _current_session_platform_hint()
+        disabled = get_disabled_skill_names(platform or None)
+        return _skills_sources_fingerprint(
+            skills_dir,
+            external_dirs,
+            get_project_skills_dirs(),
+            disabled=disabled,
+            platform=platform,
+            compact_categories=compact_categories,
+        )
+    finally:
+        if token is not None:
+            reset_hermes_home_override(token)
+
+
+def stored_skills_prompt_sources_stale(
+    prompt: str,
+    *,
+    skills_dir_override: "Path | None" = None,
+    compact_categories: frozenset[str] | None = None,
+) -> bool:
+    """Whether a persisted prompt carries a changed skill-source fingerprint.
+
+    Prompts written before the marker existed but containing a skills section
+    are refreshed once at resume so future turns can use the cheap marker.
+    Prompts with no skills section are left byte-stable for compatibility.
+    """
+    marker = _SKILLS_SOURCE_MARKER
+    start = prompt.find(marker)
+    if start < 0:
+        return "## Skills" in prompt
+    end = prompt.find("-->", start)
+    if end < 0:
+        return False
+    previous = prompt[start + len(marker):end].strip()
+    if not previous:
+        return False
+    try:
+        return previous != skills_source_fingerprint(
+            skills_dir_override=skills_dir_override,
+            compact_categories=compact_categories,
+        )
+    except Exception:
+        return False
 
 
 def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
@@ -1209,8 +1320,10 @@ def build_skills_system_prompt(
         # Trusted project-local dirs — highest-precedence tier; cwd/trust are session-stable, so byte-stable.
         from agent.skill_utils import get_project_skills_dirs
         project_dirs = get_project_skills_dirs()
-        if not skills_dir.exists() and not external_dirs and not project_dirs:
-            return ""
+        # Always build the hidden source marker, even when all roots are empty.
+        # A later skill installation must have a resume baseline to compare
+        # against; returning an empty prompt here would make additions
+        # invisible until a manual reload or fresh session.
         return _build_skills_system_prompt_inner(
             skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
     finally:
@@ -1395,7 +1508,22 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    source_marker = (
+        _SKILLS_SOURCE_MARKER
+        + _skills_sources_fingerprint(
+            skills_dir,
+            external_dirs,
+            project_dirs,
+            disabled=disabled,
+            platform=_platform_hint,
+            compact_categories=compact_categories,
+        )
+        + "-->\n"
+    )
+    rendered_index = _render_skills_index(
+        skills_by_category, category_descriptions, compact_categories, available_tools
+    )
+    result = source_marker + rendered_index
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

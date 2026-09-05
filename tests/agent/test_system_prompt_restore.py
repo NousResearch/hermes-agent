@@ -40,6 +40,15 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     return agent
 
 
+def test_resume_skill_helper_uses_profile_db_home(tmp_path):
+    from agent.system_prompt import _agent_skills_dir
+
+    db = MagicMock()
+    db.db_path = str(tmp_path / "profile" / "state.db")
+    agent = _make_agent(session_db=db)
+    assert _agent_skills_dir(agent) == tmp_path / "profile" / "skills"
+
+
 # ---------------------------------------------------------------------------
 # Happy paths
 # ---------------------------------------------------------------------------
@@ -61,6 +70,39 @@ class TestStoredPromptReuse:
         db.update_system_prompt.assert_not_called()
         # No warnings on the happy path
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_unchanged_legacy_prompt_without_skills_is_reused_without_rebuild(self):
+        # No marker means this synthetic prompt has no skills section and is
+        # intentionally treated as a legacy prompt with no refresh signal.
+        db = MagicMock()
+        stored = "Stored prompt without skills section"
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+        agent._build_system_prompt.assert_not_called()
+
+    def test_unchanged_marked_skills_prompt_is_reused_without_rebuild(self, monkeypatch):
+        db = MagicMock()
+        stored = "<!-- hermes-skills-sources:stable-->\n## Skills\n"
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        monkeypatch.setattr(
+            "agent.prompt_builder.stored_skills_prompt_sources_stale", lambda *a, **k: False
+        )
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+    def test_changed_skill_sources_rebuild_and_persist_once(self, monkeypatch):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": "<!-- hermes-skills-sources:old-->\n## Skills\n"}
+        agent = _make_agent(session_db=db, prebuilt_prompt="REFRESHED")
+        monkeypatch.setattr(
+            "agent.prompt_builder.stored_skills_prompt_sources_stale", lambda *a, **k: True
+        )
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(agent.session_id, "REFRESHED")
 
     def test_present_row_with_unicode_preserved(self):
         """Non-ASCII bytes in the stored prompt are not mangled."""

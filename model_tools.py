@@ -774,12 +774,27 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
                                              **ids.hook_kwargs())
 
 
+def _is_multimodal_envelope(value) -> bool:
+    """A multimodal tool-result envelope, the shape ``browser_vision`` and
+    ``computer_use`` return: a dict with ``_multimodal: True`` and a list of
+    OpenAI-style content parts. The same predicate as
+    ``agent.tool_dispatch_helpers._is_multimodal_tool_result``, kept local so
+    this module adds no import of the dispatch layer."""
+    return (
+        isinstance(value, dict)
+        and value.get("_multimodal") is True
+        and isinstance(value.get("content"), list)
+    )
+
+
 def _apply_transform_tool_result_hook(function_name: str, function_args: Dict[str, Any], result: Any, duration_ms: int,
                                       ids: _CallIds) -> Any:
-    """transform_tool_result: plugins may replace the final result string.
+    """transform_tool_result: plugins may replace the final result with a string
+    or a multimodal tool-result envelope (so a plugin can attach an image).
 
     Runs after post_tool_call and before the result enters context. Fail-open;
-    first string return wins. Gated on has_hook so the no-listener path is cheap.
+    the first string or envelope return wins, any other return is ignored. Gated
+    on has_hook so the no-listener path is cheap.
     """
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
@@ -788,7 +803,7 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: Dict[st
             hook_results = invoke_hook("transform_tool_result", tool_name=function_name, args=function_args,
                                        result=result, **ids.hook_kwargs(), duration_ms=duration_ms,
                                        status=status, error_type=error_type, error_message=error_message)
-            return next((r for r in hook_results if isinstance(r, str)), result)
+            return next((r for r in hook_results if isinstance(r, str) or _is_multimodal_envelope(r)), result)
     except Exception as _hook_err:
         logger.debug("transform_tool_result hook error: %s", _hook_err)
     return result

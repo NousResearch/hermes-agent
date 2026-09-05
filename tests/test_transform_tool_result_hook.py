@@ -57,6 +57,33 @@ def _run_handle_function_call(
 
 
 
+def test_a_multimodal_envelope_return_replaces_result(monkeypatch):
+    """A hook may hand the model an image beside the result: it returns the same
+    multimodal envelope a tool like browser_vision returns (``_multimodal: True``
+    with OpenAI-style content parts). The envelope wins like a string does; a
+    plain dict is still ignored."""
+    envelope = {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": '{"output": "original", "second_look": true}'},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}},
+        ],
+        "text_summary": '{"output": "original", "second_look": true}',
+    }
+    out = _run_handle_function_call(
+        monkeypatch,
+        invoke_hook=lambda hook_name, **kw: [None, {"x": 1}, envelope, "later"],
+    )
+    assert out is envelope
+    # not an envelope: no `_multimodal` flag, or content that is not a list
+    out2 = _run_handle_function_call(
+        monkeypatch,
+        invoke_hook=lambda hook_name, **kw: [{"content": [{"type": "text", "text": "x"}]},
+                                            {"_multimodal": True, "content": "x"}, "string wins"],
+    )
+    assert out2 == "string wins"
+
+
 def test_first_valid_string_return_replaces_result(monkeypatch):
     out = _run_handle_function_call(
         monkeypatch,

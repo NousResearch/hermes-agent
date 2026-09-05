@@ -415,6 +415,26 @@ class SessionManager:
         except Exception:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
+        # Resolve reasoning effort through the shared chokepoint so ACP
+        # sessions (OpenDesign, Zed) honor ``agent.reasoning_effort`` /
+        # ``agent.reasoning_overrides`` from config.yaml — same contract as
+        # the CLI and TUI surfaces (see their resolve_reasoning_config call
+        # sites).  Without this, ACP sessions silently ran on the provider's
+        # server default (Z.AI GLM: below max) regardless of config.
+        try:
+            from hermes_constants import resolve_reasoning_config
+
+            kwargs["reasoning_config"] = resolve_reasoning_config(
+                config, str(kwargs.get("model") or "")
+            )
+            logger.info(
+                "ACP: reasoning_config resolved for %s: %s",
+                kwargs.get("model"),
+                kwargs["reasoning_config"],
+            )
+        except Exception:
+            logger.debug("ACP: could not resolve reasoning_config from config", exc_info=True)
+
         agent = AIAgent(**kwargs)
         # Codex app-server sessions spawn lazily on the first turn; stamp the ACP
         # workspace so the Codex runtime starts from the editor cwd, not ours.

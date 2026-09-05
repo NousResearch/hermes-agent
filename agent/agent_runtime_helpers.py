@@ -1977,7 +1977,11 @@ def _resolve_switch_context_length(agent, snapshot):
         try:
             runtime_len = agent._ensure_lmstudio_runtime_loaded(intent)
         except Exception:
-            _restore_switch_snapshot(agent, snapshot)
+            # The snapshot is the caller's rollback authority: switch_model passes its
+            # full switch snapshot (restore + re-raise aborts the switch); callers
+            # without one (the runtime-override scope) pass None and own the failure.
+            if snapshot is not None:
+                _restore_switch_snapshot(agent, snapshot)
             raise
     if hasattr(agent, "_lmstudio_load_was_unverified") and agent._lmstudio_load_was_unverified(runtime_len):
         logger.warning(
@@ -2017,8 +2021,63 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             api_mode=agent.api_mode,
         )
     except Exception:
-        _restore_switch_snapshot(agent, snapshot)
+        # See the ``snapshot is not None`` guard in ``_resolve_switch_context_length``:
+        # the snapshot is the caller's rollback authority; None means the caller owns
+        # the failure (runtime-override scope) instead of a provider-switch rollback.
+        if snapshot is not None:
+            _restore_switch_snapshot(agent, snapshot)
         raise
+
+
+def _apply_model_owned_state(
+    agent, new_model, snapshot=None, *, provider=None, api_mode=None,
+) -> None:
+    """Project the model-owned derived state for ``new_model`` onto ``agent``.
+
+    This is the model-owned portion of a route switch — prompt-cache flags
+    (``_use_prompt_caching`` / ``_use_native_cache_layout``), the per-model
+    context-length re-point of ``agent.context_compressor``, and the per-model
+    ``reasoning_config`` — exactly as ``switch_model`` projects it.  It is
+    shared by ``switch_model`` (called after the identity/transport swap) and
+    the runtime-override scope (called after it flips only ``agent.model``), so
+    the two model switches can never drift apart: the override must not leave
+    any of this state describing the pre-override model while its scope is
+    open.
+
+    Runs after the agent's identity fields already describe the destination
+    route (``agent.model``/``provider``/``base_url``/``api_mode``), which is
+    how the destination context length resolves.  ``agent._config_context_length``
+    and ``agent._custom_providers`` are refreshed as part of the projection.
+    ``provider``/``api_mode`` default to the agent fields; ``switch_model``
+    passes its resolved destination route explicitly (the transport rebuild may
+    have overridden ``agent.api_mode`` — MoA pins ``chat_completions``).
+
+    ``snapshot`` is the caller's rollback authority for context-length /
+    compressor resolution failures: ``switch_model`` passes its full switch
+    snapshot (restore + re-raise aborts the switch); callers without one (the
+    runtime-override scope) pass None and handle the failure themselves.  The
+    reasoning-config re-resolve is best-effort on every path.
+    """
+    custom_providers, effective_context_length = _resolve_switch_context_length(agent, snapshot)
+    if custom_providers is not None:
+        agent._custom_providers = custom_providers
+    agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
+        provider=provider if provider is not None else agent.provider,
+        base_url=agent.base_url,
+        api_mode=api_mode if api_mode is not None else agent.api_mode,
+        model=new_model,
+    )
+    if hasattr(agent, "context_compressor") and agent.context_compressor:
+        _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
+    try:
+        from hermes_constants import resolve_reasoning_config
+        from hermes_cli.config import load_config as _sm_load_config
+        agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
+        logger.info(
+            "model switch: reasoning_config resolved for %s: %s", agent.model, agent.reasoning_config
+        )
+    except Exception as _reasoning_err:
+        logger.debug("model switch: could not re-resolve reasoning_config: %s", _reasoning_err)
 
 
 def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
@@ -2125,27 +2184,12 @@ def switch_model(
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise
-    custom_providers, effective_context_length = _resolve_switch_context_length(agent, snapshot)
-    # Refresh the custom-provider snapshot from the config just loaded so the prompt_caching lookup
-    # sees flags added to config.yaml after session start.
-    if custom_providers is not None:
-        agent._custom_providers = custom_providers
-    agent._use_prompt_caching, agent._use_native_cache_layout = agent._anthropic_prompt_cache_policy(
-        provider=new_provider, base_url=agent.base_url, api_mode=api_mode, model=new_model
+    # Project the model-owned derived state (prompt-cache flags, context
+    # compressor, reasoning config) for the destination model.  Shared with the
+    # runtime-override scope so the two model switches can never drift apart.
+    _apply_model_owned_state(
+        agent, new_model, snapshot, provider=new_provider, api_mode=api_mode
     )
-    if hasattr(agent, "context_compressor") and agent.context_compressor:
-        _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
-    # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
-    # YAML False = disabled).
-    try:
-        from hermes_constants import resolve_reasoning_config
-        from hermes_cli.config import load_config as _sm_load_config
-        agent.reasoning_config = resolve_reasoning_config(_sm_load_config() or {}, agent.model)
-        logger.info(
-            "switch_model: reasoning_config resolved for %s: %s", agent.model, agent.reasoning_config
-        )
-    except Exception as _reasoning_err:
-        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
     # Invalidate the cached system prompt so it rebuilds next turn.
     agent._cached_system_prompt = None
     # Publish the destination capability map only after every runtime setup above has succeeded.

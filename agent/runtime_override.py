@@ -95,9 +95,11 @@ def _refresh_derived_route_state(agent: Any, overrides: Dict[str, str]) -> None:
     ``_try_activate_fallback``) does when the active route changes: the
     switched-to provider's ``request_overrides`` (``extra_body``) replaces the
     previous provider's, and ``runtime_capabilities`` is re-resolved for the
-    new model/endpoint.  Both are best-effort — a resolution failure must never
-    crash the turn; the scope snapshot still restores the original values on
-    exit.
+    new model/endpoint.  The model-owned state the canonical switch projects
+    (prompt-cache flags, context compressor, reasoning config) is refreshed by
+    ``_project_override_model_state`` — the activation step this calls.  All of
+    it is best-effort — a resolution failure must never crash the turn; the
+    scope snapshot still restores the original values on exit.
     """
     try:
         from agent.agent_runtime_helpers import (
@@ -131,6 +133,79 @@ def _refresh_derived_route_state(agent: Any, overrides: Dict[str, str]) -> None:
             "keeping previous value for the scope",
             _cap_exc,
         )
+    _project_override_model_state(agent, overrides)
+
+
+def _isolated_context_compressor(compressor: Any) -> Any:
+    """Scope-owned copy of ``compressor`` the canonical projection may re-point.
+
+    The canonical model-owned projection re-points ``agent.context_compressor``
+    through ``update_model``, which ASSIGNS the model-owned fields (model,
+    context length, thresholds, calibration state) on the instance — a shallow
+    copy isolates those assignments from the session compressor.  Never mutate
+    the pre-override compressor in place: its reference is restored on scope
+    exit, so an in-place re-point would leave the override's context length on
+    the session compressor.  ``update_model`` only assigns scalars (no
+    nested-container mutation), so a shallow copy fully isolates the
+    projection.  The copy keeps the durable session handles: a compression that
+    actually fires inside the scope (or a fallback that supersedes it) is a
+    real session event and its bookkeeping must persist.
+    """
+    import copy as _copy
+
+    return _copy.copy(compressor)
+
+
+def _project_override_model_state(agent: Any, overrides: Dict[str, str]) -> None:
+    """Point the model-owned derived state at the overridden model (P1-1).
+
+    Reuses the canonical model-owned projection from ``switch_model``
+    (``_apply_model_owned_state`` in agent_runtime_helpers) instead of
+    re-implementing it: prompt-cache flags, the per-model context-length
+    re-point of ``agent.context_compressor``, and ``reasoning_config`` are
+    projected exactly as a real switch projects them, so the request/preflight
+    path (which reads ``context_compressor.threshold_tokens``,
+    ``_use_prompt_caching`` and ``reasoning_config``) never sees the pre-override
+    model's values while ``agent.model`` is the override model.
+
+    The canonical projection re-points ``agent.context_compressor`` in place, so
+    a scope-owned copy is swapped in first (``_isolated_context_compressor``);
+    the pre-override reference is already in the scope snapshot (it is one of
+    ``_DERIVED_ATTRS``) and is restored on exit.  Best-effort: a resolution
+    failure must never crash the turn — the previous values stay in place for
+    the scope and the exit restore is still exact.
+    """
+    _cc = getattr(agent, "context_compressor", None)
+    if _cc is not None:
+        try:
+            agent.context_compressor = _isolated_context_compressor(_cc)
+        except Exception as _iso_exc:  # noqa: BLE001
+            # Never project onto the session compressor in place: keep it (and
+            # the pre-override values) for the scope instead.
+            logger.debug(
+                "runtime_override: compressor isolation failed (%s); "
+                "keeping the session compressor for the scope",
+                _iso_exc,
+            )
+            return
+    try:
+        from agent.agent_runtime_helpers import _apply_model_owned_state
+
+        _apply_model_owned_state(
+            agent,
+            str(overrides.get("model") or getattr(agent, "model", "") or ""),
+            snapshot=None,  # the scope owns rollback; no provider-switch snapshot
+        )
+    except Exception as _moe_exc:  # noqa: BLE001
+        # Back to the session compressor for the scope (the projection may have
+        # partially mutated the copy); the exit restore is still exact.
+        if _cc is not None:
+            agent.context_compressor = _cc
+        logger.debug(
+            "runtime_override: model-owned state projection failed (%s); "
+            "keeping previous value for the scope",
+            _moe_exc,
+        )
 
 
 class _RuntimeOverrideScope:
@@ -161,9 +236,29 @@ class _RuntimeOverrideScope:
     # (``_refresh_derived_route_state``) rewrites for the new model.
     # Snapshot/restore the set unconditionally so untouched fields are no-ops
     # and changed fields revert atomically on exit.
+    #
+    # P1-1: this includes the MODEL-OWNED state the canonical switch
+    # (``switch_model``) projects and request/preflight code reads, so the scope
+    # never leaves two models' truths in play:
+    #   * ``context_compressor`` is an OBJECT — the snapshot holds the reference,
+    #     activation swaps in a scope-owned copy (see
+    #     ``_project_override_model_state``), and exit restores the reference.
+    #     The pre-override compressor is never mutated in place, so the
+    #     override's context length cannot leak into the session compressor.
+    #   * ``reasoning_config`` / ``_use_prompt_caching`` /
+    #     ``_use_native_cache_layout`` are plain values — snapshot/restore as-is.
+    #   * ``_config_context_length`` and ``_custom_providers`` are written by the
+    #     shared projection (``_resolve_switch_context_length`` / the custom-provider
+    #     refresh); restoring them keeps the override a no-leak transaction.
     _DERIVED_ATTRS = (
         "request_overrides",
         "runtime_capabilities",
+        "context_compressor",
+        "reasoning_config",
+        "_use_prompt_caching",
+        "_use_native_cache_layout",
+        "_config_context_length",
+        "_custom_providers",
     )
 
     def __init__(self, agent: Any, overrides: Dict[str, str]) -> None:

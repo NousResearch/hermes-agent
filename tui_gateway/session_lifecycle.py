@@ -450,7 +450,25 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
+        session.setdefault("internal_continuations", deque()).clear()
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    # A waiting task owns no active model turn, but Stop must still fence its
+    # queued/recovered closeout. Late completion events cannot bind a closed group.
+    from tools.async_delegation import close_work_groups_for_session, interrupt_for_session
+
+    with _session_profile_scope(session):
+        close_work_groups_for_session(
+            origin_session=str(session.get("session_key") or ""),
+            origin_ui_session_id=sid,
+            parent_session_id=str(getattr(session.get("agent"), "session_id", "") or ""),
+            disposition="cancelled",
+            diagnostics="TUI/Desktop turn interrupted",
+        )
+        interrupt_for_session(
+            session_key=str(session.get("session_key") or ""),
+            origin_ui_session_id=sid,
+            reason="session_interrupt",
+        )
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt

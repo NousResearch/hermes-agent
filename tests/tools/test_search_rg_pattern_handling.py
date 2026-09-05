@@ -231,3 +231,43 @@ def test_pcre2_retry_preserves_glob_context_and_path(corpus):
     assert result.error is None
     assert result.total_count == 1
     assert all(match.path.endswith("b.py") for match in result.matches)
+
+
+@pytest.mark.parametrize("output_mode", ["content", "files_only", "count"])
+def test_public_search_pcre2_uses_resolved_executable(corpus, monkeypatch, output_mode):
+    ops = _ops(corpus)
+    calls = []
+    original = ops._exec
+
+    def capture(command, *args, **kwargs):
+        calls.append(command)
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ops, "_exec", capture)
+    for _ in range(2):
+        result = ops.search(r"alpha (?=foo)", str(corpus), output_mode=output_mode)
+        assert result.error is None
+        assert result.total_count == 2
+    executable = ops._rg_resolution_cache["rg"]
+    quoted = ops._quote_executable(executable)
+    assert calls.count(f"{quoted} --pcre2-version") == 1
+    assert sum(command.startswith(f"set -o pipefail; {quoted} --pcre2 ")
+               for command in calls) == 2
+
+
+def test_pcre2_capability_cache_is_per_executable(corpus, monkeypatch):
+    ops = _ops(corpus)
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(command)
+        return ExecuteResult(stdout="", exit_code=0 if "enabled rg" in command else 2)
+
+    monkeypatch.setattr(ops, "_exec", probe)
+    for _ in range(2):
+        assert ops._rg_supports_pcre2("/backend/enabled rg")
+        assert not ops._rg_supports_pcre2("/backend/disabled rg")
+    assert calls == [
+        f"{ops._quote_executable('/backend/enabled rg')} --pcre2-version",
+        f"{ops._quote_executable('/backend/disabled rg')} --pcre2-version",
+    ]

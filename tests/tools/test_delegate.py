@@ -147,6 +147,28 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
 
+    def test_batch_scaffold_prefix_is_byte_stable(self):
+        """#103481: goal/context are per-child variance and must TRAIL the shared scaffold so a
+        delegate_task batch (max_concurrent_children > 1) shares one byte-identical system-prompt
+        prefix — providers with automatic prefix caching bill the scaffold once, not N times."""
+        p1 = _build_child_system_prompt("task alpha", "context one")
+        p2 = _build_child_system_prompt("task beta", "context two")
+        i1, i2 = p1.index("YOUR TASK:"), p2.index("YOUR TASK:")
+        self.assertEqual(i1, i2)
+        self.assertEqual(p1[:i1], p2[:i2])  # byte-identical scaffold before the first variant byte
+        self.assertIn("YOUR TASK:\ntask alpha", p1)
+        self.assertIn("CONTEXT:\ncontext one", p1)
+        self.assertIn("YOUR TASK:\ntask beta", p2)
+        self.assertIn("CONTEXT:\ncontext two", p2)
+        # Task text sits after the standing instructions (recency) but before the turn ends.
+        self.assertGreater(p1.index("YOUR TASK"), p1.index("Keep your final summary tight"))
+        self.assertLess(p1.index("YOUR TASK"), len(p1))
+
+    def test_context_absent_without_context_arg(self):
+        prompt = _build_child_system_prompt("Just the goal", None)
+        self.assertNotIn("CONTEXT", prompt)
+        self.assertTrue(prompt.rstrip().endswith("Just the goal"))
+
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])

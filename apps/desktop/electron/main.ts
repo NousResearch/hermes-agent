@@ -5310,7 +5310,13 @@ function fetchJson(url, token, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+                // Attach the status as a property, not only in the message.
+                // isGatewayAuthRejection() classifies solely from
+                // err.statusCode, so a bare message prefix leaves a 401/403
+                // looking like a transport failure.
+                const err = new Error(`${res.statusCode}: ${text || res.statusMessage}`) as any
+                err.statusCode = res.statusCode || 500
+                reject(err)
 
                 return
               }
@@ -5476,7 +5482,13 @@ function fetchPublicJson(url, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+                // Attach the status as a property, not only in the message.
+                // isGatewayAuthRejection() classifies solely from
+                // err.statusCode, so a bare message prefix leaves a 401/403
+                // looking like a transport failure.
+                const err = new Error(`${res.statusCode}: ${text || res.statusMessage}`) as any
+                err.statusCode = res.statusCode || 500
+                reject(err)
 
                 return
               }

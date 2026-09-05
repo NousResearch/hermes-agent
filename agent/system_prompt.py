@@ -4,8 +4,9 @@ Built once per session and reused across turns (only context compression
 triggers a rebuild) so the upstream prefix cache stays warm.  Three tiers are
 joined with ``\\n\\n``: ``stable`` (identity, guidance, env hints, coding brief,
 platform hints), ``context`` (workspace snapshot, caller ``system_message``,
-context files) and ``volatile`` (skills index, memory, USER.md, external memory
-provider, timestamp line).  See ``references/system-prompt-invariant.md``.
+context files) and ``volatile`` (skills index, plugin sections, timestamp line, memory) — the memory
+provider blocks are pinned at the volatile end so a memory rewrite between compactions
+only invalidates the tail.  See ``references/system-prompt-invariant.md``.
 """
 
 from __future__ import annotations
@@ -627,11 +628,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (most likely to differ on a rebuild; kept last so the stable prefix stays reusable) ──
     # Skills are runtime-mutable, so the index leads the volatile band: on a longest-prefix
     # backend an unchanged index stays inside the reused prefix; a changed one re-prefills from here.
-    volatile_parts: List[str] = [skills_prompt, *_memory_parts(agent)]
+    volatile_parts: List[str] = [skills_prompt]
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
     volatile_parts.append(_timestamp_line(agent))
+    # Built-in memory (MEMORY.md / USER.md) plus the external-memory provider block are
+    # the only volatile sections a background memory review can rewrite between compactions;
+    # they stay frozen (load-time snapshot) until a compaction rebuild reloads them (#98426).
+    # Pin them at the VERY END of the volatile band so such a rebuild only re-emits the memory
+    # tail: stable + context + skills + plugin sections + timestamp stay byte-identical and keep
+    # hitting the longest-prefix cache. Plugin sections above keep their historical position.
+    volatile_parts.extend(_memory_parts(agent))
     return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
 
 

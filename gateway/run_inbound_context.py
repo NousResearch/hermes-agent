@@ -280,6 +280,11 @@ class GatewayInboundContextMixin:
             redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
             if not _should_redact_pii(Platform.MATRIX, redact_pii):
                 message_text = f"{matrix_source_note(source.source_permalink)}\n\n{message_text}"
+
+        if getattr(event, "metadata", None) and event.metadata.get("edited_message"):
+            # Platform edit forwarded as a new turn (e.g. Matrix ``process_edits``): flag it so the
+            # agent treats this as a correction/follow-up rather than an unrelated fresh prompt.
+            message_text = f"[Edited message — this corrects/replaces your previous prompt]\n\n{message_text}"
         return message_text
 
 

@@ -8,7 +8,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
-  MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
+  MATRIX_PROCESS_NOTICES, MATRIX_PROCESS_EDITS, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_REPLY_TO_MODE off|first|all (default first);
   MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
@@ -898,6 +898,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFeedbackMixin, MatrixReactionProm
         raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
+        self._process_edits: bool = self._parse_process_edits(config)
 
         feedback = MatrixFeedbackPolicy.from_config(config)
         self._reactions_enabled: bool = feedback.reactions
@@ -1629,6 +1630,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFeedbackMixin, MatrixReactionProm
                 "ignored_user_pattern_count": len(self._ignored_user_patterns),
                 "require_mention": self._require_mention, "free_response_room_count": len(self._free_rooms),
                 "allow_room_mentions": self._allow_room_mentions, "process_notices": self._process_notices,
+                "process_edits": self._process_edits,
                 "allow_public_rooms": _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS")},
             "media": {"max_media_bytes": self._max_media_bytes}}
 

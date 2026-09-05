@@ -32,7 +32,11 @@ def resolve_remote_cua_config(
     permission_mode: str,
     environ: Optional[Mapping[str, str]] = None,
 ) -> Optional[RemoteCuaConfig]:
-    """Resolve and validate remote CUA configuration, or return local mode."""
+    """Resolve and validate remote CUA configuration, or return local mode.
+
+    A bare-host URL (empty or "/" path) is normalized to "/mcp" — the bridge serves
+    a single /mcp route, so a host-only URL would 404.
+    """
     raw = computer_use_config.get("remote")
     if raw is None:
         return None
@@ -57,6 +61,8 @@ def resolve_remote_cua_config(
         raise RuntimeError(f"{_REMOTE_TOKEN_ENV} must contain only ASCII characters") from exc
     if len(token_bytes) < 32:
         raise RuntimeError(f"{_REMOTE_TOKEN_ENV} must contain at least 32 bytes")
+    if any(byte < 0x20 or byte == 0x7f for byte in token_bytes):
+        raise RuntimeError(f"{_REMOTE_TOKEN_ENV} must not contain control characters")
 
     url = raw.get("url", "")
     if not isinstance(url, str) or not url:
@@ -77,6 +83,12 @@ def resolve_remote_cua_config(
         raise RuntimeError("remote computer use URL must not contain a query string")
     if parsed.fragment:
         raise RuntimeError("remote computer use URL must not contain a fragment")
+    if parsed.path in ("", "/"):
+        # The bridge serves a single /mcp route; a bare host URL would 404.
+        normalized_path = "/mcp"
+    else:
+        normalized_path = parsed.path
+    url = urlsplit(url)._replace(path=normalized_path).geturl()
     if parsed.scheme != "https" and not _is_loopback_host(parsed.hostname):
         raise RuntimeError("remote computer use requires HTTPS for non-loopback hosts")
 

@@ -397,6 +397,60 @@ hermes webhook subscribe antenna-matches \
 
 ---
 
+## GitHub issue-worker gate {#github-issue-worker-gate}
+
+GitHub issue automation should not wake an LLM just to discover that nothing relevant changed. Add
+`github_issue_gate` to a route to apply a local, payload-only decision before prompt rendering and
+before any agent run. The route still uses the normal GitHub `X-Hub-Signature-256` HMAC validation,
+rate limiting, and delivery-id dedupe.
+
+```yaml
+platforms:
+  webhook:
+    enabled: true
+    extra:
+      routes:
+        github-issue-worker:
+          # Store the real value in config/secrets management; do not hardcode it in code.
+          secret: "${GITHUB_WEBHOOK_SECRET}"
+          events: [issues, issue_comment, pull_request, push]
+          github_issue_gate:
+            repositories:
+              - ozwicked/grow-journal-pro
+              - ozwicked/trading_bot
+            labels_all: [bot-ready]
+            labels_any: [growpro, trading-bot]
+            self_users: [ozwicked, github-actions[bot]]
+            self_markers: ["<!-- hermes:automation -->"]
+            include_pull_requests: true
+            include_pushes: false
+          prompt: |
+            GitHub event matched the local issue-worker gate.
+            Repo: {repository.full_name}
+            Event: {event_type} / {action}
+            Issue: #{issue.number} {issue.title}
+            LLM reason: {__hermes_github_gate.llm_reason}
+
+            Process this issue using the existing bot-ready issue-worker flow.
+          toolsets: ["terminal", "file", "code_execution", "web"]
+```
+
+The gate wakes the agent only when all configured conditions match. It discards unsupported events,
+irrelevant actions, events from configured self users, payloads containing configured self markers,
+repository mismatches, and label mismatches. Discarded events return `200 OK` with `status=ignored`
+and never call the model.
+
+Every gate decision is logged with the event type, repository, issue/PR number, action, whether it
+was discarded, whether an LLM run will be triggered, and the reason. GitHub delivery metadata is
+also copied into `__hermes_webhook` so optional route scripts can do persistent dedupe or additional
+local filtering before any LLM call.
+
+Use this gate to replace cron jobs whose only purpose is polling GitHub issues. Keep a periodic
+fallback only if you need outage recovery; make it script-only (`no_agent=true`) or use a monitor so
+unchanged GitHub state skips the agent.
+
+---
+
 ## Dynamic Subscriptions (CLI) {#dynamic-subscriptions}
 
 In addition to static routes in `config.yaml`, you can create webhook subscriptions dynamically using the `hermes webhook` CLI command. This is especially useful when the agent itself needs to set up event-driven triggers.

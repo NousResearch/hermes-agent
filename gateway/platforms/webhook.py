@@ -31,6 +31,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.github_issue_gate import evaluate_github_issue_gate
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
 
@@ -446,6 +447,62 @@ class WebhookAdapter(BasePlatformAdapter):
             except Exception:
                 return _UNPARSEABLE
 
+    @staticmethod
+    def _delivery_id_from_headers(headers: Any) -> str:
+        return headers.get("X-GitHub-Delivery", headers.get(
+            "svix-id", headers.get("X-Request-ID", str(int(time.time() * 1000)))))
+
+    @staticmethod
+    def _attach_webhook_metadata(payload: Any, *, route_name: str, event_type: str, delivery_id: str) -> Any:
+        """Expose cheap routing metadata to route scripts/templates without trusting model prompts.
+
+        Scripts run before any agent dispatch and are the intended place for local filters, dedupe
+        stores, and self-trigger guards.  GitHub's delivery id lives in a header, not the JSON body;
+        copying it into a reserved metadata object lets scripts make idempotent decisions without
+        widening their interface or receiving raw request headers.
+        """
+        if not isinstance(payload, dict):
+            return payload
+        annotated = dict(payload)
+        annotated.setdefault("__hermes_webhook", {})
+        if isinstance(annotated["__hermes_webhook"], dict):
+            annotated["__hermes_webhook"] = {
+                **annotated["__hermes_webhook"],
+                "route": route_name,
+                "event_type": event_type,
+                "delivery_id": delivery_id,
+            }
+        return annotated
+
+    def _apply_github_issue_gate(self, route_config: dict, payload: Any, event_type: str) -> Optional["web.Response"]:
+        gate_config = route_config.get("github_issue_gate")
+        if not gate_config:
+            return None
+        if not isinstance(payload, dict):
+            logger.info("[webhook] github_issue_gate discarded event=%s repo= number= action= reason=payload_not_object llm_call=false",
+                        event_type)
+            return web.json_response({"status": "ignored", "reason": "payload_not_object"})
+        decision = evaluate_github_issue_gate(gate_config, payload, event_type)
+        logger.info(
+            "[webhook] github_issue_gate event=%s repo=%s number=%s action=%s discarded=%s llm_call=%s reason=%s llm_reason=%s",
+            decision.event_type,
+            decision.repo,
+            decision.number or "",
+            decision.action,
+            not decision.keep,
+            decision.keep,
+            decision.reason,
+            decision.llm_reason,
+        )
+        if decision.keep:
+            gate_meta = payload.setdefault("__hermes_github_gate", {})
+            if not isinstance(gate_meta, dict):
+                gate_meta = {}
+                payload["__hermes_github_gate"] = gate_meta
+            gate_meta["llm_reason"] = decision.llm_reason
+            return None
+        return web.json_response({"status": "ignored", "reason": decision.reason})
+
     async def _handle_deliver_only(self, prompt: str, payload: Any, route_config: dict, route_name: str,
                                    event_type: str, delivery_id: str) -> "web.Response":
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
@@ -523,13 +580,23 @@ class WebhookAdapter(BasePlatformAdapter):
         headers = request.headers
         event_type = (headers.get("X-GitHub-Event", "") or headers.get("X-GitLab-Event", "")
                       or payload.get("event_type", "") or payload.get("type", "") or "unknown")
+        delivery_id = self._delivery_id_from_headers(headers)
+        payload = self._attach_webhook_metadata(
+            payload,
+            route_name=route_name,
+            event_type=event_type,
+            delivery_id=delivery_id,
+        )
         allowed_events = route_config.get("events", [])
         if allowed_events and event_type not in allowed_events:
-            logger.debug("[webhook] Ignoring event %s for route %s (allowed: %s)", event_type, route_name,
-                         allowed_events)
+            logger.info("[webhook] ignored event=%s route=%s discarded=true llm_call=false reason=event_not_allowed",
+                        event_type, route_name)
             return web.json_response({"status": "ignored", "event": event_type})
+        if response := self._apply_github_issue_gate(route_config, payload, event_type):
+            return response
         if not self._route_processor.route_filters_match(route_config, payload, event_type, request.headers):
-            logger.info("[webhook] filtered event=%s route=%s", event_type, route_name)
+            logger.info("[webhook] filtered event=%s route=%s discarded=true llm_call=false reason=filter",
+                        event_type, route_name)
             return web.json_response({"status": "ignored", "reason": "filter", "route": route_name})
         # Script, prompt render and skill lookup read the profile's home (skills/, config); the runner
         # only enters the routed profile's scope later around handle_message, so enter it here.
@@ -542,17 +609,17 @@ class WebhookAdapter(BasePlatformAdapter):
                 keep, transformed_payload = await asyncio.to_thread(
                     self._route_processor.run_route_script, script, payload)
                 if not keep:
-                    logger.info("[webhook] script ignored event=%s route=%s", event_type, route_name)
+                    logger.info("[webhook] script ignored event=%s route=%s discarded=true llm_call=false reason=script",
+                                event_type, route_name)
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
             if skills := route_config.get("skills", []):
                 prompt = self._apply_skills(prompt, skills)
-        delivery_id = headers.get("X-GitHub-Delivery", headers.get(
-            "svix-id", headers.get("X-Request-ID", str(int(time.time() * 1000)))))
         now = time.time()  # idempotency: skip duplicate deliveries (webhook retries)
         if not self._record_delivery_id(delivery_id, now):
-            logger.info("[webhook] Skipping duplicate delivery %s", delivery_id)
+            logger.info("[webhook] Skipping duplicate delivery %s discarded=true llm_call=false reason=duplicate",
+                        delivery_id)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id)

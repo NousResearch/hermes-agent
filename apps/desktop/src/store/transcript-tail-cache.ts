@@ -158,6 +158,39 @@ function touchIndex(store: Storage, suffix: string): void {
   writeIndex(store, ids)
 }
 
+/** Serialize the largest complete suffix that fits the per-entry cap.
+ *  TAIL_MESSAGES is small, so a binary search needs at most six bounded
+ *  serializations while avoiding arbitrary fallback sizes that can discard a
+ *  perfectly cacheable recent turn. */
+function serializeLargestTail(messages: ChatMessage[], savedAt: number): string | null {
+  const bounded = messages.slice(-TAIL_MESSAGES)
+  let low = 1
+  let high = bounded.length
+  let best: string | null = null
+
+  while (low <= high) {
+    const count = Math.floor((low + high) / 2)
+    let serialized: string
+
+    try {
+      serialized = JSON.stringify({ messages: bounded.slice(-count), savedAt } satisfies CacheEntry)
+    } catch {
+      high = count - 1
+
+      continue
+    }
+
+    if (serialized.length <= MAX_ENTRY_BYTES) {
+      best = serialized
+      low = count + 1
+    } else {
+      high = count - 1
+    }
+  }
+
+  return best
+}
+
 /** Persist the tail of a session's transcript. No-op on empty/oversized.
  *  Pass the session's owning scope ({connectionId, profile}, or just the
  *  profile name) so the entry can only ever be read against that backend. */
@@ -173,30 +206,10 @@ export function saveTranscriptTail(
     return
   }
 
-  const entry: CacheEntry = { messages: messages.slice(-TAIL_MESSAGES), savedAt: Date.now() }
+  const serialized = serializeLargestTail(messages, Date.now())
 
-  let serialized: string
-
-  try {
-    serialized = JSON.stringify(entry)
-  } catch {
-    return // non-serializable parts (live handles) — skip, never throw
-  }
-
-  if (serialized.length > MAX_ENTRY_BYTES) {
-    // Retry with a shorter tail before giving up; a session dominated by a
-    // few huge tool results still caches its recent turns.
-    const shorter: CacheEntry = { messages: messages.slice(-8), savedAt: entry.savedAt }
-
-    try {
-      serialized = JSON.stringify(shorter)
-    } catch {
-      return
-    }
-
-    if (serialized.length > MAX_ENTRY_BYTES) {
-      return
-    }
+  if (!serialized) {
+    return
   }
 
   const suffix = entrySuffix(id, scope)

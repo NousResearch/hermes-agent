@@ -1,17 +1,21 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type MouseEvent, type ReactNode, useEffect, useMemo, useState } from 'react'
 
+import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { compactNumber } from '@/lib/format'
-import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { AlertCircle, CheckCircle2, Square } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { notifyError } from '@/store/notifications'
 import {
   $subagentsBySession,
   allSubagents,
@@ -320,6 +324,52 @@ function StreamLine({
   )
 }
 
+/**
+ * Stop a single running subagent on demand.
+ *
+ * Wires the panel to `subagent.interrupt`, the same gateway RPC the TUI's
+ * kill command already uses (tools/delegate_tool.py::interrupt_subagent) —
+ * no new backend surface, just a way to reach it from the desktop.
+ */
+function KillSubagentButton({ subagentId }: { subagentId: string }) {
+  const { t } = useI18n()
+  const { requestGateway } = useGatewayRequest()
+  const [killing, setKilling] = useState(false)
+
+  const handleKill = async (event: MouseEvent) => {
+    event.stopPropagation()
+
+    if (killing) {
+      return
+    }
+
+    setKilling(true)
+
+    try {
+      await requestGateway('subagent.interrupt', { subagent_id: subagentId })
+    } catch (error) {
+      notifyError(error, t.agents.killFailed)
+      setKilling(false)
+    }
+  }
+
+  return (
+    <Tip label={killing ? t.agents.killing : t.agents.kill}>
+      <Button
+        aria-label={killing ? t.agents.killing : t.agents.kill}
+        className="mt-0.5 shrink-0 text-muted-foreground/70 hover:text-destructive"
+        disabled={killing}
+        onClick={handleKill}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        <Square className="fill-current" size={10} />
+      </Button>
+    </Tip>
+  )
+}
+
 function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
   const { t } = useI18n()
   const running = node.status === 'running' || node.status === 'queued'
@@ -350,30 +400,33 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
 
   return (
     <div className={cn('grid min-w-0 max-w-full gap-2', depth > 0 && 'pl-4')} data-slot="tool-block" ref={enterRef}>
-      <button
-        aria-expanded={open}
-        className="group flex w-full min-w-0 items-start gap-2.5 text-left"
-        onClick={() => setOpen(v => !v)}
-        type="button"
-      >
-        <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status, t.agents)}</span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span
-            className={cn(
-              'wrap-anywhere text-[0.82rem] font-medium leading-[1.1rem] text-foreground/90 transition-colors group-hover:text-foreground',
-              running && 'shimmer text-foreground/65'
-            )}
-          >
-            {node.goal}
+      <div className="group flex w-full min-w-0 items-start gap-2.5">
+        <button
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-start gap-2.5 text-left"
+          onClick={() => setOpen(v => !v)}
+          type="button"
+        >
+          <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status, t.agents)}</span>
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span
+              className={cn(
+                'wrap-anywhere text-[0.82rem] font-medium leading-[1.1rem] text-foreground/90 transition-colors group-hover:text-foreground',
+                running && 'shimmer text-foreground/65'
+              )}
+            >
+              {node.goal}
+            </span>
+            {subtitle.length > 0 ? (
+              <FadeText className="text-[0.66rem] leading-[1.05rem] text-muted-foreground/65">
+                {subtitle.join(' · ')}
+              </FadeText>
+            ) : null}
           </span>
-          {subtitle.length > 0 ? (
-            <FadeText className="text-[0.66rem] leading-[1.05rem] text-muted-foreground/65">
-              {subtitle.join(' · ')}
-            </FadeText>
-          ) : null}
-        </span>
+        </button>
         {running ? <ActivityTimerText className="mt-1 shrink-0 text-[0.6rem]" seconds={durationSeconds} /> : null}
-      </button>
+        {running ? <KillSubagentButton subagentId={node.id} /> : null}
+      </div>
 
       {visibleRows.length > 0 ? (
         <div className="grid min-w-0 gap-1 pl-6" data-selectable-text="true">

@@ -1748,7 +1748,10 @@ export const zh: Translations = {
     ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokens: value => `${value} 词元`
+    tokens: value => `${value} 词元`,
+    kill: '终止子代理',
+    killing: '正在终止…',
+    killFailed: '终止子代理失败'
   },
 
   commandCenter: {

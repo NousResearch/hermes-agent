@@ -132,9 +132,10 @@ def test_trigger_phrase_inside_pattern_does_not_enable_pcre2(corpus, monkeypatch
     assert "--pcre2" not in commands[0]
 
 
-def test_recommendation_reflow_still_enables_pcre2():
+@pytest.mark.parametrize("header", ["rg: regex parse error:", "regex parse error:"])
+def test_recommendation_reflow_still_enables_pcre2(header):
     diagnostic = (
-        "rg: regex parse error:\n"
+        f"{header}\n"
         "error: backreferences are not supported\n"
         "consider enabling PCRE2 with the --pcre2 flag, which can handle\n"
         "backreferences and look-around."
@@ -173,32 +174,67 @@ def test_trigger_phrase_in_multiline_missing_path_does_not_enable_pcre2(
     missing = corpus / f"prefix\n{trigger}\nsuffix"
     result = _rg(ops, "alpha", missing)
 
-    assert result.error is not None
+    # Multiline I/O diagnostics can be classified as payload by the existing
+    # output parser (depending on rg version and numeric path segments). This
+    # regression guards retry routing, not that unrelated error-reporting bug.
     assert len(commands) == 1
     assert "--pcre2" not in commands[0]
+    assert result.matches == []
+    assert result.total_count == 0
 
 
-def test_pcre2_retry_preserves_offset_and_limit(corpus):
+@pytest.mark.parametrize("trigger", [
+    "error: backreferences are not supported",
+    "error: look-around, including look-ahead and look-behind, is not supported",
+])
+@pytest.mark.parametrize("prefix", ["", "rg: "])
+def test_multiline_io_diagnostic_without_payload_does_not_retry(
+    corpus, monkeypatch, trigger, prefix
+):
     ops = _ops(corpus)
-    full = _rg(
-        ops,
-        r"alpha (?=foo)",
-        corpus,
-        limit=2,
-    )
-    result = _rg(
-        ops,
-        r"alpha (?=foo)",
-        corpus,
-        limit=1,
-        offset=1,
-    )
+    calls = []
+    diagnostic = f"{prefix}/missing path/prefix\n{trigger}\nsuffix: No such file or directory (os error 2)\n"
 
-    assert full.error is None
+    def io_error(command, **kwargs):
+        calls.append(command)
+        return ExecuteResult(stdout=diagnostic, exit_code=2)
+
+    monkeypatch.setattr(ops, "_exec", io_error)
+    result = _rg(ops, "alpha", corpus)
+
+    # No payload: exercise the diagnostic guard rather than short-circuiting
+    # on a path fragment that the output parser mistakes for a match.
+    assert result.error is not None
+    assert len(calls) == 1
+    assert "--pcre2" not in calls[0]
+
+
+def test_pcre2_retry_preserves_offset_and_limit(corpus, monkeypatch):
+    # A single file has stable line ordering; parallel directory traversal does
+    # not promise the same order across two independent rg invocations.
+    path = corpus / "pagination.txt"
+    path.write_text("alpha foo first\nalpha bar excluded\nalpha foo second\nalpha foo third\n")
+    ops = _ops(corpus)
+    calls = []
+    original = ops._exec
+
+    def capture(command, *args, **kwargs):
+        calls.append(command)
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(ops, "_exec", capture)
+    result = _rg(ops, r"alpha (?=foo)", path, limit=1, offset=1)
+
     assert result.error is None
     assert result.total_count == 2
     assert len(result.matches) == 1
-    assert result.matches[0] == full.matches[1]
+    assert result.matches[0].path == str(path)
+    assert result.matches[0].line_number == 3
+    assert result.matches[0].content == "alpha foo second"
+    search_calls = [command for command in calls if command != "rg --pcre2-version"]
+    assert len(search_calls) == 2
+    assert search_calls[1] == search_calls[0].replace("rg ", "rg --pcre2 ", 1)
+    assert "head -n 2" in search_calls[0]
 
 
 def test_pcre2_retry_reuses_original_shell_template_and_timeout(corpus, monkeypatch):

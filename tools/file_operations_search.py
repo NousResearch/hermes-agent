@@ -149,7 +149,7 @@ def _rg_diagnostic_requires_pcre2(diagnostics: str) -> bool:
     }
     lines = [line.rstrip().lower() for line in diagnostics.splitlines()]
     nonempty = [line for line in lines if line]
-    if not nonempty or nonempty[0] != "rg: regex parse error:":
+    if not nonempty or nonempty[0] not in {"rg: regex parse error:", "regex parse error:"}:
         return False
     # Anchor the trigger inside rg's complete parser diagnostic. User-controlled
     # patterns are indented, while path/I/O diagnostics do not include rg's

@@ -12,6 +12,7 @@ from pathlib import Path
 from agent import secret_scope as ss
 
 
+
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
     ss.set_multiplex_active(False)

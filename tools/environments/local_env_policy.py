@@ -6,6 +6,20 @@ import os
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+_CONTAINER_ENV_FORWARD_PREFIXES = ("APPTAINERENV_", "SINGULARITYENV_")
+
+
+def _credential_target_env_name(key: str) -> str:
+    """Return the effective credential name after nested forwarding wrappers."""
+    value = str(key)
+    while True:
+        upper = value.upper()
+        for prefix in _CONTAINER_ENV_FORWARD_PREFIXES:
+            if upper.startswith(prefix):
+                value = value[len(prefix):]
+                break
+        else:
+            return value
 
 # Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"`` (Bedrock):
 # only the Bedrock bearer token, which no aws/terraform/boto3 toolchain uses. The
@@ -80,6 +94,35 @@ def _build_provider_env_blocklist() -> frozenset:
 
 
 _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+
+
+def _build_model_provider_env_names() -> frozenset[str]:
+    """Return exact model-provider credential and endpoint env names."""
+    names = {
+        "CLAUDE_CODE_OAUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+        "AWS_DEFAULT_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+        "AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_ROLE_ARN",
+        "AWS_ROLE_SESSION_NAME", "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_EC2_METADATA_DISABLED",
+    }
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+
+        for provider in PROVIDER_REGISTRY.values():
+            names.update(str(item).upper() for item in provider.api_key_env_vars)
+            if provider.base_url_env_var:
+                names.add(str(provider.base_url_env_var).upper())
+    except ImportError:
+        pass
+    return frozenset(name for name in names if name)
+
+
+def _is_blocked_provider_env(key: str) -> bool:
+    """Match current provider policy case-insensitively through wrappers."""
+    current = frozenset(name.upper() for name in _build_provider_env_blocklist())
+    return _credential_target_env_name(key).upper() in current
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,
@@ -175,10 +218,33 @@ def _is_hermes_internal_secret(key: str) -> bool:
     side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
     auth; non-secret routing hints stay visible). Stripped on every spawn path
     regardless of env_passthrough registration or ``inherit_credentials``."""
-    upper = key.upper()
+    upper = _credential_target_env_name(key).upper()
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
-    return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
+    if upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN")):
+        return True
+    if upper in {"OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_TOKEN"}:
+        return True
+    if upper.startswith("OP_SESSION_"):
+        return True
+    if "BWS" in upper and upper.endswith("_TOKEN"):
+        return True
+    return upper in {"BWS_ACCESS_TOKEN", _get_configured_bws_token_env().upper()}
+
+
+def _get_configured_bws_token_env() -> str:
+    """Resolve the exact configured Bitwarden bootstrap token name."""
+    try:
+        from hermes_cli.config import cfg_get, read_raw_config
+
+        configured = cfg_get(
+            read_raw_config(), "secrets", "bitwarden", "access_token_env"
+        )
+    except Exception as exc:
+        raise RuntimeError("Bitwarden token policy unavailable") from exc
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return "BWS_ACCESS_TOKEN"
 
 
 def _plugin_terminal_env_strip_keys() -> frozenset:
@@ -189,8 +255,8 @@ def _plugin_terminal_env_strip_keys() -> frozenset:
         from agent.terminal_env_registry import plugin_strip_env_keys
 
         return plugin_strip_env_keys()
-    except Exception:
-        return frozenset()
+    except Exception as exc:
+        raise RuntimeError("plugin terminal environment policy unavailable") from exc
 
 
 # Tier-1 secrets: stripped from EVERY spawned subprocess even under inherit_credentials

@@ -2556,18 +2556,21 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     profile-home override), but the in-process mirror historically went straight to ``os.environ``. See
     #77490, #88441.
     """
+    scope_module: Any = None
     try:
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
-
-        scope = current_secret_scope() if is_multiplex_active() else None
+        from agent import secret_scope as scope_module
     except Exception:
-        scope = None
-    target = scope if isinstance(scope, dict) else (None if scope is not None else os.environ)
-    if target is not None:
-        if value is None:
-            target.pop(key, None)
-        else:
-            target[key] = value
+        pass
+    if scope_module is not None and scope_module.is_multiplex_active():
+        # Multiplex mode must never publish a routed profile's credential to
+        # shared os.environ. The immutable scope owner replaces the current
+        # context value; a missing scope stays fail-closed.
+        scope_module.update_secret_scope(key, value)
+        return
+    if value is None:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = value
 
 
 def _env_write_blocked(key: str, action: str) -> bool:

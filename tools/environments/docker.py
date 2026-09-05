@@ -409,6 +409,15 @@ def _name_only_env_args(names) -> list[str]:
     return [arg for key in sorted(names) for arg in ("-e", key)]
 
 
+def _credential_file_mounts_for_boundary(profile_boundary) -> list[dict[str, str]]:
+    """Quarantine process-global credential mount config under multiplexing."""
+    if profile_boundary is not None:
+        return []
+    from tools.credential_files import get_credential_file_mounts
+
+    return get_credential_file_mounts()
+
+
 # Mount kinds declared by skills/credential_files: (getter, expects_file, log noun).
 _RO_MOUNT_SOURCES = (
     ("get_credential_file_mounts", True, "credential"),
@@ -416,7 +425,7 @@ _RO_MOUNT_SOURCES = (
     ("get_cache_directory_mounts", False, "cache dir"))
 
 
-def _readonly_skill_mount_args() -> list[str]:
+def _readonly_skill_mount_args(profile_boundary=None) -> list[str]:
     """``-v host:container:ro`` args for credential files, skill dirs and cache dirs. Read-only so the
     container can authenticate/read but never modify host state. Missing or wrong-kind sources are
     skipped with a warning (Docker-in-Docker auto-creates a missing file source as a directory,
@@ -425,7 +434,12 @@ def _readonly_skill_mount_args() -> list[str]:
     try:
         import tools.credential_files as cf
         for getter, expects_file, noun in _RO_MOUNT_SOURCES:
-            for entry in getattr(cf, getter)():
+            entries = (
+                _credential_file_mounts_for_boundary(profile_boundary)
+                if getter == "get_credential_file_mounts"
+                else getattr(cf, getter)()
+            )
+            for entry in entries:
                 src = Path(entry["host_path"])
                 if expects_file:
                     problem = ("source is a directory (likely Docker-in-Docker auto-creation)" if src.is_dir()
@@ -514,7 +528,7 @@ class DockerEnvironment(BaseEnvironment):
 
         resource_args = self._resource_args(image, cpu, memory, disk, network, shm_size, extra_args)
         volume_args, writable_args = self._mount_args(volumes, host_cwd, auto_mount_cwd, task_id)
-        volume_args.extend(_readonly_skill_mount_args())
+        volume_args.extend(_readonly_skill_mount_args(self._profile_env_boundary))
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
@@ -800,7 +814,9 @@ class DockerEnvironment(BaseEnvironment):
         except Exception:
             pass
         implicit_forward = {k for k in passthrough_keys if not _is_hermes_internal_secret(k)}
-        forward_keys = set(self._forward_env) | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        forward_keys = {
+            key for key in self._forward_env if not _is_hermes_internal_secret(key)
+        } | (implicit_forward - _HERMES_PROVIDER_ENV_BLOCKLIST)
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         unset_names: set[str] = set()
         for key in sorted(forward_keys):

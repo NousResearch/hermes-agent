@@ -1152,3 +1152,33 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+
+# --- container detection: a Docker/containerd HOST is not a container -----------------------------
+
+_HOST_ROOT_LINE = "30 1 0:28 /@ / rw,relatime shared:1 - btrfs /dev/mapper/root rw,compress=zstd:3\n"
+_HOST_OVERLAY_LINE = (
+    "754 30 0:81 / /var/lib/docker/rootfs/overlayfs/8128c6f rw,relatime shared:713 - overlay overlay "
+    "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/53/fs\n"
+)
+_CONTAINER_ROOT_LINE = (
+    "1264 1263 0:81 / / rw,relatime master:713 - overlay overlay "
+    "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/53/fs\n"
+)
+
+
+def test_root_mount_marker_ignores_other_mounts_on_a_container_host(tmp_path):
+    """A host running Docker lists every container's overlay in its own mountinfo; only the "/" entry counts."""
+    mi = tmp_path / "mountinfo"
+    mi.write_text(_HOST_ROOT_LINE + _HOST_OVERLAY_LINE, encoding="utf-8")
+    assert hermes_constants._root_mount_has_marker(str(mi), ("containerd", "docker")) is False
+
+
+def test_root_mount_marker_detects_container_rootfs(tmp_path):
+    mi = tmp_path / "mountinfo"
+    mi.write_text(_CONTAINER_ROOT_LINE, encoding="utf-8")
+    assert hermes_constants._root_mount_has_marker(str(mi), ("containerd", "docker")) is True
+
+
+def test_root_mount_marker_missing_file_is_not_a_container(tmp_path):
+    assert hermes_constants._root_mount_has_marker(str(tmp_path / "nope"), ("containerd",)) is False

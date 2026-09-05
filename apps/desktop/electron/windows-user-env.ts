@@ -1,18 +1,17 @@
 // windows-user-env.ts
 //
-// Read a User-scoped environment variable straight from the Windows registry
-// (HKCU\Environment).
+// Read environment variables straight from the live Windows registry.
 //
 // A GUI app launched from Explorer inherits the environment block captured at
 // login, so a variable set via `setx` AFTER login is invisible in process.env
 // even though a fresh shell — and the Hermes CLI — sees it immediately. The
-// desktop's HERMES_HOME resolution relies on process.env, so that stale-snapshot
-// gap silently sends the backend to the default %LOCALAPPDATA%\hermes. Reading
-// the live registry value closes the gap. See #45471.
+// Desktop process resolution relies on process.env, so that stale snapshot can
+// hide a custom HERMES_HOME or PATH entries written after launch. Expansion
+// still uses the inherited environment. See #45471.
 
 import { execFileSync } from 'node:child_process'
 
-// Parse the output of `reg query HKCU\Environment /v <name>`, which looks like:
+// Parse the output of `reg query <key> /v <name>`, which looks like:
 //
 //   HKEY_CURRENT_USER\Environment
 //       HERMES_HOME    REG_SZ    F:\Hermes\data
@@ -53,20 +52,16 @@ function expandWindowsEnvRefs(value, env = process.env) {
   })
 }
 
-// Read a User-scoped env var from HKCU\Environment. Windows-only: returns null
-// off-Windows (without spawning), on any spawn error, when `reg` exits non-zero
-// (the value doesn't exist), or when the value is empty.
-function readWindowsUserEnvVar(
+type WindowsEnvReadOptions = {
+  platform?: NodeJS.Platform
+  env?: NodeJS.ProcessEnv
+  exec?: typeof execFileSync | ((file?: string, args?: any) => string)
+}
+
+function readWindowsRegistryEnvVar(
+  keyPath: string,
   name,
-  {
-    platform = process.platform,
-    env = process.env,
-    exec = execFileSync
-  }: {
-    platform?: NodeJS.Platform
-    env?: NodeJS.ProcessEnv
-    exec?: typeof execFileSync | ((file?: string, args?: any) => string)
-  } = {}
+  { platform = process.platform, env = process.env, exec = execFileSync }: WindowsEnvReadOptions = {}
 ) {
   if (platform !== 'win32' || !name) {
     return null
@@ -75,13 +70,12 @@ function readWindowsUserEnvVar(
   let stdout
 
   try {
-    stdout = exec('reg', ['query', 'HKCU\\Environment', '/v', name], {
+    stdout = exec('reg', ['query', keyPath, '/v', name], {
       encoding: 'utf8',
       windowsHide: true,
       timeout: 5000
     })
   } catch {
-    // `reg` missing, or value absent (reg exits 1) — caller falls back.
     return null
   }
 
@@ -96,4 +90,37 @@ function readWindowsUserEnvVar(
   return expanded || null
 }
 
-export { expandWindowsEnvRefs, parseRegQueryValue, readWindowsUserEnvVar }
+// Read a User-scoped env var from HKCU\Environment. Windows-only: returns null
+// off-Windows (without spawning), on any spawn error, when `reg` exits non-zero
+// (the value doesn't exist), or when the value is empty.
+function readWindowsUserEnvVar(name, options: WindowsEnvReadOptions = {}) {
+  return readWindowsRegistryEnvVar('HKCU\\Environment', name, options)
+}
+
+const WINDOWS_MACHINE_ENV_KEY = 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'
+
+// Return the live effective Windows PATH rather than the environment snapshot
+// inherited by an Explorer-launched Electron process. Windows composes the
+// machine PATH before the user PATH; keeping that order preserves normal
+// command-resolution precedence while exposing newly added literal PATH
+// entries without relying on the stale process snapshot.
+function readWindowsHostPath({
+  platform = process.platform,
+  env = process.env,
+  exec = execFileSync
+}: WindowsEnvReadOptions = {}) {
+  if (platform !== 'win32') {
+    return null
+  }
+
+  const machinePath = readWindowsRegistryEnvVar(WINDOWS_MACHINE_ENV_KEY, 'Path', { platform, env, exec })
+  if (!machinePath) {
+    return null
+  }
+
+  const userPath = readWindowsRegistryEnvVar('HKCU\\Environment', 'Path', { platform, env, exec })
+
+  return userPath ? `${machinePath};${userPath}` : machinePath
+}
+
+export { expandWindowsEnvRefs, parseRegQueryValue, readWindowsHostPath, readWindowsUserEnvVar }

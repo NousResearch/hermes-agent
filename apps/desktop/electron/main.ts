@@ -452,7 +452,7 @@ import {
   writeSandboxMarker
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
-import { readWindowsUserEnvVar } from './windows-user-env'
+import { readWindowsHostPath, readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
@@ -811,6 +811,27 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+
+let windowsHostPath: string | undefined
+
+// Resolve once, only when a local backend needs an environment. Explorer-launched
+// apps can retain a login-time PATH after the registry changes.
+function getWindowsHostPath() {
+  if (windowsHostPath === undefined) {
+    windowsHostPath = IS_WINDOWS ? readWindowsHostPath() || '' : ''
+  }
+
+  return windowsHostPath
+}
+
+function buildDesktopBackendEnvironment(options) {
+  return buildDesktopBackendEnv({
+    ...options,
+    // Keep live host entries ahead of stale process extras, while
+    // buildDesktopBackendEnv still prepends Hermes-managed paths.
+    hostPath: getWindowsHostPath()
+  })
+}
 
 function pathWithHermesManagedNode(...entries) {
   const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
@@ -2443,7 +2464,7 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
     canImportHermesCli,
     getVenvPython,
     getVenvSitePackagesEntries,
-    buildDesktopBackendEnv,
+    buildDesktopBackendEnv: buildDesktopBackendEnvironment,
     hermesHome: HERMES_HOME,
     resolvePath: (...segments) => path.resolve(...segments),
     dirname: p => path.dirname(p),
@@ -4857,7 +4878,7 @@ function createPythonBackend(root, label, backendArgs, options: any = {}) {
     label,
     command,
     args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv({
+    env: buildDesktopBackendEnvironment({
       hermesHome: HERMES_HOME,
       pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
       venvRoot
@@ -4881,7 +4902,7 @@ function createActiveBackend(backendArgs) {
     label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
     command,
     args: ['-m', 'hermes_cli.main', ...backendArgs],
-    env: buildDesktopBackendEnv({
+    env: buildDesktopBackendEnvironment({
       hermesHome: HERMES_HOME,
       pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
       venvRoot: VENV_ROOT

@@ -313,6 +313,8 @@ EXA_API_KEY=your-exa-key-here
 
 Get a key at [exa.ai](https://exa.ai). The free tier includes 1 000 searches/month.
 
+`web_extract` always asks Exa for a fresh crawl of each page (`maxAgeHours: 0`). Exa's default would otherwise return its index snapshot of the page, which can be days old for frequently changing pages such as news front pages.
+
 ---
 
 ### Parallel

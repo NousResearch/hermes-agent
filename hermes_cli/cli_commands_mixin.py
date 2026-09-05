@@ -2223,26 +2223,11 @@ class CLICommandsMixin:
         else:
             self._goal_set(mgr, arg)
 
-    # `/goal <text>` kicks the loop by queueing the goal text as the next user turn. When that text
-    # is what the user JUST said (a pasted handoff note, a plan the agent already has), re-sending
-    # it makes the agent spend a turn deciding it is a replay (11 API calls, 6 min, in one run) and
-    # duplicates ~2k tokens of context. A short pointer starts the loop just as well.
-    _GOAL_ALREADY_SEEN_KICK = "[Goal set] Continue with the goal you were just given; there is no need to re-read it."
-
     def _goal_kick_prompt(self, goal: str) -> str:
-        """The goal text, or a short pointer when the last user message already carries it."""
-        last_user = ""
-        for msg in reversed(getattr(self, "conversation_history", None) or []):
-            if msg.get("role") == "user":
-                content = msg.get("content")
-                if isinstance(content, list):
-                    content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
-                last_user = str(content or "")
-                break
-        goal_norm = " ".join(goal.split())
-        if goal_norm and goal_norm in " ".join(last_user.split()):
-            return self._GOAL_ALREADY_SEEN_KICK
-        return goal
+        """The goal text, or a short pointer when the last user message is essentially that text
+        (shared rule: ``hermes_cli.goals.goal_kick_prompt``)."""
+        from hermes_cli.goals import goal_kick_prompt, last_user_message_content
+        return goal_kick_prompt(goal, last_user_message_content(getattr(self, "conversation_history", None)))
 
     def _kick_goal(self, prompt: str) -> bool:
         """Queue ``prompt`` as the next turn so the loop starts without a separate message."""

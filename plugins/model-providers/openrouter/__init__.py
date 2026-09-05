@@ -42,6 +42,19 @@ def _sticky_key(session_id: str | None) -> str | None:
     return _cache_scope_from_session_id(get_affinity_scope() or get_conversation_context() or session_id)
 
 
+# OpenAI speed tiers. Nous Portal serves them as distinct slugs (``-fast``/``-flex``); OpenRouter
+# serves them as ENDPOINTS of the base model (tags ``openai/fast``, ``openai/flex``) and silently
+# routes an unknown suffix to the standard tier at standard price. So the picker carries the Nous
+# slugs for both providers, and here the wire model becomes the base slug with ``provider.only``
+# pinned to that tier's endpoints; the base slug is pinned to the standard endpoints so default
+# routing never lands on flex/fast.
+_SPEED_TIER_ENDPOINTS = {"": ("openai", "azure", "azure/us"), "-fast": ("openai/fast",), "-flex": ("openai/flex",)}
+_SPEED_TIERED_BASES = ("openai/gpt-6-astra", "openai/gpt-6-astra-pro")
+OPENROUTER_ENDPOINT_PINS: dict[str, tuple[str, tuple[str, ...]]] = {
+    base + suffix: (base, tags) for base in _SPEED_TIERED_BASES for suffix, tags in _SPEED_TIER_ENDPOINTS.items()
+}
+
+
 class OpenRouterProfile(ProviderProfile):
     """OpenRouter aggregator — provider preferences, reasoning config passthrough."""
 
@@ -113,6 +126,10 @@ class OpenRouterProfile(ProviderProfile):
         if sticky_key:
             body["session_id"] = sticky_key
         prefs = context.get("provider_preferences")
+        pin = OPENROUTER_ENDPOINT_PINS.get(context.get("model") or "")
+        if pin:
+            # The tier pin owns ``only``; the user's other routing prefs (ignore/sort/...) still apply.
+            prefs = {**(prefs or {}), "only": list(pin[1])}
         if prefs:
             body["provider"] = prefs
         # Pareto Code router plugin is only meaningful for openrouter/pareto-code.
@@ -130,9 +147,13 @@ class OpenRouterProfile(ProviderProfile):
         self, *, reasoning_config: dict | None = None, supports_reasoning: bool = False,
         model: str | None = None, session_id: str | None = None, **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Pass reasoning_config as extra_body.reasoning; pin Grok's cache via x-grok-conv-id."""
+        """Pass reasoning_config as extra_body.reasoning; pin Grok's cache via x-grok-conv-id;
+        rewrite speed-tier slugs to their OpenRouter base model."""
         extra_body: dict[str, Any] = {}
         top_level: dict[str, Any] = {}
+        pin = OPENROUTER_ENDPOINT_PINS.get(model or "")
+        if pin and pin[0] != model:
+            top_level["model"] = pin[0]
         if supports_reasoning:
             # Reasoning-mandatory Anthropic models use adaptive thinking: any
             # ``reasoning`` field (disable, or an enabled form on a tool-continuation

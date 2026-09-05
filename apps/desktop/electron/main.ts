@@ -428,7 +428,9 @@ import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
   getVenvSitePackagesEntries,
-  resolveVenvHermesCommand
+  resolveVenvHermesCommand,
+  resolveVenvRoot,
+  venvBaseInterpreterPresent
 } from './windows-hermes-path'
 import {
   connectWindowsRemote,
@@ -2582,15 +2584,18 @@ function findPythonForRoot(root) {
     return override
   }
 
-  const relativePaths = IS_WINDOWS
-    ? [path.join('.venv', 'Scripts', 'python.exe'), path.join('venv', 'Scripts', 'python.exe')]
-    : [path.join('.venv', 'bin', 'python'), path.join('venv', 'bin', 'python')]
+  const venvRoot = resolveVenvRoot(root, {
+    isWindows: IS_WINDOWS,
+    fileExists,
+    directoryExists,
+    joinPath: path.join
+  })
 
-  for (const relativePath of relativePaths) {
-    const candidate = path.join(root, relativePath)
+  if (venvRoot) {
+    const venvPython = getVenvPython(venvRoot)
 
-    if (fileExists(candidate)) {
-      return candidate
+    if (fileExists(venvPython)) {
+      return venvPython
     }
   }
 
@@ -4254,7 +4259,16 @@ async function handOffWindowsBootstrapRecovery(reason) {
     ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
     : configuredBranch || DEFAULT_UPDATE_BRANCH
 
-  const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
+  // Keep source-install layout selection aligned with findPythonForRoot(): a
+  // healthy `.venv` must be updated in place, and its broken base interpreter
+  // must be checked before trusting the Python trampoline.
+  const venvRoot = resolveVenvRoot(updateRoot, {
+    isWindows: IS_WINDOWS,
+    fileExists,
+    directoryExists,
+    joinPath: path.join
+  }) ?? path.join(updateRoot, 'venv')
+  const venvBin = path.join(venvRoot, IS_WINDOWS ? 'Scripts' : 'bin')
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
   const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
 
@@ -4264,14 +4278,23 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // marker-only install through --update dead-ends at "Could not find the hermes
   // CLI" instead of rebuilding the runtime, so only a runnable pair gets the
   // gentle update path. Partial or missing runtimes go through full repair.
+  const missingVenvBase =
+    fileExists(venvPython) &&
+    !venvBaseInterpreterPresent(venvRoot, { isWindows: IS_WINDOWS, fileExists, rememberLog })
   const updaterArgs = chooseUpdaterArgs(
     {
       hasBootstrapMarker: fileExists(path.join(updateRoot, '.hermes-bootstrap-complete')),
       hasVenvHermes: fileExists(venvHermes),
-      hasVenvPython: fileExists(venvPython)
+      hasVenvPython: fileExists(venvPython) && !missingVenvBase
     },
     branch
   )
+
+  if (missingVenvBase) {
+    rememberLog(
+      `[bootstrap] ${reason} detected a venv whose pyvenv.cfg base interpreter is missing; forcing --repair rebuild`
+    )
+  }
 
   await releaseBackendLockForUpdate(updateRoot)
 

@@ -10,6 +10,7 @@ import {
   $currentModel,
   $currentProvider,
   getCurrentModelSource,
+  setComposerSelectionOwner,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
@@ -80,6 +81,8 @@ function Harness({
 
 describe('useModelControls', () => {
   beforeEach(() => {
+    window.localStorage.clear()
+    setComposerSelectionOwner('local', 'default')
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
@@ -91,6 +94,8 @@ describe('useModelControls', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    setComposerSelectionOwner('local', 'default')
+    window.localStorage.clear()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
@@ -650,6 +655,58 @@ describe('useModelControls', () => {
     expect(getGlobalModelInfo).toHaveBeenCalled()
     expect($currentModel.get()).toBe('gpt-5.5')
     expect($currentProvider.get()).toBe('openai-codex')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
+  // Regression: the gatewayScope effect in app/contrib/wiring.tsx must NOT
+  // force this refresh. Connection activation (setComposerSelectionOwner)
+  // already re-scoped the persisted selection to the exact (connection,
+  // profile) owner, so the value in $currentModel by the time the effect runs
+  // is that owner's own manual pick — forcing a reseed destroys precisely the
+  // selection the scoped-persistence seam exists to restore.
+  it('preserves an owner-scoped manual pick across an unforced scope-change refresh', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    // The owner's stored manual pick, restored by the activation seam.
+    setComposerSelectionOwner('aibox', 'fred')
+    setCurrentModel('grok-4')
+    setCurrentProvider('xai-oauth')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('grok-4')
+    expect($currentProvider.get()).toBe('xai-oauth')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  // The other half of the contract: dropping `force` must not strand an owner
+  // that has no pick of its own. An empty selection still seeds the default.
+  it('still seeds a scope with no stored pick from the profile default', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    setComposerSelectionOwner('aibox', 'fred-work')
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentModelSource('')
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
     expect(getCurrentModelSource()).toBe('default')
   })
 

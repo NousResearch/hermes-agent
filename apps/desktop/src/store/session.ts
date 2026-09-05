@@ -1163,6 +1163,21 @@ export function setComposerSelectionOwner(connectionId: string, profile: string)
   )
 }
 
+/**
+ * The storage namespace the composer selection is currently persisted under.
+ *
+ * Read by the gateway-scope effect to tell two scope changes apart. A local /
+ * non-registryScoped descriptor collapses to the bare legacy namespace (`''`)
+ * for EVERY profile, so a local profile switch moves the gateway scope without
+ * rescoping the composer — the previous profile's manual pick stays loaded and
+ * must be reseeded. A registry-scoped switch changes this token, which means
+ * the activation seam already restored that owner's own pick and it must be
+ * preserved. `null` means the exact owner is temporarily unknown.
+ */
+export function composerSelectionScopeToken(): string | null {
+  return composerSelectionScope
+}
+
 /** Fail closed while a successful legacy profile activation has no descriptor. */
 export function clearComposerSelectionOwner(): void {
   rescopeComposerSelection(null)

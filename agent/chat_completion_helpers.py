@@ -1721,25 +1721,18 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if value:
             msg[attr] = value
             if attr == "codex_reasoning_items":
-                from agent.codex_responses_adapter import classify_responses_route
-                from agent.native_compaction import (
-                    has_compaction_checkpoint,
-                    native_compaction_context_management,
+                from agent.codex_responses_adapter import (
+                    has_replayable_native_compaction_checkpoint,
                 )
 
-                if has_compaction_checkpoint(value):
-                    note_checkpoint = getattr(
-                        agent.context_compressor, "note_native_compaction_checkpoint", None
-                    )
-                    route = classify_responses_route(agent)
-                    native_compaction_active = native_compaction_context_management(
-                        agent,
-                        is_codex_backend=route.is_codex_backend,
-                        is_xai_responses=route.is_xai_responses,
-                        is_github_responses=route.is_github_responses,
-                    )
-                    if native_compaction_active and callable(note_checkpoint):
-                        note_checkpoint()
+                note_checkpoint = getattr(
+                    agent.context_compressor, "note_native_compaction_checkpoint", None
+                )
+                if (
+                    callable(note_checkpoint)
+                    and has_replayable_native_compaction_checkpoint(agent, [msg])
+                ):
+                    note_checkpoint()
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]

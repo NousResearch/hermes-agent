@@ -525,13 +525,37 @@ def _stage_turn_user_message(
 
 
 def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]]) -> None:
-    """Hydrate the todo store and per-session nudge counters from persisted history."""
+    """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
         return
     if not agent._todo_store.has_items():
         agent._hydrate_todo_store(conversation_history)
-    # Hydrate per-session nudge counters from persisted history.
+    # A live native checkpoint arms this latch while its response is captured.  A
+    # restarted agent must recover the same one-response deferral before turn-start
+    # compression can rewrite the restored opaque checkpoint.  Reuse the adapter's
+    # exact route/issuer/replay filtering and tolerate plugin compressors without the
+    # optional hook.
     if agent._user_turn_count == 0:
+        note_checkpoint = getattr(
+            getattr(agent, "context_compressor", None),
+            "note_native_compaction_checkpoint",
+            None,
+        )
+        if callable(note_checkpoint):
+            try:
+                from agent.codex_responses_adapter import (
+                    has_replayable_native_compaction_checkpoint,
+                )
+
+                if has_replayable_native_compaction_checkpoint(
+                    agent, conversation_history
+                ):
+                    note_checkpoint()
+            except Exception:
+                logger.debug(
+                    "restored native checkpoint hydration skipped", exc_info=True
+                )
+        # Hydrate per-session nudge counters from persisted history.
         prior_user_turns = sum(1 for m in conversation_history if m.get("role") == "user")
         if prior_user_turns > 0:
             agent._user_turn_count = prior_user_turns

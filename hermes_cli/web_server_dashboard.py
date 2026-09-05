@@ -161,8 +161,16 @@ def mount_spa(application: FastAPI):
         )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build to go through the proxy.
-            for attr in ('href="/assets/', 'src="/assets/', 'href="/favicon.ico"', 'href="/fonts/',
-                         'href="/ds-assets/', 'src="/ds-assets/'):
+            for attr in (
+                'href="/assets/',
+                'src="/assets/',
+                'href="/favicon.ico"',
+                'href="/manifest.webmanifest"',
+                'href="/pwa-icon-',
+                'href="/fonts/',
+                'href="/ds-assets/',
+                'src="/ds-assets/',
+            ):
                 html = html.replace(attr, attr.replace('"/', f'"{prefix}/', 1))
         theme_bootstrap = _render_active_theme_bootstrap_css()
         if theme_bootstrap:
@@ -201,6 +209,33 @@ def mount_spa(application: FastAPI):
     application.mount(
         "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets", check_dir=False), name="assets"
     )
+
+    @application.get("/manifest.webmanifest")
+    async def serve_webmanifest():
+        manifest_path = WEB_DIST / "manifest.webmanifest"
+        if not manifest_path.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return FileResponse(
+            manifest_path,
+            media_type="application/manifest+json",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    @application.get("/sw.js")
+    async def serve_service_worker(request: Request):
+        sw_path = WEB_DIST / "sw.js"
+        if not sw_path.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
+        allowed_scope = f"{prefix}/" if prefix else "/"
+        return FileResponse(
+            sw_path,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache",
+                "Service-Worker-Allowed": allowed_scope,
+            },
+        )
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):

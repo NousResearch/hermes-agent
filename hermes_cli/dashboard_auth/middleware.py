@@ -32,6 +32,19 @@ from hermes_cli.dashboard_auth.request_utils import (
 
 _log = logging.getLogger(__name__)
 
+# Exact PWA metadata and icon files must be fetchable before a browser has an authenticated
+# SPA session. Exact matching keeps similarly named HTML/API routes protected.
+_GATE_PUBLIC_PATHS: frozenset[str] = frozenset(
+    {
+        "/manifest.webmanifest",
+        "/sw.js",
+        "/pwa-icon-180.png",
+        "/pwa-icon-192.png",
+        "/pwa-icon-512.png",
+        "/pwa-icon.svg",
+    }
+)
+
 # Prefix-matched bypass list: auth bootstrap routes and static asset mounts. ``/assets/`` with
 # the trailing slash matches ``/assets/foo.css`` but not ``/assetsleak``.
 _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
@@ -42,11 +55,11 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
 
 
 def _path_is_public(path: str) -> bool:
-    """:data:`PUBLIC_API_PATHS` (shared with the legacy middleware) matched exactly so
-    ``/api/status`` never exposes ``/api/status/extension``; :data:`_GATE_PUBLIC_PREFIXES`
-    prefix-matched."""
-    return path in PUBLIC_API_PATHS or any(
-        path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES)
+    """:data:`PUBLIC_API_PATHS` and PWA metadata are matched exactly; auth/bootstrap
+    prefixes are prefix-matched."""
+    return path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_PATHS or any(
+        path == p or path.startswith(p) for p in _GATE_PUBLIC_PREFIXES
+    )
 
 
 def _safe_next_target(request: Request) -> str:

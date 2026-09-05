@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes Agent</title>
+  <desc id="desc">Hermes teal app icon with a terminal prompt and wing motif.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#061a1a" />
+      <stop offset="0.55" stop-color="#083334" />
+      <stop offset="1" stop-color="#14b8a6" />
+    </linearGradient>
+    <linearGradient id="wing" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ecfeff" />
+      <stop offset="1" stop-color="#5eead4" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <path d="M128 178h256c21 0 38 17 38 38v128c0 21-17 38-38 38H128c-21 0-38-17-38-38V216c0-21 17-38 38-38Z" fill="#031313" opacity="0.78" stroke="#5eead4" stroke-width="10" />
+  <path d="M143 252l45 36-45 36" fill="none" stroke="#ecfeff" stroke-linecap="round" stroke-linejoin="round" stroke-width="28" />
+  <path d="M228 326h116" fill="none" stroke="#5eead4" stroke-linecap="round" stroke-width="26" />
+  <path d="M175 142c55-46 112-58 171-36-49 7-91 28-128 63 58-18 107-17 147 2-55 8-104 27-147 58" fill="none" stroke="url(#wing)" stroke-linecap="round" stroke-linejoin="round" stroke-width="18" opacity="0.9" />
+</svg>

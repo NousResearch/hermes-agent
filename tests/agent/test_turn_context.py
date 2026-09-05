@@ -504,3 +504,32 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+@pytest.mark.parametrize("clean_prompt,expected", [("What time is it?", "medium"), ("End-to-end production architecture audit: research, design, implement and test the gateway, config, database, security and source files; preserve scope, back up, verify logs and produce a report.", "high")])
+def test_escalation_scores_clean_prompt_and_resets_between_turns(tmp_path, monkeypatch, clean_prompt, expected):
+    import yaml
+    from agent.reasoning_escalation import effective_reasoning_config
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"agent": {"reasoning_auto_escalation": {"enabled": True, "providers": ["openai-codex"], "models": ["test/model"], "announce": False, "log_decisions": False}}}))
+    agent = _FakeAgent()
+    agent.provider = "openai-codex"
+    agent.reasoning_config = {"enabled": True, "effort": "medium"}
+    _build(agent, user_message="Injected routing metadata: use high", persist_user_message=clean_prompt)
+    assert effective_reasoning_config(agent)["effort"] == expected
+    assert agent.reasoning_config["effort"] == "medium"
+    _build(agent, user_message="What time is it?")
+    assert effective_reasoning_config(agent)["effort"] == "medium"
+
+
+def test_escalation_failure_clears_stale_override(monkeypatch):
+    agent = _FakeAgent()
+    agent.reasoning_config = {"enabled": True, "effort": "medium"}
+    agent._turn_reasoning_config_override = {"enabled": True, "effort": "high"}
+    agent._turn_reasoning_escalation_target = (agent.provider, agent.model)
+    def broken(*args):
+        raise ValueError("synthetic classifier failure")
+    monkeypatch.setattr("agent.reasoning_escalation.apply_turn_reasoning_escalation", broken)
+    _build(agent)
+    assert agent._turn_reasoning_config_override is None
+    assert agent._turn_reasoning_escalation_target is None

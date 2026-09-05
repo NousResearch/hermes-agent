@@ -83,6 +83,8 @@ def perform_api_call(
         if agent.api_mode == "codex_responses":
             next_api_kwargs = agent._get_transport().preflight_kwargs(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
+                is_azure_foundry=(agent.provider or "").strip().lower() == "azure-foundry",
+                provider=getattr(agent, "provider", None), base_url=getattr(agent, "base_url", None),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
         if _use_streaming:

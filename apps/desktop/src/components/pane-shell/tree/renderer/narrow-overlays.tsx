@@ -20,6 +20,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
 
+import { $narrowOverlayChrome } from './narrow-overlay-state'
 import { paneChrome } from './track-model'
 
 export function NarrowOverlays() {
@@ -101,10 +102,6 @@ export function NarrowOverlays() {
     }
   }, [narrow])
 
-  if (!narrow || collapsibles.length === 0) {
-    return null
-  }
-
   const sideOf = (c: Contribution) => (paneChrome(c).placement === 'left' ? 'left' : 'right')
   const revealed = reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
   const sides = [...new Set(collapsibles.map(sideOf))]
@@ -113,7 +110,7 @@ export function NarrowOverlays() {
   // stacks SESSIONS | BOTS): the overlay mirrors the zone's tab strip so a
   // pane docked into a collapsed zone stays reachable on narrow viewports —
   // without this, only the zone's first pane ever surfaces again.
-  const zonePanes = (() => {
+  const zonePanes = useMemo(() => {
     if (!revealed || !tree) {
       return [revealed].filter((p): p is Contribution => Boolean(p))
     }
@@ -123,7 +120,27 @@ export function NarrowOverlays() {
     const shown = mates.filter((p): p is Contribution => Boolean(p))
 
     return shown.length > 0 ? shown : [revealed]
-  })()
+  }, [revealed, tree, collapsibles])
+
+  const tabIds = useMemo(
+    () =>
+      narrow && revealed && (zonePanes.length > 1 || paneChrome(revealed).tabTitle)
+        ? zonePanes.map(pane => pane.id)
+        : [],
+    [narrow, revealed, zonePanes]
+  )
+
+  // Publish mounted chrome so a collapsed docked-open pane cannot hide the
+  // titlebar count. Cleanup hands ownership back on close or unmount.
+  useEffect(() => {
+    $narrowOverlayChrome.set(narrow && revealed ? { paneId: revealed.id, tabIds } : null)
+
+    return () => $narrowOverlayChrome.set(null)
+  }, [narrow, revealed, tabIds])
+
+  if (!narrow || collapsibles.length === 0) {
+    return null
+  }
 
   return (
     <>
@@ -160,8 +177,9 @@ export function NarrowOverlays() {
           style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
         >
           {/* Zone-mates share the overlay through the zone's own tab strip
-              (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}
-          {zonePanes.length > 1 && (
+              (SESSIONS | BOTS). A lone pane with live title controls keeps
+              that chrome too; ordinary single panes stay stripless. */}
+          {tabIds.length > 0 && (
             <PaneTabStrip>
               {zonePanes.map(pane => (
                 <PaneTab
@@ -176,7 +194,7 @@ export function NarrowOverlays() {
                     }
                   }}
                 >
-                  <PaneTabLabel>{pane.title ?? pane.id}</PaneTabLabel>
+                  <PaneTabLabel>{paneChrome(pane).tabTitle?.() ?? pane.title ?? pane.id}</PaneTabLabel>
                 </PaneTab>
               ))}
             </PaneTabStrip>

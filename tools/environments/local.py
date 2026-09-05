@@ -359,7 +359,19 @@ def _windows_bash_candidates(custom: "str | None") -> list[str]:
     raw = [custom or "", *(os.path.join(r, "bash.exe") for r in roots if r)]
     candidates = list(dict.fromkeys(c for c in raw if c and os.path.isfile(c)))
     found = shutil.which("bash")
-    if found and found not in candidates:
+    # The bash.exe stub in the Windows system directory is the WSL launcher:
+    # it is a working bash *inside WSL*, where /c/... and /d/... do not exist,
+    # so selecting it makes every command fail with ENOENT even though the
+    # probe passes. Exclude it and let the structured "Git Bash not found"
+    # error surface instead (#103398). Resolve via %SystemRoot% (fallback
+    # %WINDIR%) so non-C:\ Windows installs are covered too.
+    wsl_stub = os.path.join(
+        getenv("SystemRoot") or getenv("WINDIR") or r"C:\Windows",
+        "System32", "bash.exe",
+    )
+    if (found
+            and os.path.normcase(found) != os.path.normcase(wsl_stub)
+            and found not in candidates):
         candidates.append(found)
     return candidates
 

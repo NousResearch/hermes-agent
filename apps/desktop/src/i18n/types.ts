@@ -1031,6 +1031,11 @@ export interface Translations {
       ejectTip: string
       ejected: string
       ejectFailed: string
+      autoEjectTitle: string
+      autoEjectDetail: string
+      autoEjectOffDetail: string
+      autoEjectUnit: string
+      autoEjectFailed: string
       stopServer: string
       startServer: string
       runtimeRunningDetail: string

@@ -208,7 +208,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     try:
         from hermes_cli.local_runtime.binaries import (
             default_tag, ensure_runtime_installed, installed_tags, select_backend)
-        from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+        from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor, normalize_unload_after_idle
 
         backend = section.get("backend", "auto")
         if backend == "auto":
@@ -236,6 +236,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
 
         sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
                                     models_max=int(section.get("models_max", 4)),
+                                    unload_after_idle_s=normalize_unload_after_idle(
+                                        section.get("unload_after_idle_seconds", 900)),
                                     port=int(section.get("port", 0)) or None)
         try:
             sup.start()
@@ -267,14 +269,25 @@ def get_supervisor():
     return _SUPERVISOR
 
 
+def _sweep_interval(unload_after_idle_s: float) -> float:
+    """How often to sweep for a given threshold. Half the threshold so an eject lands near the
+    deadline the user asked for rather than up to two minutes late, bounded either way: never
+    tighter than 5s (the sweep costs a /models + /slots round trip per model), never looser than
+    the 120s the loop has always used."""
+    if unload_after_idle_s <= 0:
+        return 120.0
+    return min(120.0, max(5.0, unload_after_idle_s / 2))
+
+
 def _start_idle_sweeper(sup) -> None:
-    """Idle-residency loop: every couple of minutes, unload models idle past the supervisor's
-    threshold. Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
+    """Idle-residency loop: unload models idle past the supervisor's threshold. Daemon thread
+    tied to the supervisor's lifetime — exits when the server stops. The threshold is re-read
+    every pass so a dashboard change applies to the running server, not only the next boot."""
     import threading
 
     def _loop():
         while sup.proc is not None and sup.proc.poll() is None:
-            time.sleep(120)
+            time.sleep(_sweep_interval(sup.unload_after_idle_s))
             try:
                 sup.sweep_idle()
             except Exception as exc:  # noqa: BLE001

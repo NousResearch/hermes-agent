@@ -1092,6 +1092,13 @@ export const ja = defineLocale({
       ejectTip: 'GPU メモリを解放（必要時に再読み込み）',
       ejected: 'モデルをアンロードしました——GPU メモリを解放しました。',
       ejectFailed: 'モデルをアンロードできませんでした',
+      autoEjectTitle: 'アイドル時の自動アンロード',
+      autoEjectDetail:
+        'この時間だけ使われなかったモデルは GPU メモリを解放します。次のメッセージで再び読み込まれます。0 にすると手動でアンロードするまで常駐します。最小 30 秒。',
+      autoEjectOffDetail:
+        'オフ: 手動でアンロードするかサーバーを停止するまで、モデルは GPU メモリに常駐します。秒数を設定すると自動で解放されます（最小 30 秒）。',
+      autoEjectUnit: '秒',
+      autoEjectFailed: '自動アンロード時間を保存できませんでした',
       stopServer: 'オフにする',
       startServer: 'オンにする',
       runtimeRunningDetail:

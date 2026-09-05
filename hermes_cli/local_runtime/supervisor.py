@@ -90,23 +90,44 @@ def _stable_api_key() -> str:
     return key
 
 
+MIN_UNLOAD_AFTER_IDLE_S = 30
+
+
+def normalize_unload_after_idle(value) -> float:
+    """The one gate for a user-supplied auto-eject TTL (config or dashboard).
+
+    0 (or anything unreadable) means never auto-eject; a positive value is raised to
+    ``MIN_UNLOAD_AFTER_IDLE_S`` because below that a model spends more time reloading than resident.
+    """
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return float(LlamaServerSupervisor.IDLE_UNLOAD_S)
+    if seconds <= 0:
+        return 0.0
+    return float(max(MIN_UNLOAD_AFTER_IDLE_S, seconds))
+
+
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 
-    # A model that has gone quiet gets its VRAM back after this long. A constant, not a knob:
-    # long enough that an active conversation never trips it, short enough that a wandered-off
-    # session frees ~20 GiB within the hour. No exemptions: demand reloads anything the user
-    # comes back to.
+    # A model that has gone quiet gets its VRAM back after this long. The default is chosen so
+    # an active conversation never trips it while a wandered-off session frees ~20 GiB within
+    # the hour; users who want their VRAM back sooner (or never) set
+    # local_runtime.unload_after_idle_seconds. No exemptions: demand reloads anything the
+    # user comes back to.
     IDLE_UNLOAD_S = 15 * 60
 
     def __init__(self, install_dir: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
-                 preset_path: Path | None = None):
+                 preset_path: Path | None = None,
+                 unload_after_idle_s: float | None = None):
         self.install_dir = Path(install_dir)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
+        self.unload_after_idle_s = float(self.IDLE_UNLOAD_S if unload_after_idle_s is None else unload_after_idle_s)
         self.port = port or _stable_port()
         self.api_key = _stable_api_key()
         self.extra_args = list(extra_args or [])
@@ -315,10 +336,14 @@ class LlamaServerSupervisor:
             time.sleep(0.3)
 
     def sweep_idle(self, now: float | None = None) -> list[str]:
-        """Unload models idle past IDLE_UNLOAD_S; returns their ids. Idle = no busy slots and no
-        queued work, tracked per model across calls; a model seen busy resets its clock."""
+        """Unload models idle past ``unload_after_idle_s``; returns their ids. Idle = no busy slots and
+        no queued work, tracked per model across calls; a model seen busy resets its clock. A
+        threshold of 0 turns auto-eject off — residency then ends only at an explicit eject."""
         now = time.monotonic() if now is None else now
         unloaded: list[str] = []
+        if self.unload_after_idle_s <= 0:
+            self._idle_since.clear()
+            return unloaded
         try:
             statuses = self.models()
         except Exception:  # noqa: BLE001
@@ -328,7 +353,7 @@ class LlamaServerSupervisor:
                 self._idle_since.pop(model_id, None)
                 continue
             first_idle = self._idle_since.setdefault(model_id, now)
-            if now - first_idle < self.IDLE_UNLOAD_S:
+            if now - first_idle < self.unload_after_idle_s:
                 continue
             try:
                 self.unload_model(model_id)

@@ -73,6 +73,10 @@ class ModelEjectBody(BaseModel):
     model_id: str
 
 
+class IdleUnloadBody(BaseModel):
+    seconds: float              # 0 = never auto-eject; positive values are floored at 30
+
+
 class ModelActivateBody(BaseModel):
     model_id: str               # exact variant id (a staged .gguf stem)
 
@@ -477,6 +481,9 @@ def local_models_status():
         "runtime_installed": runtime_backend is not None, "runtime_backend": runtime_backend,
         "server_running": running is not None, "server_base_url": (running or {}).get("base_url"),
         "active_model_id": _active_llamacpp_model_id(), "loaded_models": loaded,
+        # Auto-eject threshold as ENFORCED (clamped), so the field the pane renders is the one
+        # the sweeper uses — a stored 5 must not display as 5 while 30 is what runs.
+        "unload_after_idle_seconds": supervisor.normalize_unload_after_idle(section.get("unload_after_idle_seconds", 900)),
         # Live load progress per model (SSE-fed): {model_id: {stage, value, percent}}.
         # The chat's loading bar and the picker rows poll this; garnish, never a 500.
         "loading": _quiet(load_progress.get_loading_progress, {}),
@@ -823,6 +830,24 @@ def local_models_eject(body: ModelEjectBody):
     with _http_error(502):
         _router_request(endpoint, "/models/unload", timeout=120, payload={"model": body.model_id})
     return {"ok": True}
+
+
+@router.post("/api/local-models/unload-after-idle")
+def local_models_idle_unload(body: IdleUnloadBody):
+    """Set how long a loaded model may sit idle before the sweeper gives its VRAM back. Durable
+    (config.yaml) AND applied to a server this process already supervises; a server owned by
+    another process picks the new threshold up at its next start."""
+    if body.seconds < 0:
+        raise HTTPException(status_code=400, detail="seconds must be 0 (never) or a positive number")
+    seconds = supervisor.normalize_unload_after_idle(body.seconds)
+    seconds = int(seconds) if float(seconds).is_integer() else seconds   # config.yaml stays readable
+    config = config_mod.load_config()
+    config.setdefault("local_runtime", {})["unload_after_idle_seconds"] = seconds
+    config_mod.save_config(config)
+    sup = bootstrap.get_supervisor()
+    if sup is not None:
+        sup.unload_after_idle_s = seconds
+    return {"ok": True, "unload_after_idle_seconds": seconds}
 
 
 @router.post("/api/local-models/activate")

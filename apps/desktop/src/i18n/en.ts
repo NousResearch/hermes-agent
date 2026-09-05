@@ -1199,6 +1199,13 @@ export const en: Translations = {
       ejectTip: 'Free GPU memory (loads again on the next message)',
       ejected: 'Model unloaded — GPU memory freed.',
       ejectFailed: 'Could not unload the model',
+      autoEjectTitle: 'Auto-eject idle models',
+      autoEjectDetail:
+        'A loaded model that goes unused this long gives its GPU memory back; your next message loads it again. Set 0 to keep models resident until you eject them. Minimum 30 seconds.',
+      autoEjectOffDetail:
+        'Off: loaded models stay in GPU memory until you eject them or turn the server off. Set a number of seconds to free memory automatically (minimum 30).',
+      autoEjectUnit: 'seconds',
+      autoEjectFailed: 'Could not save the auto-eject time',
       stopServer: 'Turn off',
       startServer: 'Turn on',
       runtimeRunningDetail:

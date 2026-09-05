@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 
 import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import {
   activateLocalModel,
@@ -21,6 +22,7 @@ import {
   quickstartLocalModels,
   searchHFModels,
   setLocalServer,
+  setLocalUnloadAfterIdle,
   sideloadLocalModel
 } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -83,6 +85,70 @@ function fitRank(model: LocalCatalogModel): number {
   }
 
   return 2
+}
+
+/** Runtime section row: how long a loaded model may idle before its VRAM goes back.
+ *  The backend clamps (0 = never, positive floored at 30s) and answers with what it will
+ *  actually enforce — that answer, never the draft, becomes the field's value. */
+function IdleUnloadRow({ onSaved, seconds }: { onSaved: () => void; seconds: number }) {
+  const { t } = useI18n()
+  const copy = t.settings.localModels
+  const [draft, setDraft] = useState(String(seconds))
+
+  // Re-syncs only when the enforced value itself changes — the pane polls status every few
+  // seconds and an unconditional sync would eat the digits being typed.
+  useEffect(() => {
+    setDraft(String(seconds))
+  }, [seconds])
+
+  const commit = () => {
+    const parsed = Number(draft)
+
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed === seconds) {
+      setDraft(String(seconds))
+
+      return
+    }
+
+    void setLocalUnloadAfterIdle(parsed)
+      .then(res => {
+        setDraft(String(res.unload_after_idle_seconds))
+        onSaved()
+      })
+      .catch(error => {
+        setDraft(String(seconds))
+        notifyError(error, copy.autoEjectFailed)
+      })
+  }
+
+  return (
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            aria-label={copy.autoEjectTitle}
+            className="w-24"
+            inputMode="numeric"
+            min={0}
+            onBlur={commit}
+            onChange={event => setDraft(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur()
+              }
+            }}
+            type="number"
+            value={draft}
+          />
+          <span className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {copy.autoEjectUnit}
+          </span>
+        </div>
+      }
+      description={seconds === 0 ? copy.autoEjectOffDetail : copy.autoEjectDetail}
+      title={copy.autoEjectTitle}
+    />
+  )
 }
 
 export function LocalModelsSettings() {
@@ -477,6 +543,8 @@ export function LocalModelsSettings() {
             title={copy.installTitle}
           />
         )}
+
+        {status.runtime_installed && <IdleUnloadRow onSaved={refresh} seconds={status.unload_after_idle_seconds} />}
 
         {status.update_available && !rJob && (
           <ListRow

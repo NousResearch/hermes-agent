@@ -293,20 +293,79 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     return path, None
 
 
+def _is_wsl_bash(bash_path: "str | os.PathLike[str] | None") -> bool:
+    """True when *bash_path* is Windows' WSL launcher (System32 / WindowsApps).
+
+    That binary starts a Linux bash which cannot open Win32 paths: the
+    backslashes are eaten as escapes and the script fails with exit 127.
+    """
+    if not bash_path:
+        return False
+    parts = {p.lower() for p in Path(str(bash_path)).parts}
+    if "windowsapps" in parts:
+        return True
+    return "windows" in parts and ("system32" in parts or "sysnative" in parts)
+
+
+def _cron_bash_script_arg(path: Path, is_windows: "bool | None" = None) -> str:
+    """Script argument for bash. On Windows return a slash-only form.
+
+    Git Bash treats backslashes as escapes, so ``C:\\x\\y.sh`` turns into
+    ``C:xy.sh``. Prefer the shared MSYS form (``/c/x/y.sh``); fall back to
+    ``Path.as_posix()``. POSIX paths are returned unchanged.
+    """
+    if is_windows is None:
+        is_windows = sys.platform == "win32"
+    if not is_windows:
+        return str(path)
+    try:
+        from tools.environments.local import _bash_safe_path
+
+        return _bash_safe_path(str(path))
+    except Exception:
+        return path.as_posix()
+
+
+def _resolve_cron_bash() -> Optional[str]:
+    """Pick a bash that can run ``HERMES_HOME/scripts/*.sh``.
+
+    Delegates to ``tools.environments.local._find_bash`` (portable Git, Git for
+    Windows install dirs, then PATH). Returns ``None`` instead of the WSL
+    launcher so the caller can fail with a clear message.
+    """
+    found: Optional[str] = None
+    try:
+        from tools.environments.local import _find_bash
+
+        found = _find_bash()
+    except RuntimeError:
+        found = None
+    except Exception:
+        found = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+    if not found or _is_wsl_bash(found):
+        return None
+    return found
+
+
 def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
     else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
-        # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
-        _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
+        # Use the shared Windows-aware resolver and refuse the WSL shim. When
+        # ``System32\bash.exe`` sits first on PATH (typical for a gateway started
+        # from the Windows autostart folder) ``shutil.which("bash")`` returns it,
+        # bash then receives a Win32 path, collapses the backslashes and exits
+        # 127 (#46332). Git Bash gets the script in POSIX form for the same reason.
+        _bash = _resolve_cron_bash()
         if _bash is None:
             return None, {}, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                f"Cannot run .sh/.bash script {path.name!r}: no usable bash found "
+                "(the WSL launcher in System32 cannot open Windows paths). "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        return [_bash, str(path)], {}, None
+        return [_bash, _cron_bash_script_arg(path)], {}, None
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
     if env_overlay:
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None

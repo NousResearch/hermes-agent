@@ -164,6 +164,25 @@ class TestAgentHasActiveSubagents:
         parent = MagicMock()  # no explicit _active_children setup
         assert GatewayRunner._agent_has_active_subagents(parent) is False
 
+    def test_detects_delegate_teardown_window_after_child_unregisters(self) -> None:
+        """The parent tool marker outlives the child registry entry."""
+        parent = _make_parent_with_subagents(children=0)
+        parent._current_tool = "delegate_task"
+
+        assert GatewayRunner._agent_has_active_subagents(parent) is True
+
+    def test_detects_delegate_in_concurrent_tool_batch(self) -> None:
+        parent = _make_parent_with_subagents(children=0)
+        parent._current_tool = "delegate_task, terminal"
+
+        assert GatewayRunner._agent_has_active_subagents(parent) is True
+
+    def test_empty_children_with_other_tool_stays_interruptible(self) -> None:
+        parent = _make_parent_no_subagents()
+        parent._current_tool = "terminal"
+
+        assert GatewayRunner._agent_has_active_subagents(parent) is False
+
 
 # ──────────────────────────────────────────────────────────────────────
 # _handle_active_session_busy_message — interrupt demotion
@@ -194,6 +213,25 @@ class TestBusyHandlerDemotesInterruptForSubagents:
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
         assert "Interrupting" in content
         assert "Subagent" not in content
+
+    @pytest.mark.asyncio
+    async def test_delegate_teardown_window_is_queued_not_interrupted(self) -> None:
+        runner = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+        event = _make_event(text="follow-up during delegate teardown")
+        sk = build_session_key(event.source)
+        parent = _make_parent_with_subagents(children=0)
+        parent._current_tool = "delegate_task"
+        runner._running_agents[sk] = parent
+        runner.adapters[event.source.platform] = adapter
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        parent.interrupt.assert_not_called()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Subagent working" in content
 
     @pytest.mark.asyncio
     async def test_queue_mode_unchanged_with_subagents(self) -> None:

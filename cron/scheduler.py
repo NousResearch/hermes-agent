@@ -3784,11 +3784,11 @@ def tick(
         advance_next_runs([job["id"] for job in due_jobs])
 
         _max_workers = _resolve_max_parallel_workers()
-        if verbose:
-            logger.info(
-                "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
-                _max_workers if _max_workers else "unbounded")
+        logger.info(
+            "Running %d job(s) in parallel (max_workers=%s)",
+            len(due_jobs),
+            _max_workers if _max_workers else "unbounded",
+        )
 
         def _process_job(job: dict) -> bool:
             return _process_due_job(job, adapters, loop, verbose)

@@ -60,7 +60,7 @@ const tailTurnAssistantMatchIndex = (
   if (
     localMessages
       .slice(localAssistantIndex + 1)
-      .some(message => message.role === 'user' && !message.hidden)
+      .some(message => (message.role === 'user' || message.role === 'assistant') && !message.hidden)
   ) {
     return -1
   }
@@ -245,6 +245,7 @@ export function preserveLocalAssistantErrors(
       mergedNextMessages[hydratedAssistantIndex] = {
         ...mergedNextMessages[hydratedAssistantIndex],
         error: message.error,
+        ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
         pending: false
       }
 

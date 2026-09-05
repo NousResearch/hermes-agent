@@ -708,7 +708,11 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.enabled',
       'stt.echo_transcripts',
       'stt.provider',
-      'voice.auto_tts',
+      // Use desktop.voice.auto_speak (Desktop-only) not voice.auto_tts
+      // (gateway-level): the gateway's auto_tts fires its own TTS pipeline
+      // independently of the Desktop renderer's audio path, causing double-
+      // speech when both are true (#99076).
+      'desktop.voice.auto_speak',
       'tts.edge.voice',
       'tts.openai.model',
       'tts.openai.voice',

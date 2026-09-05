@@ -27,6 +27,9 @@
  * debugger off-host, and offering the knob invites someone to try.
  */
 
+import path from 'node:path'
+import crypto from 'node:crypto'
+
 /** Why the port is closed, for a one-line log the developer can act on. */
 type ClosedReason = 'packaged' | 'no-dev-server' | 'opted-out' | 'invalid-port'
 
@@ -36,6 +39,14 @@ type DevCdpInput = {
   env: Record<string, string | undefined>
   isPackaged: boolean
   devServer: string | undefined
+  /**
+   * The REALIZED Hermes home, resolved once by the single home authority
+   * (hermes-home.ts) in the same main process. The descriptor attests exactly
+   * this value — it must never re-derive a home from env here, or a
+   * USER_DATA_DIR-only sandbox launch would attest the wrong root (P1, PR
+   * #95781 review round 3).
+   */
+  resolvedHermesHome: string
 }
 
 /** What every script under scripts/ already reaches for. */
@@ -104,5 +115,35 @@ function describeDevCdpDecision(decision: DevCdpDecision): string | null {
   }
 }
 
-export { DEFAULT_PORT, describeDevCdpDecision, resolveDevCdpPort }
-export type { DevCdpDecision }
+/**
+ * The per-instance debug descriptor the renderer exposes to an attached MCP
+ * server, so the server can prove which Hermes home the connected target is
+ * actually running against — instead of trusting a caller-supplied coordinate.
+ *
+ * Emitted by the same main process that opens the CDP port (never the renderer,
+ * never a caller), so it is target-derived authority. The MCP server reads
+ * `dataRoot` over CDP and refuses unless it matches the declared sandbox home.
+ *
+ * Returns null when the port is closed (packaged / no-dev-server / opted-out),
+ * so nothing is exposed outside dev mode.
+ */
+type DevCdpInstance = { nonce: string; dataRoot: string }
+
+function resolveDevCdpInstance({ env, isPackaged, devServer, resolvedHermesHome }: DevCdpInput): DevCdpInstance | null {
+  const decision = resolveDevCdpPort({ env, isPackaged, devServer })
+  if (decision.port === null) return null
+
+  // dataRoot IS the realized home from the single authority — canonical,
+  // lexical (path.resolve), matching what main.ts actually uses. No env
+  // reading here: the descriptor describes, it does not guess.
+  const dataRoot = path.resolve(resolvedHermesHome)
+
+  // Per-run opaque nonce. The server checks it is present (a descriptor exists)
+  // and compares the canonical dataRoot against its declared sandbox home.
+  const nonce = crypto.randomBytes(16).toString('hex')
+
+  return { nonce, dataRoot }
+}
+
+export { DEFAULT_PORT, describeDevCdpDecision, resolveDevCdpPort, resolveDevCdpInstance }
+export type { DevCdpDecision, DevCdpInstance }

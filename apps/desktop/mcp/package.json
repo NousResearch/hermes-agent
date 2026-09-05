@@ -1,0 +1,11 @@
+{
+  "name": "hermes-desktop-debug-mcp",
+  "version": "0.1.0",
+  "description": "MCP server: LLM-agent tools to inspect and drive the Hermes desktop renderer over CDP",
+  "type": "module",
+  "main": "server.mjs",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

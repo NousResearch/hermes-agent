@@ -116,6 +116,10 @@ interface GroupMemberSessionHandle {
   stored?: null | string | true
 }
 
+function durableGroupSessionId(value: null | string | true | undefined): null | string {
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
 /** Ensure the member's per-group session exists and return a LIVE runtime
  *  session id for it. Gateway-native: session.create mints the session
  *  (lazy until its first message), session.resume by stored id — or by
@@ -130,6 +134,7 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
   const title = `Group: ${room.roomId || group}`
   const key = groupMemberKey(member)
   const known = room.sessions && room.sessions[key]
+  const knownStored = durableGroupSessionId(known)
 
   // Try resuming what we know (stored sid first, then title lookup).
   //
@@ -143,8 +148,8 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
   // room.sessions[key] so the old session becomes unreachable from the
   // room. Only a genuine 4007 on BOTH targets means there truly is nothing
   // to resume yet, so the loop falls through to session.create below.
-  for (const target of [known, title]) {
-    if (!target || target === true) {
+  for (const target of [knownStored, title]) {
+    if (!target) {
       continue
     }
 
@@ -156,14 +161,7 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
       })) as GroupSessionSnapshot
 
       if (res?.session_id) {
-        // TODO(bot-mode-types): `known` is `room.sessions[key]`, which the
-        // domain model types `string | true` — and the `target === true` skip
-        // above shows the legacy `true` sentinel is expected here. A backend
-        // that answers the title resume without a `session_key` therefore
-        // stores `true` back into room.sessions and hands `true` on as the
-        // durable id, which later rides into `session_id` on the recovery
-        // resume and on session.interrupt. Typed as-written.
-        const stored = res.session_key || known
+        const stored = durableGroupSessionId(res.session_key) || (target === knownStored ? knownStored : null)
 
         if (stored) {
           updateGroupChat(group, (current: GroupChatRoom) => {
@@ -370,6 +368,8 @@ async function submitGroupTurnPrompt(
   stored: null | string | true | undefined,
   text: string
 ): Promise<string> {
+  const durableStored = durableGroupSessionId(stored)
+
   try {
     await requestForBot(member, 'prompt.submit', {
       session_id: runtime,
@@ -378,12 +378,12 @@ async function submitGroupTurnPrompt(
 
     return runtime
   } catch (error: any) {
-    if (!isSessionGoneError(error) || !stored) {
+    if (!isSessionGoneError(error) || !durableStored) {
       throw error
     }
 
     const res = (await requestForBot(member, 'session.resume', {
-      session_id: stored,
+      session_id: durableStored,
       profile: member.name,
       omit_messages: true
     })) as GroupSessionSnapshot
@@ -611,6 +611,7 @@ async function runGroupChatMemberTurnLeased(
   if (!runtime) {
     return null
   }
+  const durableStored = durableGroupSessionId(stored)
 
   // #91868/#94569: remember the epoch this turn was dispatched under so the
   // poll loop below can tell an explicit stop from ordinary room churn.
@@ -630,7 +631,7 @@ async function runGroupChatMemberTurnLeased(
 
   try {
     const pre = (await requestForBot(member, 'session.resume', {
-      session_id: stored || runtime,
+      session_id: durableStored || runtime,
       profile: member.name
     })) as GroupSessionSnapshot
 
@@ -727,7 +728,7 @@ async function runGroupChatMemberTurnLeased(
 
     try {
       state = (await requestForBot(member, 'session.resume', {
-        session_id: stored || liveRuntime,
+        session_id: durableStored || liveRuntime,
         profile: member.name
       })) as GroupSessionSnapshot
     } catch {
@@ -819,7 +820,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   let state: GroupSessionSnapshot | null = null
 
   try {
-    const stored = room.sessions?.[memberKey]
+    const stored = durableGroupSessionId(room.sessions?.[memberKey])
     state = (await requestForBot(member, 'session.resume', {
       session_id: stored || `Group: ${room.roomId || group}`,
       profile: member.name

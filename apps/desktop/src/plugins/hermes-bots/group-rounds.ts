@@ -473,7 +473,8 @@ export async function stopGroupThread(group: string, thread: null | string, memb
   // Interrupt the member actually mid-turn. room.turn is runtime-only and
   // names exactly one member (the loop is serial); a settled room has none.
   const onTurn = turnName ? roster.find((member: GroupMember) => member?.name === turnName) : null
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  const rawSessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  const sessionId = typeof rawSessionId === 'string' && rawSessionId.trim() ? rawSessionId : null
 
   if (onTurn && sessionId) {
     try {

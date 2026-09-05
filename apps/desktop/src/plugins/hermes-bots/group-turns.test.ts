@@ -186,6 +186,30 @@ describe('session resolution', () => {
     expect(result.stored).toBeTruthy()
     expect(result.stored).not.toBe('sid-gone')
   })
+  it('never sends the legacy true session sentinel as a session id', async () => {
+    const room = await loadRoom({ omitSessionKeyOnResume: true, turn: () => 'ok' })
+    const member: GroupMember = { name: 'helper', title: '' }
+
+    await room.turns.ensureGroupChatSession('LegacySentinel', member)
+    room.chat.updateGroupChat('LegacySentinel', current => {
+      current.sessions = { helper: true }
+
+      return current
+    })
+
+    expect(await room.turns.runGroupChatMemberTurn('LegacySentinel', member, 'hello', 't1', [])).toBe('ok')
+    expect(room.gateway.rpc.some(call => call.params.session_id === true)).toBe(false)
+
+    room.chat.updateGroupChat('LegacySentinel', current => {
+      ;(current as GroupChat & { turn?: string }).turn = 'helper'
+      current.sessions = { helper: true }
+
+      return current
+    })
+    await room.rounds.stopGroupThread('LegacySentinel', 't1', [member])
+
+    expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(0)
+  })
 })
 
 describe('session-gone classification', () => {

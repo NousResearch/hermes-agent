@@ -32,6 +32,12 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
 
+import {
+  classifySessionScroll,
+  sessionScrollMemory,
+  sessionScrollOffsetPlaceable,
+  sessionScrollTargetTop
+} from './session-scroll-memory'
 import { resolveShowEarlierAction, useTranscriptWindow } from './transcript-window'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
@@ -501,7 +507,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const anchorBeforePrepend = useCallback(() => {
     const el = scrollRef.current
 
-    restoreFromBottomRef.current = el && loadSettledRef.current ? el.scrollHeight - el.scrollTop : 0
+    if (!el) {
+      return
+    }
+
+    // Mid-load, a session-switch restore may already own the target. Do not
+    // replace it with 0 — that is what used to pin a mid-read return to the
+    // bottom while older turns backfilled (#45562).
+    if (!loadSettledRef.current) {
+      return
+    }
+
+    restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
   }, [scrollRef])
 
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
@@ -653,12 +670,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   })
 
-  // Reset the cap and pin to bottom on mount + every session switch (messages
-  // swap in place on a long-lived runtime, so sessionKey is the only signal).
-  // The swap is multi-step and lays out over many frames; letting the library
-  // follow re-pins every frame to a moving target — visible as ~10 scroll jumps.
-  // Instead: quiet it, glue to the true bottom until the height holds steady,
-  // then hand back locked. Live streaming afterward uses the normal resize follow.
+  // Reset the cap on mount + every session switch (messages swap in place on a
+  // long-lived runtime, so sessionKey is the only signal). The swap is multi-step
+  // and lays out over many frames; letting the library follow re-pins every
+  // frame to a moving target — visible as ~10 scroll jumps. Instead: quiet it,
+  // glue to the remembered target (bottom, or the mid-read offset saved when
+  // we left) until the height holds steady, then hand back. Live streaming
+  // afterward uses the normal resize follow.
   //
   // `hasGroups` joins sessionKey as a dep because a COLD load changes the key
   // while the transcript is still empty and publishes messages hundreds of ms
@@ -671,6 +689,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // streaming append.
   useLayoutEffect(() => {
     const el = scrollRef.current
+    const armedKey = sessionKey
 
     if (!el) {
       return
@@ -682,15 +701,25 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       settledNonEmptyRef.current = false
     }
 
+    const rememberArmed = () => {
+      const node = scrollRef.current
+
+      if (node && armedKey && loadSettledRef.current) {
+        sessionScrollMemory.remember(armedKey, classifySessionScroll(node))
+      }
+    }
+
     // Same-session refresh (transcript briefly cleared and repopulated) must
     // keep the reader's position. Run before stopScroll / scrollTop reset so
     // a refresh neither yanks the view nor clears the settled flag.
     if (!shouldRePinOnTranscriptReload({ sessionSwitched, settledNonEmpty: settledNonEmptyRef.current })) {
-      return
+      return rememberArmed
     }
 
+    const remembered = sessionSwitched ? sessionScrollMemory.recall(sessionKey) : null
+    const restoreOffset = remembered?.kind === 'offset' ? remembered : null
+
     stopScroll()
-    el.scrollTop = el.scrollHeight
     loadSettledRef.current = false
 
     // An anchor captured for the OUTGOING transcript must not be applied to
@@ -698,8 +727,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // re-arm is the SAME load, whose in-flight anchor is still correct.
     if (sessionSwitched) {
       settleKeyRef.current = sessionKey
-      restoreFromBottomRef.current = null
+      restoreFromBottomRef.current = restoreOffset ? restoreOffset.fromBottom : null
     }
+
+    const applyTarget = (node: HTMLElement) => {
+      if (restoreOffset) {
+        node.scrollTop = sessionScrollTargetTop(restoreOffset, node)
+      } else {
+        node.scrollTop = node.scrollHeight
+      }
+    }
+
+    applyTarget(el)
 
     let frame = 0
     let stableFrames = 0
@@ -713,18 +752,31 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
 
       const height = node.scrollHeight
+      const placed = !restoreOffset || sessionScrollOffsetPlaceable(restoreOffset, height)
 
-      stableFrames = height === lastHeight ? stableFrames + 1 : 0
+      stableFrames = height === lastHeight && placed ? stableFrames + 1 : 0
       lastHeight = height
-      node.scrollTop = height
+      applyTarget(node)
 
       // Most session switches are synchronous and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
+      // An offset deeper than the painted height waits for backfill instead of
+      // declaring a clamped frame stable — unless we hit the cap.
       if (stableFrames >= 2 || ++frame > 15) {
-        void scrollToBottom('instant')
+        if (restoreOffset) {
+          applyTarget(node)
+          stopScroll()
+        } else {
+          void scrollToBottom('instant')
+        }
+
         settledNonEmptyRef.current = hasGroups
         loadSettledRef.current = true
+
+        if (restoreOffset) {
+          restoreFromBottomRef.current = null
+        }
 
         return
       }
@@ -734,7 +786,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     let rafId = requestAnimationFrame(settle)
 
-    return () => cancelAnimationFrame(rafId)
+    return () => {
+      cancelAnimationFrame(rafId)
+      rememberArmed()
+    }
   }, [hasGroups, scrollRef, scrollToBottom, sessionKey, stopScroll])
 
   // Prepend an older page while preserving the on-screen position. The user is
@@ -764,7 +819,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     if (el && restoreFromBottomRef.current != null) {
       el.scrollTop = el.scrollHeight - restoreFromBottomRef.current
-      restoreFromBottomRef.current = null
+
+      // Keep a session-switch mid-read target across backfill prepends until
+      // the settle loop parks the load. Clearing it here used to drop the
+      // offset after the first prepend and pin the rest of the restore to
+      // whatever was on screen (usually the tail).
+      if (loadSettledRef.current) {
+        restoreFromBottomRef.current = null
+      }
     }
     // renderBudget covers DOM pages; groups.length covers store-window expands.
   }, [scrollRef, renderBudget, groups.length])

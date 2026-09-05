@@ -408,7 +408,14 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Enable `matrix` and/or `matrix_admin` for Matrix via `hermes tools` (or `hermes tools enable matrix` and `hermes tools enable matrix_admin`). The tools require a live Matrix conversation and use its connected gateway adapter:
+Both Matrix toolsets are off by default and available only on the Matrix platform. Select them in the Matrix checklist in `hermes tools`, or enable each explicitly:
+
+```bash
+hermes tools enable matrix --platform matrix
+hermes tools enable matrix_admin --platform matrix
+```
+
+The `--platform matrix` flag is required: the command defaults to CLI, where these toolsets are rejected. Enabling a toolset does not open its action-policy gates. Credential availability is checked independently of session platform; every invocation still requires a live Matrix conversation and its connected profile adapter:
 
 | Tool | Actions |
 |------|---------|

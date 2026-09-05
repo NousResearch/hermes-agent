@@ -31,9 +31,11 @@ _ADMIN_ACTIONS = {
 
 
 def check_matrix_tool_requirements() -> bool:
-    """Available when Matrix credentials exist or a Matrix session is active."""
-    if get_session_env("HERMES_SESSION_PLATFORM", "").lower() == "matrix":
-        return True
+    """Check credentials only; process-cached checks must not gate session surfaces.
+
+    Matrix-only selection belongs to toolset_scope; invocation still resolves
+    and authorizes the current conversation's live profile adapter.
+    """
     token = (get_secret("MATRIX_ACCESS_TOKEN") or "").strip()
     homeserver = (get_secret("MATRIX_HOMESERVER") or "").strip()
     return bool(token and homeserver)

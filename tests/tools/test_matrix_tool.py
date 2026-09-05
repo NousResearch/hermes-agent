@@ -35,12 +35,12 @@ def _clear_matrix_env(monkeypatch):
 
 
 class TestMatrixToolRequirements:
-    def test_session_platform_matrix(self):
+    def test_session_platform_alone_does_not_supply_credentials(self):
         with patch(
             "tools.matrix_tool.get_session_env",
             side_effect=lambda k, d="": "matrix" if k == "HERMES_SESSION_PLATFORM" else d,
         ):
-            assert check_matrix_tool_requirements() is True
+            assert check_matrix_tool_requirements() is False
 
     def test_token_and_homeserver(self, monkeypatch):
         with patch("tools.matrix_tool.get_session_env", return_value=""):

@@ -63,6 +63,18 @@
       "capabilities": ["tools"],
       "api_version": 1,
       "added_at": "2026-08-12"
+    },
+    {
+      "name": "glm-quota",
+      "description": "GLM Coding Plan quota monitor — statusbar chip + pane showing 5h/weekly/tools usage and reset times (Z.AI & Zhipu).",
+      "author": "iftoif",
+      "tags": ["glm", "zai", "zhipu", "quota", "monitor", "desktop", "statusbar"],
+      "repo": "iftoif/glm-quota",
+      "ref": "c2ef4335be907bb0769ebd8f341cb3d01ad7b08f",
+      "homepage": "https://github.com/iftoif/glm-quota",
+      "capabilities": ["dashboard", "desktop"],
+      "api_version": 1,
+      "added_at": "2026-08-24"
     }
   ]
 }

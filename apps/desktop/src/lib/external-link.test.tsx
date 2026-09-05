@@ -108,6 +108,29 @@ describe('external link helpers', () => {
     expect(bridge).toHaveBeenCalledTimes(1)
   })
 
+  // Regression: two services on the SAME host but DIFFERENT ports are distinct
+  // origins and must not share a cached title. The cache key is built from
+  // hostname + path only, so a LAN dev box running a stack on :3005 and a web
+  // app on :8891 used to collide: the title fetched for one port was shown for
+  // the other (e.g. an API's "Codepoint API" welcome rendered on a totally
+  // different app's link).
+  it('keeps same-host different-port targets in separate cache entries', async () => {
+    const bridge = vi
+      .fn()
+      .mockResolvedValueOnce('Codepoint API')
+      .mockResolvedValueOnce('Vintage Reselling — Item Manager')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const [api, webapp] = await Promise.all([
+      fetchLinkTitle('http://10.0.4.15:3005/'),
+      fetchLinkTitle('http://10.0.4.15:8891/')
+    ])
+
+    expect(api).toBe('Codepoint API')
+    expect(webapp).toBe('Vintage Reselling — Item Manager')
+    expect(bridge).toHaveBeenCalledTimes(2)
+  })
+
   // A web link belongs in the in-app browser now; the OS browser is the
   // ⌘/Ctrl-click escape hatch.
   it('opens a web link in the in-app browser', async () => {

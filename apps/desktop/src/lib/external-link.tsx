@@ -53,9 +53,14 @@ function titleCacheKey(value: string): string {
   }
 
   const host = url.hostname.replace(/^www\./i, '').toLowerCase()
+  // A port is part of the origin: two services on the same host but different
+  // ports (e.g. dev servers on :3005 and :8891) serve different pages, so they
+  // must never share a cached title. Default ports parse to '' and keep the
+  // protocol/www canonicalization below (http↔https share one entry).
+  const port = url.port ? `:${url.port}` : ''
   const pathname = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '') || '/'
 
-  return `${host}${pathname}${url.search || ''}`
+  return `${host}${port}${pathname}${url.search || ''}`
 }
 
 export function shortHostLabel(value: string): string {

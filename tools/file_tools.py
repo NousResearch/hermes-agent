@@ -716,22 +716,34 @@ _REWRITE_HINT_MIN_CHARS = 20_000
 _REWRITE_HINT_MIN_UNCHANGED = 0.80
 
 
-def _whole_file_rewrite_hint(resolved: str | None, new_content: str) -> str | None:
-    """Return a hint when ``new_content`` mostly re-sends what is already on disk at ``resolved``."""
-    if not resolved or len(new_content) < _REWRITE_HINT_MIN_CHARS:
+# Above this the line diff is skipped: SequenceMatcher on pathological repeated-line files is
+# quadratic (a 460 KB same-line file took ~22 s under the write lock).
+_REWRITE_HINT_MAX_CHARS = 400_000
+
+
+def _whole_file_rewrite_hint(task_id: str, resolved: str | None, new_content: str) -> str | None:
+    """Return a hint when ``new_content`` mostly re-sends what is already at ``resolved``.
+
+    Reads the OLD content through the task's own file ops (``read_file_raw``, the sandbox/remote
+    backend the write targets), never the host path: on a remote backend the host file is a
+    different file, and a host FIFO at that path would block the write lock forever. Bounded size
+    and a line multiset comparison (linear) instead of a sequence diff (quadratic on repeated lines)."""
+    if not resolved or not (_REWRITE_HINT_MIN_CHARS <= len(new_content) <= _REWRITE_HINT_MAX_CHARS):
         return None
     try:
-        old = Path(resolved).read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        result = _get_file_ops(task_id).read_file_raw(resolved)
+        old = getattr(result, "content", None)
+        if getattr(result, "error", None) or not isinstance(old, str):
+            return None
+    except Exception:
         return None
-    if len(old) < _REWRITE_HINT_MIN_CHARS:
+    if not (_REWRITE_HINT_MIN_CHARS <= len(old) <= _REWRITE_HINT_MAX_CHARS):
         return None
     old_lines, new_lines = old.splitlines(), new_content.splitlines()
     if not old_lines:
         return None
-    import difflib
-    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
-    unchanged = sum(size for _, _, size in matcher.get_matching_blocks())
+    from collections import Counter
+    unchanged = sum((Counter(old_lines) & Counter(new_lines)).values())
     ratio = unchanged / max(len(old_lines), len(new_lines))
     if ratio < _REWRITE_HINT_MIN_UNCHANGED:
         return None
@@ -775,7 +787,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # subagents; different paths stay fully parallel.
                 _lock.enter_context(file_state.lock_path(_resolved))
             warnings = _edit_warnings([path], path_to_resolved, task_id)
-            rewrite_hint = _whole_file_rewrite_hint(_resolved, content)
+            rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
             result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]

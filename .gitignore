@@ -216,6 +216,26 @@ native/fts5_cjk/*.so
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
+
+# OMH scaffolding materialised into the checkout at runtime. `.omh/` ships its
+# own nested .gitignore, but git never reads an ignore file inside a directory
+# that is itself untracked, so the bare `?? .omh/` entry still reached
+# `git status --porcelain` — which is exactly what _assess_parked_branch_switch
+# reads. A clean tree is load-bearing for `hermes update`: on a parked branch a
+# dirty tree returns "dirty", the code update is SKIPPED and the run exits 1
+# (the desktop update button surfaces this as "Hermes update did not finish").
+# Two inert scaffolding files were enough to strand a checkout behind main.
+#
+# Ignore the ephemeral runtime only. `.omh/README.md` documents selective
+# sharing: state/logs/progress are per-session, while specs/, plans/ and
+# research/ are durable decision artifacts that stay committable — so this
+# must not become a blanket `.omh/` rule.
+.omh/README.md
+.omh/.gitignore
+.omh/state/
+.omh/logs/
+.omh/progress/
+
 .skills_prompt_snapshot.json
 
 # Disposable profile created by scripts/probe_active_session_exclusivity.py

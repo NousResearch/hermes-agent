@@ -1825,6 +1825,72 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+def abandoned_route_for_audit(agent) -> "tuple[Optional[str], Optional[str]]":
+    """The route a fallback swap gave up on, for the session row's audit pair.
+
+    ``record_session_fallback`` writes a request and the verdict "this request
+    was abandoned" as one record, so it must be handed the route that actually
+    failed — not merely the one this process started with.
+
+    ``_fallback_abandoned_route`` is set by ``try_activate_fallback`` from its
+    pre-swap ``old_model``/``old_provider``, i.e. the live route at the instant
+    it gave up, once per fallback EPISODE: a chain hop abandons the previous
+    fallback, and the request worth naming is the one the operator made, not an
+    intermediate the chain walked through (the DB freezes an already-flagged
+    pair for the same reason, so the memo only decides the case where there is
+    no row yet to freeze). ``restore_primary_runtime`` and ``switch_model``
+    both clear ``_fallback_activated``, so a genuinely new request is captured
+    afresh rather than replaying a superseded one.
+
+    Reading the live route rather than ``origin_requested_*`` is what makes a
+    ``/model`` switch followed by a fallback name the SWITCHED request: the
+    switch reassigns ``agent.model``/``agent.provider``, so it is the switched
+    route that the swap abandons, while the origin snapshot is frozen at
+    process start and names a request that stopped being current the moment the
+    operator switched.
+
+    ``origin_requested_*`` remains the fallback for a row flagged before any
+    swap recorded a route (the deferred re-apply in ``_ensure_db_session`` when
+    the very first turn both creates the row and falls back reaches it through
+    the attribute; a caller with neither has no route to name and passes none,
+    which leaves the stored pair untouched).
+    """
+    route = getattr(agent, "_fallback_abandoned_route", None)
+    if isinstance(route, tuple) and len(route) == 2:
+        model, provider = route
+    else:
+        model = getattr(agent, "origin_requested_model", "")
+        provider = getattr(agent, "origin_requested_provider", "")
+    return (str(model or "") or None, str(provider or "") or None)
+
+
+def _record_fallback_on_session(agent) -> None:
+    """Flag the live session row as fallback-served. Best effort.
+
+    A fallback swap is a recovery path: it must never be aborted by a
+    bookkeeping write, hence the blanket except. When the session row does not
+    exist yet (it is created lazily on the first turn, which can be the very
+    turn that fell back), the UPDATE is a no-op and ``_ensure_db_session``
+    re-applies the flag right after it inserts the row.
+
+    The request recorded beside the flag is the abandoned route — see
+    ``abandoned_route_for_audit``.
+    """
+    try:
+        db = getattr(agent, "_session_db", None)
+        session_id = getattr(agent, "session_id", None)
+        if db is None or not session_id:
+            return
+        requested_model, requested_provider = abandoned_route_for_audit(agent)
+        db.record_session_fallback(
+            session_id,
+            requested_model=requested_model,
+            requested_provider=requested_provider,
+        )
+    except Exception:
+        logger.debug("Could not record fallback on the session row", exc_info=True)
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
@@ -1879,6 +1945,12 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 fb_api_mode = _fallback_api_mode_resolved(agent, fb_provider, fb_model, fb_base_url)
 
             old_model, old_provider, old_base_url = agent.model, agent.provider, agent.base_url
+            # Read before the swap raises the flag: distinguishes "this is the
+            # first hop of a fallback episode" from "we are already on a
+            # fallback and chain-switching". Used by the audit memo below.
+            fallback_already_active_for_audit = bool(
+                getattr(agent, "_fallback_activated", False)
+            )
 
             # Clear the per-config context_length override so the fallback model's own context
             # window is resolved instead of the previous model's stale value.
@@ -1891,6 +1963,25 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if hasattr(agent, "_transport_cache"):
                 agent._transport_cache.clear()
             agent._fallback_activated = True
+
+            # The route this swap ABANDONED, for the session row's request audit
+            # (see abandoned_route_for_audit). Recorded beside the flag as one
+            # record, so it must be the route that actually failed — the live one,
+            # which a /model switch may have moved away from the process-start
+            # snapshot.
+            #
+            # Captured once per fallback EPISODE, gated on the pre-swap
+            # _fallback_activated read above: hop 2 of a chain abandons hop 1's
+            # fallback, and the request worth naming is the one the operator made,
+            # not an intermediate the chain walked through. Both events that make a
+            # new request current — restore_primary_runtime and switch_model (i.e.
+            # /model) — reset _fallback_activated, so the next episode re-captures
+            # the then-live route instead of replaying a superseded one. (The DB
+            # freezes an already-flagged pair on the same reasoning; this memo is
+            # what keeps the deferred re-apply in _ensure_db_session, where there is
+            # no row yet to freeze, saying the same thing.)
+            if not fallback_already_active_for_audit:
+                agent._fallback_abandoned_route = (old_model or "", old_provider or "")
 
             _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
             from agent.client_lifecycle import _swap_fallback_clients
@@ -1914,6 +2005,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
             _buffer_fallback_notice(agent, notice)
+            # Persist the swap on the session row. The buffered notice above is
+            # terminal-only and is swallowed whole by quiet one-shot and gateway
+            # surfaces (suppress_status_output short-circuits status output even
+            # for force=True), so without this write a silent fallback leaves no
+            # trace anywhere: the row ends up naming the served model as if it had
+            # been the one requested.
+            _record_fallback_on_session(agent)
             # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
             # provenance so the restore path only emits a recovery notice after a real fallback.
             agent._provider_fallback_active = True

@@ -216,7 +216,8 @@ class _CaptureMixin:
         if not windows:
             # Diagnose instead of a bare 0x0: the dominant real-world cause on Linux is a locked desktop session.
             from tools.computer_use import cua_backend as _cb
-            return self._failed_capture(mode, _cb._empty_discovery_reason())
+            return self._failed_capture(mode, _cb._empty_discovery_reason(
+                remote=getattr(self, "_remote_config", None) is not None))
         if not app:
             return windows
         if app.strip().lower() in _DESKTOP_SHELL_SENTINELS:

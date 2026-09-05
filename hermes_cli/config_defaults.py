@@ -2187,6 +2187,10 @@ DEFAULT_CONFIG = {
         # inferred: an unrecognized name is an error, not a quiet fall back to the host desktop.
         # Replaces the HERMES_COMPUTER_USE_BACKEND env var.
         "provider": "local",
+        # Authenticated remote transport: drive a cua-driver host bridge (hermes computer-use
+        # host-bridge) on another machine instead of a local driver. Requires the bridge URL here
+        # and HERMES_CUA_REMOTE_TOKEN in .env (>= 32 bytes; secrets.token_hex(32)); HTTP is loopback-only.
+        "remote": {"enabled": False, "url": ""},
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,
@@ -2468,6 +2472,10 @@ OPTIONAL_ENV_VARS = {
         "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
         "Azure Foundry base URL", None, password=False),
     # ── Tool API keys ──
+    "HERMES_CUA_REMOTE_TOKEN": _tool(
+        "Bearer token for the remote CUA transport (computer_use.provider=remote; >= 32 bytes; "
+        "generate with secrets.token_hex(32))", "Remote CUA transport token", None, advanced=True,
+        tools=["computer_use"]),
     "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",
         "https://exa.ai/", tools=["web_search", "web_extract"]),
     "PARALLEL_API_KEY": _tool("Parallel API key for AI-native web search and extract",

@@ -24,6 +24,7 @@ from agent.computer_use_provider import ComputerUseProvider
 from agent.computer_use_registry import HOST_PROVIDER_NAME, UnknownComputerUseProvider, resolve_provider
 from hermes_constants import hermes_home_key
 from tools.computer_use import host_provider  # noqa: F401 — registers the built-ins
+from tools.computer_use import remote_provider  # noqa: F401 — registers the remote transport
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
 
 logger = logging.getLogger(__name__)

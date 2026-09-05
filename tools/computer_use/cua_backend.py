@@ -28,7 +28,6 @@ from tools.computer_use.cua_backend_driver import (
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
-from tools.computer_use.remote import resolve_remote_cua_config
 
 logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
@@ -161,8 +160,12 @@ def _linux_session_locked() -> Optional[bool]:
     except Exception:
         return None
 
-def _empty_discovery_reason() -> str:
+def _empty_discovery_reason(remote: bool = False) -> str:
     """One-line diagnosis for 'window discovery found nothing'."""
+    if remote:
+        # Remote transport: the local session is irrelevant — windows come from the bridge host.
+        return ("remote desktop returned no windows — check the host bridge connection and the "
+                "remote desktop session state")
     if _linux_session_locked() is True:
         return ("the desktop session is LOCKED (loginctl LockedHint=yes) — unlock the screen; "
                 "a locked compositor hides windows and freezes app renderers")
@@ -218,13 +221,16 @@ def _maybe_nudge_update() -> None:
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
-    def __init__(self, permission_mode: str = "standard") -> None:
+    def __init__(self, permission_mode: str = "standard", remote_config: Optional[Any] = None) -> None:
         if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
-        self._remote_config = resolve_remote_cua_config(
-            _computer_use_cfg(),
-            permission_mode=permission_mode,
-        )
+        # Remote transport selection is explicit (provider registry contract): the backend
+        # receives the resolved remote config from whoever built it — today the remote
+        # provider (tools/computer_use/remote_provider.py), tomorrow any plugin. Self-resolving
+        # from config here would make ``computer_use.provider: local`` click a remote desktop
+        # whenever ``computer_use.remote`` happens to be present in config.yaml, which is the
+        # silent-selection failure the registry exists to prevent.
+        self._remote_config = remote_config
         self.permission_mode = permission_mode
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
         if permission_mode != "standard" and self._remote_config is None:
@@ -308,6 +314,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             logger.debug("cua-driver %s: %s", what, e)
 
     def is_available(self) -> bool:
+        # Remote transport: the bridge host owns the driver, so the local binary is irrelevant.
+        if self._remote_config is not None:
+            return True
         return sys.platform in ("darwin", "win32", "linux") and cua_driver_binary_available()  # other Unix-likes untested E2E
 
     def _clear_active_target(self) -> None:

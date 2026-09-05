@@ -3571,6 +3571,28 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             logger.warning("Failed to cleanup browser for task %s: %s", task_id, e)
 
 
+def _chunk_provider(chunk) -> str:
+    """The upstream host named on a streaming chunk, or "".
+
+    OpenRouter puts ``provider`` at the top level of every chunk ("Z.AI",
+    "Novita", "Baidu", ...). The OpenAI SDK keeps unknown fields in
+    ``model_extra``; a hand-built namespace may carry it as a plain attribute.
+    Both are checked. Returns "" for every direct provider, where there is no
+    upstream to attribute and the field is absent by definition.
+    """
+    try:
+        value = getattr(chunk, "provider", None)
+        if not value:
+            extra = getattr(chunk, "model_extra", None)
+            if isinstance(extra, dict):
+                value = extra.get("provider")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    except Exception:  # noqa: BLE001 — accounting must never break a stream
+        pass
+    return ""
+
+
 def _build_partial_stream_stub(
     role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None,
@@ -4238,6 +4260,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        # The UPSTREAM host an aggregator routed this call to (OpenRouter sends
+        # `provider` on its chunks). Captured exactly like model_name and
+        # usage_obj, because the response object assembled at the end of this
+        # function is a SimpleNamespace and silently drops every field the
+        # OpenAI schema does not name. That is why 5,387 usage rows recorded a
+        # real cost but no host: `usage` survived, `provider` did not.
+        # (2026-09-05)
+        provider_name = None
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         _writer_token = {"value": None}
@@ -4461,6 +4491,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 # Usage comes in the final chunk with empty choices
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage_obj = chunk.usage
+                provider_name = _chunk_provider(chunk) or provider_name
                 # Some OpenAI-compatible providers (DeepInfra, etc.)
                 # return validation errors as in-stream error chunks:
                 # choices=None with error_type/error_message in
@@ -4514,6 +4545,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 finish_reason = chunk_finish_reason
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
+            provider_name = _chunk_provider(chunk) or provider_name
 
             # Accumulate reasoning content
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
@@ -4856,6 +4888,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             model=model_name,
             choices=[mock_choice],
             usage=usage_obj,
+            # Carry the upstream host through. Everything not named here is
+            # lost, because this object replaces the SDK response for the rest
+            # of the turn — including the usage-recording call. Omitting it is
+            # what left every streamed call unattributed. (2026-09-05)
+            provider=provider_name,
         )
 
     def _call_anthropic(request_client):

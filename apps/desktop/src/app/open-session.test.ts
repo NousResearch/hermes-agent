@@ -27,7 +27,13 @@ vi.mock('./routes', () => ({
   sessionRoute: (id: string) => `/c/${encodeURIComponent(id)}`
 }))
 
-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  $workspaceCwdOwner
+} from '@/store/session'
 
 import { mainChatOccupied, openSession, openSessionIntentFromModifiers } from './open-session'
 
@@ -94,6 +100,12 @@ describe('openSession', () => {
     setSessionTileWorkspaceScope.mockReset()
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
+    // Reset the workspace atoms between cases. `setOwner(null)` (the no-call
+    // path) and a missing release leave whatever the previous test wrote, so
+    // without this each new case would observe a stale cwd.
+    $currentCwd.set('')
+    $workspaceCwdOwner.set(null)
+    $sessions.set([])
   })
 
   it('in-place focuses an existing tile and does not navigate', () => {
@@ -224,5 +236,58 @@ describe('openSession', () => {
     openSession('', navigate)
     expect(navigate).not.toHaveBeenCalled()
     expect(focusOpenSession).not.toHaveBeenCalled()
+  })
+
+  // The Files pane subscribes to $currentCwd. Until this fix, a sidebar click
+  // on an already-open session fronted the tab but never wrote the target's
+  // cwd, so the pane stayed on whichever folder the previously-loaded chat
+  // owned until the next backend session.info heartbeat landed. These tests
+  // pin the new behavior: a focused hit MUST mirror the sidebar row's cwd
+  // projection so the panel tracks a click instantly.
+  it('mirrors the target session cwd when focused on an existing tile', () => {
+    $sessions.set([{ id: 's1', cwd: '/path/B' } as never])
+    focusOpenSession.mockReturnValue('tile')
+    $currentCwd.set('/path/A')
+    $workspaceCwdOwner.set('s0')
+    openSession('s1', navigate)
+    expect($currentCwd.get()).toBe('/path/B')
+    expect($workspaceCwdOwner.get()).toBe('s1')
+  })
+
+  it('mirrors the target session cwd when focused on main', () => {
+    $sessions.set([{ id: 's1', cwd: '/path/B' } as never])
+    focusOpenSession.mockReturnValue('main')
+    $currentCwd.set('/path/A')
+    $workspaceCwdOwner.set('s0')
+    openSession('s1', navigate)
+    expect($currentCwd.get()).toBe('/path/B')
+    expect($workspaceCwdOwner.get()).toBe('s1')
+  })
+
+  it('releases ownership for a detached session stored row', () => {
+    // cwd absent: the path on screen is provably still the previous
+    // conversation's, so release rather than write '' and collapse the
+    // Files/Review panes on every click (#71254).
+    $sessions.set([{ id: 's1', cwd: null } as never])
+    focusOpenSession.mockReturnValue('tile')
+    $currentCwd.set('/path/A')
+    $workspaceCwdOwner.set('s0')
+    openSession('s1', navigate)
+    expect($currentCwd.get()).toBe('/path/A')
+    expect($workspaceCwdOwner.get()).not.toBe('s0')
+    expect($workspaceCwdOwner.get()).not.toBe('s1')
+  })
+
+  it('does not touch cwd when the session is not on screen', () => {
+    // A null focus falls through to resumeSession which has its own path —
+    // openSession itself must not double-write the cwd here.
+    $sessions.set([{ id: 's1', cwd: '/path/B' } as never])
+    focusOpenSession.mockReturnValue(null)
+    $currentCwd.set('/path/A')
+    $workspaceCwdOwner.set('s0')
+    openSession('s1', navigate)
+    // Forced by an old owner to make sure openSession didn't release it as
+    // a side effect; the atom retains whatever it held.
+    expect($currentCwd.get()).toBe('/path/A')
   })
 })

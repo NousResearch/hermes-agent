@@ -15,7 +15,16 @@
  *     the bridge has no session-window support.
  */
 import type { WorkspaceMode } from '@/contrib/types'
-import { $activeSessionId, $selectedStoredSessionId, markSessionRead } from '@/store/session'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  $sessions,
+  markSessionRead,
+  releaseWorkspaceCwdOwner,
+  sessionMatchesStoredId,
+  setCurrentCwdTransient,
+  setWorkspaceCwdOwner
+} from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
 import {
   focusedSessionNeedsRoute,
@@ -165,7 +174,32 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  const focused = focusOpenSession(storedSessionId, workspaceScope)
+
+  // A focused hit skips `resumeSession` entirely — `focusOpenSession` just
+  // fronts the tab — so nothing has written the target session's `cwd` into
+  // `$currentCwd`. The Files pane subscribes to that atom and would stay on
+  // whichever folder the previously-loaded chat was using, then only catch up
+  // when the next backend `session.info` lands (next user message). Mirror the
+  // sidebar row's own projection here so the panel tracks a click instantly,
+  // matching `applyStoredSessionPreviewRuntimeInfo` on the cold-resume path
+  // (we can't import that helper without dragging the resume hook in). A
+  // missed focus falls through to `resumeSession` which already covers this.
+  if (focused) {
+    const stored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+    const storedCwd = stored?.cwd?.trim() || ''
+
+    if (storedCwd) {
+      setCurrentCwdTransient(storedCwd)
+      setWorkspaceCwdOwner(storedSessionId)
+    } else {
+      // Detached / not-yet-loaded session: the path on screen is still the
+      // previous conversation's, so release rather than write `''`.
+      releaseWorkspaceCwdOwner()
+    }
+  }
+
+  if (focusedSessionNeedsRoute(focused, $workspaceIsPage.get())) {
     navigate(sessionRoute(storedSessionId))
   }
 }

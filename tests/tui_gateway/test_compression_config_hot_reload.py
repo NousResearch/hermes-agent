@@ -282,3 +282,40 @@ def test_removing_codex_native_threshold_restores_default(monkeypatch):
     session["agent"].codex_responses_compact_threshold = 120_000
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].codex_responses_compact_threshold == 200_000
+
+
+def test_external_context_engine_skips_compressor_hot_reload(monkeypatch, caplog):
+    """External engines (e.g. LCM) own compaction policy: live sync must leave
+    them alone. Regression: the god-file extraction assumed ContextCompressor
+    and logged ``'LCMEngine' object has no attribute
+    '_coerce_threshold_tokens_cap'`` on every config change."""
+    import logging
+
+    plugin_calls: list = []
+    engine = SimpleNamespace(
+        name="lcm",
+        threshold_tokens=100_000,
+        threshold_percent=0.65,
+        model_thresholds={},
+        update_model=lambda *a, **k: plugin_calls.append((a, k)),
+    )
+    agent = SimpleNamespace(
+        model="m",
+        provider="p",
+        context_compressor=engine,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    session = {"agent": agent, "session_key": "session-external-engine"}
+    with caplog.at_level(logging.WARNING):
+        _sync_with_cfg(
+            monkeypatch,
+            session,
+            {"compression": {"threshold_tokens": 50_000, "tail_mode": "legacy"}},
+        )
+    assert "Could not apply live compression config" not in caplog.text
+    assert engine.threshold_tokens == 100_000
+    assert not hasattr(engine, "tail_mode")
+    assert plugin_calls == []

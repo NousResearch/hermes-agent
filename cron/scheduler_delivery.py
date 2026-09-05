@@ -1147,7 +1147,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         # thread_id is absent from metadata; cron deliveries have no inbound reply anchor, so the metadata
         # key bypasses that check and lets the adapter route via a plain message_thread_id. See #52060.
         route_thread_id = str(thread_id) if thread_id is not None else None
-        route_metadata = {"job_id": job["id"], "notify": t.notify_delivery}
+        route_metadata = {"job_id": job["id"], "job_name": job.get("name") or job.get("id", "cron"), "notify": t.notify_delivery}
         if route_thread_id:
             route_metadata["thread_id"] = route_thread_id
         media_metadata = {"notify": t.notify_delivery}

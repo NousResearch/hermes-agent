@@ -5,9 +5,10 @@ interrupting. The gateway runner must:
 
   1. When an agent IS running → call ``agent.steer(text)``, do NOT set
      ``_interrupt_requested``, do NOT touch ``_pending_messages``.
-  2. When the agent is the PENDING sentinel → fall back to /queue
+  2. When the agent rejects live delivery → fall back to /queue semantics.
+  3. When the agent is the PENDING sentinel → fall back to /queue
      semantics (store in ``adapter._pending_messages``).
-  3. When no agent is active → strip the slash prefix and let the normal
+  4. When no agent is active → strip the slash prefix and let the normal
      prompt pipeline handle it as a regular user message.
 """
 from __future__ import annotations
@@ -115,6 +116,24 @@ async def test_steer_calls_agent_steer_and_does_not_interrupt():
     # _pending_messages (that would be turn-boundary /queue semantics).
     assert runner._pending_messages == {}
     assert adapter._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_rejected_live_steer_queues_payload_for_next_turn():
+    """A retained agent without a live delivery window must not lose the payload."""
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    running_agent = MagicMock()
+    running_agent.steer.return_value = False
+    runner._running_agents[sk] = running_agent
+
+    result = await runner._handle_message(_make_event("/steer preserve this correction"))
+
+    running_agent.steer.assert_called_once_with("preserve this correction")
+    running_agent.interrupt.assert_not_called()
+    assert adapter._pending_messages[sk].text == "preserve this correction"
+    assert runner._session_state(sk).conversation.queued_events == []
+    assert "queued for the next turn" in result.lower()
 
 
 @pytest.mark.asyncio

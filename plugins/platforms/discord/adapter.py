@@ -82,6 +82,17 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
+_DISCORD_PATH_ONLY_TEXT_BASENAMES = frozenset({
+    ".env", ".envrc", ".git-credentials", ".netrc", ".npmrc", ".pypirc",
+    "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa",
+})
+_DISCORD_PATH_ONLY_TEXT_EXTENSIONS = frozenset({
+    ".jks", ".kdbx", ".key", ".keystore", ".p12", ".pem", ".pfx", ".ppk",
+})
+_DISCORD_PATH_ONLY_TEXT_TOKENS = frozenset({
+    "apikey", "auth", "credential", "credentials", "key", "oauth", "passwd",
+    "password", "passwords", "privatekey", "secret", "secrets", "token", "tokens",
+})
 
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
@@ -319,6 +330,21 @@ def _abort_discord_websocket_transport(websocket: Any) -> bool:
         return False
     abort()
     return True
+
+
+def _discord_attachment_name_requires_path_only(filename: str | None) -> bool:
+    """Whether filename metadata strongly indicates credentials; contents are not inspected."""
+    name = str(filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip().lower()
+    if not name:
+        return False
+    if (
+        name in _DISCORD_PATH_ONLY_TEXT_BASENAMES
+        or name.startswith(".env.")
+        or os.path.splitext(name)[1] in _DISCORD_PATH_ONLY_TEXT_EXTENSIONS
+    ):
+        return True
+    tokens = {part for part in re.split(r"[^a-z0-9]+", name) if part}
+    return bool(tokens & _DISCORD_PATH_ONLY_TEXT_TOKENS)
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -5832,9 +5858,10 @@ class DiscordAdapter(BasePlatformAdapter):
             return att.url
 
     async def _collect_attachment_media(self, all_attachments: list) -> tuple:
-        """Cache every attachment and return ``(media_urls, media_types, pending_text_injection)``."""
+        """Cache attachments and return URLs, MIME types, safe inline text, and path-only identities."""
         media_urls = []
         media_types = []
+        path_only_attachment_paths = []
         pending_text_injection: Optional[str] = None
         for att in all_attachments:
             content_type = att.content_type or "unknown"
@@ -5883,7 +5910,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     # types rely on ``gateway/run.py`` emitting a (sandbox-translated) path note.
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
                     _is_text = ext in _TEXT_INJECT_EXTENSIONS or (content_type or "").startswith("text/")
-                    if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                    requires_path_only = _discord_attachment_name_requires_path_only(att.filename)
+                    if requires_path_only:
+                        path_only_attachment_paths.append(cached_path)
+                    if _is_text and not requires_path_only and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")
                             display_name = att.filename or f"document{ext or '.txt'}"
@@ -5897,7 +5927,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             pass
                 except Exception as e:
                     logger.warning("[Discord] Failed to cache document %s: %s", att.filename, e, exc_info=True)
-        return media_urls, media_types, pending_text_injection
+        return media_urls, media_types, pending_text_injection, path_only_attachment_paths
 
     def _attachment_message_type(self, att: Any) -> MessageType:
         """MessageType from the first attachment's MIME. Any non-media (or untyped) attachment
@@ -6074,7 +6104,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
-        media_urls, media_types, pending_text_injection = await self._collect_attachment_media(all_attachments)
+        (
+            media_urls,
+            media_types,
+            pending_text_injection,
+            path_only_attachment_paths,
+        ) = await self._collect_attachment_media(all_attachments)
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
@@ -6124,6 +6159,11 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            metadata=(
+                {"discord_path_only_attachment_paths": path_only_attachment_paths}
+                if path_only_attachment_paths
+                else {}
+            ),
         )
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:

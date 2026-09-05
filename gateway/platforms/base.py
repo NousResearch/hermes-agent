@@ -1699,6 +1699,23 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _merge_pending_media_metadata(existing: MessageEvent, incoming: MessageEvent) -> None:
+    """Merge only attachment identity metadata that remains valid after media concatenation."""
+    incoming_metadata = incoming.metadata if isinstance(incoming.metadata, dict) else {}
+    values = incoming_metadata.get("discord_path_only_attachment_paths")
+    if not isinstance(values, list) or not values:
+        return
+    if not isinstance(existing.metadata, dict):
+        existing.metadata = {}
+    current = existing.metadata.setdefault("discord_path_only_attachment_paths", [])
+    if not isinstance(current, list):
+        current = []
+        existing.metadata["discord_path_only_attachment_paths"] = current
+    for value in values:
+        if value not in current:
+            current.append(value)
+
+
 def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
                                 event: MessageEvent, *, merge_text: bool = False) -> None:
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
@@ -1726,6 +1743,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
                 existing.media_text_inlined.extend(incoming_inline_flags)
+                _merge_pending_media_metadata(existing, event)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             if existing_is_photo or incoming_is_photo:

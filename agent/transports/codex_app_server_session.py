@@ -387,6 +387,10 @@ class CodexAppServerSession:
                 if proj.is_tool_iteration:
                     last_tool_completion_at = time.monotonic()
                 turn_complete = turn_complete or aborted
+                if self._interrupt_event.is_set():
+                    self._issue_interrupt(result.turn_id)
+                    result.interrupted = True
+                    return True
             self._handle_server_request(sreq)
             # An approval round-trip is live signal — don't let it trip the watchdog.
             last_tool_completion_at = None

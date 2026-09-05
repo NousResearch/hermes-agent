@@ -172,6 +172,7 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
         "reload",
         "release",
     ]
+    assert agent._last_turn_admitted is True
 
 
 def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
@@ -219,6 +220,7 @@ def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
     assert "session_turn_lease_timeout:" in result["error"]
     assert "send it again" in result["final_response"]
     assert [event[0] for event in db.events] == ["acquire"]
+    assert agent._last_turn_admitted is False
     assert any(
         kind == "lifecycle"
         and text
@@ -265,6 +267,7 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     assert [event[0] for event in db.events] == ["acquire"]
     assert agent._interrupt_requested is False
     assert agent._interrupt_message is None
+    assert agent._last_turn_admitted is False
 
 
 def test_run_conversation_second_turn_after_lease_wait_abort(monkeypatch):

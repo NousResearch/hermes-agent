@@ -140,6 +140,7 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    resume: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -151,6 +152,7 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            resume=resume,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -2876,6 +2878,9 @@ def _run_oneshot_from_args(args) -> None:
 
     Bypasses cli.py entirely; _run_and_exit_oneshot never returns.
     """
+    with contextlib.redirect_stdout(sys.stderr):
+        _resolve_chat_session_args(args, use_tui=False)
+    _restore_oneshot_resume_model(args)
     _confirm_startup_expensive_model_override(args)
     _run_and_exit_oneshot(
         args.oneshot,
@@ -2884,7 +2889,37 @@ def _run_oneshot_from_args(args) -> None:
         toolsets=getattr(args, "toolsets", None),
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
+        resume=getattr(args, "resume", None),
     )
+
+
+def _restore_oneshot_resume_model(args) -> None:
+    """Apply the session-scoped model/provider for top-level ``-z --resume``.
+
+    ``HermesCLI`` restores this in its interactive resume flow after resolving the canonical
+    session. Top-level oneshot bypasses that object, so it mirrors the row-level restore before
+    constructing ``AIAgent``.
+    """
+    resume = str(getattr(args, "resume", "") or "").strip()
+    if not resume or getattr(args, "model", None) or getattr(args, "provider", None):
+        return
+    with _session_db() as db:
+        if db is None:
+            return
+        session_meta = db.get_session(resume) or {}
+    stored_model = str((session_meta or {}).get("model") or "").strip()
+    if not stored_model:
+        return
+    args.model = stored_model
+    try:
+        from hermes_state import SessionDB as _SessionDB
+
+        stored_runtime = _SessionDB.session_gateway_runtime(session_meta)
+    except Exception:
+        stored_runtime = {}
+    stored_provider = str((stored_runtime or {}).get("provider") or "").strip()
+    if stored_provider:
+        args.provider = stored_provider
 
 
 def _light_chat_parser():

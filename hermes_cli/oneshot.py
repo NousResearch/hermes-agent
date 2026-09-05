@@ -15,6 +15,7 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
@@ -167,12 +168,13 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    resume: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
-    JSON usage report even when the run fails. Returns the exit code; the caller owns process
-    termination.
+    JSON usage report even when the run fails. ``resume`` preloads an existing session before the
+    one-shot turn. Returns the exit code; the caller owns process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -220,6 +222,7 @@ def run_oneshot(
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
                 skills=skills,
+                resume=resume,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -250,6 +253,9 @@ def run_oneshot(
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
+
+    if result.get("failed") or result.get("interrupted"):
+        return 2
 
     if not (response or "").strip():
         if result.get("failed") or result.get("partial"):
@@ -347,6 +353,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    resume: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
@@ -356,13 +363,6 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
-    choice = _resolve_model_and_provider(cfg, model, provider)
-    runtime = resolve_runtime_provider(
-        requested=choice.provider,
-        target_model=choice.model or None,
-        explicit_base_url=choice.base_url,
-        explicit_api_key=choice.api_key,
-    )
 
     # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
@@ -382,10 +382,44 @@ def _run_agent(
     skills_prompt = _build_preloaded_skills_prompt(skills)
 
     session_db = _create_session_db_for_oneshot()
+    resume_session_id = (resume or "").strip()
+    resume_session_meta: dict = {}
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = None
     try:
+        if resume_session_id:
+            if session_db is None:
+                raise ValueError("Session store unavailable; cannot resume a one-shot session.")
+            try:
+                resolved = session_db.resolve_resume_session_id(resume_session_id)
+            except Exception:
+                resolved = resume_session_id
+            resume_session_id = resolved or resume_session_id
+            resume_session_meta = session_db.get_session(resume_session_id) or {}
+            if not resume_session_meta:
+                raise ValueError(f"Session not found: {resume}")
+            try:
+                session_db.reopen_session(resume_session_id)
+            except Exception:
+                logging.debug("oneshot resume reopen_session failed", exc_info=True)
+        if resume_session_meta and not ((model or "").strip() or (provider or "").strip()):
+            model = str(resume_session_meta.get("model") or "").strip() or model
+            try:
+                from hermes_state import SessionDB as _SessionDB
+
+                stored_runtime = _SessionDB.session_gateway_runtime(resume_session_meta)
+            except Exception:
+                stored_runtime = {}
+            provider = str((stored_runtime or {}).get("provider") or "").strip() or provider
+
+        choice = _resolve_model_and_provider(cfg, model, provider)
+        runtime = resolve_runtime_provider(
+            requested=choice.provider,
+            target_model=choice.model or None,
+            explicit_base_url=choice.base_url,
+            explicit_api_key=choice.api_key,
+        )
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -396,6 +430,7 @@ def _run_agent(
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
             platform="cli",
+            session_id=resume_session_id or None,
             session_db=session_db,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
@@ -410,7 +445,35 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
-        result = agent.run_conversation(prompt)
+        def _load_resume_history() -> list[dict]:
+            active_session_id = str(getattr(agent, "session_id", None) or resume_session_id)
+            try:
+                resolved = session_db.resolve_resume_session_id(active_session_id)
+            except Exception:
+                resolved = active_session_id
+            active_session_id = resolved or active_session_id
+            if active_session_id != getattr(agent, "session_id", None):
+                agent.session_id = active_session_id
+            try:
+                session_db.reopen_session(active_session_id)
+            except Exception:
+                logging.debug("oneshot resume reopen_session failed", exc_info=True)
+            if callable(safety_check := getattr(session_db, "assert_resume_safe", None)):
+                safety_check(active_session_id, tip_only=True)
+            model_history = session_db.get_messages_as_conversation(
+                active_session_id,
+                repair_alternation=True,
+            )
+            history = [
+                msg for msg in (model_history or []) if msg.get("role") != "session_meta"
+            ]
+            setattr(agent, "_oneshot_resume_history", history)
+            return history
+
+        run_kwargs = {"conversation_history_loader": _load_resume_history} if resume_session_id else {}
+        result = agent.run_conversation(prompt, **run_kwargs)
+        if resume_session_id and isinstance(result, dict):
+            result.setdefault("session_id", getattr(agent, "session_id", resume_session_id))
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)
@@ -434,14 +497,42 @@ def _linger_for_background_completions() -> None:
     process_registry.wait_for_pending_completions(None)
 
 
+def _flush_oneshot_session_store(agent) -> None:
+    """Reuse the classic single-query durable flush/finalize retry for top-level ``-z``."""
+    if agent is None:
+        return
+    try:
+        import cli as cli_mod
+
+        cli_mod._flush_one_shot_session_store(
+            SimpleNamespace(
+                agent=agent,
+                session_id=getattr(agent, "session_id", None),
+                conversation_history=getattr(agent, "_oneshot_resume_history", []),
+                _session_db=getattr(agent, "_session_db", None),
+                _release_active_session=lambda: None,
+            )
+        )
+    except Exception:
+        logging.debug("top-level oneshot session store flush failed", exc_info=True)
+
+
 def _close_agent(agent, session_db) -> None:
     """Teardown mirroring gateway/run.py:_cleanup_agent_resources (NOT cli.py:_run_cleanup):
     oneshot has no _active_agent_ref and the hard-exit path skips finalizers."""
     if agent is not None:
+        turn_admitted = getattr(agent, "_last_turn_admitted", True)
+        if not turn_admitted:
+            # A lease timeout/abort did not own this session. Resource teardown is still
+            # required, but neither the explicit flush nor agent.close() may end the row
+            # another process is actively using.
+            agent._end_session_on_close = False
         # Linger (bounded) for notify_on_complete background processes BEFORE agent.close():
         # close() kill_all()s the task and the dying parent owns the children's stdout pipes, so
         # exiting now destroys in-flight deliveries (e.g. Bot Mode handoff replies).
         _quietly("background completion wait", _linger_for_background_completions)
+        if turn_admitted:
+            _quietly("session store flush", lambda: _flush_oneshot_session_store(agent))
         session_messages = getattr(agent, "_session_messages", None)
         memory_args = (session_messages,) if isinstance(session_messages, list) else ()
         _quietly("memory/context cleanup", lambda: agent.shutdown_memory_provider(*memory_args))

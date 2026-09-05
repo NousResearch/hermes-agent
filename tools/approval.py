@@ -204,9 +204,11 @@ def get_pending_gateway_approval(session_key: str) -> dict | None:
 
 
 def submit_pending(session_key: str, approval: dict):
-    """Store a pending approval request for a session."""
+    """Store a pending approval request with a stable response identity."""
+    entry = dict(approval)
+    entry.setdefault("approval_id", uuid.uuid4().hex)
     with _lock:
-        _pending[session_key] = approval
+        _pending[session_key] = entry
 
 
 def approve_session(session_key: str, pattern_key: str):

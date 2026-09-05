@@ -1,24 +1,10 @@
-"""Per-job durable notepad for cron jobs.
+"""Per-job durable KV notepad (cursors, watermarks) carried across cron wake-ups; profile-local
+SQLite next to the executions ledger (same connection/pragma pattern as ``cron/executions.py``).
 
-A tiny KV scratchpad each cron job can use to carry state across scheduled
-wake-ups (cursors, watermarks, watchlists). Stored in its own profile-local
-SQLite file next to the executions ledger, following the same
-connection/pragma pattern as ``cron/executions.py``.
-
-Size caps (documented contract):
-
-- ``MAX_VALUE_BYTES`` (16 KB): per-key value cap, measured in UTF-8 bytes.
-- ``MAX_JOB_TOTAL_BYTES`` (64 KB): per-job cap over the sum of key+value
-  bytes. Oversized writes raise ``ValueError`` and leave the store
-  untouched — the notepad is prompt-injected each run, so unbounded growth
-  would bloat every wake-up's prompt.
-
-Write path is the CLI (``hermes cron notepad <job_id> set <key> <value>``),
-which the running agent invokes via its terminal tool; no model tool is
-added.
-
-Inspired by: Amp (Sourcegraph) cron notepad (idea-level, proprietary — zero
-code).
+Caps are a documented contract: ``MAX_VALUE_BYTES`` (16 KB per value, UTF-8) and
+``MAX_JOB_TOTAL_BYTES`` (64 KB per job, key+value). Oversized writes raise ``ValueError`` and leave
+the store untouched — the notepad is prompt-injected each run. Write path is the CLI
+(``hermes cron notepad <job_id> set ...``) via the terminal tool; no model tool is added.
 """
 
 from __future__ import annotations
@@ -29,14 +15,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from cron.executions import ledger_transaction, open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
-# Optional test override. Production resolves the path at transaction time so
-# multiplexed profile ticks (set_hermes_home_override) cannot leak one
-# profile's notepad rows into the import-time home — and remove_job's
-# clear_notepad cannot wipe the wrong profile's DB (#86519). Same pattern as
-# cron/executions.py.
+# Optional test override. Production resolves the path at transaction time so multiplexed profile
+# ticks (set_hermes_home_override) cannot leak one profile's notepad rows into the import-time home
+# — and remove_job's clear_notepad cannot wipe the wrong profile's DB.
+# Same pattern as cron/executions.py. See #86519.
 NOTEPAD_FILE: Optional[Path] = None
 MAX_VALUE_BYTES = 16 * 1024
 MAX_KEY_CHARS = 128
@@ -49,19 +35,11 @@ def _current_notepad_file() -> Path:
 
 
 def _connect() -> sqlite3.Connection:
-    from cron.jobs import _ensure_cron_dir
-
-    path = _current_notepad_file()
-    _ensure_cron_dir(path.parent)
-    return sqlite3.connect(path, timeout=5)
+    return open_ledger(_current_notepad_file())
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state import apply_wal_with_fallback
-
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    apply_wal_with_fallback(conn, db_label="cron/notepad.db")
+    prepare_ledger(conn, db_label="cron/notepad.db", synchronous_full=False)
     conn.execute(
         """CREATE TABLE IF NOT EXISTS cron_notepad (
              job_id TEXT NOT NULL,
@@ -75,20 +53,8 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, always close.
-
-    Mirrors ``cron.executions._transaction``: schema init runs inside the
-    ``try`` so a PRAGMA/DDL failure still closes the connection instead of
-    leaking it.
-    """
-    with _lock:
-        conn = _connect()
-        try:
-            _initialize_schema(conn)
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+    with ledger_transaction(_lock, _connect, _initialize_schema) as conn:
+        yield conn
 
 
 def _validate(job_id: str, key: str, value: str) -> None:
@@ -99,9 +65,7 @@ def _validate(job_id: str, key: str, value: str) -> None:
     if len(key) > MAX_KEY_CHARS:
         raise ValueError(f"key too long (max {MAX_KEY_CHARS} characters)")
     if len(value.encode("utf-8")) > MAX_VALUE_BYTES:
-        raise ValueError(
-            f"value too large (max {MAX_VALUE_BYTES} bytes per key)"
-        )
+        raise ValueError(f"value too large (max {MAX_VALUE_BYTES} bytes per key)")
 
 
 def set_note(job_id: str, key: str, value: str) -> Dict[str, Any]:
@@ -163,11 +127,8 @@ def list_notes(job_id: str) -> List[Dict[str, Any]]:
 
 
 def clear_notepad(job_id: str) -> int:
-    """Delete every key for one job (e.g. on job removal). Returns row count.
-
-    Called from ``cron.jobs.remove_job`` so deleted jobs don't orphan their
-    rows. No-ops without creating the DB when no notepad file exists yet.
-    """
+    """Delete every key for one job (called from ``cron.jobs.remove_job``). Returns row count;
+    no-ops without creating the DB when no notepad file exists yet."""
     if not _current_notepad_file().exists():
         return 0
     with _transaction() as conn:
@@ -178,11 +139,8 @@ def clear_notepad(job_id: str) -> int:
 
 
 def render_notepad_section(job_id: str) -> str:
-    """Render a job's notepad as a prompt section, or '' when empty/unavailable.
-
-    Empty notepad MUST return the empty string so jobs that never use the
-    feature get a byte-identical prompt (prompt-cache + drift safety).
-    """
+    """Render a job's notepad as a prompt section. An empty notepad MUST return '' so jobs that
+    never use the feature get a byte-identical prompt (prompt-cache + drift safety)."""
     try:
         notes = list_notes(job_id)
     except Exception:

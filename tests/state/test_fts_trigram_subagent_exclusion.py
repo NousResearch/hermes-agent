@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_state import SCHEMA_VERSION, SessionDB
+from hermes_state import SessionDB
+from hermes_state_common import SCHEMA_VERSION
 from hermes_state_common import FTS_TRIGRAM_EXCLUDED_SOURCES, fts_trigram_session_sql
 
 

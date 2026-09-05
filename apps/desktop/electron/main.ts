@@ -158,7 +158,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-import { resolveDesktopRemoteRoute } from './desktop-remote-route'
+import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -274,6 +274,10 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
+import {
+  pendingNotice as pendingPluginCompatNotice,
+  recordDismissed as recordPluginCompatDismissed
+} from './plugin-compat-notice'
 import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
@@ -407,7 +411,12 @@ import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
-import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
+import {
+  registrySshPoolScopeByConnectionId,
+  registrySshScopeForWindowRoute,
+  WindowConnectionRouteRegistry
+} from './window-connection-route'
+import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -6715,6 +6724,57 @@ function getAppIconPath() {
   }
 }
 
+// One-time modal for plugins importing pre-decomposition module paths (see
+// electron/plugin-compat-notice.ts). The backend writes the report during plugin
+// discovery; we show each distinct report exactly once and remember the dismissal
+// in userData so the user is never nagged twice about the same set of plugins.
+let pluginCompatNoticeShown = false
+
+async function showPluginCompatNoticeOnce() {
+  if (pluginCompatNoticeShown) {
+    return
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  let notice
+
+  try {
+    notice = pendingPluginCompatNotice(HERMES_HOME, app.getPath('userData'))
+  } catch (err) {
+    rememberLog(`[plugins] compat notice check failed: ${err.message}`)
+
+    return
+  }
+
+  if (!notice) {
+    return
+  }
+
+  pluginCompatNoticeShown = true
+  rememberLog(`[plugins] compat notice shown (${notice.key})`)
+
+  try {
+    await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      title: notice.title,
+      message: notice.message,
+      detail: notice.detail,
+      buttons: ['OK'],
+      defaultId: 0,
+      noLink: true
+    })
+  } finally {
+    try {
+      recordPluginCompatDismissed(app.getPath('userData'), notice.key)
+    } catch (err) {
+      rememberLog(`[plugins] could not persist compat notice dismissal: ${err.message}`)
+    }
+  }
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
@@ -10259,7 +10319,18 @@ function activeSshTerminalTarget(webContentsId?: number) {
 
     const state = sshConnections.get(scope)
 
-    return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
+    if (state && state.ssh) {
+      return { ssh: state.ssh, scope }
+    }
+
+    // The pool's single writer publishes under the per-profile bootstrap key
+    // while stamping the entry with its registry connection id (#97345), so a
+    // composite-key miss must still resolve the live tunnel by that identity
+    // instead of reporting 'pending' forever.
+    const pooledScope = registrySshPoolScopeByConnectionId(sshConnections, windowRoute.connectionId)
+    const pooledState = pooledScope === null ? null : sshConnections.get(pooledScope)
+
+    return pooledState && pooledState.ssh ? { ssh: pooledState.ssh, scope: pooledScope } : 'pending'
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
@@ -10279,9 +10350,7 @@ function activeSshTerminalTarget(webContentsId?: number) {
     return null
   }
 
-  const scope = route.connectionId
-    ? backendScopeKey(route.connectionId, profile)
-    : sshScopeKey(route.source === 'profile' ? profile : null)
+  const scope = v1SshTerminalPoolKey(route, profile)
 
   const state = sshConnections.get(scope)
 
@@ -13049,6 +13118,10 @@ async function startHermes() {
     // accumulated count of the resolved episode.
     bootstrapRepairAttempt = 0
 
+    // The backend's plugin discovery just ran and refreshed HERMES_HOME/.plugin-compat-report.json.
+    // Surface it once (per distinct set of affected plugins) after the window is up; never block boot.
+    setTimeout(() => void showPluginCompatNoticeOnce(), 1500)
+
     return {
       baseUrl,
       mode: 'local',
@@ -13183,11 +13256,11 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   installContextMenuBridge(win)
-  win.webContents.setWindowOpenHandler(details => {
-    openExternalUrl(details.url)
-
-    return { action: 'deny' }
-  })
+  // Always deny, never open as a side effect: GHSA-9f4c-93c8-jc8g. Trusted
+  // links arrive via `hermes:openExternal`, not here. See window-open-policy.ts.
+  win.webContents.setWindowOpenHandler(
+    createWindowOpenHandler(origin => rememberLog(`[window-open] denied: ${origin}`))
+  )
   win.webContents.on('will-navigate', (event, url) => {
     if ((DEV_SERVER && url.startsWith(DEV_SERVER)) || (!DEV_SERVER && url.startsWith('file:'))) {
       return

@@ -112,7 +112,7 @@ class TestApprovalCommandWiring:
         )
 
     def test_chat_platform_path_redacts_before_send(self):
-        import gateway.run as run
+        import gateway.run_turn_runner as run
 
         self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
 

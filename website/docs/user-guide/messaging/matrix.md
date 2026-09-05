@@ -730,6 +730,7 @@ Matrix E2EE requires `libolm`, which doesn't compile on macOS ARM64 (Apple Silic
 macOS (Host):
   └─ hermes gateway
        ├─ api_server adapter ← listens on 0.0.0.0:8642
+       ├─ proxy outbox → proactive text (cron, reminders)
        ├─ AIAgent ← single source of truth
        ├─ Sessions, memory, skills
        └─ Local file access (Obsidian, projects, etc.)
@@ -737,7 +738,8 @@ macOS (Host):
 Linux VM (Docker):
   └─ hermes gateway (proxy mode)
        ├─ Matrix adapter ← E2EE decryption/encryption
-       └─ HTTP forward → macOS:8642/v1/chat/completions
+       ├─ HTTP forward → macOS:8642/v1/chat/completions
+       └─ authenticated outbox poll ← proactive host text
            (no LLM API keys, no agent, no inference)
 ```
 
@@ -753,6 +755,14 @@ Add to `~/.hermes/.env`:
 API_SERVER_ENABLED=true
 API_SERVER_KEY=your-secret-key-here
 API_SERVER_HOST=0.0.0.0
+```
+
+Enable proactive text delivery for the logical platforms hosted by the thin
+gateway in `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  proxy_outbox_platforms: [matrix]
 ```
 
 - `API_SERVER_HOST=0.0.0.0` binds to all interfaces so the Docker container can reach it.
@@ -842,17 +852,25 @@ The host side needs:
 | `API_SERVER_KEY` | Bearer token (shared with the container) |
 | `API_SERVER_HOST` | Set to `0.0.0.0` for network access |
 | `API_SERVER_PORT` | Port number (default: `8642`) |
+| `gateway.proxy_outbox_platforms` | Logical platforms whose proactive text is queued for a thin gateway (for example `[matrix]`) |
 
 ### Works for Any Platform
 
 Proxy mode is not limited to Matrix. Any platform adapter can use it — set `GATEWAY_PROXY_URL` on any gateway instance and it will forward to the remote agent instead of running one locally. This is useful for any deployment where the platform adapter needs to run in a different environment from the agent (network isolation, E2EE requirements, resource constraints).
+
+When `gateway.proxy_outbox_platforms` is configured on the host, the thin
+gateway also polls for proactive **text** addressed to its connected native
+adapters and acknowledges the exact delivery attempt. Adapter failures and
+missing acknowledgements are terminal because a partial platform send may
+already be visible. This at-most-once posture avoids silently duplicating
+messages after a consumer crash or chunked partial send.
 
 :::tip
 Session continuity is maintained via the `X-Hermes-Session-Id` header. The host's API server tracks sessions by this ID, so conversations persist across messages just like they would with a local agent.
 :::
 
 :::note
-**Limitations (v1):** Tool progress messages from the remote agent are not relayed back — the user sees the streamed final response only, not individual tool calls. Dangerous command approval prompts are handled on the host side, not relayed to the Matrix user. These can be addressed in future updates.
+**Limitations (v1):** Tool progress messages from the remote agent are not relayed back — the user sees the streamed final response only, not individual tool calls. Dangerous command approval prompts are handled on the host side, not relayed to the Matrix user. The proactive outbox transports text only; media stays on the node that owns the native adapter. Targets must already resolve to native platform identifiers; host-side route creation such as named Telegram private DM topics is not supported through the generic outbox. These can be addressed in future updates.
 :::
 
 ### Bot connects and sends, but ignores inbound messages

@@ -1286,6 +1286,8 @@ class GatewayStartupMixin:
         self._running = True
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
+        if self._should_run_proxy_outbox_watcher():
+            self._spawn_supervised(self._proxy_outbox_watcher, "proxy_outbox_watcher")
         await self._start_finish_wiring(connected_count)
         self._start_spawn_background_watchers()
         logger.info("Press Ctrl+C to stop")

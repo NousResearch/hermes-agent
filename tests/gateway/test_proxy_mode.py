@@ -1,5 +1,7 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+from contextlib import asynccontextmanager
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,7 +16,9 @@ def _make_runner(proxy_url=None):
     """Create a minimal GatewayRunner for proxy tests."""
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
+    runner._profile_adapters = {}
     runner.config = MagicMock()
+    runner.config.multiplex_profiles = False
     runner.config.streaming = StreamingConfig()
     runner._running_agents = {}
     runner._session_run_generation = {}
@@ -107,6 +111,15 @@ class TestGetProxyUrl:
         cfg = {"gateway": {"proxy_url": "http://10.0.0.1:8642"}}
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
+
+
+def test_proxy_outbox_watcher_starts_for_secondary_only_proxy_mode():
+    runner = _make_runner()
+    runner.config.multiplex_profiles = True
+    runner._get_proxy_url = MagicMock(return_value=None)
+    runner._get_proxy_key = MagicMock(return_value="")
+
+    assert runner._should_run_proxy_outbox_watcher()
 
 
 class TestResolveProxyUrl:
@@ -294,4 +307,67 @@ class TestEnvVarRegistration:
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
         assert info["category"] == "messaging"
         assert info["password"] is False
+
+
+@pytest.mark.asyncio
+async def test_proxy_outbox_watcher_uses_connected_native_adapters(monkeypatch):
+    runner = _make_runner()
+    native = MagicMock()
+    runner.adapters = {Platform.MATRIX: native, Platform.API_SERVER: MagicMock()}
+    runner._running = True
+    monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+    monkeypatch.setenv("GATEWAY_PROXY_KEY", "proxy-key")
+
+    async def _deliver_once(url, key, adapters, *, session):
+        assert url == "http://host:8642"
+        assert key == "proxy-key"
+        assert adapters == {Platform.MATRIX: native}
+        runner._running = False
+        return 1
+
+    with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("gateway.proxy_outbox.deliver_once", side_effect=_deliver_once):
+            with patch("aiohttp.ClientSession", return_value=_FakeSession(None)):
+                with patch("aiohttp.ClientTimeout"):
+                    await runner._proxy_outbox_watcher(interval=0)
+
+
+@pytest.mark.asyncio
+async def test_proxy_outbox_watcher_polls_secondary_profile(monkeypatch):
+    runner = _make_runner()
+    primary = MagicMock()
+    secondary = MagicMock()
+    runner.adapters = {Platform.MATRIX: primary}
+    runner._profile_adapters = {"medicina": {Platform.MATRIX: secondary}}
+    runner._running = True
+    monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+    monkeypatch.setenv("GATEWAY_PROXY_KEY", "proxy-key")
+    calls = []
+
+    async def _deliver_once(url, key, adapters, *, session):
+        calls.append((url, key, adapters))
+        if len(calls) == 2:
+            runner._running = False
+        return 0
+
+    @asynccontextmanager
+    async def _profile_scope(_home):
+        yield
+
+    scopes = [(None, None), ("medicina", Path("/tmp/medicina"))]
+    with patch("gateway.run._handoff_watch_scopes", return_value=scopes):
+        with patch("gateway.run._async_profile_runtime_scope", new=_profile_scope):
+            with patch("gateway.proxy_outbox.deliver_once", side_effect=_deliver_once):
+                with patch("aiohttp.ClientSession", return_value=_FakeSession(None)):
+                    with patch("aiohttp.ClientTimeout"):
+                        await runner._proxy_outbox_watcher(interval=0)
+
+    assert calls == [
+        ("http://host:8642", "proxy-key", {Platform.MATRIX: primary}),
+        (
+            "http://host:8642/p/medicina",
+            "proxy-key",
+            {Platform.MATRIX: secondary},
+        ),
+    ]
 

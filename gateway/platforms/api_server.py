@@ -1099,7 +1099,10 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+from gateway.platforms.api_server_proxy_outbox import ProxyOutboxAPIMixin
+
+
+class APIServerAdapter(ProxyOutboxAPIMixin, OpenAICompatRoutesMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
@@ -1546,7 +1549,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("DELETE", "/api/jobs/{job_id}", self._handle_delete_job),
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
-            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
+            ("GET", "/v1/proxy/outbox", self._handle_proxy_outbox),
+            ("POST", "/v1/proxy/outbox/{delivery_id}/ack", self._handle_proxy_outbox_ack)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:

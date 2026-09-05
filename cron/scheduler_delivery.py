@@ -491,6 +491,19 @@ def _relay_fronted_delivery_platforms(connected: set) -> set:
         return set()
 
 
+def _proxy_fronted_delivery_platforms(connected: set) -> set:
+    """Logical platforms deliverable through a connected API proxy outbox."""
+    if "api_server" not in connected:
+        return set()
+    try:
+        from gateway.proxy_outbox import enabled_platforms
+
+        return enabled_platforms()
+    except Exception:
+        logger.debug("proxy outbox platform lookup failed", exc_info=True)
+        return set()
+
+
 def cron_delivery_targets() -> list[dict]:
     """Platforms a cron job can auto-deliver to (single source of truth for UIs): valid delivery
     platform AND gateway-configured; ``home_target_set`` flags whether the home channel exists.
@@ -501,6 +514,7 @@ def cron_delivery_targets() -> list[dict]:
         from gateway.config import load_gateway_config
         connected = {p.value for p in load_gateway_config().get_connected_platforms()}
         connected |= _relay_fronted_delivery_platforms(connected)
+        connected |= _proxy_fronted_delivery_platforms(connected)
     except Exception:
         logger.debug("cron_delivery_targets: gateway config unavailable", exc_info=True)
         connected = set()
@@ -1037,8 +1051,8 @@ class _TargetDelivery:
     live_adapter_ready: bool = False
 
     @property
-    def is_relay(self) -> bool:
-        return self.transport is not None and self.transport.is_relay
+    def forwarded(self) -> bool:
+        return self.transport is not None and self.transport.forwarded
 
     @property
     def where(self) -> str:
@@ -1051,9 +1065,9 @@ def _note_target_error(job: dict, msg: str, errors: list) -> None:
     errors.append(msg)
 
 
-def _warn_live_lane_failure(job: dict, msg: str, is_relay: bool) -> None:
-    """Relay targets have no standalone fallback, so the log line must not promise one."""
-    if is_relay:
+def _warn_live_lane_failure(job: dict, msg: str, forwarded: bool) -> None:
+    """Forwarded targets have no standalone fallback, so the log line must not promise one."""
+    if forwarded:
         logger.warning("Job '%s': %s", job["id"], msg)
     else:
         logger.warning("Job '%s': %s, falling back to standalone", job["id"], msg)
@@ -1090,8 +1104,8 @@ def _resolve_target_transport(
         pconfig = config.platforms.get(platform)
         runtime_adapter = None
 
-    if transport is not None and transport.is_relay:
-        # Relay transport carries the RELAY adapter's config (enablement already checked). The
+    if transport is not None and transport.forwarded:
+        # Forwarding transport carries its own config (enablement already checked). The
         # logical platform is deliberately NOT natively enabled, so the native gate must not apply.
         if pconfig is None:
             from gateway.config import PlatformConfig
@@ -1182,8 +1196,10 @@ def _live_send_text(
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None
+    from gateway.config import Platform
+    send_timeout = 650 if t.transport is not None and t.transport.transport_platform == Platform.API_SERVER else 60
     try:
-        send_result = future.result(timeout=60)
+        send_result = future.result(timeout=send_timeout)
     except TimeoutError:
         # Slow confirmation != failure; future.cancel() disambiguates. False -> already in flight,
         # cannot be un-sent, standalone resend would DUPLICATE: assume delivered. True -> never
@@ -1195,10 +1211,10 @@ def _live_send_text(
             return False, False, None
         logger.warning(
             "Job '%s': live adapter send to %s:%s timed out "
-            "after 60s; already dispatched (in flight), "
+            "after %ss; already dispatched (in flight), "
             "assuming delivered (skipping standalone fallback "
             "to avoid duplicate)",
-            job["id"], t.platform_name, t.chat_id)
+            job["id"], t.platform_name, t.chat_id, send_timeout)
         return True, True, None
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone.
@@ -1224,7 +1240,7 @@ def _live_send_text(
         else:
             err, shape = getattr(send_result, "error", None), type(send_result).__name__
         msg = f"live adapter send to {t.where} returned unconfirmed result ({shape}, error={err})"
-        _warn_live_lane_failure(job, msg, t.is_relay)
+        _warn_live_lane_failure(job, msg, t.forwarded)
         target_errors.append(msg)
         return False, False, None
     if send_raw_response and t.thread_id and send_raw_response.get("thread_fallback"):
@@ -1241,7 +1257,7 @@ def _live_send_media(
     t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list) -> None:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
-    if t.is_relay:
+    if t.transport is not None and t.transport.is_relay:
         routed_media_metadata["_relay_logical_platform"] = t.platform.value
         logical_home = t.config.get_home_channel(t.platform)
         if logical_home is not None and logical_home.chat_id == t.chat_id:
@@ -1368,7 +1384,7 @@ def _deliver_via_live_adapter(
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
-        _warn_live_lane_failure(job, err_msg, t.is_relay)
+        _warn_live_lane_failure(job, err_msg, t.forwarded)
     return delivered
 
 
@@ -1433,10 +1449,10 @@ def _deliver_standalone(
 ) -> None:
     """Standalone fallback for a target the live lane did not deliver."""
     job = t.job
-    if t.is_relay:
-        # Relay owns the destination and credential; a native retry could duplicate — fail closed.
+    if t.forwarded:
+        # The forwarding adapter owns delivery; a native retry could duplicate — fail closed.
         if not target_errors:
-            target_errors.append(f"relay delivery to {t.where} failed")
+            target_errors.append(f"forwarded delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
     result, err = _standalone_send(t, content, media_files)

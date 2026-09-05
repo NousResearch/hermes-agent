@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any, Dict
 
+from tools.schema_sanitizer import _normalize_type_array
+
 # Gemini's ``FunctionDeclaration.parameters`` accepts only a subset of OpenAPI 3.0 /
 # JSON Schema (the ``Schema`` object); everything else is stripped.
 _GEMINI_SCHEMA_ALLOWED_KEYS = {
@@ -30,6 +32,7 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
     if not isinstance(schema, dict):
         return {}
     cleaned: Dict[str, Any] = {}
+    type_array: Any = None
     for key, value in schema.items():
         if key not in _GEMINI_SCHEMA_ALLOWED_KEYS:
             continue
@@ -41,8 +44,27 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
         elif key == "anyOf":
             if isinstance(value, list):
                 cleaned[key] = [sanitize_gemini_schema(item) for item in value if isinstance(item, dict)]
+        elif key == "type" and isinstance(value, list):
+            type_array = value  # normalized after the loop, so the derived ``nullable`` wins
         else:
             cleaned[key] = value
+
+    # JSON Schema allows an array ``type`` (``["string", "null"]``, ``["string", "integer"]``).
+    # Gemini's ``Schema`` accepts only a single string, and the enum check below would evaluate
+    # ``[...] in {...}`` -> TypeError: unhashable type: 'list', aborting translation of the WHOLE
+    # tool catalog. Reuse the sanitizer's normalization so a multi-type array becomes an ``anyOf``
+    # of single-type branches (no branch dropped) rather than keeping only the first.
+    if type_array is not None:
+        derived: Dict[str, Any] = {}
+        _normalize_type_array(type_array, derived)
+        if "anyOf" in derived:
+            cleaned["anyOf"] = derived["anyOf"]
+        else:
+            cleaned["type"] = derived["type"]
+        if derived.get("nullable"):
+            # Derived from "null" in the array. Set AFTER the loop so it beats an input
+            # ``nullable: false`` regardless of which key the producer emitted first.
+            cleaned["nullable"] = True
 
     # Gemini requires every ``enum`` entry to be a string even for
     # integer/number/boolean types; the declared type stays intact and Gemini

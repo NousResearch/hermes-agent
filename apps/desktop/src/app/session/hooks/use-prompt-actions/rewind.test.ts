@@ -78,6 +78,31 @@ describe('appendMidTurnUserMessage', () => {
     expect(next.interimBoundaryPending).toBe(false)
   })
 
+  // #79231: streamId is often still null while the live turn is thinking / in
+  // a tool, so the old last-assistant fallback spliced the steer above the
+  // current prompt. Null stream id must append at the tail.
+  it('never inserts a steer above the current turn prompt when streamId is null (#79231)', () => {
+    const state: MidTurnState = {
+      interimBoundaryPending: false,
+      streamId: null,
+      messages: [
+        row('user-1', 'user', 'original prompt'),
+        row('assistant-1', 'assistant', 'reply'),
+        row('user-2', 'user', 'current prompt')
+      ]
+    }
+
+    const next = appendMidTurnUserMessage(state, row('user-steer', 'user', 'correction'))
+
+    expect(next.messages.map(message => message.id)).toEqual([
+      'user-1',
+      'assistant-1',
+      'user-2',
+      'user-steer'
+    ])
+    expect(next.streamId).toBeNull()
+  })
+
   it('drops an empty pending stream placeholder instead of sealing it', () => {
     const state: MidTurnState = {
       interimBoundaryPending: false,

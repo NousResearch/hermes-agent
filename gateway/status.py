@@ -504,9 +504,30 @@ def _pid_from_record(record: Optional[dict[str, Any]], key: str = "pid") -> Opti
         return None
 
 
+# Drift tolerance for the start-time PID-reuse guard, in fingerprint units.
+# On macOS/Windows the fingerprint is ``psutil.create_time()`` quantized to
+# centiseconds, and that value can shift by ~1s for the *same* live process
+# across a psutil upgrade in the venv or an NTP step adjustment (issue #78498) --
+# strict equality then rejects the live PID as "recycled" and the dashboard
+# reports a healthy gateway as stopped.  200 centiseconds (~2s) absorbs that
+# drift while staying far below any realistic PID-recycling window; the
+# cmdline/profile identity checks still gate on top.  On Linux the /proc
+# start-time (integer clock ticks since boot) never drifts, so the tolerance is
+# inert there and only same-source values are ever compared.
+_START_TIME_DRIFT_TOLERANCE = 200
+
+
 def _start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
-    """PID-reuse guard: True only when BOTH start times are known and differ."""
-    return None not in (recorded_start, current_start) and current_start != recorded_start
+    """PID-reuse guard: True only when BOTH start times are known and differ
+    beyond :data:`_START_TIME_DRIFT_TOLERANCE` (absorbs sub-2s create_time drift
+    on the same live process; issue #78498). Non-numeric fingerprints fall back
+    to strict inequality."""
+    if None in (recorded_start, current_start):
+        return False
+    try:
+        return abs(current_start - recorded_start) > _START_TIME_DRIFT_TOLERANCE
+    except (TypeError, ValueError):
+        return current_start != recorded_start
 
 
 def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:

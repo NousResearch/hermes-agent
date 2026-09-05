@@ -4564,14 +4564,26 @@ def _capture_make_agent_kwargs(monkeypatch) -> dict:
 
 def test_make_agent_passes_the_authenticated_dashboard_user_as_user_id(monkeypatch):
     """The identity stamped at WS-upgrade auth (WSTransport.auth_identity) reaches the agent as
-    ``user_id``, the same kwarg gateways pass, so memory providers scope memory to the login (#89794)."""
+    ``user_id``, the same kwarg gateways pass, so memory providers scope memory to the login."""
     captured = _capture_make_agent_kwargs(monkeypatch)
     transport = types.SimpleNamespace(auth_identity={"user_id": "oidc|abc123", "provider": "oidc"})
     monkeypatch.setitem(server._sessions, "sid-auth", {"session_key": "k", "transport": transport})
 
     server._make_agent("sid-auth", "k")
 
-    assert captured["user_id"] == "oidc|abc123"
+    assert captured["user_id"] == "oidc:oidc|abc123"
+
+
+def test_make_agent_keeps_same_named_users_of_two_login_providers_apart(monkeypatch):
+    """A basic-auth ``alice`` and an OIDC ``alice`` are two people and must not share one memory peer."""
+    seen = []
+    for provider in ("basic", "oidc"):
+        captured = _capture_make_agent_kwargs(monkeypatch)
+        transport = types.SimpleNamespace(auth_identity={"user_id": "alice", "provider": provider})
+        monkeypatch.setitem(server._sessions, f"sid-{provider}", {"session_key": "k", "transport": transport})
+        server._make_agent(f"sid-{provider}", "k")
+        seen.append(captured["user_id"])
+    assert seen == ["basic:alice", "oidc:alice"]
 
 
 @pytest.mark.parametrize("identity", [
@@ -4581,7 +4593,7 @@ def test_make_agent_passes_the_authenticated_dashboard_user_as_user_id(monkeypat
     {"user_id": "abc", "provider": ""},
 ])
 def test_make_agent_passes_no_user_id_without_an_authenticated_human(monkeypatch, identity):
-    """Legacy token, stdio and the PTY child's server-internal credential name no human; the
+    """Legacy token, stdio and the PTY child's server-internal credential name no human. The
     agent must not receive a user id memory would treat as a person."""
     captured = _capture_make_agent_kwargs(monkeypatch)
     transport = types.SimpleNamespace(auth_identity=identity)

@@ -93,7 +93,7 @@ class SessionPeersMixin:
             return self._sanitize_id(peer_name)
         raise HonchoPeerUnresolvedError(
             f"Honcho has no user peer for session '{key}': the transport supplied no user identity and "
-            "honcho.json declares no peerName. Set one with 'hermes honcho peer --user <name>'.")
+            "honcho.json declares no peerName.")
 
     def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
         """Resolve a peer alias ('user'/'ai') or explicit peer ID to a concrete, non-empty peer ID."""

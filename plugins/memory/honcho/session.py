@@ -24,9 +24,7 @@ logger = logging.getLogger(__name__)
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 
-# Honcho persists every message durably and get_or_create() re-hydrates from it on a cache miss,
-# so the local copies are bounded: synced messages beyond the retention cap are trimmed after a
-# flush, and sessions idle past the TTL are evicted (next use costs one extra round trip).
+# Honcho persists every message and get_or_create() re-hydrates on a miss, so the local copies stay bounded.
 _SESSION_MESSAGE_RETENTION = 200
 _SESSION_IDLE_TTL_SECONDS = 3600
 _SESSION_SWEEP_INTERVAL_SECONDS = 300
@@ -47,7 +45,7 @@ class HonchoSession:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
-    # Held by _flush_session across select, send and the _synced flip; lives with the message list it guards.
+    # Held by _flush_session across select, send and the _synced flip. It lives with the message list it guards.
     _flush_lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
@@ -95,8 +93,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         ):
             setattr(self, f"_{name}", getattr(config, name) if config else default)
         self._turn_counter: int = 0
-        # honcho session id -> observation booleans synced from that session's server config.
-        # Whole-dict values are swapped in one assignment, so lock-free readers never see a partial one.
+        # honcho session id -> observation booleans. Whole dicts are swapped in one assignment, so readers never see a partial one.
         self._session_observation: dict[str, dict[str, bool]] = {}
 
         # Prefetch cache: session_key -> last context result (consumed once per turn).
@@ -242,12 +239,13 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
     def _get_or_create_honcho_session(
         self, session_id: str, user_peer: Any, assistant_peer: Any,
     ) -> tuple[Any, list, dict[str, bool] | None]:
-        """(honcho_session, existing_messages, observation flags) with peers configured; a cached
-        session yields no messages and no flags."""
+        """(honcho_session, existing_messages, observation flags) with peers configured.
+
+        A cached session yields no messages and the flags stored when it was configured."""
         with self._cache_lock:
             if session_id in self._sessions_cache:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
-                return self._sessions_cache[session_id], [], None
+                return self._sessions_cache[session_id], [], self._session_observation.get(session_id)
 
         self._authed_call("session setup", lambda: self._sdk_session(session_id))
         observation = self._configure_session_peers(session_id, user_peer, assistant_peer)
@@ -262,7 +260,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
 
     @staticmethod
     def _has_unsynced(session: HonchoSession) -> bool:
-        return any(not m.get("_synced") for m in session.messages)
+        return any(not m.get("_synced") for m in list(session.messages))
 
     def _evict_session_locked(self, key: str, session: HonchoSession) -> None:
         """Drop one session and every entry keyed to it. Caller holds _cache_lock."""
@@ -368,9 +366,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             excess -= 1
 
     def _flush_session(self, session: HonchoSession) -> bool:
-        """Write unsynced messages to Honcho synchronously. The session's lock serializes flushers of
-        one message list: the async writer and an exit-time flush_all() both pick up the same batch
-        otherwise, and the second one enters here only after the first marked it synced."""
+        """Write unsynced messages to Honcho synchronously.
+
+        The session's lock keeps the async writer and an exit-time flush_all() from posting the same batch."""
         with session._flush_lock:
             return self._flush_session_locked(session)
 
@@ -385,7 +383,11 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
             honcho_session = self._sessions_cache.get(session.honcho_session_id)
             if honcho_session is None:
-                honcho_session, _, _ = self._get_or_create_honcho_session(session.honcho_session_id, user_peer, assistant_peer)
+                honcho_session, _, observation = self._get_or_create_honcho_session(
+                    session.honcho_session_id, user_peer, assistant_peer)
+                if observation is not None:
+                    with self._cache_lock:
+                        self._session_observation[session.honcho_session_id] = observation
             honcho_messages = [(user_peer if m["role"] == "user" else assistant_peer).message(m["content"]) for m in new_messages]
             honcho_session.add_messages(honcho_messages)
             return len(honcho_messages)
@@ -399,7 +401,9 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         for msg in new_messages:
             msg["_synced"] = ok
         if ok:
-            self._trim_synced_messages(session)
+            # Under the cache lock so the eviction check never iterates a list being trimmed.
+            with self._cache_lock:
+                self._trim_synced_messages(session)
         return ok
 
     def _try_flush(self, session: HonchoSession, level: int, msg: str) -> bool:
@@ -427,19 +431,36 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             except Exception as e:
                 logger.error("Honcho async writer error: %s", e)
 
+    def _keep_until_flushed(self, session: HonchoSession) -> None:
+        """Put an evicted session that still holds unsynced messages back where flush_all() looks.
+
+        When a newer object already owns the key, this one's batch is written now instead."""
+        with self._cache_lock:
+            current = self._cache.get(session.key)
+            if current is session or not self._has_unsynced(session):
+                return
+            if current is None:
+                self._cache[session.key] = session
+                return
+        self._flush_session(session)
+
     def save(self, session: HonchoSession) -> None:
-        """Save messages per write_frequency: "async" enqueues for the background thread; "turn"
-        flushes now; "session" defers until flush_all(); int N flushes every N turns."""
+        """Save messages per write_frequency: "async" enqueues for the background thread, "turn"
+        flushes now, "session" defers until flush_all(), int N flushes every N turns."""
         self._turn_counter += 1
         wf = self._write_frequency
-        if self._shutting_down:
+        if wf == "async" and self._async_queue is not None:
+            # Under the writer lock, so a put cannot slip in after stop_async_writer() drained the queue.
+            with self._async_thread_lock:
+                if not self._shutting_down:
+                    self._ensure_async_writer_locked()
+                    self._async_queue.put(session)
+                    return
             self._flush_session(session)
-        elif wf == "async":
-            if self._async_queue is not None:
-                self._ensure_async_writer()
-                self._async_queue.put(session)
-        elif wf == "turn" or (isinstance(wf, int) and wf > 0 and self._turn_counter % wf == 0):
+        elif self._shutting_down or wf == "turn" or (isinstance(wf, int) and wf > 0 and self._turn_counter % wf == 0):
             self._flush_session(session)
+        else:
+            self._keep_until_flushed(session)
 
     def flush_all(self) -> None:
         """Flush unsynced messages for all cached sessions, then drain the async queue inline."""
@@ -450,38 +471,48 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
                 self._flush_session(session)
             except Exception as e:
                 logger.error("Honcho flush_all error for %s: %s", session.key, e)
+        self._drain_async_queue()
 
-        if self._async_queue is not None:
-            while not self._async_queue.empty():
-                try:
-                    item = self._async_queue.get_nowait()
-                    if item is not _ASYNC_SHUTDOWN:
-                        self._flush_session(item)
-                except queue.Empty:
-                    break
+    def _drain_async_queue(self) -> None:
+        if self._async_queue is None:
+            return
+        while not self._async_queue.empty():
+            try:
+                item = self._async_queue.get_nowait()
+                if item is not _ASYNC_SHUTDOWN:
+                    self._flush_session(item)
+            except queue.Empty:
+                break
 
     def _ensure_async_writer(self) -> None:
         """Start the async writer on first enqueue (idempotent, thread-safe)."""
         if self._async_thread is not None and self._async_thread.is_alive():
             return
         with self._async_thread_lock:
-            if self._async_thread is None or not self._async_thread.is_alive():
-                self._async_thread = spawn_context_thread(self._async_writer_loop, name="honcho-async-writer", owner=self)
-                self._async_thread.start()
+            self._ensure_async_writer_locked()
 
-    def stop_async_writer(self) -> None:
-        """Join the async writer WITHOUT flushing (saveMessages: false must still exit cleanly)."""
-        self._shutting_down = True
+    def _ensure_async_writer_locked(self) -> None:
+        if self._async_thread is None or not self._async_thread.is_alive():
+            self._async_thread = spawn_context_thread(self._async_writer_loop, name="honcho-async-writer", owner=self)
+            self._async_thread.start()
+
+    def stop_async_writer(self, timeout: float = 10.0) -> None:
+        """Join the async writer, then drain whatever was queued before the join.
+
+        saveMessages: false never enqueues, so the drain is a no-op there and the exit stays clean."""
+        with self._async_thread_lock:
+            self._shutting_down = True
         if self._async_queue is not None and self._async_thread is not None and self._async_thread.is_alive():
             self._async_queue.put(_ASYNC_SHUTDOWN)
-            self._async_thread.join(timeout=10)
+            self._async_thread.join(timeout=timeout)
+        self._drain_async_queue()
 
-    def shutdown(self) -> None:
+    def shutdown(self, timeout: float = 10.0) -> None:
         """Flush everything, then stop the async writer thread."""
         self._shutting_down = True
         if self._async_queue is not None:
             self.flush_all()
-            self.stop_async_writer()
+            self.stop_async_writer(timeout=timeout)
 
     # ----- Prefetch cache -----
 

@@ -203,6 +203,8 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 | `userPeerAliases` | object | `{}` | Map of runtime IDs to peer IDs (`{"7654321": "alice"}`). Many-to-one is the intended pattern — alias all your runtime IDs to one peer name. One-to-many is not supported; one runtime ID resolves to exactly one peer |
 | `runtimePeerPrefix` | string | `""` | Prepended to unknown runtime IDs to namespace them (e.g. `"telegram_"` → `telegram_7654321`). Used only when no alias matches. Prevents collisions between platforms whose runtime IDs share the same shape |
 
+A dashboard login is a runtime identity too. The desktop passes `<provider>:<user id>` (for example `basic:alice` or `oidc:google-oauth2|1183…`) as the runtime user, so a logged-in session resolves like a gateway user: alias, then prefix, else the raw id. Enabling dashboard login on an install that ran on `peerName` moves new sessions to that peer. Keep the old history with `pinUserPeer: true` or a `userPeerAliases` entry for the login id. Without a login the desktop still uses `peerName`.
+
 > **Deprecated:** `pinPeerName` is a legacy alias for `pinUserPeer`, still read for back-compat (`pinUserPeer` wins where both are set). `hermes honcho setup` migrates it onto `pinUserPeer` on touch and never writes it.
 
 **Resolver ladder** (first match wins):
@@ -337,6 +339,8 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `contextCadence` | int | `1` | Minimum turns between base context refreshes (session summary + representation + card) |
 | `dialecticCadence` | int | `1` | Minimum turns between dialectic `.chat()` firings |
 | `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject base context on the first user message only; the dialectic supplement keeps its own cadence) |
+| `injection.sessionStart` | list | unset | Which base-context sections to inject: any of `summary`, `peerRepresentation`, `peerCard`, `aiRepresentation`, `aiCard`. Unset injects all of them in that order. `[]` injects nothing. A host block with an `injection` object replaces the root pin wholesale |
+| `logging` | bool | `false` | Append one JSON record per turn to `~/.honcho/injection.log` saying what was injected and why. The file is owner-only and holds the user's representation verbatim. `HONCHO_LOGGING=1` also switches it on and `HONCHO_INJECTION_LOG=<path>` moves it |
 | `queryRewrite` | bool | `false` | Rewrite the latest message into a retrieval query before dialectic (one extra auxiliary LLM call per cycle) |
 | `firstTurnBaseWait` | float | `3.0` | Max seconds turn 1 waits for base context / session init. `0` disables the wait (fully async; context surfaces on later turns). Turns 2+ never wait on a stalled init |
 | `firstTurnDialecticWait` | float | `2.0` | Max seconds turn 1 waits for a dialectic result. `0` disables |

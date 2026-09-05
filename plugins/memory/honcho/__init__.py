@@ -78,7 +78,25 @@ _PROMPT_HEADERS = {
     ),
 }
 
-# (context key, section header) for the injected base-context block, in display order.
+_LOCAL_PLATFORMS = frozenset({"cli", "tui", "desktop", ""})
+
+
+def _as_flag(raw: Any, default: Optional[bool]) -> Optional[bool]:
+    """A config or env value read as a boolean. Unrecognized strings keep ``default``."""
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+        return default
+    return bool(raw)
+
+
 # (injection.sessionStart name, context key, heading). Render order is fixed here, not by config order.
 _CONTEXT_SECTIONS = (
     ("summary", "summary", "Session Summary"),
@@ -152,8 +170,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         # Init auth failures live here because the failed manager is discarded.
         self._init_auth_failure: Optional[str] = None
         self._init_auth_notice_emitted = False
-        # Set when no user peer could be named (no runtime identity, no peerName); init is not retried.
+        # Set when no user peer could be named (no runtime identity, no peerName). Init is not retried.
         self._init_peer_failure: Optional[str] = None
+        self._init_peer_platform: str = "cli"
         self._init_peer_notice_emitted = False
         self._cron_skipped = False  # cron and flush contexts disable the plugin entirely
 
@@ -285,6 +304,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             elif isinstance(e, HonchoPeerUnresolvedError):
                 # A missing peerName does not heal mid-session, so drop the deferred kwargs and stop retrying.
                 self._init_peer_failure = str(e)
+                self._init_peer_platform = str(dict(init_kwargs).get("platform") or "cli")
                 self._lazy_init_kwargs = self._lazy_init_session_id = None
             logger.warning("Honcho %s session init failed: %s", label, detail)
             return False
@@ -432,24 +452,22 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     @staticmethod
     def _resolve_injection_log_path(look: _HostLookup) -> Optional[str]:
         """Where to append the injection audit, or None to keep it off.
-        The ``logging`` key and HONCHO_LOGGING were both accepted and ignored before this;
-        they now switch the audit on. HONCHO_INJECTION_LOG overrides the destination."""
+
+        The ``logging`` key or HONCHO_LOGGING switches it on. HONCHO_INJECTION_LOG overrides the destination."""
         explicit = os.environ.get("HONCHO_INJECTION_LOG")
         if explicit:
             return explicit
-        enabled = look.pick_set("logging")
+        enabled = _as_flag(look.pick_set("logging"), default=None)
         if enabled is None:
-            enabled = os.environ.get("HONCHO_LOGGING", "").lower() in ("1", "true", "yes")
+            enabled = _as_flag(os.environ.get("HONCHO_LOGGING"), default=False)
         if not enabled:
             return None
         return os.path.join(os.path.expanduser("~"), ".honcho", "injection.log")
 
     def _log_injection(self, reason: str, payload: str = "") -> str:
-        """Append one record of what this turn injected and why, then return ``payload`` unchanged.
-        The reason matters as much as the bytes: prefetch has several ways to return nothing
-        (cron, tools mode, session not ready, trivial prompt, fetched-but-empty) and they need
-        different fixes. The turn number says whether context arrived in time to steer the turn.
-        Never raises: an audit that can break the agent is worse than no audit."""
+        """Append one record of what this turn injected and why, then return ``payload`` unchanged. Never raises.
+
+        The reason is recorded because prefetch has several ways to return nothing and each needs a different fix."""
         path = self._injection_log_path
         if not path:
             return payload
@@ -461,7 +479,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             }, ensure_ascii=False)
             with self._injection_log_lock:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "a", encoding="utf-8") as fh:
+                # The record holds the user's representation verbatim, so the file is owner-only.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                with os.fdopen(fd, "a", encoding="utf-8") as fh:
                     fh.write(record + "\n")
         except Exception as e:
             logger.debug("Honcho injection log write failed: %s", e)
@@ -592,13 +612,27 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 "Tell the user (once) that Honcho memory is paused and that running 'hermes honcho setup' "
                 "to re-authenticate will restore it.")
 
+    def _peer_failure_text(self) -> str:
+        """The stored peer failure plus the fix that fits the session's platform.
+
+        On a gateway platform the fix is a user id from the transport, never peerName: a shared
+        peerName would merge every user of that gateway onto one peer."""
+        text = self._init_peer_failure or ""
+        if self._init_peer_platform in _LOCAL_PLATFORMS:
+            return f"{text} Set one with 'hermes honcho peer --user <name>'."
+        return f"{text} This platform supplied no user id for the chat, so memory stays off here."
+
     def _pop_peer_notice(self) -> str:
         """One-time model-facing notice that no user peer could be named and memory is off."""
         if self._init_peer_failure is None or self._init_peer_notice_emitted:
             return ""
         self._init_peer_notice_emitted = True
-        return (f"[Honcho memory status] Honcho memory is off for this session. {self._init_peer_failure}\n"
-                "Tell the user (once) that Honcho memory is off until honcho.json names a user peer.")
+        if self._init_peer_platform in _LOCAL_PLATFORMS:
+            advice = "Tell the user (once) that Honcho memory is off until honcho.json names a user peer."
+        else:
+            advice = ("Tell the user (once) that Honcho memory is off for this chat. Do not suggest peerName: "
+                      "on a shared gateway it would merge every user onto one peer.")
+        return f"[Honcho memory status] Honcho memory is off for this session. {self._peer_failure_text()}\n{advice}"
 
     def _truncate_to_budget(self, text: str) -> str:
         """Truncate text to the context_tokens budget (≈4 chars/token) at a word boundary."""
@@ -889,7 +923,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             if not self._ensure_session():
                 if self._init_auth_failure:
                     return tool_error(f"Honcho memory authentication failed: {self._init_auth_failure}")
-                return tool_error(self._init_peer_failure or "Honcho session could not be initialized.")
+                if self._init_peer_failure:
+                    return tool_error(self._peer_failure_text())
+                return tool_error("Honcho session could not be initialized.")
         if not self._manager or not self._session_key:
             return tool_error("Honcho is not active for this session.")
         if (handler := self._TOOL_HANDLERS.get(tool_name)) is None:
@@ -904,13 +940,12 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             logger.error("Honcho tool %s failed: %s", tool_name, e)
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
-    # Shutdown never joins for less than this; a thread blocked in httpx can hold the HTTP timeout.
+    # Shutdown never joins for less than this. A thread blocked in httpx can hold the HTTP timeout.
     _SHUTDOWN_JOIN_FLOOR = 5.0
 
     def _shutdown_join_budget(self) -> float:
         """One join window for every plugin thread: the floor, or the configured HTTP timeout when
-        that is longer, so a thread blocked in a Honcho call can finish before the interpreter
-        finalizes (#33485)."""
+        that is longer, so a thread blocked in a Honcho call can finish before the interpreter finalizes."""
         try:
             from plugins.memory.honcho.client_cache import _resolve_timeout_from_sources
             return max(self._SHUTDOWN_JOIN_FLOOR, _resolve_timeout_from_sources(self._config))
@@ -920,7 +955,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def shutdown(self) -> None:
         """Join the write threads, flush and stop the manager, then join every other thread this
         provider or its manager spawned, all within one budget. A daemon thread still blocked in
-        httpx I/O when the interpreter finalizes aborts the process (#37632)."""
+        httpx I/O when the interpreter finalizes aborts the process."""
         self._recall_generation = object()
         budget = self._shutdown_join_budget()
         deadline = time.monotonic() + budget
@@ -931,10 +966,11 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         if manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             # saveMessages: false skips persistence, but the async-writer thread must still be joined.
             with contextlib.suppress(Exception):
+                remaining = max(0.0, deadline - time.monotonic())
                 if getattr(self._config, "save_messages", True):
-                    manager.shutdown()  # flush_all() + join the writer
+                    manager.shutdown(timeout=remaining)  # flush_all() + join the writer
                 else:
-                    manager.stop_async_writer()
+                    manager.stop_async_writer(timeout=remaining)
         left = join_plugin_threads((self, manager), timeout=max(0.0, deadline - time.monotonic()))
         if left:
             logger.warning("Honcho shutdown timed out after %.1fs with %d thread(s) still running: %s",

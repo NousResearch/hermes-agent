@@ -85,7 +85,7 @@ class WSTransport:
         self._ws = ws
         self._loop = loop
         self._peer = peer
-        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server._ws_auth_reason``; None
+        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity

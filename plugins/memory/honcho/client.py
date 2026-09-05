@@ -503,8 +503,7 @@ class HonchoClientConfig:
         return self.workspace_id
 
 
-# Threads the plugin spawned, keyed by the provider or manager that owns them: shutdown joins its own
-# threads with one budget and never waits on another agent's work in the same gateway process.
+# Threads keyed by the provider or manager that owns them, so shutdown never waits on another agent's work.
 _plugin_threads: "weakref.WeakKeyDictionary[Any, weakref.WeakSet]" = weakref.WeakKeyDictionary()
 _plugin_threads_lock = _threading.Lock()
 

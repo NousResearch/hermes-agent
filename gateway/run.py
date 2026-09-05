@@ -2233,8 +2233,11 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
             custom_providers = data.get("custom_providers")
 
     def _read_runtime() -> None:
-        nonlocal provider, base_url, api_key
+        nonlocal resolved_model, provider, base_url, api_key
         runtime = _resolve_runtime_agent_kwargs()
+        runtime_model = runtime.get("model")
+        if runtime_model:
+            resolved_model = runtime_model
         provider = runtime.get("provider") or provider
         base_url = runtime.get("base_url") or base_url
         api_key = runtime.get("api_key")

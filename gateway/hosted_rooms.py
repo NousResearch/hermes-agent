@@ -703,6 +703,33 @@ def revoke_room_grant_scope(
                 timestamp, timestamp,
                 *_claim_values(claims, ("room_id", "member_id", "target_profile", "authority_gateway_id")).values(),
                 int(claims.get("authority_epoch") or 0)))
+        if table_exists(conn, "hosted_room_peer_controls"):
+            columns = table_columns(conn, "hosted_room_peer_controls")
+            required = {
+                "room_id", "member_id", "authority_gateway_id", "authority_epoch",
+                "status", "updated_at", "revoked_at",
+            }
+            if required.issubset(columns):
+                clauses = [
+                    "room_id=?", "member_id=?", "authority_gateway_id=?",
+                    "authority_epoch=?", "status IN ('active','expired')",
+                ]
+                values = [
+                    *_claim_values(
+                        claims,
+                        ("room_id", "member_id", "authority_gateway_id"),
+                    ).values(),
+                    int(claims.get("authority_epoch") or 0),
+                ]
+                if "target_profile" in columns:
+                    clauses.insert(2, "target_profile=?")
+                    values.insert(2, str(claims.get("target_profile") or ""))
+                conn.execute(
+                    f"""UPDATE hosted_room_peer_controls
+                            SET status='revoked', updated_at=?, revoked_at=?
+                          WHERE {' AND '.join(clauses)}""",
+                    (timestamp, timestamp, *values),
+                )
 
 
 def _reservation_claims(claims: Mapping[str, Any]) -> tuple[str, str, str, str, int]:

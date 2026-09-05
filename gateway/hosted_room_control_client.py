@@ -145,7 +145,7 @@ class RoomControlHTTPClient:
     def revoke(self) -> int:
         result = self._request(method="DELETE")
         revoked = result.get("revoked")
-        if set(result) != {"revoked"} or type(revoked) is not int or revoked not in {0, 1}:
+        if type(revoked) is not int or revoked not in {0, 1}:
             raise RoomControlClientError(
                 "Group Chat host returned an invalid revocation acknowledgement"
             )

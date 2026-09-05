@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from gateway import hosted_room_controls, hosted_rooms
+from gateway import hosted_room_controls, hosted_room_grant_state, hosted_rooms
 from gateway.hosted_room_control_client import (
     RoomControlHTTPClient,
     RoomControlClientError,
@@ -211,31 +212,65 @@ def test_partial_revoke_survives_reservation_gc_and_retries_the_bearer(
     tmp_path, monkeypatch
 ):
     db = tmp_path / "state.db"
+    profile_db = tmp_path / "profile.db"
+    now = time.time()
     claims = {
         "room_id": "room-1",
+        "home_install_id": "install:home",
         "member_id": "member-peer",
         "target_profile": "reviewer",
+        "target_install_id": "install:target",
         "authority_gateway_id": "install:home",
         "authority_epoch": 1,
     }
-    hosted_rooms.reserve_peer_room(db, claims=claims, expires_at=100, now=20)
+    reservation_expiry = now + 60
+    hosted_rooms.reserve_peer_room(
+        db, claims=claims, expires_at=reservation_expiry, now=now
+    )
     saved = hosted_room_controls.save_peer_control_link(
         db,
-        **claims,
+        room_id=claims["room_id"],
+        member_id=claims["member_id"],
+        target_profile=claims["target_profile"],
+        authority_gateway_id=claims["authority_gateway_id"],
+        authority_epoch=claims["authority_epoch"],
         room_name="Planning",
         member_count=2,
         home_url="https://home.example.test",
         control_token="A" * 43,
         expires_at=10_000_000_000,
-        now=20,
+        now=now,
     ).link
-    with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE hosted_room_peer_reservations SET revoked_at=30")
+
+    original_revoke = hosted_rooms.revoke_room_grant_scope
+
+    def fail_profile_store(db_path, **kwargs):
+        if str(db_path) == str(profile_db):
+            raise RuntimeError("profile revoke unavailable")
+        return original_revoke(db_path, **kwargs)
+
+    monkeypatch.setattr(
+        hosted_rooms, "revoke_room_grant_scope", fail_profile_store
+    )
+    with pytest.raises(RuntimeError, match="profile revoke unavailable"):
+        hosted_room_grant_state.revoke_grant_state(
+            (db, profile_db),
+            claims=claims,
+            expires_at=reservation_expiry,
+        )
+
+    retained = hosted_room_controls.load_peer_control_links(
+        db, include_inactive=True, now=now + 1
+    ).links
+    assert len(retained) == 1
+    assert retained[0].status == "revoked"
+    assert retained[0].control_token == saved.control_token
+    assert hosted_room_controls.load_peer_control_links(db, now=now + 1).links == ()
 
     responses = [
         RoomControlClientError("home unavailable", retryable=True),
         {"revoked": 2},
-        {"revoked": 0},
+        {"revoked": 0, "server_revision": 2},
     ]
     attempts = []
 
@@ -247,18 +282,6 @@ def test_partial_revoke_survives_reservation_gc_and_retries_the_bearer(
             raise response
         return response
 
-    monkeypatch.setattr(RoomControlHTTPClient, "_request", request)
-    with pytest.raises(RoomControlClientError, match="unavailable"):
-        revoke_stored_peer_control(db, room_id="room-1", member_id="member-peer")
-
-    retained = hosted_room_controls.load_peer_control_links(
-        db, include_inactive=True, now=40
-    ).links
-    assert len(retained) == 1
-    assert retained[0].status == "revoked"
-    assert retained[0].control_token == saved.control_token
-    assert hosted_room_controls.load_peer_control_links(db, now=40).links == ()
-
     hosted_rooms.reserve_peer_room(
         db,
         claims={
@@ -268,8 +291,8 @@ def test_partial_revoke_survives_reservation_gc_and_retries_the_bearer(
             "authority_gateway_id": "install:other",
             "authority_epoch": 1,
         },
-        expires_at=200,
-        now=101,
+        expires_at=reservation_expiry + 120,
+        now=reservation_expiry + 1,
     )
     with sqlite3.connect(db) as conn:
         assert conn.execute(
@@ -291,11 +314,20 @@ def test_partial_revoke_survives_reservation_gc_and_retries_the_bearer(
         backend.list_files(room=room)
     assert error.value.code == "file_access_denied"
 
+    monkeypatch.setattr(RoomControlHTTPClient, "_request", request)
+    with pytest.raises(RoomControlClientError, match="unavailable"):
+        revoke_stored_peer_control(db, room_id="room-1", member_id="member-peer")
+    assert len(
+        hosted_room_controls.load_peer_control_links(
+            db, include_inactive=True, now=now + 1
+        ).links
+    ) == 1
+
     with pytest.raises(RoomControlClientError, match="acknowledgement"):
         revoke_stored_peer_control(db, room_id="room-1", member_id="member-peer")
     assert len(
         hosted_room_controls.load_peer_control_links(
-            db, include_inactive=True, now=40
+            db, include_inactive=True, now=now + 1
         ).links
     ) == 1
 
@@ -305,7 +337,7 @@ def test_partial_revoke_survives_reservation_gc_and_retries_the_bearer(
     )
     assert (
         hosted_room_controls.load_peer_control_links(
-            db, include_inactive=True, now=40
+            db, include_inactive=True, now=now + 1
         ).links
         == ()
     )

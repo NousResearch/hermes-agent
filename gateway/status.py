@@ -981,14 +981,29 @@ def get_runtime_status_running_pid(
         return None
     if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
         return None
-    pid = _live_pid_from_record(payload)
-    if pid is None:
+    pid = _pid_from_record(payload)
+    if pid is None or not _pid_exists(pid):
         return None
     # Active-profile context: the record's hermes_home must match this process so a stale record
     # cannot lend another profile's identity.
     if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
         return None
-    if not _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
+
+    live_cmdline = _read_process_cmdline(pid)
+    if live_cmdline:
+        profile_home = expected_home or _get_process_hermes_home()
+        if not looks_like_gateway_runtime_command_line(live_cmdline):
+            return None
+        if not _command_line_belongs_to_profile(live_cmdline, profile_home):
+            return None
+        return pid
+
+    # If the OS cannot expose argv, retain the exact start-time guard before trusting the record.
+    # Destructive paths always keep their own exact guard; this exception is liveness-only and
+    # requires a readable live command line above to override a stale writer fingerprint.
+    if _start_times_conflict(payload.get("start_time"), _get_process_start_time(pid)):
+        return None
+    if not _record_looks_like_gateway(payload):
         return None
     return pid
 

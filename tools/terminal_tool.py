@@ -139,7 +139,88 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    if any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", [])):
+        return True
+    # Also check docker_extra_args for bind mounts specified via --mount or -v/--volume
+    return _docker_extra_args_have_host_bind(config.get("docker_extra_args", []))
+
+
+def _docker_extra_args_have_host_bind(extra_args: list) -> bool:
+    """Parse docker_extra_args for host bind mounts.
+    
+    Docker supports multiple forms:
+      --mount type=bind,source=/host,target=/container
+      --mount type=bind,src=/host,dst=/container
+      --mount=... (equals form)
+      -v /host:/container
+      -v=/host:/container (equals form)
+      --volume /host:/container
+      --volume=/host:/container (equals form)
+    """
+    if not extra_args:
+        return False
+    
+    args = list(extra_args)
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        # --mount=... form
+        if arg.startswith("--mount="):
+            mount_spec = arg[len("--mount="):]
+            if _is_host_bind_mount(mount_spec):
+                return True
+        # --mount value form (next arg)
+        elif arg == "--mount" and i + 1 < len(args):
+            if _is_host_bind_mount(args[i + 1]):
+                return True
+            i += 1
+        # -v=/host:/container or --volume=/host:/container
+        elif arg.startswith("-v=") or arg.startswith("--volume="):
+            mount_spec = arg.split("=", 1)[1]
+            if _is_host_bind_volume(mount_spec):
+                return True
+        # -v /host:/container or --volume /host:/container (next arg)
+        elif arg in ("-v", "--volume") and i + 1 < len(args):
+            if _is_host_bind_volume(args[i + 1]):
+                return True
+            i += 1
+        i += 1
+    return False
+
+
+def _is_host_bind_mount(mount_spec: str) -> bool:
+    """Check if a --mount spec is a bind mount with a host path source."""
+    params = {}
+    for part in mount_spec.split(","):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            params[key.strip()] = value.strip()
+    # type must be bind (or omitted, default is bind)
+    mount_type = params.get("type", "bind")
+    if mount_type != "bind":
+        return False
+    # source/src can be host path
+    source = params.get("source") or params.get("src", "")
+    return _docker_volume_uses_host_path(source)
+
+
+def _is_host_bind_volume(volume_spec: str) -> bool:
+    """Check if a -v/--volume spec bind-mounts a host path.
+    
+    Formats:
+      /host:/container
+      /host:/container:ro
+      named_volume:/container
+    """
+    if not volume_spec:
+        return False
+    parts = volume_spec.split(":")
+    if len(parts) >= 2:
+        source = parts[0]
+        # Named volumes are not host paths
+        if "/" in source or source.startswith(".") or source == "~":
+            return True
+    return False
 
 
 def _check_all_guards(command: str, env_type: str,

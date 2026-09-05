@@ -1413,6 +1413,8 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     from agent.codex_responses_adapter import classify_responses_route
     from agent.native_compaction import native_compaction_context_management
+    from agent.astra_async_tools import is_direct_astra
+    from agent.turn_api_call import _should_stream
     is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
     # Native server-side compaction (gpt-5.6 on direct OpenAI / ChatGPT Codex routes
     # only) — None on every other route/model, leaving the request unchanged.
@@ -1439,7 +1441,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
         replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
-        context_management=context_management)
+        context_management=context_management,
+        midstream_executor_active=bool(_should_stream(agent) and is_direct_astra(agent)))
 
 
 def _anthropic_max_output_for_model(agent):
@@ -1631,6 +1634,10 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     tc_dict = {"id": call_id, "call_id": call_id, "response_item_id": response_item_id,
         "type": tool_call.type,
         "function": {"name": tool_call.function.name, "arguments": tool_call.function.arguments}}
+    provider_data = getattr(tool_call, "provider_data", None) or {}
+    if getattr(tool_call, "async", False) is True or getattr(tool_call, "async_", False) is True \
+            or provider_data.get("async") is True:
+        tc_dict["async"] = True
     # Preserve extra_content (Gemini thought_signature) or Gemini 3 thinking
     # models 400 on the next request.
     # Tool-call arguments are intentionally NOT redacted here. This dict enters the in-memory conversation

@@ -553,6 +553,13 @@ def estimate_usage_cost(
     for tokens, rate, rate_above, note in (
         (usage.input_tokens, entry.input_cost_per_million, entry.input_cost_per_million_above, ()),
         (usage.output_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
+        # Reasoning tokens are billed by providers as completion tokens (confirmed
+        # against OpenRouter per-call billing, #68081). normalize_usage captures them
+        # as a separate additive bucket disjoint from output_tokens, so without this
+        # they were silently dropped from cost and reasoning-model spend undercounted.
+        # Priced at the output rate so above-tier context rates apply to them too; a
+        # missing output rate with reasoning tokens present reports unknown, not $0.
+        (usage.reasoning_tokens, entry.output_cost_per_million, entry.output_cost_per_million_above, ()),
         (usage.cache_read_tokens, entry.cache_read_cost_per_million, entry.cache_read_cost_per_million_above,
          ("cache-read pricing unavailable for route",)),
         (usage.cache_write_tokens, entry.cache_write_cost_per_million, None,

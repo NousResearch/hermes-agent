@@ -1149,9 +1149,12 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb)) so a stuck
-        # policy hook cannot spawn a new abandoned thread on every fire.
-        self._hook_running_callbacks: Dict[tuple, object] = {}
+        # In-flight / recently-timed-out hook callbacks. Multiple turns may
+        # legitimately invoke the same callback concurrently, so running
+        # tokens are tracked independently. Only a token that actually timed
+        # out suppresses later fires; an ordinary in-flight callback does not.
+        self._hook_running_callbacks: Dict[tuple, Set[object]] = {}
+        self._hook_timed_out_callbacks: Dict[tuple, Set[object]] = {}
         self._hook_timeout_suppressed_until: Dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()
         self._hook_timeout_suppression_seconds = _HOOK_TIMEOUT_SUPPRESSION_SECONDS
@@ -1670,8 +1673,8 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
     Hot-path / observer hooks in ``_HOOK_TIMEOUT_BOUNDED_HOOKS`` and the policy hook ``pre_tool_call`` are
     bounded by ``plugins.hook_callback_timeout`` (default 30s). On timeout the worker is abandoned (not
-    joined) so we do not reintroduce the #6622 hang. Timed-out or still-running ``pre_tool_call`` callbacks
-    fail closed with a block directive; other bounded hooks fail open (skip).
+    joined) so we do not reintroduce the #6622 hang. Timed-out ``pre_tool_call`` callbacks and their
+    still-running abandoned workers fail closed with a block directive; other bounded hooks fail open.
     Ensures plugins are discovered on first invocation so callers in processes that never explicitly call
     ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
     callbacks registered by user plugins (tracking #64178).

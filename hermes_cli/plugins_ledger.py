@@ -53,6 +53,11 @@ class PluginRegistration:
 
 
 class PluginLedgerMixin:
+    _hook_running_callbacks: Dict[tuple, Set[object]]
+    _hook_timed_out_callbacks: Dict[tuple, Set[object]]
+    _hook_timeout_suppressed_until: Dict[tuple, float]
+    _hook_timeout_lock: Any
+
     def _track_registration(
         self, manifest: PluginManifest, kind: str, key: str, release: Callable[[], None], *,
         persistent: bool = False,
@@ -265,5 +270,6 @@ class PluginLedgerMixin:
         self._context_engine = None
         with self._hook_timeout_lock:
             self._hook_running_callbacks.clear()
+            self._hook_timed_out_callbacks.clear()
             self._hook_timeout_suppressed_until.clear()
         self._discovered = False

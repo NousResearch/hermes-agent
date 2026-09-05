@@ -85,11 +85,34 @@ _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
 
+def _worker_memory_max_cap_bytes() -> int:
+    """Configured worker ceiling, falling back to the historical 4 GiB cap."""
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+
+        configured = cfg_get(read_raw_config(), "terminal", "worker_memory_max_mb")
+        if configured is None:
+            configured = DEFAULT_CONFIG["terminal"]["worker_memory_max_mb"]
+        parsed = int(configured) * 1024 * 1024
+    except Exception:
+        return _WORKER_MEMORY_MAX_CAP_BYTES
+    if parsed >= _MIN_WORKER_MEMORY_MAX_BYTES:
+        return parsed
+    logger.warning(
+        "Ignoring invalid terminal.worker_memory_max_mb=%r; "
+        "expected an integer representing at least %d MiB",
+        configured,
+        _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024),
+    )
+    return _WORKER_MEMORY_MAX_CAP_BYTES
+
+
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
     ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
     bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
+    capped by ``terminal.worker_memory_max_mb``), so an oversized override cannot
+    exceed the enclosing slice.
 
     The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
     isolation composes with PR #57121 instead of inventing a second knob.
@@ -108,6 +131,7 @@ def _worker_memory_max_bytes() -> int:
                 "Ignoring invalid TERMINAL_LOCAL_MEMORY_MAX_MB=%r; "
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
+    configured_cap = _worker_memory_max_cap_bytes()
     candidates: List[int] = []
     with suppress(OSError, ValueError):
         lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
@@ -119,8 +143,12 @@ def _worker_memory_max_bytes() -> int:
                 candidates.append(int(raw_limit))
     with suppress(OSError, ValueError, TypeError):
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
-        candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))
-    safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
+        candidates.append(max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2))
+    safe_bound = (
+        min(configured_cap, *candidates)
+        if candidates
+        else min(configured_cap, _DEFAULT_WORKER_MEMORY_MAX_BYTES)
+    )
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 

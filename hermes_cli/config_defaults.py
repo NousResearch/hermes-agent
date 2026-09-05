@@ -271,6 +271,9 @@ DEFAULT_CONFIG = {
         # Menlo, Consolas, monospace"). Lets users use a Nerd Font without patching the app.
         "font_family": "",
         "timeout": 180,
+        # Ceiling for each gateway-spawned local worker's systemd scope. The effective MemoryMax
+        # remains bounded by the enclosing cgroup, half of physical RAM, and the legacy local guard.
+        "worker_memory_max_mb": 4096,
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,

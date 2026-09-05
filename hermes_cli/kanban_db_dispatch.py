@@ -272,14 +272,24 @@ def _poll_worker_exit(pid: int) -> bool:
     return False
 
 
-def _sigkill(kill, pid: int) -> bool:
-    """Best-effort SIGKILL; True when the signal was delivered."""
+def _send_worker_signal(kill, pid: int, signum: int) -> bool:
+    """Signal the worker process group when available, then fall back to its pid."""
+    if hasattr(os, "killpg"):
+        try:
+            kill(-pid, signum)
+            return True
+        except (ProcessLookupError, OSError):
+            pass
     try:
-        # signal.SIGKILL doesn't exist on Windows; SIGTERM maps to TerminateProcess.
-        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        kill(pid, signum)
         return True
     except (ProcessLookupError, OSError):
         return False
+
+
+def _sigkill(kill, pid: int) -> bool:
+    """Best-effort SIGKILL; True when the signal was delivered."""
+    return _send_worker_signal(kill, pid, getattr(signal, "SIGKILL", signal.SIGTERM))
 
 
 def _terminate_reclaimed_worker(
@@ -454,8 +464,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         killed = False
         kill = _kill_fn(signal_fn)
         if kill is not None:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
+            _send_worker_signal(kill, pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid)
             if _kb._pid_alive(pid):
@@ -1899,9 +1908,16 @@ def _rotate_worker_log(
             src = _rotated_log_path(log_path, generation)
             if not src.exists():
                 continue
-            with contextlib.suppress(OSError):
-                src.rename(_rotated_log_path(log_path, generation + 1))
-        log_path.rename(_rotated_log_path(log_path, 1))
+            dst = _rotated_log_path(log_path, generation + 1)
+            try:
+                src.rename(dst)
+                dst.chmod(0o600)
+            except OSError:
+                continue
+        first = _rotated_log_path(log_path, 1)
+        log_path.rename(first)
+        with contextlib.suppress(OSError):
+            first.chmod(0o600)
     except OSError:
         pass
 
@@ -2251,30 +2267,38 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    log_dir = _kb.worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    wrapped_cmd = [
+        sys.executable,
+        "-m",
+        "hermes_cli.kanban_worker_log",
+        str(log_path),
+        "--",
+        *cmd,
+    ]
     # A worker spawned by a managed systemd gateway must leave the gateway's
-    # cgroup before startup; otherwise restarting the service kills the worker
-    # that is performing the handoff.
-    cmd = _restart_safe_worker_argv(task, cmd)
-    log_f = _open_worker_log(task, board)
+    # cgroup before startup; scope the wrapper so its child stays with it.
+    wrapped_cmd = _restart_safe_worker_argv(task, wrapped_cmd)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
+            wrapped_cmd,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL,
-            stdout=log_f,
+            stdout=subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
         )
     except FileNotFoundError:
-        log_f.close()
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
-    # Intentionally NOT closing log_f: the child keeps writing after return;
-    # the OS-level FD stays open in the child until it exits.
     return proc.pid
 
 

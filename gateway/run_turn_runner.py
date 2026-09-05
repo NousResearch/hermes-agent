@@ -948,7 +948,7 @@ class TurnRunner:
         )
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
-                           reasoning_config, pr, skip_context_files):
+                           reasoning_config, pr, skip_context_files, skip_memory):
         from gateway.run import _checkpoint_agent_kwargs
         ctx = self._ctx
         runner = self._runner
@@ -973,6 +973,7 @@ class TurnRunner:
             # See #60955.
             fallback_model=self._runner._refresh_fallback_model(),
             skip_context_files=skip_context_files,
+            skip_memory=skip_memory,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
         )
@@ -982,13 +983,18 @@ class TurnRunner:
         hits) or build a fresh one. Returns (agent, reused_cached_agent)."""
         ctx = self._ctx
         runner = self._runner
-        skip_context_files = self._skip_context_files(platform_key)
+        from gateway.run import _resolve_gateway_isolation_skip_flags
+
+        skip_context_files, skip_memory = _resolve_gateway_isolation_skip_flags(
+            self._skip_context_files(platform_key)
+        )
         sig = runner._agent_config_signature(
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
             cache_keys=runner._extract_cache_busting_config(ctx.user_config),
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
+            skip_memory=skip_memory,
         )
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)
@@ -1005,7 +1011,8 @@ class TurnRunner:
             self._release_evicted_agent(found.evicted)
         if agent is None:
             agent = self._build_fresh_agent(
-                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
+                turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
+                skip_context_files, skip_memory,
             )
             if cache_lock and cache is not None:
                 with cache_lock:

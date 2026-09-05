@@ -2157,6 +2157,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key}
+        from agent.isolation import resolve_agent_isolation
+
+        isolated = resolve_agent_isolation()
+        agent_kwargs.update(skip_context_files=isolated, skip_memory=isolated)
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
         agent = AIAgent(**agent_kwargs)

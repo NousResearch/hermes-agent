@@ -390,6 +390,10 @@ class SessionManager:
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
             "model": model or default_model,
         }
+        from agent.isolation import resolve_agent_isolation
+
+        isolated = resolve_agent_isolation()
+        kwargs.update(skip_context_files=isolated, skip_memory=isolated)
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
             kwargs.update({

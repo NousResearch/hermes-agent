@@ -2117,6 +2117,17 @@ class GatewayTurnMixin:
 
             platform_key = _platform_config_key(source.platform)
             enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
+            from gateway.run import _resolve_gateway_isolation_skip_flags
+
+            platforms_cfg = (user_config.get("gateway") or {}).get("platforms") or {}
+            platform_skip_context = False
+            if isinstance(platforms_cfg, dict):
+                platform_cfg = platforms_cfg.get(platform_key) or {}
+                if isinstance(platform_cfg, dict):
+                    platform_skip_context = bool(platform_cfg.get("skip_context_files"))
+            skip_context_files, skip_memory = _resolve_gateway_isolation_skip_flags(
+                platform_skip_context
+            )
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(source=source, model=model)
@@ -2164,6 +2175,8 @@ class GatewayTurnMixin:
                     # Reload from disk — do not reuse the startup snapshot.
                     # See #60955.
                     fallback_model=self._refresh_fallback_model(),
+                    skip_context_files=skip_context_files,
+                    skip_memory=skip_memory,
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)

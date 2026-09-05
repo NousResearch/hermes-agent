@@ -2777,6 +2777,16 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
 
 
+def _resolve_gateway_isolation_skip_flags(
+    platform_skip_context: bool = False,
+) -> tuple[bool, bool]:
+    """Compose the platform context opt-out with process-wide isolation."""
+    from agent.isolation import resolve_agent_isolation
+
+    isolated = resolve_agent_isolation()
+    return bool(platform_skip_context or isolated), isolated
+
+
 def _load_gateway_runtime_config() -> dict:
     """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
     Expansion failures are deliberately NOT swallowed: an unexpanded dict would mask the bug fixed here.

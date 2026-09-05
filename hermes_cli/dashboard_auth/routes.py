@@ -17,6 +17,7 @@ allowlists the public ones.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -349,6 +350,128 @@ def _reset_password_rate_limit() -> None:
         _pw_attempts.clear()
 
 
+# --- Native refresh circuit breaker ------------------------------------------
+# A struggling upstream (429/5xx/transport → ProviderError → 503) used to be met
+# with zero state change no matter how many consecutive failures piled up
+# (#98338: 3,338 rejected refreshes). The breaker trips after a few consecutive
+# transient failures for one credential hash and refuses fast (503 +
+# Retry-After) through a cooldown, then admits a single half-open probe: any
+# provider verdict (success OR permanent rejection) proves reachability and
+# closes it; only another transient failure re-opens. Permanent rejections
+# (401 all-rejected) never count — a dead token is not an outage.
+# Token rotation (fresh garbage per attempt) evades any per-credential budget,
+# so a coarse per-IP transient-failure count refuses fast past its own budget.
+# Process-local and best-effort (resets on restart), same as the limiters.
+_BREAKER_FAIL_THRESHOLD = 3
+_BREAKER_WINDOW_SEC = 60.0
+_BREAKER_COOLDOWN_SEC = 30.0
+_BREAKER_MAX_BUCKETS = 4096
+_IP_STORM_MAX = 30
+_IP_STORM_WINDOW_SEC = 60.0
+_IP_TABLE_MAX = 4096
+_breaker_state: Dict[str, Dict[str, Any]] = {}
+_breaker_lock = threading.Lock()
+_ip_transients: Dict[str, Deque[float]] = defaultdict(deque)
+
+
+def _breaker_bucket(refresh_token: str) -> str:
+    """State-table key for a presented refresh token: hex SHA-256, never raw."""
+    return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+def _prune_breaker_buckets(now: float) -> None:
+    """Caller must hold ``_breaker_lock``. Drop idle buckets past the cap."""
+    if len(_breaker_state) <= _BREAKER_MAX_BUCKETS:
+        return
+    cutoff = now - _BREAKER_WINDOW_SEC
+    for key in [k for k, st in _breaker_state.items()
+                if not st["fails"] and (st["open_at"] or 0) < cutoff]:
+        del _breaker_state[key]
+        if len(_breaker_state) <= _BREAKER_MAX_BUCKETS:
+            return
+    while len(_breaker_state) > _BREAKER_MAX_BUCKETS:
+        _breaker_state.pop(next(iter(_breaker_state)))
+
+
+def _breaker_check(refresh_token: str, ip: str) -> tuple[bool, str, float]:
+    """``(refuse, reason, retry_after)``. Admits exactly one half-open probe per
+    cooldown; concurrent probers keep getting refused until it resolves."""
+    now = time.monotonic()
+    key = _breaker_bucket(refresh_token)
+    with _breaker_lock:
+        _prune_breaker_buckets(now)
+        st = _breaker_state.get(key)
+        if st is not None and st["open_at"] is not None:
+            if now - st["open_at"] < _BREAKER_COOLDOWN_SEC:
+                return True, "breaker_open", _BREAKER_COOLDOWN_SEC - (now - st["open_at"])
+            if st["probing"]:
+                return True, "breaker_open", 0.0
+            st["probing"] = True
+            return False, "", 0.0
+        bucket = _ip_transients[ip or "_unknown_"]
+        cutoff = now - _IP_STORM_WINDOW_SEC
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _IP_STORM_MAX:
+            return True, "storm_backstop", _IP_STORM_WINDOW_SEC - (now - bucket[0])
+        return False, "", 0.0
+
+
+def _breaker_record(refresh_token: str, ip: str, outcome: str) -> None:
+    """Fold one resolved attempt in: ``\"success\"`` / ``\"permanent\"`` (any provider
+    verdict → upstream reachable → close) or ``\"transient\"`` (count toward trip)."""
+    now = time.monotonic()
+    key = _breaker_bucket(refresh_token)
+    with _breaker_lock:
+        if outcome in ("success", "permanent"):
+            _breaker_state.pop(key, None)
+            return
+        st = _breaker_state.setdefault(
+            key, {"fails": deque(), "open_at": None, "probing": False})
+        was_probe = st["probing"]
+        cutoff = now - _BREAKER_WINDOW_SEC
+        while st["fails"] and st["fails"][0] < cutoff:
+            st["fails"].popleft()
+        st["fails"].append(now)
+        st["probing"] = False
+        if was_probe:
+            # Failed half-open probe: re-arm the full cooldown, or every
+            # request past the first trip would probe straight through.
+            st["open_at"] = now
+            _log.warning("dashboard-auth: refresh breaker probe failed for credential hash "
+                         "%.12s; cooldown re-armed", key)
+        elif st["open_at"] is None and len(st["fails"]) >= _BREAKER_FAIL_THRESHOLD:
+            st["open_at"] = now
+            _log.warning("dashboard-auth: refresh breaker OPEN for credential hash %.12s "
+                         "(%d transient failures in %.0fs)",
+                         key, len(st["fails"]), _BREAKER_WINDOW_SEC)
+        bucket = _ip_transients[ip or "_unknown_"]
+        while bucket and bucket[0] < now - _IP_STORM_WINDOW_SEC:
+            bucket.popleft()
+        bucket.append(now)
+        if len(_ip_transients) > _IP_TABLE_MAX:
+            _prune_ip_buckets(now)
+
+
+def _prune_ip_buckets(now: float) -> None:
+    """Caller must hold ``_breaker_lock``. Drop expired IP buckets, then oldest."""
+    cutoff = now - _IP_STORM_WINDOW_SEC
+    for key in [k for k, bucket in _ip_transients.items()
+                if not bucket or bucket[-1] < cutoff]:
+        del _ip_transients[key]
+        if len(_ip_transients) <= _IP_TABLE_MAX:
+            return
+    while len(_ip_transients) > _IP_TABLE_MAX:
+        _ip_transients.pop(next(iter(_ip_transients)))
+
+
+def _reset_native_refresh_breaker() -> None:
+    """Test-only: clear all breaker and storm-backstop state."""
+    with _breaker_lock:
+        _breaker_state.clear()
+        _ip_transients.clear()
+
+
 class _PasswordLoginBody(BaseModel):
     provider: str
     username: str
@@ -484,19 +607,36 @@ class _NativeRefreshBody(BaseModel):
 async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     """Rotate a desktop-held refresh token (mirrors the gate's ``_attempt_refresh``): every
     provider rejecting the RT -> 401 ``session_expired`` (desktop re-logs); none rotated and one
-    unreachable -> 503."""
+    unreachable -> 503. Consecutive transient failures trip a per-credential circuit
+    breaker (fast 503 + ``Retry-After`` through a cooldown, then one half-open probe);
+    token rotation from a single IP trips a coarser storm backstop."""
     if not body.refresh_token:
         raise _http(400, "refresh_token required")
+    ip = _client_ip(request)
+    refuse, reason, retry_after = _breaker_check(body.refresh_token, ip)
+    if refuse:
+        _audit(request, AuditEvent.REFRESH_FAILURE, reason=reason)
+        return JSONResponse(
+            {
+                "error": reason,
+                "detail": "Authentication service is struggling. Try again shortly.",
+            },
+            status_code=503,
+            headers={"Retry-After": str(int(max(1.0, retry_after)))},
+        )
     try:
         session = scan_session_providers(
             body.provider, lambda p: p.refresh_session(refresh_token=body.refresh_token),
             phase="native refresh", log=_log, swallow=(RefreshExpiredError,))
     except ProviderError as e:
+        _breaker_record(body.refresh_token, ip, "transient")
         raise _http(503, f"Auth provider {str(e)!r} unreachable")
     if session is not None:
+        _breaker_record(body.refresh_token, ip, "success")
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)
         return _bearer_payload(session)
+    _breaker_record(body.refresh_token, ip, "permanent")
     _audit(request, AuditEvent.REFRESH_FAILURE, reason="all_providers_rejected_rt")
     return JSONResponse(
         {"error": "session_expired",

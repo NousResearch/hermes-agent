@@ -278,8 +278,8 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
         def __init__(self):
             self.closed = False
 
-        def assert_resume_safe(self, session_id):
-            captured["assert_resume_safe"] = session_id
+        def assert_resume_safe(self, session_id, **kwargs):
+            captured["assert_resume_safe"] = (session_id, kwargs)
             return 2
 
         def resolve_resume_session_id(self, session_id):
@@ -339,7 +339,7 @@ def test_oneshot_resume_preloads_session_history(monkeypatch):
     assert not result.get("failed")
     assert resolve_calls == ["input-session", "resolved-session"]
     assert captured["get_session"] == "resolved-session"
-    assert captured["assert_resume_safe"] == "resolved-session"
+    assert captured["assert_resume_safe"] == ("resolved-session", {"tip_only": True})
     assert captured["get_messages_as_conversation"] == (
         "resolved-session",
         {"repair_alternation": True},
@@ -369,11 +369,11 @@ def test_oneshot_resume_refuses_oversized_session_before_loading_history(
         def reopen_session(self, session_id):
             calls.append(("reopen", session_id))
 
-        def assert_resume_safe(self, session_id):
-            calls.append(("assert_resume_safe", session_id))
+        def assert_resume_safe(self, session_id, **kwargs):
+            calls.append(("assert_resume_safe", session_id, kwargs))
             from hermes_state import SessionResumeTooLargeError
 
-            raise SessionResumeTooLargeError(3, 2)
+            raise SessionResumeTooLargeError(3, 2, scope="in its tip segment")
 
         def get_resume_conversations(self, session_id):
             calls.append(("get_resume_conversations", session_id))
@@ -440,7 +440,7 @@ def test_oneshot_resume_refuses_oversized_session_before_loading_history(
         ("reopen", "too-large"),
         ("resolve", "too-large"),
         ("reopen", "too-large"),
-        ("assert_resume_safe", "too-large"),
+        ("assert_resume_safe", "too-large", {"tip_only": True}),
         ("close", None),
     ]
 
@@ -846,6 +846,175 @@ def test_oneshot_resume_retries_failed_transcript_flush_before_close(
         ("user", "what was stored?"),
         ("assistant", "resumed fact is cobalt"),
     ]
+
+
+def test_oneshot_resume_allows_compressed_lineage_when_tip_is_within_limit(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    import logging
+
+    from hermes_cli.oneshot import run_oneshot
+    import hermes_cli.config as config_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import hermes_cli.tools_config as tools_config_mod
+    import hermes_state
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    seed_db = SessionDB(db_path=db_path)
+    seed_db.create_session("compressed-root", source="cli")
+    seed_db.append_messages_batch(
+        "compressed-root",
+        [{"role": "user", "content": f"archived-{idx}"} for idx in range(4)],
+    )
+    seed_db.end_session("compressed-root", "compression")
+    seed_db.create_session("live-tip", source="cli", parent_session_id="compressed-root")
+    seed_db.append_message("live-tip", "user", "remember live-tip cobalt")
+    seed_db.append_message("live-tip", "assistant", "tip fact stored")
+    seed_db.end_session("live-tip", "agent_close")
+    seed_db.close()
+
+    class DeterministicClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **kwargs):
+            messages = kwargs["messages"]
+            saw_tip = any(
+                isinstance(message.get("content"), str)
+                and "live-tip cobalt" in message["content"]
+                for message in messages
+            )
+            saw_archive = any(
+                isinstance(message.get("content"), str)
+                and "archived-" in message["content"]
+                for message in messages
+            )
+            return _mock_response(
+                "tip-only resume worked" if saw_tip and not saw_archive else "wrong scope"
+            )
+
+    monkeypatch.setattr(hermes_state, "resolved_max_resume_messages", lambda: 3)
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._create_session_db_for_oneshot",
+        lambda: SessionDB(db_path=db_path),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"model": {"default": "m"}})
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "provider": "openai",
+            "requested_provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+        lambda **_kwargs: None,
+    )
+
+    with (
+        patch("agent.process_bootstrap.OpenAI", DeterministicClient),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+    ):
+        try:
+            rc = run_oneshot("what does the live tip remember?", resume="live-tip")
+        finally:
+            logging.disable(logging.NOTSET)
+
+    assert rc == 0
+    assert capsys.readouterr().out == "tip-only resume worked\n"
+    verify_db = SessionDB(db_path=db_path)
+    try:
+        assert verify_db.get_resume_message_count("live-tip") > 3
+        rows = verify_db.get_messages_as_conversation("live-tip")
+    finally:
+        verify_db.close()
+    assert [(row["role"], row["content"]) for row in rows][-2:] == [
+        ("user", "what does the live tip remember?"),
+        ("assistant", "tip-only resume worked"),
+    ]
+
+
+def test_oneshot_resume_rejects_compressed_tip_when_tip_exceeds_limit(
+    monkeypatch,
+    tmp_path,
+):
+    import logging
+
+    from hermes_cli.oneshot import _run_agent
+    import hermes_cli.config as config_mod
+    import hermes_cli.runtime_provider as runtime_provider_mod
+    import hermes_cli.tools_config as tools_config_mod
+    import hermes_state
+    from hermes_state import SessionDB, SessionResumeTooLargeError
+
+    db_path = tmp_path / "state.db"
+    seed_db = SessionDB(db_path=db_path)
+    seed_db.create_session("compressed-root", source="cli")
+    seed_db.append_message("compressed-root", "user", "archived")
+    seed_db.end_session("compressed-root", "compression")
+    seed_db.create_session("large-tip", source="cli", parent_session_id="compressed-root")
+    seed_db.append_messages_batch(
+        "large-tip",
+        [{"role": "user", "content": f"tip-{idx}"} for idx in range(4)],
+    )
+    seed_db.end_session("large-tip", "agent_close")
+    seed_db.close()
+
+    class MustNotCallClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(
+                completions=SimpleNamespace(create=self._create)
+            )
+
+        def _create(self, **_kwargs):
+            raise AssertionError("oversized tip must fail before provider call")
+
+    monkeypatch.setattr(hermes_state, "resolved_max_resume_messages", lambda: 3)
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._create_session_db_for_oneshot",
+        lambda: SessionDB(db_path=db_path),
+    )
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"model": {"default": "m"}})
+    monkeypatch.setattr(
+        runtime_provider_mod,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "api_key": "k",
+            "base_url": "https://example.invalid/v1",
+            "provider": "openai",
+            "requested_provider": "openai",
+            "api_mode": "chat_completions",
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(tools_config_mod, "_get_platform_tools", lambda *_args, **_kwargs: set())
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
+        lambda **_kwargs: None,
+    )
+
+    with (
+        patch("agent.process_bootstrap.OpenAI", MustNotCallClient),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        pytest.raises(SessionResumeTooLargeError, match="in its tip segment"),
+    ):
+        try:
+            _run_agent("should fail", resume="large-tip")
+        finally:
+            logging.disable(logging.NOTSET)
 
 
 def test_oneshot_without_resume_real_agent_does_not_see_prior_session(

@@ -456,7 +456,7 @@ def _run_agent(
             except Exception:
                 logging.debug("oneshot resume reopen_session failed", exc_info=True)
             if callable(safety_check := getattr(session_db, "assert_resume_safe", None)):
-                safety_check(active_session_id)
+                safety_check(active_session_id, tip_only=True)
             model_history = session_db.get_messages_as_conversation(
                 active_session_id,
                 repair_alternation=True,

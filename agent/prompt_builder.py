@@ -96,7 +96,15 @@ def _scan_context_content(content: str, filename: str) -> str:
 def _find_git_root(start: Path) -> Optional[Path]:
     """Nearest ancestor (or *start* itself) containing ``.git``, else None."""
     current = start.resolve()
-    return next((p for p in (current, *current.parents) if (p / ".git").exists()), None)
+    # A parent the process may not stat (locked-down /home on shared hosts) is "no .git here", not a crash.
+    return next((p for p in (current, *current.parents) if _exists_or_denied(p / ".git")), None)
+
+
+def _exists_or_denied(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:

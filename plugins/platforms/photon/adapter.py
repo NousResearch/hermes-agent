@@ -1187,13 +1187,19 @@ class PhotonAdapter(BasePlatformAdapter):
         if not delivered_count:
             return result
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+        delivered_prefix = "\n\n".join(bubbles[:delivered_count])
+        last_message_id = message_ids[-1] if message_ids else None
         raw.update({
             "partial_bubble_delivery": True,
             "message_ids": message_ids,
             "delivered_bubbles": delivered_count,
             "total_bubbles": len(bubbles),
+            "delivered_prefix": delivered_prefix,
+            "last_message_id": last_message_id,
             "undelivered_content": "\n\n".join(bubbles[delivered_count:]),
         })
+        result.message_id = last_message_id
+        result.continuation_message_ids = tuple(message_ids[:-1])
         result.raw_response = raw
         return result
 

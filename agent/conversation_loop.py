@@ -5605,6 +5605,56 @@ def run_conversation(
                     )
                     continue
 
+                # ── Model not found recovery ────────────────────────────
+                # The configured model ID does not exist on the provider.
+                # This is a configuration error — retrying won't help.
+                # Surface a clear error with actionable guidance instead of
+                # looping to max_retries_exhausted.
+                if (
+                    classified.reason == FailoverReason.model_not_found
+                    and not _retry.model_not_found_retry_attempted
+                ):
+                    _retry.model_not_found_retry_attempted = True
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Model '{_model}' not found on provider {_provider} ({_base}).",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 The model ID may be stale, misspelled, or missing its vendor prefix (e.g., 'nvidia/nemotron-...').",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 Run `hermes model` to re-pick from the provider's current catalog, or check available models at the provider's dashboard.",
+                        force=True,
+                    )
+                    logger.error(
+                        "%sModel not found on provider: %s (provider=%s, base=%s)",
+                        agent.log_prefix, _model, _provider, _base,
+                    )
+                    # Terminal — don't retry, don't fallback. This is a config error.
+                    agent._flush_status_buffer()
+                    _final_summary = (
+                        f"Model '{_model}' not found on provider {_provider}. "
+                        "Check the model ID and re-pick with `hermes model`."
+                    )
+                    agent._emit_status(f"❌ {_final_summary}")
+                    agent._vprint(f"{agent.log_prefix}❌ {_final_summary}", force=True)
+                    agent._persist_session(messages, conversation_history)
+                    _final_response = (
+                        f"Model '{_model}' not found on provider {_provider}. "
+                        "Run 'hermes model' to re-pick from the provider's catalog."
+                    )
+                    return {
+                        "final_response": _final_response,
+                        "messages": messages,
+                        "completed": False,
+                        "api_calls": api_call_count,
+                        "error": _final_response,
+                        "partial": True,
+                        "failed": True,
+                        "model_not_found": True,
+                    }
+
                 # ── Invalid encrypted reasoning replay recovery ───────
                 # OpenAI Responses API surfaces (and some compatible relays)
                 # return HTTP 400 ``invalid_encrypted_content`` when a

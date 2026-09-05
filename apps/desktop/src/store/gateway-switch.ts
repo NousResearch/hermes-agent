@@ -8,6 +8,7 @@ import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
+import { resetProjectsForGatewaySwitch } from '@/store/projects'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -225,6 +226,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // different backend can recycle stored ids, and painting another machine's
   // conversation under a same-named id is worse than a loader. Wipe them.
   clearTranscriptTails()
+  // Projects are per-profile (each gateway has its own projects.db): the tree,
+  // list, active pointer, drill-in scope, and tombstones must not carry across
+  // a switch, or the sidebar paints the previous profile's projects (or a
+  // stale drill-in id that doesn't exist in the new catalog).
+  resetProjectsForGatewaySwitch()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

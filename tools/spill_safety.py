@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from typing import IO
 
@@ -17,6 +19,17 @@ __all__ = ["ensure_spill_dir", "open_exclusive", "write_text_exclusive"]
 
 # O_NOFOLLOW is POSIX-only; on Windows O_EXCL alone already refuses every pre-existing path.
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _strip_private_acl(path: Path) -> None:
+    """Remove macOS ACL entries that can override private mode bits."""
+    if sys.platform == "darwin":
+        subprocess.run(
+            ["chmod", "-N", os.fspath(path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
 
 
 def ensure_spill_dir(path: Path, *, private: bool = True) -> Path:
@@ -28,8 +41,10 @@ def ensure_spill_dir(path: Path, *, private: bool = True) -> Path:
     st = os.lstat(path)
     if not stat.S_ISDIR(st.st_mode):
         raise OSError(f"spill dir is not a directory (symlink?): {path}")
-    if private and stat.S_IMODE(st.st_mode) != 0o700:
-        os.chmod(path, 0o700)
+    if private:
+        _strip_private_acl(path)
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            os.chmod(path, 0o700)
     return path
 
 
@@ -52,9 +67,15 @@ def open_exclusive(path: Path, *, private: bool = True, overwrite: bool = False,
     mode = 0o600 if private else 0o666  # non-private honors umask
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW, mode)
     try:
+        if private:
+            _strip_private_acl(path)
         return os.fdopen(fd, "w", encoding=encoding, errors=errors)
     except Exception:
         os.close(fd)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
         raise
 
 

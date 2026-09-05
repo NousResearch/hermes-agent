@@ -183,7 +183,9 @@ async function locateHermes(ssh, remoteHermesPath) {
   const isExecutable = async (candidate: string) => {
     try {
       validateRemotePath(candidate)
-      const ok = (await ssh.exec(`[ -x ${expandRemotePath(candidate)} ] && echo OK || true`)).trim()
+      const ok = (
+        await ssh.exec(`sh -c ${shq(`[ -x ${expandRemotePath(candidate)} ] && echo OK || true`)}`)
+      ).trim()
 
       return ok === 'OK'
     } catch {
@@ -279,7 +281,7 @@ async function probeRemotePlatform(ssh) {
 // state store; best-effort.
 async function probeRemoteHermesHome(ssh) {
   try {
-    const out = (await ssh.exec('echo "${HERMES_HOME:-$HOME/.hermes}"')).trim().split('\n').pop()
+    const out = (await ssh.exec(`sh -c ${shq('echo "${HERMES_HOME:-$HOME/.hermes}"')}`)).trim().split('\n').pop()
 
     return out || '~/.hermes'
   } catch (cause) {
@@ -375,7 +377,7 @@ async function listRemoteHermesProfiles(ssh) {
   let listing = ''
 
   try {
-    listing = await ssh.exec(`if [ -d ${dir} ]; then ls -1 ${dir}; fi`)
+    listing = await ssh.exec(`sh -c ${shq(`if [ -d ${dir} ]; then ls -1 ${dir}; fi`)}`)
   } catch (cause) {
     const error: any = new Error('Could not list remote Hermes profiles.')
     error.kind = 'transient-transport-error'
@@ -410,7 +412,9 @@ async function readLockfile(ssh, ownershipId) {
   let raw
 
   try {
-    raw = await ssh.exec(`if [ ! -e ${expandRemotePath(lpath)} ]; then exit 0; fi; cat ${expandRemotePath(lpath)}`)
+    raw = await ssh.exec(
+      `sh -c ${shq(`if [ ! -e ${expandRemotePath(lpath)} ]; then exit 0; fi; cat ${expandRemotePath(lpath)}`)}`
+    )
   } catch (cause) {
     const error: any = new Error('Could not read the SSH backend ownership record.')
     error.kind = 'transient-transport-error'
@@ -497,9 +501,11 @@ async function writeLockfile(ssh, ownershipId, lock) {
   const temporaryPath = `${directory}/.${crypto.randomBytes(8).toString('hex')}.lock.tmp`
   const json = JSON.stringify({ ...lock, schemaVersion: LOCKFILE_SCHEMA_VERSION })
   await ssh.exec(
-    `umask 077 && mkdir -p ${expandRemotePath(directory)} && ` +
-      `printf '%s' ${shq(json)} > ${expandRemotePath(temporaryPath)} && ` +
-      `mv -f ${expandRemotePath(temporaryPath)} ${expandRemotePath(lpath)}`
+    `sh -c ${shq(
+      `umask 077 && mkdir -p ${expandRemotePath(directory)} && ` +
+        `printf '%s' ${shq(json)} > ${expandRemotePath(temporaryPath)} && ` +
+        `mv -f ${expandRemotePath(temporaryPath)} ${expandRemotePath(lpath)}`
+    )}`
   )
 }
 
@@ -519,7 +525,7 @@ async function remotePidAlive(ssh, pid) {
   }
 
   try {
-    const out = (await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
+    const out = (await ssh.exec(`sh -c ${shq(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)}`)).trim()
 
     return out === 'ALIVE'
   } catch (cause) {
@@ -667,9 +673,11 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
     try {
       const result = (
         await ssh.exec(
-          `kill ${Number(lock.pid)} && ` +
-            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-            `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
+          `sh -c ${shq(
+            `kill ${Number(lock.pid)} && ` +
+              `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
+              `i=$((i+1)); [ "$i" -ge 50 ] && exit 1; sleep 0.1; done`
+          )}`
         )
       ).trim()
 
@@ -683,9 +691,11 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
       // confirmed exit before treating the record as reclaimed.
       try {
         await ssh.exec(
-          `kill -9 ${Number(lock.pid)} 2>/dev/null; ` +
-            `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
-            `i=$((i+1)); [ "$i" -ge 20 ] && exit 1; sleep 0.1; done`
+          `sh -c ${shq(
+            `kill -9 ${Number(lock.pid)} 2>/dev/null; ` +
+              `i=0; while kill -0 ${Number(lock.pid)} 2>/dev/null; do ` +
+              `i=$((i+1)); [ "$i" -ge 20 ] && exit 1; sleep 0.1; done`
+          )}`
         )
       } catch (cause) {
         // Even SIGKILL could not confirm death (D-state, permissions). Keep
@@ -1120,11 +1130,12 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
 async function remoteSupportsSshOwnership(ssh, hermesPath) {
   const hermes = expandRemotePath(hermesPath)
 
-  const out = await ssh.exec(
+  const checkScript =
     `help="$(${hermes} serve --help 2>&1)"; ` +
-      `printf '%s' "$help" | grep -q ssh-session-token-file && ` +
-      `printf '%s' "$help" | grep -q ssh-owner-nonce && echo YES || echo NO`
-  )
+    `printf '%s' "$help" | grep -q ssh-session-token-file && ` +
+    `printf '%s' "$help" | grep -q ssh-owner-nonce && echo YES || echo NO`
+
+  const out = await ssh.exec(`sh -c ${shq(checkScript)}`)
 
   return String(out || '')
     .trim()
@@ -1147,7 +1158,7 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT
     let tail
 
     try {
-      tail = await ssh.exec(`cat ${remoteLog} 2>/dev/null || true`)
+      tail = await ssh.exec(`sh -c ${shq(`cat ${remoteLog} 2>/dev/null || true`)}`)
     } catch {
       tail = ''
     }

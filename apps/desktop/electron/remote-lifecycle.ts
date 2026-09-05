@@ -38,7 +38,16 @@ const PROTOCOL_VERSION = 1
 const READY_RE = /^HERMES_(?:BACKEND|DASHBOARD)_READY port=(\d+)/m
 const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
-const DEFAULT_READY_TIMEOUT_MS = 45_000
+// On a busy remote host a healthy cold boot can take 60-150s before the
+// freshly spawned `hermes serve --isolated` prints its READY line (event-loop
+// stalls of 5-27s each during spawn storms are routine). The historical 45s
+// budget gave up milliseconds before a healthy backend announced ready and
+// surfaced a timeout toast (issue #94642). A roomier default absorbs the
+// cold-start cost; a warm start still announces in well under a second.
+const DEFAULT_READY_TIMEOUT_MS = 120_000
+// Never trust a deadline tighter than the warm-start path needs; floor at 45s
+// (the historical default) so a malformed override can't reintroduce the loop.
+const MIN_READY_TIMEOUT_MS = 45_000
 const READY_POLL_INTERVAL_MS = 750
 // macOS sshd starts non-interactive shells with a 256-FD soft limit even when
 // the hard limit is unlimited. A Desktop backend can legitimately exceed that
@@ -53,6 +62,19 @@ function classifySshReuseProof(proof, spawnNonce) {
     proof.runtimeIntact !== false
     ? 'authenticated-ok'
     : 'authenticated-stale'
+
+/**
+ * Resolve the remote ready-port deadline. Honors the
+ * HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS env override (for users on busy
+ * hosts whose cold boots routinely exceed the default), clamped to a sane
+ * floor so a bad value can't make boot flakier than the default.
+ */
+function resolveReadyTimeoutMs(env = process.env) {
+  const parsed = Number(env.HERMES_DESKTOP_REMOTE_READY_TIMEOUT_MS)
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.max(MIN_READY_TIMEOUT_MS, Math.round(parsed))
+  }
+  return DEFAULT_READY_TIMEOUT_MS
 }
 
 function mintToken() {
@@ -1131,7 +1153,7 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
     .endsWith('YES')
 }
 
-async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT_MS, isAlive, signal }: any = {}) {
+async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs(), isAlive, signal }: any = {}) {
   const deadline = Date.now() + timeoutMs
   const remoteLog = expandRemotePath(logPath)
 
@@ -1386,7 +1408,7 @@ async function connect(deps) {
     probeReuseProof,
     adoptServedToken,
     rememberLog = () => {},
-    readyTimeoutMs = DEFAULT_READY_TIMEOUT_MS,
+    readyTimeoutMs = resolveReadyTimeoutMs(),
     signal
   } = deps
 
@@ -1664,6 +1686,7 @@ export {
   locateHermes,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
+  MIN_READY_TIMEOUT_MS,
   mintToken,
   openForward,
   ownershipDirectory,
@@ -1679,6 +1702,7 @@ export {
   remoteProcessCreationTime,
   remoteSupportsSshOwnership,
   removeLockfile,
+  resolveReadyTimeoutMs,
   scrapeReadyPort,
   shq,
   spawnLogPath,

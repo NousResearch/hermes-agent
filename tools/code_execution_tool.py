@@ -625,6 +625,25 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
     exec_start = time.monotonic()
+    # The commands below run with cwd="/" or from the sandbox dir, and
+    # BaseEnvironment.execute tracks the cwd each ran in, so the terminal
+    # would carry on at / afterwards. Remember the tracked cwd and put it
+    # back on the way out; it is a host-side value that feeds only the
+    # next command's cd (--chdir under bubblewrap).
+    prev_cwd = getattr(env, "cwd", None)
+    try:
+        return _execute_remote_dispatch(code, env, env_type, effective_task_id, sandbox_tools, reset=reset,
+                                        timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
+                                        idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)))
+    finally:
+        if prev_cwd is not None:
+            env.cwd = prev_cwd
+
+
+def _execute_remote_dispatch(code: str, env, env_type: str, effective_task_id: str, sandbox_tools: frozenset, *,
+                             reset: bool, timeout: int, max_tool_calls: int, exec_start: float,
+                             idle_exit: int) -> str:
+    """Session kernel first (never for bubblewrap), else the per-call script ship."""
     try:
         py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
         if "OK" not in py_check.get("output", ""):
@@ -633,6 +652,13 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
         # Session-kernel path: one persistent kernel per owner on the
         # run-to-completion transport. Spawn failure falls OPEN to the per-call
         # path below so a degraded remote host never blocks execution.
+        # bubblewrap never takes it: each of its commands is its own sandbox
+        # that ends with the command, so a detached kernel runner would die
+        # with the spawn that started it. It goes straight to the per-call path.
+        kernel_result = None
+        if env_type == "bubblewrap":
+            return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
+                                        timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
         try:
             # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
             # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
@@ -641,8 +667,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
             kernel_result = execute_in_remote_kernel(
                 code, env=env, env_type=env_type, task_env_id=effective_task_id,
                 sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
-                max_tool_calls=max_tool_calls, reset=bool(reset),
-                idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+                max_tool_calls=max_tool_calls, reset=bool(reset), idle_exit=idle_exit,
             )
         except Exception:
             logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
@@ -718,6 +743,12 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+
+    # Only the local backend takes the host session-kernel path: it spawns the
+    # script directly on the host. bubblewrap is a host-path backend for file
+    # access but every command it runs must carry the bwrap prefix, so it takes
+    # the env.execute() file-RPC path on purpose, like the remote backends. The
+    # script then runs inside a sandbox under the same rlimits as terminal().
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
     from tools.interrupt import is_interrupted as _is_interrupted

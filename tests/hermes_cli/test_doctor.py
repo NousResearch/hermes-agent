@@ -1742,3 +1742,42 @@ def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
+
+
+def _bubblewrap_doctor_output(monkeypatch, tmp_path, bwrap_path, probe_failure=None):
+    helper = TestDoctorMemoryProviderSection()
+    monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
+    # The terminal-backend check lives in doctor_tools; patch where production reads.
+    from hermes_cli import doctor_tools as doctor_tools_mod
+    real_which = doctor_tools_mod._safe_which
+    monkeypatch.setattr(doctor_tools_mod, "_safe_which", lambda cmd: bwrap_path if cmd == "bwrap" else real_which(cmd))
+    real_run = doctor_tools_mod.subprocess.run
+
+    def fake_run(argv, *args, **kwargs):
+        if argv and str(argv[0]).endswith("bwrap"):
+            return doctor_tools_mod.subprocess.CompletedProcess(argv, 0, stdout="bubblewrap 0.9.0\n", stderr="")
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(doctor_tools_mod.subprocess, "run", fake_run)
+    from tools.environments import bubblewrap as bwrap_mod
+    monkeypatch.setattr(bwrap_mod, "run_probe", lambda: (bwrap_path, probe_failure))
+    return helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+
+def test_run_doctor_reports_bwrap_found_with_version_for_bubblewrap_backend(monkeypatch, tmp_path):
+    out = _bubblewrap_doctor_output(monkeypatch, tmp_path, "/usr/bin/bwrap")
+    assert "bwrap (found: bubblewrap 0.9.0)" in out
+    assert "bwrap sandbox probe failed" not in out
+
+
+def test_run_doctor_reports_bwrap_probe_failure_for_bubblewrap_backend(monkeypatch, tmp_path):
+    out = _bubblewrap_doctor_output(monkeypatch, tmp_path, "/usr/bin/bwrap", "bwrap probe failed (exit 1): no permission")
+    assert "bwrap (found: bubblewrap 0.9.0)" in out
+    assert "bwrap sandbox probe failed" in out
+    assert "no permission" in out
+
+
+def test_run_doctor_reports_bwrap_missing_for_bubblewrap_backend(monkeypatch, tmp_path):
+    out = _bubblewrap_doctor_output(monkeypatch, tmp_path, None)
+    assert "bwrap not found" in out
+    assert "required for TERMINAL_ENV=bubblewrap" in out

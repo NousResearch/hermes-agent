@@ -170,11 +170,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute: your local machine, a bubblewrap sandbox on your machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | bubblewrap | docker | ssh | modal | daytona | vercel_sandbox | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   temp_dir: ""      # Session temp root; empty = TMPDIR, else ~/.hermes/cache/terminal
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
@@ -207,6 +207,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | Backend | Where commands run | Isolation | Best for |
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
+| **bubblewrap** | Your machine, one bwrap sandbox per command | Read-only root, hidden secrets, private /proc, rlimits (no seccomp, no cgroups) | Personal machines and small servers where local is too open and Docker too heavy |
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
@@ -518,6 +519,26 @@ terminal:
 **Scratch directory:** Resolved in order: `TERMINAL_SCRATCH_DIR` → `TERMINAL_SANDBOX_DIR/singularity` → `/scratch/$USER/hermes-agent` (HPC convention) → `~/.hermes/sandboxes/singularity`.
 
 **Isolation:** Uses `--containall --no-home` for full namespace isolation without mounting the host home directory.
+
+### Bubblewrap Backend
+
+Runs every command inside its own [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) sandbox on the host: read-only host filesystem at host paths, writable working directory, `~/.ssh`, `~/.aws`, `~/.hermes` and the other credential paths hidden, a private `/proc` and a fresh `/tmp` per command, plus per-process memory, CPU and process limits. Linux only, bubblewrap 0.9.0 or later.
+
+```yaml
+terminal:
+  backend: bubblewrap
+  bubblewrap_profile: network      # restricted | workspace | network
+  bubblewrap_binds: []             # extra host dirs: [{src, dest, readonly}]
+  bubblewrap_memory_mb: 256        # RLIMIT_AS per process, 0 disables
+  bubblewrap_cpu_seconds: 30       # RLIMIT_CPU per process, 0 disables
+  bubblewrap_max_procs: 256        # processes a command may add, 0 disables
+```
+
+**Requirements:** the `bubblewrap` package (`bwrap` in `$PATH`) and unprivileged user namespaces. `hermes doctor` reports the binary, its version and the sandbox probe.
+
+**Approval and file tools:** behave as for `local`, since commands write to real host paths. Background jobs are refused.
+
+See [Bubblewrap](./bubblewrap.md) for the profiles, the hidden path set, the limits and how to raise them, and the known limitations.
 
 ### Common Terminal Backend Issues
 

@@ -13,10 +13,28 @@ import shutil
 import tempfile
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from tools.environments.bubblewrap import BubblewrapEnvironment
 from tools.environments.local import (
     LocalEnvironment,
     _resolve_safe_cwd,
 )
+
+
+@pytest.fixture(params=[LocalEnvironment, BubblewrapEnvironment], ids=["local", "bubblewrap"])
+def env_cls(request, tmp_path_factory, monkeypatch):
+    """The environment classes that share LocalEnvironment's cwd recovery."""
+    if request.param is BubblewrapEnvironment:
+        # Outside tmp_path: the tests use tmp_path as the cwd, and the
+        # bubblewrap backend refuses a sandbox dir inside a writable cwd.
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path_factory.mktemp("bwrap-sandboxes")))
+    return request.param
+
+
+def _chdir_of(args):
+    """The ``--chdir`` target in a bwrap argv, or None for a plain bash argv."""
+    return args[args.index("--chdir") + 1] if "--chdir" in args else None
 
 
 class TestResolveSafeCwd:
@@ -49,6 +67,7 @@ def _make_fake_popen(captured: dict, fds: list):
     caller can clean up after the test.
     """
     def fake_popen(cmd, **kwargs):
+        captured["args"] = list(cmd)
         captured["cwd"] = kwargs.get("cwd")
         captured["env"] = kwargs.get("env", {})
         read_fd, write_fd = os.pipe()
@@ -75,7 +94,7 @@ def _close_fds(fds):
 class TestRunBashCwdRecovery:
     """End-to-end recovery: deleted ``self.cwd`` must not crash Popen."""
 
-    def test_recovers_when_cwd_deleted_after_init(self, tmp_path, caplog):
+    def test_recovers_when_cwd_deleted_after_init(self, env_cls, tmp_path, caplog):
         """Reproduces the wedge from #17558: cwd was valid when the
         snapshot was taken, but a subsequent command deleted it before the
         next ``Popen``."""
@@ -83,7 +102,7 @@ class TestRunBashCwdRecovery:
         wedged.mkdir()
 
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
-            env = LocalEnvironment(cwd=str(wedged), timeout=10)
+            env = env_cls(cwd=str(wedged), timeout=10)
 
         # The previous tool call deleted the working directory.
         shutil.rmtree(wedged)
@@ -102,6 +121,11 @@ class TestRunBashCwdRecovery:
         # Popen must have been handed a real, existing directory.
         assert captured["cwd"] == str(tmp_path)
         assert os.path.isdir(captured["cwd"])
+        # A sandbox prefix must --chdir to the recovered directory too.
+        if env_cls is BubblewrapEnvironment:
+            assert _chdir_of(captured["args"]) == str(tmp_path)
+        else:
+            assert _chdir_of(captured["args"]) is None
 
         # ``self.cwd`` is updated so the next call doesn't re-warn.
         assert env.cwd == str(tmp_path)
@@ -109,9 +133,9 @@ class TestRunBashCwdRecovery:
         # The warning surfaces the wedge so it isn't silently masked.
         assert any("missing on disk" in rec.message for rec in caplog.records)
 
-    def test_no_warning_when_cwd_still_exists(self, tmp_path, caplog):
+    def test_no_warning_when_cwd_still_exists(self, env_cls, tmp_path, caplog):
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
-            env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
+            env = env_cls(cwd=str(tmp_path), timeout=10)
 
         captured = {}
         fds: list = []
@@ -131,12 +155,12 @@ class TestRunBashCwdRecovery:
 class TestUpdateCwdRejectsMissingPaths:
     """``_update_cwd`` must not propagate a deleted path back into ``self.cwd``."""
 
-    def test_skips_assignment_when_marker_path_missing(self, tmp_path):
+    def test_skips_assignment_when_marker_path_missing(self, env_cls, tmp_path):
         original = tmp_path / "starting"
         original.mkdir()
 
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
-            env = LocalEnvironment(cwd=str(original), timeout=10)
+            env = env_cls(cwd=str(original), timeout=10)
 
         # Simulate the stale-marker case: the prior command emitted a cwd
         # marker for a directory that has since been deleted.
@@ -149,14 +173,14 @@ class TestUpdateCwdRejectsMissingPaths:
 
         assert env.cwd == str(original)
 
-    def test_accepts_assignment_when_marker_path_exists(self, tmp_path):
+    def test_accepts_assignment_when_marker_path_exists(self, env_cls, tmp_path):
         original = tmp_path / "starting"
         original.mkdir()
         new_dir = tmp_path / "next"
         new_dir.mkdir()
 
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
-            env = LocalEnvironment(cwd=str(original), timeout=10)
+            env = env_cls(cwd=str(original), timeout=10)
         marker = env._cwd_marker
 
         env._update_cwd(

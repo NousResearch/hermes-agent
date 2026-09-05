@@ -374,7 +374,25 @@ terminal:
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 
 # -----------------------------------------------------------------------------
-# OPTION 2: SSH remote execution
+# OPTION 2: Bubblewrap sandbox (Linux only)
+# Commands run on your machine, each in its own bwrap sandbox: host filesystem
+# read-only at host paths, working directory writable, credentials hidden,
+# private /proc and /tmp per command, per-process memory/CPU/process limits
+# Great for: personal machines and small servers where local is too open and Docker too heavy
+# Requires: the bubblewrap package (bwrap 0.9.0 or later) and unprivileged user namespaces
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "bubblewrap"
+#   cwd: "."  # Host path, the writable set. "/" and paths under ~/.hermes are refused.
+#   timeout: 180
+#   bubblewrap_profile: "network"  # restricted (cwd read-only, no network) | workspace (writable, no network) | network (writable, host network)
+#   bubblewrap_binds: []           # Extra host dirs: [{src: /data/models, dest: /data/models, readonly: true}]
+#   bubblewrap_memory_mb: 256      # RLIMIT_AS per process in MB, 0 disables. Raise for pip, node, cargo.
+#   bubblewrap_cpu_seconds: 30     # RLIMIT_CPU per process, 0 disables. Raise for long builds.
+#   bubblewrap_max_procs: 256      # Processes a command may add (RLIMIT_NPROC), 0 disables.
+
+# -----------------------------------------------------------------------------
+# OPTION 3: SSH remote execution
 # Commands run on a remote server - agent code stays local (sandboxed)
 # Great for: keeping agent isolated from its own code, using powerful remote hardware
 # -----------------------------------------------------------------------------
@@ -389,7 +407,7 @@ terminal:
 #   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
 
 # -----------------------------------------------------------------------------
-# OPTION 3: Docker container
+# OPTION 4: Docker container
 # Commands run in an isolated Docker container
 # Great for: reproducible environments, testing, isolation
 # -----------------------------------------------------------------------------
@@ -419,7 +437,7 @@ terminal:
 #   #   - "SETUID"
 
 # -----------------------------------------------------------------------------
-# OPTION 4: Singularity/Apptainer container
+# OPTION 5: Singularity/Apptainer container
 # Commands run in a Singularity container (common in HPC environments)
 # Great for: HPC clusters, shared compute environments
 # -----------------------------------------------------------------------------
@@ -431,7 +449,7 @@ terminal:
 #   singularity_image: "docker://nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
-# OPTION 5: Modal cloud execution
+# OPTION 6: Modal cloud execution
 # Commands run on Modal's cloud infrastructure
 # Great for: GPU access, scalable compute, serverless execution
 # -----------------------------------------------------------------------------
@@ -443,7 +461,7 @@ terminal:
 #   modal_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 
 # -----------------------------------------------------------------------------
-# OPTION 6: Daytona cloud execution
+# OPTION 7: Daytona cloud execution
 # Commands run in Daytona cloud sandboxes
 # Great for: Cloud dev environments, persistent workspaces, team collaboration
 # Requires: pip install daytona, DAYTONA_API_KEY env var

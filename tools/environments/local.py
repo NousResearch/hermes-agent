@@ -774,6 +774,14 @@ class LocalEnvironment(BaseEnvironment):
                 self.cwd, safe_cwd)
         self.cwd = safe_cwd
 
+    def _wrap_popen_args(self, args: list[str]) -> list[str]:
+        """Seam for subclasses that wrap the shell argv (a sandbox prefix).
+
+        Identity for the local backend. ``_run_bash`` passes the result to
+        ``Popen`` unchanged, so an override must return the complete argv.
+        """
+        return args
+
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
         bash = _find_bash()
@@ -783,6 +791,9 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
+        # Wrap after cwd recovery so a sandbox prefix that carries the cwd
+        # (bwrap --chdir) sees the recovered directory, not the deleted one.
+        args = self._wrap_popen_args(args)
         proc = subprocess.Popen(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

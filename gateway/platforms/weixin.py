@@ -521,7 +521,10 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
 
 
-def _extract_text(item_list: List[Dict[str, Any]]) -> str:
+def _extract_text(
+    item_list: List[Dict[str, Any]],
+    use_provider_stt: bool = False,
+) -> str:
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -531,7 +534,7 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
                 title = ref.get("title") or ""
                 return f"[引用媒体: {title}]\n{text}".strip() if title else f"[引用媒体]\n{text}".strip()
             if ref_item:
-                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item])) if p]
+                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item], use_provider_stt)) if p]
                 if parts:
                     return f"[引用: {' | '.join(parts)}]\n{text}".strip()
             return text
@@ -548,7 +551,10 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
             # Use it, but preserve the voice origin so the agent can distinguish this from text the user
             # typed (#65022).
             voice_text = str(voice_item.get("text") or "")
-            if not (voice_item.get("media") or {}) and voice_text:
+            has_media = bool(voice_item.get("media") or {})
+            # When ``use_provider_stt`` is enabled the user explicitly trusts Weixin's
+            # transcription (accurate for most Chinese speakers), so use it directly.
+            if voice_text and (use_provider_stt or not has_media):
                 return f"[Voice transcription provided by Weixin]\n{voice_text}"
     return ""
 
@@ -726,6 +732,12 @@ class WeixinAdapter(BasePlatformAdapter):
         self._allow_from = self._coerce_list(_wx_secret("WEIXIN_ALLOWED_USERS", "") if allow_from is None else allow_from)
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
         self._split_multiline_messages = _coerce_bool(extra.get("split_multiline_messages") or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"), default=False)
+        # When True, trust Weixin's built-in STT text for voice messages instead of
+        # downloading the raw audio and re-transcribing via the central STT pipeline.
+        # Weixin's STT is very accurate for Chinese audio (the dominant use case) but
+        # produces garbled output for other languages (#27300), so the default is False.
+        # Config: gateway.platforms.weixin.extra.use_provider_stt
+        self._use_provider_stt = _coerce_bool(extra.get("use_provider_stt"), default=False)
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
         # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
         self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
@@ -888,7 +900,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
         item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
+        text = _extract_text(item_list, self._use_provider_stt)
         if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
             logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
             return
@@ -971,6 +983,11 @@ class WeixinAdapter(BasePlatformAdapter):
         (never trust Tencent's ``voice_item.text``) so gateway/run.py's central STT re-transcribes."""
         item_key, timeout_seconds, cache_fn, mime, label = spec
         payload = item.get(item_key) or {}
+        # When ``use_provider_stt`` is enabled the user has explicitly opted in to
+        # trusting Weixin's transcription, so skip the voice download and let
+        # ``_extract_text`` surface the provider text as the message body.
+        if item_key == "voice_item" and self._use_provider_stt and str(payload.get("text") or "").strip():
+            return None, mime
         media = payload.get("media") or {}
         filename = str(payload.get("file_name") or "document.bin")
         mime = mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"

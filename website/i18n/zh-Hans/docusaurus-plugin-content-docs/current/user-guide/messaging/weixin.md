@@ -123,6 +123,7 @@ hermes gateway
 | `allow_from` | `[]` | 允许发送私信的用户 ID（当 dm_policy=allowlist 时生效） |
 | `group_allow_from` | `[]` | 允许的群组 ID（当 group_policy=allowlist 时生效） |
 | `split_multiline_messages` | `false` | 为 `true` 时，将多行回复拆分为多条消息（旧版行为）；为 `false` 时，多行回复保持为单条消息，除非超出长度限制。 |
+| `use_provider_stt` | `false` | 为 `true` 时，直接信任微信内置的语音识别结果，而不再下载原始音频并用 Hermes 自己的 STT 流水线重新转写。微信的语音识别对中文非常准确，但对其他语言会产生乱码，因此默认值为 `false`。如果你主要接收中文语音消息，想跳过额外的转写步骤，可开启此项。 |
 
 ## 访问策略
 
@@ -174,7 +175,7 @@ WEIXIN_GROUP_ALLOWED_USERS=group_id_1,group_id_2
 | **图片** | 下载、AES 解密后缓存为 JPEG。 |
 | **视频** | 下载、AES 解密后缓存为 MP4。 |
 | **文件** | 下载、AES 解密后缓存，保留原始文件名。 |
-| **语音** | 若有文字转录，则提取为文本；否则下载音频（SILK 格式）并缓存。 |
+| **语音** | 下载原始音频（SILK 格式）并由 Hermes 自己的 STT 流水线重新转写。默认情况下会忽略微信内置的转录文本，因为它对非中文音频不可靠。设置 `use_provider_stt: true` 可直接信任微信的转录文本并跳过下载 + 重新转写步骤（推荐用于以中文为主的对话）。 |
 
 **引用消息：** 引用（回复）消息中的媒体也会被提取，以便代理了解用户回复的上下文。
 
@@ -306,7 +307,7 @@ iLink Bot API 要求在每条出站消息中回传 `context_token`（针对特�
 | Bot 忽略群消息 | 群组策略默认为 `disabled`。设置 `WEIXIN_GROUP_POLICY=open` 或 `allowlist`——但请注意，扫码登录的 iLink bot 身份（`...@im.bot`）通常根本无法接收普通微信群消息。若网关日志中没有群消息的原始入站事件，限制来自 iLink 侧，而非 Hermes。 |
 | 媒体下载/上传失败 | 确保已安装 `cryptography`。检查对 `novac2c.cdn.weixin.qq.com` 的网络访问 |
 | `Blocked unsafe URL (SSRF protection)` | 出站媒体 URL 指向私有/内部地址，仅允许公网 URL |
-| 语音消息显示为文本 | 若微信提供了转录文本，适配器会使用文本内容，这是预期行为 |
+| 语音消息显示为文本 | 默认情况下，适配器会下载原始音频并通过 Hermes 的 STT 流水线重新转写，忽略微信内置的转录文本（它对非中文音频不可靠）。如果你只接收中文语音消息，想直接使用微信的转录文本，请在 `platforms.weixin.extra` 下设置 `use_provider_stt: true`。 |
 | 消息出现重复 | 适配器通过消息 ID 去重。若仍出现重复，检查是否有多个网关实例在运行 |
 | `iLink POST ... HTTP 4xx/5xx` | iLink 服务返回 API 错误。检查 token 有效性和网络连通性 |
 | 终端二维码无法渲染 | 使用 messaging 扩展重新安装：`cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"`。或者，打开二维码上方打印的 URL |

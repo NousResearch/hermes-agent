@@ -8,6 +8,7 @@ import {
   powershellCandidates,
   readWslWindowsClipboardImage
 } from './wsl-clipboard-image'
+import { WSL_CLIPBOARD_IMAGE_SCRIPT } from './wsl-clipboard-script'
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 
@@ -15,10 +16,10 @@ function fakePngBuffer(extraBytes = 16) {
   return Buffer.concat([PNG_SIGNATURE, Buffer.alloc(extraBytes, 0x42)])
 }
 
-test('encodePowerShellCommand produces UTF-16LE base64 PowerShell can decode', () => {
-  const encoded = encodePowerShellCommand('Write-Output "hi"')
+test('encodePowerShellCommand preserves the clipboard script through UTF-16LE base64', () => {
+  const encoded = encodePowerShellCommand(WSL_CLIPBOARD_IMAGE_SCRIPT)
   const roundTripped = Buffer.from(encoded, 'base64').toString('utf16le')
-  assert.equal(roundTripped, 'Write-Output "hi"')
+  assert.equal(roundTripped, WSL_CLIPBOARD_IMAGE_SCRIPT)
 })
 
 test('decodeClipboardImageBase64 returns a Buffer for valid PNG base64', () => {
@@ -62,8 +63,18 @@ test('readWslWindowsClipboardImage decodes the first candidate that returns a PN
   assert.equal(calls.length, 1)
   assert.equal(calls[0].cmd, 'powershell.exe')
   // -STA is mandatory for System.Windows.Forms.Clipboard.
-  assert.ok(calls[0].args.includes('-STA'))
-  assert.ok(calls[0].args.includes('-EncodedCommand'))
+  assert.deepEqual(calls[0].args.slice(0, -1), [
+    '-NoProfile',
+    '-NonInteractive',
+    '-STA',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-EncodedCommand'
+  ])
+  assert.equal(
+    Buffer.from(calls[0].args.at(-1), 'base64').toString('utf16le'),
+    WSL_CLIPBOARD_IMAGE_SCRIPT
+  )
 })
 
 test('readWslWindowsClipboardImage returns null and stops when stdout is empty (no image)', () => {

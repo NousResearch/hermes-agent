@@ -351,6 +351,18 @@ async def _try_fallback_extract(
                 metadata["fallback_from"] = primary_name
                 metadata["backend_error"] = (original_error or "unknown error")[:300]
 
+    if ordered is None and any(_policy_blocked_result(row) for row in mapped.values()):
+        # Policy is terminal even if neither provider returned a complete batch.
+        # Retain exact-URL primary failures and fill only unidentified positions;
+        # dropping this partial secondary would let rescue fetch a refused URL.
+        from tools.web_tools_extract import _NO_RESULT_ERROR, _result_entry
+
+        original = _map_extract_rows_by_url(urls, list(range(len(urls))), results)
+        ordered = [
+            original.get(index, _result_entry(url, _NO_RESULT_ERROR))
+            for index, url in enumerate(urls)
+        ]
+
     if ordered is not None:
         # Preserve the complete original batch and replace only rows that can be
         # associated with an exact requested URL. This keeps policy signals,

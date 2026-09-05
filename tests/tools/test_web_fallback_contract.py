@@ -31,6 +31,23 @@ class Provider:
         return self.response
 
 
+@pytest.fixture(autouse=True)
+def deny_network(monkeypatch):
+    import socket
+
+    attempts = []
+
+    def denied(*args, **kwargs):
+        attempts.append("unexpected network call")
+        raise AssertionError("Network access is not allowed in fallback contract tests")
+
+    monkeypatch.setattr(socket, "getaddrinfo", denied)
+    monkeypatch.setattr(socket.socket, "connect", denied)
+    monkeypatch.setattr(socket.socket, "connect_ex", denied)
+    yield
+    assert not attempts, "A caught exception hid an unexpected network call"
+
+
 @pytest.fixture
 def configured(tmp_path, monkeypatch):
     # Real YAML loader, real registry tool handler, isolated on-disk cache.
@@ -167,3 +184,85 @@ def test_extract_fallback_does_not_stick_in_primary_cache(configured):
         assert result["results"][0]["content"] == "fallback"
     assert primary.calls == [[url], [url]]
     assert secondary.calls == [[url], [url]]
+
+
+@pytest.mark.parametrize("primary_kind", ["none-row", "short", "duplicate", "unknown", "wrapper"])
+@pytest.mark.parametrize("blocked_index", [0, 1])
+@pytest.mark.parametrize("policy_marker", ["flag", "message"])
+def test_incomplete_primary_retains_short_secondary_policy(
+    configured, monkeypatch, primary_kind, blocked_index, policy_marker
+):
+    """A safely identified refusal survives even when neither batch is complete."""
+    urls = ["https://example.com/a", "https://example.com/b"]
+    failure = {"url": urls[1 - blocked_index], "error": "primary outage"}
+    primary_rows = {
+        "none-row": [None], "short": [failure],
+        "duplicate": [failure, dict(failure)],
+        "unknown": [{"url": "https://other.example", "error": "outage"}],
+        "wrapper": {"results": [failure]},
+    }[primary_kind]
+    blocked = {"url": urls[blocked_index], "error": "Blocked by website policy after redirect"}
+    if policy_marker == "flag":
+        blocked.update(error="refused", blocked_by_policy=True)
+    primary = Provider("primary", primary_rows)
+    secondary = Provider("secondary", [None, blocked, {"content": "unidentified"}])
+    configured.update(primary=primary, secondary=secondary)
+    monkeypatch.setattr("tools.web_tools_extract._rescue_eligible", lambda provider: True)
+    ring_calls = []
+
+    def ring(name, requested):
+        ring_calls.append(requested)
+        return [{"url": url, "content": "ring text"} for url in requested]
+
+    monkeypatch.setattr("plugins.web.keyless_mcp.extract_with_failover", ring)
+    entry = web_tools.registry.get_entry("web_extract")
+    assert entry is not None
+    for _ in range(2):
+        result = json.loads(asyncio.run(entry.handler({"urls": urls})))
+        assert all(urls[blocked_index] not in batch for batch in ring_calls)
+        rows = result["results"]
+        assert [row["url"] for row in rows] == urls
+        assert rows[blocked_index]["error"] == blocked["error"]
+        assert rows[1 - blocked_index]["content"] == "ring text"
+    assert ring_calls == [[urls[1 - blocked_index]]] * 2
+    assert primary.calls == [urls, urls]
+    assert secondary.calls == [urls, urls]
+
+
+@pytest.mark.parametrize("kind", ["empty", "none", "later", "unknown", "reordered", "partial-success"])
+def test_partial_policy_keeps_exact_failures_and_rescue_identity(configured, monkeypatch, kind):
+    urls = ["https://example.com/a", "https://example.com/b", "https://example.com/c"]
+    failure = {"url": urls[2], "error": "original C outage"}
+    blocked = {"url": urls[1], "error": "Blocked by website policy after redirect"}
+    a = {"url": urls[0], "content": "A"}
+    c = {"url": urls[2], "content": "C"}
+    primary = Provider("primary", [failure, None])
+    secondary_rows = [blocked, c] if kind == "partial-success" else [blocked]
+    configured.update(primary=primary, secondary=Provider("secondary", secondary_rows))
+    monkeypatch.setattr("tools.web_tools_extract._rescue_eligible", lambda provider: True)
+    calls = []
+
+    def ring(name, requested):
+        calls.append(requested)
+        return {
+            "empty": [], "none": None, "later": [None, c],
+            "unknown": [{"url": "https://other.example", "content": "wrong"}],
+            "reordered": [c, a], "partial-success": [a, c],
+        }[kind]
+
+    monkeypatch.setattr("plugins.web.keyless_mcp.extract_with_failover", ring)
+    entry = web_tools.registry.get_entry("web_extract")
+    assert entry is not None
+    result = json.loads(asyncio.run(entry.handler({"urls": urls})))
+    rows = result["results"]
+    assert [row["url"] for row in rows] == urls
+    assert rows[1]["error"] == blocked["error"]
+    assert calls == ([] if kind == "partial-success" else [[urls[0], urls[2]]])
+    if kind in {"later", "reordered", "partial-success"}:
+        assert rows[2]["content"] == "C"
+    else:
+        assert rows[2]["error"] == failure["error"]
+    if kind == "reordered":
+        assert rows[0]["content"] == "A"
+    else:
+        assert rows[0]["error"]

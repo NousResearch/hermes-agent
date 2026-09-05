@@ -264,6 +264,24 @@ def _extra_args_set_shm_size(extra_args: list) -> bool:
         for a in (extra_args or []))
 
 
+_NETWORK_FLAGS = ("--network", "--net")
+
+
+def _extra_args_network_mode(extra_args: list) -> Optional[str]:
+    """Network mode requested by ``docker_extra_args`` (``--network none`` / ``--network=none`` /
+    ``--net``), or None when the operator set no network flag. Docker rejects a repeated
+    ``--network`` outright (exit 125), so the implicit ``docker_network: false`` flag and an
+    operator-supplied one must be reconciled before the command line is built."""
+    args = [a for a in (extra_args or []) if isinstance(a, str)]
+    for i, arg in enumerate(args):
+        for flag in _NETWORK_FLAGS:
+            if arg == flag:
+                return args[i + 1] if i + 1 < len(args) else ""
+            if arg.startswith(f"{flag}="):
+                return arg.split("=", 1)[1]
+    return None
+
+
 # /run is separate from _BASE_SECURITY_ARGS: s6-overlay images exec
 # /run/s6/basedir/bin/init at stage0 and die (exit 126) on a noexec mount.
 _RUN_TMPFS_NOEXEC = "--tmpfs", "/run:rw,noexec,nosuid,size=64m"
@@ -615,7 +633,18 @@ class DockerEnvironment(BaseEnvironment):
                     "Docker storage driver does not support per-container disk limits "
                     "(requires overlay2 on XFS with pquota). Container will run without disk quota.")
         if not network:
-            args.append("--network=none")
+            extra_network = _extra_args_network_mode(extra_args)
+            if extra_network is None:
+                args.append("--network=none")
+            elif extra_network != "none":
+                # Contradictory intent: honouring the extra arg would hand the agent a networked
+                # container despite the configured lockdown, and the reuse guard (NetworkMode ==
+                # "none") would churn it every startup. Fail closed and name both keys.
+                raise RuntimeError(
+                    f"terminal.docker_network is false (air-gapped) but terminal.docker_extra_args "
+                    f"requests --network={extra_network!r}. Remove the --network entry from "
+                    f"docker_extra_args, or set docker_network: true to opt into that network.")
+            # extra_network == "none": same intent stated twice; the extra arg carries it once.
         return args
 
     def _mount_args(self, volumes, host_cwd, auto_mount_cwd, task_id) -> tuple[list[str], list[str]]:

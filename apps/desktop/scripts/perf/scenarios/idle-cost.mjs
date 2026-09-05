@@ -64,16 +64,20 @@ const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`se
 const idleCost = seconds => `
   (async () => {
     const rc = window.__RENDER_COUNTS__
+    const ac = window.__ATOM_CHURN__
+    if (ac) ac.start()
     rc.start()
     const t0 = performance.now()
     await new Promise(r => setTimeout(r, ${seconds} * 1000))
     const elapsed = (performance.now() - t0) / 1000
     rc.stop()
+    const churn = ac ? ac.stop() : []
     return JSON.stringify({
       elapsed,
       commits: rc.commits(),
       top: rc.report(12),
-      owners: rc.report(300).filter(r => r.stateChanged > 0 && r.propsChanged === 0).slice(0, 10)
+      owners: rc.report(300).filter(r => r.stateChanged > 0 && r.propsChanged === 0).slice(0, 10),
+      churn: churn.slice(0, 10)
     })
   })()
 `
@@ -252,6 +256,8 @@ export default {
         // Commits per second with a turn open and nothing arriving. Should be 0.
         idle_commits_per_s: round(idle.commits / idle.elapsed),
         idle_renders: idle.top.reduce((a, r) => a + r.renders, 0),
+        idle_atom_churn: idle.churn ? idle.churn.reduce((a, c) => a + c.notifies, 0) : 0,
+        idle_wasted_churn: idle.churn ? idle.churn.reduce((a, c) => a + c.wasted, 0) : 0,
         // Interaction smoothness while that churn competes for the main thread.
         // Reported as a deficit from 60fps so "lower is better" matches the
         // baseline gate's direction.
@@ -274,6 +280,7 @@ export default {
         // Components whose OWN state changed with no prop change: the roots.
         idleOwners: idle.owners,
         idleTop: idle.top,
+        idleChurn: idle.churn ?? [],
         dragCommits: drag.commits,
         dragTop: drag.top,
         typeCommits: type.commits,

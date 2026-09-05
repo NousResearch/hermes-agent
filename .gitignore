@@ -37,8 +37,27 @@ data/
 !hermes_cli/data/
 !hermes_cli/data/plugin_index.json
 .pytest_cache/
-test_durations.json
 .pytest-cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# JavaScript lint cache
+.eslintcache
+
+# Local audit artifacts an agent drops in the repo root (advisory output, never
+# project source). Leading slash is load-bearing: unanchored these patterns match
+# at ANY depth and would silently swallow a legitimately tracked docs/ file with
+# one of these very generic names.
+/audit_report.md
+/review_findings.md
+/investigation_report.md
+/fix_summary.md
+
+test_durations.json
 tmp/
 temp_vision_images/
 hermes-*/*

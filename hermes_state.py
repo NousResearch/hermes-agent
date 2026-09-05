@@ -149,6 +149,27 @@ def _scrub_surrogates(value: Any) -> Any:
 # session_gateway_runtime and tui_gateway.server so they cannot drift.
 _BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
 
+# Per-database reopen locks for the self-heal path (#102827). A teardown owner
+# can close() a writer while a worker still has a flush to land; the next
+# write reopens the connection. The reopen must not race another thread's
+# in-flight write on the same file, or the fresh connection's pragma/checkpoint
+# setup can interleave with an active WAL append (structural corruption).
+# RLock: _execute_write holds it across the whole write including the nested
+# reopen call, so the same thread must re-acquire safely while other threads
+# block.
+_db_reopen_locks: Dict[str, threading.RLock] = {}
+_db_reopen_locks_lock = threading.Lock()
+
+
+def _get_db_reopen_lock(db_path: Path) -> threading.RLock:
+    key = str(db_path)
+    with _db_reopen_locks_lock:
+        lock = _db_reopen_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _db_reopen_locks[key] = lock
+        return lock
+
 T = TypeVar("T")
 
 # Import-time snapshot lets _default_db_path() detect a re-pointed DEFAULT_DB_PATH
@@ -742,7 +763,20 @@ class SessionDB(
         """Reopen the writer after ``close()`` raced a live caller (a teardown owner
         set ``_conn = None`` while a worker still had a transcript flush to land).
         Loud (WARNING) and bounded (only after an explicit close()). Caller holds
-        ``self._lock``. No _init_schema: no DDL races with siblings during teardown."""
+        ``self._lock``. No _init_schema: no DDL races with siblings during teardown.
+
+        Serialized per database file against all writers via the reopen lock
+        (#102827): the fresh connection's pragma/checkpoint setup must not
+        interleave with another thread's active WAL append."""
+        reopen_lock = _get_db_reopen_lock(self.db_path)
+        reopen_lock.acquire()
+        try:
+            self._reopen_after_close_inner(context=context)
+        finally:
+            reopen_lock.release()
+
+    def _reopen_after_close_inner(self, context: str = "write") -> None:
+        """Inner reopen body; caller holds ``self._lock`` + the reopen lock."""
         if self.read_only:
             raise sqlite3.ProgrammingError(
                 f"SessionDB for {self.db_path} was closed (read-only handle); "
@@ -789,10 +823,12 @@ class SessionDB(
         # settlement unknown and must propagate — this helper owns non-idempotent transcript/counter
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
+        reopen_lock = _get_db_reopen_lock(self.db_path)
         while True:
             self._raise_if_db_corrupt()
             self._raise_if_db_replaced()
             fn_started = False
+            reopen_lock.acquire()
             try:
                 with self._lock:
                     if self._conn is None:  # close() raced this writer
@@ -874,6 +910,8 @@ class SessionDB(
                     if self._is_structural_corruption_error(exc):
                         self._halt_db_corrupt(exc)
                 raise
+            finally:
+                reopen_lock.release()
 
     def _write_sql(
         self, sql: str, params: Any = (), *, many: bool = False, patience_s: Optional[float] = None,

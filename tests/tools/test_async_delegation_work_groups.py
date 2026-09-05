@@ -505,6 +505,75 @@ def test_recovery_rotates_dead_bound_claim_before_enqueueing_replacement():
     assert ad.recover_and_enqueue_work_groups(consumer="restart-again") == []
 
 
+@pytest.mark.parametrize("child_count,budget,long_detail", [
+    (1, 48000, False), (2, 48000, False), (2, 1800, True), (2, 48000, True),
+])
+def test_production_batch_closeout_keeps_child_outcomes(child_count, budget, long_detail):
+    goals = ["research", "required review"][:child_count]
+    assert _register(is_batch=True, goals=goals, aggregate_char_budget=budget)
+    results = [
+        {"task_index": 0, "status": "completed", "summary": "Research evidence"},
+        {"task_index": 1, "status": "error", "summary": "Review incomplete",
+         "error": "Required security review failed", "schema_valid": False,
+         "schema_errors": ["Missing verdict"], "schema_retries": 2},
+    ][:child_count]
+    if long_detail:
+        for child in results:
+            child["summary"] += "界" * 10000
+    for child in results:
+        child["live_transcript"] = f"/tmp/deleg-1/task-{child['task_index']}.jsonl"
+    combined = {"results": results, "total_duration_seconds": 1.0}
+    # Exercise the production event/persistence path, without launching delegates.
+    ad._push_completion_event(
+        {"delegation_id": "deleg-1", "origin_work_id": "work-1", "is_batch": True,
+         "goals": goals}, combined, ad._batch_status(combined),
+    )
+    assert ad.seal_work_group("work-1", "turn-1")
+    claimed = ad.claim_ready_work_group("work-1", "batch")
+    assert claimed is not None
+    envelope = claimed["envelope"]
+    assert len(ad._json_bytes(envelope)) <= budget
+    children = envelope["members"]
+    assert [(c["delegation_id"], c["task_index"]) for c in children] == [
+        ("deleg-1", i) for i in range(child_count)
+    ]
+    for child, source, goal in zip(children, results, goals):
+        assert child["status"] == ad._status_category(source["status"])
+        assert child["detail_ref"].startswith("async_delegation:deleg-1")
+        assert child["detail_truncated"] is long_detail
+        if not long_detail:
+            assert child["summary"] == source["summary"]
+            assert child["goal"] == goal
+            assert child["live_transcript"] == source["live_transcript"]
+        if source.get("error"):
+            assert child["error_present"] is True
+            assert child["schema_valid"] is False
+            assert child["schema_error_count"] == len(source["schema_errors"])
+            if not long_detail:
+                assert child["error"] == source["error"]
+                assert child["schema_errors"] == source["schema_errors"]
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_batch_admission_reserves_each_child_outcome(replacement):
+    if replacement:
+        assert _register(aggregate_char_budget=1800)
+        _finish("deleg-1")
+        assert ad.seal_work_group("work-1", "turn-1")
+        claimed = _claim_bound()
+        def register_batch(goals):
+            return ad.reopen_work_group_with_member(
+                work_id="work-1", generation=0, delivery_id=claimed["envelope"]["delivery_id"],
+                claim_id=claimed["claim_id"], closeout_turn_id="closeout-1",
+                delegation_id="batch", task={"is_batch": True, "goals": goals},
+            )
+    else:
+        def register_batch(goals):
+            return _register(member="batch", is_batch=True, goals=goals, aggregate_char_budget=1800)
+    assert not register_batch(["required"] * 20)
+    assert register_batch(["research", "review"])
+
+
 def test_bounded_aggregate_has_deterministic_order_and_terminal_metadata():
     assert _register(member="later", task_index=2)
     assert _register(member="first", task_index=0)

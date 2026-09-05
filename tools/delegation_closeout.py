@@ -303,13 +303,23 @@ def _identifier_fits(value: Any, byte_limit: int) -> bool:
     return isinstance(value, str) and bool(value) and len(value.encode("utf-8")) <= byte_limit
 
 
-def _minimal_envelope_size(work_id: str, generation: int, member_ids: List[str]) -> int:
+def _capacity_members(delegation_id: str, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+    goals = task.get("goals")
+    if not task.get("is_batch"):
+        return [_capacity_member(delegation_id)]
+    return [dict(_capacity_member(delegation_id), task_index=index)
+            for index in range(max(1, len(goals) if isinstance(goals, list) else 0))]
+
+
+def _minimal_envelope_size(
+    work_id: str, generation: int, members: List[Dict[str, Any]]
+) -> int:
     envelope = {
         "type": "async_delegation_work_closeout",
         "work_id": work_id,
         "generation": generation,
         "delivery_id": _delivery_id(work_id, generation),
-        "members": [_capacity_member(member_id) for member_id in sorted(member_ids)],
+        "members": members,
     }
     return len(_json_bytes(envelope))
 
@@ -383,16 +393,17 @@ def register_work_group_member(
         budget = _bounded_budget(
             aggregate_char_budget if group is None else group["aggregate_char_budget"]
         )
-        existing_ids = [
-            str(row[0])
+        existing_members = [
+            member
             for row in conn.execute(
-                "SELECT delegation_id FROM async_delegations "
+                "SELECT delegation_id, task_json FROM async_delegations "
                 "WHERE origin_work_id=? AND work_generation=?",
                 (work_id, generation),
             ).fetchall()
+            for member in _capacity_members(str(row[0]), json.loads(row[1] or "{}"))
         ]
         if _minimal_envelope_size(
-            work_id, generation, existing_ids + [delegation_id]
+            work_id, generation, existing_members + _capacity_members(delegation_id, task)
         ) > budget:
             if created_group:
                 conn.execute(
@@ -623,33 +634,78 @@ def _schema_metadata(result: Dict[str, Any], event: Dict[str, Any]) -> Dict[str,
     return metadata
 
 
-def _build_group_envelope(
-    work_id: str, generation: int, delivery_id: str, budget: int, rows: List[sqlite3.Row]
-) -> Dict[str, Any]:
-    members: List[Dict[str, Any]] = []
-    mandatory_by_id: Dict[str, Dict[str, Any]] = {}
+def _member_outcomes(rows: List[sqlite3.Row]):
+    """Expand production batches; a batch status never substitutes for a child."""
     for row in rows:
         task = json.loads(row["task_json"] or "{}")
         event = json.loads(row["event_json"] or "{}")
         result = json.loads(row["result_json"] or "{}")
-        status = result.get("status", event.get("status", row["state"] or "unknown"))
+        children = result.get("results", event.get("results"))
+        if not isinstance(children, list):
+            if not task.get("is_batch"):
+                yield row, task, event, result, False
+                continue
+            children = []
+        goals = task.get("goals", event.get("goals")) or []
+        by_index = {child.get("task_index", index): child
+                    for index, child in enumerate(children)}
+        for index in sorted(set(range(len(goals))) | set(by_index)):
+            child = by_index.get(index)
+            if child is None:
+                child = {
+                    "status": "unknown", "detail_lost": True,
+                    "error": result.get("error") or event.get("error") or "Child result missing",
+                }
+            child_task = dict(task, task_index=index)
+            child_task["goal"] = goals[index] if 0 <= index < len(goals) else ""
+            yield row, child_task, {}, child, True
+        if not goals and not children:
+            # Legacy/compacted batches have no recoverable child identities.
+            yield row, task, {}, dict(result, status="unknown", detail_lost=True), False
+
+
+def _build_group_envelope(
+    work_id: str, generation: int, delivery_id: str, budget: int, rows: List[sqlite3.Row]
+) -> Dict[str, Any]:
+    members: List[Dict[str, Any]] = []
+    mandatory_by_id: Dict[tuple, Dict[str, Any]] = {}
+    for row, task, event, result, is_child in _member_outcomes(rows):
+        status = result.get("status", event.get("status", "unknown" if is_child else row["state"] or "unknown"))
         delegation_id = str(row["delegation_id"])
         item = _mandatory_member(
             delegation_id, status=status, result=result, event=event
         )
-        mandatory_by_id[delegation_id] = dict(item)
-        item["detail_truncated"] = False
+        task_index = int(task.get("task_index", 0) or 0)
+        if is_child:
+            item["task_index"] = task_index
+        mandatory_by_id[(delegation_id, task_index)] = dict(item)
+        item["detail_truncated"] = item["detail_lost"]
+
+        def add_detail(key, value, limit=160):
+            compact = _compact_scalar(value, limit)
+            item[key] = compact
+            if compact != value:
+                item["detail_truncated"] = True
+
         item["dispatch_index"] = int(task.get("dispatch_index", task.get("task_index", 0)) or 0)
         item["task_index"] = int(task.get("task_index", 0) or 0)
         for key in _PRESERVED_RESULT_KEYS:
             if key in {"status", "detail_lost"}:
                 continue
             if key in result:
-                item[key] = _compact_scalar(result[key])
+                add_detail(key, result[key])
             elif key in event:
-                item[key] = _compact_scalar(event[key])
+                add_detail(key, event[key])
         item.update(_schema_metadata(result, event))
+        verdict = result.get("schema_verdict", result.get("verdict", event.get("schema_verdict", event.get("verdict"))))
+        if verdict is not None and item.get("schema_verdict") != verdict:
+            item["detail_truncated"] = True
         errors = result.get("schema_errors", event.get("schema_errors"))
+        if errors is not None:
+            if len(_json_bytes(errors)) <= 240:
+                item["schema_errors"] = errors
+            else:
+                add_detail("schema_errors", errors, 240)
         if errors is not None and "schema_error_count" not in item:
             item["schema_error_count"] = len(errors) if isinstance(errors, list) else 1
         for key, value in (
@@ -657,10 +713,13 @@ def _build_group_envelope(
             ("error", result.get("error", event.get("error"))),
         ):
             if value not in (None, ""):
-                item[key] = _compact_scalar(value, 240)
+                add_detail(key, value, 240)
         summary = result.get("summary", event.get("summary"))
         if summary is not None:
-            item["summary"] = _compact_scalar(summary, 480)
+            add_detail("summary", summary, 480)
+        transcript = result.get("live_transcript", event.get("live_transcript"))
+        if transcript:
+            add_detail("live_transcript", transcript, 480)
         members.append(item)
     members.sort(key=lambda item: (item["dispatch_index"], item["task_index"], item["delegation_id"]))
     envelope = {
@@ -673,13 +732,15 @@ def _build_group_envelope(
     # Fail down deterministically to the registration-tested mandatory form.
     if len(_json_bytes(envelope)) > budget:
         optional_order = (
-            "summary", "goal", "error", "schema_verdict", "model",
+            "summary", "goal", "error", "schema_errors", "schema_verdict", "model",
             "duration_seconds", "api_calls", "exit_reason", "timeout_phase",
-            "stall_phase", "dispatch_index", "task_index",
+            "stall_phase", "dispatch_index", "live_transcript",
         )
         for key in optional_order:
             for item in reversed(members):
-                item.pop(key, None)
+                if key in item:
+                    item.pop(key)
+                    item["detail_truncated"] = True
             if len(_json_bytes(envelope)) <= budget:
                 break
     if len(_json_bytes(envelope)) > budget:
@@ -687,7 +748,7 @@ def _build_group_envelope(
         # than pruning rich data in place, so no untrusted scalar can leak into
         # the mandatory envelope.
         envelope["members"] = [
-            mandatory_by_id[item["delegation_id"]] for item in members
+            mandatory_by_id[(item["delegation_id"], item["task_index"])] for item in members
         ]
     if len(_json_bytes(envelope)) > budget:
         # Only corrupt/legacy rows can reach this state: admitted Stage-1 rows
@@ -1048,7 +1109,7 @@ def reopen_work_group_with_member(
         ):
             return False
         if _minimal_envelope_size(
-            work_id, generation + 1, [delegation_id]
+            work_id, generation + 1, _capacity_members(delegation_id, task or {})
         ) > _bounded_budget(group["aggregate_char_budget"]):
             return False
         cur = conn.execute(

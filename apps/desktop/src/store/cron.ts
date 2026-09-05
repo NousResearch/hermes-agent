@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import type { CronJob } from '@/types/hermes'
+import type { CronJob, CronJobSchedule } from '@/types/hermes'
 
 // Cron *jobs* (not run sessions) power the sidebar "Cron jobs" section. Listing
 // the job — schedule, state, live next-run countdown — makes the job the
@@ -57,6 +57,65 @@ export function invalidateCronJobsRequests(): void {
   cronJobsScopeGeneration += 1
 }
 
+function sameCronSchedule(
+  a?: CronJobSchedule | null,
+  b?: CronJobSchedule | null
+): boolean {
+  if (a === b) {
+    return true
+  }
+
+  if (!a && !b) {
+    return true
+  }
+
+  if (!a || !b) {
+    return false
+  }
+
+  return a.kind === b.kind && a.expr === b.expr && a.display === b.display
+}
+
+export function sameCronJob(a: CronJob, b: CronJob): boolean {
+  if (a === b) {
+    return true
+  }
+
+  return (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.enabled === b.enabled &&
+    a.state === b.state &&
+    a.next_run_at === b.next_run_at &&
+    a.last_run_at === b.last_run_at &&
+    a.last_error === b.last_error &&
+    sameCronSchedule(a.schedule, b.schedule) &&
+    a.schedule_display === b.schedule_display &&
+    a.prompt === b.prompt &&
+    a.model === b.model &&
+    a.provider === b.provider &&
+    a.deliver === b.deliver &&
+    a.no_agent === b.no_agent &&
+    a.script === b.script
+  )
+}
+
+export function sameCronJobs(a: CronJob[], b: CronJob[]): boolean {
+  if (a === b) {
+    return true
+  }
+
+  if (a.length !== b.length) {
+    return false
+  }
+
+  return a.every((job, i) => {
+    const other = b[i]
+
+    return other != null && sameCronJob(job, other)
+  })
+}
+
 export function commitCronJobsRequest(request: CronJobsRequest, jobs: CronJob[]): boolean {
   if (!isCronJobsRequestCurrent(request)) {
     return false
@@ -65,14 +124,20 @@ export function commitCronJobsRequest(request: CronJobsRequest, jobs: CronJob[])
   // Consume the token so neither a duplicate completion nor any older request
   // can publish after this authoritative snapshot.
   cronJobsRequestGeneration += 1
-  $cronJobs.set(jobs)
+
+  if (!sameCronJobs($cronJobs.get(), jobs)) {
+    $cronJobs.set(jobs)
+  }
 
   return true
 }
 
 export const setCronJobs = (jobs: CronJob[]) => {
   cronJobsRequestGeneration += 1
-  $cronJobs.set(jobs)
+
+  if (!sameCronJobs($cronJobs.get(), jobs)) {
+    $cronJobs.set(jobs)
+  }
 }
 
 // In-place edit so the cron overlay's mutations (create/edit/delete/pause/…)

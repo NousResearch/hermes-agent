@@ -1584,6 +1584,19 @@ def _enable_multiplex_log_routing(config: object) -> bool:
         return False
 
 
+def _cron_shared_adapter_profile() -> str:
+    """Return the profile that owns ``GatewayRunner.adapters``.
+
+    A gateway launched with ``--profile NAME`` owns the shared platform
+    adapters for NAME, not for the literal ``default`` profile.  The multiplex
+    cron ticker needs that identity so NAME's jobs reuse the connected adapters
+    instead of constructing a conflicting standalone listener.
+    """
+    from hermes_cli.profiles import get_active_profile_name
+
+    return get_active_profile_name() or "default"
+
+
 def _handoff_watch_scopes(runner: object) -> list:
     """``(profile_name, home)`` pairs whose ``state.db`` the watcher must poll; ``(None, None)`` = root
     poll, always first. ``/handoff`` writes into the store of the profile the CLI ran under; an unscoped
@@ -5040,9 +5053,12 @@ def _start_gateway_start_cron_and_housekeeping(runner):
                 cron_start_kwargs["profile_homes"] = profile_homes
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
-                # runner.adapters belongs to "default"; naming it keeps the ticker from routing a secondary's
-                # cron through the default bot (even before that profile's adapter connects).
-                cron_start_kwargs["default_profile"] = "default"
+                # runner.adapters belongs to the gateway's active profile. A
+                # named launch (for example ``--profile rex``) does not make the
+                # literal ``default`` profile its owner. Thread the real owner so
+                # only that profile reuses the shared live adapters; secondaries
+                # still receive their own maps or an empty fail-closed map.
+                cron_start_kwargs["default_profile"] = _cron_shared_adapter_profile()
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
                     [p[0] if isinstance(p, tuple) else p for p in profile_homes])

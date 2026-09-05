@@ -168,6 +168,7 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     if not powershell.is_file():
         pytest.skip(f"Windows PowerShell not found at {powershell}")
 
+    flood_kb = 8192
     env = {
         **os.environ,
         # The fixture writes its child scripts, pid file and hand-off log under
@@ -180,6 +181,7 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         "HERMES_UPDATE_PIPE_DRAIN_SECONDS": "3",
         "HERMES_UPDATE_STEP_IDLE_SECONDS": "3",
         "HERMES_SELFTEST_HOLD_SECONDS": "45",
+        "HERMES_SELFTEST_FLOOD_KB": str(flood_kb),
     }
 
     result = subprocess.run(
@@ -204,7 +206,7 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
 
     assert "PIPE-DRAIN SELF-TEST: PASS" in result.stdout, (
         "The Windows update hand-off's step drain regressed: it either waited "
-        "on a descendant holding the pipe open (the Desktop parks on 'Updating "
+        "on a descendant holding the pipe open (the Desktop parks on 'Updating "  # windows-footgun: ok -- prose, not open()
         "Hermes' forever) or metered a chatty step (backpressure on the running "
         f"update). Fixture diagnosis follows.\n--- stdout ---\n{result.stdout}\n"
         f"--- stderr ---\n{result.stderr}"
@@ -213,3 +215,17 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         f"-SelfTestPipeDrain exited {result.returncode}.\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
     )
+    handoff_log = tmp_path / "logs" / "desktop-update-handoff.log"
+    emitted_stdout_bytes = len(result.stdout.encode("utf-8"))
+    assert emitted_stdout_bytes < 64 * 1024, (
+        "GitHub Actions throttling risk: self-test emitted "
+        f"{emitted_stdout_bytes} stdout bytes"
+    )
+    if "pipeflood| " in result.stdout:
+        pytest.fail("GitHub Actions throttling risk: flood output was replayed")
+    assert "pipedrain| pipe-drain step output" in result.stdout
+    assert "stepstall| step entered silent finalization" in result.stdout
+    assert handoff_log.is_file()
+    assert handoff_log.stat().st_size >= flood_kb * 1024
+    with handoff_log.open(encoding="utf-8-sig") as log_handle:
+        assert any("pipeflood| " in line for line in log_handle)

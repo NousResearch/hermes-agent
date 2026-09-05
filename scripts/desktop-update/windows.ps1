@@ -89,10 +89,10 @@ $script:Ui = $null
 $script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
-function Write-HandoffLog([string]$Message) {
+function Write-HandoffLog([string]$Message, [bool]$EchoToHost = $true) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
-    Write-Host $line
+    if ($EchoToHost) { Write-Host $line }
 }
 
 # ── The shim: repo-owned HTML in a chromeless default-browser app window ───
@@ -1001,13 +1001,15 @@ function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     return $false
 }
 
-function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
-    # The window does not stream child output, so no line-pump: both pipes
-    # drain asynchronously (no deadlock however chatty the child) while a small
-    # DoEvents loop keeps the marquee animating through long silent
-    # stretches (pip installs) -- the old EndOfStream pump blocked on quiet
-    # children and froze it. Full output still lands in the hand-off log
-    # afterwards, where `hermes debug share` picks it up.
+function Invoke-HermesStep(
+    [string]$Exe,
+    [string[]]$HermesArgs,
+    [string]$Tag,
+    [bool]$EchoCapturedOutput = $true
+) {
+    # Captured output always lands in desktop-update-handoff.log and in the
+    # returned Output string. EchoCapturedOutput controls only replay to this
+    # process's host console; production callers retain the default ($true).
     #
     # The drain is bounded once the step exits (#90455). Waiting for pipe EOF
     # is waiting on the step's whole surviving descendant tree, and this
@@ -1137,10 +1139,14 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
     $outText = $outSink.ToString()
     $errText = $errSink.ToString()
     foreach ($ln in ($outText -split "`r?`n")) {
-        if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
+        if ($ln.Trim()) {
+            Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) $EchoCapturedOutput
+        }
     }
     foreach ($ln in ($errText -split "`r?`n")) {
-        if ($ln.Trim()) { Write-HandoffLog ("{0}!| {1}" -f $Tag, $ln) }
+        if ($ln.Trim()) {
+            Write-HandoffLog ("{0}!| {1}" -f $Tag, $ln) $EchoCapturedOutput
+        }
     }
     $all = $outText
     if ($errText) { $all += "`n" + $errText }
@@ -1303,10 +1309,11 @@ exit 3
     }
 
     $floodSw = [System.Diagnostics.Stopwatch]::StartNew()
-    $flood = Invoke-HermesStep $powershell @(
+    Write-HandoffLog ("PIPE-DRAIN SELF-TEST: running flood arm ({0}KB; raw payload retained in hand-off log)" -f $floodKb)
+    $flood = Invoke-HermesStep -Exe $powershell -HermesArgs @(
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $floodPs1,
         "-Kb", [string]$floodKb
-    ) "pipeflood"
+    ) -Tag "pipeflood" -EchoCapturedOutput $false
     $floodSw.Stop()
     $floodElapsed = [Math]::Round($floodSw.Elapsed.TotalSeconds, 2)
     $floodBytes = $flood.Output.Length

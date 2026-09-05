@@ -142,8 +142,14 @@ class RoomControlHTTPClient:
 
         return latest_shared_message(self, target_profile=target_profile)
 
-    def revoke(self) -> None:
-        self._request(method="DELETE")
+    def revoke(self) -> int:
+        result = self._request(method="DELETE")
+        revoked = result.get("revoked")
+        if set(result) != {"revoked"} or type(revoked) is not int or revoked not in {0, 1}:
+            raise RoomControlClientError(
+                "Group Chat host returned an invalid revocation acknowledgement"
+            )
+        return revoked
 
     def mutate(
         self,
@@ -188,8 +194,18 @@ def revoke_stored_peer_control(
         ),
         None,
     )
-    if link is not None and link.status == "active":
-        RoomControlHTTPClient(link).revoke()
-    return hosted_room_controls.delete_peer_control_links(
-        db_path, room_id=room_id, member_id=member_id
+    if link is None:
+        return 0
+    if link.status == "expired":
+        return hosted_room_controls.delete_peer_control_link_value(
+            db_path, expected=link, required_status="expired"
+        )
+    revoked = hosted_room_controls.revoke_peer_control_link_value(
+        db_path, expected=link
+    )
+    if revoked is None:
+        return 0
+    RoomControlHTTPClient(revoked).revoke()
+    return hosted_room_controls.delete_peer_control_link_value(
+        db_path, expected=revoked, required_status="revoked"
     )

@@ -1080,6 +1080,99 @@ def revoke_peer_control_links(
         return cursor.rowcount
 
 
+def _same_peer_control(
+    current: StoredPeerRoomControl, expected: StoredPeerRoomControl
+) -> bool:
+    return bool(
+        current.room_id == expected.room_id
+        and current.member_id == expected.member_id
+        and current.target_profile == expected.target_profile
+        and current.home_url == expected.home_url
+        and current.authority_gateway_id == expected.authority_gateway_id
+        and current.authority_epoch == expected.authority_epoch
+        and current.created_at == expected.created_at
+        and current.expires_at == expected.expires_at
+        and hmac.compare_digest(current.control_token, expected.control_token)
+    )
+
+
+def revoke_peer_control_link_value(
+    db_path: Path | str,
+    *,
+    expected: StoredPeerRoomControl,
+    now: float | None = None,
+) -> StoredPeerRoomControl | None:
+    """Locally revoke one exact credential while retaining its bearer for retry."""
+
+    if not isinstance(expected, StoredPeerRoomControl):
+        raise HostedRoomControlError("expected control link is invalid")
+    timestamp = _timestamp(time.time() if now is None else now, label="now")
+    with _transaction(db_path, immediate=True) as conn:
+        row = conn.execute(
+            """SELECT rowid, * FROM hosted_room_peer_controls
+                WHERE room_id=? AND member_id=?""",
+            (expected.room_id, expected.member_id),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            current = _peer_link_from_row(row)
+        except HostedRoomControlError:
+            return None
+        if not _same_peer_control(current, expected):
+            return None
+        if current.status == "revoked":
+            return current
+        if current.status != "active":
+            return None
+        conn.execute(
+            """UPDATE hosted_room_peer_controls
+                  SET status='revoked', updated_at=?, revoked_at=?
+                WHERE rowid=?""",
+            (timestamp, timestamp, row["rowid"]),
+        )
+        return _peer_link_from_row(
+            conn.execute(
+                "SELECT * FROM hosted_room_peer_controls WHERE rowid=?",
+                (row["rowid"],),
+            ).fetchone()
+        )
+
+
+def delete_peer_control_link_value(
+    db_path: Path | str,
+    *,
+    expected: StoredPeerRoomControl,
+    required_status: str,
+) -> int:
+    """Delete one unchanged credential after its terminal state is verified."""
+
+    if not isinstance(expected, StoredPeerRoomControl):
+        raise HostedRoomControlError("expected control link is invalid")
+    if required_status not in {"expired", "revoked"}:
+        raise HostedRoomControlError("required control status is invalid")
+    with _transaction(db_path, immediate=True) as conn:
+        row = conn.execute(
+            """SELECT rowid, * FROM hosted_room_peer_controls
+                WHERE room_id=? AND member_id=?""",
+            (expected.room_id, expected.member_id),
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            current = _peer_link_from_row(row)
+        except HostedRoomControlError:
+            return 0
+        if current.status != required_status or not _same_peer_control(
+            current, expected
+        ):
+            return 0
+        return conn.execute(
+            "DELETE FROM hosted_room_peer_controls WHERE rowid=?",
+            (row["rowid"],),
+        ).rowcount
+
+
 def delete_peer_control_links(
     db_path: Path | str,
     *,

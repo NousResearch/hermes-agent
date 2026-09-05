@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from gateway import hosted_room_controls
+from gateway import hosted_room_controls, hosted_rooms
 from gateway.hosted_room_control_client import (
     RoomControlHTTPClient,
+    RoomControlClientError,
     revoke_stored_peer_control,
 )
 from gateway.hosted_room_controls import StoredPeerRoomControl
+from gateway.hosted_room_file_contract import FileAccessError
+from gateway.hosted_room_messaging import MessagingRoomBackend
 
 
 class ControlHandler(BaseHTTPRequestHandler):
@@ -90,7 +94,7 @@ def test_summary_and_mutation_keep_the_token_in_headers(control_server):
         )["action"]
         == "send"
     )
-    client.revoke()
+    assert client.revoke() == 1
 
     assert [request[0] for request in ControlHandler.requests] == [
         "GET",
@@ -146,7 +150,7 @@ def test_stored_peer_revoke_contacts_home_before_erasing_bearer(tmp_path, monkey
     monkeypatch.setattr(
         RoomControlHTTPClient,
         "revoke",
-        lambda self: revoked.append(self.link.room_id),
+        lambda self: revoked.append(self.link.room_id) or 1,
     )
 
     assert (
@@ -159,3 +163,150 @@ def test_stored_peer_revoke_contacts_home_before_erasing_bearer(tmp_path, monkey
         ).links
         == ()
     )
+
+    replacement = hosted_room_controls.save_peer_control_link(
+        db,
+        room_id="room-1",
+        member_id="member-peer",
+        target_profile="reviewer",
+        room_name="Planning",
+        member_count=2,
+        home_url="https://home.example.test",
+        authority_gateway_id="install:home",
+        authority_epoch=1,
+        control_token="A" * 43,
+        expires_at=10_000_000_000,
+        now=20,
+    ).link
+
+    def replace_before_ack(_client):
+        hosted_room_controls.save_peer_control_link(
+            db,
+            room_id=replacement.room_id,
+            member_id=replacement.member_id,
+            target_profile="reviewer",
+            room_name="Planning",
+            member_count=2,
+            home_url=replacement.home_url,
+            authority_gateway_id=replacement.authority_gateway_id,
+            authority_epoch=replacement.authority_epoch,
+            control_token="B" * 43,
+            expires_at=10_000_000_000,
+            allow_rotation=True,
+            now=30,
+        )
+        return 1
+
+    monkeypatch.setattr(RoomControlHTTPClient, "revoke", replace_before_ack)
+    assert (
+        revoke_stored_peer_control(db, room_id="room-1", member_id="member-peer")
+        == 0
+    )
+    current = hosted_room_controls.load_peer_control_links(db, now=40).links
+    assert len(current) == 1
+    assert current[0].control_token == "B" * 43
+
+
+def test_partial_revoke_survives_reservation_gc_and_retries_the_bearer(
+    tmp_path, monkeypatch
+):
+    db = tmp_path / "state.db"
+    claims = {
+        "room_id": "room-1",
+        "member_id": "member-peer",
+        "target_profile": "reviewer",
+        "authority_gateway_id": "install:home",
+        "authority_epoch": 1,
+    }
+    hosted_rooms.reserve_peer_room(db, claims=claims, expires_at=100, now=20)
+    saved = hosted_room_controls.save_peer_control_link(
+        db,
+        **claims,
+        room_name="Planning",
+        member_count=2,
+        home_url="https://home.example.test",
+        control_token="A" * 43,
+        expires_at=10_000_000_000,
+        now=20,
+    ).link
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE hosted_room_peer_reservations SET revoked_at=30")
+
+    responses = [
+        RoomControlClientError("home unavailable", retryable=True),
+        {"revoked": 2},
+        {"revoked": 0},
+    ]
+    attempts = []
+
+    def request(client, *, method, body=None):
+        assert method == "DELETE" and body is None
+        attempts.append(client.link.control_token)
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(RoomControlHTTPClient, "_request", request)
+    with pytest.raises(RoomControlClientError, match="unavailable"):
+        revoke_stored_peer_control(db, room_id="room-1", member_id="member-peer")
+
+    retained = hosted_room_controls.load_peer_control_links(
+        db, include_inactive=True, now=40
+    ).links
+    assert len(retained) == 1
+    assert retained[0].status == "revoked"
+    assert retained[0].control_token == saved.control_token
+    assert hosted_room_controls.load_peer_control_links(db, now=40).links == ()
+
+    hosted_rooms.reserve_peer_room(
+        db,
+        claims={
+            "room_id": "room-other",
+            "member_id": "member-other",
+            "target_profile": "other",
+            "authority_gateway_id": "install:other",
+            "authority_epoch": 1,
+        },
+        expires_at=200,
+        now=101,
+    )
+    with sqlite3.connect(db) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM hosted_room_peer_reservations WHERE room_id='room-1'"
+        ).fetchone()[0] == 0
+
+    monkeypatch.setattr(
+        RoomControlHTTPClient,
+        "list_files",
+        lambda *_args, **_kwargs: pytest.fail("revoked control reused for Files"),
+    )
+    backend = MessagingRoomBackend(db_path=db)
+    room = {
+        **claims,
+        "_room_mode": "remote",
+        "_remote_member_id": "member-peer",
+    }
+    with pytest.raises(FileAccessError) as error:
+        backend.list_files(room=room)
+    assert error.value.code == "file_access_denied"
+
+    with pytest.raises(RoomControlClientError, match="acknowledgement"):
+        revoke_stored_peer_control(db, room_id="room-1", member_id="member-peer")
+    assert len(
+        hosted_room_controls.load_peer_control_links(
+            db, include_inactive=True, now=40
+        ).links
+    ) == 1
+
+    assert (
+        revoke_stored_peer_control(db, room_id="room-1", member_id="member-peer")
+        == 1
+    )
+    assert (
+        hosted_room_controls.load_peer_control_links(
+            db, include_inactive=True, now=40
+        ).links
+        == ()
+    )
+    assert attempts == [saved.control_token] * 3

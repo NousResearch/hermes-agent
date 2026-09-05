@@ -98,9 +98,12 @@ class SessionSource:
     delivered_via_upstream_relay: bool = False
     # Internal, wire-INVISIBLE Telegram Business authorization proof. The
     # plugin adapter sets this only after enabled-config, chat-scope, trigger,
-    # actor, and connection-id checks pass. It is deliberately omitted from
-    # ``to_dict``/``from_dict`` so persisted or relayed input cannot forge it.
+    # actor, owner/connection allowlist, and connection-id checks pass. Both fields are deliberately
+    # omitted from ``to_dict``/``from_dict`` so persisted or relayed input cannot forge them.
     authorized_via_telegram_business: bool = False
+    telegram_business_owner_id: Optional[str] = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -676,14 +679,15 @@ def build_session_key(
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 
     parts = [_session_key_namespace(profile), source.platform.value, chat_type_slot]
-    if source.platform == Platform.SLACK and source.scope_id:
-        parts.append(str(source.scope_id))
+    scope_id = getattr(source, "scope_id", None)
+    if source.platform == Platform.SLACK and scope_id:
+        parts.append(str(scope_id))
     elif (
         source.platform == Platform.TELEGRAM
-        and source.scope_id
-        and str(source.scope_id).startswith("telegram-business:")
+        and scope_id
+        and str(scope_id).startswith("telegram-business:")
     ):
-        parts.append(str(source.scope_id))
+        parts.append(str(scope_id))
     if chat_id:
         parts.append(chat_id)
     # DMs put the participant before the thread; groups/threads put it after.

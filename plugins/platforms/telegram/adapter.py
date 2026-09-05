@@ -1003,6 +1003,21 @@ class TelegramAdapter(BasePlatformAdapter):
         raw = extra.get("business", {}) if isinstance(extra, dict) else {}
         return _normalize_business_config(raw)
 
+    def _business_scope_allowed(self, owner_id: Any, connection_id: Any) -> bool:
+        """Require an explicit owner/connection allowlist for delegated inbox authority."""
+        config = self._business_config()
+        owner_id = str(owner_id or "").strip()
+        connection_id = str(connection_id or "").strip()
+        allowed_owners = set(config.get("allowed_owner_ids") or ())
+        allowed_connections = set(config.get("allowed_connection_ids") or ())
+        if not owner_id or not connection_id or not (allowed_owners or allowed_connections):
+            return False
+        if allowed_owners and owner_id not in allowed_owners:
+            return False
+        if allowed_connections and connection_id not in allowed_connections:
+            return False
+        return True
+
     def _business_trigger_text(self, message: Message) -> Optional[str]:
         """Return customer text after an explicit configured trigger."""
         text = (
@@ -1093,6 +1108,7 @@ class TelegramAdapter(BasePlatformAdapter):
             or actor_id is None
             or isinstance(actor_id, bool)
             or str(actor_id) == owner_id
+            or not self._business_scope_allowed(owner_id, connection_id)
         ):
             # Business owners can write through the connected account too.
             # Treat their updates as operator traffic, not delegated-customer
@@ -1108,6 +1124,7 @@ class TelegramAdapter(BasePlatformAdapter):
         event.source.scope_id = f"telegram-business:{connection_id}"
         event.source.chat_type = "dm"
         event.source.authorized_via_telegram_business = True
+        event.source.telegram_business_owner_id = owner_id
         event.metadata = dict(event.metadata or {})
         event.metadata.update(
             {
@@ -6608,6 +6625,10 @@ def _normalize_business_config(raw: Any) -> Dict[str, Any]:
         "enabled": enabled,
         "allow_business_send_as_account": allow_send_as_account,
         "allowed_chats": _items(raw.get("allowed_chats", [])),
+        "allowed_owner_ids": _items(
+            raw.get("allowed_owner_ids", raw.get("allow_from", []))
+        ),
+        "allowed_connection_ids": _items(raw.get("allowed_connection_ids", [])),
         "trigger_words": _items(raw.get("trigger_words", [])),
     }
 

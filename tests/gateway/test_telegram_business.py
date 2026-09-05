@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, _thread_metadata_for_source
+from gateway.platforms.base import (
+    MessageEvent,
+    MessageType,
+    SendResult,
+    _thread_metadata_for_source,
+)
 from gateway.session import SessionSource, build_session_key
 from plugins.platforms.telegram import adapter as telegram
 
@@ -19,10 +24,17 @@ def _adapter(business=None):
             is_enabled=True,
         )
 
+    business_config = dict(business or {})
+    if business_config.get("enabled") and not (
+        "allowed_owner_ids" in business_config
+        or "allowed_connection_ids" in business_config
+        or "allow_from" in business_config
+    ):
+        business_config["allowed_owner_ids"] = ["business-owner"]
     config = PlatformConfig(
         enabled=True,
         token="fake",
-        extra={"business": business or {}},
+        extra={"business": business_config},
     )
     instance = object.__new__(telegram.TelegramAdapter)
     instance.config = config
@@ -84,6 +96,8 @@ def _message(
                 "enabled": False,
                 "allow_business_send_as_account": False,
                 "allowed_chats": [],
+                "allowed_owner_ids": [],
+                "allowed_connection_ids": [],
                 "trigger_words": [],
             },
         ),
@@ -93,6 +107,8 @@ def _message(
                 "enabled": True,
                 "allow_business_send_as_account": False,
                 "allowed_chats": ["42"],
+                "allowed_owner_ids": [],
+                "allowed_connection_ids": [],
                 "trigger_words": ["Sigurd"],
             },
         ),
@@ -102,6 +118,8 @@ def _message(
                 "enabled": False,
                 "allow_business_send_as_account": False,
                 "allowed_chats": ["7"],
+                "allowed_owner_ids": [],
+                "allowed_connection_ids": [],
                 "trigger_words": ["Argus"],
             },
         ),
@@ -110,6 +128,21 @@ def _message(
 def test_apply_yaml_config_normalizes_business(raw, expected):
     extras = telegram._apply_yaml_config({}, {"business": raw})
     assert extras["business"] == expected
+
+
+def test_business_config_normalizes_explicit_authority():
+    extras = telegram._apply_yaml_config(
+        {},
+        {
+            "business": {
+                "allowed_owner_ids": [" owner ", 7],
+                "allowed_connection_ids": " connection ",
+            }
+        },
+    )
+    assert extras is not None
+    assert extras["business"]["allowed_owner_ids"] == ["owner", "7"]
+    assert extras["business"]["allowed_connection_ids"] == ["connection"]
 
 
 def test_business_session_key_isolated_from_ordinary_telegram_dm():
@@ -145,6 +178,23 @@ def test_business_connections_get_distinct_session_keys():
         scope_id="telegram-business:bc-two",
     )
     assert build_session_key(first) != build_session_key(second)
+
+
+def test_business_authority_proof_is_not_serialized():
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="456",
+        user_id="customer",
+        scope_id="telegram-business:bc-123",
+        authorized_via_telegram_business=True,
+        telegram_business_owner_id="business-owner",
+    )
+    serialized = source.to_dict()
+    assert "authorized_via_telegram_business" not in serialized
+    assert "telegram_business_owner_id" not in serialized
+    restored = SessionSource.from_dict(serialized)
+    assert restored.authorized_via_telegram_business is False
+    assert restored.telegram_business_owner_id is None
 
 
 def test_business_delivery_metadata_requires_trusted_matching_opt_in():
@@ -229,6 +279,7 @@ async def test_business_inbound_stamps_trusted_route_and_external_session_scope(
     event = accepted[0]
     assert event.text == "hello"
     assert event.source.scope_id == "telegram-business:bc-123"
+    assert event.source.telegram_business_owner_id == "business-owner"
     assert event.metadata == {
         "allow_business_send_as_account": True,
         "business_connection_id": "bc-123",
@@ -274,6 +325,30 @@ async def test_business_inbound_rejects_owner_and_unverifiable_connection():
         )
 
         assert accepted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authority",
+    [
+        {"allowed_owner_ids": [], "allowed_connection_ids": []},
+        {"allowed_owner_ids": ["different-owner"]},
+        {"allowed_connection_ids": ["different-connection"]},
+    ],
+)
+async def test_business_inbound_requires_explicit_matching_authority(authority):
+    accepted = []
+    adapter = _adapter(
+        {"enabled": True, "trigger_words": ["Sigurd"], **authority}
+    )
+    adapter._enqueue_text_event = lambda event: accepted.append(event)
+
+    await adapter._handle_business_message(
+        SimpleNamespace(update_id=7, business_message=_message()),
+        SimpleNamespace(),
+    )
+
+    assert accepted == []
 
 
 @pytest.mark.asyncio
@@ -569,14 +644,30 @@ def test_business_authorization_is_in_process_bound_and_fail_closed(monkeypatch)
         user_id="external-customer",
         scope_id="telegram-business:bc-123",
         authorized_via_telegram_business=True,
+        telegram_business_owner_id="business-owner",
     )
 
     assert runner._is_user_authorized(source) is True
     assert runner._is_user_authorized(source, allow_adapter_delegation=False) is False
 
+    monkeypatch.setenv("TELEGRAM_ALLOW_ALL_USERS", "true")
+    source.telegram_business_owner_id = "different-owner"
+    assert runner._is_user_authorized(source) is False
+    source.telegram_business_owner_id = "business-owner"
     source.authorized_via_telegram_business = False
     assert runner._is_user_authorized(source) is False
     source.authorized_via_telegram_business = True
+    adapter.config.extra["business"]["enabled"] = False
+    assert runner._is_user_authorized(source) is False
+
+    ordinary = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="42",
+        chat_type="dm",
+        user_id="ordinary-user",
+    )
+    assert runner._is_user_authorized(ordinary) is True
+
     source.scope_id = "telegram-business:bc-other"
     source.chat_id = "not-allowed"
     assert runner._is_user_authorized(source) is False
@@ -607,6 +698,18 @@ def test_gateway_runner_business_egress_metadata_is_event_bound():
     assert metadata["business_connection_id"] == "bc-123"
     assert metadata["telegram_reply_to_message_id"] == "99"
     assert metadata["hermes_profile"] == "coder"
+
+    progress_metadata, progress_reply_to, status_metadata = (
+        runner._run_agent_progress_threading(
+            source, "99", False, trusted_event_metadata
+        )
+    )
+    assert progress_reply_to is None
+    assert progress_metadata is not None
+    assert status_metadata is not None
+    for routed_metadata in (progress_metadata, status_metadata):
+        assert routed_metadata["allow_business_send_as_account"] is True
+        assert routed_metadata["business_connection_id"] == "bc-123"
 
     threadless_source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -763,3 +866,77 @@ def test_restricted_business_event_cannot_dispatch_gateway_command():
     assert GatewayRunner._gateway_command_for_event(event) is None
     event.allow_gateway_control = True
     assert GatewayRunner._gateway_command_for_event(event) == "stop"
+
+
+@pytest.mark.asyncio
+async def test_business_stream_reconciliation_preserves_identity_and_failed_delivery():
+    from gateway.run import GatewayRunner
+    from gateway.stream_consumer import GatewayStreamConsumer
+
+    metadata = {
+        "allow_business_send_as_account": True,
+        "business_connection_id": "bc-123",
+    }
+    adapter = SimpleNamespace(
+        edit_message=AsyncMock(return_value=SendResult(success=False, error="rejected"))
+    )
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="customer-chat",
+        metadata=metadata,
+    )
+    consumer._message_id = "42"
+    response = {}
+    runner = object.__new__(GatewayRunner)
+
+    await runner._run_agent_edit_streamed_message(
+        consumer,
+        SimpleNamespace(chat_id="customer-chat"),
+        response,
+        "final answer",
+        _sk="session",
+        ok=("edited",),
+        fail_result=None,
+        fail_exc="edit failed for %s: %s",
+    )
+
+    assert adapter.edit_message.await_args.kwargs["metadata"] == metadata
+    assert "already_sent" not in response
+
+
+@pytest.mark.asyncio
+async def test_stream_reconciliation_keeps_legacy_adapter_edit_signature():
+    from gateway.run import GatewayRunner
+    from gateway.stream_consumer import GatewayStreamConsumer
+
+    class LegacyAdapter:
+        def __init__(self):
+            self.calls = []
+
+        async def edit_message(self, chat_id, message_id, content, finalize=False):
+            self.calls.append((chat_id, message_id, content, finalize))
+            return SendResult(success=True)
+
+    adapter = LegacyAdapter()
+    consumer = GatewayStreamConsumer(
+        adapter=adapter,
+        chat_id="legacy-chat",
+        metadata={"thread_id": "topic"},
+    )
+    consumer._message_id = "42"
+    response = {}
+    runner = object.__new__(GatewayRunner)
+
+    await runner._run_agent_edit_streamed_message(
+        consumer,
+        SimpleNamespace(chat_id="legacy-chat"),
+        response,
+        "final answer",
+        _sk="session",
+        ok=("edited",),
+        fail_result=None,
+        fail_exc="edit failed for %s: %s",
+    )
+
+    assert adapter.calls == [("legacy-chat", "42", "final answer", True)]
+    assert response["already_sent"] is True

@@ -2846,7 +2846,8 @@ class GatewayTurnMixin:
             _status_thread_metadata = {"thread_id": _progress_thread_id, "reply_to_message_id": event_message_id}
         else:
             _status_thread_metadata = self._thread_metadata_for_progress(
-                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
+                source, event_message_id, _progress_thread_id,
+                _relay_prospective_thread_id, event_metadata,
             )
         return _progress_metadata, _progress_reply_to, _status_thread_metadata
 
@@ -3568,17 +3569,20 @@ class GatewayTurnMixin:
         self, _sc, source, response, content, *, _sk, ok, fail_result, fail_exc,
     ) -> None:
         """Edit the stream consumer's message in place with ``content``; on success mark
-        ``response["already_sent"]`` and log ``ok``. ``fail_result`` (None = trust the call) logs a
-        returned failure as ``(session, error)``; ``fail_exc`` logs an exception as ``(session, exc)``."""
+        ``response["already_sent"]`` and log ``ok``. ``fail_result`` controls returned-failure
+        logging as ``(session, error)``; ``fail_exc`` logs an exception as ``(session, exc)``."""
         try:
-            _res = await _sc.adapter.edit_message(
-                chat_id=source.chat_id, message_id=_sc.message_id, content=content, finalize=True,
+            _res = await _sc._edit_message(
+                message_id=_sc.message_id,
+                content=content,
+                finalize=True,
             )
         except Exception as _edit_err:
             logger.warning(fail_exc, _sk, _edit_err)
             return
-        if fail_result is not None and not getattr(_res, "success", True):
-            logger.warning(fail_result, _sk, getattr(_res, "error", None))
+        if not getattr(_res, "success", True):
+            if fail_result is not None:
+                logger.warning(fail_result, _sk, getattr(_res, "error", None))
             return
         response["already_sent"] = True
         logger.info(*ok)

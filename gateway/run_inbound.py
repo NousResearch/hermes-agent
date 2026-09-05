@@ -750,6 +750,10 @@ class GatewayInboundMixin:
         The running-agent path deliberately does NOT fire these — a slow or hostile plugin must not
         interfere with the operator's escape hatches for a live agent."""
         raw_args = event.get_command_args().strip()
+        if canonical == "model":
+            # /model may carry an inline payload after a newline; hooks see command-line args only
+            # — the payload is routed to the agent after a successful switch (see _hm_cmd_model).
+            raw_args = self._split_inline_command_payload(event)[0].get_command_args().strip()
         platform = source.platform.value if source.platform else ""
         try:
             from hermes_cli.plugins import fire_pre_command_hook
@@ -916,6 +920,19 @@ class GatewayInboundMixin:
             return True, _text or None
         return False, None
 
+    # /model: on a successful typed switch with an inline payload (``/model <name>\n<prompt>``),
+    # deliver the confirmation out-of-band and run the payload as the user turn on the new model.
+    async def _hm_cmd_model(self, event, source, _quick_key):
+        from gateway.slash_commands_model import ModelSwitchConfirmation
+
+        _model_event, _inline_payload = self._split_inline_command_payload(event)
+        _response = await self._handle_model_command(_model_event)
+        if not _inline_payload.strip() or not isinstance(_response, ModelSwitchConfirmation):
+            return True, _response
+        await self._send_command_ack(source, str(_response), "model")
+        event.text = _inline_payload
+        return False, None
+
     async def _hm_cmd_undo(self, event, source, _quick_key):
         _undo_n = 1
         _undo_raw = event.get_command_args().strip()
@@ -989,6 +1006,10 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str]]:
         """Dispatch built-in idle-path commands → ``(handled, result)``; prompt-rewriting commands
         mutate ``event.text`` and return ``(False, None)`` to fall through to the agent."""
+        if canonical == "model":
+            # Bespoke: /model stays in the idle table for the busy path, but the idle path needs
+            # the inline-payload routing wrapper (see _hm_cmd_model).
+            return await self._hm_cmd_model(event, source, _quick_key)
         plain_handler = (
             self._gateway_plain_command_handlers().get(canonical)
             or self._gateway_idle_command_handlers().get(canonical)

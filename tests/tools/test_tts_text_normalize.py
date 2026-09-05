@@ -57,3 +57,11 @@ def test_prepare_spoken_text_strips_reasoning_display_blocks():
     assert prepare_spoken_text("> 💭 **Reasoning:**\n> think\n\nAnswer.") == "Answer."
     # code-fence style
     assert prepare_spoken_text("💭 **Reasoning:**\n```\nthink\n```\n\nAnswer.") == "Answer."
+
+
+def test_prepare_spoken_text_literal_think_mention_not_swallowed():
+    # A literal "<think>" mention (not a real block) must not eat the rest of the message.
+    assert "Here is the answer" in prepare_spoken_text(
+        "You asked about <think> blocks. Here is the answer.")
+    # Same inside a reasoning display block: it is stripped WITH the reasoning, answer survives.
+    assert prepare_spoken_text("-# 💭 Reasoning\n-# rather than <think> variants\n\nReal answer.") == "Real answer."

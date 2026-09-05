@@ -170,7 +170,11 @@ def smooth_whitespace_for_tts(text: str) -> str:
 # Reasoning blocks: models with ``/reasoning show`` enabled emit ``<think>...</think>`` blocks in the final
 # assistant message. See #34213.
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL | re.IGNORECASE)
-_THINK_BLOCK_OPEN_RE = re.compile(r"<think[\s>].*\Z", flags=re.DOTALL | re.IGNORECASE)
+# An unterminated <think> block is only a real block when the reasoning starts on the NEXT
+# line ("<think>\nreasoning…"). A LITERAL "<think>" mention mid-sentence (e.g. an answer that
+# talks ABOUT think tags) is followed by a space/word, not a newline — do not treat it as an
+# open block and swallow the rest of the message.
+_THINK_BLOCK_OPEN_RE = re.compile(r"<think[^>\n]*>\s*\n[\s\S]*\Z", flags=re.DOTALL | re.IGNORECASE)
 
 # Gateway reasoning DISPLAY blocks (gateway/run_turn.py `_hmwa_prepend_reasoning`) are prepended
 # to the response when `show_reasoning` is on. Three render styles, all display-only — never speech:
@@ -194,8 +198,8 @@ def strip_nonspoken_blocks(text: str) -> str:
     styles) and the file-mutation verifier footer."""
     if not text:
         return ""
-    for pattern in (_THINK_BLOCK_RE, _THINK_BLOCK_OPEN_RE,
-                    _REASONING_SUBTEXT_RE, _REASONING_BLOCKQUOTE_RE, _REASONING_CODE_RE,
+    for pattern in (_REASONING_SUBTEXT_RE, _REASONING_BLOCKQUOTE_RE, _REASONING_CODE_RE,
+                    _THINK_BLOCK_RE, _THINK_BLOCK_OPEN_RE,
                     _VERIFIER_FOOTER_RE):
         text = pattern.sub(" ", text)
     return text

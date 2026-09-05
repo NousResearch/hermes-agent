@@ -5,9 +5,9 @@ import { notifyError } from '@/store/notifications'
 /**
  * Feature store for backend (agent) plugins — the native Hermes plugins plus
  * portable Agent Plugins v1 packages the backend discovers on disk. Settings
- * renders this next to the desktop (renderer) plugin inventory so every plugin
- * the user has is discoverable and toggleable from one page, whatever process
- * it runs in.
+ * renders general plugins next to the desktop (renderer) inventory; category
+ * plugins remain on the Browser, provider, messaging, and other settings
+ * surfaces that own their configuration.
  *
  * Backed by the gateway's `plugins.manage` RPC — the same list/toggle
  * primitives `hermes plugins` and the dashboard use, so all surfaces agree on
@@ -39,19 +39,32 @@ export const $agentPluginsError = atom<string | null>(null)
 /** Best available address of the row whose toggle RPC is in flight. */
 export const $agentPluginBusy = atom<string | null>(null)
 
-// Rows the Plugins page actually lists (and search should surface): plugins
-// the USER installed. Repo-bundled built-ins ship enabled-by-default and are
-// configured from their own surfaces, so they're pure noise here. The prefix
-// list is the fallback for older backends whose rows predate a reliable
-// `source` field — same curation stance as desktop-slash-commands.ts.
-const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
+// Rows the Plugins page actually lists (and search should surface). Bundled
+// plugins fail closed: only explicitly curated lifecycle plugins belong here;
+// tool-owned and dedicated-surface bundles stay hidden even when their keys do
+// not use a known category prefix. Non-bundled keyed rows retain the prefix
+// fallback for older backends. Keyless legacy rows remain visible and read-only
+// because their owning surface cannot be inferred — same stance as
+// desktop-slash-commands.
+const DESKTOP_BUNDLED_PLUGIN_KEYS = new Set(['disk-cleanup', 'security-guidance'])
+
+const HIDDEN_KEY_PREFIXES = [
+  'browser/',
+  'cron_providers/',
+  'dashboard_auth/',
+  'image_gen/',
+  'model-providers/',
+  'platforms/',
+  'video_gen/',
+  'web/'
+]
 
 export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
-  if (row.source === 'bundled') {
-    return false
-  }
-
   const key = row.key
+
+  if (row.source === 'bundled') {
+    return Boolean(key && DESKTOP_BUNDLED_PLUGIN_KEYS.has(key))
+  }
 
   return !key || !HIDDEN_KEY_PREFIXES.some(prefix => key.startsWith(prefix))
 }

@@ -43,10 +43,37 @@ def _claim_active_session_slot(
         return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
 
 
+def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
+    """Adopt the parent's registry slot as an INERT token on a compute-host child.
+
+    An isolated turn runs in the compute-host CHILD process. The parent dashboard already
+    claimed the session's active-session lease before routing the turn here, but the child's
+    freshly built session record never carried it — so ``_admit_prompt_turn`` re-claimed from
+    the child's pid and was fenced out by the parent's own entry (``_is_same_writer`` requires
+    same pid AND same live_session_id): every isolated turn failed with "Session ... already
+    has a live owner" (#101416). The slot is real and owned upstream, so the child must
+    neither claim a second one nor be able to release/transfer the parent's: the token is
+    ``enabled=False`` (release/transfer no-op on it) and ``released=True`` (already "done").
+
+    Only claimed when the parent vouched via ``parent_owns_active_session_lease`` in the
+    frame. Anything else keeps the legacy behaviour — the child claims for itself and any
+    ownership conflict fails CLOSED with the visible refusal.
+    """
+    if frame.get("parent_owns_active_session_lease") is not True:
+        return
+    if session.get("active_session_lease") is not None:
+        return
+    from hermes_cli.active_sessions import ActiveSessionLease
+    session["active_session_lease"] = ActiveSessionLease(
+        lease_id=f"borrowed:{sid}", session_id=str(session.get("session_key") or ""),
+        surface=str(frame.get("source") or "desktop"), enabled=False, released=True)
+
+
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
-    that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
+    that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
+    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
     if session.get("active_session_lease") is not None:
         return None
     lease, limit_message = _claim_active_session_slot(

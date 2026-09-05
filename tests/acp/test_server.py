@@ -532,7 +532,7 @@ class TestSlashCommands:
         state.agent._session_db = original_session_db
 
         def _compress_context(messages, system_prompt, *, approx_tokens, task_id, force):
-            assert state.agent._session_db is None
+            assert state.agent._session_db is original_session_db
             assert messages == state.history
             assert system_prompt == "system"
             assert approx_tokens == 40
@@ -568,6 +568,71 @@ class TestSlashCommands:
             force=True,
         )
         mock_save.assert_called_once_with(state.session_id)
+
+    def test_compact_survives_process_restart(self, tmp_path, monkeypatch):
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        live_agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            session_db=db,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        summary = "[CONTEXT COMPACTION] durable summary"
+        monkeypatch.setattr(
+            live_agent.context_compressor,
+            "compress",
+            MagicMock(return_value=[{"role": "user", "content": summary}]),
+        )
+        manager = SessionManager(agent_factory=lambda: live_agent, db=db)
+        state = manager.create_session(cwd=str(tmp_path))
+        live_agent.session_id = state.session_id
+        live_agent._session_db = db
+        live_agent._session_db_created = True
+
+        original = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ]
+        state.history = list(original)
+        for message in original:
+            db.append_message(
+                state.session_id,
+                message["role"],
+                message["content"],
+            )
+
+        HermesACPAgent(session_manager=manager)._handle_slash_command(
+            "/compress", state
+        )
+
+        restarted_db = SessionDB(db_path=db_path)
+        restarted = SessionManager(
+            agent_factory=lambda: MagicMock(model="test/model"),
+            db=restarted_db,
+        ).get_session(state.session_id)
+
+        assert restarted is not None
+        assert [message["content"] for message in restarted.history] == [summary]
+        archived = [
+            message
+            for message in restarted_db.get_messages(
+                state.session_id, include_inactive=True
+            )
+            if not message["active"]
+        ]
+        assert [message["content"] for message in archived] == [
+            message["content"] for message in original
+        ]
+        assert all(message["compacted"] for message in archived)
 
 
     def test_unknown_command_returns_none(self, agent, mock_manager):

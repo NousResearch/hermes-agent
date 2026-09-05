@@ -416,6 +416,9 @@ class SessionManager:
             logger.debug("ACP: bounded MCP discovery wait failed", exc_info=True)
 
         agent = AIAgent(**kwargs)
+        # ACP clients retain the session id returned by session/new across
+        # manual and automatic compression.
+        agent.compression_in_place = True
         # Codex app-server sessions spawn lazily on the first turn; stamp the ACP
         # workspace so the Codex runtime starts from the editor cwd, not ours.
         agent.session_cwd = cwd

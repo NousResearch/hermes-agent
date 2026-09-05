@@ -412,7 +412,7 @@ import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-market
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
-import { createWindowOpenHandler } from './window-open-policy'
+import { createWindowOpenHandler, guardAuthSessionDownloads } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
@@ -7308,6 +7308,11 @@ function getOauthSession() {
 
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
+  // The auth windows never legitimately download anything (every consumer is
+  // a cookie read after a navigation); remote IDP/portal content must not
+  // be able to open a raw save dialog from this partition.
+  guardAuthSessionDownloads(oauthSession, 'oauth', rememberLog)
+
   return oauthSession
 }
 
@@ -7346,6 +7351,9 @@ function getOauthSessionForUrl(url) {
 
   if (!sess) {
     sess = session.fromPartition(partition)
+    // Per-connection OAuth jars get the same download guard as the legacy
+    // shared partition — their windows are sign-in-only too.
+    guardAuthSessionDownloads(sess, `oauth:${partition}`, rememberLog)
     oauthSessionsByPartition.set(partition, sess)
   }
 

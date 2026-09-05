@@ -56,3 +56,32 @@ export function createWindowOpenHandler(
     return { action: 'deny' }
   }
 }
+
+/**
+ * Session-level guard for the OAuth/portal partitions: cancel any download
+ * those windows trigger.
+ *
+ * The auth windows exist solely to complete sign-in — every consumer is a
+ * cookie read (`hasOauthSessionCookie`, `hasLivePortalSession`, ...) after
+ * a navigation — so a real download is never a legitimate part of any flow.
+ * Remote IDP/portal content (or a Content-Disposition: attachment response
+ * on a redirect hop) can otherwise reach `will-download` with NO handler:
+ * `installDownloadHandling` wires only `session.defaultSession`, so the raw
+ * Chromium save dialog would open with the process cwd as the default
+ * directory and an extensionless attacker-chosen filename. Same exposure
+ * the link-title partition closes via `guardLinkTitleSession`.
+ */
+export function guardAuthSessionDownloads(
+  partitionSession: { on: (event: string, handler: (event: unknown, item: { cancel: () => void }) => void) => void },
+  label: string,
+  log?: (line: string) => void
+): void {
+  try {
+    partitionSession.on('will-download', (_event, item) => {
+      log?.(`[auth-download] ${label} cancelled`)
+      item.cancel()
+    })
+  } catch {
+    // best-effort; worst case is a spurious download dialog
+  }
+}

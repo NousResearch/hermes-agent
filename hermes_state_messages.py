@@ -627,24 +627,29 @@ class SessionMessagesMixin:
 
     def get_messages(self, session_id: str, include_inactive: bool = False, include_compacted: bool = False,
                      limit: Optional[int] = None, offset: int = 0, latest: bool = False,
-                     after_id: Optional[int] = None) -> List[Dict[str, Any]]:
+                     after_id: Optional[int] = None, include_ancestors: bool = False) -> List[Dict[str, Any]]:
         """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
         rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
-        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging."""
+        ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging.
+        ``include_ancestors``: also load the compression lineage (root → tip, branch sessions exempt),
+        mirroring ``get_messages_as_conversation(include_ancestors=True)`` — after a compression rotation
+        the full transcript spans parent sessions, not just the child continuation (#51058)."""
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
+        # Ancestor expansion uses the resume lineage (explicit /branch copies stay single-session).
+        session_ids = self._resume_lineage_ids(session_id) if include_ancestors else [session_id]
         if include_compacted:
             # Full display set (the UI row cap lives in the endpoint), dedupe, then page ([:None] is a no-op).
             rows = self._dedupe_display_generations(self._read_all(
-                "SELECT * FROM messages WHERE session_id = ?" + active_clause + " ORDER BY id ASC", [session_id]))
+                f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)})" + active_clause + " ORDER BY id ASC", session_ids))
             rows = rows[::-1][offset:][:limit][::-1] if latest else rows[offset:][:limit]
         else:
-            sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
+            sql = (f"SELECT * FROM messages WHERE session_id IN ({_placeholders(session_ids)}){active_clause}"
                 f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")
-            params: list = [session_id] if after_id is None else [session_id, after_id]
+            params: list = list(session_ids) if after_id is None else [*session_ids, after_id]
             if limit is not None or offset:
                 # SQLite's OFFSET requires LIMIT; -1 means "no limit".
                 sql += " LIMIT ? OFFSET ?"

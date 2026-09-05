@@ -5852,3 +5852,62 @@ class TestFts5SanitizerCharacterClass:
         # text; keep % intact there (pre-existing contract).
         sanitized = self._sanitize("完成50%")
         assert "%" in sanitized
+
+
+class TestGetMessagesAncestors:
+    """get_messages(include_ancestors=True) spans the compression lineage (#51058)."""
+
+    def test_include_ancestors_returns_lineage_messages(self, db):
+        """After a compression rotation, include_ancestors=True returns the
+        parent's rows plus the child continuation in insertion order."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="early ask")
+        db.append_message("parent", role="assistant", content="early answer")
+
+        db.create_session("child", source="tui", parent_session_id="parent")
+        db.append_message("child", role="user", content="continuation ask")
+        db.append_message("child", role="assistant", content="continuation answer")
+
+        # Without the flag: only the child continuation (legacy behaviour).
+        assert [m["content"] for m in db.get_messages("child")] == [
+            "continuation ask",
+            "continuation answer",
+        ]
+        # With the flag: the full root→tip transcript, insertion order.
+        assert [m["content"] for m in db.get_messages("child", include_ancestors=True)] == [
+            "early ask",
+            "early answer",
+            "continuation ask",
+            "continuation answer",
+        ]
+
+    def test_include_ancestors_explicit_branch_stays_single_session(self, db):
+        """Explicit /branch copies own their copied transcript: the lineage
+        expansion must not pull the parent's rows in (parity with
+        get_messages_as_conversation)."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="before branch")
+        db.create_session(
+            "branch",
+            source="tui",
+            parent_session_id="parent",
+            model_config={"_branched_from": "parent"},
+        )
+        db.append_message("branch", role="user", content="copied turn")
+
+        assert [m["content"] for m in db.get_messages("branch", include_ancestors=True)] == [
+            "copied turn"
+        ]
+
+    def test_include_ancestors_paging_still_applies(self, db):
+        """Paging applies to the merged lineage set, not per-session."""
+        db.create_session("parent", source="tui")
+        db.append_message("parent", role="user", content="p1")
+        db.create_session("child", source="tui", parent_session_id="parent")
+        for i in range(2, 6):
+            db.append_message("child", role="user", content=f"c{i}")
+
+        rows = db.get_messages("child", include_ancestors=True, limit=3, offset=0)
+        assert [m["content"] for m in rows] == ["p1", "c2", "c3"]
+        rows = db.get_messages("child", include_ancestors=True, limit=3, offset=3)
+        assert [m["content"] for m in rows] == ["c4", "c5"]

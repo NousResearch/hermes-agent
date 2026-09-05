@@ -1878,6 +1878,7 @@ export function ChatSidebar({
                   !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
                 )}
                 sessions={displayAgentSessions}
+                showProfileTags={showAllProfiles}
                 sortable={!showAllProfiles && agentSessions.length > 1}
               />
             )}

@@ -520,7 +520,8 @@ export function ModelCatalogMenu({
                       activeId ?? family.id,
                       group.provider.models ?? [],
                       caps?.fast ?? false,
-                      effFast
+                      effFast,
+                      { baseId: family.id, fastId: family.fastId }
                     )
 
                     const meta = [

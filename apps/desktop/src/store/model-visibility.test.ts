@@ -90,6 +90,38 @@ describe('model visibility', () => {
     expect(families.map(f => f.id)).toEqual(['claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001'])
   })
 
+  it('folds Fireworks router speed variants into their model families', () => {
+    const families = collapseModelFamilies([
+      'accounts/fireworks/routers/kimi-k3-fast',
+      'accounts/fireworks/models/kimi-k3',
+      'accounts/fireworks/models/kimi-k2p6',
+      'accounts/fireworks/routers/kimi-k2p6-turbo',
+      'accounts/fireworks/models/kimi-k2p7-code',
+      'accounts/fireworks/routers/kimi-k2p7-code-fast'
+    ])
+
+    expect(families).toEqual([
+      {
+        id: 'accounts/fireworks/models/kimi-k3',
+        fastId: 'accounts/fireworks/routers/kimi-k3-fast'
+      },
+      {
+        id: 'accounts/fireworks/models/kimi-k2p6',
+        fastId: 'accounts/fireworks/routers/kimi-k2p6-turbo'
+      },
+      {
+        id: 'accounts/fireworks/models/kimi-k2p7-code',
+        fastId: 'accounts/fireworks/routers/kimi-k2p7-code-fast'
+      }
+    ])
+  })
+
+  it('keeps a Fireworks router standalone when its base model is absent', () => {
+    const router = 'accounts/fireworks/routers/kimi-k3-fast'
+
+    expect(collapseModelFamilies([router])).toEqual([{ id: router, fastId: null }])
+  })
+
   it('sentinel key helper produces correct format', () => {
     expect(emptyProviderSentinelKey('openai')).toBe('openai::')
     expect(isProviderSentinel('openai::')).toBe(true)

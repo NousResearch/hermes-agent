@@ -3078,6 +3078,58 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return ""
         return "confirmed" if runtime else "accepted"
 
+    @staticmethod
+    def _turn_completion_flags(result: Any) -> Dict[str, bool]:
+        """``completed`` / ``partial`` / ``interrupted`` for one agent turn.
+
+        The core already reports interruption in the result dict (``agent/turn_finalizer.py``,
+        ``agent/turn_recovery.py``, ``agent/codex_runtime.py``), but the session API hard-coded
+        ``completed=True`` / ``interrupted=False``, so a turn cut short by a new message was
+        advertised to clients as a clean completion.
+        """
+        is_dict = isinstance(result, dict)
+        interrupted = bool(result.get("interrupted")) if is_dict else False
+        return {
+            "completed": not interrupted,
+            "partial": bool(result.get("partial")) if is_dict else False,
+            "interrupted": interrupted,
+        }
+
+    @staticmethod
+    def _strip_interrupt_sentinel(final_response: Any, interrupted: bool) -> Any:
+        """Drop the internal wait-for-model interrupt status from user-visible assistant text.
+
+        ``agent/turn_api_call.py`` sets ``final_response`` to
+        ``Operation interrupted: waiting for model response (…)`` when a new message lands while
+        the turn is still waiting on the model. That is cancellation metadata, not prose: ACP
+        (``acp_adapter/server.py``) and the chat surfaces (``gateway/run.py``) already suppress it,
+        leaving the session API as the last surface that rendered it as if the assistant had
+        authored it. Only the sentinel is dropped — real interrupted or partial text is kept.
+        Refs #7921.
+        """
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        if interrupted and str(final_response).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
+            return ""
+        return final_response
+
+    @staticmethod
+    def _without_interrupt_sentinel_rows(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """The same filter for the per-turn transcript carried on ``run.completed``.
+
+        A synthetic assistant row holding only the sentinel is dropped; rows with real text or
+        tool calls are preserved, so an interrupted turn still replays what the model did say.
+        """
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        kept: List[Dict[str, Any]] = []
+        for msg in messages:
+            if (isinstance(msg, dict) and msg.get("role") == "assistant" and not msg.get("tool_calls")
+                    and str(msg.get("content") or "").strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)):
+                continue
+            kept.append(msg)
+        return kept
+
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
@@ -3092,11 +3144,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
             result.get("final_response", "") if is_dict else "")
+        flags = self._turn_completion_flags(result)
+        final_response = self._strip_interrupt_sentinel(final_response, flags["interrupted"])
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
         return web.json_response(
             {"object": "hermes.session.chat.completion",
              "session_id": effective_session_id or session_id,
              "message": {"role": "assistant", "content": final_response}, "usage": usage,
+             **flags,
              "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
             headers=headers)
 
@@ -3146,19 +3201,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
+                flags = self._turn_completion_flags(result)
+                final_response = self._strip_interrupt_sentinel(final_response, flags["interrupted"])
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
+                if flags["interrupted"]:
+                    turn_messages = self._without_interrupt_sentinel_rows(turn_messages)
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, "completed": True,
-                    "partial": bool(result.get("partial")) if is_dict else False,
-                    "interrupted": False, "runtime": effective_runtime}))
+                    "content": final_response, **flags, "runtime": effective_runtime}))
                 # A steer accepted after the final reply lands in result["pending_steer"]; surface
                 # it so clients can replay it rather than lose it.
                 pending_steer = result.get("pending_steer") if is_dict else None
+                # Both advertised terminal events carry the same completion state, so a client that
+                # only listens for run.completed sees the interruption too (review note on #65970).
                 completed_payload = {
-                    "session_id": effective_session_id, "message_id": message_id, "completed": True,
+                    "session_id": effective_session_id, "message_id": message_id, **flags,
                     "messages": turn_messages, "usage": usage, "runtime": effective_runtime}
                 if pending_steer:
                     completed_payload["pending_steer"] = pending_steer

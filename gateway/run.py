@@ -1429,13 +1429,30 @@ def _ensure_ssl_certs() -> None:
         os.environ.pop("SSL_CERT_FILE", None)
 
     import ssl
+    import sys
 
-    # 1. Python's compiled-in defaults
+    # 1. Python's compiled-in defaults. On macOS those paths are always
+    #    /etc/ssl/cert.pem (and the /private/etc alias) — a frozen, incomplete
+    #    root set. Returning here made the certifi fallback unreachable, so
+    #    providers whose chain lives in Mozilla's bundle but not Apple's
+    #    failed with an opaque Connection error (#100414).
     paths = ssl.get_default_verify_paths()
+    _macos_system_ca = {
+        "/etc/ssl/cert.pem",
+        "/private/etc/ssl/cert.pem",
+    }
     for candidate in (paths.cafile, paths.openssl_cafile):
-        if candidate and os.path.exists(candidate):
-            os.environ["SSL_CERT_FILE"] = candidate
-            return
+        if not candidate or not os.path.exists(candidate):
+            continue
+        if sys.platform == "darwin":
+            try:
+                if os.path.realpath(candidate) in _macos_system_ca:
+                    continue
+            except OSError:
+                if candidate in _macos_system_ca:
+                    continue
+        os.environ["SSL_CERT_FILE"] = candidate
+        return
 
     # 2. certifi (ships its own Mozilla bundle)
     try:

@@ -9,6 +9,7 @@ own ``model_setup_flows_*`` modules.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import argparse
 import os
 
@@ -577,7 +578,9 @@ def _model_flow_copilot(config, current_model=""):
             print(f"Reasoning effort set to: {selected_effort}")
 
 
-def _external_process_model_choices(provider_id: str) -> list[str]:
+def _external_process_model_choices(
+    provider_id: str, *, status: dict | None = None,
+) -> list[str]:
     """Return a subprocess provider's live catalog, or its declared fallback."""
     from hermes_cli.auth import get_external_process_provider_status
     from providers import get_provider_profile
@@ -585,17 +588,24 @@ def _external_process_model_choices(provider_id: str) -> list[str]:
     profile = get_provider_profile(provider_id)
     if profile is None or profile.auth_type != "external_process":
         return []
-    status = get_external_process_provider_status(provider_id)
+    status = status or get_external_process_provider_status(provider_id)
     discovered = None
     try:
-        discovered = profile.fetch_models(
-            api_key="", base_url=profile.base_url,
-            command=status.get("resolved_command") or status.get("command"),
-            args=status.get("args") or (),
+        fetch = profile.fetch_models
+        parameters = inspect.signature(fetch).parameters.values()
+        supports_context = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        ) or {"command", "args"}.issubset(
+            {parameter.name for parameter in parameters}
         )
-    except TypeError:
-        with contextlib.suppress(Exception):
-            discovered = profile.fetch_models(api_key="", base_url=profile.base_url)
+        kwargs = {"api_key": "", "base_url": profile.base_url}
+        if supports_context:
+            kwargs.update(
+                command=status.get("resolved_command") or status.get("command"),
+                args=status.get("args") or (),
+            )
+        discovered = fetch(**kwargs)
     except Exception:
         pass
     candidates = discovered or profile.fallback_models or ()
@@ -632,7 +642,7 @@ def _model_flow_external_process(config, provider_id: str, current_model=""):
         print(f"  ⚠ {exc}")
         return
 
-    models = _external_process_model_choices(provider_id)
+    models = _external_process_model_choices(provider_id, status=status)
     selected = _pick_model_or_prompt(
         models, "Model name: ", current_model=current_model,
         confirm_provider=provider_id, confirm_base_url=effective_base,

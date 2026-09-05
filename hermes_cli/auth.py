@@ -1289,6 +1289,22 @@ def _plugin_aliases() -> Dict[str, str]:
     return aliases
 
 
+def _reconcile_plugin_provider(provider: str) -> str:
+    """Resolve plugin aliases and lazily add a provider discovered after module import."""
+    canonical = _plugin_aliases().get(provider, provider)
+    if canonical in PROVIDER_REGISTRY:
+        return canonical
+    try:
+        import providers as providers_module
+
+        profile = getattr(providers_module, "get_provider_profile")(canonical)
+        if profile is not None:
+            _register_plugin_provider(profile)
+    except Exception as exc:
+        logger.debug("Could not reconcile provider plugin %r: %s", canonical, exc)
+    return canonical
+
+
 def _scoped_key_env_reader() -> Callable[[str], str]:
     """Scope-aware key reader for provider auto-detection.
 
@@ -1350,6 +1366,8 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
+        if provider:
+            provider = _reconcile_plugin_provider(provider)
         return model_cfg, (provider if provider in PROVIDER_REGISTRY else None)
     except Exception as e:
         logger.debug("Could not read config.yaml model.provider for auto-resolution: %s", e)
@@ -1402,7 +1420,7 @@ def resolve_provider(
     provider configured) See #29285.
     """
     normalized = (requested or "auto").strip().lower()
-    normalized = _plugin_aliases().get(normalized, normalized)
+    normalized = _reconcile_plugin_provider(normalized)
 
     if normalized in ("openrouter", "custom") or normalized in PROVIDER_REGISTRY:
         return normalized
@@ -1874,6 +1892,7 @@ def _external_process_spec(
         command = configured_command.strip()
     command = command or str(getattr(profile, "process_command", "") or "")
 
+    args: List[str]
     try:
         if raw_args:
             args = shlex.split(raw_args)
@@ -1882,9 +1901,16 @@ def _external_process_spec(
             if isinstance(configured_args, str):
                 args = shlex.split(configured_args)
             elif isinstance(configured_args, (list, tuple)):
-                args = [str(value) for value in configured_args]
+                if not all(isinstance(value, str) for value in configured_args):
+                    raise ValueError("process argv must contain strings")
+                args = list(configured_args)
             else:
-                args = [str(value) for value in (getattr(profile, "process_args", ()) or ())]
+                profile_args = getattr(profile, "process_args", ()) or ()
+                if not all(isinstance(value, str) for value in profile_args):
+                    raise ValueError("process argv must contain strings")
+                args = list(profile_args)
+        if "\0" in command or any("\0" in value for value in args):
+            raise ValueError("process command and argv cannot contain NUL bytes")
     except ValueError as exc:
         raise AuthError(
             f"Invalid process arguments for provider '{pconfig.id}'.",
@@ -1895,6 +1921,8 @@ def _external_process_spec(
 
 
 _EXTERNAL_PROCESS_PROBE_JOIN_TIMEOUT = 9.0
+_EXTERNAL_PROCESS_PROBE_LOCK = threading.Lock()
+_EXTERNAL_PROCESS_PROBES: Dict[str, Dict[str, Any]] = {}
 
 
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
@@ -1928,29 +1956,55 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
         pass
     probe = getattr(profile, "external_process_auth_status", None) if profile else None
     if configured and callable(probe):
-        probe_result: list[Any] = []
-        probe_error: list[Exception] = []
+        with _EXTERNAL_PROCESS_PROBE_LOCK:
+            state = _EXTERNAL_PROCESS_PROBES.get(provider_id)
+            if state is None:
+                probe_result: list[Any] = []
+                probe_error: list[Exception] = []
 
-        def invoke_probe() -> None:
-            try:
-                probe_result.append(
-                    probe(command=resolved_command or command, args=args, timeout=8.0)
+                def invoke_probe() -> None:
+                    try:
+                        probe_result.append(
+                            probe(
+                                command=resolved_command or command,
+                                args=args,
+                                timeout=8.0,
+                            )
+                        )
+                    except Exception as exc:
+                        probe_error.append(exc)
+
+                worker = threading.Thread(
+                    target=invoke_probe,
+                    name=f"external-process-auth-{provider_id}",
+                    daemon=True,
                 )
-            except Exception as exc:
-                probe_error.append(exc)
-
-        worker = threading.Thread(target=invoke_probe, daemon=True)
-        worker.start()
+                state = {
+                    "worker": worker,
+                    "result": probe_result,
+                    "error": probe_error,
+                }
+                _EXTERNAL_PROCESS_PROBES[provider_id] = state
+                worker.start()
+            worker = state["worker"]
+            probe_result = state["result"]
+            probe_error = state["error"]
         worker.join(timeout=_EXTERNAL_PROCESS_PROBE_JOIN_TIMEOUT)
         if worker.is_alive():
             auth_verified = False
             auth_source = "provider_probe_timeout"
             auth_evidence = "provider authentication probe timed out"
         elif probe_error:
+            with _EXTERNAL_PROCESS_PROBE_LOCK:
+                if _EXTERNAL_PROCESS_PROBES.get(provider_id) is state:
+                    _EXTERNAL_PROCESS_PROBES.pop(provider_id, None)
             auth_verified = False
             auth_source = "provider_probe_error"
             auth_evidence = "provider authentication probe unavailable"
         elif probe_result:
+            with _EXTERNAL_PROCESS_PROBE_LOCK:
+                if _EXTERNAL_PROCESS_PROBES.get(provider_id) is state:
+                    _EXTERNAL_PROCESS_PROBES.pop(provider_id, None)
             probed = probe_result[0]
             if isinstance(probed, dict) and isinstance(probed.get("logged_in"), bool):
                 logged_in = bool(probed["logged_in"])

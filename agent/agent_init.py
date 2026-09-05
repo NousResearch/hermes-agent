@@ -788,7 +788,16 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
         client_kwargs["default_query"] = {k: v[0] for k, v in parse_qs(_parsed_url.query).items()}
     if _provider_timeout is not None:
         client_kwargs["timeout"] = _provider_timeout
-    if agent.provider == "copilot-acp":
+    _process_backed = agent.provider == "copilot-acp"
+    if not _process_backed:
+        with suppress(Exception):
+            from providers import get_provider_profile as _get_process_profile
+
+            _process_profile = _get_process_profile(agent.provider)
+            _process_backed = bool(
+                _process_profile and _process_profile.auth_type == "external_process"
+            )
+    if _process_backed:
         client_kwargs["command"] = agent.acp_command
         client_kwargs["args"] = agent.acp_args
     # OpenCode Zen free tier is served ANONYMOUSLY and 401s any bearer (incl. our keyless

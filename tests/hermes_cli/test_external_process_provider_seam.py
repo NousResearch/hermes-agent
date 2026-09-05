@@ -57,9 +57,9 @@ def test_an_out_of_tree_external_process_provider_resolves_end_to_end(fake_cli, 
     from hermes_cli.auth import PROVIDER_REGISTRY, resolve_external_process_provider_credentials, resolve_provider
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    assert resolve_provider("acme") == "acme-acp"
     assert PROVIDER_REGISTRY["acme"] is PROVIDER_REGISTRY["acme-acp"]
     assert PROVIDER_REGISTRY["acme-acp"].auth_type == "external_process"
-    assert resolve_provider("acme") == "acme-acp"
 
     creds = resolve_external_process_provider_credentials("acme-acp")
     assert (creds["command"], creds["args"], creds["api_key"]) == (str(fake_cli / "acme-cli"), ["--acp"], "acme-acp")
@@ -84,3 +84,17 @@ def test_copilot_acp_launch_details_are_unchanged(fake_cli, monkeypatch):
     monkeypatch.setenv("COPILOT_CLI_PATH", str(fake_cli / "custom-acme"))
     assert resolve_external_process_provider_credentials("copilot-acp")["command"] == str(fake_cli / "custom-acme")
     assert resolve_runtime_provider(requested="copilot-acp", target_model="x")["base_url"] == "acp://copilot"
+
+
+def test_auto_resolution_reconciles_a_late_configured_plugin(monkeypatch):
+    from hermes_cli import auth
+
+    monkeypatch.delitem(auth.PROVIDER_REGISTRY, "acme-acp", raising=False)
+    monkeypatch.delitem(auth.PROVIDER_REGISTRY, "acme", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "acme"}},
+    )
+
+    assert auth.resolve_provider("auto") == "acme-acp"
+    assert auth.PROVIDER_REGISTRY["acme"] is auth.PROVIDER_REGISTRY["acme-acp"]

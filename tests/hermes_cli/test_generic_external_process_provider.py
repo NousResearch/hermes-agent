@@ -137,8 +137,15 @@ def test_status_hard_bounds_a_probe_that_ignores_timeout(tmp_path, monkeypatch):
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(executable.stat().st_mode | stat.S_IEXEC)
     blocked = threading.Event()
+    calls = 0
     profile = _profile(process_command=str(executable))
-    profile.external_process_auth_status = lambda **_: blocked.wait(5)
+
+    def blocked_probe(**_):
+        nonlocal calls
+        calls += 1
+        return blocked.wait(5)
+
+    setattr(profile, "external_process_auth_status", blocked_probe)
     monkeypatch.setitem(
         auth.PROVIDER_REGISTRY,
         profile.name,
@@ -154,12 +161,69 @@ def test_status_hard_bounds_a_probe_that_ignores_timeout(tmp_path, monkeypatch):
 
     started = time.monotonic()
     status = auth.get_external_process_provider_status(profile.name)
+    for _ in range(3):
+        auth.get_external_process_provider_status(profile.name)
 
-    assert time.monotonic() - started < 0.5
+    assert time.monotonic() - started < 1.5
+    assert calls == 1
     assert status["configured"] is True
     assert status["logged_in"] is True
     assert status["auth_verified"] is False
     assert status["auth_source"] == "provider_probe_timeout"
+    blocked.set()
+    state = auth._EXTERNAL_PROCESS_PROBES.pop(profile.name)
+    state["worker"].join(timeout=1)
+
+
+def test_status_concurrent_callers_share_one_started_probe(tmp_path, monkeypatch):
+    from hermes_cli import auth
+
+    executable = tmp_path / "test-agent"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(executable.stat().st_mode | stat.S_IEXEC)
+    release = threading.Event()
+    calls = 0
+    profile = _profile(process_command=str(executable))
+
+    def blocked_probe(**_):
+        nonlocal calls
+        calls += 1
+        release.wait(1)
+        return {"logged_in": True}
+
+    setattr(profile, "external_process_auth_status", blocked_probe)
+    monkeypatch.setitem(
+        auth.PROVIDER_REGISTRY,
+        profile.name,
+        auth.ProviderConfig(
+            id=profile.name,
+            name=profile.display_name,
+            auth_type="external_process",
+            inference_base_url=profile.base_url,
+        ),
+    )
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    monkeypatch.setattr(auth, "_EXTERNAL_PROCESS_PROBE_JOIN_TIMEOUT", 0.05)
+    errors = []
+
+    def status_call():
+        try:
+            auth.get_external_process_provider_status(profile.name)
+        except Exception as exc:
+            errors.append(exc)
+
+    callers = [threading.Thread(target=status_call) for _ in range(6)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(timeout=1)
+    release.set()
+
+    assert not errors
+    assert all(not caller.is_alive() for caller in callers)
+    assert calls == 1
+    state = auth._EXTERNAL_PROCESS_PROBES.pop(profile.name)
+    state["worker"].join(timeout=1)
 
 
 def test_status_reports_malformed_configured_args(tmp_path, monkeypatch):
@@ -189,6 +253,35 @@ def test_status_reports_malformed_configured_args(tmp_path, monkeypatch):
 
     assert status["configured"] is False
     assert status["auth_source"] == "invalid_configuration"
+    assert status["error"] == "invalid_external_process_args"
+
+
+def test_status_rejects_nul_in_structured_argv(tmp_path, monkeypatch):
+    from hermes_cli import auth
+
+    executable = tmp_path / "test-agent"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(executable.stat().st_mode | stat.S_IEXEC)
+    profile = _profile(process_command=str(executable))
+    monkeypatch.setitem(
+        auth.PROVIDER_REGISTRY,
+        profile.name,
+        auth.ProviderConfig(
+            id=profile.name,
+            name=profile.display_name,
+            auth_type="external_process",
+            inference_base_url=profile.base_url,
+        ),
+    )
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"providers": {profile.name: {"args": ["--ok", "\0"]}}},
+    )
+
+    status = auth.get_external_process_provider_status(profile.name)
+
+    assert status["configured"] is False
     assert status["error"] == "invalid_external_process_args"
 
 
@@ -226,6 +319,41 @@ def test_external_process_model_choices_prefer_live_catalog_and_fall_back(monkey
 
     monkeypatch.setattr(profile, "fetch_models", lambda **kwargs: None)
     assert _external_process_model_choices(profile.name) == ["test-model-a", "test-model-b"]
+
+
+def test_model_catalog_internal_type_error_is_not_retried(monkeypatch):
+    from hermes_cli.model_setup_flows import _external_process_model_choices
+
+    profile = _profile()
+    calls = 0
+
+    def broken_fetch(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise TypeError("provider implementation defect")
+
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    monkeypatch.setattr(profile, "fetch_models", broken_fetch)
+
+    assert _external_process_model_choices(profile.name) == ["test-model-a", "test-model-b"]
+    assert calls == 1
+
+
+def test_runtime_client_kwargs_include_generic_process_launch_settings(monkeypatch):
+    from agent.agent_init import _explicit_client_kwargs
+
+    profile = _profile()
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    agent = SimpleNamespace(
+        provider=profile.name,
+        acp_command="/configured/process-cli",
+        acp_args=["--tenant", "test"],
+    )
+
+    kwargs = _explicit_client_kwargs(agent, "process-provider", profile.base_url, 30)
+
+    assert kwargs["command"] == "/configured/process-cli"
+    assert kwargs["args"] == ["--tenant", "test"]
 
 
 def test_external_process_setup_stops_on_failed_provider_auth_probe(monkeypatch, capsys):

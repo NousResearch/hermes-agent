@@ -52,6 +52,51 @@ class TestClarifyPrimitive:
         assert cm.resolve_gateway_clarify("id-race", "") is False
         assert entry.response == "A"
 
+    def test_resolved_head_is_skipped_before_waiter_cleanup(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("answered", "same-session", "First?", ["A"])
+        next_entry = cm.register("next", "same-session", "Second?", ["B"])
+        assert cm.resolve_gateway_clarify("answered", "A")
+        assert cm.get_pending_for_session(
+            "same-session", include_choice_prompts=True
+        ) is next_entry
+        assert cm.has_pending("same-session")
+
+    def test_concurrent_text_replies_claim_distinct_fifo_entries(self, monkeypatch):
+        from tools import clarify_gateway as cm
+
+        first = cm.register("first", "same-session", "First?", ["A"])
+        second = cm.register("second", "same-session", "Second?", ["A"])
+        original = cm._coerce_text_response_detailed
+        first_inside = threading.Event()
+        release_first = threading.Event()
+        calls_lock = threading.Lock()
+        calls = 0
+
+        def controlled(*args, **kwargs):
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+                current = calls
+            if current == 1:
+                first_inside.set()
+                assert release_first.wait(timeout=5)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(cm, "_coerce_text_response_detailed", controlled)
+        with ThreadPoolExecutor(2) as pool:
+            one = pool.submit(cm.attempt_text_response_for_session, "same-session", "A")
+            assert first_inside.wait(timeout=5)
+            two = pool.submit(cm.attempt_text_response_for_session, "same-session", "A")
+            release_first.set()
+            assert [one.result(timeout=5), two.result(timeout=5)] == [
+                cm.TEXT_RESOLVED,
+                cm.TEXT_RESOLVED,
+            ]
+        assert first.response == "A"
+        assert second.response == "A"
+
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
         from tools import clarify_gateway as cm
@@ -377,12 +422,82 @@ class TestNativeRejectClassification:
         value, reason = cm._coerce_text_response_detailed(entry, "1,99")
         assert value is None
         assert reason == "invalid_selection"
-        assert cm.attempt_text_response_for_session("sk-ms2", "nope,nope") == (
+        assert cm.attempt_text_response_for_session("sk-ms2", "1,99") == (
             cm.TEXT_REJECTED_SELECTION
         )
         pending = cm.get_pending_for_session("sk-ms2", include_choice_prompts=True)
         assert pending is not None
         assert not pending.event.is_set()
+
+    def test_exact_multi_select_label_may_contain_comma(self):
+        import json
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "comma-label",
+            "comma-label-session",
+            "Pick",
+            ["Alpha, Beta", "Gamma"],
+            multi_select=True,
+        )
+        value, reason = cm._coerce_text_response_detailed(entry, "Alpha, Beta")
+        assert reason is None
+        assert value is not None
+        assert json.loads(value) == ["Alpha, Beta"]
+
+    def test_evidence_based_comma_and_numeric_edge_contract(self):
+        from tools import clarify_gateway as cm
+
+        malformed = ("1,", ",1", "1,,2", "1,99", "²", "9" * 5000)
+        for index, response in enumerate(malformed):
+            session = f"malformed-{index}"
+            entry = cm.register(
+                f"malformed-{index}", session, "Pick", ["A", "B"], multi_select=True
+            )
+            assert cm.attempt_text_response_for_session(session, response) == (
+                cm.TEXT_REJECTED_SELECTION
+            )
+            assert not entry.event.is_set()
+
+        prose = ("nope,nope", "hello, world", "thanks,", "Привет, мир", "   ,   ")
+        for index, response in enumerate(prose):
+            session = f"prose-{index}"
+            entry = cm.register(
+                f"prose-{index}", session, "Where?",
+                ["Send to SOL", "Keep with Enoch"], multi_select=True,
+            )
+            assert cm.attempt_text_response_for_session(session, response) == (
+                cm.TEXT_REJECTED_PROSE
+            )
+            assert entry.event.is_set()
+            assert entry.response == ""
+
+    def test_single_select_numeric_like_edges_remain_armed(self):
+        from tools import clarify_gateway as cm
+
+        for index, response in enumerate(("²", "9" * 5000)):
+            session = f"single-malformed-{index}"
+            entry = cm.register(
+                f"single-malformed-{index}", session, "Pick", ["A", "B"]
+            )
+            assert cm.attempt_text_response_for_session(session, response) == (
+                cm.TEXT_REJECTED_SELECTION
+            )
+            assert not entry.event.is_set()
+
+    def test_rejected_prose_cancels_exact_selected_entry(self):
+        from tools import clarify_gateway as cm
+
+        stale = cm.register("stale", "same-session", "Old?", ["A"])
+        current = cm.register("current", "same-session", "Current?", ["B"])
+        assert cm.resolve_gateway_clarify(stale.clarify_id, "A")
+        assert cm.attempt_text_response_for_session(
+            "same-session", "unrelated follow-up prose"
+        ) == cm.TEXT_REJECTED_PROSE
+        assert stale.response == "A"
+        assert current.event.is_set()
+        assert current.response == ""
+        assert not cm.has_pending("same-session")
 
     def test_multi_select_free_prose_is_rejected_prose(self):
         from tools import clarify_gateway as cm

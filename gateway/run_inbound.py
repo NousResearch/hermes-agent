@@ -353,11 +353,9 @@ class GatewayInboundMixin:
             # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify
             # armed for retry — don't cancel, don't treat as an unrelated follow-up.
             return _retain("invalid selection attempt")
-        if _text_outcome == _clarify_mod.TEXT_REJECTED_PROSE:
-            # Native-choice prompts reject unmatched prose so it continues through normal busy
-            # routing. Release this clarify first: redirect() degrades to steer() while tools
-            # execute, and that steer cannot drain until the clarify tool returns.
-            _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, "")
+        # TEXT_REJECTED_PROSE falls through normal busy routing. The atomic
+        # text attempt already released the exact entry it classified; this
+        # precheck snapshot may be stale after a rapid reply.
         return None
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the

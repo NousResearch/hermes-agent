@@ -317,12 +317,14 @@ class GatewayNotificationsMixin:
         self, response: str, source: SessionSource, adapter,
         metadata: Optional[Dict[str, Any]] = None, event_message_id: Optional[str] = None,
         text_already_delivered: bool = False, deliver_media: bool = True, stream_consumer=None,
-        session_key: Optional[str] = None,
+        session_key: Optional[str] = None, inbound_message_id: Optional[str] = None,
     ) -> None:
         """Deliver a queued response using the normal text+attachment split.
 
         ``session_key`` lets the text send record a delivery-ledger obligation like the normal final
-        send does (see ``_send_queued_final_text``); without it the send stays unledgered."""
+        send does, keyed on ``inbound_message_id`` (the raw inbound id, distinct from the
+        ``event_message_id`` reply anchor); see ``_send_queued_final_text``. Without a key the send
+        stays unledgered."""
         from gateway.run import _strip_response_attachments_for_direct_send
         if not text_already_delivered:
             text_content = _strip_response_attachments_for_direct_send(response, adapter)
@@ -363,7 +365,8 @@ class GatewayNotificationsMixin:
                         logger.debug("Queued-lane reconcile edit failed (%s); falling back to send.", _qe)
                 if not _reconciled:
                     await self._send_queued_final_text(
-                        adapter, source, text_content, metadata, event_message_id, session_key)
+                        adapter, source, text_content, metadata, event_message_id, session_key,
+                        inbound_message_id)
         # Failed turns deliver their (normalized failure) text but must not upload attachments as if
         # they succeeded — mirrors the ``not agent_result.get("failed")`` completed-turn guard.
         if not deliver_media:
@@ -376,27 +379,34 @@ class GatewayNotificationsMixin:
     async def _send_queued_final_text(
         self, adapter, source: SessionSource, text_content: str, metadata: Optional[Dict[str, Any]],
         event_message_id: Optional[str], session_key: Optional[str],
+        inbound_message_id: Optional[str] = None,
     ):
-        """Send a queued-lane final through the adapter's ledger-bracketed final send.
+        """Send a queued-lane final under the delivery-ledger bracket the normal final send uses.
 
-        This lane used to call ``adapter.send`` bare and discard the result. A final refused here
-        (flood control, a transport that just died) was gone for good: no delivery-ledger row was ever
-        written, so neither the boot sweep nor the runtime redelivery could see it, and the queued
-        follow-up ran as if the answer had landed. The normal final send records the obligation before
-        the send and finalizes it from the result; this routes the queued lane through that same method
-        so both lanes recover the same way. The event carries the inbound message id, so the obligation
-        id matches the one the normal lane would compute for the same turn (idempotent re-record), and
-        the reply is marked notify-worthy like every other user-visible final. Adapters without the
-        base contract (relay doubles, third-party plugins) and sends without a session key keep the
-        plain send. Returns the SendResult, or None when the adapter's send returned nothing
-        (queued-final-ledger)."""
-        bracketed = getattr(adapter, "_send_final_text", None)
-        if session_key and callable(bracketed):
-            results: list = []
-            await bracketed(
-                MessageEvent(text="", source=source, message_id=event_message_id), session_key,
-                text_content, _mark_notify_metadata(metadata), False, 0, results.append)
-            result = results[-1] if results else None
+        This lane used to call ``adapter.send`` bare and discard the result, so a final refused here
+        (flood control, a transport that had just died) left no ledger row and was gone for good.
+        Now the obligation is recorded before the send and finalized from the result, the same
+        record / send-with-retry / finalize sequence as ``_send_final_text``, so both lanes recover
+        the same way. The ledger id is keyed on the raw inbound message id, as the normal lane's is;
+        ``event_message_id`` is only the reply anchor, which is None wherever replies are not used
+        (Telegram forum topics, Slack reaction handoffs) and so cannot identify the turn. Adapters
+        without the base contract and sends without a session key keep the plain send. Returns the
+        SendResult, or None when the adapter's send returned nothing."""
+        record = getattr(adapter, "_record_delivery_obligation", None)
+        finalize = getattr(adapter, "_finalize_delivery_obligation", None)
+        transport_for = getattr(adapter, "_final_delivery_adapter", None)
+        if session_key and callable(record) and callable(finalize) and callable(transport_for):
+            delivery_adapter = transport_for(source)
+            ledger_message_id = (
+                inbound_message_id if inbound_message_id is not None else event_message_id)
+            ledger_event = MessageEvent(text="", source=source, message_id=ledger_message_id)
+            obligation_id = await record(
+                ledger_event, session_key, text_content, delivery_adapter, False)
+            result = await delivery_adapter._send_with_retry(
+                chat_id=source.chat_id, content=text_content, reply_to=event_message_id,
+                metadata=_mark_notify_metadata(metadata))
+            if obligation_id is not None:
+                await finalize(obligation_id, result, ledger_event, delivery_adapter)
         else:
             result = await adapter.send(source.chat_id, text_content, metadata=metadata)
         if not getattr(result, "success", False):

@@ -3316,6 +3316,23 @@ def main():
     except Exception:
         pass
 
+    # Refuse to run when the Hermes home is redirected into an MSIX app-container
+    # overlay (Claude desktop).  A redirected process creates state.db's -wal/-shm
+    # in the overlay while state.db itself reads through to the real path, leaving
+    # two write-ahead logs over one database.  That corrupted state.db across
+    # 2026-07-02..07-12 and again on 2026-07-29.  Checked here, before anything
+    # touches the filesystem.
+    from hermes_constants import (
+        ContainerRedirectedHomeError,
+        assert_home_not_container_redirected,
+    )
+
+    try:
+        assert_home_not_container_redirected()
+    except ContainerRedirectedHomeError as exc:
+        print(f"hermes: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     # Sweep stale ``hermes.exe.old.*`` quarantine files from previous Windows
     # updates (see ``_quarantine_running_hermes_exe``). No-op elsewhere.
     try:

@@ -3,6 +3,7 @@
 import json
 
 from agent.tool_guardrails import (
+    LoopCapConfig,
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
@@ -246,6 +247,89 @@ def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_poller
 
 
 
+def test_file_mutation_resets_guardrail_failure_counts():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2)
+    )
+    cmd_args = {"command": "python3 -m unittest", "workdir": "/root/project"}
+
+    # 1st failure
+    controller.after_call("terminal", cmd_args, '{"exit_code":1}', failed=True)
+    assert controller.before_call("terminal", cmd_args).action == "allow"
+
+    # 2nd failure (blocks future repeats)
+    controller.after_call("terminal", cmd_args, '{"exit_code":1}', failed=True)
+    assert controller.before_call("terminal", cmd_args).action == "block"
+
+    # Successful file mutation
+    patch_args = {"path": "/root/project/file.py", "content": "fix", "mode": "replace"}
+    controller.after_call("patch", patch_args, '{"success":true}', failed=False)
+
+    # Terminal command should now be allowed again
+    assert controller.before_call("terminal", cmd_args).action == "allow"
+
+
+def test_file_mutation_resets_guardrail_no_progress_counts():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=2,
+        )
+    )
+    args = {"path": "/tmp/same.txt"}
+    result = "same file contents"
+
+    controller.after_call("read_file", args, result, failed=False)
+    controller.after_call("read_file", args, result, failed=False)
+    assert controller.before_call("read_file", args).action == "block"
+
+    # Successful file mutation
+    patch_args = {"path": "/tmp/same.txt", "content": "fix", "mode": "replace"}
+    controller.after_call("patch", patch_args, '{"success":true}', failed=False)
+
+    # read_file should now be allowed again
+    assert controller.before_call("read_file", args).action == "allow"
+
+
+def test_file_mutation_does_not_reset_turn_loop_caps():
+    config = ToolCallGuardrailConfig(
+        loop_caps=LoopCapConfig(max_web_searches=2),
+    )
+    controller = ToolCallGuardrailController(config)
+    # 2 web searches reach the per-turn limit
+    controller.before_call("web_search", {"query": "q1"})
+    controller.before_call("web_search", {"query": "q2"})
+    # 3rd is blocked
+    assert controller.before_call("web_search", {"query": "q3"}).action == "block"
+
+    # Successful file mutation landed
+    patch_args = {"path": "/root/project/file.py", "content": "fix", "mode": "replace"}
+    controller.after_call("patch", patch_args, '{"success":true}', failed=False)
+
+    # Per-turn loop cap should still remain enforced (not wiped by file mutation)
+    assert controller.before_call("web_search", {"query": "q3"}).action == "block"
+
+
+def test_after_call_survives_lone_surrogates_in_result_and_args():
+    # Scraped web/social text can contain unpaired UTF-16 surrogates (e.g. the
+    # first half of a mathematical-bold pair, '\ud835'). str.encode('utf-8')
+    # rejects them, and the result hasher crashed the whole conversation loop
+    # (live outage: "Outer loop error in API call #34 ... surrogates not
+    # allowed"). Weird text must never take down the loop.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, no_progress_block_after=2)
+    )
+    dirty = "price \ud835 update"
+
+    decision = controller.after_call("web_search", {"query": dirty}, dirty, failed=False)
+    assert decision.action in {"allow", "warn"}
+
+    # hashing stays deterministic: the same dirty failure twice still trips
+    # the exact-failure guard, proving the hash is stable across calls
+    controller.after_call("web_search", {"query": dirty}, '{"error":"\ud835 boom"}', failed=True)
+    controller.after_call("web_search", {"query": dirty}, '{"error":"\ud835 boom"}', failed=True)
+    assert controller.before_call("web_search", {"query": dirty}).action == "block"
 
 
 # ── Per-turn runaway-loop caps (Claude Code v2.1.212, Week 29) ──────────────

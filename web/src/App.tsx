@@ -73,6 +73,7 @@ import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
+import { DashboardOfflineBanner } from "@/components/DashboardOfflineBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
@@ -762,6 +763,7 @@ export default function App() {
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
+              <DashboardOfflineBanner />
               <PluginSlot name="pre-main" />
               <div
                 className={cn(

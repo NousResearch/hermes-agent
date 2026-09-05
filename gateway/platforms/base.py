@@ -766,6 +766,11 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".azure", ".gcloud",
     "Library/Keychains")
 
+def _SQLITE_FILES(name: str) -> tuple[str, str, str]:
+    """A SQLite store plus its WAL/SHM sidecars."""
+    return (name, f"{name}-wal", f"{name}-shm")
+
+
 # Credential stores at the HERMES_HOME root, denied per-file so skills/, logs/ and agent-written
 # files stay deliverable (cache subdirs are allowlisted BEFORE this). Mirrors agent/file_safety.py
 # so exfil never trails the read guard. google_token.json's mtime bumps every turn (defeats the
@@ -774,7 +779,11 @@ _ROOT_CREDENTIAL_PATHS = (
     ".env", "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
     "google_token.json", "google_oauth_pending.json", os.path.join("auth", "google_oauth.json"),
     "webhook_subscriptions.json", os.path.join("cache", "bws_cache.json"),
-    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens")
+    os.path.join("cache", "bws_cache.enc.json"), "pairing", "mcp-tokens",
+    # Whole conversation history (every secret ever pasted into a chat) and the copied browser
+    # cookie/login store; sessions/ is the legacy transcript dir. SQLite sidecars are listed
+    # too: WAL mode touches state.db-wal on every write, so recency trust alone would leak them.
+    "sessions", "browser-profile", *_SQLITE_FILES("state.db"), *_SQLITE_FILES("kanban.db"))
 
 
 def _profile_cache_roots() -> List[Path]:
@@ -831,12 +840,24 @@ def _media_delivery_recency_seconds() -> float:
     return _or_default(lambda: max(0.0, float(custom)) if custom else default, default)
 
 
+def _kanban_board_db_paths() -> List[Path]:
+    """Named-board ``kanban.db`` stores (+ sidecars) under ``<root>/kanban/boards/<slug>/`` — the
+    same board dirs ``_kanban_attachment_roots`` allowlists for ATTACHMENTS; the DB beside them
+    holds every task, comment and run transcript."""
+    root = Path(os.environ.get("HERMES_KANBAN_HOME", "").strip() or _HERMES_ROOT).expanduser()
+    with contextlib.suppress(OSError):
+        return [board / name for board in (root / "kanban" / "boards").iterdir() if board.is_dir()
+                for name in _SQLITE_FILES("kanban.db")]
+    return []
+
+
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
     home = Path(os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
-            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS)]
+            *(r / rel for r in (_HERMES_HOME, _HERMES_ROOT) for rel in _ROOT_CREDENTIAL_PATHS),
+            *_kanban_board_db_paths()]
 
 
 def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> Optional[Path]:

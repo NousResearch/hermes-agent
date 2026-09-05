@@ -12,8 +12,14 @@ on:
     - cron: '0 */4 * * *'
   workflow_dispatch:
 
+concurrency:
+  # A slow probe must not queue duplicate recovery decisions.
+  group: skills-index-freshness
+  cancel-in-progress: false
+
 permissions:
   contents: read
+  actions: write
   issues: write
 
 jobs:
@@ -125,12 +131,21 @@ jobs:
           client-id: ${{ vars.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      - name: Trigger recovery build
+        id: recovery
+        if: steps.probe.outputs.status != 'ok'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: python3 scripts/skills_index_watchdog.py --repo "$REPOSITORY" --workflow skills-index.yml >> "$GITHUB_OUTPUT"
+
       - name: Open issue on degraded / failed probe
         if: steps.probe.outputs.status != 'ok'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           STATUS: ${{ steps.probe.outputs.status }}
           DETAIL: ${{ steps.probe.outputs.detail }}
+          RECOVERY: ${{ steps.recovery.outputs.recovery || 'not-run' }}
         run: |
           # Find existing open issue by title prefix so we don't spam — we
           # append a comment instead of opening a new one each tick.
@@ -146,6 +161,7 @@ jobs:
 
           **Status:** \`$STATUS\`
           **Detail:** $DETAIL
+          **Recovery:** \`$RECOVERY\`
 
           The Skills Hub at /docs/skills depends on \`/docs/api/skills-index.json\`.
           The unified index is rebuilt by \`.github/workflows/skills-index.yml\` (cron 6/18 UTC)

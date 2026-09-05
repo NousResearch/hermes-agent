@@ -56,6 +56,7 @@ from hermes_cli.config import (
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
+from agent.message_sanitization import safe_strftime
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context,
     exit_non_dispatcher_owned_context,
@@ -7175,7 +7176,7 @@ def run_job(
             # except-fallback below guarantees a non-blank title (#50535).
             try:
                 _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
-                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                _cron_title = f"{_title_base} · {safe_strftime(_hermes_now(), '%b %d %H:%M')}"
                 if not _set_cron_session_title(
                     _session_db, _final_cron_session_id, _cron_title
                 ):

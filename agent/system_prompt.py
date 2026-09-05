@@ -52,6 +52,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     drain_truncation_warnings,
 )
+from agent.message_sanitization import safe_strftime
 from agent.runtime_cwd import resolve_context_cwd
 from hermes_constants import get_default_hermes_root, get_hermes_home
 from pathlib import Path
@@ -983,7 +984,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _iana = getattr(_tz, "key", None)
     if _iana:
         _zone_bits.append(_iana)
-    _abbrev = now.strftime("%Z")
+    # safe_strftime: tz names via the Windows code page can carry lone
+    # surrogates and make strftime itself raise (#102910).
+    _abbrev = safe_strftime(now, "%Z")
     if _abbrev and _abbrev != _iana:
         _zone_bits.append(_abbrev)
     _offset = now.strftime("%z")
@@ -992,7 +995,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _zone_suffix = f" ({', '.join(_zone_bits)})" if _zone_bits else ""
     _start = _session_start_like(agent, now)
     timestamp_line = (
-        f"Conversation started: {_start.strftime('%A, %B %d, %Y')}{_zone_suffix}"
+        f"Conversation started: {safe_strftime(_start, '%A, %B %d, %Y')}{_zone_suffix}"
     )
     # Second line (maintainer design, salvaging #96224's anchor): long-lived
     # sessions — Bot Mode forever-chats, messenger channels people never
@@ -1007,7 +1010,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if now.strftime("%Y%m%d") != _start.strftime("%Y%m%d"):
         timestamp_line += (
             f"\nToday's date (as of the last context rebuild): "
-            f"{now.strftime('%A, %B %d, %Y')} — trust this over the start "
+            f"{safe_strftime(now, '%A, %B %d, %Y')} — trust this over the start "
             f"date for what day it is now; query tools for exact time."
         )
     # Bot Chat sessions are effectively eternal — a birth date frozen in the

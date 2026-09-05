@@ -19,6 +19,8 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from agent.message_sanitization import safe_strftime
+
 # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
 LEAD_IN = 0.06
 
@@ -74,7 +76,7 @@ def format_date(ts: Optional[float]) -> str:
         return "unknown"
     try:
         dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
-        return f"{dt.day} {dt.strftime('%b %Y')}"
+        return f"{dt.day} {safe_strftime(dt, '%b %Y')}"
     except (ValueError, OSError, OverflowError):
         return "unknown"
 
@@ -256,9 +258,9 @@ def _period_key(ts: float, granularity: str) -> tuple[int, ...]:
 def _period_label(ts: float, granularity: str) -> str:
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     if granularity == "day":
-        return f"{dt.day} {dt.strftime('%b')}"
+        return f"{dt.day} {safe_strftime(dt, '%b')}"
     if granularity == "month":
-        return dt.strftime("%b %Y")
+        return safe_strftime(dt, "%b %Y")
     return dt.strftime("%Y")
 
 

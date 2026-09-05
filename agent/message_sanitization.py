@@ -40,6 +40,34 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
+def safe_strftime(dt, fmt: str) -> str:
+    """Format a datetime without letting locale decoding crash the caller.
+
+    On Windows with some system locales (reported: fr-FR), the timezone /
+    day / month names come back through the ANSI code page carrying lone
+    surrogates (e.g. ``"Paris, Madrid (heure d'été)"``), and ``strftime``
+    itself RAISES ``UnicodeEncodeError`` before producing any output — so
+    merely scrubbing the returned string never runs. That crash landed in
+    the system-prompt builder (rebuilt every conversation + compaction),
+    killing gateway turns outright (#102910).
+
+    On ``UnicodeEncodeError`` this retries with the locale-name codes
+    (``%Z %A %a %B %b``) removed, then scrubs any surviving surrogates.
+    Numeric codes (``%z %Y %m %d …``) never touch locale data and are kept,
+    so the UTC offset survives the fallback.
+    """
+    try:
+        return _sanitize_surrogates(dt.strftime(fmt))
+    except UnicodeEncodeError:
+        fallback = fmt
+        for code in ("%Z", "%A", "%a", "%B", "%b"):
+            fallback = fallback.replace(code, "")
+        fallback = " ".join(fallback.split())
+        if not fallback.strip():
+            return ""
+        return _sanitize_surrogates(dt.strftime(fallback))
+
+
 def _sanitize_structure_surrogates(payload: Any) -> bool:
     """Replace surrogate code points in nested dict/list payloads in-place.
 

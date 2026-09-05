@@ -37,6 +37,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+from agent.message_sanitization import safe_strftime
 from hermes_state_common import _RESET_END_REASONS
 
 # Sources that are excluded from session browsing/searching by default.
@@ -107,12 +108,12 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
         if isinstance(ts, (int, float)):
             from datetime import datetime
             dt = datetime.fromtimestamp(ts)
-            return dt.strftime("%B %d, %Y at %I:%M %p")
+            return safe_strftime(dt, "%B %d, %Y at %I:%M %p")
         if isinstance(ts, str):
             if ts.replace(".", "").replace("-", "").isdigit():
                 from datetime import datetime
                 dt = datetime.fromtimestamp(float(ts))
-                return dt.strftime("%B %d, %Y at %I:%M %p")
+                return safe_strftime(dt, "%B %d, %Y at %I:%M %p")
             return ts
     except (ValueError, OSError, OverflowError) as e:
         logging.debug("Failed to format timestamp %s: %s", ts, e, exc_info=True)

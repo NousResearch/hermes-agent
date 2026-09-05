@@ -24,6 +24,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
+from agent.message_sanitization import safe_strftime
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
@@ -924,7 +925,7 @@ class InsightsEngine:
                 "label": "Longest session",
                 "session_id": longest["id"][:16],
                 "value": format_duration_compact(dur),
-                "date": datetime.fromtimestamp(longest["started_at"]).strftime("%b %d"),
+                "date": safe_strftime(datetime.fromtimestamp(longest["started_at"]), "%b %d"),
             })
 
         # Most messages
@@ -934,7 +935,7 @@ class InsightsEngine:
                 "label": "Most messages",
                 "session_id": most_msgs["id"][:16],
                 "value": f"{most_msgs['message_count']} msgs",
-                "date": datetime.fromtimestamp(most_msgs["started_at"]).strftime("%b %d") if most_msgs.get("started_at") else "?",
+                "date": safe_strftime(datetime.fromtimestamp(most_msgs["started_at"]), "%b %d") if most_msgs.get("started_at") else "?",
             })
 
         # Most tokens
@@ -948,7 +949,7 @@ class InsightsEngine:
                 "label": "Most tokens",
                 "session_id": most_tokens["id"][:16],
                 "value": f"{token_total:,} tokens",
-                "date": datetime.fromtimestamp(most_tokens["started_at"]).strftime("%b %d") if most_tokens.get("started_at") else "?",
+                "date": safe_strftime(datetime.fromtimestamp(most_tokens["started_at"]), "%b %d") if most_tokens.get("started_at") else "?",
             })
 
         # Most tool calls
@@ -958,7 +959,7 @@ class InsightsEngine:
                 "label": "Most tool calls",
                 "session_id": most_tools["id"][:16],
                 "value": f"{most_tools['tool_call_count']} calls",
-                "date": datetime.fromtimestamp(most_tools["started_at"]).strftime("%b %d") if most_tools.get("started_at") else "?",
+                "date": safe_strftime(datetime.fromtimestamp(most_tools["started_at"]), "%b %d") if most_tools.get("started_at") else "?",
             })
 
         return top
@@ -995,8 +996,8 @@ class InsightsEngine:
 
         # Date range
         if o.get("date_range_start") and o.get("date_range_end"):
-            start_str = datetime.fromtimestamp(o["date_range_start"]).strftime("%b %d, %Y")
-            end_str = datetime.fromtimestamp(o["date_range_end"]).strftime("%b %d, %Y")
+            start_str = safe_strftime(datetime.fromtimestamp(o["date_range_start"]), "%b %d, %Y")
+            end_str = safe_strftime(datetime.fromtimestamp(o["date_range_end"]), "%b %d, %Y")
             lines.append(f"  Period: {start_str} — {end_str}")
             lines.append("")
 
@@ -1075,7 +1076,7 @@ class InsightsEngine:
             for skill in top_skills[:10]:
                 last_used = "—"
                 if skill.get("last_used_at"):
-                    last_used = datetime.fromtimestamp(skill["last_used_at"]).strftime("%b %d")
+                    last_used = safe_strftime(datetime.fromtimestamp(skill["last_used_at"]), "%b %d")
                 lines.append(
                     f"  {skill['skill'][:28]:<28} {skill['view_count']:>7,} {skill['manage_count']:>7,} {last_used:>11}"
                 )
@@ -1191,7 +1192,7 @@ class InsightsEngine:
             for skill in skills["top_skills"][:5]:
                 suffix = ""
                 if skill.get("last_used_at"):
-                    suffix = f", last used {datetime.fromtimestamp(skill['last_used_at']).strftime('%b %d')}"
+                    suffix = f", last used {safe_strftime(datetime.fromtimestamp(skill['last_used_at']), '%b %d')}"
                 lines.append(
                     f"  {skill['skill']} — {skill['view_count']:,} loads, {skill['manage_count']:,} edits{suffix}"
                 )

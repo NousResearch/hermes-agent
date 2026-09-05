@@ -37,6 +37,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from agent.message_sanitization import safe_strftime
+
 logger = logging.getLogger(__name__)
 
 # Below this TOTAL spendable ($), a paid account is flagged "low" — the alert
@@ -82,7 +84,7 @@ def format_renews(value: Optional[str]) -> Optional[str]:
         except ValueError:
             return text
     # %-d isn't portable to Windows; build the day without a leading zero.
-    return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
+    return f"{safe_strftime(dt, '%b')} {dt.day}, {dt.year}"
 
 
 @dataclass(frozen=True)

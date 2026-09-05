@@ -261,6 +261,19 @@ CASES = {
         ["apps/desktop/src/app.tsx"],
         _lanes(frontend=True),
     ),
+    # tests-js is a declared npm workspace and js-tests.yml checks it (it even
+    # caches tests-js/node_modules), so a broken spec there must not ride in
+    # under a skipped lane.
+    "tests-js spec → frontend": (
+        ["tests-js/node-engine-alignment.test.ts"],
+        _lanes(frontend=True),
+    ),
+    # detect-changes runs this script from the PR's own checkout, so it decides
+    # whether the ci_review gate fires at all.
+    "classifier → ci_review": (
+        ["scripts/ci/classify_changes.py"],
+        _lanes(python=True, scan=True, ci_review=True),
+    ),
     # Fail open: CI-config / empty / blank diffs run everything.
     ".github change → all": ([".github/workflows/tests.yml"], DEFAULT),
     "action change → all": ([".github/actions/detect-changes/action.yml"], DEFAULT),
@@ -321,6 +334,41 @@ def _iter_if_expressions(job: object):
     for step in job.get("steps", []) or []:
         if isinstance(step, dict) and isinstance(cond := step.get("if"), str):
             yield cond
+
+
+def _npm_workspace_dirs() -> list[str]:
+    """Every workspace the root manifest declares, resolved against the tree."""
+    manifest = json.loads((_REPO / "package.json").read_text(encoding="utf-8"))
+    return [
+        path.relative_to(_REPO).as_posix()
+        for pattern in manifest["workspaces"]
+        for path in sorted(_REPO.glob(pattern))
+        if (path / "package.json").is_file()
+    ]
+
+
+def test_every_npm_workspace_selects_the_frontend_lane():
+    """js-tests.yml discovers its work with ``npm query .workspace``, so every
+    workspace the root manifest declares is checked there. A workspace the
+    classifier does not map to ``frontend`` has its vitest/tsc/eslint run
+    skipped, and a skipped job counts as success in the merge gate.
+    """
+    workspaces = _npm_workspace_dirs()
+    assert workspaces, "root package.json declares no npm workspaces"
+    missed = [d for d in workspaces if not classify([f"{d}/src/probe.ts"])["frontend"]]
+    assert not missed, f"npm workspaces whose changes skip the js-tests lane: {missed}"
+
+
+def test_the_classifier_the_gate_runs_is_itself_ci_sensitive():
+    """``detect-changes`` executes this script out of the PR's own checkout,
+    so it decides every lane — ``ci_review`` included. The composite action
+    around it already requires the review label; the script it runs must too,
+    or the gate is editable by the diff it is meant to gate.
+    """
+    assert classify([".github/actions/detect-changes/action.yml"])["ci_review"]
+    rel = _PATH.relative_to(_REPO).as_posix()
+    assert classify([rel])["ci_review"], f"{rel} does not require CI review"
+    assert ci_review_files([rel]) == [rel]
 
 
 def test_ci_review_files_returns_only_sensitive_paths_sorted_and_unique():

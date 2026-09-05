@@ -3062,6 +3062,16 @@ class _StreamingCall:
                         arguments = repaired
                     else:
                         has_truncated_tool_args = True
+                else:
+                    from agent.repetition_guard import is_repetition_dominated
+                    if is_repetition_dominated(arguments):
+                        logger.warning(
+                            "Tool call '%s' arguments are repetition-dominated "
+                            "(degenerate model output); treating as a dropped "
+                            "tool call instead of executing.",
+                            tc["function"]["name"] or "?",
+                        )
+                        has_truncated_tool_args = True
             elif finish_reason is None:
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this
                 # becomes a "stop" turn executing "{}" with no retry.

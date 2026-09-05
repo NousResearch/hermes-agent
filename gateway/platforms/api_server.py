@@ -1514,6 +1514,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
+            ("GET", "/v1/peers", self._handle_peers),
             # Browser-control (gated on browser.extension_control.enabled + API key): POST
             # mints a short-lived ticket, WS consumes it; artifacts are bounded + scope-bound.
             ("POST", "/v1/browser-control/register", self._handle_browser_control_register),
@@ -2204,6 +2205,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "exit_reason": runtime.get("exit_reason"),
             # Contract: RFC3339 string | null, never a number (legacy epoch floats exist).
             "updated_at": normalize_updated_at(runtime.get("updated_at")), "pid": os.getpid()})
+
+    @_require_auth
+    async def _handle_peers(self, request: "web.Request") -> "web.Response":
+        """GET /v1/peers — read-only listing of this gateway's registered ``hermes peer``
+        targets (name + URL only, never the peer's stored API key), so fleet-topology
+        tooling (e.g. a dashboard drawing the peer mesh) can discover who is peered with
+        whom without SSHing into every box and running `hermes peer list` by hand."""
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        bot_peers = cfg.get("bot_peers")
+        peers = []
+        if isinstance(bot_peers, dict):
+            for name in sorted(bot_peers):
+                entry = bot_peers[name] if isinstance(bot_peers[name], dict) else {}
+                peers.append({"name": name, "url": entry.get("url"), "note": entry.get("note") or None})
+        return web.json_response({"peers": peers})
 
     @_require_auth
     async def _handle_models(self, request: "web.Request") -> "web.Response":

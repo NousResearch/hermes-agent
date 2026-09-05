@@ -13,6 +13,7 @@ import type { ActionStatusResponse, AnalyticsResponse, SessionInfo, StatusRespon
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { compactNumber } from '@/lib/format'
+import { displayModelName } from '@/lib/model-status-label'
 import {
   Activity,
   AlertCircle,
@@ -645,7 +646,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           emptyLabel={cc.noModelUsage}
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
-            label: entry.model,
+            label: displayModelName(entry.model),
             value: `${compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
           }))}
           title={cc.topModels}

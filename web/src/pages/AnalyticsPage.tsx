@@ -33,6 +33,11 @@ const PERIODS = [
 
 const CHART_HEIGHT_PX = 160;
 
+function displayModelName(model: string): string {
+  if (!model) return 'unknown'
+  return model.trim().split('/').slice(-1)[0] || model.trim()
+}
+
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -324,7 +329,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                   className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
                 >
                   <td className="py-2 pr-4">
-                    <span className="font-mono-ui text-xs">{m.model}</span>
+                    <span className="font-mono-ui text-xs">{displayModelName(m.model)}</span>
                   </td>
                   <td className="text-right py-2 px-4 text-muted-foreground">
                     {m.sessions}

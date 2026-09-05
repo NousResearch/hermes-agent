@@ -1052,13 +1052,19 @@ class TestAutoTtsEmptyTextGuard:
 class TestStreamTtsToSpeaker:
     """Functional tests for the streaming TTS pipeline."""
 
-    def test_none_sentinel_flushes_buffer(self):
+    def test_none_sentinel_flushes_buffer(self, monkeypatch):
         """None sentinel causes remaining buffer to be spoken."""
         from tools.tts_tool_speaker import stream_tts_to_speaker
         text_q = queue.Queue()
         stop_evt = threading.Event()
         done_evt = threading.Event()
         spoken = []
+        synthesized = []
+
+        monkeypatch.setattr(
+            "tools.tts_tool.text_to_speech_tool",
+            lambda **kwargs: synthesized.append(kwargs["text"]),
+        )
 
         def display(text):
             spoken.append(text)
@@ -1069,6 +1075,7 @@ class TestStreamTtsToSpeaker:
         stream_tts_to_speaker(text_q, stop_evt, done_evt, display_callback=display)
         assert done_evt.is_set()
         assert any("Hello" in s for s in spoken)
+        assert synthesized == ["Hello world."]
 
     def test_stop_event_aborts_early(self):
         """Setting stop_event causes early exit."""

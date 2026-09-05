@@ -1074,10 +1074,12 @@ def _wal_is_usable() -> bool:
 #    gateway call sites late-import, so patching the module attribute catches
 #    them wherever they import it from.
 #  • ``hermes_cli.voice.play_audio_file`` — the module-level binding
-#    ``speak_text`` actually plays through. Patching the binding inside
-#    ``hermes_cli.voice`` (not ``tools.voice_mode``) keeps the real function
-#    available to the tests that legitimately exercise it with a mocked
-#    audio backend (``tests/tools/test_voice_mode.py``).
+#    ``speak_text`` actually plays through.
+#  • sounddevice output primitives and system audio-player subprocesses —
+#    ``tools.tts_tool``'s streaming paths import these directly, bypassing both
+#    bindings above. The guards block real OutputStreams / ``play`` calls and
+#    ``afplay`` / ``ffplay`` / ``aplay`` processes while tests that replace
+#    the lazy imports or mock ``subprocess.Popen`` can still exercise them.
 #
 # Config cannot re-open this hole: the ``tts:`` section of ``config.yaml``
 # only selects *which* provider speaks, never *whether* to speak — that gate
@@ -1143,6 +1145,35 @@ _OS_MARKS = {
         "native Windows",
     ),
 }
+
+
+class _SounddeviceOutputGuard:
+    """Delegate sounddevice input APIs while refusing every output primitive."""
+
+    _OUTPUT_PRIMITIVES = {
+        "OutputStream",
+        "RawOutputStream",
+        "RawStream",
+        "Stream",
+        "play",
+        "playrec",
+    }
+
+    def __init__(self, sounddevice):
+        self._sounddevice = sounddevice
+
+    def __getattr__(self, name):
+        if name in self._OUTPUT_PRIMITIVES:
+            def _blocked_output(*args, **kwargs):
+                raise RuntimeError(
+                    "tests/conftest.py audio-playback guard: blocked "
+                    f"sounddevice.{name}() — unit tests must mock the audio output. "
+                    "Mark with @pytest.mark.real_audio_playback only for an "
+                    "explicit live-audio integration test."
+                )
+
+            return _blocked_output
+        return getattr(self._sounddevice, name)
 
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
@@ -1310,9 +1341,9 @@ def _live_system_guard(request, monkeypatch):
     are all caught. ``pkill``/``killall``/``taskkill`` invocations
     targeting hermes/python patterns are also blocked.
     """
-    if request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK):
-        yield
-        return
+    live_system_bypass = request.node.get_closest_marker(
+        _LIVE_SYSTEM_GUARD_BYPASS_MARK
+    ) is not None
 
     import os as _os
     import shlex as _shlex
@@ -1380,14 +1411,15 @@ def _live_system_guard(request, monkeypatch):
             "delivery is genuinely required."
         )
 
-    monkeypatch.setattr(_os, "kill", _guarded_kill)
+    if not live_system_bypass:
+        monkeypatch.setattr(_os, "kill", _guarded_kill)
 
     # ``os.killpg`` is the same risk class — sends a signal to every
     # process in a group. The gateway is a session leader (its own
     # PGID == its PID), so killpg(gateway_pid, SIGTERM) is a one-shot
     # kill of the live process. Allow it only when the target PGID is
     # the test process's own group.
-    if hasattr(_os, "killpg"):
+    if not live_system_bypass and hasattr(_os, "killpg"):
         real_killpg = _os.killpg
         own_pgid = _os.getpgrp()
 
@@ -1420,6 +1452,7 @@ def _live_system_guard(request, monkeypatch):
         "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    _AUDIO_PLAYERS = ("afplay", "ffplay", "aplay")
     # Shell/launcher executables whose arguments are themselves commands —
     # argv[0]-only scanning must not exempt what they wrap.
     _WRAPPER_COMMANDS = (
@@ -1493,7 +1526,51 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
+    def _is_audio_player(cmd) -> bool:
+        cmd_str = _cmd_to_string(cmd)
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        if not tokens:
+            return False
+
+        head = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if head in _AUDIO_PLAYERS:
+            return True
+        if head not in _WRAPPER_COMMANDS:
+            return False
+
+        # Shell payloads stay grouped after the outer split (for example,
+        # ``bash -c 'afplay sample.wav'``). Split each argument once more so
+        # quoted payloads cannot hide the player executable.
+        nested_tokens = []
+        for token in tokens[1:]:
+            try:
+                nested_tokens.extend(_shlex.split(token))
+            except ValueError:
+                nested_tokens.extend(token.split())
+
+        # Shell-wrapped playback also includes the WSL Media.SoundPlayer path.
+        normalized = {
+            token.strip("()'\";&|").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            for token in nested_tokens
+        }
+        return bool(set(_AUDIO_PLAYERS) & normalized) or "Media.SoundPlayer" in cmd_str
+
     def _check_subprocess_cmd(name, cmd):
+        if (
+            request.node.get_closest_marker(_AUDIO_GUARD_BYPASS_MARK) is None
+            and _is_audio_player(cmd)
+        ):
+            raise RuntimeError(
+                f"tests/conftest.py audio-playback guard: blocked "
+                f"subprocess.{name}({cmd!r}) — unit tests must mock the "
+                "audio player. Mark with @pytest.mark.real_audio_playback "
+                "only for an explicit live-audio integration test."
+            )
+        if live_system_bypass:
+            return
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -1693,6 +1770,38 @@ def _audio_playback_guard(request, monkeypatch):
         monkeypatch.setattr(_voice, "speak_text", _blocked_speak_text)
     if hasattr(_voice, "play_audio_file"):
         monkeypatch.setattr(_voice, "play_audio_file", _blocked_play_audio_file)
+
+    # Both output paths lazy-import sounddevice. Wrap those imports instead of
+    # importing sounddevice here (which can itself initialize host audio), and
+    # delegate input-only APIs so microphone tests remain unaffected. Tests
+    # that explicitly replace a lazy importer after fixture setup keep using
+    # their fake sounddevice module as intended.
+    try:
+        import tools.voice_mode as _voice_mode
+
+        real_import_audio = _voice_mode._import_audio
+
+        def _guarded_import_audio():
+            sounddevice, numpy = real_import_audio()
+            return _SounddeviceOutputGuard(sounddevice), numpy
+
+        monkeypatch.setattr(_voice_mode, "_import_audio", _guarded_import_audio)
+    except Exception:
+        pass
+
+    try:
+        import tools.tts_tool as _tts_tool
+
+        real_import_sounddevice = _tts_tool._import_sounddevice
+
+        def _guarded_import_sounddevice():
+            return _SounddeviceOutputGuard(real_import_sounddevice())
+
+        monkeypatch.setattr(
+            _tts_tool, "_import_sounddevice", _guarded_import_sounddevice
+        )
+    except Exception:
+        pass
 
     yield
 

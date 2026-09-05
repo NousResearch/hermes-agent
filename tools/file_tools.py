@@ -27,7 +27,8 @@ from tools.file_operations import (
 from tools import file_state
 from agent.redact import redact_sensitive_text
 from tools.file_tools_paths import (
-    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
+    _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task,
+    _uses_container_paths)
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,

@@ -964,6 +964,34 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is False
         assert "Invalid source" in result["error"]
 
+    def test_source_external_with_no_external_dirs_configured_gives_clear_error(self, tmp_path):
+        """Regression: filtering all_dirs down to nothing for source="external" must not
+        fall through to the generic "Skills directory does not exist yet" message -- that's
+        about the skills dir never being created, not about a config that has no external_dirs."""
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "solo-skill")
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("solo-skill", source="external")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "external_dirs" in result["error"]
+        assert "does not exist yet" not in result["error"]
+
+    def test_source_local_with_no_local_dirs_gives_clear_error(self, tmp_path):
+        local_dir = tmp_path / "local"  # deliberately not created -> _skills_dir().exists() is False
+        external_dir = tmp_path / "external"
+        external_dir.mkdir()
+        _make_skill(external_dir, "solo-skill")
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("solo-skill", source="local")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "No local skills directory" in result["error"]
+        assert "does not exist yet" not in result["error"]
+
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
         """Supporting reference docs named <skill>.md are not skills.

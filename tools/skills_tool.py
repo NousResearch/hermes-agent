@@ -469,7 +469,10 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
     gate, not-found listing. ``(error_json, skill_dir, skill_md)``; skill_md set iff no error.
     ``local_dirs`` (project dirs + the active skills dir) tags an ambiguous match's ``source`` as
     "local"/"external" and detects the case where two roots collide on the identical relative
-    path — there "pass the full path" is impossible advice, since that path is what collides."""
+    path — there "pass the full path" is impossible advice, since that path is what collides.
+    Known gap: two DIFFERENT project-tier dirs (nested project skill scopes) colliding on the
+    same relative path both tag as "local" — source can't split those apart, same as before
+    this parameter existed; only the local/external split is covered."""
     if not all_dirs:
         return _fail(
             "Skills directory does not exist yet. It will be created on first install."), None, None
@@ -554,6 +557,8 @@ def skill_view(
             return _fail(f"Invalid source '{source}': must be \"local\" or \"external\".")
         local_category_name: str | None = None
         if ":" in name:  # plugin registry; bare names use the flat-tree scan below
+            # A resolvable plugin:skill answers here and returns immediately — source
+            # only affects the flat-tree fall-through below, so it's a no-op for a hit.
             served, local_category_name = _resolve_plugin_skill(name, file_path, task_id, preprocess)
             if served is not None:
                 return served
@@ -565,8 +570,14 @@ def skill_view(
         local_dirs = project_dirs + ([active_skills_dir] if active_skills_dir.exists() else [])
         if source == "local":
             all_dirs = [d for d in all_dirs if d in local_dirs]
+            if not all_dirs:
+                return _fail("No local skills directory is configured.")
         elif source == "external":
             all_dirs = [d for d in all_dirs if d not in local_dirs]
+            if not all_dirs:
+                return _fail(
+                    'No skills.external_dirs are configured — there is nothing to search '
+                    'with source="external".')
         error, skill_dir, skill_md = _locate_skill(
             name, local_category_name, project_dirs, all_dirs, local_dirs)
         if error is not None:

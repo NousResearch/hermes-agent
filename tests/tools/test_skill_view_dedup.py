@@ -4,6 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -92,3 +93,29 @@ class TestSkillViewDedup:
         # conversation_compression imports this lazily; keep the seam stable.
         from tools.skills_tool import reset_skill_view_dedup as f
         f(None)
+
+    def test_source_switch_does_not_return_stale_stub_from_other_root(self, skills_home, tmp_path):
+        """Regression: a colliding name resolves to a DIFFERENT on-disk file per source, so
+        switching source must never coalesce with the other root's cached "unchanged" view."""
+        external_dir = tmp_path / "external"
+        d = external_dir / "demo-dedup-skill"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: demo-dedup-skill\ndescription: Demo skill for dedup tests.\n---\n"
+            "# Demo\n\nEXTERNAL VERSION.\n"
+        )
+        with patch("agent.skill_utils.get_external_skills_dirs", return_value=[external_dir]):
+            r1 = json.loads(_skill_view_with_bump(
+                {"name": "demo-dedup-skill", "source": "local"}, task_id="t-svd"))
+            assert r1["success"] is True and "Step one" in r1["content"]
+
+            r2 = json.loads(_skill_view_with_bump(
+                {"name": "demo-dedup-skill", "source": "external"}, task_id="t-svd"))
+            assert r2["success"] is True
+            assert r2.get("dedup") is not True  # must NOT be a stale stub from the local view
+            assert "EXTERNAL VERSION" in r2["content"]
+
+            # Repeating the same source now correctly dedups against itself.
+            r3 = json.loads(_skill_view_with_bump(
+                {"name": "demo-dedup-skill", "source": "external"}, task_id="t-svd"))
+            assert r3.get("dedup") is True

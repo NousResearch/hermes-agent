@@ -172,6 +172,62 @@ toolsets:
     assert resolved != ["kanban"]
 
 
+def test_default_spawn_refuses_when_assignee_toolsets_cannot_be_resolved(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    profile = tmp_path / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.resolve_profile_env", lambda _name: profile
+    )
+    monkeypatch.setattr(kbd, "_resolve_worker_cli_toolsets", lambda _home: None)
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail(
+            "worker must not start without capability pin"
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="toolsets"):
+        kbd._default_spawn(
+            _make_task(kb, assignee="elias"), str(workspace)
+        )
+
+
+def test_worker_argv_refuses_explicitly_empty_toolset_surface(monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_worker_cli_toolsets", lambda _home: [])
+
+    with pytest.raises(RuntimeError, match="toolsets"):
+        kbd._worker_argv(
+            _make_task(kb, assignee="elias"), "elias", "/profiles/elias"
+        )
+
+
+def test_resolve_worker_cli_toolsets_refuses_empty_surface(monkeypatch, tmp_path):
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools", lambda _cfg, _platform: set()
+    )
+
+    with pytest.raises(RuntimeError, match="toolsets could not be resolved"):
+        kbd._resolve_worker_cli_toolsets(str(profile))
+
+
 def test_default_spawn_refuses_unresolved_assignee_before_popen(monkeypatch, tmp_path):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_dispatch as kbd

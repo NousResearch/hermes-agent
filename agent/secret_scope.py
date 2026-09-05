@@ -416,7 +416,13 @@ def _profile_external_secret_snapshot(home: Path, *, fail_closed: bool):
         from hermes_cli import env_loader
 
         snapshot = env_loader.get_external_secret_snapshot(home)
-        if snapshot.status in {"not_hydrated", "stale"}:
+        initial_status = snapshot.status
+        if initial_status in {"not_hydrated", "stale", "failed"}:
+            # ``failed`` homes are deliberately not admitted to env_loader's
+            # once-per-home set, so the next boundary construction is the
+            # retry point for a transient source/config outage.  Do not retry
+            # twice inside one construction: a not_hydrated/stale refresh that
+            # records failure must still fail this attempt.
             env_loader.hydrate_profile_secret_sources(home)
             snapshot = env_loader.get_external_secret_snapshot(home)
         if fail_closed and snapshot.status in {

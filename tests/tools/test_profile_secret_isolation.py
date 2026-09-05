@@ -695,6 +695,33 @@ def test_external_secret_source_failure_refuses_boundary(monkeypatch, tmp_path):
         build_profile_env_boundary(tmp_path / "source", tmp_path / "target")
 
 
+def test_failed_external_snapshot_recovers_on_next_boundary(monkeypatch, tmp_path):
+    import hermes_cli.env_loader as env_loader
+
+    outcomes = iter([RuntimeError("temporary"), {"API_TOKEN": "recovered"}])
+
+    def _hydrate(home):
+        result = next(outcomes)
+        if isinstance(result, Exception):
+            env_loader._record_external_secret_snapshot(
+                home, data={}, status="failed", error_kind="source_apply"
+            )
+            return {}
+        env_loader._record_external_secret_snapshot(
+            home, data=result, status="ready"
+        )
+        return result
+
+    env_loader.reset_secret_source_cache()
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", _hydrate)
+
+    with pytest.raises(RuntimeError, match="snapshot is failed"):
+        build_profile_secret_scope(tmp_path, fail_closed_external=True)
+
+    scope = build_profile_secret_scope(tmp_path, fail_closed_external=True)
+    assert scope["API_TOKEN"] == "recovered"
+
+
 def test_multiplex_target_home_resolution_failure_refuses_run(
     monkeypatch, tmp_path, multiplex_mode
 ):

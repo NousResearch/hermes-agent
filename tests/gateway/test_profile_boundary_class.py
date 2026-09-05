@@ -5,9 +5,9 @@ session identity) resolved from **ambient process state at use time** instead of
 being **bound to the owning profile/session at creation time**.
 
 Each test asserts the *correct* profile-bound behavior and currently fails on
-main, so it is marked ``xfail(strict=False)``. When a member's fix lands, its
-test flips to XPASS and the seam has a live scoreboard — same format as the
-delegation-seam map in ``tests/tools/test_delegation_fallback_class.py``.
+main, so it is marked ``xfail(strict=True)``. When a member's fix lands, its
+unexpected pass fails this scoreboard until the marker is removed — same format
+as the delegation-seam map in ``tests/tools/test_delegation_fallback_class.py``.
 
 Members and in-flight fixes are tracked on the class table in #82936. The
 junction member (default-profile secrets reaching child processes) is
@@ -81,7 +81,7 @@ def test_multiplex_terminal_env_excludes_other_profiles_undeclared_secret(
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason="#81952: load_config() silently returns DEFAULT_CONFIG when the "
     "profile's config.yaml is corrupt",
 )
@@ -116,7 +116,7 @@ def test_corrupt_profile_config_fails_loudly(tmp_path):
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason="#83346: session-key fallback resolves profile from ambient "
     "active-profile state instead of the session's owning profile",
 )
@@ -175,7 +175,7 @@ def _ambient_profile(profiles_mod):
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason="#80318: profile-scoped HERMES_HOME hides root-config MoA presets "
     "from kanban workers",
 )
@@ -233,7 +233,7 @@ def test_profile_scope_resolves_root_moa_preset(tmp_path):
 
 
 @pytest.mark.xfail(
-    strict=False,
+    strict=True,
     reason="#83197/#83557: cron secret scope reset before _deliver_result; "
     "delivery runs unscoped",
 )

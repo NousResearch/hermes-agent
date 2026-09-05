@@ -2025,7 +2025,7 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
-def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[str]]:
+def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> list[str]:
     """Return the assigned profile's effective CLI toolsets for a worker.
 
     Resolved at dispatch time and passed as an explicit ``--toolsets`` pin so
@@ -2035,7 +2035,7 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     tools when ``HERMES_KANBAN_TASK`` is set.
     """
     if not hermes_home:
-        return None
+        raise RuntimeError("kanban worker profile home is unavailable for toolset pin")
     try:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import load_config
@@ -2045,16 +2045,15 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         try:
             cfg = load_config()
             toolsets = sorted(_get_platform_tools(cfg, "cli"))
+            if not toolsets:
+                raise RuntimeError("assigned profile resolved an empty CLI toolset surface")
         finally:
             reset_hermes_home_override(token)
-        return toolsets or None
     except Exception as exc:
-        _kb._log.debug(
-            "kanban worker: could not resolve CLI toolsets for HERMES_HOME=%r (%s)",
-            hermes_home,
-            exc,
-        )
-        return None
+        raise RuntimeError(
+            f"kanban worker CLI toolsets could not be resolved for HERMES_HOME={hermes_home!r}"
+        ) from exc
+    return toolsets
 
 
 _retagged_workspace_roots: set[str] = set()
@@ -2112,8 +2111,11 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
-    if worker_toolsets:
-        cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    if not worker_toolsets:
+        raise RuntimeError("kanban worker CLI toolsets could not be pinned")
+    # The resolver rejects an empty surface: omitting this flag would silently
+    # reactivate CLI defaults rather than preserve the assignee's authority.
+    cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
     if task.goal_mode:
         # The kanban goal-loop hook only runs in cli.py's fully-quiet branch.

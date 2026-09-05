@@ -2484,10 +2484,20 @@ def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, 
 
 
 def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "", *, keep_ws: bool = False) -> list[str]:
-    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews)."""
+    """Wrap panel text; ``keep_ws`` preserves whitespace (command/detail previews).
+
+    Split on newlines first, then wrap each line. ``textwrap.wrap`` treats
+    embedded ``\\n`` as ordinary whitespace, so a multi-line command (e.g. a
+    heredoc pending approval) would otherwise collapse into a few unreadable
+    long lines and push approve/deny choices off-screen (#72580).
+    """
     kw = dict(replace_whitespace=False, drop_whitespace=False) if keep_ws else dict(break_long_words=False, break_on_hyphens=False)
-    wrapped = textwrap.wrap(text, width=max(8, width), subsequent_indent=subsequent_indent, **kw)
-    return wrapped or [""]
+    result: list[str] = []
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    for line in normalized.split("\n"):
+        wrapped = textwrap.wrap(line, width=max(8, width), subsequent_indent=subsequent_indent, **kw)
+        result.extend(wrapped or [""])
+    return result or [""]
 
 
 _wrap_panel_text_keep_ws = functools.partial(_wrap_panel_text, keep_ws=True)

@@ -241,6 +241,28 @@ def test_eject_without_supervisor_is_not_a_500(client, monkeypatch):
     assert r.status_code == 409, (r.status_code, r.text)
 
 
+def test_idle_unload_write_is_durable_clamped_and_reflected(client):
+    """What the pane saves is what the sweeper runs: the value is persisted for the next boot,
+    clamped by the same gate the supervisor uses, and read back by /status — so the number on
+    screen can never be a threshold nothing enforces. Negative input is a 400, not a silent
+    'off' (0 already says that explicitly)."""
+    from hermes_cli import config as config_mod
+    from hermes_cli.local_runtime.supervisor import MIN_UNLOAD_AFTER_IDLE_S
+
+    r = client.post("/api/local-models/unload-after-idle", json={"seconds": 120})
+    assert r.status_code == 200, r.text
+    assert r.json()["unload_after_idle_seconds"] == 120
+    assert config_mod.load_config()["local_runtime"]["unload_after_idle_seconds"] == 120
+    assert client.get("/api/local-models/status").json()["unload_after_idle_seconds"] == 120
+
+    clamped = client.post("/api/local-models/unload-after-idle", json={"seconds": 1}).json()
+    assert clamped["unload_after_idle_seconds"] == MIN_UNLOAD_AFTER_IDLE_S
+    assert client.get("/api/local-models/status").json()["unload_after_idle_seconds"] == MIN_UNLOAD_AFTER_IDLE_S
+
+    assert client.post("/api/local-models/unload-after-idle", json={"seconds": 0}).json()["unload_after_idle_seconds"] == 0
+    assert client.post("/api/local-models/unload-after-idle", json={"seconds": -1}).status_code == 400
+
+
 def test_download_tolerates_stale_catalog_size(client, monkeypatch):
     """Upstream re-uploads make catalog sizes stale; a download whose
     delivered bytes are self-consistent with the SERVER's declared length

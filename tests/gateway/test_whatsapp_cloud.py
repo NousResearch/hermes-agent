@@ -875,6 +875,64 @@ class TestInboundMediaDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Inbound contact dispatch
+# ---------------------------------------------------------------------------
+
+class TestInboundContactDispatch:
+    @pytest.mark.asyncio
+    async def test_shared_contacts_include_names_and_phone_numbers(self):
+        adapter = _make_adapter()
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{
+                "id": "x",
+                "changes": [{
+                    "field": "messages",
+                    "value": {
+                        "metadata": {"phone_number_id": "1"},
+                        "contacts": [
+                            {"profile": {"name": "Sender"}, "wa_id": "1555"}
+                        ],
+                        "messages": [{
+                            "from": "1555",
+                            "id": "wamid.contacts1",
+                            "timestamp": "0",
+                            "type": "contacts",
+                            "contacts": [
+                                {
+                                    "name": {"formatted_name": "Ada Lovelace"},
+                                    "phones": [
+                                        {"phone": "+44 20 1234", "type": "WORK"},
+                                        {"wa_id": "15551234567", "type": "CELL"},
+                                    ],
+                                },
+                                {
+                                    "name": {"formatted_name": "Grace Hopper"},
+                                    "phones": [],
+                                },
+                            ],
+                        }],
+                    },
+                }],
+            }],
+        }
+
+        await adapter._dispatch_payload(payload)
+
+        assert len(captured) == 1
+        assert captured[0].text == (
+            "[Contact: Ada Lovelace +44 20 1234 15551234567]\n"
+            "[Contact: Grace Hopper]"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Group-shaped message guard
 # ---------------------------------------------------------------------------
 

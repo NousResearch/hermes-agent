@@ -37,6 +37,7 @@ if _repo not in sys.path:
 
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+import plugins.platforms.telegram.adapter as _tg_adapter_mod  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
 from hermes_cli.plugins import (  # noqa: E402
@@ -672,14 +673,43 @@ class TestRegisterHandlers:
         app = MagicMock()
         a._register_handlers(app)
 
-        # Six core handlers (default group, no group kwarg — incl. the
-        # inline command picker) plus the gateway_platform_event observer
-        # alone in group 99, so it observes alongside rather than
-        # displacing the core handlers.
+        # Seven core handlers (default group, no group kwarg — incl. the
+        # inline command picker and the guest_message handler, which must be
+        # in the SAME group as filters.TEXT et al. and registered first, so
+        # PTB's per-group first-match-wins semantics keep them from also
+        # matching a guest update) plus the gateway_platform_event observer
+        # alone in group 99, so it observes alongside rather than displacing
+        # the core handlers.
         calls = app.add_handler.call_args_list
-        assert len(calls) == 7
+        assert len(calls) == 8
         assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
-        assert len([c for c in calls if not c.kwargs]) == 6
+        assert len([c for c in calls if not c.kwargs]) == 7
+
+    def test_guest_handler_registered_first_in_default_group(self):
+        """The guest_message handler must be the FIRST default-group handler:
+        MessageFilter.check_update passes handlers Update.effective_message,
+        which also surfaces update.guest_message (a guest chat has no
+        update.message), so filters.TEXT/.COMMAND/etc. would otherwise ALSO
+        match a guest update. PTB tries handlers within one group in
+        registration order and stops at the first match — first position is
+        what makes the guest handler take priority instead of running
+        alongside the normal pipeline against a chat the bot isn't in."""
+        # The shared telegram mock (conftest.py) makes TelegramMessageHandler(...)
+        # return a generic auto-mock whose .callback doesn't reflect what it was
+        # constructed with — patch in a real, inspectable stand-in instead.
+        class _FakeMessageHandler:
+            def __init__(self, filters, callback, block=True):
+                self.filters = filters
+                self.callback = callback
+
+        a = self._adapter_with_handlers()
+        app = MagicMock()
+        with patch.object(_tg_adapter_mod, "TelegramMessageHandler", _FakeMessageHandler):
+            a._register_handlers(app)
+
+        default_group_calls = [c for c in app.add_handler.call_args_list if not c.kwargs]
+        first_handler = default_group_calls[0].args[0]
+        assert first_handler.callback == a._handle_guest_message_update
 
     def test_rebuild_re_registers_observer(self):
         """A second call on a fresh app (e.g. a future rebuild) re-registers
@@ -691,7 +721,7 @@ class TestRegisterHandlers:
         a._register_handlers(first_app)
         a._register_handlers(rebuilt_app)  # the rebuild path
 
-        assert rebuilt_app.add_handler.call_count == 7
+        assert rebuilt_app.add_handler.call_count == 8
         assert len(self._observer_calls(rebuilt_app)) == 1
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):

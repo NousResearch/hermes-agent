@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from agent.memory_ranking import rerank_memories
 from agent.secret_scope import get_secret
 from tools.registry import tool_error
 
@@ -234,7 +235,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
         def _run():
             results = self._try(lambda: self._search(query, backend=backend), logger.debug, "Mem0 prefetch failed: %s")
-            lines = [r.get("memory", "") for r in (results or []) if r.get("memory")]
+            ranked = rerank_memories(results or [], query=query)
+            lines = [r.get("memory", "") for r in ranked if r.get("memory")]
             body = "## Mem0 Memory\n" + "\n".join(f"- {l}" for l in lines) if lines else ""
             with self._prefetch_lock:
                 if self._prefetch_query == query:

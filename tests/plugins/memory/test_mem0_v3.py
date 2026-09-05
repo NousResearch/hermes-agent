@@ -177,6 +177,20 @@ class TestMem0Prefetch:
         assert "user prefers dark mode" in result
 
 
+    def test_prefetch_applies_memory_ranking_end_to_end(self):
+        backend = FakeBackend(search_results=[
+            {"id": "m1", "memory": "user prefers dark mode", "score": 0.4},
+            {"id": "m2", "memory": "deployment route is production", "score": 0.4},
+        ])
+        provider = self._make_provider(backend)
+
+        result = provider.prefetch("deployment route")
+
+        assert backend.captured[0][1] == "deployment route"
+        assert result.index("deployment route is production") < result.index(
+            "user prefers dark mode"
+        )
+
     def test_on_turn_start_queues_current_query(self):
         backend = FakeBackend(search_results=[{"id": "m1", "memory": "lives in Berlin"}])
         provider = self._make_provider(backend)

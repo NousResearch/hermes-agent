@@ -24,7 +24,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
-import { clearAllSessionStates } from '@/store/session-states'
+import { $sessionTiles, clearAllSessionStates } from '@/store/session-states'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
 // True while a connection switch is mid-flight — a Settings → Gateway apply
@@ -212,19 +212,23 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setSessionsLoading(true)
   resetSessionsLimit()
 
-  setActiveSessionId(null)
-  setSelectedStoredSessionId(null)
-  setMessages([])
-  setFreshDraftReady(true)
+  const keepSplitTranscripts = $sessionTiles.get().length > 0
+
+  // Split panes keep their own session tiles. Clearing the primary transcript
+  // here empties the unfocused pane on every backend warm (Bots page visit)
+  // and it rebuilds on a ~5s loop (#100675). A true source switch with no
+  // extra tiles still wipes in place.
+  if (!keepSplitTranscripts) {
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+    setMessages([])
+    setFreshDraftReady(true)
+    clearTranscriptTails()
+  }
 
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.
   clearArtifactRegistry()
-
-  // Cached transcript tails belong to the PREVIOUS backend's sessions; a
-  // different backend can recycle stored ids, and painting another machine's
-  // conversation under a same-named id is worse than a loader. Wipe them.
-  clearTranscriptTails()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

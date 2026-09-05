@@ -5,19 +5,23 @@ import {
   $activeSessionId,
   $cronSessions,
   $freshDraftReady,
+  $messages,
   $messagingSessions,
+  $selectedStoredSessionId,
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
   setActiveSessionId,
   setCronSessions,
   setFreshDraftReady,
+  setMessages,
   setMessagingSessions,
+  setSelectedStoredSessionId,
   setSessionProfilesTruncated,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
-import { $stalledSessionIds } from '@/store/session-states'
+import { $sessionTiles, $stalledSessionIds } from '@/store/session-states'
 
 import {
   $gatewaySwitching,
@@ -62,6 +66,10 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setCronSessions([])
     setMessagingSessions([])
     $stalledSessionIds.set([])
+    $sessionTiles.set([])
+    setMessages([])
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
   })
@@ -86,6 +94,22 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     wipeSessionListsForGatewaySwitch()
 
     expect(invalidateProfileListFetches).toHaveBeenCalled()
+  })
+
+  it('keeps open split-pane transcripts when session tiles are mounted (#100675)', () => {
+    setActiveSessionId('rt-primary')
+    setSelectedStoredSessionId('stored-primary')
+    setMessages([{ id: 'keep-me', parts: [], role: 'user', timestamp: 0 } as never])
+    $sessionTiles.set([{ runtimeId: 'rt-tile', storedSessionId: 'stored-tile' }])
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($sessions.get()).toEqual([])
+    expect($sessionsLoading.get()).toBe(true)
+    expect($activeSessionId.get()).toBe('rt-primary')
+    expect($selectedStoredSessionId.get()).toBe('stored-primary')
+    expect($messages.get()).toEqual([{ id: 'keep-me', parts: [], role: 'user', timestamp: 0 }])
+    expect($freshDraftReady.get()).toBe(false)
   })
 })
 

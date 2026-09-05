@@ -229,6 +229,16 @@ def get_language() -> str:
     return DEFAULT_LANGUAGE
 
 
+def has_key(key: str, lang: str | None = None) -> bool:
+    """True when *key* exists in the active (or given) language catalog or in
+    the English fallback -- i.e. when :func:`t` would return a real string
+    rather than the bare key path."""
+    target = _normalize_lang(lang) if lang else get_language()
+    if key in _load_catalog(target):
+        return True
+    return target != DEFAULT_LANGUAGE and key in _load_catalog(DEFAULT_LANGUAGE)
+
+
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     """Translate a dotted key to the active language.
 

@@ -25,6 +25,19 @@ approval:
   blocklist_message: "هذا الأمر مدرج في قائمة الحظر غير المشروطة ولا يمكن الموافقة عليه."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ تم إدراج رسالتك في التشغيل الحالي{detail}. ستصل بعد استدعاء الأداة التالي."
+    redirected: "↪ تمت إعادة توجيه التشغيل الحالي{detail}. سأعدّل وفق تصحيحك."
+    subagent_queued: "⏳ الوكيل الفرعي يعمل{detail} — رسالتك في الانتظار حتى ينتهي (/stop لإلغاء كل شيء)."
+    compressing_queued: "⏳ جارٍ ضغط السياق{detail} — رسالتك في الانتظار حتى ينتهي (/stop لإلغاء كل شيء)."
+    queued: "⏳ في الانتظار للدور التالي{detail}. سأرد عند انتهاء المهمة الحالية."
+    interrupting: "⚡ جارٍ مقاطعة المهمة الحالية{detail}. سأرد على رسالتك قريبًا."
+    elapsed: "مضت {minutes} دقيقة"
+    iteration: "التكرار {current}/{max}"
+    running: "قيد التشغيل: {tool}"
+    working: "⏳ أعمل — {minutes} دقيقة{detail}"
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"
@@ -458,3 +471,16 @@ gateway:
     session_db_unavailable_prefix: "قاعدة بيانات الجلسات غير متاحة"
     session_not_found:           "لم يُعثر على الجلسة في قاعدة البيانات."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "عرض الأوامر المتاحة (/help skills يعرض أوامر المهارات، /help <نص> للتصفية)"
+  new: "بدء جلسة جديدة (معرّف جلسة جديد + سجل جديد)"
+  stop: "إيقاف جميع العمليات العاملة في الخلفية"
+  status: "عرض معلومات الجلسة والنموذج والرموز والسياق"
+  resume: "استئناف جلسة مسماة سابقًا"
+  sessions: "تصفح الجلسات السابقة واستئنافها"
+  model: "تبديل النموذج (لهذه الجلسة؛ --global للحفظ الدائم)"
+  compress: "ضغط سياق المحادثة ('here [N]' يحتفظ بآخر N دور؛ --preview يعرض ما سيحدث)"
+  voice: "تشغيل أو إيقاف الوضع الصوتي"

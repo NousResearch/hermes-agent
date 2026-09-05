@@ -24,6 +24,19 @@ approval:
   blocklist_message: "Tá an t-ordú seo ar an liosta cosc gan choinníoll agus ní féidir é a cheadú."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Teachtaireacht curtha isteach sa rith reatha{detail}. Sroichfidh sí tar éis an chéad ghlao uirlise eile."
+    redirected: "↪ Rith reatha atreoraithe{detail}. Cuirfidh mé do cheartú san áireamh."
+    subagent_queued: "⏳ Fo-ghníomhaire ag obair{detail} — tá do theachtaireacht i scuaine go dtí go gcríochnóidh sé (/stop chun gach rud a chealú)."
+    compressing_queued: "⏳ Comhthéacs á chomhbhrú{detail} — tá do theachtaireacht i scuaine go dtí go gcríochnóidh sé (/stop chun gach rud a chealú)."
+    queued: "⏳ I scuaine don chéad seal eile{detail}. Freagróidh mé nuair a bheidh an tasc reatha críochnaithe."
+    interrupting: "⚡ Ag cur isteach ar an tasc reatha{detail}. Freagróidh mé do theachtaireacht go luath."
+    elapsed: "{minutes} nóim caite"
+    iteration: "atriall {current}/{max}"
+    running: "ag rith: {tool}"
+    working: "⏳ Ag obair — {minutes} nóim{detail}"
   approval_expired: "⚠️ Tá an cead imithe in éag (níl an gníomhaire ag fanacht níos mó). Iarr ar an ngníomhaire iarracht eile a dhéanamh."
   draining:         "⏳ Ag fanacht le {count} gníomhaire(í) gníomhach roimh atosú..."
   goal_cleared:     "✓ Sprioc glanta."
@@ -460,3 +473,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Níl bunachar sonraí na seisiún ar fáil"
     session_not_found:           "Seisiún gan a aimsiú sa bhunachar sonraí."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Taispeáin na horduithe atá ar fáil (/help skills: orduithe scileanna, /help <téacs>: scagadh)"
+  new: "Tosaigh seisiún nua (ID seisiúin nua + stair)"
+  stop: "Stop gach próiseas cúlra atá ag rith"
+  status: "Taispeáin seisiún, samhail, comharthaí agus comhthéacs"
+  resume: "Atosaigh seisiún a ainmníodh roimhe seo"
+  sessions: "Brabhsáil agus atosaigh seisiúin roimhe seo"
+  model: "Athraigh samhail (don seisiún; --global le sábháil)"
+  compress: "Comhbhrúigh comhthéacs an chomhrá ('here [N]' coinníonn na N seal deireanacha; --preview taispeánann an plean)"
+  voice: "Cas mód gutha air nó as"

@@ -20,6 +20,19 @@ approval:
   blocklist_message: "Este comando está na lista de bloqueio incondicional e não pode ser aprovado."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ Mensagem inserida na execução atual{detail}. Ela chega após a próxima chamada de ferramenta."
+    redirected: "↪ Execução atual redirecionada{detail}. Vou ajustar conforme sua correção."
+    subagent_queued: "⏳ Subagente trabalhando{detail} — sua mensagem fica na fila até ele terminar (/stop cancela tudo)."
+    compressing_queued: "⏳ Comprimindo contexto{detail} — sua mensagem fica na fila até terminar (/stop cancela tudo)."
+    queued: "⏳ Na fila para o próximo turno{detail}. Respondo assim que a tarefa atual terminar."
+    interrupting: "⚡ Interrompendo a tarefa atual{detail}. Respondo à sua mensagem em instantes."
+    elapsed: "{minutes} min decorridos"
+    iteration: "iteração {current}/{max}"
+    running: "executando: {tool}"
+    working: "⏳ Trabalhando — {minutes} min{detail}"
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
   draining:         "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
   goal_cleared:     "✓ Objetivo removido."
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de dados de sessões indisponível"
     session_not_found:           "Sessão não encontrada na base de dados."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "Mostrar comandos disponíveis (/help skills lista comandos de skills, /help <texto> filtra)"
+  new: "Iniciar uma nova sessão (novo ID + histórico)"
+  stop: "Encerrar todos os processos em segundo plano"
+  status: "Mostrar sessão, modelo, tokens e contexto"
+  resume: "Retomar uma sessão salva pelo nome"
+  sessions: "Navegar e retomar sessões anteriores"
+  model: "Trocar de modelo (para a sessão; --global para persistir)"
+  compress: "Comprimir o contexto da conversa ('here [N]' mantém os últimos N turnos; --preview mostra o plano)"
+  voice: "Ativar ou desativar o modo de voz"

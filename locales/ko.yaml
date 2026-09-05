@@ -20,6 +20,19 @@ approval:
   blocklist_message: "이 명령은 무조건 차단 목록에 있으며 승인할 수 없습니다."
 
 gateway:
+  # Mid-run replies when a message arrives while the agent is busy, and the
+  # long-running heartbeat. {detail} is a pre-formatted " (…)" suffix.
+  busy:
+    steered: "⏩ 현재 실행에 메시지를 끼워 넣었습니다{detail}. 다음 도구 호출 후에 전달됩니다."
+    redirected: "↪ 현재 실행을 방향 전환했습니다{detail}. 수정 내용을 반영하겠습니다."
+    subagent_queued: "⏳ 서브에이전트 작업 중{detail} — 완료될 때까지 메시지가 대기합니다 (/stop 으로 전부 취소)."
+    compressing_queued: "⏳ 컨텍스트 압축 중{detail} — 완료될 때까지 메시지가 대기합니다 (/stop 으로 전부 취소)."
+    queued: "⏳ 다음 차례에 대기 중{detail}. 현재 작업이 끝나면 답변하겠습니다."
+    interrupting: "⚡ 현재 작업을 중단합니다{detail}. 곧 메시지에 답변하겠습니다."
+    elapsed: "{minutes}분 경과"
+    iteration: "반복 {current}/{max}"
+    running: "실행 중: {tool}"
+    working: "⏳ 작업 중 — {minutes}분{detail}"
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining:         "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
   goal_cleared:     "✓ 목표가 삭제되었습니다."
@@ -456,3 +469,16 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found:           "데이터베이스에서 세션을 찾을 수 없습니다."
     warn_passthrough:            "⚠️ {error}"
+
+# Slash-command descriptions shown in messenger command menus and /help.
+# Commands without an entry keep their English CommandDef.description.
+commands:
+  help: "사용 가능한 명령 표시 (/help skills 는 스킬 명령 목록, /help <텍스트> 는 필터)"
+  new: "새 세션 시작 (새 세션 ID + 기록)"
+  stop: "실행 중인 모든 백그라운드 프로세스 종료"
+  status: "세션, 모델, 토큰, 컨텍스트 정보 표시"
+  resume: "이름을 지정한 이전 세션 이어가기"
+  sessions: "이전 세션 찾아보기 및 이어가기"
+  model: "모델 전환 (세션 범위; --global 은 영구 저장)"
+  compress: "대화 컨텍스트 압축 ('here [N]' 은 최근 N턴 유지, --preview 는 미리보기)"
+  voice: "음성 모드 켜기/끄기"

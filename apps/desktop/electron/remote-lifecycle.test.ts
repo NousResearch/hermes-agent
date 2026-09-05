@@ -1506,6 +1506,29 @@ test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)'
   assert.ok(cmd.includes('sed "s/__PID__/${child}/"'), 'pid substitution must use sed')
 })
 
+test('buildSpawnCommand does not double-quote the update mutex path', () => {
+  const cmdAbs = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '/home/hermes/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
+  })
+  // Absolute mutexPath is expandRemotePath output ('/home/hermes/.hermes/.hermes-update-in-progress.mutex').
+  // It must be embedded directly as sys.argv[1] without being wrapped in shq() again,
+  // which would pass literal quote characters to python and create a directory named `'`.
+  assert.match(cmdAbs, /python3 -c '[\s\S]+?' '\/home\/hermes\/\.hermes\/\.hermes-update-in-progress\.mutex'/)
+  assert.doesNotMatch(cmdAbs, /python3 -c '[\s\S]+?' ''\\''/)
+
+  const cmdTilde = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    ownershipId: OWNERSHIP_ID,
+    lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
+  })
+  // Tilde mutexPath is expandRemotePath output ("$HOME"'/.hermes/.hermes-update-in-progress.mutex').
+  assert.match(cmdTilde, /python3 -c '[\s\S]+?' "\$HOME"'\/\.hermes\/\.hermes-update-in-progress\.mutex'/)
+})
+
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
   const failure = new Error('channel closed')
 

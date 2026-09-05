@@ -909,7 +909,9 @@ def observe_lifecycle(hook_name: str, **kwargs: Any) -> None:
     try:
         _HOOK_HANDLERS[hook_name](runtime, kwargs)
     except Exception:
-        logger.warning("Hermes shared metrics hook failed: %s", hook_name, exc_info=True)
+        from hermes_cli.lifecycle import log_observer_failure
+
+        log_observer_failure(logger, "Hermes shared metrics hook failed: %s", hook_name)
 
 
 def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:

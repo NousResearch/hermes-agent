@@ -161,7 +161,17 @@ def _format_async_delegation(evt: dict) -> str:
     """Self-contained re-injection for an async-delegation completion: the FULL
     original task source (goal, context, toolsets, role, model), dispatch time, status
     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
-    deleg_id = evt.get("delegation_id", "unknown")
+    deleg_id = evt.get("delegation_id")
+    if not deleg_id:
+        # No real delegation behind this event (synthetic/echo lane): never render a completion
+        # envelope — empty text makes the watcher skip injection. The facade's logger is reused so
+        # the record keeps the ``tools.process_registry`` name log readers key on.
+        from tools.process_registry import logger
+        logger.warning(
+            "async-delegation completion with empty delegation_id dropped (goal=%r, status=%r) — envelope not rendered",
+            evt.get("goal", ""), evt.get("status"),
+        )
+        return ""
     completed_at = evt.get("completed_at") or time.time()
     if evt.get("is_batch") or isinstance(evt.get("results"), list):
         return _format_batch_delegation(evt, deleg_id, completed_at)

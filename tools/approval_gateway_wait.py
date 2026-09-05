@@ -11,12 +11,14 @@ call time.
 """
 
 import logging
+from contextlib import nullcontext
 import threading
 import time
 import uuid
 
 from tools.interrupt import is_interrupted
 from tools import approval_context as _ctx
+from hermes_cli.lifecycle import observer_failure_log
 from tools.approval_human_wait import activity_heartbeat, human_wait_window
 
 logger = logging.getLogger("tools.approval")
@@ -48,7 +50,11 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     a gateway inactivity timeout — both resolve as 'deny' (not outcome='timeout').
     The per-thread interrupt flag carries no stable machine-checkable cause, so a
     fail-closed deny preserves the historical semantics; changing this needs a
-    dedicated interrupt-cause channel, not string matching."""
+    dedicated interrupt-cause channel, not string matching.
+
+    ``surface="claude_sdk"`` waits on the SDK loop's ``to_thread`` worker, which interrupts never
+    flag — that surface unblocks via turn teardown/unregister or the approval timeout (see
+    ``tools.approval_sdk_gateway.build_sdk_gateway_approval_callback``)."""
     deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
@@ -126,10 +132,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "session_key": session_key, "surface": surface,
     }
     keys = list(approval_data.get("pattern_keys") or [])
-    with _approval._lock:
-        leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                       if e.data.get("command") == approval_data.get("command")
-                       and list(e.data.get("pattern_keys") or []) == keys), None)
+    # Correlated SDK requests opt out (``no_coalesce``): one answer must never authorize a
+    # distinct SDK tool_use_id, even when the bounded summaries are identical.
+    leader = None
+    if not approval_data.get("no_coalesce"):
+        with _approval._lock:
+            leader = next((e for e in _approval._gateway_queues.get(session_key, [])
+                           if e.data.get("command") == approval_data.get("command")
+                           and list(e.data.get("pattern_keys") or []) == keys), None)
     if leader is not None:
         adopted = _await_coalesced_leader(session_key, leader, payload)
         if adopted is not None:
@@ -147,15 +157,22 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
 
+    # On the SDK surface a failing observer must log a fixed line, never the (untrusted) payload.
+    sdk_surface = surface == "claude_sdk"
+    pre_scope = observer_failure_log(_ctx.SDK_PRE_OBSERVER_FAILURE_LOG) if sdk_surface else nullcontext()
+    post_scope = observer_failure_log(_ctx.SDK_POST_OBSERVER_FAILURE_LOG) if sdk_surface else nullcontext()
     # Plugins hear about the request before the gateway does (real-time observers).
-    _ctx._fire_approval_hook("pre_approval_request", **payload)
-    # Bridges sync agent thread → async gateway.
+    with pre_scope:
+        _ctx._fire_approval_hook("pre_approval_request", **payload)
+    # Bridges sync agent thread → async gateway. The entry owns the canonical queued copy (with
+    # request_id); the caller's pre-entry dict is neither replayable nor correlatable.
     try:
         notify_cb(dict(entry.data))
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()
-        _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
+        with post_scope:
+            _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
         return {"resolved": False, "choice": None, "notify_failed": True}
 
     state = _poll_event(entry.event, session_key,
@@ -164,4 +181,5 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         entry.result = "deny"
         entry.event.set()
     _drop_entry()
-    return _finish(payload, state != "timeout", entry.result, entry.reason)
+    with post_scope:
+        return _finish(payload, state != "timeout", entry.result, entry.reason)

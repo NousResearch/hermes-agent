@@ -78,3 +78,70 @@ jobs:
           uv run --no-sync python -m pytest \
             tests/tools/test_process_registry_windows_live.py \
             -o addopts= -v -p no:cacheprovider
+
+  desktop-build-e2e:
+    name: desktop build live E2E (windows-latest)
+    # Proves the Electron pin installs and packages on a real Windows host.
+    #
+    # e2e-desktop.yml runs on ubuntu only, so the failure class that produced the
+    # 40.10.2 pin is invisible to every lane that fires on a PR: Electron
+    # >= 40.10.3 unpacks via the NATIVE @electron-internal/extract-zip, whose
+    # win32-x64 binding failed to dlopen (ERR_DLOPEN_FAILED loading
+    # index.win32-x64-msvc.node) and broke the install at "Building desktop app".
+    # A green Linux run is not evidence about that bug.
+    #
+    # Two details are load-bearing and must not be "optimised" away:
+    #   * npm ci runs WITH scripts. Electron's postinstall is the code path under
+    #     test; --ignore-scripts would skip the unpacker and pass while proving
+    #     nothing.
+    #   * node_modules is NOT restored from cache. A warm cache can mask a broken
+    #     download/extract by reusing a previously-good dist.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+
+      - name: grab npm 12
+        run: npm i -g npm@12
+
+      - name: Install dependencies (scripts enabled - exercises the unpacker)
+        run: npm ci
+
+      - name: Assert the Electron dist actually extracted
+        shell: bash
+        run: |
+          set -uo pipefail
+          # The dlopen failure leaves a staged package with no dist/, the exact
+          # shape _electron_dist_ok() treats as not-ok. Fail here with a clear
+          # message rather than deep inside electron-builder.
+          for root in apps/desktop/node_modules node_modules; do
+            if [ -f "$root/electron/dist/electron.exe" ]; then
+              echo "electron dist present at $root/electron/dist/electron.exe"
+              exit 0
+            fi
+          done
+          echo "::error::Electron dist missing electron.exe - the postinstall unpack failed (see ERR_DLOPEN_FAILED)."
+          ls -la apps/desktop/node_modules/electron node_modules/electron || true
+          exit 1
+
+      - name: Package the desktop app
+        working-directory: apps/desktop
+        run: npm run pack
+        env:
+          CI: 'true'
+
+      - name: Assert a packaged executable exists
+        shell: bash
+        run: |
+          set -uo pipefail
+          if [ ! -f apps/desktop/release/win-unpacked/Hermes.exe ]; then
+            echo "::error::pack completed but release/win-unpacked/Hermes.exe is missing."
+            ls -la apps/desktop/release || true
+            exit 1
+          fi
+          echo "packaged Hermes.exe present"

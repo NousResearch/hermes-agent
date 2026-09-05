@@ -83,8 +83,8 @@ class GatewayGoalCommandsMixin:
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
-        A kickoff keeps the triggering message id / channel prompt; a resume continuation carries
-        none. *route* is a pre-resolved ``(adapter, quick_key)``. Best-effort: failures only logged.
+        A kickoff is a distinct internal lifecycle; neither kickoff nor resume reuses the
+        triggering message id/channel prompt. *route* is pre-resolved when supplied.
         """
         try:
             adapter, quick_key = route or self._adapter_and_key_for(event)
@@ -93,8 +93,9 @@ class GatewayGoalCommandsMixin:
                     text=text,
                     message_type=MessageType.TEXT,
                     source=event.source,
-                    message_id=event.message_id if kickoff else None,
-                    channel_prompt=event.channel_prompt if kickoff else None,
+                    message_id=None,
+                    channel_prompt=None,
+                    internal=kickoff,
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:
@@ -198,7 +199,11 @@ class GatewayGoalCommandsMixin:
 
         # Queue the goal text as an immediate first turn; the post-turn hook takes over after.
         self._enqueue_goal_turn(
-            event, state.goal, label="kickoff enqueue", kickoff=True, route=self._adapter_and_key_for(event)
+            event,
+            mgr.next_continuation_prompt() or state.goal,
+            label="kickoff enqueue",
+            kickoff=True,
+            route=self._adapter_and_key_for(event),
         )
 
         base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)

@@ -63,11 +63,16 @@ class _ArtifactScopeFacade:
 # Advertised in capabilities and echoed in registration responses; validated by the broker.
 _BROWSER_CONTROL_PROTOCOL_VERSION = 1
 
+# Canonical disabled→low→high ladder accepted by model_options and advertised server-wide;
+# provider/model-specific wire clamping happens downstream in agent.reasoning_effort.
+_REASONING_EFFORTS: tuple[str, ...] = (
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 # /v1/capabilities static feature flags (order is part of the JSON shape).
 _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
-    "session_resources": True, "model_options": True, "session_chat": True,
+    "session_resources": True, "model_options": True, "reasoning_efforts": _REASONING_EFFORTS,
+    "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
@@ -247,9 +252,6 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
 
 
 _REQUEST_OPTION_MISSING = object()
-# Full internal ladder + "none" (what /reasoning and config.yaml accept); provider
-# vocabulary clamping happens downstream in agent.reasoning_effort.
-_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool", "max_tokens")
 

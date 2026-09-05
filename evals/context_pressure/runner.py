@@ -105,13 +105,13 @@ def run_one(
             target_config.write_bytes(config.read_bytes())
 
         values = {
-            "python": sys.executable,
-            "prompt": task.prompt,
-            "workspace": str(workspace),
-            "hermes_home": str(hermes_home),
-            "usage_file": str(usage_file),
-            "model": model or "",
-            "provider": provider or "",
+            "python": shlex.quote(sys.executable),
+            "prompt": shlex.quote(task.prompt),
+            "workspace": shlex.quote(str(workspace)),
+            "hermes_home": shlex.quote(str(hermes_home)),
+            "usage_file": shlex.quote(str(usage_file)),
+            "model": shlex.quote(model) if model else "",
+            "provider": shlex.quote(provider) if provider else "",
             "model_flags": " ".join(
                 part
                 for part in (

@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+import shlex
 
 from evals.context_pressure.runner import run_one
+from evals.context_pressure.runner import _format_command
 from evals.context_pressure.tasks import (
     EVIDENCE_COUNT,
     create_distributed_evidence_workspace,
@@ -90,3 +92,15 @@ def test_runner_preserves_timeout_classification(tmp_path: Path) -> None:
     assert result["return_code"] == 124
     assert result["validated"] is False
     assert Path(result["result_file"]).is_file()
+
+
+def test_runner_quotes_multiword_command_values() -> None:
+    command = _format_command(
+        "{python} -c {prompt}",
+        {
+            "python": shlex.quote("/usr/bin/python3"),
+            "prompt": shlex.quote("a multi-word prompt"),
+        },
+    )
+
+    assert command == ["/usr/bin/python3", "-c", "a multi-word prompt"]

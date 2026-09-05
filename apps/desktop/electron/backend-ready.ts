@@ -137,6 +137,19 @@ function waitForDashboardPort(
     // listener attaches, so no chunk can fall between snapshot and listener.
     // Scanned with the merged-tail regex, not the line-anchored one: the tail
     // interleaves both streams and can splice a partial line onto the sentinel.
+    //
+    // REACHABILITY — do not mistake this for a hot path. Both callers in
+    // main.ts (spawnPoolBackend, startHermes) build this wait in the SAME
+    // synchronous block as `outputTail.attach(child)`, with no `await`
+    // between them, and stream 'data' is delivered asynchronously. So under
+    // the current ordering `bufferedOutput()` is always empty here and this
+    // block recovers nothing — it is a dormant safety net, not a live fix.
+    //
+    // It stops being dormant the moment ANY await is reintroduced between
+    // attach and this call. That was the real ordering before #100442, and it
+    // is one refactor away from returning: the surrounding region is claim /
+    // boot-progress / token-handoff code that repeatedly grows awaits. Keep
+    // the net correct while it is cheap, and keep the tests that pin it.
     if (!done) {
       const alreadyBuffered = bufferedOutput()
       const m = alreadyBuffered ? alreadyBuffered.match(_READY_IN_MERGED_TAIL_RE) : null

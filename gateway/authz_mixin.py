@@ -679,7 +679,11 @@ class GatewayAuthorizationMixin:
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and _auth_env(platform_allow_all_var).lower() in {"true", "1", "yes"}:
-            return True
+            # Druzhok patch: only bypass auth for non-DM chats. DMs still
+            # require pairing/allowlist so strangers can't talk to the bot.
+            if source.chat_type != "dm":
+                return True
+            # DMs fall through to pairing/allowlist checks below.
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
         # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.

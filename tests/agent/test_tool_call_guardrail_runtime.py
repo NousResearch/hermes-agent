@@ -359,7 +359,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     with (
         patch(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
-            return_value=("plugin policy", None),
+            return_value=("plugin policy", None, None),
         ),
         patch("model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc,
     ):
@@ -419,6 +419,28 @@ def test_read_only_tool_may_quote_current_context_prune_marker():
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     dispatch.assert_called_once()
+def test_serve_directive_skips_dispatch_and_emits_cached():
+    """A pre_tool_call serve directive returns the cached result without executing
+    the tool, and the post_tool_call observation carries status='cached'."""
+    from model_tools import handle_function_call
+    emitted = []
+    with (
+        patch(
+            "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
+            return_value=(None, None, '{"cached": true}'),
+        ),
+        patch("model_tools.registry.dispatch") as dispatch,
+        patch(
+            "model_tools._emit_post_tool_call_hook",
+            side_effect=lambda **kwargs: emitted.append(kwargs),
+        ),
+    ):
+        result = handle_function_call("read_file", {"path": "/x"})
+
+    assert result == '{"cached": true}'
+    dispatch.assert_not_called()
+    assert emitted[0]["status"] == "cached"
+    assert emitted[0]["error_type"] is None
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

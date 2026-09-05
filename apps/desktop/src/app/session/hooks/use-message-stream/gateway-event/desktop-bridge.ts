@@ -8,6 +8,8 @@ import { $gateway } from '@/store/gateway'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
+import { ambientRequestFor } from '@/store/session-gone-latch'
+import { requestForOwnedSession } from '@/store/session-states'
 import { $tipsEnabled, type ActiveTip, showTip } from '@/store/tips'
 import { $toursEnabled } from '@/store/tours'
 
@@ -41,6 +43,31 @@ const loadPreviewEngine = () => {
     .then(mod => mod.actOnActivePreview as Awaited<ReturnType<typeof stable>>['actOnActivePreview'])
 }
 
+/** Answer a blocking Desktop tool on the socket that owns its session.
+ *
+ * Bot Mode and all-profiles views receive events from background profile
+ * sockets while `$gateway` still names the ambient foreground socket. Sending
+ * a `*.respond` there leaves the requesting backend blocked until timeout.
+ * Event fan-in records the exact owner before dispatch, so use the same
+ * session-owned request seam as clarify/approval responses. */
+function respondToDesktopBridgeRequest(
+  ctx: GatewayEventContext,
+  method: string,
+  requestId: string,
+  result: unknown
+): void {
+  const gateway = $gateway.get()
+
+  if (!gateway || !ctx.sessionId) {
+    return
+  }
+
+  void requestForOwnedSession(ctx.sessionId, ambientRequestFor(gateway), method, {
+    request_id: requestId,
+    text: result ? JSON.stringify(result) : ''
+  }).catch(() => undefined)
+}
+
 /** Desktop-surface bridge events: read-back requests the agent blocks on
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
@@ -57,10 +84,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
       const result = readActiveTerminal({ start, count })
 
-      void $gateway.get()?.request('terminal.read.respond', {
-        request_id: requestId,
-        text: result ? JSON.stringify(result) : ''
-      })
+      respondToDesktopBridgeRequest(ctx, 'terminal.read.respond', requestId, result)
     }
 
     return true
@@ -76,10 +100,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
       const count = typeof payload?.count === 'number' ? payload.count : undefined
 
       void readActivePreview({ count, start }).then(result => {
-        void $gateway.get()?.request('preview.read.respond', {
-          request_id: requestId,
-          text: result ? JSON.stringify(result) : ''
-        })
+        respondToDesktopBridgeRequest(ctx, 'preview.read.respond', requestId, result)
       })
     }
 
@@ -95,11 +116,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
-      const answer = (result: unknown) =>
-        $gateway.get()?.request('preview.act.respond', {
-          request_id: requestId,
-          text: result ? JSON.stringify(result) : ''
-        })
+      const answer = (result: unknown) => respondToDesktopBridgeRequest(ctx, 'preview.act.respond', requestId, result)
 
       if (isActiveEvent) {
         void loadPreviewEngine()
@@ -139,11 +156,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     if (requestId) {
       const read = window.hermesDesktop?.readWindowBelow
 
-      const answer = (result: unknown) =>
-        $gateway.get()?.request('window.read.respond', {
-          request_id: requestId,
-          text: result ? JSON.stringify(result) : ''
-        })
+      const answer = (result: unknown) => respondToDesktopBridgeRequest(ctx, 'window.read.respond', requestId, result)
 
       // .catch: ipcRenderer.invoke rejects on an older shell without the
       // handler or a main-side throw — without an empty answer the tool
@@ -179,11 +192,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
-      const answer = (result: unknown) =>
-        $gateway.get()?.request('tour.respond', {
-          request_id: requestId,
-          text: result ? JSON.stringify(result) : ''
-        })
+      const answer = (result: unknown) => respondToDesktopBridgeRequest(ctx, 'tour.respond', requestId, result)
 
       if (!$toursEnabled.get()) {
         // Refused in words, not silently dropped: the agent asked for a

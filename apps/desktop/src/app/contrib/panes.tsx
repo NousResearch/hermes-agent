@@ -25,7 +25,7 @@ import { getLogs } from '@/hermes'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { openPreview } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 // ---------------------------------------------------------------------------
 // Logs — live agent-log tail. ⌘K-only chrome: the pane contribution exists
@@ -71,7 +71,7 @@ export const $restartPreviewServer = atom<((url: string, context?: string) => Pr
 
 /** Open a file from the tree in the real preview pipeline. */
 function previewFile(path: string) {
-  void normalizeOrLocalPreviewTarget(path, $currentCwd.get() || undefined)
+  void normalizeOrLocalPreviewTarget(path, $focusedWorkspaceCwd.get() || undefined)
     .then(target => {
       if (target) {
         openPreview(target, 'file-browser')
@@ -98,7 +98,7 @@ export function FilesPane() {
 // ---------------------------------------------------------------------------
 
 export function ReviewPaneContent() {
-  const cwd = useStore($currentCwd)
+  const cwd = useStore($focusedWorkspaceCwd)
 
   // Keyed by cwd like DesktopController so switching projects rebuilds the
   // diff state instead of showing the previous repo's files.

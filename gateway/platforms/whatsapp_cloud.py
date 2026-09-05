@@ -89,7 +89,7 @@ _MESSAGE_TYPE_BY_KIND = {
     "text": MessageType.TEXT, "image": MessageType.PHOTO, "video": MessageType.VIDEO,
     "audio": MessageType.VOICE, "voice": MessageType.VOICE, "document": MessageType.DOCUMENT,
     "sticker": MessageType.PHOTO, "button": MessageType.TEXT, "interactive": MessageType.TEXT,
-    "location": MessageType.TEXT, "contacts": MessageType.TEXT,
+    "location": MessageType.TEXT, "contacts": MessageType.TEXT, "reaction": MessageType.TEXT,
 }
 _HTTP_PREFIXES = ("http://", "https://")
 
@@ -100,11 +100,34 @@ def _interactive_inner(raw_message: Dict[str, Any]) -> Dict[str, Any]:
     return inter.get("button_reply") or inter.get("list_reply") or {}
 
 
+def _location_body(raw_message: Dict[str, Any]) -> str:
+    """Cloud location payload → bracketed text, mirroring the Baileys bridge's formatLocationText."""
+    loc = raw_message.get("location") or {}
+    name = str(loc.get("name") or loc.get("address") or "").strip()
+    lat, lng = loc.get("latitude"), loc.get("longitude")
+    coords = f"{lat},{lng}" if lat is not None and lng is not None else ""
+    parts = " ".join(part for part in (name, coords) if part)
+    return f"[Location: {parts}]" if parts else ""
+
+
+def _reaction_body(raw_message: Dict[str, Any]) -> str:
+    """Cloud reaction payload → bracketed text, mirroring the Baileys bridge's formatReactionText."""
+    reaction = raw_message.get("reaction") or {}
+    emoji = str(reaction.get("emoji") or "").strip()
+    target = str(reaction.get("message_id") or "").strip()
+    out = f"[Reaction: {emoji}"
+    if target:
+        out += f" to {target}"
+    return out + "]" if emoji else ""
+
+
 # Inbound message type → body text extractor; media kinds use the caption.
 _BODY_BY_KIND = {
     "text": lambda m: (m.get("text") or {}).get("body"),
     "button": lambda m: (m.get("button") or {}).get("text"),
     "interactive": lambda m: _interactive_inner(m).get("title"),
+    "location": _location_body,
+    "reaction": _reaction_body,
     **{kind: (lambda m, k=kind: (m.get(k) or {}).get("caption")) for kind in _INBOUND_MEDIA_KINDS},
 }
 

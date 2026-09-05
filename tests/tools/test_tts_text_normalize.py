@@ -81,3 +81,13 @@ def test_prepare_spoken_text_closes_colon_on_single_line():
     assert prepare_spoken_text("Here is the list:") == "Here is the list."
     # ...but a digit-preceded colon is a ratio and must stay intact.
     assert prepare_spoken_text("Final score 3:2") == "Final score 3:2"
+
+
+def test_prepare_spoken_text_strips_reasoning_display_blocks():
+    # Gateway reasoning display blocks (show_reasoning) are display-only — never speech.
+    # subtext style (Discord default)
+    assert prepare_spoken_text("-# 💭 Reasoning\n-# think about it\n\nAnswer.") == "Answer."
+    # blockquote style
+    assert prepare_spoken_text("> 💭 **Reasoning:**\n> think\n\nAnswer.") == "Answer."
+    # code-fence style
+    assert prepare_spoken_text("💭 **Reasoning:**\n```\nthink\n```\n\nAnswer.") == "Answer."

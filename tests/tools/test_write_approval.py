@@ -252,6 +252,68 @@ def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
     assert wa.pending_count("memory") == 0  # denied, not staged
 
 
+def test_single_query_probe_import_failure_preserves_interactive_callback(
+    approval_callback_cleanup, monkeypatch
+):
+    """A broken headless-context probe must not disable a live CLI callback."""
+    import sys
+
+    from tools import write_approval as wa
+    from tools.terminal_tool import set_approval_callback
+
+    set_approval_callback(lambda *args, **kwargs: "once")
+    monkeypatch.setitem(sys.modules, "tools.approval", None)
+
+    assert wa._interactive_approval_available() is True
+
+
+def test_single_query_probe_exception_fails_safe_to_staging(
+    approval_callback_cleanup, monkeypatch
+):
+    """A broken headless-context probe must not fall through to prompting."""
+    from tools import approval
+    from tools import write_approval as wa
+    from tools.terminal_tool import set_approval_callback
+
+    set_approval_callback(lambda *args, **kwargs: "once")
+    monkeypatch.setattr(
+        approval,
+        "_is_single_query_approval_context",
+        lambda: (_ for _ in ()).throw(RuntimeError("probe failed")),
+    )
+
+    assert wa._interactive_approval_available() is False
+
+
+def test_single_query_memory_stages_without_inline_prompt(
+    hermes_home, approval_callback_cleanup, monkeypatch
+):
+    """Headless ``hermes chat -q`` runs have no human to answer a callback."""
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.terminal_tool import set_approval_callback
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+
+    calls = []
+
+    def approve_if_prompted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "once"
+
+    set_approval_callback(approve_if_prompted)
+    store = MemoryStore(); store.load_from_disk()
+
+    r = json.loads(memory_tool("add", "memory", "headless fact", store=store))
+
+    assert calls == []
+    assert r["success"] is True
+    assert r["staged"] is True
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 1
+
+
 def test_memory_invalid_params_rejected_before_staging(hermes_home):
     # Param validation must run BEFORE the gate so a broken write is rejected
     # immediately instead of staged and failing at approve time.

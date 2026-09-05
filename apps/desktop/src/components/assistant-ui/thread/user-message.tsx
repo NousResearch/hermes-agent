@@ -7,6 +7,7 @@ import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
 import { useMessageReactions } from '@/components/assistant-ui/thread/use-message-reactions'
+import { scrollToPrompt } from '@/components/assistant-ui/thread/timeline'
 import { UserMessageText } from '@/components/assistant-ui/thread/user-message-text'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -407,7 +408,7 @@ export const UserMessage: FC<{
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'cursor-pointer pl-9 pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
     'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
@@ -526,6 +527,28 @@ export const UserMessage: FC<{
                       {bubbleContent}
                     </button>
                   </ActionBarPrimitive.Edit>
+                )}
+                {hasBody && (
+                  <div className="pointer-events-none absolute left-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
+                    <button
+                      aria-label={copy.jumpToPrompt}
+                      className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        triggerHaptic('selection')
+                        scrollToPrompt(event.currentTarget, messageId)
+                      }}
+                      onPointerDown={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                      }}
+                      title={copy.jumpToPrompt}
+                      type="button"
+                    >
+                      <Codicon name="arrow-up" size="0.875rem" />
+                    </button>
+                  </div>
                 )}
                 {(showStop || showRestore) && (
                   <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">

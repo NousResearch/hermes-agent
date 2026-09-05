@@ -19,6 +19,8 @@ import {
   appendMediaFailureNote,
   extractBridgeEvent,
   inboundReadReceiptKeys,
+  isBotInteractionMessage,
+  isCanonicalSelfChat,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
@@ -43,6 +45,43 @@ import {
   assert.equal(receiptKeys[0], groupKey);
   assert.equal(receiptKeys[0].participant, groupKey.participant);
   console.log('  ✓ inbound read receipts preserve the original group message key');
+}
+
+// -- self-chat bot isolation ---------------------------------------------
+{
+  assert.equal(isBotInteractionMessage({
+    key: { remoteJid: '15551234567@s.whatsapp.net', fromMe: true },
+    message: { conversation: 'ordinary self-chat message' },
+  }), false);
+  assert.equal(isBotInteractionMessage({
+    key: { remoteJid: '15551234567@s.whatsapp.net', fromMe: true },
+    message: { botInvokeMessage: { message: { conversation: 'ask Meta AI' } } },
+  }), true);
+  assert.equal(isBotInteractionMessage({
+    key: { remoteJid: '15551234567@s.whatsapp.net', fromMe: true },
+    botTargetId: '13135550002@bot',
+    message: { conversation: 'ask a bot' },
+  }), true);
+  assert.equal(isBotInteractionMessage({
+    key: { remoteJid: '13135550002@bot', fromMe: true },
+    message: { conversation: 'direct bot chat' },
+  }), true);
+  console.log('  ✓ self-chat bot interactions are isolated from Hermes');
+}
+
+{
+  const account = {
+    accountId: '1555010:12@s.whatsapp.net',
+    accountLid: '155501234567890:12@lid',
+  };
+  assert.equal(isCanonicalSelfChat({ chatId: '155501234567890@lid', ...account }), true);
+  assert.equal(isCanonicalSelfChat({ chatId: '1555010@s.whatsapp.net', ...account }), false);
+  assert.equal(isCanonicalSelfChat({
+    chatId: '1555010@s.whatsapp.net',
+    accountId: account.accountId,
+    accountLid: '',
+  }), true);
+  console.log('  ✓ LID self-chat identity takes precedence over legacy PN mirrors');
 }
 
 // -- quoted outbound text -------------------------------------------------

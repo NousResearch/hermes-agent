@@ -43,6 +43,8 @@ import {
   extractBridgeEvent,
   inboundReadReceiptKeys,
   inferMediaType,
+  isBotInteractionMessage,
+  isCanonicalSelfChat,
   mediaPayloadForFile,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
@@ -555,6 +557,16 @@ async function startSocket() {
         messageKeys: Object.keys(msg.message || {}),
       });
 
+      if (WHATSAPP_MODE === 'self-chat' && isBotInteractionMessage(msg)) {
+        emitDebugEvent({
+          stage: 'ignored',
+          reason: 'self_chat_bot_interaction',
+          chatId: redactWhatsAppId(chatId),
+          senderId: redactWhatsAppId(senderId),
+        });
+        continue;
+      }
+
       // Handle fromMe messages based on mode
       let fromOwner = false;
       if (msg.key.fromMe) {
@@ -606,10 +618,11 @@ async function startSocket() {
           // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
           // AND classic format: 34652029134@s.whatsapp.net
           // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-          const chatNumber = chatId.replace(/@.*/, '');
-          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          const isSelfChat = isCanonicalSelfChat({
+            chatId,
+            accountId: sock.user?.id,
+            accountLid: sock.user?.lid,
+          });
           emitDebugEvent({
             stage: 'self_chat_check',
             matched: !!isSelfChat,

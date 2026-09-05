@@ -369,9 +369,33 @@ class BaseEnvironment(ABC):
         # backends) into every terminal-tool response.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Select functions to keep by NAME, then dump only those.
+        #
+        # The previous form -- ``declare -f | grep -vE '^_[^_]'`` -- filtered
+        # the dump LINE BY LINE.  That drops the ``_foo () `` header line of
+        # every single-underscore-prefixed function while KEEPING its body,
+        # leaving an orphaned top-level ``{ ... }`` group command in the
+        # snapshot.  Group commands EXECUTE on ``source``, so any such body
+        # containing a loop or a blocking call hangs every terminal command
+        # until the tool timeout (exit 124) -- with the failure invisible
+        # because the source is ``>/dev/null 2>&1``.  Real-world trigger:
+        # shells that define ``_``-prefixed helpers (completion handlers,
+        # chpwd/PROMPT_COMMAND hooks) in the user's rc files.
+        #
+        # ``declare -F`` lists names only, so filtering there keeps each
+        # function definition intact (header + body) or omits it entirely.
+        # The snapshot is a verbatim ``export -p`` dump, so it contains every
+        # exported secret in the user's shell (API tokens, PATs, and anything
+        # else sourced from their rc files).  Default umask would create it
+        # 0644.  Force 0600 so the dump is readable only by the owning user --
+        # the redirect in ``_wrap_command`` then preserves that mode, since
+        # ``>`` truncates in place rather than recreating.
         bootstrap = (
+            "umask 077\n"
             f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
+            f"__hermes_fns=$(declare -F | awk '{{print $3}}' | grep -vE '^_[^_]' | tr '\\n' ' ')\n"
+            f"[ -n \"$__hermes_fns\" ] && declare -f $__hermes_fns >> {_quoted_snap} 2>/dev/null\n"
+            f"unset __hermes_fns\n"
             f"alias -p >> {_quoted_snap}\n"
             f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
             f"echo 'set +e' >> {_quoted_snap}\n"

@@ -15,6 +15,103 @@ import { textBeforeCaret } from './text-utils'
 const URL_RE = /https?:\/\/[^\s<>[\]{}"'`]+/gi
 const TYPED_URL_RE = /(?:^|\s)(https?:\/\/[^\s<>[\]{}"'`]+)$/i
 
+interface TextRange {
+  end: number
+  start: number
+}
+
+const containsIndex = (ranges: TextRange[], index: number) =>
+  ranges.some(range => index >= range.start && index < range.end)
+
+function isEscaped(text: string, index: number) {
+  let backslashes = 0
+
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) {
+    backslashes += 1
+  }
+
+  return backslashes % 2 === 1
+}
+
+/** Markdown fenced code blocks, including an unfinished block while composing. */
+function fencedCodeRanges(text: string) {
+  const ranges: TextRange[] = []
+  let opening: { marker: string; start: number } | undefined
+
+  for (const match of text.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)/gm)) {
+    const marker = match[1]
+    const tail = match[2]
+
+    if (!opening) {
+      // Backticks in an opening backtick fence's info string are invalid
+      // Markdown, so do not turn the rest of the draft into protected code.
+      if (marker[0] === '`' && tail.includes('`')) {
+        continue
+      }
+
+      opening = { marker, start: match.index ?? 0 }
+
+      continue
+    }
+
+    const closesFence = marker[0] === opening.marker[0] && marker.length >= opening.marker.length && tail.trim() === ''
+
+    if (closesFence) {
+      ranges.push({ end: (match.index ?? 0) + match[0].length, start: opening.start })
+      opening = undefined
+    }
+  }
+
+  if (opening) {
+    ranges.push({ end: text.length, start: opening.start })
+  }
+
+  return ranges
+}
+
+/** Markdown inline code spans outside fences, including an unfinished span. */
+function inlineCodeRanges(text: string, fenced: TextRange[]) {
+  const ranges: TextRange[] = []
+
+  const markers = Array.from(text.matchAll(/`+/g)).filter(marker => {
+    const index = marker.index ?? 0
+
+    return !containsIndex(fenced, index) && !isEscaped(text, index)
+  })
+
+  let markerIndex = 0
+
+  while (markerIndex < markers.length) {
+    const opening = markers[markerIndex]
+
+    const closingIndex = markers.findIndex(
+      (candidate, index) => index > markerIndex && candidate[0].length === opening[0].length
+    )
+
+    if (closingIndex === -1) {
+      ranges.push({ end: text.length, start: opening.index ?? 0 })
+
+      break
+    }
+
+    const closing = markers[closingIndex]
+
+    ranges.push({
+      end: (closing.index ?? 0) + closing[0].length,
+      start: opening.index ?? 0
+    })
+    markerIndex = closingIndex + 1
+  }
+
+  return ranges
+}
+
+function markdownCodeRanges(text: string) {
+  const fenced = fencedCodeRanges(text)
+
+  return [...fenced, ...inlineCodeRanges(text, fenced)]
+}
+
 /** A URL at the end of a sentence carries the punctuation that ended it. */
 function splitUrlTail(raw: string) {
   let url = raw.replace(/[,.;:!?]+$/, '')
@@ -35,11 +132,13 @@ const hasHost = (url: string) => /^https?:\/\/[^/\s]/i.test(url)
 export function linkifyUrls(text: string) {
   REF_RE.lastIndex = 0
 
-  const fenced = Array.from(text.matchAll(REF_RE)).map(match => {
+  const protectedRanges = Array.from(text.matchAll(REF_RE)).map(match => {
     const start = match.index ?? 0
 
     return { end: start + match[0].length, start }
   })
+
+  protectedRanges.push(...markdownCodeRanges(text))
 
   let out = ''
   let cursor = 0
@@ -48,7 +147,7 @@ export function linkifyUrls(text: string) {
     const start = match.index ?? 0
     const { url } = splitUrlTail(match[0])
 
-    if (!hasHost(url) || fenced.some(span => start >= span.start && start < span.end)) {
+    if (!hasHost(url) || containsIndex(protectedRanges, start)) {
       continue
     }
 
@@ -76,10 +175,21 @@ export function chipTypedUrlOnSpace(event: KeyboardEvent<HTMLDivElement>) {
   }
 
   const before = textBeforeCaret(editor)
-  const match = before ? TYPED_URL_RE.exec(before) : null
+
+  if (!before) {
+    return false
+  }
+
+  const match = TYPED_URL_RE.exec(before)
   const token = match?.[1]
 
   if (!token) {
+    return false
+  }
+
+  const tokenStart = before.length - token.length
+
+  if (containsIndex(markdownCodeRanges(before), tokenStart)) {
     return false
   }
 

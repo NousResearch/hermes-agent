@@ -325,3 +325,33 @@ class TestManualRunReportsDeliveryFailure:
             res = _execute_job_now(dict(_JOB))
         assert res["success"] is True
         assert res["error"] is None
+
+
+class TestCronjobRunQueuesContinuableForGateway:
+    def test_run_queues_continuable_job_for_live_gateway(self):
+        """action='run' on a continuable job with a foreign live gateway must
+        queue it for the gateway tick instead of executing inline without
+        platform adapters."""
+        job = {
+            "id": "job-gw-1", "name": "gw job", "prompt": "hi",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+            "attach_to_session": True,
+            "origin": {"platform": "discord", "chat_id": "123"},
+            "deliver": "origin",
+        }
+        queued = {**job, "next_run_at": "2030-01-01T00:00:00"}
+        refreshed = {**queued, "last_status": "ok"}
+        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(job)), \
+             patch("gateway.status.get_running_pid", return_value=999999), \
+             patch("tools.cronjob_tools.trigger_job",
+                   return_value=dict(queued)) as m_trigger, \
+             patch("tools.cronjob_tools.get_job", return_value=dict(refreshed)), \
+             patch("tools.cronjob_tools._execute_job_now") as m_exec:
+            out = json.loads(cronjob(action="run", job_id="job-gw-1"))
+
+        assert out["success"] is True
+        assert out["job"]["executed"] is False
+        assert out["job"]["scheduled_for_gateway"] is True
+        assert out["job"]["execution_mode"] == "gateway_tick"
+        m_trigger.assert_called_once_with("job-gw-1", extra_prompt=None)
+        m_exec.assert_not_called()

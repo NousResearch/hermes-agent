@@ -1190,3 +1190,29 @@ async def test_create_cron_job_without_profile_defaults_when_unscoped(
 
     assert job["profile"] == "default"
     assert (isolated_profiles["default"] / "cron" / "jobs.json").exists()
+
+
+def test_trigger_queues_continuable_job_for_gateway(monkeypatch):
+    """Dashboard trigger on a continuable job owned by a live gateway queues it
+    for the gateway tick instead of firing in-process without adapters."""
+    job = {
+        "id": "dash-gw-1", "attach_to_session": True, "deliver": "discord",
+        "origin": {"platform": "discord", "chat_id": "7"},
+    }
+    monkeypatch.setattr(_rt_cron, "_job_profile", lambda job_id, profile: "default")
+    monkeypatch.setattr(
+        _web_server_cron, "_call_cron_for_profile", lambda *a, **k: dict(job))
+    monkeypatch.setattr(
+        _rt_cron, "_dashboard_cron_owned_by_gateway", lambda profile: True)
+    monkeypatch.setattr(
+        _rt_cron, "_mutate_cron_for_profile", lambda *a, **k: {"id": "dash-gw-1"})
+    fired = []
+    monkeypatch.setattr(
+        _web_server_cron, "_fire_cron_job_for_profile",
+        lambda *a, **k: fired.append(1) or True)
+
+    out = _rt_cron._trigger_cron_job_sync("dash-gw-1", None)
+
+    assert out["scheduled_for_gateway"] is True
+    assert out["execution_mode"] == "gateway_tick"
+    assert fired == []

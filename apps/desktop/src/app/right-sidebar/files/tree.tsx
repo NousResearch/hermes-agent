@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { useMemo } from 'react'
-import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type TreeApi } from 'react-arborist'
+import { type NodeRendererProps, type RowRendererProps, Tree, type TreeApi } from 'react-arborist'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
@@ -146,42 +146,45 @@ export function ProjectTree({
     [revealNode]
   )
 
-  const handleActivate = useCallback(
-    (node: NodeApi<TreeNode>) => {
-      // arborist fires onActivate on click/dblclick/Enter — independent of the
-      // row's own handlers. Suppress it for the row being renamed so the
-      // context-menu "Rename" (and its fall-through) can't open the preview.
-      if (node.data && !node.data.isDirectory && $renamingPath.get() !== node.data.id) {
-        onPreviewFile?.(node.data.id)
+  // Keep keyboard activation explicit now that mouse preview is double-click
+  // only. Capture-phase also lets F2 / Enter beat arborist's own handlers.
+  const handleTreeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.key === ' ' && !$renamingPath.get()) {
+        const node = treeRef.current?.focusedNode
+
+        if (node?.data && !node.data.isDirectory && !node.data.placeholder) {
+          event.preventDefault()
+          event.stopPropagation()
+          node.select()
+          onPreviewFile?.(node.data.id)
+        }
+
+        return
       }
+
+      if (!isRenameShortcut(event) || $renamingPath.get()) {
+        return
+      }
+
+      const node = treeRef.current?.selectedNodes?.[0]
+
+      if (!node?.data || node.data.placeholder) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      beginInlineRename(node.data.id)
     },
     [onPreviewFile]
   )
-
-  // F2 / Enter on the selected row begins an inline rename. Capture-phase so it
-  // beats arborist's own Enter-to-activate; skipped while an edit is in progress
-  // (the editor input owns Enter/Esc then) and for placeholder rows.
-  const handleRenameShortcut = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!isRenameShortcut(event) || $renamingPath.get()) {
-      return
-    }
-
-    const node = treeRef.current?.selectedNodes?.[0]
-
-    if (!node?.data || node.data.placeholder) {
-      return
-    }
-
-    event.preventDefault()
-    event.stopPropagation()
-    beginInlineRename(node.data.id)
-  }, [])
 
   return (
     <div
       className="min-h-0 flex-1 overflow-hidden"
       data-project-tree=""
-      onKeyDownCapture={handleRenameShortcut}
+      onKeyDownCapture={handleTreeKeyDown}
       ref={containerRef}
     >
       {size.height > 0 && size.width > 0 ? (
@@ -196,7 +199,6 @@ export function ProjectTree({
           indent={INDENT}
           initialOpenState={openState}
           key={`${cwd}:${collapseNonce}`}
-          onActivate={handleActivate}
           onToggle={handleToggle}
           openByDefault={false}
           padding={0}

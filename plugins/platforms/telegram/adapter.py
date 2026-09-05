@@ -4966,8 +4966,16 @@ class TelegramAdapter(BasePlatformAdapter):
         ch = m.group(0)
         if s > 0 and seg[s - 1] == '\\':  # already escaped
             return ch
-        if ch == '(' and s > 0 and seg[s - 1] == ']':  # opens a link [text](url)
-            return ch
+        if ch == '(' and s > 0 and seg[s - 1] == ']':  # opens a link [text](url)?
+            # Only keep the '(' unescaped when the link is actually closed on
+            # the same line. A link truncated by chunk splitting has no closing
+            # ')' and its bare '(' makes Telegram reject the whole chunk
+            # ("character '(' is reserved"), forcing the plain-text fallback
+            # and losing all bold formatting.
+            rest = seg[s + 1:]
+            close = rest.find(')')
+            if close != -1 and '\n' not in rest[:close]:
+                return ch
         if ch == ')':  # closes a link URL? walk back matching depth
             before = seg[:s]
             if '](http' in before or '](' in before:

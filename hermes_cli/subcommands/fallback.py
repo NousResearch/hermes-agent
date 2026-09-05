@@ -18,7 +18,15 @@ def build_fallback_parser(subparsers) -> None:
         "list", aliases=["ls"], help="Show the current fallback chain (default when no subcommand)")
     fallback_subparsers.add_parser(
         "add",
-        help="Pick a provider + model (same picker as `hermes model`) and append to the chain")
+        help=("Append a fallback. Without args, opens the provider/model picker. "
+              "Or pass a spec directly: <provider>/<model> (e.g. openrouter/google/gemini-3.7-flash), "
+              "optionally with @base_url."),
+    ).add_argument(
+        "spec",
+        nargs="?",
+        help=("Non-interactive fallback spec as <provider>/<model>, e.g. "
+              "openrouter/google/gemini-3.7-flash. Optional @base_url suffix for custom endpoints."),
+    )
     fallback_subparsers.add_parser(
         "remove", aliases=["rm"], help="Pick an entry to delete from the chain")
     fallback_subparsers.add_parser("clear", help="Remove all fallback entries")

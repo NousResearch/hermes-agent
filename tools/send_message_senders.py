@@ -257,7 +257,15 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
+        _text_chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else []
+        if send_parse_mode and "MARKDOWN" in str(send_parse_mode):
+            # truncate_message appends a chunk indicator "(N/M)" at the end of
+            # every chunk, unescaped. Its bare '(' makes Telegram reject the
+            # chunk ("character '(' is reserved"), forcing the plain-text
+            # fallback and losing all bold formatting. Escape the indicator so
+            # the rest of the chunk renders normally.
+            _text_chunks = [re.sub(r"\((\d+/\d+)\)$", r"\\(\1\\)", c) for c in _text_chunks]
+        for chunk in _text_chunks:
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):

@@ -121,22 +121,44 @@ def test_corrupt_schema_probe_releases_tracked_connection(tmp_path: Path) -> Non
     assert header is not None and header.startswith(b"SQLite format 3")
 
 
-def test_repair_still_works_through_durable_connection(tmp_path: Path) -> None:
-    """Routing every strategy through the helper must not break the path.
+def test_repair_still_works_through_durable_connection(tmp_path: Path, monkeypatch) -> None:
+    """Exercise source, scratch, strategy and promotion handles, not their source shape."""
+    from contextlib import closing
 
-    The helper is entered once per strategy, so a plumbing fault (recursion,
-    a leaked connection, a refused pragma) surfaces as an exception rather
-    than a report. Whether this fixture's minimal schema is *repairable* is
-    beside the point — the assertion is that the path runs to completion.
-    """
-    db = _make_db(tmp_path)
-    report = repair_state_db_schema(db, backup=False)
-    assert isinstance(report, dict)
-    assert set(report) >= {"repaired", "strategy", "backup_path"}
-    # The file must still open afterwards — repair may fail, but it must not
-    # leave the database less usable than it found it.
-    conn = sqlite3.connect(str(db))
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
-    finally:
-        conn.close()
+    from hermes_cli.sqlite_safe_read import has_live_connection
+    from hermes_state import SessionDB
+
+    path = tmp_path / "state.db"
+    with SessionDB(db_path=path) as db:
+        db.create_session("repair", source="cli")
+        db.append_message("repair", role="user", content="durable pizza")
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("UPDATE messages_fts_data SET block=X'BADC0FFEE0DDF00D'")
+        conn.commit()
+
+    connect = sqlite3.connect
+    observations = []
+
+    def observed_connect(database, *args, **kwargs):
+        conn = connect(database, *args, **kwargs)
+        db_path = Path(database)
+
+        def trace(sql):
+            # Connection setup pragmas precede registration; inspect actual
+            # diagnostic and repair work, including scratch-file strategies.
+            if sql.lstrip().upper().startswith(("SELECT", "INSERT", "UPDATE", "DELETE", "REINDEX", "VACUUM")):
+                observations.append((db_path, has_live_connection(db_path)))
+
+        conn.set_trace_callback(trace)
+        return conn
+
+    with monkeypatch.context() as m:
+        m.setattr(sqlite3, "connect", observed_connect)
+        report = repair_state_db_schema(path)
+    assert report["repaired"], report
+    assert observations
+    assert all(tracked for _, tracked in observations), observations
+    assert any(p != path for p, _ in observations), "exercise scratch repair too"
+    assert all(not has_live_connection(p) for p, _ in observations)
+    with SessionDB(db_path=path) as db:
+        assert db.search_messages("pizza")

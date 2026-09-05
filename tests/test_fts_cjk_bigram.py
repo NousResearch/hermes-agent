@@ -66,6 +66,35 @@ def test_two_char_korean_hits_cjk_index(db):
     assert rows
 
 
+@pytest.mark.parametrize("condition", ["healthy", "missing-tokenizer", "missing-tokenizer-with-corruption", "corrupt"])
+def test_cjk_health_probe_distinguishes_capability_from_corruption(db, tmp_path, monkeypatch, condition):
+    from hermes_state_repair import _db_opens_cleanly
+
+    path = db.db_path
+    if condition == "missing-tokenizer-with-corruption":
+        db._conn.execute("CREATE TABLE health_sentinel(value INTEGER CHECK(value > 0))")
+        db._conn.execute("PRAGMA ignore_check_constraints=ON")
+        db._conn.execute("INSERT INTO health_sentinel VALUES(-1)")
+        db._conn.commit()
+    if condition == "corrupt":
+        db._conn.execute("UPDATE messages_fts_cjk_data SET block=X'BADC0FFEE0DDF00D'")
+        db._conn.commit()
+        with pytest.raises(sqlite3.DatabaseError):
+            db._conn.execute("SELECT rowid FROM messages_fts_cjk WHERE messages_fts_cjk MATCH '\"\"'").fetchall()
+    db.close()
+    if condition.startswith("missing-tokenizer"):
+        monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(tmp_path / "absent.so"))
+    reason = _db_opens_cleanly(path)
+    if condition == "corrupt":
+        assert reason is not None
+        assert "messages_fts_cjk" in reason
+    elif condition == "missing-tokenizer-with-corruption":
+        assert reason is not None
+        assert "health_sentinel" in reason
+    else:
+        assert reason is None, reason
+
+
 def test_mixed_and_ascii_queries(db):
     assert db.search_messages("graphiti", limit=10)
     assert db.search_messages('"shared default" AND 웅기', limit=10)

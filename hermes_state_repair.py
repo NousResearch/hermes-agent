@@ -691,7 +691,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
 
     Runs the first statement that trips the malformed-schema parse (``PRAGMA journal_mode``),
-    ``integrity_check``, a ``sessions`` read, FTS5 integrity checks and a rolled-back ``messages`` write — so FTS5
+    ``integrity_check``, a ``sessions`` read, FTS5 MATCH probes and a rolled-back ``messages`` write — so FTS5
     index corruption (reads and ``integrity_check`` pass, every ``INSERT INTO messages`` fails through the FTS
     triggers) is reported as unhealthy.
 
@@ -709,27 +709,41 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             # tokenizer absence must never classify as corruption.
             load_fts5_cjk_extension(conn)
             conn.execute("PRAGMA journal_mode").fetchone()
-            rows = conn.execute("PRAGMA integrity_check").fetchall()
+            try:
+                rows = conn.execute("PRAGMA integrity_check").fetchall()
+            except sqlite3.OperationalError as exc:
+                if not SessionDB._is_fts5_unavailable_error(exc):
+                    raise
+                # Some SQLite versions instantiate virtual tables during the
+                # global check. A missing optional tokenizer is not corruption.
+                # Still check every ordinary B-tree (including FTS shadow tables).
+                # Partial checks cannot verify global page allocation or FTS
+                # segment semantics; this is a degraded-runtime health probe.
+                rows = []
+                tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND rootpage > 0").fetchall()
+                for (table,) in tables:
+                    quoted = table.replace("'", "''")
+                    rows.extend(conn.execute(f"PRAGMA integrity_check('{quoted}')").fetchall())
             problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
             if problems:
                 return "; ".join(problems[:3])
             conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
-            # FTS write probe: drive a row through the messages_fts* triggers in a transaction that is always
-            # rolled back.
+            # Keep read diagnostics outside the writer reservation. Full FTS5
+            # integrity-check commands scan all segments under a write lock;
+            # those belong in an offline diagnostic, not a live health probe.
+            for fts_table in _FTS_TABLES:
+                try:
+                    conn.execute(f"SELECT 1 FROM {fts_table} WHERE {fts_table} MATCH '\"\"' LIMIT 1").fetchone()
+                except sqlite3.DatabaseError as exc:
+                    benign = isinstance(exc, sqlite3.OperationalError) and (
+                        SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc))
+                    if not benign:
+                        return f"fts5 read probe failed on {fts_table}: {exc}"
+            # FTS write probe: only the two inserts hold the writer reservation,
+            # and every exit (including DatabaseError) rolls them back.
             probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                # Empty MATCH does not read segment payloads. Older SQLite
-                # integrity_check also omits virtual-table integrity, so ask
-                # each FTS index directly, in this rolled-back transaction.
-                for fts_table in _FTS_TABLES:
-                    try:
-                        conn.execute(f"INSERT INTO {fts_table}({fts_table}) VALUES('integrity-check')")
-                    except sqlite3.DatabaseError as exc:
-                        benign = isinstance(exc, sqlite3.OperationalError) and (
-                            SessionDB._is_fts5_unavailable_error(exc) or _schema_not_built(exc))
-                        if not benign:
-                            return f"fts5 integrity check failed on {fts_table}: {exc}"
                 conn.execute("INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
                              (probe_session_id, "_health_probe", time.time()))
                 conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",

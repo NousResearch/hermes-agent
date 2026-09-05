@@ -1094,6 +1094,36 @@ class TestTruncateMessage:
                 "No continuation chunk reopened with language tag"
             )
 
+    def test_indented_code_block_keeps_indentation_across_chunks(self):
+        """A code block split across chunks must keep each line's indentation.
+
+        The split point has to advance past the boundary newline, but a bare
+        ``.lstrip()`` also eats the next line's leading whitespace, so the first
+        line of every continuation chunk arrives de-indented and the code no
+        longer runs.
+        """
+        adapter = self._adapter()
+        body = "\n".join(f"    value_{i} = compute(item_{i})" for i in range(60))
+        msg = "```python\n" + body + "\n```"
+        chunks = adapter.truncate_message(msg, max_length=400)
+        assert len(chunks) > 1, "message should have split into multiple chunks"
+        for i, chunk in enumerate(chunks):
+            for line in chunk.splitlines():
+                assert not line.startswith("value_"), (
+                    f"chunk {i} has a de-indented code line: {line!r}")
+
+    def test_space_split_does_not_leave_a_leading_space(self):
+        """Prose splits on a space; that boundary space must still be dropped.
+
+        This is why the advance is conditional rather than a blanket
+        ``.lstrip("\\n")`` copied from the newline-only chunkers.
+        """
+        adapter = self._adapter()
+        chunks = adapter.truncate_message(" ".join(["word"] * 300), max_length=200)
+        assert len(chunks) > 1
+        for i, chunk in enumerate(chunks):
+            assert not chunk.startswith(" "), f"chunk {i} starts with a space: {chunk[:12]!r}"
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

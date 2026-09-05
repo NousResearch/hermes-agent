@@ -4149,7 +4149,15 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
             chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
+            # Advance past the separator we split on, but keep the next line's own leading
+            # indentation: a bare ``.lstrip()`` de-indents the first line of every continuation
+            # chunk, silently breaking code blocks that span more than one message. Drop the
+            # boundary newline(s) on a newline split, the boundary space(s) on a mid-line space
+            # split, nothing on a hard cut. A blanket ``.lstrip("\n")`` is not enough here: unlike
+            # the newline-only chunkers in helpers.py and stream_consumer.py, this splitter falls
+            # back to ``region.rfind(" ")`` above, so a space split would leave its boundary space.
+            _next = remaining[split_at:]
+            remaining = _next.lstrip("\n") if _next[:1] == "\n" else _next.lstrip(" ")
             full_chunk = prefix + chunk_body
             # Walk only chunk_body (not the prepended prefix) for the fence state.
             in_code, lang = fence_state_after(chunk_body, carry_lang is not None, carry_lang or "")

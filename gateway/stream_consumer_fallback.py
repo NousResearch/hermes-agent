@@ -99,7 +99,8 @@ class StreamFallbackMixin:
         sent_any_chunk = False
         for chunk in chunks:
             result = await self._send_with_flood_retry(
-                content=chunk, retry_log="Flood control on fallback send, retrying in %.1fs")
+                content=chunk, reply_to=self._initial_reply_to_id,
+                retry_log="Flood control on fallback send, retrying in %.1fs")
             if not result or not result.success:
                 # Partial continuation landed: do NOT set _final_response_sent (the
                 # gateway must still deliver the full answer); _already_sent only

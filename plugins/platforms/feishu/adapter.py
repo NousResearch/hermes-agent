@@ -63,7 +63,8 @@ _LARK_SDK_IMPORTS = (
     ("lark_oapi.api.im.v1", (
         "CreateFileRequest", "CreateFileRequestBody", "CreateImageRequest", "CreateImageRequestBody",
         "CreateMessageRequest", "CreateMessageRequestBody", "GetChatRequest", "GetMessageRequest",
-        "GetMessageResourceRequest", "P2ImMessageMessageReadV1", "ReplyMessageRequest", "ReplyMessageRequestBody",
+        "DeleteMessageRequest", "GetMessageResourceRequest", "P2ImMessageMessageReadV1",
+        "ReplyMessageRequest", "ReplyMessageRequestBody",
         "UpdateMessageRequest", "UpdateMessageRequestBody",
     )),
     ("lark_oapi.core", ("AccessTokenType", "HttpMethod")),
@@ -1632,6 +1633,23 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a bot-posted message so stream-consumer fallback/fresh-final can
+        remove a truncated edit bubble instead of leaving it next to the full send.
+
+        Feishu has no ``delete_message`` today, so ``_delete_previews`` no-ops and a
+        failed finalize-edit + fallback send (#103068) keeps both bubbles.
+        """
+        if not self._client or not message_id:
+            return False
+        try:
+            request = self._build_delete_message_request(message_id)
+            response = await self._run_blocking(self._client.im.v1.message.delete, request)
+            return self._response_succeeded(response)
+        except Exception:
+            logger.debug("[Feishu] Failed to delete message %s", message_id, exc_info=True)
+            return False
 
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
@@ -3835,6 +3853,10 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_update_message_request(message_id: str, request_body: Any) -> Any:
         return _sdk_build(UpdateMessageRequest, message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_delete_message_request(message_id: str) -> Any:
+        return _sdk_build(DeleteMessageRequest, message_id=message_id)
 
     @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:

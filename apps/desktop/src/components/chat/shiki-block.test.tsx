@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
@@ -47,9 +47,51 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
 })
 
 describe('CachedShikiBlock (warm-switch perf guard)', () => {
+  it('defers tokenization for an offscreen cache miss', async () => {
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      }
+    )
+
+    render(<CachedShikiBlock {...TS_BLOCK} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 250))
+
+    expect(screen.getByTestId('shiki-placeholder').textContent).toContain('const answer')
+    expect(codeToHtml).not.toHaveBeenCalled()
+  })
+
+  it('highlights once the block enters the viewport margin', async () => {
+    let deliver!: (entries: IntersectionObserverEntry[]) => void
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        constructor(callback: IntersectionObserverCallback) {
+          deliver = entries => callback(entries, this as unknown as IntersectionObserver)
+        }
+        disconnect() {}
+        observe() {}
+        unobserve() {}
+      }
+    )
+
+    render(<CachedShikiBlock {...TS_BLOCK} />)
+    expect(codeToHtml).not.toHaveBeenCalled()
+
+    act(() => deliver([{ intersectionRatio: 1, isIntersecting: true } as IntersectionObserverEntry]))
+    await waitForHighlighted()
+
+    expect(codeToHtml).toHaveBeenCalledTimes(1)
+  })
+
   it('highlights on first mount and reuses the cached HTML on remount', async () => {
     const { unmount } = render(<CachedShikiBlock {...TS_BLOCK} />)
     await waitForHighlighted()

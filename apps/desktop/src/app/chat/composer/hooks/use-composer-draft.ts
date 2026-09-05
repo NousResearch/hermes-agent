@@ -6,7 +6,6 @@ import '@/store/suggestion-providers/github'
 import '@/store/suggestion-providers/mcp'
 import '@/store/suggestion-providers/skill'
 
-import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
@@ -57,13 +56,43 @@ interface UseComposerDraftArgs {
   sessionId: string | null | undefined
 }
 
+interface ComposerDraftSignals {
+  hasHardNewline: boolean
+  hasText: boolean
+  isEmpty: boolean
+  isHelpHint: boolean
+  isSteerableText: boolean
+}
+
+function draftSignals(text: string): ComposerDraftSignals {
+  const trimmed = text.trim()
+
+  return {
+    hasHardNewline: text.trimEnd().includes('\n'),
+    hasText: trimmed.length > 0,
+    isEmpty: text.length === 0,
+    isHelpHint: text === '?',
+    isSteerableText: trimmed.length > 0 && !SLASH_COMMAND_RE.test(trimmed)
+  }
+}
+
+function sameDraftSignals(left: ComposerDraftSignals, right: ComposerDraftSignals) {
+  return (
+    left.hasHardNewline === right.hasHardNewline &&
+    left.hasText === right.hasText &&
+    left.isEmpty === right.isEmpty &&
+    left.isHelpHint === right.isHelpHint &&
+    left.isSteerableText === right.isSteerableText
+  )
+}
+
 /**
  * The composer's draft engine — the detached source-of-truth spine. The live
  * text lives in the contentEditable DOM + `draftRef`; React only sees coarse
- * edge selectors, so typing never re-renders the chrome. Owns the imperative
- * composer-runtime subscription (draftRef mirror + external repaint + debounced
- * per-session stash), the edit primitives (append/insert/inline-refs), focus,
- * and per-session load/clear/stash/restore. The contentEditable *event*
+ * edge selectors, so ordinary typing does not re-render the chrome. Owns the
+ * local draft mirror + debounced per-session stash, the edit primitives
+ * (append/insert/inline-refs), focus, and per-session load/clear/stash/restore.
+ * The contentEditable *event*
  * handlers stay in ChatBar (they bridge into the trigger engine) and drive the
  * primitives exposed here.
  */
@@ -74,36 +103,13 @@ export function useComposerDraft({
   queueEditRef,
   sessionId
 }: UseComposerDraftArgs) {
-  const aui = useAui()
-  const composerRuntime = useComposerRuntime()
   const paneVisible = usePaneVisible()
   // Which composer this is on the focus bus + which attachment set it owns.
   const { attachments: attachmentScope, target } = useComposerScope()
 
   // Coarse edges only — these flip rarely (empty↔non-empty, the `?` help sigil,
   // steerable-vs-slash), so typing within a line costs no render.
-  const hasText = useAuiState(s => s.composer.text.trim().length > 0)
-  const isHelpHint = useAuiState(s => s.composer.text === '?')
-
-  const isSteerableText = useAuiState(s => {
-    const trimmed = s.composer.text.trim()
-
-    return trimmed.length > 0 && !SLASH_COMMAND_RE.test(trimmed)
-  })
-
-  // assistant-ui's composer mutators throw when the core isn't bound yet (a
-  // startup/thread-swap window); the DOM + draftRef hold the text and the
-  // subscription reconciles once it binds, so swallow the premature write.
-  const setComposerText = useCallback(
-    (value: string) => {
-      try {
-        aui.composer().setText(value)
-      } catch {
-        // Composer core not bound yet — DOM/draftRef carry the text.
-      }
-    },
-    [aui]
-  )
+  const [signals, setSignals] = useState<ComposerDraftSignals>(() => draftSignals(''))
 
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef('')
@@ -123,6 +129,33 @@ export function useComposerDraft({
   const queueEditStateRef = useRef<QueueEditState | null>(queueEditRef.current)
   queueEditStateRef.current = queueEditRef.current
 
+  const setComposerText = useCallback(
+    (value: string) => {
+      draftRef.current = value
+      const nextSignals = draftSignals(value)
+      setSignals(current => (sameDraftSignals(current, nextSignals) ? current : nextSignals))
+      sampleComposerDraft(sessionIdRef.current ?? null, value)
+
+      if (isBrowsingHistory(sessionIdRef.current) || queueEditStateRef.current) {
+        return
+      }
+
+      const scope = draftScopeRef.current
+      const entry = { scope, text: value }
+      pendingDraftPersistRef.current = entry
+      window.clearTimeout(draftPersistTimerRef.current)
+      draftPersistTimerRef.current = window.setTimeout(() => {
+        if (!isPendingDraftPersistCurrent(pendingDraftPersistRef.current, entry)) {
+          return
+        }
+
+        pendingDraftPersistRef.current = null
+        stashSessionDraft(scope, value, attachmentScope.$attachments.get())
+      }, DRAFT_PERSIST_DEBOUNCE_MS)
+    },
+    [attachmentScope.$attachments]
+  )
+
   const [focusRequestId, setFocusRequestId] = useState(0)
 
   const focusInput = useCallback(() => {
@@ -134,10 +167,9 @@ export function useComposerDraft({
     setFocusRequestId(id => id + 1)
   }, [])
 
-  // The single write path for programmatic draft mutations: mirror → AUI state →
-  // repaint the editor (caret to end). Repaints even while focused — inserts /
-  // restores run mid-focus, and the runtime sync only repaints an unfocused
-  // editor — so the visible text never lags the store.
+  // The single write path for programmatic draft mutations: local mirror →
+  // coarse signals/persistence → editor repaint (caret to end). Repaints even
+  // while focused because inserts and restores can run mid-focus.
   const paintDraft = useCallback(
     (next: string, focus = true) => {
       draftRef.current = next
@@ -234,8 +266,11 @@ export function useComposerDraft({
     }
   }, [appendExternalText, inputDisabled, paintDraft, target])
 
-  const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
-    stashSessionDraft(scope, text, attachments)
+  const stashAt = useCallback(
+    (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
+      stashSessionDraft(scope, text, attachments),
+    [attachmentScope.$attachments]
+  )
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     // Diagnostic breadcrumb for #59305-class reports: identifies WHAT kind of
@@ -267,7 +302,7 @@ export function useComposerDraft({
     }
   }, [setComposerText])
 
-  // Read the editor's current plain text into draftRef + composer state. This
+  // Read the editor's current plain text into draftRef + local draft state. This
   // closes the "queued rAF flush hasn't run yet" window so scope-swap/pagehide
   // persistence captures the latest keystrokes.
   const syncDraftFromEditor = useCallback(() => {
@@ -293,60 +328,9 @@ export function useComposerDraft({
     return text
   }, [setComposerText])
 
-  // Imperative draft sync — the spine of the "work only when work is to be
-  // performed" model. Subscribing to the composer runtime directly (not
-  // `useAuiState(text)` + a `[draft]` effect) keeps per-keystroke text out of
-  // React, so typing never re-renders the chrome. On each change we (1) mirror
-  // text into draftRef, (2) repaint the editor only when the change came from
-  // OUTSIDE it (programmatic clear/restore/insert; the focused editor is the
-  // source otherwise), and (3) schedule the debounced per-session stash.
-  // Browsing history / editing a queued prompt suppress the stash so recalled
-  // text never clobbers the draft.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    const sync = () => {
-      const text = composerRuntime.getState().text
-      draftRef.current = text
-      // Composer suggestion pills for THIS session's draft (debounced +
-      // change-gated in the bus — this is just a timer reset).
-      sampleComposerDraft(sessionIdRef.current ?? null, text)
-
-      const editor = editorRef.current
-
-      if (editor && document.activeElement !== editor && composerPlainText(editor) !== text) {
-        renderComposerContents(editor, text, { trailingCommitted: true })
-      }
-
-      if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
-        return
-      }
-
-      const scope = draftScopeRef.current
-      const entry = { scope, text }
-      pendingDraftPersistRef.current = entry
-      window.clearTimeout(draftPersistTimerRef.current)
-      draftPersistTimerRef.current = window.setTimeout(() => {
-        // Integrity guard (defense-in-depth, #54527): only commit if this is
-        // still the pending write on file. A session swap or a newer
-        // keystroke clears/replaces it before firing in the normal case; this
-        // catches any future call site that skips that bookkeeping instead of
-        // silently filing text under the wrong session.
-        if (!isPendingDraftPersistCurrent(pendingDraftPersistRef.current, entry)) {
-          return
-        }
-
-        pendingDraftPersistRef.current = null
-        stashAt(scope, text)
-      }, DRAFT_PERSIST_DEBOUNCE_MS)
-    }
-
-    const unsubscribe = composerRuntime.subscribe(sync)
-
-    return () => {
-      unsubscribe()
-      window.clearTimeout(draftPersistTimerRef.current)
-    }
-  }, [composerRuntime, queueEditRef])
+  // Scope swaps and pagehide flush/cancel this timer below. Cover a normal
+  // unmount that does not reach either path as well.
+  useEffect(() => () => window.clearTimeout(draftPersistTimerRef.current), [])
 
   const insertText = (text: string) => {
     const base = draftRef.current
@@ -488,7 +472,7 @@ export function useComposerDraft({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [syncDraftFromEditor])
+  }, [stashAt, syncDraftFromEditor])
 
   return {
     activeQueueSessionKeyRef,
@@ -496,11 +480,13 @@ export function useComposerDraft({
     draftRef,
     editorRef,
     focusInput,
-    hasText,
+    hasHardNewline: signals.hasHardNewline,
+    hasText: signals.hasText,
     insertInlineRefs,
     insertText,
-    isHelpHint,
-    isSteerableText,
+    isEmpty: signals.isEmpty,
+    isHelpHint: signals.isHelpHint,
+    isSteerableText: signals.isSteerableText,
     loadIntoComposer,
     requestMainFocus,
     sessionIdRef,

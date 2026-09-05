@@ -149,8 +149,8 @@ export const enumerationFailed = <T>(result: EnumerationFailure | T): result is 
 export function getWindowsFailureReason(detail: string, platform: string, arch: string): string {
   if (platform === 'win32' && arch === 'arm64') {
     return (
-      `${detail}. Window context requires a working win32-arm64 native binding; ` +
-      'get-windows 9.3.0 does not ship one. Use the x64 desktop build under Windows emulation, ' +
+      `${detail}. On Windows ARM64, check that the installed get-windows package includes a working ` +
+      'win32-arm64 native binding. If that binding is unavailable, use the x64 desktop build under Windows emulation, ' +
       'or a build with a matching native binding. This affects both read_window_below and HUD window context.'
     )
   }

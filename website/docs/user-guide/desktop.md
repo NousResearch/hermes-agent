@@ -540,13 +540,13 @@ The remote gateway host is configured per [profile](./profiles.md), so each prof
 
 ### Window context unavailable on Windows ARM64
 
-The ARM64 desktop build's `get-windows` 9.3.0 dependency does not ship a
-`win32-arm64` native binding. Without a working binding, `read_window_below`
-and HUD window context cannot enumerate other apps' windows. The error and
-HUD log include this limitation alongside the underlying failure reason.
+Check that the installed `get-windows` package includes a working
+`win32-arm64` native binding. Without one, `read_window_below` and HUD window
+context cannot enumerate other apps' windows. The error and HUD log preserve
+the underlying failure reason alongside this troubleshooting guidance.
 
-Use the x64 desktop build under Windows emulation, or a custom build with a
-matching native binding. Changing the agent backend or granting macOS screen
+If the binding is unavailable, use the x64 desktop build under Windows
+emulation, or a custom build with a matching native binding. Changing the agent backend or granting macOS screen
 permissions cannot fix a missing Windows binding; enumeration runs on the
 computer hosting the desktop app. This diagnostic does not add native ARM64
 window enumeration support.

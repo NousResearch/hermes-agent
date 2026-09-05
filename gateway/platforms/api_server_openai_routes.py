@@ -600,15 +600,23 @@ class OpenAICompatRoutesMixin:
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
         log_label: str, fingerprint_keys: List[str]) -> tuple:
-        """Run ``compute()`` once per Idempotency-Key + body fingerprint ->
-        ``((result, usage), None)`` or ``(None, 500 response)``."""
+        """Run ``compute()`` once per profile + Idempotency-Key + body fingerprint ->
+        ``((result, usage), None)`` or ``(None, 500 response)``.
+
+        The profile is folded into the cache key (mirroring ``_run_idempotency_scope``'s
+        ``_api_request_profile.get() or "default"``) so two ``/p/<profile>/...`` mirrors
+        under ``gateway.multiplex_profiles`` never share a cached response for a client-
+        supplied Idempotency-Key that happens to collide across profiles.
+        """
         from gateway.platforms.api_server import (
-            _error_response, _idem_cache, _make_request_fingerprint)
+            _api_request_profile, _error_response, _idem_cache, _make_request_fingerprint)
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
             if idempotency_key:
+                profile = _api_request_profile.get() or "default"
+                scoped_key = f"{profile}\0{idempotency_key}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, compute)
+                result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
             else:
                 result, usage = await compute()
             return (result, usage), None

@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 import json
 
+import pytest
+
 
 class TestResolveApiKey:
     """Test _resolve_api_key with various config shapes."""
@@ -744,3 +746,289 @@ class TestCmdSetupDeviceFlow:
         assert len(calls) == 1
         assert "apiKey" not in cfg.get("hosts", {}).get("hermes", {})
 
+
+
+class TestWriteRefusesUnparseableStore:
+    """A honcho.json that exists but does not parse reads as {} on the tolerant path. Writing that
+    back would replace every host and root key with the current command's block, so writes refuse."""
+
+    def _point_at(self, monkeypatch, cfg_path):
+        import plugins.memory.honcho.cli as honcho_cli
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes_coder")
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: False)
+        return honcho_cli
+
+    def test_write_config_refuses_and_leaves_file_alone(self, monkeypatch, tmp_path):
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text('{"hosts": {"hermes": {"apiKey": "k"', encoding="utf-8")
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        with pytest.raises(honcho_cli.ConfigWriteRefused):
+            honcho_cli._write_config({"hosts": {"hermes_coder": {"enabled": True}}})
+        assert cfg_path.read_text(encoding="utf-8") == '{"hosts": {"hermes": {"apiKey": "k"'
+
+    def test_write_config_still_bootstraps_a_missing_file(self, monkeypatch, tmp_path):
+        cfg_path = tmp_path / "honcho.json"
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        honcho_cli._write_config({"apiKey": "k"})
+        assert json.loads(cfg_path.read_text(encoding="utf-8")) == {"apiKey": "k"}
+
+    def test_command_prints_one_sentence_and_writes_nothing(self, monkeypatch, tmp_path, capsys):
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{not json", encoding="utf-8")
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        honcho_cli.honcho_command(SimpleNamespace(honcho_command="mode", mode="tools", target_profile=None))
+        out = capsys.readouterr().out
+        assert "could not be read as JSON" in out
+        assert "Nothing was written" in out
+        assert cfg_path.read_text(encoding="utf-8") == "{not json"
+
+    def test_setup_refuses_before_asking_anything(self, monkeypatch, tmp_path, capsys):
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{not json", encoding="utf-8")
+        honcho_cli = self._point_at(monkeypatch, cfg_path)
+        monkeypatch.setattr(honcho_cli, "_prompt", lambda *a, **k: pytest.fail("wizard asked a question"))
+        honcho_cli.cmd_setup(SimpleNamespace())
+        assert "Nothing was written" in capsys.readouterr().out
+        assert cfg_path.read_text(encoding="utf-8") == "{not json"
+
+
+class TestSetupApiKeyReplacesStaleGrant:
+    """#97990: choosing apikey after a revoked grant left hosts.<name>.oauth in place, so the dead
+    grant kept shadowing the fresh key across every later setup run."""
+
+    def _cfg_with_grant(self):
+        return {"hosts": {"hermes": {
+            "apiKey": "hch-at-dead",
+            "oauth": {"refreshToken": "hch-rt-dead", "expiresAt": 1, "clientId": "hermes-agent",
+                      "tokenEndpoint": "https://api.honcho.dev/oauth/token"},
+        }}}
+
+    def _cloud_auth(self, monkeypatch, tmp_path, cfg, *, key_answer):
+        import plugins.memory.honcho.cli as honcho_cli
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: False)
+        monkeypatch.setattr(honcho_cli, "_headless", lambda: (False, True))
+        shown = []
+
+        def _prompt(label, default=None, secret=False):
+            shown.append(label)
+            return "apikey" if "OAuth" in label else key_answer
+        monkeypatch.setattr(honcho_cli, "_prompt", _prompt)
+        ok = honcho_cli._setup_cloud_auth(cfg, cfg["hosts"]["hermes"], tmp_path / "honcho.json")
+        return ok, cfg["hosts"]["hermes"]
+
+    def test_new_key_clears_oauth_and_lands_on_the_host_block(self, monkeypatch, tmp_path):
+        cfg = self._cfg_with_grant()
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="hch-v3-fresh")
+        assert ok is True
+        assert "oauth" not in host
+        assert host["apiKey"] == "hch-v3-fresh"
+        assert cfg["apiKey"] == "hch-v3-fresh"
+
+    def test_kept_root_key_still_clears_oauth(self, monkeypatch, tmp_path, capsys):
+        cfg = self._cfg_with_grant()
+        cfg["apiKey"] = "hch-v3-rootkey"
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="")
+        assert ok is True
+        assert "oauth" not in host
+        assert host["apiKey"] == "hch-v3-rootkey"
+        assert "...-rootkey" in capsys.readouterr().out
+
+    def test_dead_access_token_is_not_offered_as_current(self, monkeypatch, tmp_path, capsys):
+        cfg = self._cfg_with_grant()
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="")
+        assert ok is False
+        assert "Current API key: not set" in capsys.readouterr().out
+
+    def test_static_host_key_without_grant_is_kept(self, monkeypatch, tmp_path):
+        cfg = {"hosts": {"hermes": {"apiKey": "hch-v3-hostkey"}}}
+        ok, host = self._cloud_auth(monkeypatch, tmp_path, cfg, key_answer="")
+        assert ok is True
+        assert host["apiKey"] == "hch-v3-hostkey"
+        assert "apiKey" not in cfg
+
+
+class TestEnabledRequiresACredential:
+    """A host block must not be written with enabled: true unless it can authenticate. The default
+    host's apiKey is not inherited by named profiles (#66125), so a clone of an OAuth-authenticated
+    default block, or an enable on an empty block, has nothing to sign requests with."""
+
+    def _env(self, monkeypatch, tmp_path, cfg, *, host="hermes_dreamer", profile="dreamer"):
+        import plugins.memory.honcho.cli as honcho_cli
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{}")
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_host_key", lambda: host)
+        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: profile)
+        monkeypatch.setattr(honcho_cli, "_ensure_peer_exists", lambda host_key=None: True)
+        written = {}
+        monkeypatch.setattr(honcho_cli, "_write_config", lambda c, path=None: written.setdefault("cfg", c))
+        return honcho_cli, written
+
+    def _oauth_default(self):
+        return {"peerName": "eri", "hosts": {"hermes": {
+            "enabled": True, "apiKey": "hch-at-live", "workspace": "hermes", "peerName": "eri",
+            "oauth": {"refreshToken": "hch-rt-live", "expiresAt": 9e9, "clientId": "hermes-agent",
+                      "tokenEndpoint": "https://api.honcho.dev/oauth/token"},
+        }}}
+
+    def test_clone_from_oauth_default_is_written_without_enabled(self, monkeypatch, tmp_path):
+        honcho_cli, written = self._env(monkeypatch, tmp_path, self._oauth_default())
+        assert honcho_cli.clone_honcho_for_profile("dreamer") is True
+        block = written["cfg"]["hosts"]["hermes_dreamer"]
+        assert "enabled" not in block
+        assert "apiKey" not in block and "oauth" not in block
+        assert block["aiPeer"] == "dreamer" and block["workspace"] == "hermes"
+
+    def test_clone_from_host_only_static_key_is_written_without_enabled(self, monkeypatch, tmp_path):
+        cfg = {"hosts": {"hermes": {"enabled": True, "apiKey": "hch-v3-hostonly", "workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        assert honcho_cli.clone_honcho_for_profile("dreamer") is True
+        assert "enabled" not in written["cfg"]["hosts"]["hermes_dreamer"]
+
+    def test_clone_with_root_key_is_enabled(self, monkeypatch, tmp_path):
+        cfg = {"apiKey": "hch-v3-root", "hosts": {"hermes": {"workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        assert honcho_cli.clone_honcho_for_profile("dreamer") is True
+        assert written["cfg"]["hosts"]["hermes_dreamer"]["enabled"] is True
+
+    def test_env_key_alone_does_not_enable_a_clone(self, monkeypatch, tmp_path):
+        """A variable can vanish from the next process; only what is on disk counts at write time."""
+        cfg = {"hosts": {"hermes": {"workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        monkeypatch.setenv("HONCHO_API_KEY", "hch-v3-from-env")
+        assert honcho_cli.clone_honcho_for_profile("dreamer") is True
+        assert "enabled" not in written["cfg"]["hosts"]["hermes_dreamer"]
+
+    def test_enable_refuses_with_only_an_env_key(self, monkeypatch, tmp_path, capsys):
+        from types import SimpleNamespace
+        cfg = {"hosts": {"hermes_dreamer": {"workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        monkeypatch.setenv("HONCHO_API_KEY", "hch-v3-from-env")
+        honcho_cli.cmd_enable(SimpleNamespace())
+        assert written == {}
+        assert "setup" in capsys.readouterr().out
+
+
+    def test_clone_with_self_hosted_url_is_enabled(self, monkeypatch, tmp_path):
+        cfg = {"baseUrl": "http://localhost:8000", "hosts": {"hermes": {"workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        assert honcho_cli.clone_honcho_for_profile("dreamer") is True
+        assert written["cfg"]["hosts"]["hermes_dreamer"]["enabled"] is True
+
+    def test_enable_on_empty_block_refuses_and_writes_nothing(self, monkeypatch, tmp_path, capsys):
+        honcho_cli, written = self._env(monkeypatch, tmp_path, self._oauth_default())
+        honcho_cli.cmd_enable(SimpleNamespace())
+        out = capsys.readouterr().out
+        assert "stays disabled" in out
+        assert "hermes honcho setup --target-profile dreamer" in out
+        assert "hosts.hermes_dreamer" in out
+        assert written == {}
+
+    def test_enable_on_legacy_enabled_keyless_block_explains_instead_of_already_enabled(self, monkeypatch, tmp_path, capsys):
+        cfg = self._oauth_default()
+        cfg["hosts"]["hermes_dreamer"] = {"enabled": True, "aiPeer": "dreamer", "workspace": "hermes", "peerName": "eri"}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        honcho_cli.cmd_enable(SimpleNamespace())
+        out = capsys.readouterr().out
+        assert "stays disabled" in out
+        assert "already enabled" not in out
+        assert written == {}
+
+    def test_enable_with_root_key_still_enables(self, monkeypatch, tmp_path, capsys):
+        cfg = {"apiKey": "hch-v3-root", "hosts": {"hermes": {"workspace": "hermes"}}}
+        honcho_cli, written = self._env(monkeypatch, tmp_path, cfg)
+        honcho_cli.cmd_enable(SimpleNamespace())
+        assert "Honcho enabled" in capsys.readouterr().out
+        assert written["cfg"]["hosts"]["hermes_dreamer"]["enabled"] is True
+
+    def test_enable_on_default_profile_hint_omits_target_profile(self, monkeypatch, tmp_path, capsys):
+        honcho_cli, written = self._env(monkeypatch, tmp_path, {"hosts": {}}, host="hermes", profile="default")
+        honcho_cli.cmd_enable(SimpleNamespace())
+        out = capsys.readouterr().out
+        assert "Run 'hermes honcho setup' to sign in" in out
+        assert written == {}
+
+
+class TestWriteConfigMergesOntoDisk:
+    """A command reads honcho.json, works, then writes. A refresh in another process may have rotated
+    the token in between; the write must keep that rotation and apply only the command's own edits."""
+
+    def _paths(self, monkeypatch, tmp_path, disk):
+        import plugins.memory.honcho.cli as honcho_cli
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text(json.dumps(disk))
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        return honcho_cli, cfg_path
+
+    def _rotated(self, cfg_path, disk):
+        disk["hosts"]["hermes"]["apiKey"] = "hch-at-new"
+        disk["hosts"]["hermes"]["oauth"] = {"refreshToken": "hch-rt-new"}
+        cfg_path.write_text(json.dumps(disk))
+
+    def test_rotation_between_read_and_write_survives(self, monkeypatch, tmp_path):
+        disk = {"apiKey": "root", "hosts": {"hermes": {"apiKey": "hch-at-old", "oauth": {"refreshToken": "hch-rt-old"},
+                                                     "recallMode": "hybrid"}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = honcho_cli._read_config()
+        self._rotated(cfg_path, json.loads(cfg_path.read_text()))
+        cfg["hosts"]["hermes"]["recallMode"] = "tools"
+        cfg["dialecticCadence"] = 3
+        honcho_cli._write_config(cfg)
+        out = json.loads(cfg_path.read_text())
+        assert out["hosts"]["hermes"]["apiKey"] == "hch-at-new"
+        assert out["hosts"]["hermes"]["oauth"] == {"refreshToken": "hch-rt-new"}
+        assert out["hosts"]["hermes"]["recallMode"] == "tools" and out["dialecticCadence"] == 3
+
+    def test_a_credential_the_command_set_wins(self, monkeypatch, tmp_path):
+        disk = {"hosts": {"hermes": {"apiKey": "hch-at-old", "oauth": {"refreshToken": "hch-rt-old"}}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = honcho_cli._read_config()
+        self._rotated(cfg_path, json.loads(cfg_path.read_text()))
+        cfg["hosts"]["hermes"]["apiKey"] = "hch-v3-pasted"
+        cfg["hosts"]["hermes"].pop("oauth")
+        honcho_cli._write_config(cfg)
+        out = json.loads(cfg_path.read_text())
+        assert out["hosts"]["hermes"]["apiKey"] == "hch-v3-pasted" and "oauth" not in out["hosts"]["hermes"]
+
+    def test_a_key_the_command_removed_is_removed(self, monkeypatch, tmp_path):
+        disk = {"hosts": {"hermes": {"apiKey": "k", "runtimePeerPrefix": "tg_"}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = honcho_cli._read_config()
+        cfg["hosts"]["hermes"].pop("runtimePeerPrefix")
+        honcho_cli._write_config(cfg)
+        assert "runtimePeerPrefix" not in json.loads(cfg_path.read_text())["hosts"]["hermes"]
+
+    def test_write_without_a_prior_read_writes_the_whole_config(self, monkeypatch, tmp_path):
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, {"hosts": {"hermes": {"apiKey": "k"}}})
+        honcho_cli._write_config({"hosts": {"other": {"apiKey": "o"}}})
+        assert json.loads(cfg_path.read_text()) == {"hosts": {"other": {"apiKey": "o"}}}
+
+    def test_a_rebuilt_plain_dict_is_written_whole(self, monkeypatch, tmp_path):
+        disk = {"hosts": {"hermes": {"apiKey": "hch-at-old", "recallMode": "hybrid"}}}
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, disk)
+        cfg = dict(honcho_cli._read_config())
+        self._rotated(cfg_path, json.loads(cfg_path.read_text()))
+        honcho_cli._write_config(cfg)
+        assert json.loads(cfg_path.read_text())["hosts"]["hermes"]["apiKey"] == "hch-at-old"
+
+    def test_write_holds_the_refresh_file_lock(self, monkeypatch, tmp_path):
+        import contextlib
+        import plugins.memory.honcho.oauth as oauth
+        honcho_cli, cfg_path = self._paths(monkeypatch, tmp_path, {})
+        locked = []
+
+        @contextlib.contextmanager
+        def _lock(path):
+            locked.append(path)
+            yield
+
+        monkeypatch.setattr(oauth, "_config_refresh_lock", _lock)
+        honcho_cli._write_config({"apiKey": "k"})
+        assert locked == [cfg_path]

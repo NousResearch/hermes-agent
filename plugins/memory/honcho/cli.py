@@ -64,18 +64,81 @@ def _local_config_path() -> Path:
     return get_hermes_home() / "honcho.json"
 
 
+class _ReadConfig(dict):
+    """The config a command works on, carrying what disk held when it was read (``snapshot``) and where
+    (``path``), so _write_config() can apply only the command's edits onto a fresh read."""
+
+    snapshot: dict
+    path: Path
+
+
 def _read_config() -> dict:
+    import copy
+    path = _config_path()
     try:
-        return json.loads(_config_path().read_text(encoding="utf-8"))
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {}
+        raw = {}
+    cfg = _ReadConfig(raw)
+    cfg.snapshot, cfg.path = copy.deepcopy(raw), path
+    return cfg
+
+
+class ConfigWriteRefused(Exception):
+    """honcho.json exists on disk but does not parse, so no command may overwrite it."""
+
+
+def _refuse_unparseable(path: Path) -> None:
+    """Raise ConfigWriteRefused when ``path`` exists but cannot be parsed: writing back the ``{}`` a
+    tolerant read returns would drop every other host."""
+    from plugins.memory.honcho.oauth import _read_config_strict
+    try:
+        _read_config_strict(path)
+    except (OSError, ValueError) as e:
+        raise ConfigWriteRefused(f"{path} exists but could not be read as JSON ({e}). Nothing was written. "
+                                 "Fix or move the file, then re-run.") from e
+
+
+def _apply_edits(base: dict, edited: dict, current: dict) -> dict:
+    """Return ``current`` with every root key and ``hosts.<h>.<k>`` the command changed between ``base``
+    and ``edited`` applied. Keys the command left alone keep their on-disk value, so a token rotation
+    that landed while the command ran survives; a key the command set deliberately wins."""
+    import copy
+    out = copy.deepcopy(current)
+    for key in (set(base) | set(edited)) - {"hosts"}:
+        if key in edited and edited[key] != base.get(key):
+            out[key] = copy.deepcopy(edited[key])
+        elif key not in edited and key in base:
+            out.pop(key, None)
+    base_hosts, edited_hosts = base.get("hosts") or {}, edited.get("hosts") or {}
+    out_hosts = out.setdefault("hosts", {}) if (base_hosts or edited_hosts or "hosts" in current) else None
+    for host in set(base_hosts) | set(edited_hosts):
+        if host not in edited_hosts:
+            out_hosts.pop(host, None)
+            continue
+        b, e = base_hosts.get(host) or {}, edited_hosts[host]
+        block = out_hosts.setdefault(host, {})
+        for key in set(b) | set(e):
+            if key in e and e[key] != b.get(key):
+                block[key] = copy.deepcopy(e[key])
+            elif key not in e and key in b:
+                block.pop(key, None)
+    return out
 
 
 def _write_config(cfg: dict, path: Path | None = None) -> None:
-    path = path or _local_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Persist ``cfg`` under the same cross-process lock the token refresh holds. When ``cfg`` is the
+    object _read_config() returned for this path, only the command's edits are applied onto a fresh read
+    of disk; a plain dict is written whole."""
+    from plugins.memory.honcho.oauth import _config_refresh_lock, _read_config_strict
     from utils import atomic_json_write
-    atomic_json_write(path, cfg, mode=0o600)
+    path = path or _local_config_path()
+    with _config_refresh_lock(path):
+        _refuse_unparseable(path)
+        if getattr(cfg, "path", None) == path:
+            cfg = _apply_edits(cfg.snapshot, cfg, _read_config_strict(path))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_json_write(path, cfg, mode=0o600)
 
 
 def _label(host: str) -> str:
@@ -112,15 +175,17 @@ def _default_block_and_key(cfg: dict) -> tuple[dict, bool]:
     return cfg_get(cfg, "hosts", HOST, default={}), bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
 
 
-def _resolve_api_key(cfg: dict) -> str:
-    """API key with host -> root -> env fallback. A self-hosted ``baseUrl`` without a key
-    yields ``"local"`` so credential guards accept it: the URL must be http/https (so
-    ``baseUrl: true`` can't pass) or a schemeless host:port (legacy ``localhost:8000``;
-    the SDK rejects those itself)."""
-    key = _host_block(cfg, _host_key()).get("apiKey") or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+def _resolve_api_key(cfg: dict, block: dict | None = None, *, env: bool = True) -> str:
+    """API key for ``block`` (default: the active host's block), host -> root -> env. A self-hosted
+    http(s) or host:port ``baseUrl`` without a key yields "local" so credential guards accept it.
+    ``env=False`` counts only what is on disk: a write that enables a block must not rely on a variable
+    that can vanish from the next process."""
+    block = _host_block(cfg, _host_key()) if block is None else block
+    key = (block.get("apiKey") or cfg.get("apiKey", "") or (os.environ.get("HONCHO_API_KEY", "") if env else ""))
     if key:
         return key
-    base_url = (cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "") or "").strip()
+    base_url = (block.get("baseUrl") or block.get("base_url") or cfg.get("baseUrl") or cfg.get("base_url")
+                or (os.environ.get("HONCHO_BASE_URL", "") if env else "") or "").strip()
     if not base_url:
         return key
     from urllib.parse import urlparse
@@ -216,8 +281,10 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
         new_block["pinUserPeer"] = default_block["pinPeerName"]
     # AI peer is profile-specific (bare profile name: Honcho peer IDs allow no dots);
     # workspace is shared so all profiles see the same context.
-    new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST,
-                     enabled=default_block.get("enabled", True))
+    new_block.update(aiPeer=profile_name, workspace=_pref(default_block, cfg, "workspace") or HOST)
+    # The default host's apiKey is not inherited; the block stays unenabled until this profile signs in.
+    if _resolve_api_key(cfg, new_block, env=False):
+        new_block["enabled"] = default_block.get("enabled", True)
     cfg.setdefault("hosts", {})[new_host] = new_block
     _write_config(cfg)
     _ensure_peer_exists(new_host)  # eager so the peer exists before first message
@@ -241,7 +308,11 @@ def _sync_profiles(verbose: bool) -> int:
 
     created = skipped = 0
     for p in (p for p in profiles if p.name != "default"):
-        if clone_honcho_for_profile(p.name):
+        try:
+            cloned = clone_honcho_for_profile(p.name)
+        except ConfigWriteRefused as e:
+            return say(f"  {e}\n") or created
+        if cloned:
             say(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
@@ -263,12 +334,21 @@ def sync_honcho_profiles_quiet() -> int:
     return _sync_profiles(verbose=False)
 
 
+def _no_credential_hint(host: str) -> str:
+    profile = _active_profile_name()
+    setup = "hermes honcho setup" + (f" --target-profile {profile}" if profile != "default" else "")
+    return (f"Honcho stays disabled: no API key or base URL is configured for this profile, and the default "
+            f"profile's key is not shared.\n  Run '{setup}' to sign in, or set apiKey on hosts.{host} in {_config_path()}.")
+
+
 def cmd_enable(args) -> None:
-    """Enable Honcho for the active profile."""
+    """Enable Honcho for the active profile; refuses a block that cannot authenticate."""
     cfg = _read_config()
     host = _host_key()
     label = _label(host)
     block = cfg.setdefault("hosts", {}).setdefault(host, {})
+    if not _resolve_api_key(cfg, block, env=False):
+        return print(f"  {label}{_no_credential_hint(host)}\n")
     if block.get("enabled") is True:
         return print(f"  {label}Honcho is already enabled.\n")
     block["enabled"] = True
@@ -594,7 +674,7 @@ def _setup_browser_login(hermes_host: dict, write_path: Path) -> bool:
 def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Cloud auth: OAuth (browser), device code, or API key. Returns False on abort."""
     cfg.pop("baseUrl", None)  # cloud uses SDK default
-    from plugins.memory.honcho.oauth import OAuthCredential
+    from plugins.memory.honcho.oauth import OAuthCredential, is_oauth_access_token
     existing_oauth = OAuthCredential.from_host_block(hermes_host)
     device_available = _device_login_available()
     is_remote, can_browse = _headless()
@@ -619,14 +699,20 @@ def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
         return _setup_device_login(hermes_host, write_path, open_browser=can_browse and not is_remote)
     if method in {"oauth", "o"}:
         return _setup_browser_login(hermes_host, write_path)
-    print(f"\n  Current API key: {_mask(cfg.get('apiKey', ''))}")
+    # A leftover grant on the host block would shadow the pasted key.
+    stale_grant = existing_oauth is not None or is_oauth_access_token(hermes_host.get("apiKey"))
+    current = ("" if stale_grant else hermes_host.get("apiKey", "")) or cfg.get("apiKey", "")
+    print(f"\n  Current API key: {_mask(current)}")
     if new_key := _prompt("Honcho API key (leave blank to keep current)", secret=True):
         cfg["apiKey"] = new_key
-    if cfg.get("apiKey"):
-        return True
-    print("\n  No API key configured. Get yours at https://app.honcho.dev\n"
-          "  Run 'hermes honcho setup' again once you have a key.\n")
-    return False
+    key = new_key or current
+    if not key:
+        print("\n  No API key configured. Get yours at https://app.honcho.dev\n"
+              "  Run 'hermes honcho setup' again once you have a key.\n")
+        return False
+    hermes_host.pop("oauth", None)
+    hermes_host["apiKey"] = key
+    return True
 
 
 def _menu(header: str, *lines: str) -> None:
@@ -699,8 +785,16 @@ def _setup_tuning(cfg: dict, hermes_host: dict) -> None:
 
 def cmd_setup(args) -> None:
     """Interactive Honcho setup wizard."""
+    try:
+        _setup_wizard(args)
+    except ConfigWriteRefused as e:
+        print(f"  {e}\n")
+
+
+def _setup_wizard(args) -> None:
     cfg = _read_config()
     write_path, read_path = _local_config_path(), _config_path()
+    _refuse_unparseable(write_path)  # before the questions, not after them
     print(f"\nHoncho memory setup\n{RULE}\n  Honcho gives Hermes persistent cross-session memory.\n  Config: {write_path}")
     if read_path != write_path and read_path.exists():
         print(f"  (seeding from existing config at {read_path})")
@@ -1338,7 +1432,10 @@ def honcho_command(args) -> None:
     if handler is None:
         return print(f"  Unknown honcho command: {sub}\n"
                      "  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
-    handler(args)
+    try:
+        handler(args)
+    except ConfigWriteRefused as e:
+        print(f"  {e}\n")
 
 
 def register_cli(subparser) -> None:

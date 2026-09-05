@@ -184,6 +184,38 @@ class TestInstallGrant:
                 client_id="c", token_endpoint="e",
             )
 
+    def test_reads_and_writes_under_the_refresh_locks(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"other": _host_block()}})
+        seen = {}
+        real_read, real_persist = oauth._read_config_strict, oauth._persist_credential
+        locked_paths = []
+
+        @oauth.contextmanager
+        def spy_file_lock(p):
+            locked_paths.append(p)
+            yield
+
+        def spy_read(p):
+            seen["read_locked"] = oauth._refresh_lock.locked()
+            return real_read(p)
+
+        def spy_persist(p, host, cred, raw=None):
+            seen["persist_locked"] = oauth._refresh_lock.locked()
+            return real_persist(p, host, cred, raw)
+
+        monkeypatch.setattr(oauth, "_config_refresh_lock", spy_file_lock)
+        monkeypatch.setattr(oauth, "_read_config_strict", spy_read)
+        monkeypatch.setattr(oauth, "_persist_credential", spy_persist)
+        oauth.install_grant(
+            path, "hermes", {"access_token": "hch-at-new", "refresh_token": "hch-rt-new", "expires_in": 60},
+            client_id="c", token_endpoint="e",
+        )
+        assert seen == {"read_locked": True, "persist_locked": True}
+        assert locked_paths == [path]
+        assert not oauth._refresh_lock.locked()
+        assert "other" in json.loads(path.read_text())["hosts"]
+
 
 class TestApplyTokenToClient:
     def test_mutates_live_bearer(self):
@@ -199,3 +231,143 @@ class TestApplyTokenToClient:
 
     def test_returns_false_when_shape_unknown(self):
         assert oauth.apply_token_to_client(object(), "hch-at-new") is False
+
+
+class TestPersistReadFailure:
+    """One unreadable honcho.json must never become a single-host store.
+
+    ``_persist_credential`` promises "leaving all else intact", but it seeded
+    the write from a reader that returned ``{}`` on ANY read failure, and
+    ``_atomic_write_config`` replaces the whole file via ``os.replace`` —
+    which needs only a writable parent, so a present-but-unreadable store did
+    not stop the overwrite. Same class as the auth-store fix in #75206.
+    """
+
+    @staticmethod
+    def _seed_two_hosts(path: Path) -> bytes:
+        _write(path, {
+            "hosts": {
+                "keep.example": _host_block(refresh="hch-rt-keep"),
+                "rotate.example": _host_block(refresh="hch-rt-rot"),
+            },
+            "defaults": {"workspace": "w1"},
+        })
+        return path.read_bytes()
+
+    def _unreadable(self, monkeypatch, target: Path):
+        real = Path.read_text
+
+        def boom(self, *a, **kw):
+            if self.name == target.name:
+                raise PermissionError(13, "Permission denied")
+            return real(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_text", boom)
+
+    def test_persist_raises_and_preserves_store_when_unreadable(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "honcho.json"
+        before = self._seed_two_hosts(path)
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-new"))
+
+        with monkeypatch.context() as m:
+            self._unreadable(m, path)
+            with pytest.raises(OSError):
+                oauth._persist_credential(path, "rotate.example", cred)
+
+        assert path.read_bytes() == before
+
+    def test_rotate_refuses_before_spending_the_refresh_token(
+        self, tmp_path, monkeypatch
+    ):
+        # Rotation is single-use: an exchange whose result cannot be persisted
+        # loses the grant, so an unreadable store must fail the refresh BEFORE
+        # the exchange, not after.
+        path = tmp_path / "honcho.json"
+        before = self._seed_two_hosts(path)
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-rot"))
+        key = (str(path), "rotate.example")
+        oauth._refresh_failure_at.pop(key, None)
+
+        def no_exchange(*a, **kw):  # pragma: no cover - must not run
+            raise AssertionError("exchange ran against an unreadable store")
+
+        with monkeypatch.context() as m:
+            m.setattr(oauth, "_exchange_with_retry", no_exchange)
+            self._unreadable(m, path)
+            assert oauth._rotate_and_persist(
+                path, "rotate.example", key, cred, now=1.0
+            ) is None
+
+        assert key in oauth._refresh_failure_at
+        oauth._refresh_failure_at.pop(key, None)
+        assert path.read_bytes() == before
+
+    def test_corrupt_store_refuses_to_persist(self, tmp_path):
+        path = tmp_path / "honcho.json"
+        truncated = json.dumps(
+            {"hosts": {"keep.example": _host_block(refresh="hch-rt-keep")}}
+        )[:-5]
+        path.write_text(truncated, encoding="utf-8")
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-new"))
+
+        with pytest.raises(ValueError):
+            oauth._read_config_strict(path)
+        with pytest.raises(ValueError):
+            oauth._persist_credential(path, "keep.example", cred)
+        with pytest.raises(ValueError):
+            oauth.install_grant(
+                path, "new.example",
+                {"access_token": "hch-at-new", "refresh_token": "hch-rt-new", "expires_in": 3600},
+                client_id="hermes-desktop", token_endpoint="http://localhost:8000/oauth/token",
+            )
+        assert path.read_text(encoding="utf-8") == truncated
+        assert not path.with_name(path.name + ".corrupt").exists()
+
+    def test_corrupt_store_fails_the_refresh_before_the_exchange(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        path.write_text("{not json", encoding="utf-8")
+        cred = OAuthCredential.from_host_block(_host_block(refresh="hch-rt-rot"))
+        key = (str(path), "rotate.example")
+        oauth._refresh_failure_at.pop(key, None)
+
+        def no_exchange(*a, **kw):  # pragma: no cover - must not run
+            raise AssertionError("exchange ran against a corrupt store")
+
+        monkeypatch.setattr(oauth, "_exchange_with_retry", no_exchange)
+        assert oauth._rotate_and_persist(path, "rotate.example", key, cred, now=1.0) is None
+        assert key in oauth._refresh_failure_at
+        oauth._refresh_failure_at.pop(key, None)
+        assert path.read_text(encoding="utf-8") == "{not json"
+
+    def test_missing_store_still_bootstraps_empty(self, tmp_path):
+        assert oauth._read_config_strict(tmp_path / "honcho.json") == {}
+
+    def test_bom_prefixed_store_is_not_corruption(self, tmp_path):
+        path = tmp_path / "honcho.json"
+        path.write_text(
+            json.dumps({"hosts": {"keep.example": _host_block()}}),
+            encoding="utf-8-sig",
+        )
+        assert "keep.example" in oauth._read_config(path).get("hosts", {})
+        assert "keep.example" in oauth._read_config_strict(path).get("hosts", {})
+
+    def test_install_grant_raises_and_preserves_store_when_unreadable(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "honcho.json"
+        before = self._seed_two_hosts(path)
+
+        with monkeypatch.context() as m:
+            self._unreadable(m, path)
+            with pytest.raises(OSError):
+                oauth.install_grant(
+                    path, "new.example",
+                    {"access_token": "hch-at-new", "refresh_token": "hch-rt-new",
+                     "expires_in": 3600},
+                    client_id="hermes-desktop",
+                    token_endpoint="http://localhost:8000/oauth/token",
+                )
+
+        assert path.read_bytes() == before

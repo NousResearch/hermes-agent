@@ -94,9 +94,11 @@ class SessionAuthMixin:
         except Exception:
             return False
 
-    def _force_reauth(self) -> bool:
+    def _force_reauth(self, failed_access_token: str | None = None) -> bool:
         """Rotate the token after a 401 and rebind the client. False for a static API key, a dead
-        grant, or a failed exchange."""
+        grant, or a failed exchange. ``failed_access_token`` is the bearer the failing operation
+        sent, snapshotted by ``_authed_call`` before it ran: the live client's ``api_key`` is
+        rotated in place by sibling waiters, so reading it here would defeat the adopt check."""
         try:
             from plugins.memory.honcho import oauth
             from plugins.memory.honcho.client import reset_honcho_client
@@ -104,7 +106,9 @@ class SessionAuthMixin:
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            token = oauth.force_refresh_token(self._bound_config_path(), host)
+            token = oauth.force_refresh_token(
+                self._bound_config_path(), host, failed_access_token=failed_access_token
+            )
             if not token:
                 return False
             if not oauth.apply_token_to_client(self.honcho, token):
@@ -127,6 +131,11 @@ class SessionAuthMixin:
             exc = HonchoAuthError(_REAUTH_REQUIRED_MESSAGE)
             self._record_auth_failure(exc)
             raise exc
+        # Snapshot the bearer first: after a 401 the client's api_key may already hold a sibling's rotation.
+        try:
+            failed_token = getattr(getattr(self.honcho, "_http", None), "api_key", None)
+        except Exception:
+            failed_token = None
         try:
             result = operation()
         except HonchoAuthError:
@@ -136,7 +145,7 @@ class SessionAuthMixin:
                 raise
             logger.warning("Honcho %s hit an auth error; forcing token refresh and retrying once: %s",
                            op_name, _redact_tokens(str(e)))
-            if not self._force_reauth():
+            if not self._force_reauth(failed_access_token=failed_token):
                 self._record_auth_failure(e)
                 raise HonchoAuthError(_auth_error_message(e)) from e
             try:

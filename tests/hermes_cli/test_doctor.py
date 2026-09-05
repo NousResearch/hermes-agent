@@ -1758,3 +1758,219 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     doctor_tools._check_docker_backend("docker", False, [])
 
     assert calls and calls[0][:2] == ["docker", "version"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "expected_model", "extra_config"),
+    [
+        ("openai-codex", "openai-codex/gpt-5.6-sol", "gpt-5.6-sol", ""),
+        ("openrouter", "openai/gpt-5.6-sol", "openai/gpt-5.6-sol", ""),
+        (
+            "custom:hpc-ai",
+            "deepseek/deepseek-v4-flash",
+            "deepseek/deepseek-v4-flash",
+            "custom_providers:\n"
+            "  - name: hpc-ai\n"
+            "    base_url: https://hpc-ai.example/v1\n"
+            "    api_key: test-key\n",
+        ),
+    ],
+)
+def test_doctor_fix_canonicalizes_legacy_model_config(
+    monkeypatch, tmp_path, provider, model, expected_model, extra_config
+):
+    """One repair pass canonicalizes safely and remains idempotent."""
+    import yaml
+
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        f"model: {model}\n"
+        f"provider: {provider}\n"
+        f"{extra_config}",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+
+    from hermes_cli import config as config_mod
+
+    writes = 0
+    real_atomic_config_write = config_mod.atomic_config_write
+
+    def count_atomic_write(*args, **kwargs):
+        nonlocal writes
+        writes += 1
+        return real_atomic_config_write(*args, **kwargs)
+
+    monkeypatch.setattr(config_mod, "atomic_config_write", count_atomic_write)
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        doctor_mod.run_doctor(Namespace(fix=True))
+
+    repaired_text = (home / "config.yaml").read_text(encoding="utf-8")
+    repaired = yaml.safe_load(repaired_text)
+    assert repaired["model"] == {
+        "default": expected_model,
+        "provider": provider,
+    }
+    assert "provider" not in repaired
+    assert writes == 1
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        doctor_mod.run_doctor(Namespace(fix=True))
+
+    assert (home / "config.yaml").read_text(encoding="utf-8") == repaired_text
+    assert writes == 1
+
+
+@pytest.mark.parametrize(
+    ("provider", "default_model", "extra_config", "expect_warning"),
+    [
+        # Native provider + vendor-prefixed model: diagnose, do not rewrite.
+        ("openai-codex", "openai-codex/gpt-5.6-sol", "", True),
+        # Aggregator: vendor/model is the correct shape — stay silent.
+        ("openrouter", "openai/gpt-5.6-sol", "", False),
+        # Named custom provider: also exempt from the vendor-prefix warning.
+        (
+            "custom:hpc-ai",
+            "deepseek/deepseek-v4-flash",
+            "custom_providers:\n"
+            "  - name: hpc-ai\n"
+            "    base_url: https://hpc-ai.example/v1\n"
+            "    api_key: test-key\n",
+            False,
+        ),
+    ],
+)
+def test_doctor_without_fix_reports_vendor_prefix_without_writing(
+    monkeypatch, tmp_path, provider, default_model, extra_config, expect_warning
+):
+    """``doctor`` (no --fix) diagnoses the native vendor-prefix case read-only.
+
+    Locks the warning shape for the diagnostic path and pins that the
+    aggregator/custom-provider exemptions stay silent. The read-only run must
+    never touch config.yaml — the repair is opt-in via --fix.
+
+    Uses the already-nested ``model:`` mapping rather than the legacy scalar
+    form: without --fix the root-key migration does not run, so a scalar
+    ``model:`` leaves ``model_section`` a string and the vendor-prefix check
+    is skipped entirely. That read-only blind spot predates this change (see
+    the companion test below, which pins it as known behaviour).
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("", encoding="utf-8")
+    original_text = (
+        "model:\n"
+        f"  default: {default_model}\n"
+        f"  provider: {provider}\n"
+        f"{extra_config}"
+    )
+    (home / "config.yaml").write_text(original_text, encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+
+    from hermes_cli import config as config_mod
+
+    def fail_atomic_write(*args, **kwargs):
+        raise AssertionError("doctor without --fix must not write config.yaml")
+
+    monkeypatch.setattr(config_mod, "atomic_config_write", fail_atomic_write)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    warning = (
+        f"model.default '{default_model}' uses a vendor/model slug "
+        f"but provider is '{provider}'"
+    )
+    if expect_warning:
+        assert warning in out
+    else:
+        assert warning not in out
+
+    # Read-only: the file is byte-for-byte untouched.
+    assert (home / "config.yaml").read_text(encoding="utf-8") == original_text
+
+
+def test_doctor_without_fix_skips_vendor_prefix_check_on_legacy_scalar_config(
+    monkeypatch, tmp_path
+):
+    """Known gap: the read-only path cannot see into a legacy scalar ``model:``.
+
+    ``_normalize_root_model_keys`` only runs under --fix, so a config using the
+    old ``model: <id>`` + root ``provider:`` shape leaves ``model_section`` as a
+    string. ``model_section.get(...)`` then yields nothing and the
+    vendor-prefix check is skipped, so plain ``hermes doctor`` stays silent on a
+    config that ``--fix`` does repair.
+
+    Pinned deliberately so the day someone hoists the migration out of the
+    ``should_fix`` branch, this test fails and is updated to assert the warning.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("", encoding="utf-8")
+    original_text = "model: openai-codex/gpt-5.6-sol\nprovider: openai-codex\n"
+    (home / "config.yaml").write_text(original_text, encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    from hermes_cli import auth as _auth_mod
+
+    monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+    monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert "uses a vendor/model slug" not in buf.getvalue()
+    # Still strictly read-only.
+    assert (home / "config.yaml").read_text(encoding="utf-8") == original_text

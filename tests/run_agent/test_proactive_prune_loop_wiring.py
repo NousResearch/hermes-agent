@@ -270,7 +270,7 @@ class TestProactivePruneLoopWiring:
 
     def test_committed_prune_resets_only_effective_task_caches(self, agent):
         """Characterize task isolation at the proactive-prune call boundary."""
-        from tools import file_tools_read_tracking as file_tools, skills_tool
+        from tools import file_tools_read_tracking as file_tools, skills_tool_dedup as skills_tool
 
         committed = False
         effective_task_id = "active-prune-task"

@@ -197,3 +197,47 @@ def test_retry_gate_publishes_a_distinct_stage(tmp_path):
         "Updating code and dependencies",
         "Retrying update",
     ]
+
+
+def _extract_notify_fallback(src: str) -> str:
+    start = src.index("notify_fallback() {")
+    end = src.index("\nwrite_status()", start)
+    return src[start:end].rstrip() + "\n"
+
+
+@requires_posix_handoff
+def test_notify_fallback_fires_on_done_without_a_shim(tmp_path):
+    """Renderer-less success publishes status=done; that must reach the OS notifier.
+
+    #103058: notify_fallback used to return immediately unless the status was
+    manual|error, so Chromium-less machines got silence until relaunch.
+    """
+    src = _extract_notify_fallback((SHIM_DIR / "posix.sh").read_text())
+    record = tmp_path / "osascript.log"
+    stub = tmp_path / "osascript"
+    stub.write_text(
+        "#!/bin/bash\n"
+        f"printf '%s\\n' \"$*\" >> '{record}'\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    src = src.replace("/usr/bin/osascript", str(stub))
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        "#!/bin/bash\n"
+        "set -u\n"
+        "log() { :; }\n"
+        "uname() { echo Darwin; }\n"
+        f"{src}\n"
+        "notify_fallback running 'should-not-notify'\n"
+        "notify_fallback done ''\n"
+        "notify_fallback error 'Update failed.'\n",
+        encoding="utf-8",
+    )
+    harness.chmod(0o755)
+    subprocess.run(["/bin/bash", str(harness)], check=True, timeout=10)
+    logged = record.read_text(encoding="utf-8")
+    assert "Hermes update complete." in logged
+    assert "Update failed." in logged
+    assert "should-not-notify" not in logged

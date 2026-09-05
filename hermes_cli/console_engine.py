@@ -721,7 +721,7 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> None:
         return
     print(f"{db_path} does not open cleanly: {reason}")
     if ns.check_only:
-        return
+        raise ConsoleCommandError(f"{db_path} does not open cleanly: {reason}")
     report = repair_state_db_schema(db_path, backup=not ns.no_backup)
     if not report.get("repaired"):
         raise ConsoleCommandError(f"Repair failed: {report.get('error')}")

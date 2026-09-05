@@ -60,6 +60,20 @@ function gitFor(cwd, gitBin) {
   })
 }
 
+async function reviewCwd(repoPath, purpose, gitBin) {
+  const cwd = resolveRequestedPathForIpc(repoPath, { purpose })
+
+  try {
+    const root = String(await gitFor(cwd, gitBin).revparse(['--show-toplevel'])).trim()
+
+    return root ? path.resolve(root) : cwd
+  } catch {
+    // Preserve existing off-repo behavior. Only cwd values already inside a
+    // repository are normalized to its top level.
+    return cwd
+  }
+}
+
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
 // to the NEW path so the row addresses the real file for diff/stage.
 function resolveRenamePath(raw) {
@@ -236,7 +250,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
   let cwd
 
   try {
-    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review list' })
+    cwd = await reviewCwd(repoPath, 'Review list', gitBin)
   } catch {
     return { files: [], base: null }
   }
@@ -329,7 +343,7 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   let cwd
 
   try {
-    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review diff' })
+    cwd = await reviewCwd(repoPath, 'Review diff', gitBin)
   } catch {
     return ''
   }
@@ -409,7 +423,7 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
 }
 
 async function reviewStage(repoPath, filePath, gitBin) {
-  const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review stage' })
+  const cwd = await reviewCwd(repoPath, 'Review stage', gitBin)
 
   await gitFor(cwd, gitBin).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
 
@@ -417,7 +431,7 @@ async function reviewStage(repoPath, filePath, gitBin) {
 }
 
 async function reviewUnstage(repoPath, filePath, gitBin) {
-  const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review unstage' })
+  const cwd = await reviewCwd(repoPath, 'Review unstage', gitBin)
 
   await gitFor(cwd, gitBin).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
 
@@ -427,7 +441,7 @@ async function reviewUnstage(repoPath, filePath, gitBin) {
 // Discard changes back to the committed state. Destructive — the renderer
 // confirms first. Restores tracked files and removes untracked ones.
 async function reviewRevert(repoPath, filePath, gitBin) {
-  const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review revert' })
+  const cwd = await reviewCwd(repoPath, 'Review revert', gitBin)
   const git = gitFor(cwd, gitBin)
 
   if (filePath) {

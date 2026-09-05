@@ -19,6 +19,8 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
+
 from hermes_cli import setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
@@ -2740,10 +2742,63 @@ def _service_venv_dir() -> str:
     return str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
 
+# Resource-pointer env vars the ``hermes`` wrapper exports so packaged installs
+# (Homebrew, Nix) can locate bundled plugins/skills/locales/TUI assets that live
+# outside site-packages (e.g. ``<prefix>/share/hermes-agent/plugins``). launchd
+# and systemd start the venv python directly, bypassing the wrapper, so these
+# must be baked into the generated service definition — otherwise the supervised
+# gateway falls back to the in-repo ``plugins/`` path, discovers zero bundled
+# platform manifests, and logs "No adapter available for <platform>". See #85357.
+_BUNDLED_RESOURCE_ENV_VARS = (
+    "HERMES_BUNDLED_PLUGINS",
+    "HERMES_BUNDLED_SKILLS",
+    "HERMES_BUNDLED_LOCALES",
+    "HERMES_OPTIONAL_SKILLS",
+    "HERMES_TUI_DIR",
+)
+
+
+def _bundled_resource_env_pairs() -> list[tuple[str, str]]:
+    """Return ``(name, value)`` for each bundled-resource env var currently set.
+
+    Empty on a standard pip/uv install where the wrapper isn't involved, so the
+    generated unit is byte-for-byte unchanged for those deployments.
+    """
+    pairs: list[tuple[str, str]] = []
+    for name in _BUNDLED_RESOURCE_ENV_VARS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            pairs.append((name, value))
+    return pairs
+
+
+def _systemd_env_value_escape(value: str) -> str:
+    """Escape a value for a double-quoted systemd ``Environment=`` directive.
+
+    systemd unescapes C-style sequences inside the quotes and expands ``%``
+    specifiers, so a bundled path containing ``"``, ``\\`` or ``%`` would
+    otherwise truncate the value or be silently rewritten — breaking the
+    supervised gateway this propagation is meant to fix. Escape backslash and
+    quote for the quoting layer, then double ``%`` to defeat specifier
+    expansion. Ordinary paths (no special chars) are returned unchanged.
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("%", "%%")
+    )
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
     venv_dir = _service_venv_dir()
+    # Propagate the wrapper's bundled-resource pointers (empty → no-op). Rendered
+    # as extra ``Environment=`` lines appended after HERMES_SUPERVISED_CHILD below.
+    bundled_env_block = "".join(
+        f'\nEnvironment="{name}={_systemd_env_value_escape(value)}"'
+        for name, value in _bundled_resource_env_pairs()
+    )
 
     path_entries = _build_service_path_dirs()
     if not system:
@@ -2808,7 +2863,7 @@ WorkingDirectory={working_dir}
 {env_lines}Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
-Environment="HERMES_SUPERVISED_CHILD=1"
+Environment="HERMES_SUPERVISED_CHILD=1"{bundled_env_block}
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
@@ -3649,6 +3704,15 @@ def generate_launchd_plist() -> str:
         for part in _timestamped_stderr_gateway_command(log_dir / "gateway.error.log", external_supervisor=True)
     )
 
+    # Propagate the wrapper's bundled-resource pointers into the plist so the
+    # launchd-supervised gateway (which starts the venv python directly, not the
+    # wrapper) can still find bundled plugins/skills/locales. Empty → no-op. See
+    # #85357. Rendered as extra <key>/<string> pairs inside EnvironmentVariables.
+    bundled_env_xml = "".join(
+        f"\n        <key>{name}</key>\n        <string>{_xml_escape(value)}</string>"
+        for name, value in _bundled_resource_env_pairs()
+    )
+
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
     nofile_block = ""
@@ -3690,7 +3754,7 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
-        <string>1</string>
+        <string>1</string>{bundled_env_xml}
     </dict>
 
     <key>LimitLoadToSessionType</key>

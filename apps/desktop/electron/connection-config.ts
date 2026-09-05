@@ -636,6 +636,14 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return true
   }
 
+  // Session reads already accept `profile` and open that profile's state.db
+  // read-only. Keep ownership probes and transcript reads on the shared primary
+  // instead of spawning one local backend per profile. Writes remain pooled so
+  // their process-level profile scope and side effects are unchanged.
+  if (method === 'GET' && (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/'))) {
+    return true
+  }
+
   // Every current /api/tools handler accepts `profile`; every /api/profiles
   // handler either aggregates profiles or names its target in the path/body.
   // These are the only whole families safe to route through the primary.

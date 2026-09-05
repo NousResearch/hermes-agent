@@ -1133,6 +1133,130 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, usage)
 
 
+@_session_method("session.account_usage")
+def _(rid, params: dict, session: dict) -> dict:
+    """Return a discriminated provider-limits envelope without exposing credentials.
+
+    ``status`` is ``ok`` (snapshot available), ``unsupported`` (resolved
+    provider has no account-usage fetcher; the renderer should stop
+    refetching), or ``unavailable`` (retryable, with a machine-readable
+    ``reason``). The renderer still reads the ``account_usage`` key.
+
+    This stays session-scoped: the live agent selects the provider, endpoint,
+    and exact credential identity. A renderer receives only the normalized
+    quota snapshot, never the OAuth token or account headers.
+
+    Profile safety: session-scoped RPCs are routed to the session owner's
+    backend, so the process env is already that profile's. App-global remote
+    can still host multiple profiles in one process. The persisted-fallback
+    DB read uses ``_session_db`` (profile-home-aware) and stays outside
+    ``_session_profile_runtime_scope``; only the credential-resolving fetch
+    runs inside that scope so OpenRouter/Anthropic config and OAuth resolve
+    against the session's ``profile_home`` rather than the launch-process env.
+    """
+    from agent.account_usage import (
+        SUPPORTED_ACCOUNT_USAGE_PROVIDERS,
+        fetch_account_usage,
+        serialize_account_usage_snapshot,
+    )
+    from agent.anthropic_credentials import _is_oauth_token
+
+    agent = session.get("agent")
+    provider = None
+    base_url = None
+    api_key = None
+    if agent is not None:
+        provider = str(getattr(agent, "provider", "") or "").strip().lower()
+        raw_base = getattr(agent, "base_url", None)
+        base_url = raw_base.strip() if isinstance(raw_base, str) else raw_base
+        raw_key = getattr(agent, "api_key", None)
+        # Non-str keys (lazy callables) are absent here — never str() them into
+        # a fake token. Codex then fail-closes instead of substituting pool creds.
+        api_key = raw_key.strip() if isinstance(raw_key, str) else None
+        if api_key == "":
+            api_key = None
+    else:
+        with _session_db(session) as db:
+            if db is not None:
+                key = session["session_key"]
+                try:
+                    route = db.get_dominant_session_model_route(key)
+                except Exception:
+                    route = None
+                persisted_route = route if isinstance(route, dict) else {}
+                if persisted_route.get("billing_provider"):
+                    provider = persisted_route["billing_provider"]
+                    base_url = persisted_route.get("billing_base_url")
+                else:
+                    try:
+                        persisted = db.get_session(key) or {}
+                    except Exception:
+                        persisted = {}
+                    provider = persisted.get("billing_provider")
+                    base_url = persisted.get("billing_base_url")
+        provider = str(provider or "").strip().lower()
+        if isinstance(base_url, str):
+            base_url = base_url.strip() or None
+
+    if not provider:
+        return _ok(
+            rid,
+            {"status": "unavailable", "account_usage": None, "reason": "no-provider"},
+        )
+    if provider not in SUPPORTED_ACCOUNT_USAGE_PROVIDERS:
+        return _ok(rid, {"status": "unsupported", "account_usage": None})
+    if provider == "openai-codex" and not api_key:
+        # The generic /usage helper may select a singleton or pool credential
+        # when no key is supplied. A session-scoped read must never substitute
+        # another account for the credential already chosen by this session.
+        return _ok(
+            rid,
+            {"status": "unavailable", "account_usage": None, "reason": "no-credential"},
+        )
+    if provider == "anthropic" and api_key and not _is_oauth_token(api_key):
+        # The Anthropic usage endpoint is queried with the profile's resolved
+        # OAuth token. A live agent on a plain API key is a different account
+        # we cannot query, so fail closed rather than show the wrong account.
+        # An OAuth-shaped live key is the same account as resolve_anthropic_token();
+        # no live agent (persisted fallback, api_key None) uses the profile
+        # token, which is the right account.
+        return _ok(
+            rid,
+            {"status": "unavailable", "account_usage": None, "reason": "no-credential"},
+        )
+
+    try:
+        with _session_profile_runtime_scope(session):
+            snapshot = fetch_account_usage(
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+            )
+        if snapshot is None:
+            return _ok(
+                rid,
+                {"status": "unavailable", "account_usage": None, "reason": "no-data"},
+            )
+        if not snapshot.available:
+            return _ok(
+                rid,
+                {"status": "unavailable", "account_usage": None, "reason": "no-data"},
+            )
+        return _ok(
+            rid,
+            {
+                "status": "ok",
+                "account_usage": serialize_account_usage_snapshot(snapshot),
+            },
+        )
+    except Exception:
+        logger.debug("failed to fetch session account usage", exc_info=True)
+        return _ok(
+            rid,
+            {"status": "unavailable", "account_usage": None, "reason": "fetch-failed"},
+        )
+
+
 @_session_method("session.context_breakdown")
 def _(rid, params: dict, session: dict) -> dict:
     if (agent := session.get("agent")) is None:

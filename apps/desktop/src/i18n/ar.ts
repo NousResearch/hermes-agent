@@ -2300,6 +2300,52 @@ export const ar = defineLocale({
       cron: 'المهام',
       openCron: 'فتح المهام المجدولة',
       turnRunning: 'الدور يعمل',
+      toggleAccountUsage: 'استخدام الحساب',
+      accountUsage: 'استخدام الحساب',
+      accountUsageLeft: remaining => `متبقٍ ${remaining}%`,
+      accountUsagePanel: {
+        openUsageSettings: 'فتح إعدادات الاستخدام',
+        plan: plan => `خطة ${plan}`,
+        refresh: 'تحديث',
+        remaining: remaining => `متبقٍ ${remaining}%`,
+        resets: time => `يُعاد التعيين ${time}`,
+        sessionLine: (input, output, total) => `${input} وارد · ${output} صادر · ${total} إجمالي`,
+        stale: 'تعذر تحديث الاستخدام. يتم عرض آخر نتيجة ناجحة.',
+        thisSession: 'هذه الجلسة',
+        title: 'استخدام الحساب',
+        unavailable: 'غير متاح',
+        updated: time => `حُدّث ${time}`,
+        updatedUnknown: 'وقت التحديث غير معروف',
+        used: used => `مستخدم ${used}%`,
+        apiKeyUsage: 'استخدام مفتاح API',
+        bankedResets: count =>
+          count === 1
+            ? 'لديك إعادة تعيين واحدة محفوظة — استخدم /usage reset للتفعيل'
+            : `لديك ${count} إعادة تعيين محفوظة — استخدم /usage reset للتفعيل`,
+        creditsBalance: 'رصيد الاعتمادات',
+        creditsUnlimited: 'غير محدود',
+        extraUsage: 'استخدام إضافي',
+        extraUsageValue: (used, limit) => `${used} / ${limit}`,
+        ofLimitRemaining: (remaining, limit) => `متبقٍ ${remaining} من ${limit}`,
+        resetIntervals: {
+          daily: 'يُعاد التعيين يومياً',
+          monthly: 'يُعاد التعيين شهرياً',
+          weekly: 'يُعاد التعيين أسبوعياً'
+        },
+        usageThisMonth: value => `${value} هذا الشهر`,
+        usageThisWeek: value => `${value} هذا الأسبوع`,
+        usageToday: value => `${value} اليوم`,
+        usageTotal: value => `${value} إجمالي`,
+        windowLabels: {
+          api_key_quota: 'حصة مفتاح API',
+          current_session: 'الجلسة الحالية',
+          current_week: 'الأسبوع الحالي',
+          opus_week: 'أسبوع Opus',
+          session: 'الجلسة',
+          sonnet_week: 'أسبوع Sonnet',
+          weekly: 'أسبوعي'
+        }
+      },
       contextUsage: 'استخدام السياق',
       session: 'الجلسة',
       yoloOn: 'YOLO مفعل',

@@ -749,6 +749,43 @@ export interface UsageStats {
   total: number
 }
 
+export interface AccountUsageRow {
+  key: string
+  args?: Record<string, number | string>
+}
+
+export interface AccountUsageWindow {
+  detail?: null | string
+  label: string
+  reset_at?: null | string
+  used_percent?: null | number
+  label_key?: string
+  limit?: number
+  limit_remaining?: number
+  reset_interval?: string
+}
+
+export interface AccountUsageSnapshot {
+  available?: boolean
+  credits_balance?: null | number
+  details: string[]
+  details_structured?: boolean
+  fetched_at: string
+  plan?: null | string
+  provider: string
+  rows?: AccountUsageRow[]
+  source: string
+  title: string
+  unavailable_reason?: null | string
+  windows: AccountUsageWindow[]
+}
+
+export interface AccountUsageResponse {
+  account_usage?: AccountUsageSnapshot | null
+  reason?: string
+  status?: 'ok' | 'unavailable' | 'unsupported'
+}
+
 /** One graph node in the star map (learned skill or memory chunk). */
 export interface StarmapNode {
   id: string

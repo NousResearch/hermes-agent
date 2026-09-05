@@ -3099,6 +3099,7 @@ export const ru = defineLocale({
       hideStatusbar: 'Скрыть статус-бар',
       resetStatusbar: 'Сбросить к значениям по умолчанию',
       toggleApprovalMode: 'Подтверждения',
+      toggleAccountUsage: 'Лимиты аккаунта',
       toggleBackendVersion: 'Версия бэкенда',
       toggleCacheHitRate: 'Попадания в кэш',
       toggleCommandCenter: 'Командный центр',
@@ -3124,6 +3125,49 @@ export const ru = defineLocale({
       starmap: 'Граф памяти',
       openStarmap: 'Открыть граф памяти',
       turnRunning: 'Выполняется',
+      accountUsage: 'Лимиты аккаунта',
+      accountUsageLeft: remaining => `осталось ${remaining}%`,
+      accountUsagePanel: {
+        openUsageSettings: 'Открыть настройки использования',
+        plan: plan => `план ${plan}`,
+        refresh: 'Обновить',
+        remaining: remaining => `осталось ${remaining}%`,
+        resets: time => `сброс ${time}`,
+        sessionLine: (input, output, total) => `${input} вх. · ${output} исх. · ${total} всего`,
+        stale: 'Не удалось обновить данные. Показан последний успешный результат.',
+        thisSession: 'Этот сеанс',
+        title: 'Лимиты аккаунта',
+        unavailable: 'Недоступно',
+        updated: time => `Обновлено ${time}`,
+        updatedUnknown: 'Время обновления неизвестно',
+        used: used => `использовано ${used}%`,
+        apiKeyUsage: 'Использование API-ключа',
+        bankedResets: count =>
+          `У вас ${count} ${RU_PLURAL(count, 'сохранённый сброс', 'сохранённых сброса', 'сохранённых сбросов')} — используйте /usage reset, чтобы активировать`,
+        creditsBalance: 'Баланс кредитов',
+        creditsUnlimited: 'Безлимитно',
+        extraUsage: 'Дополнительное использование',
+        extraUsageValue: (used, limit) => `${used} / ${limit}`,
+        ofLimitRemaining: (remaining, limit) => `осталось ${remaining} из ${limit}`,
+        resetIntervals: {
+          daily: 'сброс ежедневно',
+          monthly: 'сброс ежемесячно',
+          weekly: 'сброс еженедельно'
+        },
+        usageThisMonth: value => `${value} за месяц`,
+        usageThisWeek: value => `${value} за неделю`,
+        usageToday: value => `${value} сегодня`,
+        usageTotal: value => `${value} всего`,
+        windowLabels: {
+          api_key_quota: 'Квота API-ключа',
+          current_session: 'Текущий сеанс',
+          current_week: 'Текущая неделя',
+          opus_week: 'Неделя Opus',
+          session: 'Сеанс',
+          sonnet_week: 'Неделя Sonnet',
+          weekly: 'Неделя'
+        }
+      },
       contextUsage: 'Использование контекста',
       contextUsagePanel: {
         categories: {

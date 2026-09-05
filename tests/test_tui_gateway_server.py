@@ -4646,6 +4646,479 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_account_usage_returns_normalized_secret_free_snapshot(monkeypatch):
+    agent = types.SimpleNamespace(
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="oauth-secret",
+    )
+    server._sessions["usage-sid"] = _session(agent=agent)
+    captured = {}
+
+    def _fetch(provider, *, base_url=None, api_key=None):
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+        captured.update(provider=provider, base_url=base_url, api_key=api_key)
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.fromisoformat("2026-07-16T01:02:03+00:00"),
+            plan="Plus",
+            windows=(AccountUsageWindow(label="Session", used_percent=27),),
+        )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    result = response["result"]
+    payload = result["account_usage"]
+    assert result["status"] == "ok"
+    assert captured == {
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "oauth-secret",
+    }
+    assert payload["available"] is True
+    assert payload["plan"] == "Plus"
+    assert payload["windows"] == [
+        {
+            "label": "Session",
+            "used_percent": 27,
+            "reset_at": None,
+            "detail": None,
+        }
+    ]
+    assert payload["credits_balance"] is None
+    assert "oauth-secret" not in repr(result)
+
+
+def test_session_account_usage_openrouter_live_agent_includes_credits_balance(monkeypatch):
+    agent = types.SimpleNamespace(
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="oauth-secret",
+    )
+    server._sessions["usage-sid"] = _session(agent=agent)
+
+    def _fetch(provider, *, base_url=None, api_key=None):
+        from agent.account_usage import AccountUsageSnapshot
+
+        assert provider == "openrouter"
+        return AccountUsageSnapshot(
+            provider="openrouter",
+            source="credits_api",
+            fetched_at=datetime.fromisoformat("2026-07-16T01:02:03+00:00"),
+            details=("Credits balance: $12.50",),
+            credits_balance=12.5,
+        )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    result = response["result"]
+    assert result["status"] == "ok"
+    assert result["account_usage"]["credits_balance"] == 12.5
+    assert "oauth-secret" not in repr(result)
+
+
+def test_session_account_usage_unsupported_provider_does_not_fetch(monkeypatch):
+    server._sessions["usage-sid"] = _session(
+        agent=types.SimpleNamespace(provider="gemini", api_key="oauth-secret")
+    )
+    fetch = Mock(side_effect=AssertionError("unsupported providers must not fetch"))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert response["result"] == {"status": "unsupported", "account_usage": None}
+    fetch.assert_not_called()
+    assert "oauth-secret" not in repr(response["result"])
+
+
+def test_session_account_usage_persisted_openrouter_route_without_live_agent(monkeypatch):
+    class _DbCtx:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeDb:
+        def get_dominant_session_model_route(self, key):
+            assert key == "session-key"
+            return {
+                "billing_provider": "openrouter",
+                "billing_base_url": "https://openrouter.ai/api/v1",
+            }
+
+        def get_session(self, key):
+            raise AssertionError("dominant route should win")
+
+    captured = {}
+
+    def _fetch(provider, *, base_url=None, api_key=None):
+        from agent.account_usage import AccountUsageSnapshot
+
+        captured.update(provider=provider, base_url=base_url, api_key=api_key)
+        return AccountUsageSnapshot(
+            provider="openrouter",
+            source="credits_api",
+            fetched_at=datetime.fromisoformat("2026-07-16T01:02:03+00:00"),
+            details=("Credits balance: $1.00",),
+            credits_balance=1.0,
+        )
+
+    session = _session()
+    session["agent"] = None
+    server._sessions["usage-sid"] = session
+    monkeypatch.setattr(server, "_session_db", lambda _session: _DbCtx(FakeDb()))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert captured == {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": None,
+    }
+    assert response["result"]["status"] == "ok"
+    assert response["result"]["account_usage"]["credits_balance"] == 1.0
+
+
+def test_session_account_usage_persisted_anthropic_route_without_live_agent(monkeypatch):
+    class _DbCtx:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeDb:
+        def get_dominant_session_model_route(self, key):
+            assert key == "session-key"
+            return {
+                "billing_provider": "anthropic",
+                "billing_base_url": "https://api.anthropic.com",
+            }
+
+        def get_session(self, key):
+            raise AssertionError("dominant route should win")
+
+    captured = {}
+
+    def _fetch(provider, *, base_url=None, api_key=None):
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+        captured.update(provider=provider, base_url=base_url, api_key=api_key)
+        return AccountUsageSnapshot(
+            provider="anthropic",
+            source="oauth_usage_api",
+            fetched_at=datetime.fromisoformat("2026-07-16T01:02:03+00:00"),
+            windows=(AccountUsageWindow(label="Current session", used_percent=10),),
+        )
+
+    session = _session()
+    session["agent"] = None
+    server._sessions["usage-sid"] = session
+    monkeypatch.setattr(server, "_session_db", lambda _session: _DbCtx(FakeDb()))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert captured == {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key": None,
+    }
+    assert response["result"]["status"] == "ok"
+    assert response["result"]["account_usage"]["provider"] == "anthropic"
+
+
+def test_session_account_usage_persisted_session_row_when_dominant_route_lacks_provider(
+    monkeypatch,
+):
+    class _DbCtx:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeDb:
+        def get_dominant_session_model_route(self, key):
+            assert key == "session-key"
+            return {}
+
+        def get_session(self, key):
+            assert key == "session-key"
+            return {
+                "billing_provider": "openrouter",
+                "billing_base_url": "https://openrouter.ai/api/v1",
+            }
+
+    captured = {}
+
+    def _fetch(provider, *, base_url=None, api_key=None):
+        from agent.account_usage import AccountUsageSnapshot
+
+        captured.update(provider=provider, base_url=base_url, api_key=api_key)
+        return AccountUsageSnapshot(
+            provider="openrouter",
+            source="credits_api",
+            fetched_at=datetime.fromisoformat("2026-07-16T01:02:03+00:00"),
+            details=("Credits balance: $2.00",),
+            credits_balance=2.0,
+        )
+
+    session = _session()
+    session["agent"] = None
+    server._sessions["usage-sid"] = session
+    monkeypatch.setattr(server, "_session_db", lambda _session: _DbCtx(FakeDb()))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert captured == {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": None,
+    }
+    assert response["result"]["status"] == "ok"
+
+
+def test_session_account_usage_no_agent_and_nothing_persisted_is_unavailable(monkeypatch):
+    class _DbCtx:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeDb:
+        def get_dominant_session_model_route(self, _key):
+            return None
+
+        def get_session(self, _key):
+            return {}
+
+    fetch = Mock(side_effect=AssertionError("no-provider must not fetch"))
+    session = _session()
+    session["agent"] = None
+    server._sessions["usage-sid"] = session
+    monkeypatch.setattr(server, "_session_db", lambda _session: _DbCtx(FakeDb()))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert response["result"] == {
+        "status": "unavailable",
+        "account_usage": None,
+        "reason": "no-provider",
+    }
+    fetch.assert_not_called()
+
+
+def test_session_account_usage_db_unavailable_is_no_provider(monkeypatch):
+    class _DbCtx:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return False
+
+    fetch = Mock(side_effect=AssertionError("missing db must not fetch"))
+    session = _session()
+    session["agent"] = None
+    server._sessions["usage-sid"] = session
+    monkeypatch.setattr(server, "_session_db", lambda _session: _DbCtx())
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert response["result"]["reason"] == "no-provider"
+    fetch.assert_not_called()
+
+
+def test_session_account_usage_live_agent_fetch_none_is_unavailable_no_data(monkeypatch):
+    server._sessions["usage-sid"] = _session(
+        agent=types.SimpleNamespace(
+            provider="openai-codex",
+            api_key="oauth-secret",
+        )
+    )
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **k: None)
+    try:
+        unavailable = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert unavailable["result"] == {
+        "status": "unavailable",
+        "account_usage": None,
+        "reason": "no-data",
+    }
+    assert "oauth-secret" not in repr(unavailable["result"])
+
+
+def test_session_account_usage_never_falls_back_without_live_codex_key(monkeypatch):
+    server._sessions["usage-sid"] = _session(
+        agent=types.SimpleNamespace(
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="",
+        )
+    )
+    fetch = Mock(side_effect=AssertionError("credential fallback must not run"))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert response["result"] == {
+        "status": "unavailable",
+        "account_usage": None,
+        "reason": "no-credential",
+    }
+    fetch.assert_not_called()
+
+
+def test_session_account_usage_anthropic_plain_api_key_is_unavailable(monkeypatch):
+    server._sessions["usage-sid"] = _session(
+        agent=types.SimpleNamespace(
+            provider="anthropic",
+            api_key="sk-ant-api03-plain-session-key",
+        )
+    )
+    fetch = Mock(side_effect=AssertionError("plain Anthropic API keys must not fetch"))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert response["result"] == {
+        "status": "unavailable",
+        "account_usage": None,
+        "reason": "no-credential",
+    }
+    fetch.assert_not_called()
+    assert "sk-ant-api03-plain-session-key" not in repr(response["result"])
+
+
+def test_session_account_usage_anthropic_oauth_key_attempts_fetch(monkeypatch):
+    captured = {}
+
+    def _fetch(provider, *, base_url=None, api_key=None):
+        from agent.account_usage import AccountUsageSnapshot
+
+        captured.update(provider=provider, base_url=base_url, api_key=api_key)
+        return AccountUsageSnapshot(
+            provider="anthropic",
+            source="oauth_usage_api",
+            fetched_at=datetime.fromisoformat("2026-07-16T01:02:03+00:00"),
+            windows=(),
+            details=("Extra usage: 1.00 / 10.00 USD",),
+        )
+
+    server._sessions["usage-sid"] = _session(
+        agent=types.SimpleNamespace(
+            provider="anthropic",
+            api_key="sk-ant-oat-session-oauth",
+        )
+    )
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert captured["provider"] == "anthropic"
+    assert captured["api_key"] == "sk-ant-oat-session-oauth"
+    assert response["result"]["status"] == "ok"
+    assert "sk-ant-oat-session-oauth" not in repr(response["result"])
+
+
+def test_session_account_usage_fetch_raising_is_unavailable(monkeypatch):
+    server._sessions["usage-sid"] = _session(
+        agent=types.SimpleNamespace(
+            provider="openrouter",
+            api_key="oauth-secret",
+        )
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        Mock(side_effect=RuntimeError("provider down")),
+    )
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert response["result"] == {
+        "status": "unavailable",
+        "account_usage": None,
+        "reason": "fetch-failed",
+    }
+    assert "oauth-secret" not in repr(response["result"])
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

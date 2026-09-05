@@ -2618,6 +2618,7 @@ export interface Translations {
       hideStatusbar: string
       resetStatusbar: string
       toggleApprovalMode: string
+      toggleAccountUsage: string
       toggleBackendVersion: string
       toggleCacheHitRate: string
       toggleCommandCenter: string
@@ -2643,6 +2644,49 @@ export interface Translations {
       starmap: string
       openStarmap: string
       turnRunning: string
+      currentTurnElapsed: string
+      accountUsage: string
+      accountUsageLeft: (remaining: number) => string
+      accountUsagePanel: {
+        openUsageSettings: string
+        plan: (plan: string) => string
+        refresh: string
+        remaining: (remaining: number) => string
+        resets: (time: string) => string
+        sessionLine: (input: string, output: string, total: string) => string
+        stale: string
+        thisSession: string
+        title: string
+        unavailable: string
+        updated: (time: string) => string
+        updatedUnknown: string
+        used: (used: number) => string
+        apiKeyUsage: string
+        bankedResets: (count: number) => string
+        creditsBalance: string
+        creditsUnlimited: string
+        extraUsage: string
+        extraUsageValue: (used: string, limit: string) => string
+        ofLimitRemaining: (remaining: string, limit: string) => string
+        resetIntervals: {
+          daily: string
+          monthly: string
+          weekly: string
+        }
+        usageThisMonth: (value: string) => string
+        usageThisWeek: (value: string) => string
+        usageToday: (value: string) => string
+        usageTotal: (value: string) => string
+        windowLabels: {
+          api_key_quota: string
+          current_session: string
+          current_week: string
+          opus_week: string
+          session: string
+          sonnet_week: string
+          weekly: string
+        }
+      }
       contextUsage: string
       systemResources: {
         title: string

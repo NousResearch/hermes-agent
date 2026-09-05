@@ -78,6 +78,7 @@ def capture(server):
 FRONTEND_POLLED_RPCS = [
     "session.active_list",   # live-session rehydrate — in-memory registry
     "session.list",          # loads session list — SQLite query
+    "session.account_usage", # provider quota poll — blocking provider HTTP
     "pet.info",              # petdex poll — file/network read
     "process.list",          # background process status — process registry scan
     "setup.runtime_check",   # runtime readiness — resolve_runtime_provider() I/O

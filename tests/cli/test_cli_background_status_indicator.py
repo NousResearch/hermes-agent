@@ -1,7 +1,7 @@
-"""Tests for the /background indicator in the CLI status bar.
+"""Tests for the /bg indicator in the CLI status bar.
 
 The classic prompt_toolkit status bar shows `▶ N` when N tasks launched via
-`/background` are still running. Source of truth is `self._background_tasks`
+`/bg` are still running. Source of truth is `self._background_tasks`
 (a Dict[str, threading.Thread]); entries are removed in the task thread's
 finally block, so len() reflects truly-running tasks.
 """
@@ -69,7 +69,7 @@ def test_fragments_omit_bg_segment_when_idle():
 # ── Background terminal-process indicator (⚙ N) ───────────────────────────
 # Source of truth is tools.process_registry.process_registry._running (a dict
 # of currently-running shell processes spawned by terminal(background=true)).
-# Distinct from /background tasks above: ▶ counts agent threads, ⚙ counts
+# Distinct from /bg tasks above: ▶ counts agent threads, ⚙ counts
 # shell processes. Both can be active simultaneously.
 
 
@@ -105,7 +105,7 @@ def _patch_process_registry(monkeypatch, count: int) -> None:
 # ── Background/async subagent indicator (⛓ N) ─────────────────────────────
 # Source of truth is tools.async_delegation.active_count() — the count of
 # delegate_task delegations (batch + background single) still in the
-# "running" state. Distinct from ▶ (/background agent threads) and ⚙ (shell
+# "running" state. Distinct from ▶ (/bg agent threads) and ⚙ (shell
 # processes); all three can be active at once.
 
 

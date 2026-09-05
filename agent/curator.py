@@ -1,31 +1,20 @@
 """Curator — background skill maintenance orchestrator.
 
-The curator is an auxiliary-model task that periodically reviews agent-created
-skills and maintains the collection. It runs inactivity-triggered (no cron
-daemon): when the agent is idle and the last curator run was longer than
-``interval_hours`` ago, ``maybe_run_curator()`` spawns a forked AIAgent to do
-the review.
-
-Responsibilities:
-  - Auto-transition lifecycle states based on derived skill activity timestamps
-  - Spawn a background review agent that can pin / archive / consolidate /
-    patch agent-created skills via skill_manage
-  - Persist curator state (last_run_at, paused, etc.) in .curator_state
-
-Strict invariants:
-  - Only touches agent-created skills (see tools/skill_usage.is_agent_created)
-  - Never auto-deletes — only archives. Archive is recoverable.
-  - Pinned skills bypass all auto-transitions
-  - Uses the auxiliary client; never touches the main session's prompt cache
-"""
+Inactivity-triggered (no cron daemon): when the agent is idle and the last run is older than ``interval_hours``,
+``maybe_run_curator()`` auto-transitions lifecycle states from activity timestamps, optionally forks an AIAgent that
+may pin/archive/consolidate/patch skills via skill_manage, and persists scheduler state in ``.curator_state``.
+Invariants: only curator-managed skills are touched; never delete, only archive (recoverable); pinned skills bypass
+all auto-transitions; the fork uses the auxiliary client and never touches the main session's prompt cache."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import re
 import threading
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
@@ -36,264 +25,146 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-
-def _strip_aux_credential(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-class _ReviewRuntimeBinding(NamedTuple):
-    """Provider/model for the curator review fork plus per-slot overrides."""
-
-    provider: str
-    model: str
-    explicit_api_key: Optional[str]
-    explicit_base_url: Optional[str]
-    request_overrides: Dict[str, Any]
-
-
-def _merge_request_overrides(
-    runtime_overrides: Any,
-    slot_extra_body: Any,
-) -> Dict[str, Any]:
-    """Merge resolver metadata with task-local request body fields."""
-    merged = dict(runtime_overrides or {})
-    if isinstance(slot_extra_body, dict) and slot_extra_body:
-        extra_body = dict(merged.get("extra_body") or {})
-        extra_body.update(slot_extra_body)
-        merged["extra_body"] = extra_body
-    return merged
-
-
-DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
-DEFAULT_MIN_IDLE_HOURS = 2
-DEFAULT_STALE_AFTER_DAYS = 30
-DEFAULT_ARCHIVE_AFTER_DAYS = 90
-# Consolidation (the LLM umbrella-building fork) is OFF by default. The
-# deterministic inactivity prune (apply_automatic_transitions) still runs
-# whenever the curator is enabled; only the opinionated, aux-model-cost
-# consolidation pass is opt-in.
+DEFAULT_INTERVAL_HOURS, DEFAULT_MIN_IDLE_HOURS = 24 * 7, 2  # 7 days
+DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 30, 90
+# The LLM consolidation fork is opt-in; the deterministic inactivity prune
+# (apply_automatic_transitions) always runs when the curator is enabled.
 DEFAULT_CONSOLIDATE = False
 
 
-# ---------------------------------------------------------------------------
-# .curator_state — persistent scheduler + status
-# ---------------------------------------------------------------------------
+# --- .curator_state — persistent scheduler + status ---
 
 def _state_file() -> Path:
     return get_hermes_home() / "skills" / ".curator_state"
 
 
-def _default_state() -> Dict[str, Any]:
-    return {
-        "last_run_at": None,
-        "last_run_duration_seconds": None,
-        "last_run_summary": None,
-        "last_run_summary_shown_at": None,
-        "last_report_path": None,
-        "paused": False,
-        "run_count": 0,
-    }
-
-
 def load_state() -> Dict[str, Any]:
+    base: Dict[str, Any] = {
+        "last_run_at": None, "last_run_duration_seconds": None, "last_run_summary": None,
+        "last_run_summary_shown_at": None, "last_report_path": None, "paused": False, "run_count": 0,
+    }
     path = _state_file()
-    if not path.exists():
-        return _default_state()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict):
-            base = _default_state()
-            base.update({k: v for k, v in data.items() if k in base or k.startswith("_")})
-            return base
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
-    return _default_state()
+        return base
+    if isinstance(data, dict):
+        base.update({k: v for k, v in data.items() if k in base or k.startswith("_")})
+    return base
 
 
 def save_state(data: Dict[str, Any]) -> None:
-    path = _state_file()
     try:
-        atomic_json_write(path, data, indent=2, sort_keys=True)
+        atomic_json_write(_state_file(), data, indent=2, sort_keys=True)
     except Exception as e:
         logger.debug("Failed to save curator state: %s", e, exc_info=True)
 
 
 def set_paused(paused: bool) -> None:
-    state = load_state()
-    state["paused"] = bool(paused)
-    save_state(state)
+    save_state({**load_state(), "paused": bool(paused)})
 
 
 def is_paused() -> bool:
     return bool(load_state().get("paused"))
 
 
-# ---------------------------------------------------------------------------
-# Config access
-# ---------------------------------------------------------------------------
+# --- Config access ---
 
-def _load_config() -> Dict[str, Any]:
-    """Read curator.* config from ~/.hermes/config.yaml. Tolerates missing file."""
+def _subdict(node: Any, *keys: str) -> Dict[str, Any]:
+    """Walk nested dict keys; {} if any level is missing or not a dict."""
+    for key in keys:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else {}
+
+
+def _read_config_section(*path: str, label: str, log: logging.Logger = logger) -> Dict[str, Any]:
+    """Read a nested section of ~/.hermes/config.yaml. Tolerates missing file."""
     try:
         from hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
     except Exception as e:
-        logger.debug("Failed to load config for curator: %s", e)
+        log.debug("Failed to load config for %s: %s", label, e)
         return {}
-    if not isinstance(cfg, dict):
-        return {}
-    cur = cfg.get("curator") or {}
-    if not isinstance(cur, dict):
-        return {}
-    return cur
+    return _subdict(cfg, *path)
 
 
-def is_enabled() -> bool:
-    """Default ON when no config says otherwise."""
-    cfg = _load_config()
-    return bool(cfg.get("enabled", True))
+def _load_config() -> Dict[str, Any]:
+    return _read_config_section("curator", label="curator")
+
+
+def _config_number(key: str, default, cast):
+    try:
+        return cast(_load_config().get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def is_enabled() -> bool:  # default ON when no config says otherwise
+    return bool(_load_config().get("enabled", True))
 
 
 def get_interval_hours() -> int:
-    cfg = _load_config()
-    try:
-        return int(cfg.get("interval_hours", DEFAULT_INTERVAL_HOURS))
-    except (TypeError, ValueError):
-        return DEFAULT_INTERVAL_HOURS
+    return _config_number("interval_hours", DEFAULT_INTERVAL_HOURS, int)
 
 
 def get_min_idle_hours() -> float:
-    cfg = _load_config()
-    try:
-        return float(cfg.get("min_idle_hours", DEFAULT_MIN_IDLE_HOURS))
-    except (TypeError, ValueError):
-        return DEFAULT_MIN_IDLE_HOURS
+    return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
 
 
 def get_stale_after_days() -> int:
-    cfg = _load_config()
-    try:
-        return int(cfg.get("stale_after_days", DEFAULT_STALE_AFTER_DAYS))
-    except (TypeError, ValueError):
-        return DEFAULT_STALE_AFTER_DAYS
+    return _config_number("stale_after_days", DEFAULT_STALE_AFTER_DAYS, int)
 
 
 def get_archive_after_days() -> int:
-    cfg = _load_config()
-    try:
-        return int(cfg.get("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS))
-    except (TypeError, ValueError):
-        return DEFAULT_ARCHIVE_AFTER_DAYS
+    return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
 
 
 def get_prune_builtins() -> bool:
-    """Whether the curator may prune (archive) bundled built-in skills too.
-
-    ON by default. When on, built-ins become curation candidates and are
-    archived after the same inactivity period as agent-created skills, with a
-    suppression list keeping them archived across `hermes update` re-seeds.
-    Hub-installed skills are never pruned regardless of this flag.
-    """
-    cfg = _load_config()
-    return bool(cfg.get("prune_builtins", True))
+    """Bundled built-ins are curation candidates (ON by default); a suppression list keeps them archived across `hermes update` re-seeds. Hub skills are never pruned."""
+    return bool(_load_config().get("prune_builtins", True))
 
 
 def get_consolidate() -> bool:
-    """Whether the curator runs its LLM consolidation (umbrella-building) pass.
-
-    OFF by default. When off, a curator run does ONLY the deterministic
-    inactivity prune (mark stale / archive long-unused skills) and skips the
-    forked aux-model review entirely — no consolidation, no umbrella-building,
-    no aux-model cost. Set ``curator.consolidate: true`` to opt back into the
-    LLM pass that merges overlapping skills into class-level umbrellas.
-
-    The explicit ``hermes curator run --consolidate`` flag overrides this for
-    a single invocation regardless of the config value.
-    """
-    cfg = _load_config()
-    return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
+    """LLM consolidation pass — OFF by default (prune only, no aux-model fork); ``hermes curator run --consolidate`` overrides per invocation."""
+    return bool(_load_config().get("consolidate", DEFAULT_CONSOLIDATE))
 
 
-# ---------------------------------------------------------------------------
-# Idle / interval check
-# ---------------------------------------------------------------------------
+# --- Idle / interval check ---
 
 def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
-    if not ts:
-        return None
     try:
-        return datetime.fromisoformat(ts)
+        return datetime.fromisoformat(ts) if ts else None
     except (TypeError, ValueError):
         return None
 
 
 def should_run_now(now: Optional[datetime] = None) -> bool:
-    """Return True if the curator should run immediately.
-
-    Gates:
-      - curator.enabled == True
-      - not paused
-      - last_run_at present AND older than interval_hours
-
-    First-run behavior: when there is no ``last_run_at`` (fresh install, or
-    install that predates the curator), we DO NOT run immediately. The
-    curator is designed to run after at least ``interval_hours`` (7 days by
-    default) of skill activity, not on the first background tick after
-    ``hermes update``. On first observation we seed ``last_run_at`` to "now"
-    and defer the first real pass by one full interval. Users who want to
-    run it sooner can always invoke ``hermes curator run`` (with or without
-    ``--dry-run``) explicitly — that path bypasses this gate.
-
-    The idle check (min_idle_hours) is applied at the call site where we know
-    whether an agent is actively running — here we only enforce the static
-    gates.
-    """
-    if not is_enabled():
+    """Gates: curator.enabled, not paused, ``last_run_at`` present AND older than interval_hours. First observation seeds
+    ``last_run_at`` to now and defers one interval, so a fresh install/update never mutates the library on its first tick.
+    ``hermes curator run`` bypasses this; the idle check is the caller's."""
+    if not is_enabled() or is_paused():
         return False
-    if is_paused():
-        return False
-
     state = load_state()
     last = _parse_iso(state.get("last_run_at"))
+    now = now or datetime.now(timezone.utc)
     if last is None:
-        # Never run before. Seed state so we wait a full interval before the
-        # first real pass. Report-only; do not auto-mutate the library the
-        # very first time a gateway ticks after an update.
-        if now is None:
-            now = datetime.now(timezone.utc)
         try:
             state["last_run_at"] = now.isoformat()
-            state["last_run_summary"] = (
-                "deferred first run — curator seeded, will run after one "
-                "interval; use `hermes curator run --dry-run` to preview now"
-            )
+            state["last_run_summary"] = "deferred first run — curator seeded, will run after one interval; use `hermes curator run --dry-run` to preview now"
             save_state(state)
         except Exception as e:  # pragma: no cover — best-effort persistence
             logger.debug("Failed to seed curator last_run_at: %s", e)
         return False
-
-    if now is None:
-        now = datetime.now(timezone.utc)
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
-    interval = timedelta(hours=get_interval_hours())
-    return (now - last) >= interval
+    return (now - last) >= timedelta(hours=get_interval_hours())
 
 
-# ---------------------------------------------------------------------------
-# Automatic state transitions (pure function, no LLM)
-# ---------------------------------------------------------------------------
+# --- Automatic state transitions (pure function, no LLM) ---
 
 def _cron_referenced_skills() -> Set[str]:
-    """Skill names referenced by any cron job (incl. paused/disabled).
-
-    Best-effort: a cron-module import error or corrupt jobs store must never
-    break the curator, so any failure yields an empty set (no protection,
-    but no crash).
-    """
+    """Skill names referenced by any cron job (incl. paused/disabled). Best-effort: a cron import error or corrupt jobs store yields an empty set, never a crash."""
     try:
         from cron.jobs import referenced_skill_names as _refs
         return _refs()
@@ -302,105 +173,71 @@ def _cron_referenced_skills() -> Set[str]:
         return set()
 
 
+def _archive_as_curator(_u, name: str) -> bool:
+    """Archive via skill_usage with the ledger actor tagged 'curator', so the ledger entry reads as an autonomous transition, not a foreground call."""
+    try:
+        from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
+        tok = set_ledger_actor("curator")
+    except Exception:
+        tok = reset_ledger_actor = None  # type: ignore[assignment]
+    try:
+        return _u.archive_skill(name)[0]
+    finally:
+        if tok is not None:
+            with contextlib.suppress(Exception):
+                reset_ledger_actor(tok)
+
+
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
-    """Walk every curator-managed skill and move active/stale/archived based on
-    the latest real activity timestamp. Pinned skills are never touched.
-
-    Built-ins (eligible only when ``curator.prune_builtins`` is on) are seeded
-    with a baseline record the first time they're seen so their inactivity
-    clock starts NOW rather than at epoch — a long-unused built-in is therefore
-    archived only after a fresh ``archive_after_days`` of non-use, not on the
-    first pass after the flag flips on.
-
-    Returns a counter dict describing what changed.
-    """
+    """Move every curator-managed skill between active/stale/archived based on its latest real activity; pinned skills are
+    never touched. Built-ins are seeded with a baseline record on first sight so their inactivity clock starts NOW, not at epoch.
+    Returns a counter dict."""
     from tools import skill_usage as _u
 
-    if now is None:
-        now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
-
-    cron_referenced = _cron_referenced_skills()
-
+    # Cron-referenced skills are in use by definition (usage only bumps when a
+    # job fires, so paused/rare jobs would age them out). Treat as pinned.
+    protected = _cron_referenced_skills()
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
+
+    def _set(name: str, state: str, key: str) -> None:
+        _u.set_state(name, state)
+        counts[key] += 1
 
     for row in _u.curated_report():
         counts["checked"] += 1
         name = row["name"]
-        if row.get("pinned"):
+        if row.get("pinned") or name in protected:
             continue
-
-        # A skill referenced by any cron job (incl. paused/disabled) is in
-        # use by definition — resuming or the next fire must find it. The
-        # scheduler only bumps usage when a job actually fires, so jobs that
-        # fire less often than archive_after_days, paused jobs, and far-future
-        # one-shots would otherwise have their skills aged out from under
-        # them. Treat referenced skills like pinned: never auto-transition.
-        if name in cron_referenced:
-            continue
-
-        # First sight of a curation-eligible skill with no persisted record
-        # (e.g. a newly-eligible built-in): anchor its clock to now and defer.
+        # First sight with no persisted record: anchor its clock to now and defer.
         if not row.get("_persisted", True):
             _u.seed_record_if_missing(name)
             counts["seeded"] += 1
             continue
-
-        last_activity = _parse_iso(row.get("last_activity_at"))
-        # If never active, treat created_at as the anchor so new skills don't
-        # immediately archive themselves.
-        anchor = last_activity or _parse_iso(row.get("created_at")) or now
+        # Never-active skills anchor on created_at so they don't self-archive.
+        anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
             anchor = anchor.replace(tzinfo=timezone.utc)
-
         current = row.get("state", _u.STATE_ACTIVE)
-
-        # Never-used skills (use_count == 0) get a grace floor: don't archive
-        # one until it is at least stale_after_days old. A use=0 skill is
-        # absence of evidence, not evidence of staleness — a skill created
-        # recently may simply not have had its trigger come up yet.
-        never_used = int(row.get("use_count", 0) or 0) == 0
-        if never_used and anchor > stale_cutoff:
-            # Younger than the stale window — leave it alone entirely.
+        # use_count == 0 is absence of evidence, not staleness: never archive a
+        # never-used skill younger than stale_after_days.
+        if int(row.get("use_count", 0) or 0) == 0 and anchor > stale_cutoff:
             if current == _u.STATE_STALE:
-                _u.set_state(name, _u.STATE_ACTIVE)
-                counts["reactivated"] += 1
+                _set(name, _u.STATE_ACTIVE, "reactivated")
             continue
-
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            # Tag the ledger entry with the curator actor: this archive is an
-            # autonomous curator transition, not a foreground agent/user call.
-            try:
-                from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
-                _tok = set_ledger_actor("curator")
-            except Exception:
-                _tok = None
-                reset_ledger_actor = None  # type: ignore[assignment]
-            try:
-                ok, _msg = _u.archive_skill(name)
-            finally:
-                if _tok is not None and reset_ledger_actor is not None:
-                    try:
-                        reset_ledger_actor(_tok)
-                    except Exception:
-                        pass
-            if ok:
+            if _archive_as_curator(_u, name):
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
-            _u.set_state(name, _u.STATE_STALE)
-            counts["marked_stale"] += 1
+            _set(name, _u.STATE_STALE, "marked_stale")
         elif anchor > stale_cutoff and current == _u.STATE_STALE:
-            # Skill got used again after being marked stale — reactivate.
-            _u.set_state(name, _u.STATE_ACTIVE)
-            counts["reactivated"] += 1
-
+            _set(name, _u.STATE_ACTIVE, "reactivated")  # used again after going stale
     return counts
 
 
-# ---------------------------------------------------------------------------
-# Review prompt for the forked agent
-# ---------------------------------------------------------------------------
+# --- Review prompt for the forked agent ---
 
 CURATOR_DRY_RUN_BANNER = (
     "═══════════════════════════════════════════════════════════════\n"
@@ -411,9 +248,6 @@ CURATOR_DRY_RUN_BANNER = (
     "\n"
     "  • DO NOT call skill_manage with action=patch, create, delete, "
     "write_file, or remove_file.\n"
-    "  • DO NOT call terminal to mv skill directories into .archive/.\n"
-    "  • DO NOT call terminal to mv, cp, rm, or rewrite any file under "
-    "~/.hermes/skills/.\n"
     "  • skills_list and skill_view are FINE — read as much as you need.\n"
     "\n"
     "Your output IS the deliverable. Produce the exact same "
@@ -442,9 +276,15 @@ CURATOR_REVIEW_PROMPT = (
     "trigger class in that window). One broad umbrella "
     "skill with labeled subsections beats five narrow siblings for "
     "discoverability, not the other way around.\n\n"
-    "The right target shape is CLASS-LEVEL skills with rich SKILL.md "
-    "bodies + `references/`, `templates/`, and `scripts/` subfiles for "
-    "session-specific detail — not one-session-one-skill micro-entries.\n\n"
+    "The right target shape is CLASS-LEVEL skills whose SKILL.md carries the "
+    "always-on rules and whose `references/`, `templates/`, and `scripts/` hold a "
+    "SMALL set of topical depth — not one-session-one-skill micro-entries, and "
+    "not an umbrella that hoards one references/ file per absorbed sibling. "
+    "Consolidation means DISTILLING: the absorbed content becomes rules "
+    "(imperative + one clause of why), the same lesson stated twice becomes "
+    "one rule, and incident narration, PR/issue numbers, dates and quoted "
+    "chatter are dropped — the rule must stand without the story. Moving a "
+    "file unchanged under references/ is filing, not consolidating.\n\n"
     "Hard rules — do not violate:\n"
     "1. DO NOT touch bundled, hub-installed, or external-dir skills "
     "(`skills.external_dirs`). The candidate list below is already filtered "
@@ -499,18 +339,24 @@ CURATOR_REVIEW_PROMPT = (
     "skill whose SKILL.md covers the shared workflow and has short "
     "labeled subsections. Archive the now-absorbed narrow siblings.\n"
     "   c. DEMOTE TO REFERENCES/TEMPLATES/SCRIPTS — a sibling has "
-    "narrow-but-valuable session-specific content. Move it into the "
-    "umbrella's appropriate support directory:\n"
-    "      • `references/<topic>.md` for session-specific detail OR "
-    "condensed knowledge banks (quoted research, API docs excerpts, "
-    "domain notes, provider quirks, reproduction recipes)\n"
+    "narrow-but-valuable depth that is only needed sometimes. Distill it "
+    "into the umbrella's appropriate support directory:\n"
+    "      • `references/<topic>.md` — named by TOPIC, merged into an "
+    "existing topical file when one covers it (decision tables, recipes, "
+    "provider quirks, condensed domain notes). Never `<sibling-name>.md` "
+    "copied verbatim; never a per-incident file.\n"
     "      • `templates/<name>.<ext>` for starter files meant to be "
     "copied and modified\n"
     "      • `scripts/<name>.<ext>` for statically re-runnable actions "
     "(verification scripts, fixture generators, probes)\n"
-    "      Then archive the old sibling. Use `terminal` with `mkdir -p "
-    "~/.hermes/skills/<umbrella>/references/ && mv ... <umbrella>/"
-    "references/<topic>.md` (or templates/ / scripts/).\n\n"
+    "      Then archive the old sibling. Re-home the content through the "
+    "LEDGERED tool surface: `skill_manage action=write_file` on the umbrella "
+    "to place the file (subdirectories are created for you), then "
+    "`skill_manage action=remove_file` on the source to drop the original, "
+    "then `skill_manage action=delete` on the source. Never a terminal move "
+    "— a shell mv/cp writes the same bytes with no ledger entry, so the "
+    "archive that follows snapshots an already-stripped package and "
+    "`hermes curator rollback` restores a hollow skill (issue #96962).\n\n"
     "Package integrity — not optional:\n"
     "Before demoting or archiving a skill, inspect it as a COMPLETE "
     "directory package, not just SKILL.md. A skill root may include "
@@ -539,6 +385,13 @@ CURATOR_REVIEW_PROMPT = (
     "merges.\n\n"
     "Your toolset:\n"
     "  - skills_list, skill_view        — read the current landscape\n"
+    "    READ BEFORE WRITE — enforced, not advisory. Before skill_manage "
+    "action=patch, action=edit, action=write_file on a file that already "
+    "exists, or action=remove_file, call skill_view on that SAME target in "
+    "this review turn — skill_view(name) for SKILL.md, "
+    "skill_view(name, file_path=...) for a supporting file — and build the "
+    "write from the content it just returned. A write without that read is "
+    "REFUSED and nothing is saved.\n"
     "  - skill_manage action=patch      — add sections to the umbrella\n"
     "  - skill_manage action=create     — create a new umbrella SKILL.md\n"
     "  - skill_manage action=write_file — add a references/, templates/, "
@@ -549,9 +402,10 @@ CURATOR_REVIEW_PROMPT = (
     "skill, or `absorbed_into=\"\"` when you're truly pruning with no "
     "forwarding target. This drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
-    "  - terminal                       — move LOCAL candidate content into "
-    "a support subfile when package integrity requires it; never mv, cp, rm, "
-    "patch, or rewrite bundled, hub-installed, or external-dir skills\n\n"
+    "  You have NO terminal access in this pass — every filesystem mutation "
+    "goes through skill_manage above so it is ledgered and rollback-able "
+    "(issue #96962). Reading files works through skill_view (including "
+    "skill_view(name, file_path=...) for support files).\n\n"
     "'keep' is a legitimate decision ONLY when the skill is already a "
     "class-level umbrella and none of the proposed merges would improve "
     "discoverability. 'This is narrow but distinct from its siblings' "
@@ -585,24 +439,21 @@ CURATOR_REVIEW_PROMPT = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/
-# ---------------------------------------------------------------------------
+CURATOR_PRUNE_BUILTINS_NOTE = (
+    "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
+    "ARE included in the candidate list below and MAY be "
+    "archived for staleness/irrelevance, overriding hard "
+    "rule #1 for bundled skills ONLY. Hub-installed skills "
+    "remain strictly off-limits. Treat a stale built-in the "
+    "same as a stale agent-created skill: archive it (never "
+    "delete). It will be restored on `hermes update` only if "
+    "the user explicitly restores it."
+)
+
+# --- Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/ ---
 
 def _reports_root() -> Path:
-    """Directory where curator run reports are written.
-
-    Lives under the profile-aware logs dir (``~/.hermes/logs/curator/``)
-    alongside ``agent.log`` and ``gateway.log`` so it's found by anyone
-    looking for operational telemetry, not mixed in with the user's
-    authored skill data in ``~/.hermes/skills/``.
-
-    ``ensure_hermes_home()`` pre-creates this dir on every CLI launch and
-    the v22→v23 migration backfills it for existing profiles, but we
-    still mkdir here as a belt-and-suspenders so the curator works even
-    from an odd entry path (e.g. gateway-only install, bare library use)
-    that bypasses both.
-    """
+    """``~/.hermes/logs/curator/`` (telemetry next to agent.log, not under skills/). mkdir'd here too so gateway-only / bare-library entry paths work."""
     root = get_hermes_home() / "logs" / "curator"
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -612,527 +463,229 @@ def _reports_root() -> Path:
 
 
 def _needle_in_path_component(needle: str, path: str) -> bool:
-    """Check if *needle* is a complete filename stem or directory name in *path*.
-
-    Unlike simple substring matching, this avoids false positives where short
-    skill names are embedded in longer filenames (e.g. "api" matching
-    "references/api-design.md").  Hyphens and underscores are normalised so
-    "open-webui-setup" matches "open_webui_setup.md".
-    """
+    """True if *needle* equals a complete filename stem or directory name in *path* — so "api" does not match
+    "references/api-design.md". Hyphens and underscores are normalised ("open-webui-setup" matches "open_webui_setup.md")."""
     norm_needle = needle.replace("-", "_")
-    for part in path.replace("\\", "/").split("/"):
-        if not part:
-            continue
-        stem = part.rsplit(".", 1)[0] if "." in part else part
-        if stem.replace("-", "_") == norm_needle:
-            return True
-    return False
+    return any(part and part.rsplit(".", 1)[0].replace("-", "_") == norm_needle for part in path.replace("\\", "/").split("/"))
+
+
+def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> Optional[Dict[str, Any]]:
+    """Parsed arguments of a ``skill_manage`` tool call (JSON string or dict), or None to skip. With *raw_fallback*,
+    a malformed string yields ``{"_raw": raw}`` so substring matching still catches the common case."""
+    if not isinstance(tc, dict) or tc.get("name") != "skill_manage":
+        return None
+    raw = tc.get("arguments") or ""
+    if not isinstance(raw, str):
+        return raw if isinstance(raw, dict) else None
+    try:
+        args = json.loads(raw)
+    except Exception:
+        return {"_raw": raw} if raw_fallback else None
+    return args if isinstance(args, dict) else None
+
+
+def _find_reference(args: Dict[str, Any], needles: Set[str]) -> Optional[str]:
+    """First argument value (file_path, file_content, content, new_string, _raw — in that order) that references one of
+    *needles*. ``file_path`` must match a whole path component; content fields match on word boundaries so "test" does not match "latest"."""
+    for key in ("file_path", "file_content", "content", "new_string", "_raw"):
+        hay = args.get(key)
+        if isinstance(hay, str) and any(
+            (_needle_in_path_component(n, hay) if key == "file_path" else re.search(rf'\b{re.escape(n)}\b', hay)) for n in filter(None, needles)
+        ):
+            return hay
+    return None
 
 
 def _classify_removed_skills(
-    removed: List[str],
-    added: List[str],
-    after_names: Set[str],
-    tool_calls: List[Dict[str, Any]],
+    removed: List[str], added: List[str], after_names: Set[str], tool_calls: List[Dict[str, Any]],
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Split ``removed`` into consolidated vs pruned.
-
-    A removed skill is "consolidated" when the curator absorbed its content
-    into another skill (an umbrella) during this run — the content still
-    lives, just under a different name. A removed skill is "pruned" when the
-    curator archived it for staleness/irrelevance without preserving its
-    content elsewhere.
-
-    Heuristic: scan this run's ``skill_manage`` tool calls and look for
-    ``write_file``/``patch``/``create``/``edit`` actions whose target skill
-    (the ``name`` argument) is NOT the removed skill and whose
-    ``file_path`` / ``file_content`` / ``content`` arguments reference the
-    removed skill's name. That's the textbook "absorbed into umbrella"
-    signal. Ties are broken by first-match (earliest tool call wins).
-
-    Returns ``{"consolidated": [{"name", "into", "evidence"}, ...],
-               "pruned":       [{"name"}, ...]}``.
-    """
+    """Split ``removed`` into consolidated vs pruned. Heuristic: a ``skill_manage`` call on a DIFFERENT, surviving-or-new
+    skill whose file_path/content arguments reference the removed name is the "absorbed" signal; earliest match wins.
+    Returns ``{"consolidated": [{name, into, evidence}], "pruned": [{name}]}``."""
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
-
-    # Pre-parse tool calls: we only care about skill_manage.
-    parsed_calls: List[Dict[str, Any]] = []
-    for tc in tool_calls or []:
-        if not isinstance(tc, dict):
-            continue
-        if tc.get("name") != "skill_manage":
-            continue
-        raw = tc.get("arguments") or ""
-        # Arguments can be a JSON string (standard) or a dict (defensive).
-        args: Dict[str, Any] = {}
-        if isinstance(raw, dict):
-            args = raw
-        elif isinstance(raw, str):
-            try:
-                args = json.loads(raw)
-            except Exception:
-                # Truncated or malformed — fall back to substring match on
-                # the raw string so we still catch the common case.
-                args = {"_raw": raw}
-        if not isinstance(args, dict):
-            continue
-        parsed_calls.append(args)
-
-    # Build a set of "destination" skill names: anything still present after
-    # the run plus anything newly added this run. A removed skill being
-    # referenced from one of these is the consolidation signal.
+    parsed_calls = [a for a in (_skill_manage_args(tc, raw_fallback=True) for tc in tool_calls or []) if a is not None]
     destinations = set(after_names) | set(added or [])
-
-    for name in removed:
-        if not name:
-            continue
-        into: Optional[str] = None
-        evidence: Optional[str] = None
-
-        # Normalise name variants we'll search for in path/content strings.
+    for name in filter(None, removed):
         needles = {name, name.replace("-", "_"), name.replace("_", "-")}
-
         for args in parsed_calls:
             target = args.get("name")
-            if not isinstance(target, str) or not target:
+            # Calls on the removed skill itself, or on a skill that no longer exists, are not consolidation evidence.
+            if not isinstance(target, str) or not target or target == name or target not in destinations:
                 continue
-            # A call that operates on the removed skill itself isn't
-            # consolidation evidence.
-            if target == name:
-                continue
-            # The target must be a surviving or newly-created skill —
-            # otherwise we're pointing to a skill that doesn't exist.
-            if target not in destinations:
-                continue
-
-            # Look for the removed skill's name in file_path / content / raw.
-            # Matching strategy differs by field type:
-            #   file_path — needle must be a complete path component
-            #     (filename stem or directory name), so "api" does NOT
-            #     falsely match "references/api-design.md".
-            #   content fields — word-boundary regex so "test" does NOT
-            #     falsely match "latest" or "testing".
-            haystacks: List[tuple[str, str]] = []
-            for key in ("file_path", "file_content", "content", "new_string", "_raw"):
-                v = args.get(key)
-                if isinstance(v, str):
-                    haystacks.append((key, v))
-            hit = False
-            for key, hay in haystacks:
-                for needle in needles:
-                    if not needle:
-                        continue
-                    if key == "file_path":
-                        matched = _needle_in_path_component(needle, hay)
-                    else:
-                        matched = bool(
-                            re.search(rf'\b{re.escape(needle)}\b', hay)
-                        )
-                    if matched:
-                        hit = True
-                        evidence = (
-                            f"skill_manage action={args.get('action', '?')} "
-                            f"on '{target}' referenced '{name}' "
-                            f"in {hay[:80]}"
-                        )
-                        break
-                if hit:
-                    break
-            if hit:
-                into = target
+            hay = _find_reference(args, needles)
+            if hay is not None:
+                consolidated.append({"name": name, "into": target, "evidence":
+                                     f"skill_manage action={args.get('action', '?')} on '{target}' referenced '{name}' in {hay[:80]}"})
                 break
-
-        if into:
-            consolidated.append({"name": name, "into": into, "evidence": evidence})
         else:
             pruned.append({"name": name})
-
     return {"consolidated": consolidated, "pruned": pruned}
 
 
-def _parse_structured_summary(
-    llm_final: str,
-) -> Dict[str, List[Dict[str, str]]]:
-    """Extract the structured YAML block from the curator's final response.
-
-    The curator prompt requires a fenced ```yaml block under
-    ``## Structured summary (required)`` with ``consolidations:`` and
-    ``prunings:`` lists. This parses it tolerantly:
-
-    - Missing block → returns empty lists (we'll fall back to heuristic).
-    - Malformed YAML → returns empty lists and we rely on heuristic.
-    - Partial block (e.g. only consolidations) → returns what we could parse.
-
-    Returns ``{"consolidations": [{"from", "into", "reason"}, ...],
-               "prunings":       [{"name", "reason"}, ...]}``.
-    """
-    empty = {"consolidations": [], "prunings": []}
-    if not llm_final or not isinstance(llm_final, str):
-        return empty
-
-    # Find the YAML fenced block. We look for ```yaml ... ``` specifically
-    # rather than any fenced block so we don't accidentally pick up a code
-    # sample the model quoted elsewhere.
-    import re
-    match = re.search(
-        r"```ya?ml\s*\n(.*?)\n```",
-        llm_final,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if not match:
-        return empty
-
-    body = match.group(1)
-
-    # Prefer PyYAML when available — every hermes install already has it
-    # (config.yaml loader). Fall back to a hand parser for paranoia.
-    try:
-        import yaml  # type: ignore
-        data = yaml.safe_load(body)
-    except Exception:
-        return empty
-
+def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]:
+    """Extract the required fenced ```yaml block (``consolidations:`` / ``prunings:`` lists) from the curator's final
+    response. Tolerant: missing block or malformed YAML → empty lists (caller falls back to the tool-call heuristic); a partial
+    block returns what parsed. Returns ``{"consolidations": [{from, into, reason}], "prunings": [{name, reason}]}``."""
+    # Match ```yaml specifically so a code sample the model quoted elsewhere is never mistaken for the summary.
+    match = re.search(r"```ya?ml\s*\n(.*?)\n```", llm_final, re.DOTALL | re.IGNORECASE) if isinstance(llm_final, str) else None
+    data = None
+    if match:
+        try:
+            import yaml  # type: ignore
+            data = yaml.safe_load(match.group(1))
+        except Exception:
+            pass
     if not isinstance(data, dict):
-        return empty
+        return {"consolidations": [], "prunings": []}
 
-    out: Dict[str, List[Dict[str, str]]] = {"consolidations": [], "prunings": []}
-    cons_raw = data.get("consolidations") or []
-    prun_raw = data.get("prunings") or []
+    def _entries(key: str, *fields: str) -> List[Dict[str, str]]:
+        raw = data.get(key) or []
+        entries = (e for e in raw if isinstance(e, dict)) if isinstance(raw, list) else ()
+        cleaned = ({f: (v.strip() if isinstance((v := e.get(f)), str) else "") for f in (*fields, "reason")} for e in entries)
+        return [e for e in cleaned if all(e[f] for f in fields)]
 
-    if isinstance(cons_raw, list):
-        for entry in cons_raw:
-            if not isinstance(entry, dict):
-                continue
-            frm = entry.get("from")
-            into = entry.get("into")
-            if not (isinstance(frm, str) and frm.strip()
-                    and isinstance(into, str) and into.strip()):
-                continue
-            reason = entry.get("reason")
-            out["consolidations"].append({
-                "from": frm.strip(),
-                "into": into.strip(),
-                "reason": (reason or "").strip() if isinstance(reason, str) else "",
-            })
-
-    if isinstance(prun_raw, list):
-        for entry in prun_raw:
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            if not (isinstance(name, str) and name.strip()):
-                continue
-            reason = entry.get("reason")
-            out["prunings"].append({
-                "name": name.strip(),
-                "reason": (reason or "").strip() if isinstance(reason, str) else "",
-            })
-
-    return out
+    return {"consolidations": _entries("consolidations", "from", "into"), "prunings": _entries("prunings", "name")}
 
 
-def _extract_absorbed_into_declarations(
-    tool_calls: List[Dict[str, Any]],
-) -> Dict[str, Dict[str, Any]]:
-    """Walk this run's tool calls and extract model-declared absorption targets.
-
-    The curator prompt requires every ``skill_manage(action='delete')`` call
-    to pass ``absorbed_into=<umbrella>`` when consolidating, or
-    ``absorbed_into=""`` when truly pruning. This is the single authoritative
-    signal for classification — the model's own declaration at the moment of
-    deletion, which beats both post-hoc YAML summary parsing and substring
-    heuristics on other tool calls.
-
-    Returns ``{skill_name: {"into": "<umbrella>" | "", "declared": True}}``.
-    Entries with ``into == ""`` are explicit prunings.
-    Skills without a ``skill_manage(delete)`` call, or with one that omitted
-    ``absorbed_into``, are not in the returned dict — caller falls back to
-    the existing heuristic/YAML logic for those (backward compat with older
-    curator runs and any callers that don't populate the arg).
-    """
+def _extract_absorbed_into_declarations(tool_calls: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Model-declared absorption targets from ``skill_manage(action='delete')`` calls — the authoritative classification
+    signal (beats YAML parsing and substring heuristics). Returns ``{name: {"into": umbrella | "", "declared": True}}``;
+    ``into == ""`` is an explicit prune. Deletes omitting ``absorbed_into`` are absent so the caller falls back to heuristic/YAML (older runs)."""
     out: Dict[str, Dict[str, Any]] = {}
-    for tc in tool_calls or []:
-        if not isinstance(tc, dict):
-            continue
-        if tc.get("name") != "skill_manage":
-            continue
-        raw = tc.get("arguments") or ""
-        args: Dict[str, Any] = {}
-        if isinstance(raw, dict):
-            args = raw
-        elif isinstance(raw, str):
-            try:
-                args = json.loads(raw)
-            except Exception:
-                continue
-        if not isinstance(args, dict):
-            continue
-        if args.get("action") != "delete":
-            continue
-        name = args.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        # absorbed_into must be present (even empty string is meaningful);
-        # missing key means the model didn't declare intent.
-        if "absorbed_into" not in args:
-            continue
-        target = args.get("absorbed_into")
-        if target is None:
-            continue
-        if not isinstance(target, str):
-            continue
-        out[name.strip()] = {"into": target.strip(), "declared": True}
+    for args in (_skill_manage_args(tc, raw_fallback=False) for tc in tool_calls or []):
+        if args is not None and args.get("action") == "delete":
+            name, target = args.get("name"), args.get("absorbed_into")
+            if isinstance(name, str) and name.strip() and isinstance(target, str):
+                out[name.strip()] = {"into": target.strip(), "declared": True}
     return out
 
 
 def _reconcile_classification(
-    removed: List[str],
-    heuristic: Dict[str, List[Dict[str, Any]]],
-    model_block: Dict[str, List[Dict[str, str]]],
-    destinations: Set[str],
-    absorbed_declarations: Optional[Dict[str, Dict[str, Any]]] = None,
+    removed: List[str], heuristic: Dict[str, List[Dict[str, Any]]], model_block: Dict[str, List[Dict[str, str]]],
+    destinations: Set[str], absorbed_declarations: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """Merge heuristic (tool-call evidence) with the model's structured block.
-
-    Rules (evaluated in order; first match wins):
-    - **Model-declared `absorbed_into` at delete time is authoritative.** Any
-      entry in ``absorbed_declarations`` beats every other signal. This is
-      the model telling us directly, at the moment of deletion, what it did.
-      ``into != ""`` and target exists → consolidated. ``into == ""`` →
-      pruned. ``into != ""`` but target doesn't exist → hallucination; fall
-      through to the usual signals.
-    - Model-declared consolidation wins when its ``into`` target exists
-      in ``destinations`` (survived or newly-created). This gives the
-      model authority over intent + rationale.
-    - Model-declared consolidation whose ``into`` target does NOT exist is
-      downgraded: the model hallucinated an umbrella. We prefer the
-      heuristic's finding for that skill, or fall back to pruned.
-    - Heuristic-only finding (model didn't mention it, tool calls confirm)
-      is preserved as a consolidation, marked ``source="tool-call audit"``.
-    - Model-declared pruning is accepted unless the heuristic has
-      tool-call evidence that contradicts it (rare — the heuristic would
-      have flagged consolidation). In that case we log both.
-
-    Every removed skill is placed in exactly one bucket.
-    """
+    First match wins; every removed skill lands in exactly one bucket:
+    - ``absorbed_into`` declared at delete is authoritative: existing target → consolidated; ``""`` → pruned; missing target → fall through.
+    - Model-declared consolidation wins when its ``into`` is in ``destinations``.
+    - Model named a missing umbrella → heuristic's finding, else pruned.
+    - Heuristic-only consolidation kept, marked ``source="tool-call audit"``.
+    - Otherwise pruned (model-declared, or no-evidence fallback)."""
     heur_cons = {e["name"]: e for e in heuristic.get("consolidated", [])}
-
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
-
     declared = absorbed_declarations or {}
-
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
-
     for name in removed:
-        mc = model_cons.get(name)
-        mp = model_pruned.get(name)
-        hc = heur_cons.get(name)
-        dec = declared.get(name)
+        mc, mp, hc, dec = model_cons.get(name), model_pruned.get(name), heur_cons.get(name), declared.get(name)
+        mc_reason = (mc.get("reason") or "") if mc else ""
+        hc_evidence = {"evidence": hc["evidence"]} if hc and hc.get("evidence") else {}
 
-        # Authoritative: model declared `absorbed_into` at the delete call.
-        if dec is not None:
-            into_claim = dec.get("into", "")
-            if into_claim and into_claim in destinations:
-                entry: Dict[str, Any] = {
-                    "name": name,
-                    "into": into_claim,
-                    "source": "absorbed_into (model-declared at delete)",
-                    "reason": (mc.get("reason") or "") if mc else "",
-                }
-                if hc and hc.get("evidence"):
-                    entry["evidence"] = hc["evidence"]
-                consolidated.append(entry)
-                continue
-            if into_claim == "":
-                # Explicit prune declaration
-                pruned.append({
-                    "name": name,
-                    "source": "absorbed_into=\"\" (model-declared prune)",
-                    "reason": (mp.get("reason") or "") if mp else "",
-                })
-                continue
-            # into_claim is non-empty but target doesn't exist: the model
-            # named a nonexistent umbrella at delete time. The tool already
-            # rejects this at the skill_manage layer, so we shouldn't see it
-            # in practice — but if it slips through (e.g. the umbrella was
-            # deleted LATER in the same run), fall through to the usual
-            # signals rather than trusting a broken reference.
+        def _cons(into: str, source: str, reason: str = "", **extra: Any) -> None:
+            consolidated.append({"name": name, "into": into, "source": source, "reason": reason, **extra})
 
-        # Model says consolidated — trust it if the destination is real.
-        if mc and mc.get("into") in destinations:
-            entry: Dict[str, Any] = {
-                "name": name,
-                "into": mc["into"],
-                "source": "model" + ("+audit" if hc else ""),
-                "reason": mc.get("reason") or "",
-            }
-            if hc and hc.get("evidence"):
-                entry["evidence"] = hc["evidence"]
-            consolidated.append(entry)
-            continue
+        def _prune(source: str, reason: str = "") -> None:
+            pruned.append({"name": name, "source": source, "reason": reason})
 
-        # Model says consolidated but the umbrella doesn't exist —
-        # hallucination. Fall back to heuristic or prune.
-        if mc and mc.get("into") not in destinations:
-            if hc:
-                consolidated.append({
-                    "name": name,
-                    "into": hc["into"],
-                    "source": "tool-call audit (model named missing umbrella)",
-                    "reason": "",
-                    "evidence": hc.get("evidence", ""),
-                    "model_claimed_into": mc["into"],
-                })
-            else:
-                pruned.append({
-                    "name": name,
-                    "source": "fallback (model named missing umbrella, no tool-call evidence)",
-                    "reason": "",
-                })
-            continue
-
-        # Heuristic found consolidation the model didn't mention.
-        if hc:
-            consolidated.append({
-                "name": name,
-                "into": hc["into"],
-                "source": "tool-call audit (model omitted from structured block)",
-                "reason": "",
-                "evidence": hc.get("evidence", ""),
-            })
-            continue
-
-        # Model says pruned (or no mention + no heuristic evidence).
-        reason = mp.get("reason", "") if mp else ""
-        pruned.append({
-            "name": name,
-            "source": "model" if mp else "no-evidence fallback",
-            "reason": reason,
-        })
-
+        into_claim = dec.get("into", "") if dec is not None else None
+        if into_claim and into_claim in destinations:
+            _cons(into_claim, "absorbed_into (model-declared at delete)", mc_reason, **hc_evidence)
+        elif into_claim == "":
+            _prune("absorbed_into=\"\" (model-declared prune)", (mp.get("reason") or "") if mp else "")
+        elif mc and mc.get("into") in destinations:
+            _cons(mc["into"], "model" + ("+audit" if hc else ""), mc_reason, **hc_evidence)
+        elif mc and hc:  # model named a missing umbrella; the audit found the real one
+            _cons(hc["into"], "tool-call audit (model named missing umbrella)", evidence=hc.get("evidence", ""), model_claimed_into=mc["into"])
+        elif mc:
+            _prune("fallback (model named missing umbrella, no tool-call evidence)")
+        elif hc:
+            _cons(hc["into"], "tool-call audit (model omitted from structured block)", evidence=hc.get("evidence", ""))
+        else:
+            _prune("model" if mp else "no-evidence fallback", mp.get("reason", "") if mp else "")
     return {"consolidated": consolidated, "pruned": pruned}
 
 
-def _build_rename_summary(
-    *,
-    before_names: Set[str],
-    after_report: List[Dict[str, Any]],
-    tool_calls: List[Dict[str, Any]],
-    model_final: str,
-) -> str:
-    """Format the user-visible rename map for a curator run.
+class _RunDiff(NamedTuple):
+    after_names: Set[str]
+    removed: List[str]
+    added: List[str]
+    consolidated: List[Dict[str, Any]]
+    pruned: List[Dict[str, Any]]
 
-    Renders the "where did my skills go?" lines that get appended to the
-    `final_summary` string fed to gateway/CLI receivers. Empty string when
-    nothing was archived this run — most ticks are no-op and shouldn't add
-    extra log noise.
 
-    Format::
-
-        archived 4 skill(s):
-          • pdf-extraction → document-tools
-          • docx-extraction → document-tools
-          • flaky-thing — pruned (stale)
-          • old-utility → spreadsheet-ops
-        full report: hermes curator status
-        keep an umbrella stable: hermes curator pin document-tools
-
-    Cap is 10 entries so a 50-skill consolidation doesn't blow up
-    agent.log; the full list is always in REPORT.md. The pin hint only
-    appears when at least one consolidation produced an umbrella worth
-    pinning (pruned-only runs skip it).
-    """
-    after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
-    after_names = set(after_by_name.keys())
-    removed = sorted(before_names - after_names)
-    added = sorted(after_names - before_names)
-    if not removed:
-        return ""
-
-    heuristic = _classify_removed_skills(
-        removed=removed,
-        added=added,
-        after_names=after_names,
-        tool_calls=tool_calls,
-    )
-    model_block = _parse_structured_summary(model_final)
-    destinations = set(after_names) | set(added)
-    absorbed_declarations = _extract_absorbed_into_declarations(tool_calls)
+def _diff_and_classify(before_names: Set[str], after_names: Set[str], tool_calls: List[Dict[str, Any]], model_final: str) -> _RunDiff:
+    """Diff the before/after skill sets and classify every removal: the model's YAML block carries intent + rationale,
+    the tool-call heuristic audits for hallucinated umbrellas/omissions, per-delete ``absorbed_into`` beats both."""
+    removed, added = sorted(before_names - after_names), sorted(after_names - before_names)
     classification = _reconcile_classification(
         removed=removed,
-        heuristic=heuristic,
-        model_block=model_block,
-        destinations=destinations,
-        absorbed_declarations=absorbed_declarations,
+        heuristic=_classify_removed_skills(removed=removed, added=added, after_names=after_names, tool_calls=tool_calls),
+        model_block=_parse_structured_summary(model_final), destinations=set(after_names) | set(added),
+        absorbed_declarations=_extract_absorbed_into_declarations(tool_calls),
     )
-    consolidated = classification["consolidated"]
-    pruned = classification["pruned"]
+    return _RunDiff(after_names, removed, added, classification["consolidated"], classification["pruned"])
 
+
+def _by_name(report: List[Dict[str, Any]]) -> Dict[Any, Dict[str, Any]]:
+    return {r.get("name"): r for r in report if isinstance(r, dict)}
+
+
+def _build_rename_summary(*, before_names: Set[str], after_report: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]], model_final: str) -> str:
+    """The "where did my skills go?" lines appended to the user-visible ``final_summary``; "" when nothing was archived.
+    Capped at 10 entries so a big consolidation doesn't flood agent.log (full list is in REPORT.md); the pin hint
+    appears only when a consolidation produced an umbrella."""
+    after_names = set(_by_name(after_report))
+    if not before_names - after_names:
+        return ""
+    diff = _diff_and_classify(before_names, after_names, tool_calls, model_final)
     SHOW = 10
-    lines: List[str] = []
-    total = len(consolidated) + len(pruned)
-    lines.append(f"archived {total} skill(s):")
-    shown = 0
-    for entry in consolidated:
-        if shown >= SHOW:
-            break
-        name = entry.get("name", "?")
-        into = entry.get("into", "?")
-        lines.append(f"  • {name} → {into}")
-        shown += 1
-    for entry in pruned:
-        if shown >= SHOW:
-            break
-        name = entry.get("name", "?") if isinstance(entry, dict) else str(entry)
-        lines.append(f"  • {name} — pruned (stale)")
-        shown += 1
+    total = len(diff.consolidated) + len(diff.pruned)
+    entries = [f"  • {e.get('name', '?')} → {e.get('into', '?')}" for e in diff.consolidated]
+    entries += [f"  • {e.get('name', '?') if isinstance(e, dict) else e} — pruned (stale)" for e in diff.pruned]
+    lines = [f"archived {total} skill(s):"] + entries[:SHOW]
     if total > SHOW:
         lines.append(f"  … and {total - SHOW} more")
     lines.append("full report: hermes curator status")
-    # Pin hint — only surface it when there's actually a destination skill
-    # worth pinning. The umbrella skills that absorbed content are the natural
-    # candidates: pinning one tells future curator runs to leave it alone.
-    # Pruned-only runs don't get this hint (nothing surviving to pin).
-    if consolidated:
-        umbrellas = sorted({e.get("into") for e in consolidated if e.get("into")})
-        if umbrellas:
-            example = umbrellas[0]
-            lines.append(
-                f"keep an umbrella stable: hermes curator pin {example}"
-            )
+    umbrellas = sorted({e.get("into") for e in diff.consolidated if e.get("into")})
+    if umbrellas:
+        lines.append(f"keep an umbrella stable: hermes curator pin {umbrellas[0]}")
     return "\n".join(lines)
 
 
-def _write_run_report(
-    *,
-    started_at: datetime,
-    elapsed_seconds: float,
-    auto_counts: Dict[str, int],
-    auto_summary: str,
-    before_report: List[Dict[str, Any]],
-    before_names: Set[str],
-    after_report: List[Dict[str, Any]],
-    llm_meta: Dict[str, Any],
-) -> Optional[Path]:
-    """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}/.
-
-    Returns the report directory path on success, None if the write
-    couldn't happen (caller logs and continues — reporting is best-effort).
-    """
-    root = _reports_root()
+def _rewrite_cron_refs(consolidated: List[Dict[str, Any]], pruned: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Point cron jobs at the umbrella when the curator consolidated a skill they list — otherwise the scheduler fails to
+    load it and the job runs without its instructions. Best-effort: a cron-module issue never breaks the curator."""
     try:
-        root.mkdir(parents=True, exist_ok=True)
+        consolidated_map = {e["name"]: e["into"] for e in consolidated if isinstance(e, dict) and e.get("name") and e.get("into")}
+        pruned_names = [e["name"] for e in pruned if isinstance(e, dict) and e.get("name")]
+        if consolidated_map or pruned_names:
+            from cron.jobs import rewrite_skill_refs
+            return rewrite_skill_refs(consolidated=consolidated_map, pruned=pruned_names)
+        return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
     except Exception as e:
-        logger.debug("Curator report dir create failed: %s", e)
-        return None
+        logger.debug("Curator cron skill rewrite failed: %s", e, exc_info=True)
+        return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0, "error": str(e)}
 
-    stamp = started_at.strftime("%Y%m%d-%H%M%S")
-    run_dir = root / stamp
-    # If we crash-reran within the same second, append a disambiguator
-    suffix = 1
+
+def _write_file(path: Path, label: str, render: Any) -> None:
+    """Best-effort write of *render()* (or the JSON dump of a non-callable payload);
+    rendering runs inside the guard so a serialisation error is logged, not raised."""
+    try:
+        path.write_text(render() if callable(render) else json.dumps(render, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    except Exception as e:
+        logger.debug("Curator %s write failed: %s", label, e)
+
+
+def _write_run_report(
+    *, started_at: datetime, elapsed_seconds: float, auto_counts: Dict[str, int], auto_summary: str,
+    before_report: List[Dict[str, Any]], before_names: Set[str], after_report: List[Dict[str, Any]], llm_meta: Dict[str, Any],
+) -> Optional[Path]:
+    """Write run.json + REPORT.md under logs/curator/{YYYYMMDD-HHMMSS}[-N]/ (N disambiguates a crash-rerun in the same
+    second). Returns the report dir, or None if it couldn't be created (reporting is best-effort)."""
+    root, stamp = _reports_root(), started_at.strftime("%Y%m%d-%H%M%S")
+    run_dir, suffix = root / stamp, 1
     while run_dir.exists():
         suffix += 1
         run_dir = root / f"{stamp}-{suffix}"
@@ -1141,349 +694,122 @@ def _write_run_report(
     except Exception as e:
         logger.debug("Curator run dir create failed: %s", e)
         return None
-
-    # Diff before/after
-    after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
-    after_names = set(after_by_name.keys())
-    removed = sorted(before_names - after_names)   # archived during this run
-    added = sorted(after_names - before_names)     # new skills this run
-    before_by_name = {r.get("name"): r for r in before_report if isinstance(r, dict)}
-
-    # State transitions between the two snapshots (e.g. active -> stale)
-    transitions: List[Dict[str, str]] = []
-    for name in sorted(after_names & before_names):
-        s_before = (before_by_name.get(name) or {}).get("state")
-        s_after = (after_by_name.get(name) or {}).get("state")
-        if s_before and s_after and s_before != s_after:
-            transitions.append({"name": name, "from": s_before, "to": s_after})
-
-    # Classify LLM tool calls
-    tc_counts: Dict[str, int] = {}
-    for tc in llm_meta.get("tool_calls", []) or []:
-        name = tc.get("name", "unknown")
-        tc_counts[name] = tc_counts.get(name, 0) + 1
-
-    # Split "removed" into consolidated (absorbed into umbrella) vs pruned
-    # (archived for staleness, content not preserved elsewhere). The old
-    # "Skills archived" section lumped both together, which misled users
-    # into thinking consolidated skills had been pruned.
-    #
-    # Classification strategy:
-    # 1. Parse the curator's structured YAML block from its final response.
-    #    The curator is now prompted to emit consolidations/prunings lists
-    #    with short rationale. The model has intent visibility the tool
-    #    calls don't.
-    # 2. Run the tool-call heuristic as a ground-truth audit.
-    # 3. Reconcile: model gets authority over intent + rationale, heuristic
-    #    catches hallucination (umbrella doesn't exist) and omission
-    #    (model forgot to list an actual consolidation).
-    heuristic = _classify_removed_skills(
-        removed=removed,
-        added=added,
-        after_names=after_names,
-        tool_calls=llm_meta.get("tool_calls", []) or [],
-    )
-    model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
-    destinations = set(after_names) | set(added or [])
-    # Authoritative signal: extract per-delete `absorbed_into` declarations
-    # from this run's tool calls. These beat both the YAML summary block and
-    # the substring heuristic — the model is telling us directly, at the
-    # moment of deletion, whether each archived skill was consolidated
-    # (into=<umbrella>) or pruned (into="").
-    absorbed_declarations = _extract_absorbed_into_declarations(
-        llm_meta.get("tool_calls", []) or []
-    )
-    classification = _reconcile_classification(
-        removed=removed,
-        heuristic=heuristic,
-        model_block=model_block,
-        destinations=destinations,
-        absorbed_declarations=absorbed_declarations,
-    )
-    consolidated = classification["consolidated"]
-    pruned = classification["pruned"]
-
-    # Rewrite cron job skill references. When the curator consolidates
-    # skill X into umbrella Y, any cron job that lists X fails to load
-    # it at run time — the scheduler skips it and the job runs without
-    # the instructions it was scheduled to follow. Rewriting the
-    # references in-place keeps scheduled jobs working across
-    # consolidation passes. Best-effort: never let a cron-module issue
-    # break the curator.
-    cron_rewrites: Dict[str, Any] = {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
-    try:
-        consolidated_map = {
-            e["name"]: e["into"]
-            for e in consolidated
-            if isinstance(e, dict) and e.get("name") and e.get("into")
-        }
-        pruned_names = [
-            e["name"] for e in pruned
-            if isinstance(e, dict) and e.get("name")
-        ]
-        if consolidated_map or pruned_names:
-            from cron.jobs import rewrite_skill_refs as _rewrite_cron_refs
-            cron_rewrites = _rewrite_cron_refs(
-                consolidated=consolidated_map,
-                pruned=pruned_names,
-            )
-    except Exception as e:
-        logger.debug("Curator cron skill rewrite failed: %s", e, exc_info=True)
-        cron_rewrites = {
-            "rewrites": [],
-            "jobs_updated": 0,
-            "jobs_scanned": 0,
-            "error": str(e),
-        }
-
+    tool_calls = llm_meta.get("tool_calls", []) or []
+    after_by_name, before_by_name = _by_name(after_report), _by_name(before_report)
+    diff = _diff_and_classify(before_names, set(after_by_name), tool_calls, llm_meta.get("final", "") or "")
+    states = ((n, (before_by_name.get(n) or {}).get("state"), (after_by_name.get(n) or {}).get("state")) for n in sorted(diff.after_names & before_names))
+    transitions = [{"name": n, "from": b, "to": a} for n, b, a in states if b and a and b != a]
+    tc_counts: Dict[str, int] = dict(Counter(tc.get("name", "unknown") for tc in tool_calls))
+    cron_rewrites = _rewrite_cron_refs(diff.consolidated, diff.pruned)
+    jobs_updated = int(cron_rewrites.get("jobs_updated", 0))
     payload = {
-        "started_at": started_at.isoformat(),
-        "duration_seconds": round(elapsed_seconds, 2),
-        "model": llm_meta.get("model", ""),
-        "provider": llm_meta.get("provider", ""),
-        "auto_transitions": auto_counts,
+        "started_at": started_at.isoformat(), "duration_seconds": round(elapsed_seconds, 2),
+        "model": llm_meta.get("model", ""), "provider": llm_meta.get("provider", ""), "auto_transitions": auto_counts,
         "counts": {
-            "before": len(before_names),
-            "after": len(after_names),
-            "delta": len(after_names) - len(before_names),
-            "archived_this_run": len(removed),
-            "added_this_run": len(added),
-            "consolidated_this_run": len(consolidated),
-            "pruned_this_run": len(pruned),
-            "state_transitions": len(transitions),
-            "cron_jobs_rewritten": int(cron_rewrites.get("jobs_updated", 0)),
-            "tool_calls_total": sum(tc_counts.values()),
+            "before": len(before_names), "after": len(diff.after_names), "delta": len(diff.after_names) - len(before_names),
+            "archived_this_run": len(diff.removed), "added_this_run": len(diff.added),
+            "consolidated_this_run": len(diff.consolidated), "pruned_this_run": len(diff.pruned),
+            "state_transitions": len(transitions), "cron_jobs_rewritten": jobs_updated, "tool_calls_total": sum(tc_counts.values()),
         },
-        "tool_call_counts": tc_counts,
-        "archived": removed,
-        "consolidated": consolidated,
-        "pruned": pruned,
-        "pruned_names": [p["name"] for p in pruned],
-        "added": added,
-        "state_transitions": transitions,
-        "cron_rewrites": cron_rewrites,
-        "llm_final": llm_meta.get("final", ""),
-        "llm_summary": llm_meta.get("summary", ""),
-        "llm_error": llm_meta.get("error"),
-        "tool_calls": llm_meta.get("tool_calls", []),
+        "tool_call_counts": tc_counts, "archived": diff.removed, "consolidated": diff.consolidated, "pruned": diff.pruned,
+        "pruned_names": [p["name"] for p in diff.pruned], "added": diff.added, "state_transitions": transitions, "cron_rewrites": cron_rewrites,
+        "llm_final": llm_meta.get("final", ""), "llm_summary": llm_meta.get("summary", ""),
+        "llm_error": llm_meta.get("error"), "tool_calls": llm_meta.get("tool_calls", []),
     }
-
-    # run.json — machine-readable, full fidelity
-    try:
-        (run_dir / "run.json").write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-    except Exception as e:
-        logger.debug("Curator run.json write failed: %s", e)
-
-    # REPORT.md — human-readable
-    try:
-        md = _render_report_markdown(payload)
-        (run_dir / "REPORT.md").write_text(md, encoding="utf-8")
-    except Exception as e:
-        logger.debug("Curator REPORT.md write failed: %s", e)
-
-    # cron_rewrites.json — only when at least one job was touched, to
-    # keep run dirs uncluttered for the common no-op case.
-    try:
-        if int(cron_rewrites.get("jobs_updated", 0)) > 0:
-            (run_dir / "cron_rewrites.json").write_text(
-                json.dumps(cron_rewrites, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
-    except Exception as e:
-        logger.debug("Curator cron_rewrites.json write failed: %s", e)
-
+    _write_file(run_dir / "run.json", "run.json", payload)
+    _write_file(run_dir / "REPORT.md", "REPORT.md", lambda: _render_report_markdown(payload))
+    if jobs_updated > 0:  # only when a job was touched, to keep no-op run dirs uncluttered
+        _write_file(run_dir / "cron_rewrites.json", "cron_rewrites.json", cron_rewrites)
     return run_dir
 
 
+def _reason_suffix(entry: Dict[str, Any]) -> str:
+    return f" — {reason}" if (reason := (entry.get("reason") or "").strip()) else ""
+
+
+def _consolidated_lines(entry: Dict[str, Any]) -> List[str]:
+    line = f"- `{entry.get('name', '?')}` → merged into `{entry.get('into', '?')}`" + _reason_suffix(entry)
+    source = entry.get("source", "")
+    if source and source.startswith("tool-call audit"):
+        line += f"  _(detected via {source})_"  # model didn't enumerate this one — explains the missing rationale
+    return [line] + ([f"  ⚠ The curator's summary named `{entry['model_claimed_into']}` "
+                      "as the umbrella but that skill doesn't exist post-run; showing the tool-call audit's finding instead."]
+                     if entry.get("model_claimed_into") else [])
+
+
+def _pruned_lines(entry: Any) -> List[str]:
+    # Reconciler entries are dicts {name, source, reason}; tolerate bare strings (older format).
+    return [f"- `{entry.get('name', '?')}`" + _reason_suffix(entry) if isinstance(entry, dict) else f"- `{entry}`"]
+
+
+def _cron_rewrite_lines(entry: Dict[str, Any]) -> List[str]:
+    job_name = entry.get("job_name") or entry.get("job_id") or "?"
+    head = f"- `{job_name}`: `{', '.join(entry.get('before') or [])}` → `{', '.join(entry.get('after') or []) or '(none)'}`"
+    return ([head] + [f"    - `{old}` → `{new}` (consolidated)" for old, new in (entry.get("mapped") or {}).items()]
+            + [f"    - `{name}` dropped (pruned)" for name in (entry.get("dropped") or [])])
+
+
+# REPORT.md list sections, in order: (payload key, heading, intro, per-entry renderer, cap, overflow hint).
+# Consolidated entries are archived (recoverable by design) but live on inside the umbrella.
+_REPORT_SECTIONS = (
+    ("consolidated", "Consolidated into umbrella skills",
+     "_These skills were **absorbed into another skill** during this run — their content still lives, just under a different name. "
+     "The original directory was moved to `~/.hermes/skills/.archive/` for safety and can be restored via "
+     "`hermes curator restore <name>` if the consolidation was wrong._\n", _consolidated_lines, 50, "see `run.json`"),
+    ("pruned", "Pruned — archived for staleness",
+     "_These skills were archived without being merged into an umbrella (e.g. stale, unused, or judged irrelevant). "
+     "Directories live under `~/.hermes/skills/.archive/`. Restore any via `hermes curator restore <name>`._\n",
+     _pruned_lines, 50, "see `run.json`"),
+    ("added", "New skills this run", "_Usually these are new class-level umbrellas created via `skill_manage action=create`._\n",
+     lambda n: [f"- `{n}`"], None, ""),
+    ("state_transitions", "State transitions", None, lambda t: [f"- `{t.get('name')}`: {t.get('from')} → {t.get('to')}"], None, ""),
+    ("cron_rewrites", "Cron job skill references rewritten",
+     "_Cron jobs that referenced a consolidated or pruned skill were updated in-place so they keep loading the right instructions "
+     "on their next run. See `cron_rewrites.json` for the full record._\n", _cron_rewrite_lines, 25, "see `cron_rewrites.json`"),
+)
+
+
 def _render_report_markdown(p: Dict[str, Any]) -> str:
-    """Render the human-readable report."""
-    lines: List[str] = []
-    started = p.get("started_at", "")
-    duration = p.get("duration_seconds", 0) or 0
-    mins, secs = divmod(int(duration), 60)
+    """Render the human-readable REPORT.md."""
+    mins, secs = divmod(int(p.get("duration_seconds", 0) or 0), 60)
     dur_label = f"{mins}m {secs}s" if mins else f"{secs}s"
-
-    lines.append(f"# Curator run — {started}\n")
-    model = p.get("model") or "(not resolved)"
-    prov = p.get("provider") or "(not resolved)"
-    counts = p.get("counts") or {}
-    lines.append(
-        f"Model: `{model}` via `{prov}`  ·  Duration: {dur_label}  ·  "
-        f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} "
-        f"({counts.get('delta', 0):+d})\n"
-    )
-
+    counts, auto, tc_counts = p.get("counts") or {}, p.get("auto_transitions") or {}, p.get("tool_call_counts") or {}
     error = p.get("llm_error")
-    if error:
-        lines.append(f"> ⚠ LLM pass error: `{error}`\n")
-
-    # Auto-transitions (pure, no LLM)
-    auto = p.get("auto_transitions") or {}
-    lines.append("## Auto-transitions (pure, no LLM)\n")
-    lines.append(f"- checked: {auto.get('checked', 0)}")
-    lines.append(f"- marked stale: {auto.get('marked_stale', 0)}")
-    lines.append(f"- archived (no LLM, pure time-based staleness): {auto.get('archived', 0)}")
-    lines.append(f"- reactivated: {auto.get('reactivated', 0)}")
-    lines.append("")
-
-    # LLM pass numbers
-    tc_counts = p.get("tool_call_counts") or {}
-    lines.append("## LLM consolidation pass\n")
-    lines.append(f"- tool calls: **{counts.get('tool_calls_total', 0)}** "
-                 f"(by name: {', '.join(f'{k}={v}' for k, v in sorted(tc_counts.items())) or 'none'})")
-    lines.append(f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**")
-    lines.append(f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**")
-    lines.append(f"- new skills this run: **{counts.get('added_this_run', 0)}**")
-    lines.append(f"- state transitions (active ↔ stale ↔ archived): "
-                 f"**{counts.get('state_transitions', 0)}**")
-    lines.append("")
-
-    # Consolidated list — content absorbed into an umbrella. The directory
-    # on disk still lives under ~/.hermes/skills/.archive/ (every removal is
-    # recoverable by design), but the "live" content for these skills
-    # continues to exist inside the destination umbrella.
-    consolidated = p.get("consolidated") or []
-    if consolidated:
-        lines.append(f"### Consolidated into umbrella skills ({len(consolidated)})\n")
-        lines.append(
-            "_These skills were **absorbed into another skill** during this run — "
-            "their content still lives, just under a different name. "
-            "The original directory was moved to `~/.hermes/skills/.archive/` for "
-            "safety and can be restored via `hermes curator restore <name>` if the "
-            "consolidation was wrong._\n"
-        )
-        SHOW = 50
-        for entry in consolidated[:SHOW]:
-            name = entry.get("name", "?")
-            into = entry.get("into", "?")
-            reason = (entry.get("reason") or "").strip()
-            source = entry.get("source", "")
-            line = f"- `{name}` → merged into `{into}`"
-            if reason:
-                line += f" — {reason}"
-            if source and source.startswith("tool-call audit"):
-                # The model didn't enumerate this one — surface that to the
-                # user so they know why the row has no rationale.
-                line += f"  _(detected via {source})_"
-            lines.append(line)
-            if entry.get("model_claimed_into"):
-                lines.append(
-                    f"  ⚠ The curator's summary named `{entry['model_claimed_into']}` "
-                    "as the umbrella but that skill doesn't exist post-run; "
-                    "showing the tool-call audit's finding instead."
-                )
-        if len(consolidated) > SHOW:
-            lines.append(f"- … and {len(consolidated) - SHOW} more (see `run.json`)")
-        lines.append("")
-
-    # Pruned list — archived without consolidation. These are the
-    # "stale skill pruned" cases the UI should mark clearly.
-    pruned = p.get("pruned") or []
-    if pruned:
-        lines.append(f"### Pruned — archived for staleness ({len(pruned)})\n")
-        lines.append(
-            "_These skills were archived without being merged into an umbrella "
-            "(e.g. stale, unused, or judged irrelevant). "
-            "Directories live under `~/.hermes/skills/.archive/`. "
-            "Restore any via `hermes curator restore <name>`._\n"
-        )
-        SHOW = 50
-        for entry in pruned[:SHOW]:
-            # Entries are dicts with {name, source, reason} when written via
-            # the reconciler, or bare strings when an older format slipped
-            # through. Handle both.
-            if isinstance(entry, dict):
-                name = entry.get("name", "?")
-                reason = (entry.get("reason") or "").strip()
-                line = f"- `{name}`"
-                if reason:
-                    line += f" — {reason}"
-                lines.append(line)
-            else:
-                lines.append(f"- `{entry}`")
-        if len(pruned) > SHOW:
-            lines.append(f"- … and {len(pruned) - SHOW} more (see `run.json`)")
-        lines.append("")
-
-    # Added list
-    added = p.get("added") or []
-    if added:
-        lines.append(f"### New skills this run ({len(added)})\n")
-        lines.append("_Usually these are new class-level umbrellas created via `skill_manage action=create`._\n")
-        for n in added:
-            lines.append(f"- `{n}`")
-        lines.append("")
-
-    # State transitions
-    trans = p.get("state_transitions") or []
-    if trans:
-        lines.append(f"### State transitions ({len(trans)})\n")
-        for t in trans:
-            lines.append(f"- `{t.get('name')}`: {t.get('from')} → {t.get('to')}")
-        lines.append("")
-
-    # Cron job rewrites — show which scheduled jobs had their skill
-    # references updated so users can audit that the auto-rewrite did
-    # the right thing. Only present when at least one job changed.
-    cron_rw = p.get("cron_rewrites") or {}
-    cron_rewrites_list = cron_rw.get("rewrites") or []
-    if cron_rewrites_list:
-        lines.append(f"### Cron job skill references rewritten ({len(cron_rewrites_list)})\n")
-        lines.append(
-            "_Cron jobs that referenced a consolidated or pruned skill were "
-            "updated in-place so they keep loading the right instructions "
-            "on their next run. See `cron_rewrites.json` for the full record._\n"
-        )
-        SHOW = 25
-        for entry in cron_rewrites_list[:SHOW]:
-            job_name = entry.get("job_name") or entry.get("job_id") or "?"
-            before = entry.get("before") or []
-            after = entry.get("after") or []
-            mapped = entry.get("mapped") or {}
-            dropped = entry.get("dropped") or []
-            lines.append(
-                f"- `{job_name}`: `{', '.join(before)}` → `{', '.join(after) or '(none)'}`"
-            )
-            for old, new in mapped.items():
-                lines.append(f"    - `{old}` → `{new}` (consolidated)")
-            for name in dropped:
-                lines.append(f"    - `{name}` dropped (pruned)")
-        if len(cron_rewrites_list) > SHOW:
-            lines.append(
-                f"- … and {len(cron_rewrites_list) - SHOW} more "
-                "(see `cron_rewrites.json`)"
-            )
-        lines.append("")
-
-    # Full LLM final response
+    lines = [
+        f"# Curator run — {p.get('started_at', '')}\n",
+        f"Model: `{p.get('model') or '(not resolved)'}` via `{p.get('provider') or '(not resolved)'}`  ·  Duration: {dur_label}  ·  "
+        f"Agent-created skills: {counts.get('before', 0)} → {counts.get('after', 0)} ({counts.get('delta', 0):+d})\n",
+        *([f"> ⚠ LLM pass error: `{error}`\n"] if error else []),
+        "## Auto-transitions (pure, no LLM)\n", f"- checked: {auto.get('checked', 0)}", f"- marked stale: {auto.get('marked_stale', 0)}",
+        f"- archived (no LLM, pure time-based staleness): {auto.get('archived', 0)}", f"- reactivated: {auto.get('reactivated', 0)}", "",
+        "## LLM consolidation pass\n",
+        f"- tool calls: **{counts.get('tool_calls_total', 0)}** (by name: {', '.join(f'{k}={v}' for k, v in sorted(tc_counts.items())) or 'none'})",
+        f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**",
+        f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**", f"- new skills this run: **{counts.get('added_this_run', 0)}**",
+        f"- state transitions (active ↔ stale ↔ archived): **{counts.get('state_transitions', 0)}**", "",
+    ]
+    for key, title, intro, render, show, hint in _REPORT_SECTIONS:
+        items = p.get(key) or []
+        if key == "cron_rewrites":  # lets users audit that the auto-rewrite did the right thing
+            items = items.get("rewrites") or []
+        if not items:
+            continue
+        lines += [f"### {title} ({len(items)})\n"] + ([intro] if intro else [])
+        for entry in items[:show]:
+            lines += render(entry)
+        lines += ([f"- … and {len(items) - show} more ({hint})"] if show is not None and len(items) > show else []) + [""]
     final = (p.get("llm_final") or "").strip()
     if final:
-        lines.append("## LLM final summary\n")
-        lines.append(final)
-        lines.append("")
-    elif not error:
-        llm_sum = p.get("llm_summary") or ""
-        if llm_sum:
-            lines.append("## LLM summary\n")
-            lines.append(llm_sum)
-            lines.append("")
-
-    # Recovery footer
-    lines.append("## Recovery\n")
-    lines.append("- Restore an archived skill: `hermes curator restore <name>`")
-    lines.append("- All archives live under `~/.hermes/skills/.archive/` and are recoverable by `mv`")
-    lines.append("- See `run.json` in this directory for the full machine-readable record.")
-    lines.append("")
-
+        lines += ["## LLM final summary\n", final, ""]
+    elif not error and (p.get("llm_summary") or ""):
+        lines += ["## LLM summary\n", p.get("llm_summary"), ""]
+    lines += ["## Recovery\n", "- Restore an archived skill: `hermes curator restore <name>`",
+              "- All archives live under `~/.hermes/skills/.archive/` and are recoverable by `mv`",
+              "- See `run.json` in this directory for the full machine-readable record.", ""]
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Orchestrator — spawn a forked AIAgent for the LLM review pass
-# ---------------------------------------------------------------------------
+# --- Orchestrator — spawn a forked AIAgent for the LLM review pass ---
 
 def _render_candidate_list() -> str:
     """Human/agent-readable list of curator-managed skills with usage stats."""
@@ -1491,543 +817,267 @@ def _render_candidate_list() -> str:
     if not rows:
         return "No curator-managed skills to review."
     cron_referenced = _cron_referenced_skills()
-    lines = [f"Curator-managed skills ({len(rows)}):\n"]
-    for r in rows:
-        lines.append(
-            f"- {r['name']}  "
-            f"provenance={r.get('provenance', 'agent')}  "
-            f"state={r['state']}  "
-            f"pinned={'yes' if r.get('pinned') else 'no'}  "
-            f"cron={'yes' if r['name'] in cron_referenced else 'no'}  "
-            f"activity={r.get('activity_count', 0)}  "
-            f"use={r.get('use_count', 0)}  "
-            f"view={r.get('view_count', 0)}  "
-            f"patches={r.get('patch_count', 0)}  "
-            f"last_activity={r.get('last_activity_at') or 'never'}"
+    return "\n".join([f"Curator-managed skills ({len(rows)}):\n"] + [
+        f"- {r['name']}  provenance={r.get('provenance', 'agent')}  state={r['state']}  "
+        f"pinned={'yes' if r.get('pinned') else 'no'}  cron={'yes' if r['name'] in cron_referenced else 'no'}  "
+        f"activity={r.get('activity_count', 0)}  use={r.get('use_count', 0)}  view={r.get('view_count', 0)}  "
+        f"patches={r.get('patch_count', 0)}  last_activity={r.get('last_activity_at') or 'never'}"
+        for r in rows
+    ])
+
+
+def _llm_meta(summary: str, error: Optional[str] = None) -> Dict[str, Any]:
+    """Structured result of an LLM pass that did not run (skipped or failed)."""
+    return {"final": "", "summary": summary, "model": "", "provider": "", "tool_calls": [], "error": error}
+
+
+def _notify(on_summary: Optional[Callable[[str], None]], message: str) -> None:
+    if on_summary:
+        with contextlib.suppress(Exception):
+            on_summary(message)
+
+
+def _safe_curated_report() -> List[Dict[str, Any]]:
+    with contextlib.suppress(Exception):
+        return skill_usage.curated_report()
+    return []
+
+
+def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_names: Set[str]) -> tuple:
+    """The LLM half of a run: fork (unless no candidates), then append the rename map (`old-name → umbrella`) so users
+    needn't dig into REPORT.md. Returns ``(final_summary, llm_meta)``; never raises."""
+    try:
+        candidate_list = _render_candidate_list()
+        if "No agent-created skills" in candidate_list:
+            final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
+            llm_meta = _llm_meta("skipped (no candidates)")
+        else:
+            # With prune-builtins on, bundled skills are candidates too: relax hard rule #1 for them (archive only; hub stays off-limits).
+            prompt = f"{CURATOR_REVIEW_PROMPT}{CURATOR_PRUNE_BUILTINS_NOTE if get_prune_builtins() else ''}\n\n{candidate_list}"
+            if dry_run:
+                prompt = f"{CURATOR_DRY_RUN_BANNER}\n\n{prompt}"
+            llm_meta = _run_llm_review(prompt)
+            final_summary = f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
+    except Exception as e:
+        logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
+        final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
+        llm_meta = _llm_meta(f"error ({e})", str(e))
+    try:  # best-effort: never block the run on formatting
+        rename_lines = _build_rename_summary(
+            before_names=before_names, after_report=skill_usage.curated_report(),
+            tool_calls=llm_meta.get("tool_calls", []) or [], model_final=llm_meta.get("final", "") or "",
         )
-    return "\n".join(lines)
+        if rename_lines:
+            final_summary = f"{final_summary}\n{rename_lines}"
+    except Exception as e:
+        logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
+    return final_summary, llm_meta
 
 
 def run_curator_review(
-    on_summary: Optional[Callable[[str], None]] = None,
-    synchronous: bool = False,
-    dry_run: bool = False,
-    consolidate: Optional[bool] = None,
+    on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
+    dry_run: bool = False, consolidate: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Execute a single curator review pass.
-
-    Steps:
-      1. Apply automatic state transitions (pure, no LLM).
-      2. If consolidation is enabled AND there are agent-created skills, spawn
-         a forked AIAgent that runs the LLM review prompt against the current
-         candidate list.
-      3. Update .curator_state with last_run_at and a one-line summary.
-      4. Invoke *on_summary* with a user-visible description.
-
-    If *synchronous* is True, the LLM review runs in the calling thread; the
-    default is to spawn a daemon thread so the caller returns immediately.
-
-    *consolidate* gates the LLM umbrella-building pass. ``None`` (the default)
-    reads ``curator.consolidate`` from config (OFF by default). Passing
-    ``True``/``False`` overrides the config for this invocation — used by the
-    ``hermes curator run --consolidate`` flag. When consolidation is off, only
-    the deterministic inactivity prune runs and the forked aux-model review is
-    skipped entirely (no aux-model cost).
-
-    If *dry_run* is True, the automatic stale/archive transitions are SKIPPED
-    and the LLM review pass is instructed to produce a report only — no
-    skill_manage mutations, no terminal archive moves. The REPORT.md still
-    gets written and ``state.last_report_path`` still records it so users
-    can read what the curator WOULD have done. A dry-run also honors
-    *consolidate*: when consolidation is off, the preview only reports the
-    deterministic prune candidates.
-    """
-    if consolidate is None:
-        consolidate = get_consolidate()
+    """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) if *consolidate* and there are
+    candidates, fork an AIAgent on the review prompt; (3) update .curator_state; (4) call *on_summary*.
+    *synchronous* runs the LLM review in the calling thread (default: daemon thread). *consolidate* ``None`` reads
+    ``curator.consolidate`` (OFF by default); when off only the deterministic prune runs — no fork, no aux cost.
+    *dry_run* SKIPS the stale/archive transitions and instructs the fork to report only; REPORT.md is still written and
+    recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
+    consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(timezone.utc)
-    if dry_run:
-        # Count candidates without mutating state.
-        try:
-            report = skill_usage.curated_report()
-            counts = {
-                "checked": len(report),
-                "marked_stale": 0,
-                "archived": 0,
-                "reactivated": 0,
-            }
-        except Exception:
-            counts = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
+    if dry_run:  # count candidates without mutating state
+        counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
-        # Pre-mutation snapshot — best-effort, never blocks the run. A
-        # failed snapshot logs at debug and continues (the alternative is
-        # that a transient disk issue silently disables curator forever,
-        # which is worse). Users who want to require snapshots can disable
-        # curator entirely until they can fix disk space.
+        # Pre-mutation snapshot — best-effort, never blocks the run: a transient
+        # disk issue must not silently disable the curator forever.
         try:
             from agent import curator_backup
             snap = curator_backup.snapshot_skills(reason="pre-curator-run")
-            if snap is not None and on_summary:
-                try:
-                    on_summary(f"curator: snapshot created ({snap.name})")
-                except Exception:
-                    pass
+            if snap is not None:
+                _notify(on_summary, f"curator: snapshot created ({snap.name})")
         except Exception as e:
             logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
         counts = apply_automatic_transitions(now=start)
+    auto_summary = ", ".join(
+        f"{counts[key]} {label}" for key, label in (("marked_stale", "marked stale"), ("archived", "archived"), ("reactivated", "reactivated")) if counts[key]
+    ) or "no changes"
 
-    auto_summary_parts = []
-    if counts["marked_stale"]:
-        auto_summary_parts.append(f"{counts['marked_stale']} marked stale")
-    if counts["archived"]:
-        auto_summary_parts.append(f"{counts['archived']} archived")
-    if counts["reactivated"]:
-        auto_summary_parts.append(f"{counts['reactivated']} reactivated")
-    auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
-
-    # Persist state before the LLM pass so a crash mid-review still records
-    # the run and doesn't immediately re-trigger. In dry-run we do NOT bump
-    # last_run_at or run_count — a preview shouldn't push the next scheduled
-    # real pass out. We still record a summary so `hermes curator status`
-    # shows that a preview ran.
-    state = load_state()
-    if not dry_run:
-        state["last_run_at"] = start.isoformat()
-        state["run_count"] = int(state.get("run_count", 0)) + 1
+    # Persist before the LLM pass so a crash mid-review still records the run.
+    # Dry-run does NOT bump last_run_at/run_count (a preview must not push the
+    # next real pass out) but still records a summary for `hermes curator status`.
     prefix = "dry-run auto: " if dry_run else "auto: "
-    state["last_run_summary"] = f"{prefix}{auto_summary}"
+    state = {**load_state(), "last_run_summary": f"{prefix}{auto_summary}"}
+    if not dry_run:
+        state.update(last_run_at=start.isoformat(), run_count=int(state.get("run_count", 0)) + 1)
     save_state(state)
 
     def _llm_pass():
-        nonlocal auto_summary
         # Snapshot skill state BEFORE the LLM pass so the report can diff.
-        try:
-            before_report = skill_usage.curated_report()
-        except Exception:
-            before_report = []
-        before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
-
-        # Consolidation gate. When off (the default), the curator does ONLY the
-        # deterministic inactivity prune above — no forked aux-model review, no
-        # umbrella-building, no aux-model cost. Record the run, write a report
-        # reflecting the prune-only outcome, and return without spawning a fork.
-        if not consolidate:
-            final_summary = (
-                f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
-            )
-            llm_meta = {
-                "final": "",
-                "summary": "skipped (consolidation off)",
-                "model": "",
-                "provider": "",
-                "tool_calls": [],
-                "error": None,
-            }
-            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-            state2 = load_state()
-            state2["last_run_duration_seconds"] = elapsed
-            state2["last_run_summary"] = final_summary
-            try:
-                after_report = skill_usage.curated_report()
-            except Exception:
-                after_report = []
-            try:
-                report_path = _write_run_report(
-                    started_at=start,
-                    elapsed_seconds=elapsed,
-                    auto_counts=counts,
-                    auto_summary=auto_summary,
-                    before_report=before_report,
-                    before_names=before_names,
-                    after_report=after_report,
-                    llm_meta=llm_meta,
-                )
-                if report_path is not None:
-                    state2["last_report_path"] = str(report_path)
-            except Exception as e:
-                logger.debug("Curator report write failed: %s", e, exc_info=True)
-            save_state(state2)
-            if on_summary:
-                try:
-                    on_summary(f"curator: {final_summary}")
-                except Exception:
-                    pass
-            return
-
-        llm_meta: Dict[str, Any] = {}
-        try:
-            candidate_list = _render_candidate_list()
-            if "No agent-created skills" in candidate_list:
-                final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
-                llm_meta = {
-                    "final": "",
-                    "summary": "skipped (no candidates)",
-                    "model": "",
-                    "provider": "",
-                    "tool_calls": [],
-                    "error": None,
-                }
-            else:
-                # When pruning built-ins is enabled, the candidate list now
-                # includes bundled skills. Override the default "don't touch
-                # bundled" rule for them — but only archiving is permitted, and
-                # hub-installed skills remain strictly off-limits.
-                builtins_note = ""
-                if get_prune_builtins():
-                    builtins_note = (
-                        "\n\nPRUNE-BUILTINS MODE IS ON: bundled built-in skills "
-                        "ARE included in the candidate list below and MAY be "
-                        "archived for staleness/irrelevance, overriding hard "
-                        "rule #1 for bundled skills ONLY. Hub-installed skills "
-                        "remain strictly off-limits. Treat a stale built-in the "
-                        "same as a stale agent-created skill: archive it (never "
-                        "delete). It will be restored on `hermes update` only if "
-                        "the user explicitly restores it."
-                    )
-                if dry_run:
-                    prompt = (
-                        f"{CURATOR_DRY_RUN_BANNER}\n\n"
-                        f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n"
-                        f"{candidate_list}"
-                    )
-                else:
-                    prompt = f"{CURATOR_REVIEW_PROMPT}{builtins_note}\n\n{candidate_list}"
-                llm_meta = _run_llm_review(prompt)
-                final_summary = (
-                    f"{prefix}{auto_summary}; llm: {llm_meta.get('summary', 'no change')}"
-                )
-        except Exception as e:
-            logger.debug("Curator LLM pass failed: %s", e, exc_info=True)
-            final_summary = f"{prefix}{auto_summary}; llm: error ({e})"
-            llm_meta = {
-                "final": "",
-                "summary": f"error ({e})",
-                "model": "",
-                "provider": "",
-                "tool_calls": [],
-                "error": str(e),
-            }
-
-        # Append the rename map (`old-name → umbrella`) to the user-visible
-        # summary so people don't have to dig into REPORT.md to find out where
-        # their skills went. Best-effort: classification is pure but never
-        # block the run on a formatting issue.
-        try:
-            rename_lines = _build_rename_summary(
-                before_names=before_names,
-                after_report=skill_usage.curated_report(),
-                tool_calls=llm_meta.get("tool_calls", []) or [],
-                model_final=llm_meta.get("final", "") or "",
-            )
-            if rename_lines:
-                final_summary = f"{final_summary}\n{rename_lines}"
-        except Exception as e:
-            logger.debug("Curator rename summary build failed: %s", e, exc_info=True)
-
+        before_report = _safe_curated_report()
+        before_names = set(_by_name(before_report))
+        if consolidate:
+            final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
+        else:
+            # Prune-only run: record it and write a report, but never fork.
+            final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
+            llm_meta = _llm_meta("skipped (consolidation off)")
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-        state2 = load_state()
-        state2["last_run_duration_seconds"] = elapsed
-        state2["last_run_summary"] = final_summary
-
-        # Write the per-run report. Runs in a best-effort try so a
-        # reporting bug never breaks the curator itself. Report path is
-        # recorded in state so `hermes curator status` can point at it.
-        try:
-            after_report = skill_usage.curated_report()
-        except Exception:
-            after_report = []
+        state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
+        # Per-run report, best-effort; path recorded for `hermes curator status`.
         try:
             report_path = _write_run_report(
-                started_at=start,
-                elapsed_seconds=elapsed,
-                auto_counts=counts,
-                auto_summary=auto_summary,
-                before_report=before_report,
-                before_names=before_names,
-                after_report=after_report,
-                llm_meta=llm_meta,
+                started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
+                before_report=before_report, before_names=before_names, after_report=_safe_curated_report(), llm_meta=llm_meta,
             )
             if report_path is not None:
                 state2["last_report_path"] = str(report_path)
         except Exception as e:
             logger.debug("Curator report write failed: %s", e, exc_info=True)
-
         save_state(state2)
-
-        if on_summary:
-            try:
-                on_summary(f"curator: {final_summary}")
-            except Exception:
-                pass
+        _notify(on_summary, f"curator: {final_summary}")
 
     if synchronous:
         _llm_pass()
     else:
-        t = threading.Thread(target=_llm_pass, daemon=True, name="curator-review")
-        t.start()
+        threading.Thread(target=_llm_pass, daemon=True, name="curator-review").start()
+    return {"started_at": start.isoformat(), "auto_transitions": counts, "summary_so_far": auto_summary}
 
-    return {
-        "started_at": start.isoformat(),
-        "auto_transitions": counts,
-        "summary_so_far": auto_summary,
-    }
+
+# --- Provider/model resolution for the review fork ---
+
+class _ReviewRuntimeBinding(NamedTuple):
+    """Provider/model for the curator review fork plus per-slot overrides."""
+    provider: str
+    model: str
+    explicit_api_key: Optional[str]
+    explicit_base_url: Optional[str]
+    request_overrides: Dict[str, Any]
+
+
+def _merge_request_overrides(runtime_overrides: Any, slot_extra_body: Any) -> Dict[str, Any]:
+    """Merge resolver metadata with task-local request body fields."""
+    merged = dict(runtime_overrides or {})
+    if isinstance(slot_extra_body, dict) and slot_extra_body:
+        merged["extra_body"] = {**(merged.get("extra_body") or {}), **slot_extra_body}
+    return merged
 
 
 def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
-    """Resolve provider/model and per-slot credentials for the curator review fork.
-
-    Same precedence as `_resolve_review_model()`. Non-empty ``api_key`` /
-    ``base_url`` from the active slot are returned as explicit overrides so
-    ``resolve_runtime_provider`` does not silently reuse the main chat
-    credential chain for a routed auxiliary model.
-    """
-    _main = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
-    _main_provider = _main.get("provider") or "auto"
-    _main_model = _main.get("default") or _main.get("model") or ""
-
-    # 1. Canonical aux task slot
-    _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
-    _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
-    _task_provider = (_cur_task.get("provider") or "").strip() or None
-    _task_model = (_cur_task.get("model") or "").strip() or None
-    if _task_provider and _task_provider != "auto" and _task_model:
-        return _ReviewRuntimeBinding(
-            _task_provider,
-            _task_model,
-            _strip_aux_credential(_cur_task.get("api_key")),
-            _strip_aux_credential(_cur_task.get("base_url")),
-            _merge_request_overrides({}, _cur_task.get("extra_body")),
-        )
-
-    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
-    _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
-    _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
-    _legacy_provider = _legacy.get("provider") or None
-    _legacy_model = _legacy.get("model") or None
-    if _legacy_provider and _legacy_model:
-        logger.info(
-            "curator: using deprecated curator.auxiliary.{provider,model} "
-            "config — please migrate to auxiliary.curator.{provider,model}"
-        )
-        return _ReviewRuntimeBinding(
-            str(_legacy_provider),
-            str(_legacy_model),
-            _strip_aux_credential(_legacy.get("api_key")),
-            _strip_aux_credential(_legacy.get("base_url")),
-            _merge_request_overrides({}, _legacy.get("extra_body")),
-        )
-
-    # 3. Fall through to the main chat model
-    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None, {})
-
-
-def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
-    """Pick (provider, model) for the curator review fork.
-
-    Curator is a regular auxiliary task slot — ``auxiliary.curator.{provider,model}``
-    — so it participates in the canonical aux-model plumbing (``hermes model`` →
-    auxiliary picker, the dashboard Models tab, ``auxiliary.curator.{timeout,
-    base_url,api_key,extra_body}``). ``provider: "auto"`` with an empty model
-    means "use the main chat model" — same default as every other aux task.
-
-    Legacy fallback: users who configured ``curator.auxiliary.{provider,model}``
-    under the previous one-off schema still work. Precedence:
+    """Curator is a regular auxiliary task slot (``auxiliary.curator.*``), so it rides the canonical aux-model plumbing. Precedence:
       1. ``auxiliary.curator.{provider,model}`` when both are set non-auto
-      2. Legacy ``curator.auxiliary.{provider,model}`` when both are set
-      3. Main ``model.{provider,default/model}`` pair
-    """
-    b = _resolve_review_runtime(cfg)
-    return b.provider, b.model
+      2. Legacy ``curator.auxiliary.{provider,model}`` (deprecated) when both set
+      3. Main ``model.{provider,default/model}`` pair ("auto" + "" = main chat model)
+    Non-empty slot ``api_key``/``base_url`` are returned as explicit overrides so ``resolve_runtime_provider`` doesn't reuse the main chat credential chain."""
+    def _slot(provider: str, model: str, slot: Dict[str, Any]) -> _ReviewRuntimeBinding:
+        api_key, base_url = ((str(v).strip() or None) if v is not None else None for v in (slot.get("api_key"), slot.get("base_url")))
+        return _ReviewRuntimeBinding(provider, model, api_key, base_url, _merge_request_overrides({}, slot.get("extra_body")))
+
+    task = _subdict(cfg, "auxiliary", "curator")
+    task_provider = (task.get("provider") or "").strip() or None
+    task_model = (task.get("model") or "").strip() or None
+    if task_provider and task_provider != "auto" and task_model:
+        return _slot(task_provider, task_model, task)
+    legacy = _subdict(cfg, "curator", "auxiliary")
+    if legacy.get("provider") and legacy.get("model"):
+        logger.info("curator: using deprecated curator.auxiliary.{provider,model} config — please migrate to auxiliary.curator.{provider,model}")
+        return _slot(str(legacy["provider"]), str(legacy["model"]), legacy)
+    main = _subdict(cfg, "model")
+    return _ReviewRuntimeBinding(main.get("provider") or "auto", main.get("default") or main.get("model") or "", None, None, {})
 
 
-def _run_llm_review(prompt: str) -> Dict[str, Any]:
-    """Spawn an AIAgent fork to run the curator review prompt.
-
-    Returns a dict with:
-      - final: full (untruncated) final response from the reviewer
-      - summary: short summary suitable for state file (240-char cap)
-      - model, provider: what the fork actually ran on
-      - tool_calls: list of {name, arguments} for every tool call made during
-        the pass (arguments may be truncated for readability)
-      - error: set if the pass failed mid-run; final/summary may still be empty
-
-    Never raises; callers get a structured failure instead.
-    """
-    import contextlib
-    result_meta: Dict[str, Any] = {
-        "final": "",
-        "summary": "",
-        "model": "",
-        "provider": "",
-        "tool_calls": [],
-        "error": None,
-    }
-    try:
-        from run_agent import AIAgent
-    except Exception as e:
-        result_meta["error"] = f"AIAgent import failed: {e}"
-        result_meta["summary"] = result_meta["error"]
-        return result_meta
-
-    # Resolve provider + model the same way the CLI does, so the curator
-    # fork inherits the user's active main config rather than falling
-    # through to an empty provider/model pair (which sends HTTP 400
-    # "No models provided"). AIAgent() without explicit provider/model
-    # arguments hits an auto-resolution path that fails for OAuth-only
-    # providers and for pool-backed credentials.
-    #
-    # `_resolve_review_runtime()` honors `auxiliary.curator.{provider,model,...}`
-    # (canonical aux-task slot, wired through `hermes model` → auxiliary
-    # picker and the dashboard Models tab), with a legacy fallback to
-    # `curator.auxiliary.{provider,model,...}`. See docs/user-guide/features/curator.md.
-    _api_key = None
-    _base_url = None
-    _api_mode = None
-    _resolved_provider = None
-    _credential_pool = None
-    _request_overrides: Dict[str, Any] = {}
-    _max_tokens = None
-    _acp_command = None
-    _acp_args = None
-    _model_name = ""
+def _resolve_review_provider() -> tuple:
+    """``(runtime_provider, model_name, provider_name, request_overrides)`` resolved the way the CLI does: AIAgent() without
+    explicit provider/model hits an auto-resolution path that fails for OAuth-only providers and pooled credentials
+    (HTTP 400 "No models provided"). Never raises."""
+    rp: Dict[str, Any] = {}
+    overrides, provider, model_name = {}, None, ""
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        _cfg = load_config_readonly()
-        _binding = _resolve_review_runtime(_cfg)
-        _provider, _model_name = _binding.provider, _binding.model
-        _rp = resolve_runtime_provider(
-            requested=_provider,
-            target_model=_model_name,
-            explicit_api_key=_binding.explicit_api_key,
-            explicit_base_url=_binding.explicit_base_url,
+        binding = _resolve_review_runtime(load_config_readonly())
+        model_name = binding.model
+        rp = resolve_runtime_provider(
+            requested=binding.provider, target_model=binding.model,
+            explicit_api_key=binding.explicit_api_key, explicit_base_url=binding.explicit_base_url,
         )
-        _api_key = _rp.get("api_key")
-        _base_url = _rp.get("base_url")
-        _api_mode = _rp.get("api_mode")
-        _resolved_provider = _rp.get("provider") or _provider
-        _credential_pool = _rp.get("credential_pool")
-        _request_overrides = _merge_request_overrides(
-            _rp.get("request_overrides"),
-            _binding.request_overrides.get("extra_body"),
-        )
-        _max_tokens = _rp.get("max_output_tokens")
-        _acp_command = _rp.get("command")
-        _acp_args = list(_rp.get("args") or [])
-        if isinstance(_rp.get("model"), str) and _rp["model"].strip():
-            _model_name = _rp["model"].strip()
+        provider = rp.get("provider") or binding.provider
+        overrides = _merge_request_overrides(rp.get("request_overrides"), binding.request_overrides.get("extra_body"))
+        if isinstance(rp.get("model"), str) and rp["model"].strip():
+            model_name = rp["model"].strip()
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
+    return rp, model_name, provider, overrides
 
-    result_meta["model"] = _model_name
-    result_meta["provider"] = _resolved_provider or ""
 
+def _run_llm_review(prompt: str) -> Dict[str, Any]:
+    """Spawn an AIAgent fork on the review prompt. Returns ``final`` (untruncated response), ``summary`` (240-char cap),
+    ``model``/``provider`` (what ran), ``tool_calls`` ([{name, arguments}], truncated) and ``error``. Never raises."""
+    result_meta: Dict[str, Any] = _llm_meta("")
+    try:
+        from run_agent import AIAgent
+    except Exception as e:
+        result_meta["error"] = result_meta["summary"] = f"AIAgent import failed: {e}"
+        return result_meta
+    rp, model_name, provider, request_overrides = _resolve_review_provider()
+    result_meta["model"], result_meta["provider"] = model_name, provider or ""
     review_agent = None
     try:
-        _agent_kwargs: Dict[str, Any] = {}
-        if isinstance(_max_tokens, int):
-            _agent_kwargs["max_tokens"] = _max_tokens
-        if isinstance(_acp_command, str) and _acp_command:
-            _agent_kwargs["acp_command"] = _acp_command
-            _agent_kwargs["acp_args"] = _acp_args or []
+        agent_kwargs: Dict[str, Any] = {"max_tokens": rp["max_output_tokens"]} if isinstance(rp.get("max_output_tokens"), int) else {}
+        acp_command = rp.get("command")
+        if isinstance(acp_command, str) and acp_command:
+            agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
         review_agent = AIAgent(
-            model=_model_name,
-            provider=_resolved_provider,
-            api_key=_api_key,
-            base_url=_base_url,
-            api_mode=_api_mode,
-            credential_pool=_credential_pool,
-            request_overrides=_request_overrides,
-            **_agent_kwargs,
-            enabled_toolsets=["skills", "terminal"],
-            # Umbrella-building over a large skill collection is worth a
-            # high iteration ceiling — the pass typically takes 50-100
-            # API calls against hundreds of candidate skills. The
-            # single-session review path caps itself at a much smaller
-            # number because it's not doing a curation sweep.
+            model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
+            api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),
+            request_overrides=request_overrides, **agent_kwargs,
+            # No ``terminal``: a shell mv/cp/rm under the skills tree writes bytes
+            # with NO ledger entry, so rollback would restore a hollow skill. Every
+            # mutation goes through ledgered skill_manage; dropping the toolset
+            # closes the hole by construction (no command heuristic can).
+            enabled_toolsets=["skills"],
+            # Umbrella-building over hundreds of skills takes 50-100 API calls.
             max_iterations=9999,
-            quiet_mode=True,
-            platform="curator",
-            skip_context_files=True,
-            skip_memory=True,
+            quiet_mode=True, platform="curator", skip_context_files=True, skip_memory=True,
         )
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
-        # Tag this fork as autonomous background curation so skill_manage's
-        # background-review write guard fires. Without this the fork inherits
-        # the default "assistant_tool" origin, is_background_review() is False,
-        # and the external/bundled/hub-installed skill_manage guards never
-        # trigger during the curation pass they exist to protect against.
-        # turn_context.py binds this onto the write-origin ContextVar at turn
-        # start (see agent/turn_context.py).
+        # Tag as autonomous background curation so skill_manage's background-review
+        # write guards (external/bundled/hub) fire; turn_context binds this onto
+        # the write-origin ContextVar at turn start.
         review_agent._memory_write_origin = "background_review"
-
-        # Redirect the forked agent's stdout/stderr to /dev/null while it
-        # runs so its tool-call chatter doesn't pollute the foreground
-        # terminal. The background-thread runner also hides it; this
-        # belt-and-suspenders path matters when a caller invokes
-        # run_curator_review(synchronous=True) from the CLI.
-        with open(os.devnull, "w", encoding="utf-8") as _devnull, \
-             contextlib.redirect_stdout(_devnull), \
-             contextlib.redirect_stderr(_devnull):
+        # Silence the fork's tool-call chatter (CLI synchronous foreground runs).
+        with open(os.devnull, "w", encoding="utf-8") as devnull, \
+             contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
             conv_result = review_agent.run_conversation(user_message=prompt)
-
-        final = ""
-        if isinstance(conv_result, dict):
-            final = str(conv_result.get("final_response") or "").strip()
+        final = str(conv_result.get("final_response") or "").strip() if isinstance(conv_result, dict) else ""
         result_meta["final"] = final
         result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
-
-        # Collect tool calls for the report. Walk the forked agent's
-        # session messages and extract every tool_call made during the
-        # pass. Truncate argument payloads so a giant skill_manage create
-        # doesn't blow up the report.
-        _calls: List[Dict[str, Any]] = []
-        for msg in getattr(review_agent, "_session_messages", []) or []:
-            if not isinstance(msg, dict):
-                continue
-            tcs = msg.get("tool_calls") or []
-            for tc in tcs:
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function") or {}
-                name = fn.get("name") or ""
-                args_raw = fn.get("arguments") or ""
-                if isinstance(args_raw, str) and len(args_raw) > 400:
-                    args_raw = args_raw[:400] + "…"
-                _calls.append({"name": name, "arguments": args_raw})
-        result_meta["tool_calls"] = _calls
+        # Tool calls for the report; arguments truncated to 400 chars so a giant skill_manage create doesn't blow it up.
+        fns = (tc.get("function") or {} for msg in getattr(review_agent, "_session_messages", []) or [] if isinstance(msg, dict)
+               for tc in (msg.get("tool_calls") or []) if isinstance(tc, dict))
+        result_meta["tool_calls"] = [
+            {"name": fn.get("name") or "", "arguments": a[:400] + "…" if isinstance(a, str) and len(a) > 400 else a}
+            for fn in fns for a in (fn.get("arguments") or "",)
+        ]
     except Exception as e:
-        result_meta["error"] = f"error: {e}"
-        result_meta["summary"] = result_meta["error"]
+        result_meta["error"] = result_meta["summary"] = f"error: {e}"
     finally:
         if review_agent is not None:
-            try:
+            with contextlib.suppress(Exception):
                 review_agent.close()
-            except Exception:
-                pass
     return result_meta
 
 
-# ---------------------------------------------------------------------------
-# Public entrypoint for the session-start hook
-# ---------------------------------------------------------------------------
+# --- Public entrypoint for the session-start hook ---
 
-def maybe_run_curator(
-    *,
-    idle_for_seconds: Optional[float] = None,
-    on_summary: Optional[Callable[[str], None]] = None,
-) -> Optional[Dict[str, Any]]:
-    """Best-effort: run a curator pass if all gates pass. Returns the result
-    dict if a pass was started, else None. Never raises."""
+def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: Optional[Callable[[str], None]] = None) -> Optional[Dict[str, Any]]:
+    """Best-effort: run a curator pass if all gates pass. Returns the result dict if a pass was started, else None. Never raises."""
     try:
-        if not should_run_now():
-            return None
         # Idle gating: only enforce when the caller provided a measurement.
-        if idle_for_seconds is not None:
-            min_idle_s = get_min_idle_hours() * 3600.0
-            if idle_for_seconds < min_idle_s:
-                return None
+        if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
+            return None
         return run_curator_review(on_summary=on_summary)
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)

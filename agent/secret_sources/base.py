@@ -1,37 +1,16 @@
 """Secret-source contract: the ABC every secret backend implements.
 
-A *secret source* resolves credentials from an external secret manager
-(Bitwarden Secrets Manager, 1Password, an OS keystore, a user script, ...)
-into environment-variable-shaped values at process startup, AFTER
-``~/.hermes/.env`` has loaded and BEFORE the rest of Hermes reads
-``os.environ``.
+A *secret source* resolves credentials from an external secret manager into
+env-var-shaped values at process startup, AFTER ``~/.hermes/.env`` has loaded
+and BEFORE the rest of Hermes reads ``os.environ``. The contract is deliberately
+narrow: read-only; startup-time and synchronous (one ``fetch()`` per process per
+HERMES_HOME, under a registry-enforced wall-clock timeout, no background
+refreshers); never raises, never prompts (errors go in ``FetchResult.error``
+with an :class:`ErrorKind`; interactive auth belongs in the CLI ``setup`` flow);
+sources fetch, the orchestrator (``registry.apply_all``) applies.
 
-Scope of the contract (deliberate, please do not widen):
-
-* **Read-only.**  Sources resolve refs → values.  There is no write-back
-  ("save this key to your vault"), no arbitrary secret objects, and no
-  mid-session secret API.  If a future need for rotation/refresh appears
-  it will arrive as a versioned optional hook — do not bolt it on.
-* **Startup-time, synchronous.**  ``fetch()`` is called once per process
-  (per HERMES_HOME) by the orchestrator in
-  :mod:`agent.secret_sources.registry`, which enforces a wall-clock
-  timeout around it.  Sources must not spawn background refreshers.
-* **Never raises, never prompts.**  ``fetch()`` returns a
-  :class:`FetchResult` — errors go in ``result.error`` with a
-  machine-readable :class:`ErrorKind`.  Interactive auth belongs in the
-  source's CLI ``setup`` flow, never on the startup path (non-TTY
-  gateway/cron startup must never block on stdin).
-* **Sources fetch; the orchestrator applies.**  A source returns the
-  name→value mapping it *would* contribute.  Precedence (mapped-beats-bulk,
-  first-wins, ``override_existing``, protected vars), conflict warnings,
-  provenance tracking, and the actual ``os.environ`` writes are owned by
-  the orchestrator so no backend can get them wrong.
-
-Versioning: ``SECRET_SOURCE_API_VERSION`` gates plugin compatibility.
-New *optional* hooks with default implementations do not bump it;
-required-signature changes do, and the registry skips (with a warning)
-sources built against a different major version instead of crashing
-startup.
+``SECRET_SOURCE_API_VERSION`` gates plugin compatibility: additive optional
+hooks with defaults do NOT bump it; required-signature changes do.
 """
 
 from __future__ import annotations
@@ -39,17 +18,18 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from contextvars import ContextVar, Token
 from abc import ABC, abstractmethod
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, FrozenSet, List, MutableMapping, Optional, Sequence
+from typing import Any, Dict, FrozenSet, List, MutableMapping, Optional, Sequence, Tuple
 
-# Bump ONLY for breaking changes to the required contract surface
-# (abstract-method signatures, FetchResult required fields).  Additive
-# optional hooks must ship with defaults and must NOT bump this.
 SECRET_SOURCE_API_VERSION = 1
+
+# Generous: a first run may include a one-time CLI auto-install (bws download).
+DEFAULT_FETCH_TIMEOUT_SECONDS = 120.0
+DEFAULT_CLI_TIMEOUT_SECONDS = 30.0
 
 _SOURCE_ENVIRONMENT: ContextVar[Optional[MutableMapping[str, str]]]
 _SOURCE_ENVIRONMENT = ContextVar("hermes_secret_source_environment", default=None)
@@ -69,23 +49,22 @@ def get_source_environment() -> MutableMapping[str, str]:
     environ = _SOURCE_ENVIRONMENT.get()
     return environ if environ is not None else os.environ
 
-# Timeout the orchestrator enforces around fetch() when the source's
-# config section doesn't override it.  Generous because a first run may
-# include a one-time CLI binary auto-install (e.g. bws download+verify).
-DEFAULT_FETCH_TIMEOUT_SECONDS = 120.0
 
-# Default timeout for run_secret_cli() subprocess invocations.
-DEFAULT_CLI_TIMEOUT_SECONDS = 30.0
+def source_child_env() -> Dict[str, str]:
+    """Environment for a helper child that legitimately needs the caller's env:
+    full process env (minus the terminal blocklist) in single-profile startup;
+    ONLY the per-fetch view under multiplex, so no sibling profile's secrets leak."""
+    source_env = get_source_environment()
+    if source_env is os.environ:
+        from tools.environments.local import build_subprocess_env
+
+        return build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    return dict(source_env)
 
 
 class ErrorKind(str, Enum):
-    """Machine-readable failure taxonomy for :class:`FetchResult.error`.
-
-    A fixed vocabulary keeps startup warnings and ``hermes secrets status``
-    uniform across backends, and lets the orchestrator implement
-    kind-dependent policy (e.g. a future stale-cache fallback on
-    ``NETWORK``/``TIMEOUT`` but not on ``AUTH_FAILED``) exactly once.
-    """
+    """Failure taxonomy for :class:`FetchResult.error`; lets the orchestrator apply
+    kind-dependent policy once (stale-cache fallback on NETWORK/TIMEOUT, never AUTH_FAILED)."""
 
     NOT_CONFIGURED = "not_configured"    # enabled but missing token/project/map
     BINARY_MISSING = "binary_missing"    # helper CLI not found / not installed
@@ -98,16 +77,33 @@ class ErrorKind(str, Enum):
     INTERNAL = "internal"                # anything else (bug, unexpected shape)
 
 
+# Ordered (kind, substrings) rules for mapping CLI failure text onto ErrorKind;
+# first rule whose substring appears (case-insensitive) wins.
+ErrorRules = Sequence[Tuple[ErrorKind, Sequence[str]]]
+
+
+def classify_cli_error(message: str, rules: ErrorRules) -> ErrorKind:
+    """Best-effort mapping of helper-CLI failure text onto the taxonomy."""
+    lowered = message.lower()
+    for kind, tokens in rules:
+        if any(tok in lowered for tok in tokens):
+            return kind
+    return ErrorKind.INTERNAL
+
+
+def coerce_float(value: Any, default: float) -> float:
+    """``float(value)`` with ``default`` for malformed config values."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class FetchResult:
-    """Outcome of one source's fetch.
-
-    ``secrets`` holds what the source *would* contribute; whether each
-    var is actually applied is the orchestrator's decision.  ``applied``
-    and ``skipped`` exist for backward compatibility with the original
-    Bitwarden fetch-and-apply entry point and are left empty by
-    conforming ``fetch()`` implementations.
-    """
+    """Outcome of one source's fetch. ``secrets`` is what the source *would*
+    contribute; ``applied``/``skipped`` serve the legacy fetch-and-apply entry
+    points and stay empty in ``fetch()``."""
 
     secrets: Dict[str, str] = field(default_factory=dict)
     applied: List[str] = field(default_factory=list)
@@ -115,40 +111,40 @@ class FetchResult:
     warnings: List[str] = field(default_factory=list)
     error: Optional[str] = None
     error_kind: Optional[ErrorKind] = None
-    # Path of the helper binary used, when the source is CLI-driven.
-    # Surfaced by status commands; None for SDK/API-driven sources.
+    # Helper binary used (CLI-driven sources); surfaced by status commands.
     binary_path: Optional[Path] = None
 
     @property
     def ok(self) -> bool:
         return self.error is None
 
+    def fail(self, error: str, kind: ErrorKind) -> "FetchResult":
+        self.error, self.error_kind = error, kind
+        return self
+
+
+_GENERIC_REMEDIATION = {
+    ErrorKind.NOT_CONFIGURED: "Run `hermes secrets {name} setup` to finish configuration.",
+    ErrorKind.BINARY_MISSING: "Run `hermes secrets {name} setup` to install the helper CLI.",
+    ErrorKind.AUTH_FAILED: "Credentials rejected — run `hermes secrets {name} setup` to re-authenticate.",
+    ErrorKind.AUTH_EXPIRED: "Credentials expired — run `hermes secrets {name} setup` to re-authenticate.",
+    ErrorKind.NETWORK: "Network problem reaching the secrets backend — check connectivity and retry.",
+    ErrorKind.TIMEOUT: "Backend was slow — raise secrets.{name}.timeout_seconds if this recurs.",
+}
+
 
 class SecretSource(ABC):
-    """One external secret backend.
+    """One external secret backend. Subclasses set attributes + ``fetch``.
 
-    Subclasses set the class attributes and implement :meth:`fetch`.
-    Everything else has a sensible default.
-
-    Attributes:
-        name: Config-section key under ``secrets:`` in config.yaml.
-            Lowercase ``[a-z0-9_]+``.  Also the provenance label stored
-            for every var this source supplies.
-        label: Human-readable name used in startup messages and
-            ``hermes secrets status`` (e.g. ``"Bitwarden Secrets Manager"``).
-        shape: ``"mapped"`` when the user explicitly binds env-var names
-            to refs (1Password ``env:`` map, command source) or
-            ``"bulk"`` when the backend injects whole projects/folders
-            of secrets implicitly (Bitwarden BSM).  The orchestrator
-            gives mapped sources precedence over bulk sources: an
-            explicit binding is stronger intent than a project dump.
-        scheme: Optional URI scheme this source owns for secret
-            references (``"op"`` for ``op://...``).  Must be unique
-            across registered sources — refs may eventually appear
-            outside the ``secrets:`` block (e.g. credential-pool
-            ``api_key`` fields), so scheme collisions are rejected at
-            registration time to keep that future possible.
-        api_version: Contract version this source was built against.
+    ``name``: config-section key under ``secrets:`` (``[a-z0-9_]+``) and the
+    provenance label. ``shape``: ``"mapped"`` (user binds env-var names to refs)
+    or ``"bulk"`` (backend injects whole projects); mapped beats bulk because an
+    explicit binding is stronger intent. ``scheme``: URI scheme this source owns
+    for refs, unique across sources. ``token_env_key`` / ``default_token_env``:
+    config key naming the bootstrap-auth env var and its default; drives
+    :meth:`protected_env_vars` so a vault holding its own access token can't
+    clobber the credential used to reach it. ``remediation_hints``: per-kind
+    overrides of the generic remediation text (``{name}`` / ``{token_env}``).
     """
 
     api_version: int = SECRET_SOURCE_API_VERSION
@@ -156,112 +152,60 @@ class SecretSource(ABC):
     label: str = ""
     shape: str = "mapped"  # "mapped" | "bulk"
     scheme: Optional[str] = None
-
-    # -- required ----------------------------------------------------------
+    token_env_key: Optional[str] = None
+    default_token_env: str = ""
+    override_existing_default: bool = False
+    remediation_hints: Dict[ErrorKind, str] = {}
 
     @abstractmethod
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
-        """Resolve this source's secrets. MUST NOT raise or prompt.
-
-        ``cfg`` is the source's raw config section (``secrets.<name>``)
-        from config.yaml — treat every field defensively, the section
-        may be malformed.  ``home_path`` is the resolved HERMES_HOME.
-        """
-
-    # -- optional hooks (defaults are correct for most sources) ------------
+        """Resolve this source's secrets. MUST NOT raise or prompt; ``cfg`` is the
+        raw ``secrets.<name>`` section and may be malformed."""
 
     def is_enabled(self, cfg: dict) -> bool:
-        """Whether the user turned this source on."""
         return bool(isinstance(cfg, dict) and cfg.get("enabled"))
 
     def override_existing(self, cfg: dict) -> bool:
-        """May this source overwrite vars that .env / the shell already set?
+        """May this source overwrite vars .env / the shell already set? Never extends
+        to vars claimed by another source (a config error the orchestrator warns about)."""
+        return bool(isinstance(cfg, dict)
+                    and cfg.get("override_existing", self.override_existing_default))
 
-        This NEVER extends to vars claimed by another secret source in the
-        same startup pass — cross-source overrides are a config error the
-        orchestrator warns about, not a knob.
-        """
-        return bool(isinstance(cfg, dict) and cfg.get("override_existing", False))
+    def token_env(self, cfg: dict) -> str:
+        """Name of the env var holding this source's bootstrap credential."""
+        if isinstance(cfg, dict) and self.token_env_key:
+            return str(cfg.get(self.token_env_key) or self.default_token_env)
+        return self.default_token_env
 
     def protected_env_vars(self, cfg: dict) -> FrozenSet[str]:
-        """Env vars the orchestrator must never let ANY source overwrite.
-
-        Typically the source's own bootstrap-auth var (e.g.
-        ``BWS_ACCESS_TOKEN``) so a vault that contains its own access
-        token can't clobber the credential used to reach it.
-        """
-        return frozenset()
+        """Env vars the orchestrator must never let ANY source overwrite."""
+        return frozenset({self.token_env(cfg)}) if self.token_env_key else frozenset()
 
     def fetch_timeout_seconds(self, cfg: dict) -> float:
         """Wall-clock budget the orchestrator enforces around fetch()."""
-        try:
-            val = float((cfg or {}).get("timeout_seconds", DEFAULT_FETCH_TIMEOUT_SECONDS))
-        except (TypeError, ValueError):
-            return DEFAULT_FETCH_TIMEOUT_SECONDS
+        val = coerce_float((cfg or {}).get("timeout_seconds", DEFAULT_FETCH_TIMEOUT_SECONDS),
+                           DEFAULT_FETCH_TIMEOUT_SECONDS)
         return val if val > 0 else DEFAULT_FETCH_TIMEOUT_SECONDS
 
     def config_schema(self) -> dict:
-        """Optional description of this source's config keys.
-
-        Shape: ``{key: {"description": str, "default": Any}}``.  Used by
-        setup surfaces to render config without hardcoding per-source
-        knowledge.  Purely informational.
-        """
+        """Informational ``{key: {"description": str, "default": Any}}`` for setup UIs."""
         return {}
 
     def remediation(self, kind: Optional["ErrorKind"], cfg: dict) -> str:
-        """One-line, actionable next step for a failed fetch.
-
-        Called by the startup status printer (and ``hermes secrets ...
-        status``) right after a fetch error is surfaced, so the user sees
-        *what to run* next to fix it — not just what broke.  Sources
-        should override this to point at their own CLI verbs (e.g.
-        ``hermes secrets bitwarden token`` for AUTH_FAILED).  Return an
-        empty string to suppress the hint.
-
-        Must never raise and must not perform I/O — it's a pure
-        kind→string mapping on the startup path.
-        """
-        generic = {
-            ErrorKind.NOT_CONFIGURED: (
-                f"Run `hermes secrets {self.name} setup` to finish configuration."
-            ),
-            ErrorKind.BINARY_MISSING: (
-                f"Run `hermes secrets {self.name} setup` to install the helper CLI."
-            ),
-            ErrorKind.AUTH_FAILED: (
-                f"Credentials rejected — run `hermes secrets {self.name} setup` "
-                "to re-authenticate."
-            ),
-            ErrorKind.AUTH_EXPIRED: (
-                f"Credentials expired — run `hermes secrets {self.name} setup` "
-                "to re-authenticate."
-            ),
-            ErrorKind.NETWORK: (
-                "Network problem reaching the secrets backend — check "
-                "connectivity and retry."
-            ),
-            ErrorKind.TIMEOUT: (
-                f"Backend was slow — raise secrets.{self.name}.timeout_seconds "
-                "if this recurs."
-            ),
-        }
-        return generic.get(kind, "") if kind is not None else ""
+        """One-line actionable next step for a failed fetch (pure); "" suppresses the hint."""
+        if kind is None:
+            return ""
+        template = self.remediation_hints.get(kind) or _GENERIC_REMEDIATION.get(kind, "")
+        return template.format(name=self.name, token_env=self.token_env(cfg))
 
 
-# ---------------------------------------------------------------------------
-# Shared helpers — use these instead of hand-rolling per backend
-# ---------------------------------------------------------------------------
-
+# --- Shared helpers — use these instead of hand-rolling per backend ---------
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# ANSI CSI/OSC escape sequences — helper-CLI stderr often carries color
-# codes that must not reach Hermes' own startup output.
-# NOTE: intentionally NOT migrated to tools.ansi_strip.strip_ansi — the
-# optional terminator here (``(?:\x07|\x1b\\)?``) also strips *unterminated*
-# OSC sequences (common when a CLI is killed mid-write), which strip_ansi
-# leaves untouched. strip_ansi is not a superset of this regex.
+# Deliberately NOT tools.ansi_strip.strip_ansi: the optional terminator here
+# also strips *unterminated* OSC sequences (a CLI killed mid-write), which
+# strip_ansi leaves untouched.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")
 
 
@@ -275,62 +219,37 @@ def scrub_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text or "")
 
 
-def run_secret_cli(
-    argv: Sequence[str],
-    *,
-    allow_env: Sequence[str] = (),
-    extra_env: Optional[Dict[str, str]] = None,
-    timeout: float = DEFAULT_CLI_TIMEOUT_SECONDS,
-) -> subprocess.CompletedProcess:
-    """Run a secret-manager helper CLI with a minimal, allowlisted env.
+def run_cli(argv: Sequence[str], *, env: Dict[str, str], timeout: float, label: str,
+            timeout_message: str, stdin: Any = subprocess.DEVNULL) -> subprocess.CompletedProcess:
+    """``subprocess.run`` an argv list (never a shell), capturing utf-8 text; timeout
+    and spawn failure become ``RuntimeError``. Callers own returncode interpretation."""
+    try:
+        return subprocess.run(  # noqa: S603 — argv list, no shell
+            list(argv), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, stdin=stdin,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(timeout_message) from exc
+    except OSError as exc:
+        raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
-    Security posture shared by every subprocess-driven backend:
 
-    * argv list only — never ``shell=True``.  Callers pass user-supplied
-      reference strings AFTER a ``--`` option terminator in their argv.
-    * The child gets ``PATH``/``HOME``/locale basics plus only the env
-      vars named in ``allow_env`` (auth/session vars) and ``extra_env``
-      — never a copy of the full post-dotenv ``os.environ``, which by
-      this point holds every credential Hermes knows about.
-    * ``NO_COLOR=1`` is set and stderr/stdout are ANSI-scrubbed so
-      helper diagnostics can't smuggle escape sequences into Hermes
-      output.
-    * stdin is ``/dev/null`` so a helper that decides to prompt fails
-      fast instead of hanging startup.
-
-    Raises ``RuntimeError`` on spawn failure or timeout (message safe to
-    surface); returns the completed process otherwise — callers own
-    returncode interpretation.
-    """
+def run_secret_cli(argv: Sequence[str], *, allow_env: Sequence[str] = (), extra_env: Optional[Dict[str, str]] = None,
+                   timeout: float = DEFAULT_CLI_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+    """Run a secret-manager helper CLI with a minimal, allowlisted env (never the
+    full post-dotenv ``os.environ``): PATH/HOME/locale basics plus ``allow_env``
+    and ``extra_env``. ``NO_COLOR=1`` + ANSI-scrubbed stderr; stdin is /dev/null so
+    a prompting helper fails fast. Pass user refs AFTER a ``--`` terminator."""
     base_keep = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP",
                  "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
-    env: Dict[str, str] = {}
-    for key in (*base_keep, *allow_env):
-        val = os.environ.get(key)
-        if val is not None:
-            env[key] = val
+    env = {k: os.environ[k] for k in (*base_keep, *allow_env) if k in os.environ}
     if extra_env:
         env.update(extra_env)
     env.setdefault("NO_COLOR", "1")
 
-    try:
-        proc = subprocess.run(  # noqa: S603 — argv list, no shell
-            list(argv),
-            env=env,
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"{Path(str(argv[0])).name} timed out after {timeout:.0f}s"
-        ) from exc
-    except OSError as exc:
-        raise RuntimeError(
-            f"failed to invoke {Path(str(argv[0])).name}: {exc}"
-        ) from exc
-
+    name = Path(str(argv[0])).name
+    proc = run_cli(argv, env=env, timeout=timeout, label=name,
+                   timeout_message=f"{name} timed out after {timeout:.0f}s")
     proc.stdout = proc.stdout or ""
     proc.stderr = scrub_ansi(proc.stderr or "")
     return proc

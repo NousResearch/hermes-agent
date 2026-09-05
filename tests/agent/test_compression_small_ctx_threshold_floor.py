@@ -138,7 +138,21 @@ class TestSummaryBudgetEnvelope:
 
 class TestTailBudgetProportionality:
     def test_tail_budget_is_target_ratio_of_threshold(self):
+        # Legacy-mode contract: the threshold-proportional formula. The
+        # default is lean (clamped 10K-25K) since the tail-default flip, so
+        # this pins the LEGACY path explicitly.
         comp = _make(128_000)
+        comp.tail_mode = "legacy"
+        comp._tail_token_budget = None  # force mode-aware recompute
         assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
         # Sanity: tail protection stays a modest slice of the window (<= 20%).
         assert comp.tail_token_budget <= comp.context_length * 0.20
+
+    def test_default_lean_tail_is_clamped(self):
+        # Default-mode contract after the flip: lean clamp, never the
+        # threshold-proportional hoard.
+        from agent.context_compressor import LEAN_TAIL_CAP_TOKENS, LEAN_TAIL_FLOOR_TOKENS
+
+        comp = _make(128_000)
+        assert comp.tail_mode == "lean"
+        assert LEAN_TAIL_FLOOR_TOKENS <= comp.tail_token_budget <= LEAN_TAIL_CAP_TOKENS

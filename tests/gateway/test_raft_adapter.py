@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -218,3 +219,104 @@ class TestRaftConfig:
         assert os.environ["RAFT_PROFILE"] == "existing"
         assert "Keeping RAFT_PROFILE=existing" in capsys.readouterr().out
 
+
+# ---------------------------------------------------------------------------
+# Multiplex secondary-profile scope (RAFT_PROFILE resolution)
+# ---------------------------------------------------------------------------
+#
+# _spawn_bridge, _env_enablement, and register()'s platform_hint all
+# previously read RAFT_PROFILE via raw os.environ.get unconditionally. Under
+# a multiplexed secondary profile, os.environ holds the DEFAULT profile's
+# YAML-to-env bridge output — a secondary profile with its own RAFT_PROFILE
+# (set only in its own .env, resolved via the installed secret scope) would
+# silently connect the bridge subprocess / CLI hint to the default profile's
+# external Raft workspace/agent identity instead of its own. Mirrors the
+# Buzz/SimpleX fix for #98738.
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("RAFT_PROFILE", "default-profile-slug")
+
+
+class _FakeCtx:
+    """Minimal ``ctx`` capturing ``register_platform``'s kwargs."""
+
+    def __init__(self):
+        self.platform_kwargs = None
+
+    def register_platform(self, **kwargs):
+        self.platform_kwargs = kwargs
+
+    def register_hook(self, *args, **kwargs):
+        pass
+
+
+class TestMultiplexProfileScope:
+
+    def test_secondary_profile_uses_its_own_slug_and_never_borrows_default(
+        self, multiplex_scope, default_profile_env, monkeypatch
+    ):
+        """Bridge spawn, env-enablement and the register() hint all resolve
+        the secondary profile's own RAFT_PROFILE; with none of its own the
+        profile fails closed (bridge not spawned, not auto-enabled)."""
+        import plugins.platforms.raft.adapter as raft_mod
+
+        monkeypatch.setattr(raft_mod.shutil, "which", lambda name: "/usr/bin/raft")
+        spawned = []
+        monkeypatch.setattr(
+            raft_mod.subprocess, "Popen",
+            lambda cmd, **kwargs: spawned.append(cmd) or SimpleNamespace(pid=1),
+        )
+
+        multiplex_scope({"RAFT_PROFILE": "secondary-profile-slug"})
+        _make_adapter()._spawn_bridge(9999)
+        assert spawned[-1][:3] == ["/usr/bin/raft", "--profile", "secondary-profile-slug"]
+        assert _env_enablement() == {"enabled": True}
+        ctx = _FakeCtx()
+        register(ctx)
+        assert "--profile secondary-profile-slug" in ctx.platform_kwargs["platform_hint"]
+        assert "default-profile-slug" not in ctx.platform_kwargs["platform_hint"]
+
+        spawned.clear()
+        multiplex_scope({})
+        _make_adapter()._spawn_bridge(9999)
+        assert spawned == []
+        assert _env_enablement() is None
+
+    def test_default_profile_unscoped_keeps_env_precedence(
+        self, monkeypatch, default_profile_env
+    ):
+        """Multiplex ON but no scope (the DEFAULT profile constructs
+        unscoped): env is its own bridge output and still wins."""
+        from agent.secret_scope import set_multiplex_active
+
+        set_multiplex_active(True)
+        try:
+            assert _env_enablement() == {"enabled": True}
+            ctx = _FakeCtx()
+            register(ctx)
+            assert "--profile default-profile-slug" in ctx.platform_kwargs["platform_hint"]
+        finally:
+            set_multiplex_active(False)

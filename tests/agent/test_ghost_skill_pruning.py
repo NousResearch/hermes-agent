@@ -285,14 +285,14 @@ class TestReinjectionBoundsAndRedaction:
 
 class TestSkillsGuidanceSafetyRule:
     def test_safety_rule_present_with_real_newlines(self):
+        """SKILLS_GUIDANCE must teach the [SKILL_PRUNED] contract (reload
+        via skill_view; stale markers are artifacts) under its heading,
+        with real newlines. Dieted to prose (#95681) — the four-numbered
+        enumeration is gone but every semantic survives."""
         from agent.prompt_builder import SKILLS_GUIDANCE
 
         assert "## Skill Safety Rule" in SKILLS_GUIDANCE
         assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
-        assert "skill_view(name='...')" in SKILLS_GUIDANCE
-        # The rule list must use REAL newlines — the original PR hunk risked
-        # literal backslash-n escape text rendering into the system prompt.
-        assert "\\n" not in SKILLS_GUIDANCE
-        assert SKILLS_GUIDANCE.count("\n") >= 6
-        for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
-            assert rule in SKILLS_GUIDANCE
+        assert "skill_view(name=" in SKILLS_GUIDANCE
+        assert "historical artifacts" in SKILLS_GUIDANCE
+        assert chr(10) in SKILLS_GUIDANCE

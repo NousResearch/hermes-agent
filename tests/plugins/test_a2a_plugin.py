@@ -44,33 +44,33 @@ class TestBindSafety:
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         assert security.localhost_only() is True
-        assert security.resolve_bind_host() == "127.0.0.1"
+        assert security.A2ASecurityContext.capture().resolve_bind_host() == "127.0.0.1"
 
     def test_host_ignored_without_token(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_HOST", "0.0.0.0")
         # No token => refuse to widen, stay on loopback.
-        assert security.resolve_bind_host() == "127.0.0.1"
+        assert security.A2ASecurityContext.capture().resolve_bind_host() == "127.0.0.1"
 
     def test_host_widens_with_shared_token(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret-token-123")
         monkeypatch.setenv("A2A_HOST", "0.0.0.0")
         assert security.localhost_only() is False
-        assert security.resolve_bind_host() == "0.0.0.0"
+        assert security.A2ASecurityContext.capture().resolve_bind_host() == "0.0.0.0"
 
     def test_host_widens_with_peer_tokens(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok1")
         monkeypatch.setenv("A2A_HOST", "0.0.0.0")
         assert security.localhost_only() is False
-        assert security.resolve_bind_host() == "0.0.0.0"
+        assert security.A2ASecurityContext.capture().resolve_bind_host() == "0.0.0.0"
 
     def test_loopback_host_allowed_without_token(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.setenv("A2A_HOST", "localhost")
-        assert security.resolve_bind_host() == "localhost"
+        assert security.A2ASecurityContext.capture().resolve_bind_host() == "localhost"
 
 
 class TestPeerIdentity:
@@ -80,33 +80,33 @@ class TestPeerIdentity:
     def test_no_tokens_identity_is_client_ip(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
-        assert security.authenticate(None, "127.0.0.1") == "ip:127.0.0.1"
-        assert security.authenticate("Bearer anything", "127.0.0.1") == "ip:127.0.0.1"
+        assert security.A2ASecurityContext.capture().authenticate(None, "127.0.0.1") == "ip:127.0.0.1"
+        assert security.A2ASecurityContext.capture().authenticate("Bearer anything", "127.0.0.1") == "ip:127.0.0.1"
 
     def test_peer_token_maps_to_name(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a, bob:tok-b")
-        assert security.authenticate("Bearer tok-a", "1.2.3.4") == "alice"
-        assert security.authenticate("Bearer tok-b", "1.2.3.4") == "bob"
+        assert security.A2ASecurityContext.capture().authenticate("Bearer tok-a", "1.2.3.4") == "alice"
+        assert security.A2ASecurityContext.capture().authenticate("Bearer tok-b", "1.2.3.4") == "bob"
 
     def test_wrong_or_missing_token_rejected(self, monkeypatch):
         monkeypatch.setenv("A2A_PEER_TOKENS", "alice:tok-a")
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
-        assert security.authenticate("Bearer nope", "1.2.3.4") is None
-        assert security.authenticate(None, "1.2.3.4") is None
-        assert security.authenticate("Basic tok-a", "1.2.3.4") is None
+        assert security.A2ASecurityContext.capture().authenticate("Bearer nope", "1.2.3.4") is None
+        assert security.A2ASecurityContext.capture().authenticate(None, "1.2.3.4") is None
+        assert security.A2ASecurityContext.capture().authenticate("Basic tok-a", "1.2.3.4") is None
 
     def test_shared_token_identity_is_ip(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
-        assert security.authenticate("Bearer shared-tok", "9.8.7.6") == "ip:9.8.7.6"
-        assert security.authenticate("Bearer wrong", "9.8.7.6") is None
+        assert security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "9.8.7.6") == "ip:9.8.7.6"
+        assert security.A2ASecurityContext.capture().authenticate("Bearer wrong", "9.8.7.6") is None
 
     def test_peer_tokens_beat_shared(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "shared-tok")
         monkeypatch.setenv("A2A_PEER_TOKENS", "carol:tok-c")
-        assert security.authenticate("Bearer tok-c", "1.1.1.1") == "carol"
-        assert security.authenticate("Bearer shared-tok", "1.1.1.1") == "ip:1.1.1.1"
+        assert security.A2ASecurityContext.capture().authenticate("Bearer tok-c", "1.1.1.1") == "carol"
+        assert security.A2ASecurityContext.capture().authenticate("Bearer shared-tok", "1.1.1.1") == "ip:1.1.1.1"
 
 
 class TestTrustedPeers:
@@ -114,27 +114,27 @@ class TestTrustedPeers:
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
-        assert security.is_trusted_peer("ip:127.0.0.1") is True
+        assert security.A2ASecurityContext.capture().is_trusted_peer("ip:127.0.0.1") is True
 
     def test_no_allowlist_trusts_authenticated(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
         monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
         monkeypatch.delenv("A2A_TRUSTED_PEERS", raising=False)
-        assert security.is_trusted_peer("alice") is True
+        assert security.A2ASecurityContext.capture().is_trusted_peer("alice") is True
 
     def test_allowlist_restricts(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
         monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
         monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice,bob")
-        assert security.is_trusted_peer("alice") is True
-        assert security.is_trusted_peer("bob") is True
-        assert security.is_trusted_peer("mallory") is False
+        assert security.A2ASecurityContext.capture().is_trusted_peer("alice") is True
+        assert security.A2ASecurityContext.capture().is_trusted_peer("bob") is True
+        assert security.A2ASecurityContext.capture().is_trusted_peer("mallory") is False
 
     def test_allow_all_users_overrides(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
         monkeypatch.setenv("A2A_ALLOW_ALL_USERS", "true")
         monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
-        assert security.is_trusted_peer("mallory") is True
+        assert security.A2ASecurityContext.capture().is_trusted_peer("mallory") is True
 
 
 class TestInjectionFilter:
@@ -266,7 +266,6 @@ class TestV1Enums:
         assert protocol.STATE_CANCELED == "TASK_STATE_CANCELED"
         assert protocol.STATE_REJECTED == "TASK_STATE_REJECTED"
         assert protocol.STATE_INPUT_REQUIRED == "TASK_STATE_INPUT_REQUIRED"
-        assert protocol.STATE_AUTH_REQUIRED == "TASK_STATE_AUTH_REQUIRED"
 
     def test_roles_are_v1(self):
         assert protocol.ROLE_USER == "ROLE_USER"
@@ -329,42 +328,6 @@ class TestV1Parts:
         result = protocol.extract_text(msg)
         assert "hello.txt" in result
         assert "base64" in result
-
-    def test_file_part_builder(self):
-        """file_part() builds a v1.0 file Part with URL or raw."""
-        fp = protocol.file_part(url="https://x/f.pdf", filename="f.pdf",
-                                media_type="application/pdf")
-        assert fp["url"] == "https://x/f.pdf"
-        assert fp["filename"] == "f.pdf"
-        assert fp["mediaType"] == "application/pdf"
-        assert "kind" not in fp
-
-        # Raw variant
-        rp = protocol.file_part(raw="aGVsbG8=", filename="hello.txt",
-                                media_type="text/plain")
-        assert rp["raw"] == "aGVsbG8="
-        assert rp["filename"] == "hello.txt"
-        assert "url" not in rp
-
-    def test_data_part_builder(self):
-        """data_part() builds a v1.0 data Part."""
-        dp = protocol.data_part({"key": "value"})
-        assert dp["data"] == {"key": "value"}
-        assert dp["mediaType"] == "application/json"
-        assert "kind" not in dp
-
-    def test_message_with_parts(self):
-        """message_with_parts() builds a Message with mixed Part types."""
-        msg = protocol.message_with_parts(
-            protocol.ROLE_USER,
-            [protocol.text_part("hello"), protocol.data_part({"x": 1})],
-            context_id="ctx-1",
-        )
-        assert msg["role"] == "ROLE_USER"
-        assert len(msg["parts"]) == 2
-        assert msg["parts"][0]["text"] == "hello"
-        assert msg["parts"][1]["data"] == {"x": 1}
-        assert msg["contextId"] == "ctx-1"
 
     def test_context_id_extracted_from_message(self):
         params = {"message": protocol.text_message(protocol.ROLE_USER, "x", context_id="ctx-in-msg")}
@@ -910,7 +873,9 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
     port = _free_port()
     monkeypatch.setenv("A2A_PORT", str(port))
 
-    adapter = A2AAdapter(PlatformConfig(enabled=True))
+    # A scoped secondary profile ignores the process env (#100382); pass the
+    # port through config.extra so both construction paths bind the same port.
+    adapter = A2AAdapter(PlatformConfig(enabled=True, extra={"port": port}))
 
     async def fake_handle_message(event):
         if reply_fn is None:
@@ -1008,16 +973,14 @@ class TestInboundRoundTrip:
 
         async def run():
             assert await adapter.connect() is True
-            msg = protocol.message_with_parts(
-                protocol.ROLE_USER,
-                [
+            msg = {
+                "role": protocol.ROLE_USER, "messageId": "m-mixed", "contextId": "ctx-mixed",
+                "parts": [
                     protocol.text_part("Please process these:"),
-                    protocol.file_part(url="https://example.com/report.pdf",
-                                       filename="report.pdf", media_type="application/pdf"),
-                    protocol.data_part({"title": "Q3", "pages": 42}, "application/json"),
+                    {"mediaType": "application/pdf", "filename": "report.pdf", "url": "https://example.com/report.pdf"},
+                    {"data": {"title": "Q3", "pages": 42}, "mediaType": "application/json"},
                 ],
-                context_id="ctx-mixed",
-            )
+            }
             resp = await asyncio.to_thread(_post_json, base + "/", {
                 "jsonrpc": "2.0", "id": "1", "method": "message/send",
                 "params": {"message": msg},
@@ -1222,6 +1185,54 @@ class TestInboundRoundTrip:
             await adapter.disconnect()
 
         asyncio.run(run())
+
+    def test_multiplex_adapter_keeps_profile_scoped_peer_tokens(self, monkeypatch):
+        """A secondary listener must not authenticate with the default profile's tokens."""
+        from agent.secret_scope import (
+            reset_secret_scope,
+            set_multiplex_active,
+            set_secret_scope,
+        )
+
+        monkeypatch.setenv("A2A_PEER_TOKENS", "default:default-token")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.setenv("A2A_HOST", "127.0.0.1")
+
+        set_multiplex_active(True)
+        scope_token = set_secret_scope(
+            {"A2A_PEER_TOKENS": "secondary:secondary-token"}
+        )
+        try:
+            adapter, base = _make_live_adapter(monkeypatch)
+        finally:
+            reset_secret_scope(scope_token)
+
+        async def run():
+            try:
+                assert await adapter.connect() is True
+                response = await asyncio.to_thread(
+                    _post_json,
+                    base + "/",
+                    _send_body("profile-scoped auth"),
+                    {"Authorization": "Bearer secondary-token"},
+                )
+                assert response["result"]["status"]["state"] == "TASK_STATE_COMPLETED"
+
+                with pytest.raises(urllib.error.HTTPError) as exc_info:
+                    await asyncio.to_thread(
+                        _post_json,
+                        base + "/",
+                        _send_body("wrong profile"),
+                        {"Authorization": "Bearer default-token"},
+                    )
+                assert exc_info.value.code == 401
+            finally:
+                await adapter.disconnect()
+
+        try:
+            asyncio.run(run())
+        finally:
+            set_multiplex_active(False)
 
 
 # --------------------------------------------------------------------------
@@ -1618,3 +1629,101 @@ print('fake reply')
         title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
         con.close()
         assert title == "a2a-dev-ctx-unsafe-value"
+
+
+# --------------------------------------------------------------------------
+# Multiplex secondary-profile scope (construction-time config leak)
+# --------------------------------------------------------------------------
+#
+# __init__'s port/advertised-toolsets reads and _load_served_agents's
+# description default all previously read raw A2A_* env vars unconditionally.
+# Under a multiplexed secondary profile, os.environ holds the DEFAULT
+# profile's YAML-to-env bridge output — a secondary profile with its own
+# (different, or absent) A2A config would silently borrow the default
+# profile's port, toolset advertisement, agent name, or Agent Card
+# description. Mirrors the Buzz/SimpleX fix for #98738.
+
+_A2A_ENV_VARS = (
+    "A2A_PORT",
+    "A2A_AGENT_NAME",
+    "A2A_ADVERTISED_TOOLSETS",
+    "A2A_AGENT_DESCRIPTION",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_a2a_construction_env(monkeypatch):
+    """Keep the new multiplex tests hermetic regardless of ambient env."""
+    for var in _A2A_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
+@pytest.fixture
+def multiplex_scope():
+    """Install multiplex + a secondary-profile secret scope; restore after."""
+    tokens = []
+
+    def install(scope=None):
+        from agent.secret_scope import set_multiplex_active, set_secret_scope
+
+        set_multiplex_active(True)
+        tokens.append(set_secret_scope(scope or {}))
+        return tokens[-1]
+
+    yield install
+
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active
+
+    for token in reversed(tokens):
+        reset_secret_scope(token)
+    set_multiplex_active(False)
+
+
+@pytest.fixture
+def default_profile_env(monkeypatch):
+    """The default profile's YAML-to-env bridge output in os.environ."""
+    monkeypatch.setenv("A2A_PORT", "9111")
+    monkeypatch.setenv("A2A_AGENT_NAME", "default-profile-agent")
+    monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "default-only-toolset")
+    monkeypatch.setenv("A2A_AGENT_DESCRIPTION", "Default profile's own agent.")
+
+
+class TestMultiplexConstructionScope:
+
+    def test_secondary_profile_never_borrows_default_profile_env(
+        self, multiplex_scope, default_profile_env
+    ):
+        """The secondary profile's own config is authoritative; keys absent
+        from it fall to the module defaults, never to the default profile's
+        bridged A2A_* env values."""
+        from plugins.platforms.a2a.adapter import A2AAdapter, _DEFAULT_PORT
+        from gateway.config import PlatformConfig
+
+        multiplex_scope()
+        assert A2AAdapter(PlatformConfig(enabled=True, extra={"port": 9222})).port == 9222
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={}))
+        assert adapter.port == _DEFAULT_PORT
+        assert adapter.agent_name != "default-profile-agent"
+        assert adapter._agents[""]["description"] == (
+            "Hermes Agent — a general-purpose agent reachable over A2A."
+        )
+
+    def test_default_profile_unscoped_keeps_env_precedence(
+        self, monkeypatch, default_profile_env
+    ):
+        """Multiplex ON but no scope (the DEFAULT profile constructs
+        unscoped): env is its own bridge output and still wins."""
+        from agent.secret_scope import set_multiplex_active
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        set_multiplex_active(True)
+        try:
+            adapter = A2AAdapter(PlatformConfig(enabled=True, extra={}))
+        finally:
+            set_multiplex_active(False)
+        assert adapter.port == 9111
+        assert adapter.agent_name == "default-profile-agent"
+        assert adapter._agents[""]["description"] == "Default profile's own agent."

@@ -454,6 +454,18 @@ def test_resolve_idle_rejects_nonfinite_seconds_since_activity():
     assert idle == 15.0
 
 
+def test_resolve_idle_rejects_boolean_seconds_and_uses_timestamp():
+    now = 1_000_000.0
+    idle = resolve_session_idle_seconds_from_activity(
+        {
+            "seconds_since_activity": True,
+            "last_activity_ts": now - 3,
+        },
+        now=now,
+    )
+    assert idle == 3.0
+
+
 def test_session_stall_timeout_in_default_config():
     from hermes_cli.config import DEFAULT_CONFIG
 

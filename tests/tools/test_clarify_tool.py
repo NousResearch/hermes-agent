@@ -172,12 +172,18 @@ class TestClarifySchema:
         assert "one call" in description.lower()
 
 
-    def test_schema_questions_param_is_optional_and_capped(self):
-        """`questions` stays optional (single-question calls unchanged) and
-        carries the batch cap so the model sees the limit."""
+    def test_schema_questions_param_is_required_and_capped(self):
+        """`questions` is the single documented way to call (a single question
+        is a one-entry array) and carries the batch cap so the model sees the
+        limit. The legacy top-level `question` shape stays handler-accepted
+        but unadvertised."""
         params = CLARIFY_SCHEMA["parameters"]
-        assert "questions" not in params["required"]
+        assert params["required"] == ["questions"]
         assert params["properties"]["questions"]["maxItems"] == MAX_QUESTIONS
+        assert params["properties"]["questions"].get("minItems") == 1
+        # Legacy shape must remain accepted by the handler even though the
+        # schema no longer advertises it.
+        assert "question" not in params["properties"]
 
 
 class TestClarifyToolMultiSelect:

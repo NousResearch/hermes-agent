@@ -107,10 +107,10 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
         discover_plugins()  # idempotent; ensures no later clear wipes our hook
         pm = get_plugin_manager()
         pm._hooks.setdefault("post_api_request", []).append(usage_hook)
-        # Belt-and-braces: normalize_usage in the conversation loop is called
+        # Belt-and-braces: normalize_usage in agent.turn_usage (the conversation loop's usage recorder) is called
         # exactly once per API response (streaming AND non-streaming). Wrap it
         # to capture canonical usage the hook path may miss.
-        import agent.conversation_loop as _cl
+        import agent.turn_usage as _cl
         _orig_norm = _cl.normalize_usage
         def _norm_spy(raw, **kw):
             cu = _orig_norm(raw, **kw)
@@ -140,7 +140,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
     finally:
         registry.dispatch = original_dispatch
         try:
-            import agent.conversation_loop as _cl2
+            import agent.turn_usage as _cl2
             if "_orig_norm" in dir() or True:
                 try:
                     _cl2.normalize_usage = _orig_norm  # type: ignore[name-defined]

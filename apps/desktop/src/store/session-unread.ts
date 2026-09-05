@@ -13,7 +13,7 @@ import {
   sessionMatchesStoredId,
   sessionPinId
 } from './session'
-import { isSecondaryWindow } from './windows'
+import { isBrowserWindow, isSecondaryWindow } from './windows'
 
 /**
  * PERSISTED UNREAD ("finished — unread" green dot) — the durable layer under
@@ -43,9 +43,11 @@ import { isSecondaryWindow } from './windows'
  * cross-profile, `$sessions` is too in all-profiles mode). Unscoped keys let
  * one profile's watermark/marker paint (or silence) another's row. The bucket
  * is always the ROW's own `profile` (normalizeProfileKey, absent → "default"),
- * never the live gateway's — except for the live busy→idle edge with no loaded
- * row, which only ever fires for the ACTIVE gateway's runtimes and therefore
- * falls back to `$activeGatewayProfile`.
+ * never the live gateway's. Only an id with NO loaded row has no profile to
+ * read: it uses the caller's `profileHint` when there is one (a permanently
+ * hidden session, e.g. a Bot Mode canonical chat, is never listed and can
+ * belong to a profile the gateway isn't homed on), else `$activeGatewayProfile`
+ * — the only place a live busy→idle edge can come from.
  *
  * Both records are BOUNDED: markers cap per profile (oldest evicted),
  * watermarks cap in total (unlisted, unmarked entries dropped first), and
@@ -173,11 +175,19 @@ function resolveLoadedRow(storedSessionId: string): SessionInfo | undefined {
   return matches.find(row => profileKeyForRow(row) === gateway) ?? matches[0]
 }
 
+/** Bucket for a stored id with NO loaded row. The live gateway's profile is
+ *  the right answer for anything born of a live turn, but a permanently
+ *  hidden session (a Bot Mode canonical chat) is never in any list and can
+ *  belong to a profile the gateway isn't homed on — those callers pass the
+ *  owning profile they already know. */
+const unlistedProfile = (hint?: null | string): string =>
+  normalizeProfileKey((hint ?? '').trim() || $activeGatewayProfile.get())
+
 /** Bucket for a bare stored id: its row's profile, else the live gateway's. */
 const resolveProfile = (storedSessionId: string): string => {
   const row = resolveLoadedRow(storedSessionId)
 
-  return row ? profileKeyForRow(row) : normalizeProfileKey($activeGatewayProfile.get())
+  return row ? profileKeyForRow(row) : unlistedProfile()
 }
 
 /** Write a profile's marker bucket, dropping the key when it empties so we
@@ -195,12 +205,13 @@ function setMarkerBucket(profile: string, ids: readonly string[]): void {
   $unreadFinishedMarkers.set(next)
 }
 
-/** LIVE-EDGE WRITER — called by session-states.ts on a background busy→idle
- *  transition. Flags the transient atom (immediate paint) AND persists the
- *  marker so the dot survives a restart. The marker lands in the row's own
- *  profile; with no loaded row we use the active gateway's profile, which is
- *  the only place a live edge can come from. */
-export function markSessionUnreadFinished(storedSessionId: string): void {
+/** UNREAD WRITER — the live busy→idle edge (session-states.ts) and any surface
+ *  that learns out-of-band that a session produced something the user hasn't
+ *  seen. Flags the transient atom (immediate paint) AND persists the marker so
+ *  the dot survives a restart. The marker lands in the row's own profile; with
+ *  no loaded row it lands in `profileHint`'s, falling back to the active
+ *  gateway's — the only place a live edge can come from. */
+export function markSessionUnreadFinished(storedSessionId: string, profileHint?: null | string): void {
   const current = $unreadFinishedSessionIds.get()
 
   if (!current.includes(storedSessionId)) {
@@ -208,7 +219,7 @@ export function markSessionUnreadFinished(storedSessionId: string): void {
   }
 
   const row = resolveLoadedRow(storedSessionId)
-  const profile = row ? profileKeyForRow(row) : normalizeProfileKey($activeGatewayProfile.get())
+  const profile = row ? profileKeyForRow(row) : unlistedProfile(profileHint)
   const durableId = row ? sessionPinId(row) : storedSessionId
   const bucket = $unreadFinishedMarkers.get()[profile] ?? []
 
@@ -251,10 +262,13 @@ function ackSessionRow(row: SessionInfo): void {
 
 /** Clear persisted unread for a stored id even when its row isn't loaded —
  *  the marker alone can be retired; the watermark needs the row's count. With
- *  no row there is no profile to read, so we retire it from the active
- *  gateway's bucket (the profile whose sessions you can actually be opening);
- *  other profiles' identically-named ids stay untouched. */
-export function ackStoredSessionId(storedSessionId: null | string): void {
+ *  no row there is no profile to read, so we retire it from `profileHint`'s
+ *  bucket, falling back to the active gateway's (the profile whose sessions
+ *  you can actually be opening); other profiles' identically-named ids stay
+ *  untouched. Pass the hint whenever the caller knows the owner — a hidden
+ *  session can be opened without the gateway ever moving onto its profile,
+ *  which would otherwise ack a bucket that never held the marker. */
+export function ackStoredSessionId(storedSessionId: null | string, profileHint?: null | string): void {
   if (!storedSessionId) {
     return
   }
@@ -267,7 +281,7 @@ export function ackStoredSessionId(storedSessionId: null | string): void {
     return
   }
 
-  const profile = normalizeProfileKey($activeGatewayProfile.get())
+  const profile = unlistedProfile(profileHint)
   const markers = $unreadFinishedMarkers.get()[profile]
 
   if (!markers) {
@@ -554,12 +568,14 @@ function onListChange(): void {
 // (single-chat pop-out, watch window) sees a sliver of the session lists, and
 // letting it seed/ack against that partial view would clobber the primary's
 // whole-record writes — same isolation rule as the persisted session tiles.
-if (!isSecondaryWindow()) {
+if (!isSecondaryWindow() && !isBrowserWindow()) {
   $sessions.listen(onListChange)
   $cronSessions.listen(onListChange)
   $messagingSessions.listen(onListChange)
 
   // Opening a session acks it durably (the transient atom is already cleared
   // synchronously by setSelectedStoredSessionId — this is the persisted half).
-  $selectedStoredSessionId.listen(ackStoredSessionId)
+  // Unary on purpose: nanostores hands a listener (value, oldValue), and the
+  // old selection would otherwise arrive as the profile hint.
+  $selectedStoredSessionId.listen(id => ackStoredSessionId(id))
 }

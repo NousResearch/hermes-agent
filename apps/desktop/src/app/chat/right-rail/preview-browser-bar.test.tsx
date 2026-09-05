@@ -12,7 +12,7 @@ const baseProps = {
   onBack: vi.fn(),
   onForward: vi.fn(),
   onNavigate: vi.fn(),
-  onOpenExternal: vi.fn(),
+  onPopOut: vi.fn(),
   onReload: vi.fn(),
   onToggleConsole: vi.fn(),
   onToggleDevTools: vi.fn(),
@@ -86,10 +86,32 @@ describe('PreviewBrowserBar', () => {
     expect(rendered.getByRole('button', { name: 'Forward' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Reload page' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Copy URL' })).toBeTruthy()
-    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Show preview console' })).toBeTruthy()
     expect(rendered.getByRole('button', { name: 'Open preview DevTools' })).toBeTruthy()
     expect(address(rendered)).toBeTruthy()
+  })
+
+  it('renders the Annotate control and a blue Commenting status while the mode is on', () => {
+    const onToggleAnnotate = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} annotateMode onToggleAnnotate={onToggleAnnotate} />)
+
+    const toggle = rendered.getByRole('button', { name: 'Stop annotating' })
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(toggle)
+    expect(onToggleAnnotate).toHaveBeenCalledOnce()
+    expect(rendered.getByText('Commenting').getAttribute('data-annotate-status')).toBe('commenting')
+  })
+
+  it('flushes stacked comments from the bar without implying a send on save', () => {
+    const onFlushComments = vi.fn()
+
+    const rendered = render(
+      <PreviewBrowserBar {...baseProps} commentCount={2} onFlushComments={onFlushComments} onToggleAnnotate={vi.fn()} />
+    )
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Add 2 comments' }))
+    expect(onFlushComments).toHaveBeenCalledOnce()
   })
 
   it('disables back and forward when there is no history', () => {
@@ -110,7 +132,7 @@ describe('PreviewBrowserBar', () => {
     ['Back', 'onBack'],
     ['Forward', 'onForward'],
     ['Reload page', 'onReload'],
-    ['Open in browser', 'onOpenExternal']
+    ['Pop out', 'onPopOut']
   ] as const)('fires %s', (label, handler) => {
     const spy = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} canGoBack canGoForward {...{ [handler]: spy }} />)
@@ -163,7 +185,10 @@ describe('PreviewBrowserBar', () => {
     expect(address(rendered).value).toBe('example.org/docs')
   })
 
-  it('normalizes and navigates on Enter, then releases the field back to the page', () => {
+  // Committing used to drop the field back to `url` — the page you were
+  // LEAVING — so the address you typed flashed away and came back once the
+  // load landed. What you asked for stays put until the page actually moves.
+  it('normalizes and navigates on Enter, and holds the address it asked for', () => {
     const onNavigate = vi.fn()
     const rendered = render(<PreviewBrowserBar {...baseProps} onNavigate={onNavigate} />)
     const input = address(rendered)
@@ -173,7 +198,35 @@ describe('PreviewBrowserBar', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(onNavigate).toHaveBeenCalledWith('http://localhost:5173')
-    expect(address(rendered).value).toBe('https://example.com')
+    expect(address(rendered).value).toBe('http://localhost:5173')
+  })
+
+  // A redirect means the address you asked for is no longer the truth.
+  it('releases the asked-for address once the page lands somewhere', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+    const input = address(rendered)
+
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'example.org' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    rendered.rerender(<PreviewBrowserBar {...baseProps} url="https://www.example.org/home" />)
+
+    expect(address(rendered).value).toBe('https://www.example.org/home')
+  })
+
+  // Re-focusing mid-flight must offer what is on screen to edit, not resurrect
+  // the address of the page being left behind.
+  it('hands the in-flight address to the field on re-focus', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} />)
+    const input = address(rendered)
+
+    fireEvent.focus(input)
+    fireEvent.change(input, { target: { value: 'example.org' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.blur(input)
+    fireEvent.focus(input)
+
+    expect(address(rendered).value).toBe('https://example.org')
   })
 
   it('refuses to navigate to a script-bearing scheme and marks the field invalid', () => {
@@ -229,6 +282,19 @@ describe('PreviewBrowserBar', () => {
     expect(address(rendered).value).toBe('https://example.com')
   })
 
+  // Progress belongs beside the address it describes; the reload glyph sits in
+  // a row of four and reads as chrome rather than as this page's state.
+  it('shows progress inside the address field only while loading', () => {
+    const { container, rerender } = render(<PreviewBrowserBar {...baseProps} loading />)
+    const field = screen.getByRole('textbox', { name: 'Address' }).parentElement
+
+    expect(field?.querySelector('.codicon-loading')).toBeTruthy()
+
+    rerender(<PreviewBrowserBar {...baseProps} />)
+
+    expect(container.querySelector('.codicon-loading')).toBeNull()
+  })
+
   it('spins the reload glyph only while loading', () => {
     const { container, rerender } = render(<PreviewBrowserBar {...baseProps} loading />)
 
@@ -272,5 +338,38 @@ describe('PreviewBrowserBar', () => {
     // code-block copy icon (inline appearance, overlay on the field's edge).
     expect(copyButton.parentElement?.contains(address)).toBe(true)
     expect(copyButton.className).toContain('absolute')
+  })
+
+  it('shows Open in browser when only the external handler is provided', () => {
+    const onOpenExternal = vi.fn()
+
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={onOpenExternal} onPopOut={undefined} />)
+
+    expect(rendered.getByRole('button', { name: 'Open in browser' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+
+    expect(onOpenExternal).toHaveBeenCalledOnce()
+  })
+
+  it('prefers pop-out over open-in-browser when both handlers are provided', () => {
+    const rendered = render(<PreviewBrowserBar {...baseProps} onOpenExternal={vi.fn()} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop out' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+  })
+
+  it('shows Pop in when the window is already popped out', () => {
+    const onPopIn = vi.fn()
+    const rendered = render(<PreviewBrowserBar {...baseProps} onPopIn={onPopIn} onPopOut={undefined} />)
+
+    expect(rendered.getByRole('button', { name: 'Pop in' })).toBeTruthy()
+    expect(rendered.queryByRole('button', { name: 'Pop out' })).toBeNull()
+    expect(rendered.queryByRole('button', { name: 'Open in browser' })).toBeNull()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Pop in' }))
+
+    expect(onPopIn).toHaveBeenCalledOnce()
   })
 })

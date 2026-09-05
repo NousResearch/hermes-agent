@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from hermes_cli import main as cli_main
+from hermes_cli import update_cmd
 
 
 class _FakeNoSuchProcess(Exception):
@@ -84,7 +85,7 @@ def test_orphan_backend_dead_parent_qualifies():
     backend = _proc(200, _SERVE_ARGV, ppid=999)  # 999 not in table → dead
     fake = _fake_psutil({200: backend})
     with patch.dict(sys.modules, {"psutil": fake}):
-        assert cli_main._orphaned_desktop_backend_pids(_holders()) == [200]
+        assert cli_main._orphaned_desktop_backend_pids(_holders()) == [(200, 10000)]
 
 
 def test_backend_with_live_parent_keeps_refusal():
@@ -101,7 +102,7 @@ def test_recycled_parent_pid_counts_as_orphan():
     backend = _proc(200, _SERVE_ARGV, ppid=50, create_time=100.0)
     fake = _fake_psutil({50: recycled, 200: backend})
     with patch.dict(sys.modules, {"psutil": fake}):
-        assert cli_main._orphaned_desktop_backend_pids(_holders()) == [200]
+        assert cli_main._orphaned_desktop_backend_pids(_holders()) == [(200, 10000)]
 
 
 def test_non_backend_holder_keeps_refusal():
@@ -136,7 +137,7 @@ def test_orphan_root_plus_managed_runtime_descendant_qualifies():
     fake = _fake_psutil({200: backend, 210: child})
     with patch.dict(sys.modules, {"psutil": fake}):
         holders = _holders() + [(210, "python.exe", " ".join(child_argv))]
-        assert cli_main._orphaned_desktop_backend_pids(holders) == [200]
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [(200, 10000)]
 
 
 def test_descendant_of_grandchild_depth_qualifies():
@@ -150,7 +151,7 @@ def test_descendant_of_grandchild_depth_qualifies():
     fake = _fake_psutil({200: backend, 210: mid, 220: grand})
     with patch.dict(sys.modules, {"psutil": fake}):
         holders = _holders() + [(220, "python.exe", "python.exe leaf.py")]
-        assert cli_main._orphaned_desktop_backend_pids(holders) == [200]
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [(200, 10000)]
 
 
 def test_non_descendant_alongside_orphan_root_keeps_refusal():
@@ -172,7 +173,7 @@ def test_descendant_exited_between_scan_and_classify_is_skipped():
     fake = _fake_psutil({200: backend})  # descendant 210 already gone
     with patch.dict(sys.modules, {"psutil": fake}):
         holders = _holders() + [(210, "python.exe", "python.exe worker.py")]
-        assert cli_main._orphaned_desktop_backend_pids(holders) == [200]
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [(200, 10000)]
 
 
 def test_holder_gone_between_scan_and_classify_is_skipped():
@@ -205,7 +206,9 @@ def test_missing_psutil_keeps_refusal():
 def test_stop_process_trees_kills_full_tree():
     from hermes_cli import update_cmd
 
-    with patch.object(update_cmd.subprocess, "run") as run:
+    with patch("gateway.status.get_process_start_time", return_value=123), patch(
+        "hermes_cli._subprocess_compat.pid_is_hermes", return_value=True
+    ), patch.object(update_cmd.subprocess, "run") as run:
         cli_main._stop_process_trees([111, 222])
     calls = [c.args[0] for c in run.call_args_list]
     assert calls == [
@@ -276,7 +279,7 @@ def _run_guard(detect_side_effect, orphan_return):
         "time.sleep"
     ):
         try:
-            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+            update_cmd._cmd_update_impl(_update_args(), gateway_mode=False)
         except _PastGuard:
             return "past_guard", killed
         except SystemExit as exc:

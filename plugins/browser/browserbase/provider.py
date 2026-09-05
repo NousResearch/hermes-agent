@@ -1,213 +1,112 @@
-"""Browserbase cloud browser provider — plugin form.
-
-Subclasses :class:`agent.browser_provider.BrowserProvider` (the plugin-facing
-ABC introduced in PR #25214). The legacy in-tree module
-``tools.browser_providers.browserbase`` was removed in the same PR; this file
-is now the canonical implementation.
-
-Browserbase requires direct ``BROWSERBASE_API_KEY`` and ``BROWSERBASE_PROJECT_ID``
-credentials. Managed Nous gateway support has been removed — the Nous
-subscription now routes through Browser Use instead (see
-``plugins/browser/browser_use/``).
-
-Config keys this provider responds to::
-
-    browser:
-      cloud_provider: "browserbase"
-
-Auth env vars::
-
-    BROWSERBASE_API_KEY=...       # https://browserbase.com
-    BROWSERBASE_PROJECT_ID=...
-
-Optional feature knobs::
-
-    BROWSERBASE_BASE_URL=...      # default https://api.browserbase.com
-    BROWSERBASE_PROXIES=true      # default true
-    BROWSERBASE_ADVANCED_STEALTH=false
-    BROWSERBASE_KEEP_ALIVE=true   # default true
-    BROWSERBASE_SESSION_TIMEOUT=... (seconds, integer, max 21600 = 6h)
-"""
+"""Browserbase cloud browser provider: direct ``BROWSERBASE_API_KEY`` + ``BROWSERBASE_PROJECT_ID``
+only (the Nous subscription routes through Browser Use). Config ``browser.cloud_provider:
+"browserbase"``; knobs ``BROWSERBASE_BASE_URL``, ``BROWSERBASE_PROXIES`` (true),
+``BROWSERBASE_ADVANCED_STEALTH`` (false), ``BROWSERBASE_KEEP_ALIVE`` (true),
+``BROWSERBASE_SESSION_TIMEOUT`` (seconds, max 21600)."""
 
 from __future__ import annotations
 
 import logging
 import os
-import uuid
 from typing import Any, Dict, Optional
 
-import requests
-
-from agent.browser_provider import BrowserProvider
 from agent.secret_scope import get_secret
+from plugins.browser._common import CloudBrowserProvider
 
 logger = logging.getLogger(__name__)
 
+# 402 fallbacks, in retry order: (session_config key, warning logged when dropped).
+_PAID_FEATURE_FALLBACKS = (
+    ("keepAlive", "keepAlive may require paid plan (402), retrying without it. "
+                  "Sessions may timeout during long operations."),
+    ("proxies", "Proxies unavailable (402), retrying without proxies. "
+                "Bot detection may be less effective."))
 
-class BrowserbaseBrowserProvider(BrowserProvider):
-    """Browserbase (https://browserbase.com) cloud browser backend.
 
-    Direct credentials only — managed-Nous-gateway support lives on the
-    Browser Use provider now.
-    """
+class BrowserbaseBrowserProvider(CloudBrowserProvider):
+    """Browserbase (https://browserbase.com) cloud browser backend."""
 
-    @property
-    def name(self) -> str:
-        return "browserbase"
-
-    @property
-    def display_name(self) -> str:
-        return "Browserbase"
-
-    def is_available(self) -> bool:
-        return self._get_config_or_none() is not None
-
-    # ------------------------------------------------------------------
-    # Config resolution
-    # ------------------------------------------------------------------
+    provider_id = "browserbase"
+    label = "Browserbase"
+    release_method = "post"
+    release_path = "/v1/sessions/{session_id}"
+    missing_credentials_error = (
+        "Browserbase requires BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID "
+        "environment variables.")
+    close_fail_fmt = "Failed to close session %s: HTTP %s - %s"
+    setup_tag = "Cloud browser with stealth and proxies"
+    setup_env_vars = [
+        {"key": "BROWSERBASE_API_KEY", "prompt": "Browserbase API key", "url": "https://browserbase.com"},
+        {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
+    ]
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
         api_key = get_secret("BROWSERBASE_API_KEY")
         project_id = get_secret("BROWSERBASE_PROJECT_ID")
-        if api_key and project_id:
-            return {
-                "api_key": api_key,
-                "project_id": project_id,
-                "base_url": os.environ.get(
-                    "BROWSERBASE_BASE_URL", "https://api.browserbase.com"
-                ).rstrip("/"),
-            }
-        return None
+        if not (api_key and project_id):
+            return None
+        return {
+            "api_key": api_key,
+            "project_id": project_id,
+            "base_url": os.environ.get("BROWSERBASE_BASE_URL", "https://api.browserbase.com").rstrip("/"),
+        }
 
-    def _get_config(self) -> Dict[str, Any]:
-        config = self._get_config_or_none()
-        if config is None:
-            raise ValueError(
-                "Browserbase requires BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID "
-                "environment variables."
-            )
-        return config
+    def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+        return {"Content-Type": "application/json", "X-BB-API-Key": config["api_key"]}
 
-    # ------------------------------------------------------------------
-    # Session lifecycle
-    # ------------------------------------------------------------------
+    def _release_headers(self, config: Dict[str, Any]) -> Dict[str, str]:
+        return {"X-BB-API-Key": config["api_key"], "Content-Type": "application/json"}
+
+    def _release_body(self, config: Dict[str, Any]) -> Dict[str, object]:
+        return {"projectId": config["project_id"], "status": "REQUEST_RELEASE"}
 
     def create_session(self, task_id: str) -> Dict[str, object]:
         config = self._get_config()
-
-        # Optional env-var knobs
         enable_proxies = os.environ.get("BROWSERBASE_PROXIES", "true").lower() != "false"
-        enable_advanced_stealth = (
-            os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
-        )
-        enable_keep_alive = (
-            os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
-        )
+        enable_advanced_stealth = os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
+        enable_keep_alive = os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
         custom_timeout_ms = os.environ.get("BROWSERBASE_SESSION_TIMEOUT")
 
-        features_enabled = {
-            "basic_stealth": True,
-            "proxies": False,
-            "advanced_stealth": False,
-            "keep_alive": False,
-            "custom_timeout": False,
-        }
-
         session_config: Dict[str, object] = {"projectId": config["project_id"]}
-
         if enable_keep_alive:
             session_config["keepAlive"] = True
-
         if custom_timeout_ms:
             try:
                 timeout_val = int(custom_timeout_ms)
                 if timeout_val > 0:
                     session_config["timeout"] = timeout_val
             except ValueError:
-                logger.warning(
-                    "Invalid BROWSERBASE_SESSION_TIMEOUT value: %s", custom_timeout_ms
-                )
-
+                logger.warning("Invalid BROWSERBASE_SESSION_TIMEOUT value: %s", custom_timeout_ms)
         if enable_proxies:
             session_config["proxies"] = True
-
         if enable_advanced_stealth:
             session_config["browserSettings"] = {"advancedStealth": True}
 
-        # --- Create session via API ---
-        headers = {
-            "Content-Type": "application/json",
-            "X-BB-API-Key": config["api_key"],
-        }
+        url = f"{config['base_url']}/v1/sessions"
+        headers = self._headers(config)
+        response = self._post_create(url, headers, session_config)
 
-        try:
-            response = requests.post(
-                f"{config['base_url']}/v1/sessions",
-                headers=headers,
-                json=session_config,
-                timeout=30,
-            )
-
-            proxies_fallback = False
-            keepalive_fallback = False
-
-            # Handle 402 — paid features unavailable
-            if response.status_code == 402:
-                if enable_keep_alive:
-                    keepalive_fallback = True
-                    logger.warning(
-                        "keepAlive may require paid plan (402), retrying without it. "
-                        "Sessions may timeout during long operations."
-                    )
-                    session_config.pop("keepAlive", None)
-                    response = requests.post(
-                        f"{config['base_url']}/v1/sessions",
-                        headers=headers,
-                        json=session_config,
-                        timeout=30,
-                    )
-
-                if response.status_code == 402 and enable_proxies:
-                    proxies_fallback = True
-                    logger.warning(
-                        "Proxies unavailable (402), retrying without proxies. "
-                        "Bot detection may be less effective."
-                    )
-                    session_config.pop("proxies", None)
-                    response = requests.post(
-                        f"{config['base_url']}/v1/sessions",
-                        headers=headers,
-                        json=session_config,
-                        timeout=30,
-                    )
-        except requests.RequestException as exc:
-            raise RuntimeError(
-                f"Browserbase API connection failed: {exc}"
-            ) from exc
-
-        if not response.ok:
-            raise RuntimeError(
-                f"Failed to create Browserbase session: "
-                f"{response.status_code} {response.text}"
-            )
+        # 402 — paid features unavailable: drop keepAlive, then proxies, and retry.
+        dropped = set()
+        for key, warning in _PAID_FEATURE_FALLBACKS:
+            if response.status_code == 402 and key in session_config:
+                dropped.add(key)
+                logger.warning(warning)
+                session_config.pop(key)
+                response = self._post_create(url, headers, session_config)
+        self._check_created(response)
 
         session_data = response.json()
-        session_name = f"hermes_{task_id}_{uuid.uuid4().hex[:8]}"
-
-        if enable_proxies and not proxies_fallback:
-            features_enabled["proxies"] = True
-        if enable_advanced_stealth:
-            features_enabled["advanced_stealth"] = True
-        if enable_keep_alive and not keepalive_fallback:
-            features_enabled["keep_alive"] = True
-        if custom_timeout_ms and "timeout" in session_config:
-            features_enabled["custom_timeout"] = True
-
+        session_name = self._session_name(task_id)
+        features_enabled = {
+            "basic_stealth": True,
+            "proxies": enable_proxies and "proxies" not in dropped,
+            "advanced_stealth": enable_advanced_stealth,
+            "keep_alive": enable_keep_alive and "keepAlive" not in dropped,
+            "custom_timeout": bool(custom_timeout_ms) and "timeout" in session_config,
+        }
         feature_str = ", ".join(k for k, v in features_enabled.items() if v)
-        logger.info(
-            "Created Browserbase session %s with features: %s", session_name, feature_str
-        )
-
+        logger.info("Created Browserbase session %s with features: %s", session_name, feature_str)
         return {
             "session_name": session_name,
             "bb_session_id": session_data["id"],
@@ -215,86 +114,26 @@ class BrowserbaseBrowserProvider(BrowserProvider):
             "features": features_enabled,
         }
 
-    def close_session(self, session_id: str) -> bool:
-        try:
-            config = self._get_config()
-        except ValueError:
-            logger.warning(
-                "Cannot close Browserbase session %s — missing credentials", session_id
-            )
-            return False
 
-        try:
-            response = requests.post(
-                f"{config['base_url']}/v1/sessions/{session_id}",
-                headers={
-                    "X-BB-API-Key": config["api_key"],
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "projectId": config["project_id"],
-                    "status": "REQUEST_RELEASE",
-                },
-                timeout=10,
-            )
-            if response.status_code in {200, 201, 204}:
-                logger.debug("Successfully closed Browserbase session %s", session_id)
-                return True
-            else:
-                logger.warning(
-                    "Failed to close session %s: HTTP %s - %s",
-                    session_id,
-                    response.status_code,
-                    response.text[:200],
-                )
-                return False
-        except Exception as e:
-            logger.error("Exception closing Browserbase session %s: %s", session_id, e)
-            return False
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import requests  # noqa: F401,E402
+import uuid  # noqa: F401,E402
 
-    def emergency_cleanup(self, session_id: str) -> None:
-        config = self._get_config_or_none()
-        if config is None:
-            logger.warning(
-                "Cannot emergency-cleanup Browserbase session %s — missing credentials",
-                session_id,
-            )
-            return
-        try:
-            requests.post(
-                f"{config['base_url']}/v1/sessions/{session_id}",
-                headers={
-                    "X-BB-API-Key": config["api_key"],
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "projectId": config["project_id"],
-                    "status": "REQUEST_RELEASE",
-                },
-                timeout=5,
-            )
-        except Exception as e:
-            logger.debug(
-                "Emergency cleanup failed for Browserbase session %s: %s", session_id, e
-            )
 
-    def get_setup_schema(self) -> Dict[str, Any]:
-        return {
-            "name": "Browserbase",
-            "badge": "paid",
-            "tag": "Cloud browser with stealth and proxies",
-            "env_vars": [
-                {
-                    "key": "BROWSERBASE_API_KEY",
-                    "prompt": "Browserbase API key",
-                    "url": "https://browserbase.com",
-                },
-                {
-                    "key": "BROWSERBASE_PROJECT_ID",
-                    "prompt": "Browserbase project ID",
-                },
-            ],
-            # Cloud-scoped hook: installs the agent-browser CLI only (no
-            # local Chromium — Browserbase hosts the browser).
-            "post_setup": "browserbase",
-        }
+_PLUGIN_COMPAT_LAZY = {
+    'BrowserProvider': ('agent.browser_provider', 'BrowserProvider'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

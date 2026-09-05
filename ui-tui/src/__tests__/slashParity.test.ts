@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { findSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
+import { parseSlashCommand } from '../domain/slash.js'
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
@@ -16,7 +17,8 @@ interface CommandRegistryLoad {
 const NATIVE_MUTATING_COMMANDS = new Set(['browser', 'busy', 'fast', 'reload-mcp', 'rollback', 'stop'])
 
 const MUTATING_COMMANDS = [
-  'background',
+  'bg',
+  'btw',
   'branch',
   'browser',
   'busy',
@@ -119,5 +121,31 @@ describe('slash parity matrix', () => {
     const cmd = findSlashCommand('q')
     expect(cmd, '/q must resolve to a command').toBeDefined()
     expect(cmd!.name).toBe('queue')
+  })
+})
+
+describe('parseSlashCommand argument fidelity', () => {
+  it('keeps a multi-line argument byte-for-byte', () => {
+    const arg = 'first line\nsecond line\n\n  indented tail'
+
+    expect(parseSlashCommand(`/pr-triage ${arg}`)).toEqual({
+      arg,
+      cmd: `/pr-triage ${arg}`,
+      name: 'pr-triage'
+    })
+  })
+
+  it('preserves runs of spaces inside the argument', () => {
+    expect(parseSlashCommand('/goal ship   it').arg).toBe('ship   it')
+  })
+
+  it('still splits the command name off a single separator', () => {
+    expect(parseSlashCommand('/cron add daily')).toEqual({
+      arg: 'add daily',
+      cmd: '/cron add daily',
+      name: 'cron'
+    })
+    expect(parseSlashCommand('/exit')).toEqual({ arg: '', cmd: '/exit', name: 'exit' })
+    expect(parseSlashCommand('/exit ')).toEqual({ arg: '', cmd: '/exit ', name: 'exit' })
   })
 })

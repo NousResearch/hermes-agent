@@ -378,7 +378,7 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     
     # Mock validation to pass
     monkeypatch.setattr(
-        "hermes_cli.models.validate_requested_model",
+        "hermes_cli.models_validate.validate_requested_model",
         lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": None}
     )
     
@@ -443,7 +443,7 @@ def _run_user_provider_override_case(
     with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
          patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
          patch("hermes_cli.model_switch.normalize_model_for_provider", side_effect=lambda model, provider: model), \
-         patch("hermes_cli.models.validate_requested_model", return_value=_REJECTED_VALIDATION), \
+         patch("hermes_cli.models_validate.validate_requested_model", return_value=_REJECTED_VALIDATION), \
          patch("hermes_cli.models.detect_provider_for_model", return_value=None), \
          patch("hermes_cli.model_switch.get_model_info", return_value=None), \
          patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \

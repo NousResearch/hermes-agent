@@ -9,6 +9,8 @@ profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
 import yaml
+import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 def _write_skill(skills_dir, name, description="test skill"):
@@ -109,7 +111,7 @@ class TestProfileScopedHubActions:
             calls.append((list(subcommand), name))
             return _FakeProc()
 
-        monkeypatch.setattr(web_server, "_spawn_hermes_action", _fake_spawn)
+        monkeypatch.setattr(_web_server_gateway, "_spawn_hermes_action", _fake_spawn)
         resp = client.post(
             "/api/skills/hub/install",
             json={"identifier": "official/demo", "profile": "worker_alpha"},
@@ -118,7 +120,7 @@ class TestProfileScopedHubActions:
         assert calls == [
             (
                 ["-p", "worker_alpha", "skills", "install", "official/demo", "--yes"],
-                web_server._hub_action_name("install", "official/demo"),
+                _web_server_profiles._hub_action_name("install", "official/demo"),
             )
         ]
 

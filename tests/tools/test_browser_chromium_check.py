@@ -7,10 +7,13 @@ for the full command timeout before surfacing a useless error.
 """
 
 import os
+import shutil
 
 import pytest
 
 from tools import browser_tool as bt
+from tools import browser_tool_install as bt_install
+from tools import browser_tool_cloud as bt_cloud
 
 
 @pytest.fixture(autouse=True)
@@ -23,13 +26,13 @@ def _reset_chromium_cache():
 class TestChromiumSearchRoots:
     def test_respects_playwright_browsers_path_env(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
-        roots = bt._chromium_search_roots()
+        roots = bt_install._chromium_search_roots()
         assert str(tmp_path) == roots[0]
 
 
     def test_always_includes_default_ms_playwright_cache(self, monkeypatch):
         monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
-        roots = bt._chromium_search_roots()
+        roots = bt_install._chromium_search_roots()
         home = os.path.expanduser("~")
         assert any(r == os.path.join(home, ".cache", "ms-playwright") for r in roots)
 
@@ -38,34 +41,34 @@ class TestChromiumInstalled:
     def test_true_when_plain_chromium_on_path(self, monkeypatch):
         monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
         monkeypatch.setattr(
-            bt.shutil,
+            shutil,
             "which",
             lambda name, path=None: "/usr/bin/chromium" if name == "chromium" else None,
         )
 
-        assert bt._chromium_installed() is True
+        assert bt_install._chromium_installed() is True
 
 
     def test_result_cached(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium-1208").mkdir()
-        assert bt._chromium_installed() is True
+        assert bt_install._chromium_installed() is True
         # Delete after first call — cached True should still return True.
         (tmp_path / "chromium-1208").rmdir()
-        assert bt._chromium_installed() is True
+        assert bt_install._chromium_installed() is True
 
 
 class TestCheckBrowserRequirementsChromium:
 
     def test_local_mode_with_chromium_returns_true(self, monkeypatch, tmp_path):
         monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "/usr/local/bin/agent-browser")
-        monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _: False)
-        monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kw: "/usr/local/bin/agent-browser")
+        monkeypatch.setattr("tools.browser_tool_install._requires_real_termux_browser_install", lambda _: False)
+        monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: None)
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         (tmp_path / "chromium-1208").mkdir()
 
-        assert bt.check_browser_requirements() is True
+        assert bt_install.check_browser_requirements() is True
 
 
     def test_camofox_mode_does_not_require_chromium(self, monkeypatch, tmp_path):
@@ -74,7 +77,7 @@ class TestCheckBrowserRequirementsChromium:
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))
         monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "fakehome"))
 
-        assert bt.check_browser_requirements() is True
+        assert bt_install.check_browser_requirements() is True
 
 
 class TestRunBrowserCommandChromiumGuard:

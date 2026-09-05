@@ -30,6 +30,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import plugins.dashboard_auth.self_hosted as oidc_plugin
+from plugins.dashboard_auth._shared import JWKS_CACHE_SECONDS
 from hermes_cli.dashboard_auth import (
     InvalidCodeError,
     LoginStart,
@@ -584,7 +585,7 @@ class TestVerifySession:
         client_cls.assert_called_once_with(
             _DISCOVERY_DOC["jwks_uri"],
             cache_keys=True,
-            lifespan=oidc_plugin._JWKS_CACHE_SECONDS,
+            lifespan=JWKS_CACHE_SECONDS,
             headers={
                 "Accept": "application/json",
                 "User-Agent": "HermesAgent/1.0",

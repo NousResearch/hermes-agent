@@ -15,7 +15,7 @@ Manage Docker containers, images, volumes, and Compose.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/devops/docker-management` |
-| Path | `optional-skills/devops/docker-management` |
+| Path | `optional-skills/devops\docker-management` |
 | Version | `1.0.0` |
 | Author | sprmn24 |
 | License | MIT |
@@ -194,7 +194,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgres://user:pass@db:5432/mydb
+      # Password comes from the POSTGRES_PASSWORD secret, not the URL
+      - DATABASE_URL=postgres://mydb_user@db:5432/mydb
     depends_on:
       db:
         condition: service_healthy

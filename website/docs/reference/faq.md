@@ -319,6 +319,8 @@ If this happens on the first long conversation, Hermes may have the wrong contex
 
 Look at the CLI startup line — it shows the detected context length (e.g., `📊 Context limit: 128000 tokens`). You can also check with `/usage` during a session.
 
+**Local servers (llama.cpp, Ollama) that go silent instead of erroring:** when a provider rejects a request as too large, Hermes compacts the conversation and rebuilds the request. Hermes re-measures the *complete* rebuilt request (system prompt + tool schemas + messages) before retrying, and runs further bounded compaction passes if it is still over the threshold. If the request still cannot fit, the turn ends with `Context length exceeded: compression could not reduce the rebuilt request below the safe threshold` rather than sending an oversized request that llama.cpp would silently truncate (`stop processing: n_tokens = 65535, truncated = 1` in the server log). If you hit that message, the fix is almost always the configured `context_length` above: make it match the server's actual `-c` / `--ctx-size`.
+
 To fix context detection, set it explicitly:
 
 ```yaml

@@ -263,7 +263,9 @@ def test_reaction_guard_pinned_to_production_expression():
     (back to ``is_dm or is_mentioned``, which reacts to unmentioned MPIMs)
     fails here instead of silently passing a self-referential lambda.
     """
-    src = inspect.getsource(SlackAdapter._handle_slack_message)
+    # The public method is a thin claim-release guard; the production
+    # expression lives in the impl.
+    src = inspect.getsource(SlackAdapter._handle_slack_message_impl)
     assert "(is_one_to_one_dm or is_mentioned)" in src, (
         "reaction guard no longer keys off is_one_to_one_dm — an unmentioned "
         "MPIM would react again (regression of the group-DM fix)"

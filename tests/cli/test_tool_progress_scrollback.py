@@ -54,8 +54,15 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
         with patch.object(mod, "get_tool_definitions", return_value=[]), \
              patch.dict(mod.__dict__, {"CLI_CONFIG": _clean_config}):
             if verbose is _UNSET:
-                return mod.HermesCLI()
-            return mod.HermesCLI(verbose=verbose)
+                inst = mod.HermesCLI()
+            else:
+                inst = mod.HermesCLI(verbose=verbose)
+    # patch.dict(sys.modules) above restores the pre-import state on exit, which
+    # DROPS ``cli`` when this was the first import. The mixin handlers resolve
+    # ``_cprint`` via a lazy ``from cli import ...``, so ``cli`` must stay
+    # registered for ``patch.object(_cli_mod, "_cprint")`` to intercept.
+    sys.modules["cli"] = mod
+    return inst
 
 
 class TestToolProgressScrollback:

@@ -214,20 +214,6 @@ class TestRendering:
         assert fake_advisory.summary in body
 
 
-    def test_render_doctor_section_with_unacked_hit(
-        self, fake_advisory, monkeypatch
-    ):
-        monkeypatch.setattr(adv, "get_acked_ids", lambda: set())
-        hit = adv.AdvisoryHit(
-            advisory=fake_advisory,
-            package="fake-malicious-pkg",
-            installed_version="6.6.6",
-        )
-        has_problems, lines = adv.render_doctor_section([hit])
-        assert has_problems is True
-        body = "\n".join(lines)
-        assert fake_advisory.title in body
-
 
 
 

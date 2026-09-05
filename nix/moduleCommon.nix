@@ -10,7 +10,8 @@
 #   nixosModules.nix        the service user and group, stateDir,
 #                           addToSystemPackages, container mode, tmpfiles,
 #                           system.activationScripts, system systemd units
-#   homeManagerModules.nix  hermesHome, installPackage, home.activation,
+#   homeManagerModules.nix  hermesHome, programs.hermes-agent (the CLI and
+#                           the desktop application), home.activation,
 #                           systemd.user.services, launchd.agents
 #
 # The split is by scope, not by feature. Code that needs root or a system
@@ -618,8 +619,58 @@ let
           default = [ ];
           description = "More command-line arguments for the backend command.";
         };
+
+        sessionTokenFile = mkOption {
+          # The type is `str` and not `path` for the same reason that
+          # environmentFiles uses `str`. A Nix path literal copies the secret
+          # into the Nix store, which all users can read. Use a runtime path
+          # from sops-nix or agenix instead.
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            The path to a file that holds the session token of the backend,
+            on one line.
+
+            The backend reads the file at each start and gives the value to
+            HERMES_DASHBOARD_SESSION_TOKEN. That token authorizes the /api
+            routes and the /api/ws socket. Hermes Desktop presents the same
+            value, so the application reaches this backend and starts no
+            second one.
+
+            Without this option the backend makes a new token at each start,
+            which no other process can know.
+
+            CAUTION: The file must hold the raw token and nothing else. Give
+            it mode 0600. Do not use a Nix path literal, because that copies
+            the secret into the Nix store.
+          '';
+          example = literalExpression ''config.sops.secrets."hermes/desktop-token".path'';
+        };
       };
     };
+
+  # ── The removal of installPackage ───────────────────────────────────────
+  # The programs./services. split replaced this option. It defaulted to true,
+  # so a person who never named it still got the command line, and a silent
+  # removal leaves them with no `hermes` on the PATH and no message. The
+  # module refuses the configuration with this text.
+  #
+  # A function, and not a literal in the module, so a check can call the same
+  # code and read the real message. A check that matched the source text of
+  # the module would pass while the message was wrong.
+  installPackageRemovedMessage =
+    value:
+    ''
+      services.hermes-agent.installPackage was removed. Hermes now
+      separates the installation from the services, which is the
+      Home Manager convention:
+
+        programs.hermes-agent.enable = ${lib.boolToString (value != false)};  # the hermes CLI, and HERMES_HOME for your shells
+        programs.hermes-agent.desktop.enable = true;  # the desktop application
+
+      `services.hermes-agent` keeps the state, the configuration and
+      the daemons. Remove `installPackage` and add the line above.
+    '';
 
   # ── Package resolution ──────────────────────────────────────────────────
   effectivePackage =
@@ -862,7 +913,14 @@ let
     ]
     ++ cfg.backend.extraArgs;
 
-  # The launcher that waits for the bind target, then starts the backend.
+  # The launcher that reads the session token, waits for the bind target,
+  # then starts the backend.
+  #
+  # The token cannot go in the unit environment. A systemd `Environment=`
+  # value and a launchd EnvironmentVariables value both land in the Nix
+  # store, which all users can read. Thus the launcher reads the file at
+  # start time. launchd has no EnvironmentFile, so a script is the one shape
+  # that works on both hosts.
   #
   # `exec` on the last line keeps hermes as the MainPID of the unit. No shell
   # stays in the cgroup, and the restart logic of systemd sees the real
@@ -879,8 +937,32 @@ let
         _timeout=${toString cfg.backend.waitTimeout}
         _waited=0
 
+        ${lib.optionalString (cfg.backend.sessionTokenFile != null) ''
+          # Read the token, and never put it on a command line. A command
+          # line is visible to each process on the host.
+          _token_file=${lib.escapeShellArg cfg.backend.sessionTokenFile}
+
+          if [ ! -r "$_token_file" ]; then
+            echo "hermes-backend: cannot read the session token file '$_token_file'. The unit stops." >&2
+            echo "hermes-backend: backend.sessionTokenFile must name a runtime path that this user can read." >&2
+            exit 1
+          fi
+
+          HERMES_DASHBOARD_SESSION_TOKEN="$(${pkgs.coreutils}/bin/tr -d '\r\n' < "$_token_file")"
+          export HERMES_DASHBOARD_SESSION_TOKEN
+
+          if [ -z "$HERMES_DASHBOARD_SESSION_TOKEN" ]; then
+            echo "hermes-backend: the session token file '$_token_file' is empty. The unit stops." >&2
+            exit 1
+          fi
+        ''}
         ${
-          if cfg.backend.waitFor == "hostname" then
+          if cfg.backend.waitFor == null then
+            ''
+              _target=${lib.escapeShellArg cfg.backend.host}
+              _how="the configured address"
+            ''
+          else if cfg.backend.waitFor == "hostname" then
             ''
               _target=${lib.escapeShellArg cfg.backend.host}
               _how="hostname"
@@ -940,7 +1022,10 @@ let
 
   backendArgv =
     { pkgs, cfg }:
-    if cfg.backend.waitFor == null then
+    # A plain argv is enough only when nothing must run before the backend.
+    # A wait needs the address at start time, and a token must be read from
+    # a file that the store must never hold. Either one needs the launcher.
+    if cfg.backend.waitFor == null && cfg.backend.sessionTokenFile == null then
       backendCommand cfg cfg.backend.host
     else
       [ "${backendLauncher { inherit pkgs cfg; }}" ];
@@ -1063,6 +1148,7 @@ in
     deepConfigType
     effectivePackage
     gatewayArgv
+    installPackageRemovedMessage
     mcpServerType
     mcpServersToConfig
     mkConfigFiles

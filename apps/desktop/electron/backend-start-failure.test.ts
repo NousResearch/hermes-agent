@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { isReauthRequiredError, makeUnsignedOauthError } from './backend-health'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -67,6 +68,19 @@ test('FIX #82679: a transient remote failure is retryable so a dropped SSH/HTTP 
 
 test('a CONFIRMED reauth rejection is never auto-retried (missing capability, not transient failure)', () => {
   assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: true }), false)
+})
+
+test('unsigned OAuth latches and is never auto-retried; needsOauthLogin alone still retries', () => {
+  // Production composition in startHermes: isReauth = isReauthRequiredError(error).
+  const unsigned = isReauthRequiredError(makeUnsignedOauthError())
+  const ticketHint = isReauthRequiredError({ needsOauthLogin: true })
+
+  assert.equal(unsigned, true)
+  assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth: unsigned }), true)
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: unsigned }), false)
+  assert.equal(ticketHint, false)
+  assert.equal(shouldLatchRemoteReauthFailure({ attemptedRemote: true, isReauth: ticketHint }), false)
+  assert.equal(isRetryableRemoteBootFailure({ attemptedRemote: true, isReauth: ticketHint }), true)
 })
 
 test('local failures are never auto-retried by the remote self-heal loop', () => {

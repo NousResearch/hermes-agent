@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _cmd_update_check, cmd_update
+from hermes_cli.main import cmd_update
+from hermes_cli.update_cmd import _cmd_update_check
 
 
 def test_apt_stamp_is_detected_and_recommends_pkg_upgrade(tmp_path):
@@ -27,7 +28,8 @@ def test_cmd_update_apt_prints_pkg_guidance_without_git(
     with pytest.raises(SystemExit) as excinfo:
         cmd_update(SimpleNamespace(check=False))
 
-    assert excinfo.value.code == 1
+    # exit 2 = refused-by-contract (#91277 Phase 3), distinct from exit-1 errors
+    assert excinfo.value.code == 2
     assert "pkg upgrade hermes-agent" in capsys.readouterr().out
     assert mock_run.call_args_list == []
 
@@ -40,6 +42,7 @@ def test_cmd_update_check_apt_prints_pkg_guidance_without_git(
     with pytest.raises(SystemExit) as excinfo:
         _cmd_update_check()
 
-    assert excinfo.value.code == 1
+    # exit 2 = refused-by-contract (#91277 Phase 3)
+    assert excinfo.value.code == 2
     assert "pkg upgrade hermes-agent" in capsys.readouterr().out
     assert mock_run.call_args_list == []

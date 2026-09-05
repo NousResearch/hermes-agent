@@ -1,32 +1,12 @@
 """Profile describer — auto-generate ``description`` for a profile.
 
-Used by ``hermes profile describe <name> --auto`` and the dashboard's
-"auto-generate description" button. Reads the profile's installed
-skills, model+provider, name, and optionally a small slice of memory,
-then asks the auxiliary LLM to produce a 1-2 sentence description of
-what the profile is good at.
-
-Result is written to ``<profile_dir>/profile.yaml`` with
-``description_auto: true`` so the dashboard can surface a "review"
-badge. User can edit afterward to confirm.
-
-Design notes
-------------
-- Mirrors the shape of ``hermes_cli/kanban_specify.py``: lazy aux
-  client import inside the function, lenient response parse, never
-  raises on expected failure modes.
-- Reads at most ``MAX_SKILLS_FOR_PROMPT`` skill names to keep the
-  prompt bounded. No skill body — names + categories are enough
-  signal and avoid blowing context on profiles with 100+ skills.
-- Memory is intentionally NOT read here. Memories are personal and
-  the orchestrator routes work to a *role* not a *biography*. If we
-  find later that memory adds signal we can wire it; for now,
-  skills + name + model is plenty.
+Mirrors ``hermes_cli/kanban_specify.py``: lazy aux client import, lenient response parse,
+never raises on expected failure modes. Reads at most ``MAX_SKILLS_FOR_PROMPT`` skill
+names to keep the prompt bounded.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -38,9 +18,7 @@ from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
 
-# Cap on how many skill names we feed the LLM. Profiles with 200+
-# skills (uncommon but possible) would blow context otherwise. The cap
-# is per-category — see _collect_skills.
+# Cap on skill names fed to the LLM (200+ skill profiles would blow context).
 MAX_SKILLS_FOR_PROMPT = 60
 
 
@@ -98,12 +76,8 @@ class DescribeOutcome:
 
 
 def _collect_skills(profile_dir: Path) -> list[str]:
-    """Return a stable, capped list of skill names for the prompt.
-
-    Format: ``category/skill_name`` where category is the immediate
-    subdir under ``skills/`` (e.g. ``devops``, ``research``). Skills
-    that live directly under ``skills/`` show as bare ``skill_name``.
-    """
+    """Sorted non-excluded skill names: ``category/skill_name`` (category = immediate subdir
+    under ``skills/``), or bare ``skill_name`` for skills directly under ``skills/``."""
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return []
@@ -112,71 +86,38 @@ def _collect_skills(profile_dir: Path) -> list[str]:
         if is_excluded_skill_path(md):
             continue
         try:
-            rel = md.relative_to(skills_dir)
+            parts = md.relative_to(skills_dir).parts[:-1]  # drop SKILL.md
         except ValueError:
             continue
-        parts = rel.parts[:-1]  # drop SKILL.md filename
-        if not parts:
-            continue
-        # parts[-1] is the skill dir name; parts[:-1] is the category path
-        if len(parts) == 1:
-            names.append(parts[0])
-        else:
-            names.append(f"{parts[0]}/{parts[-1]}")
+        if parts:
+            names.append(parts[0] if len(parts) == 1 else f"{parts[0]}/{parts[-1]}")
     names.sort()
-    # Keep within prompt budget. Skills earlier in alphabet aren't more
-    # important — we'll let the LLM see a sample. Pick evenly-spaced
-    # entries instead of just the head so a profile with skills A..Z
-    # doesn't get described as "starts with A".
+    return names
+
+
+def _sample_skills(names: list[str]) -> list[str]:
+    """Cap *names* to the prompt budget with evenly-spaced picks: alphabetical position isn't
+    importance, so a profile with skills A..Z must not read as "starts with A"."""
     if len(names) <= MAX_SKILLS_FOR_PROMPT:
         return names
     step = len(names) / MAX_SKILLS_FOR_PROMPT
-    sampled = [names[int(i * step)] for i in range(MAX_SKILLS_FOR_PROMPT)]
-    return sampled
+    return [names[int(i * step)] for i in range(MAX_SKILLS_FOR_PROMPT)]
 
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
-    if not raw:
-        return None
-    stripped = _FENCE_RE.sub("", raw.strip())
-    first = stripped.find("{")
-    last = stripped.rfind("}")
-    if first == -1 or last == -1 or last <= first:
-        return None
-    candidate = stripped[first : last + 1]
-    try:
-        val = json.loads(candidate)
-    except (ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(val, dict):
-        return None
-    return val
+    from hermes_cli.kanban_specify import _extract_json_blob as _extract
+    return _extract(raw, _FENCE_RE)
 
 
-def describe_profile(
-    profile_name: str,
-    *,
-    overwrite: bool = False,
-    timeout: Optional[int] = None,
-) -> DescribeOutcome:
-    """Auto-generate a description for one profile.
+def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Optional[int] = None) -> DescribeOutcome:
+    """Auto-generate a description for one profile. Expected failures (profile missing, no aux
+    client, API error, malformed response) return ``ok=False`` so a sweep continues.
 
-    Returns an outcome describing what happened. Never raises for
-    expected failure modes (profile missing, no aux client configured,
-    API error, malformed response) — those surface via ``ok=False`` so
-    a sweep can continue past individual failures.
-
-    ``overwrite`` controls whether an existing user-authored description
-    is replaced. By default we refuse to overwrite a description with
-    ``description_auto: false`` to protect curated text. Auto-generated
-    descriptions (``description_auto: true``) are always replaceable.
-    """
+    ``overwrite`` allows replacing a user-authored (``description_auto: false``) description;
+    auto-generated ones are always replaceable."""
     canon = profiles_mod.normalize_profile_name(profile_name)
-    if not profiles_mod.profile_exists(canon):
-        # Special case: "default" exists as a virtual profile name
-        # mapped to the default home dir. profile_exists() handles it.
+    if not profiles_mod.profile_exists(canon):  # handles the virtual "default" name
         return DescribeOutcome(canon, False, "profile not found")
-
     try:
         if canon == "default":
             from hermes_constants import get_hermes_home  # type: ignore
@@ -185,55 +126,33 @@ def describe_profile(
             profile_dir = profiles_mod.get_profile_dir(canon)
     except Exception as exc:
         return DescribeOutcome(canon, False, f"cannot resolve profile dir: {exc}")
-
-    # Honor curated descriptions unless --overwrite.
     existing = profiles_mod.read_profile_meta(profile_dir)
     if existing.get("description") and not existing.get("description_auto") and not overwrite:
         return DescribeOutcome(
-            canon,
-            False,
-            "profile already has a user-authored description "
-            "(use --overwrite to replace)",
+            canon, False, "profile already has a user-authored description (use --overwrite to replace)"
         )
-
-    skill_names = _collect_skills(profile_dir)
-    skill_list = "\n".join(f"  - {n}" for n in skill_names) or "  (no skills installed)"
-    skill_count = sum(
-        1 for _ in (profile_dir / "skills").rglob("SKILL.md")
-        if not is_excluded_skill_path(_)
-    ) if (profile_dir / "skills").is_dir() else 0
-
-    # Read model + provider from the profile's config.
+    all_skills = _collect_skills(profile_dir)
+    skill_list = "\n".join(f"  - {n}" for n in _sample_skills(all_skills)) or "  (no skills installed)"
     try:
         model, provider = profiles_mod._read_config_model(profile_dir)
     except Exception:
         model, provider = None, None
-
     try:
         from agent.auxiliary_client import call_llm  # type: ignore
     except Exception as exc:
         logger.debug("describe: auxiliary client import failed: %s", exc)
         return DescribeOutcome(canon, False, "auxiliary client unavailable")
-
     user_msg = _USER_TEMPLATE.format(
-        name=canon,
-        model=(model or "(unset)"),
-        provider=(provider or "(unset)"),
-        skill_count=skill_count,
-        skill_cap=MAX_SKILLS_FOR_PROMPT,
-        skill_list=skill_list,
+        name=canon, model=(model or "(unset)"), provider=(provider or "(unset)"), skill_count=len(all_skills),
+        skill_cap=MAX_SKILLS_FOR_PROMPT, skill_list=skill_list,
     )
-
     try:
-        # Route through call_llm so auxiliary.profile_describer.* config
-        # (provider/model/base_url, extra_body, reasoning_effort, retries)
-        # all apply — the direct-create path dropped extra_body (#35566).
+        # call_llm applies auxiliary.profile_describer.* config (provider/model/base_url,
+        # extra_body, reasoning_effort, retries); the direct-create path dropped extra_body.
+        # See #35566.
         resp = call_llm(
             task="profile_describer",
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=[{"role": "system", "content": _SYSTEM_PROMPT}, {"role": "user", "content": user_msg}],
             temperature=0.3,
             max_tokens=400,
             timeout=timeout or 60,
@@ -241,15 +160,13 @@ def describe_profile(
     except Exception as exc:
         logger.info("describe: API call failed for %s (%s)", canon, exc)
         return DescribeOutcome(canon, False, f"LLM error: {type(exc).__name__}")
-
     try:
         raw = resp.choices[0].message.content or ""
     except Exception:
         raw = ""
-
     parsed = _extract_json_blob(raw)
     if parsed is None:
-        # Fall back: take the raw text trimmed to one paragraph.
+        # Fall back: raw text trimmed to one paragraph.
         text = raw.strip().split("\n\n", 1)[0]
         if not text:
             return DescribeOutcome(canon, False, "LLM returned an empty response")
@@ -257,32 +174,27 @@ def describe_profile(
     else:
         val = parsed.get("description")
         if not isinstance(val, str) or not val.strip():
-            return DescribeOutcome(
-                canon, False, "LLM response missing 'description' field"
-            )
+            return DescribeOutcome(canon, False, "LLM response missing 'description' field")
         description = val.strip()[:280]
-
     try:
-        profiles_mod.write_profile_meta(
-            profile_dir,
-            description=description,
-            description_auto=True,
-        )
+        profiles_mod.write_profile_meta(profile_dir, description=description, description_auto=True)
     except Exception as exc:
         return DescribeOutcome(canon, False, f"failed to write profile.yaml: {exc}")
-
     return DescribeOutcome(canon, True, "described", description=description)
 
 
 def list_describable_profiles(*, missing_only: bool = True) -> list[str]:
-    """Return profile names that can be described.
+    """Profile names that can be described; ``missing_only`` keeps only those without a
+    user-authored description."""
+    return [
+        p.name for p in profiles_mod.list_profiles()
+        if not (missing_only and (p.description or "").strip() and not p.description_auto)
+    ]
 
-    ``missing_only=True`` (default) returns only profiles without a
-    description. ``missing_only=False`` returns every profile.
-    """
-    out: list[str] = []
-    for p in profiles_mod.list_profiles():
-        if missing_only and (p.description or "").strip() and not p.description_auto:
-            continue
-        out.append(p.name)
-    return out
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import json  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

@@ -35,6 +35,30 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "openai/gpt-6-astra"])
+    @pytest.mark.parametrize("effort, expected", [
+        ("low", "low"), ("medium", "medium"), ("high", "high"),
+        ("xhigh", "xhigh"), ("max", "max"), ("ultra", "max"),
+        ("minimal", "low"), ("none", None),
+    ])
+    def test_astra_copilot_forwards_configured_reasoning(self, transport, model, effort, expected):
+        from agent.reasoning_params import ReasoningParamsMixin
+        from hermes_cli.config import get_config_path, load_config
+        from hermes_constants import resolve_reasoning_config
+
+        get_config_path().write_text(json.dumps({
+            "model": {"default": model}, "agent": {"reasoning_effort": effort},
+        }), encoding="utf-8")
+        reasoning = resolve_reasoning_config(load_config(), model)
+        agent = SimpleNamespace(model=model, reasoning_config=reasoning)
+        kw = transport.build_kwargs(
+            model=model, messages=[{"role": "user", "content": "Hi"}],
+            provider="github-copilot", is_github_responses=True,
+            reasoning_config=reasoning,
+            github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
+        )
+        assert kw.get("reasoning") == ({"effort": expected} if expected else None)
+
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
             model="gpt-6-astra",

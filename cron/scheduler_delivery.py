@@ -693,6 +693,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         ]
         result = subprocess.run(
             argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
+            cwd=os.path.expanduser("~") or None,
             creationflags=windows_hide_flags())
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]

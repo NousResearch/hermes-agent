@@ -300,6 +300,65 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(req, body, secret) is True
 
+    def test_standard_webhooks_headers_with_whsec_secret_valid(self):
+        """#101837: a sender using the Standard Webhooks spec's own header
+        names (webhook-id / webhook-timestamp / webhook-signature) must
+        validate the same way a Svix sender does -- identical scheme,
+        Svix co-authored the standard."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"invoice.paid"}'
+        secret = "whsec_" + base64.b64encode(b"0123456789abcdef").decode()
+        msg_id = "msg_std_1"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(headers={
+            "webhook-id": msg_id,
+            "webhook-timestamp": timestamp,
+            "webhook-signature": sig,
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_standard_webhooks_headers_with_raw_secret_valid(self):
+        adapter = _make_adapter()
+        body = b'{"event_type":"invoice.paid"}'
+        secret = "raw-standard-webhooks-secret"
+        msg_id = "msg_std_2"
+        timestamp = str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(headers={
+            "webhook-id": msg_id,
+            "webhook-timestamp": timestamp,
+            "webhook-signature": sig,
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_standard_webhooks_headers_wrong_secret_rejects(self):
+        adapter = _make_adapter()
+        body = b'{"event_type":"invoice.paid"}'
+        msg_id, timestamp = "msg_std_3", str(int(time.time()))
+        sig = _svix_signature(body, "attacker-controlled-secret", msg_id, timestamp)
+        req = _mock_request(headers={
+            "webhook-id": msg_id,
+            "webhook-timestamp": timestamp,
+            "webhook-signature": sig,
+        })
+        assert adapter._validate_signature(req, body, "real-secret") is False
+
+    def test_svix_headers_still_take_priority_and_are_unaffected(self):
+        """Regression guard: adding the webhook-* fallback must not change
+        behavior for an existing Svix sender when svix-* headers are present."""
+        adapter = _make_adapter()
+        body = b'{"event_type":"message.received"}'
+        secret = "svix-still-works"
+        msg_id, timestamp = "msg_svix_1", str(int(time.time()))
+        sig = _svix_signature(body, secret, msg_id, timestamp)
+        req = _mock_request(headers={
+            "svix-id": msg_id,
+            "svix-timestamp": timestamp,
+            "svix-signature": sig,
+        })
+        assert adapter._validate_signature(req, body, secret) is True
+
 
 # ===================================================================
 # Prompt rendering

@@ -617,14 +617,26 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: "web.Request", body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
         headers = request.headers
 
         def _header(name: str) -> str:
             return headers.get(name, "") or headers.get(name.lower(), "") or headers.get(name.upper(), "")
 
-        # Svix / AgentMail: signed content is "{id}.{timestamp}.{raw_body}".
-        svix = [_header(name) for name in ("svix-id", "svix-timestamp", "svix-signature")]
+        # Svix / AgentMail, and the Standard Webhooks spec (webhook-id / webhook-timestamp /
+        # webhook-signature) it was adopted from: signed content is "{id}.{timestamp}.{raw_body}"
+        # for both -- Svix co-authored Standard Webhooks, so a sender using the standard's own
+        # header names validates the same way a Svix sender does. Without this fallback, every
+        # standard-conformant delivery was rejected 401 even with the correct secret configured,
+        # since no header was ever matched (#101837).
+        svix = [
+            _header(name) or _header(alt)
+            for name, alt in (
+                ("svix-id", "webhook-id"),
+                ("svix-timestamp", "webhook-timestamp"),
+                ("svix-signature", "webhook-signature"),
+            )
+        ]
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
         # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.

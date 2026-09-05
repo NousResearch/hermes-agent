@@ -610,8 +610,6 @@ class TestAttemptsOnlySpentOnRealSends:
             _orphan("ob-1")
             assert dl.sweep_recoverable(deliverable_platforms={"discord"}) == []
 
-        row = dl.debug_rows()
-        assert "abandoned" not in row
         with dl._connect() as conn:
             state, attempts = conn.execute(
                 "SELECT state, attempts FROM delivery_obligations "

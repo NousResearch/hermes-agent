@@ -16,6 +16,8 @@ import json
 import pytest
 
 import cron.scheduler as s
+from cron import scheduler_delivery as sched_delivery
+from cron import scheduler_preflight as sched_preflight
 from cron.scheduler import _resolve_delivery_targets
 
 
@@ -416,8 +418,8 @@ class TestPreflightAndDashboardLanes:
     def test_preflight_blocks_unknown_failure_platform(self, monkeypatch):
         """A bogus failure_deliver platform blocks at preflight, exactly
         like a bogus deliver platform would."""
-        monkeypatch.setattr(s, "_is_known_delivery_platform", lambda _p: False)
-        err = s._preflight_check_delivery({
+        monkeypatch.setattr(sched_delivery, "_is_known_delivery_platform", lambda _p: False)
+        err = sched_preflight._preflight_check_delivery({
             "id": "p1", "deliver": "local",
             "failure_deliver": "nonexistent-platform:C1",
         })
@@ -426,7 +428,7 @@ class TestPreflightAndDashboardLanes:
     def test_preflight_failure_deliver_local_adds_no_platforms(self):
         """failure_deliver: local adds nothing to check — a deliver=local
         job with suppressed failures stays zero-cost at preflight."""
-        assert s._preflight_check_delivery({
+        assert sched_preflight._preflight_check_delivery({
             "id": "p2", "deliver": "local", "failure_deliver": "local",
         }) is None
 
@@ -439,8 +441,8 @@ class TestPreflightAndDashboardLanes:
             seen.append(p)
             return False
 
-        monkeypatch.setattr(s, "_is_known_delivery_platform", _known)
-        s._preflight_check_delivery({
+        monkeypatch.setattr(sched_delivery, "_is_known_delivery_platform", _known)
+        sched_preflight._preflight_check_delivery({
             "id": "p3", "deliver": "ghost:C1", "failure_deliver": "ghost:C1",
         })
         assert seen == ["ghost"]
@@ -449,7 +451,7 @@ class TestPreflightAndDashboardLanes:
         """The dashboard update lane normalizes failure_deliver like
         deliver: text stripped, empty clears (None) instead of
         coalescing to a target."""
-        from hermes_cli.web_server import _normalize_dashboard_cron_updates
+        from hermes_cli.web_routers.cron import _normalize_dashboard_cron_updates
 
         out = _normalize_dashboard_cron_updates(
             {"failure_deliver": "  slack:D0ALERTS  "}, tmp_path

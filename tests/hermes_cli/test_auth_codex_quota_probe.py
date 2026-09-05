@@ -244,6 +244,34 @@ def test_resolver_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
     assert entry["last_error_reset_at"] is None
 
 
+def test_resolver_selects_entry_with_expired_millisecond_reset(tmp_path, monkeypatch):
+    now = time.time()
+    store = _pool_only_rate_limited_store(now)
+    main = store["credential_pool"]["openai-codex"][0]
+    main["access_token"] = "tok-main"
+    main["last_error_reset_at"] = (now - 3600) * 1000
+    reserve = dict(main)
+    reserve.update(
+        {
+            "id": "cred-reserve",
+            "access_token": "tok-reserve",
+            "priority": 1,
+            "last_error_reset_at": now + 886,
+        }
+    )
+    store["credential_pool"]["openai-codex"].append(reserve)
+    hermes_home = tmp_path / "hermes"
+    _write_auth_store(hermes_home, store)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(auth_mod, "_probe_codex_quota_restored", lambda token, **kw: False)
+    monkeypatch.setattr(auth_codex, "_probe_codex_quota_restored", lambda token, **kw: False)
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "tok-main"
+    assert resolved["source"] == "credential_pool"
+
+
 
 
 # ---------------------------------------------------------------------------

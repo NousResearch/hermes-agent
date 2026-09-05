@@ -6632,7 +6632,7 @@ _LadderRoute = NamedTuple("_LadderRoute", [
     ("resolved_provider", str), ("resolved_model", Optional[str]), ("resolved_base_url", Optional[str]),
     ("resolved_api_key", Optional[str]), ("resolved_api_mode", Optional[str]),
     ("final_model", Optional[str]), ("main_runtime", Optional[Dict[str, Any]]),
-    ("route_info", Optional[Dict[str, str]]),
+    ("route_info", Optional[Dict[str, str]]), ("started_at", float),
 ])
 
 
@@ -6826,6 +6826,8 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     elif fb_client is None:
         fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
             resolved_provider, task, reason=reason, failed_model=_chain_failed_model)
+    if _is_timeout_error(first_err):
+        _log_auxiliary_timeout_fallback(route, fb_client, fb_model, fb_label)
     if fb_client is not None:
         # Second pass: the candidate credential was stale and quarantined — walk the discovery
         # chain once more (unhealthy entries are skipped).
@@ -6849,12 +6851,35 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     return None
 
 
+def _log_auxiliary_timeout_fallback(
+    route: _LadderRoute, fallback_client: Optional[Any], fallback_model: Optional[str], fallback_label: str,
+) -> None:
+    """Emit the one secret-safe timeout diagnostic at the shared fallback seam."""
+    source_endpoint = base_url_hostname(
+        route.base_info or route.resolved_base_url or str(getattr(route.client, "base_url", "") or "")
+    ) or "unknown"
+    if fallback_client is None:
+        fallback = "none"
+    else:
+        destination = _fallback_destination(route.task, fallback_client, fallback_model, fallback_label)
+        fallback = "%s/%s (endpoint=%s)" % (
+            destination.provider or _fallback_provider_from_label(fallback_label) or "unknown",
+            destination.model or "default",
+            base_url_hostname(destination.base_url) or "unknown",
+        )
+    logger.warning(
+        "Auxiliary %s%s: timed out after %.1fs on %s (endpoint=%s); fallback=%s",
+        route.task or "call", route.tag, max(0.0, time.monotonic() - route.started_at),
+        route.resolved_provider or "unknown", source_endpoint, fallback,
+    )
+
+
 def _aux_recovery_ladder(
     first_err: Exception, *, client: Any, kwargs: Dict[str, Any], task: Optional[str],
     async_mode: bool, base_info: str, resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
-    main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]],
+    main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]], started_at: float,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -6863,7 +6888,7 @@ def _aux_recovery_ladder(
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
-        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info)
+        resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info, started_at)
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp
@@ -7057,7 +7082,7 @@ def _ladder_step_call(
 
 def _start_recovery_ladder(
     first_err: Exception, req: _PreparedAuxRequest, retry_kwargs: Dict[str, Any], *,
-    task: Optional[str], async_mode: bool, route_info: Optional[Dict[str, str]],
+    task: Optional[str], async_mode: bool, route_info: Optional[Dict[str, str]], started_at: float,
 ):
     """Build the recovery-ladder generator for a failed primary request."""
     return _aux_recovery_ladder(
@@ -7066,7 +7091,7 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info, started_at=started_at)
 
 
 def _call_llm_impl(
@@ -7090,6 +7115,7 @@ def _call_llm_impl(
         extra_headers=extra_headers, api_mode=api_mode, route_info=route_info,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
+    request_started_at = time.monotonic()
     # Streaming path (MoA aggregator): return the raw SDK stream, skipping validation and
     # the fallback chain (they assume a complete response); the caller owns reassembly/fallback.
     if stream:
@@ -7158,7 +7184,9 @@ def _call_llm_impl(
                 return _retry_same_provider_sync(**kw)
             return _call_fallback_candidate_sync(*args, **kw)
         result = _drive_ladder(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
+            _start_recovery_ladder(
+                first_err, req, retry_kwargs, task=task, async_mode=False,
+                route_info=route_info, started_at=request_started_at),
             _perform)
         if result is _RERAISE_ORIGINAL:
             raise
@@ -7275,6 +7303,7 @@ async def _async_call_llm_impl(
         extra_headers=None, api_mode=None, route_info=route_info,
     )
     client, kwargs, request_provider = req.client, req.kwargs, req.request_provider
+    request_started_at = time.monotonic()
     try:
         # Retry ONCE on the same provider for a transient blip before fallback (see call_llm()).
         # (PR #16587)
@@ -7314,7 +7343,9 @@ async def _async_call_llm_impl(
             fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
         result = await _drive_ladder_async(
-            _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
+            _start_recovery_ladder(
+                first_err, req, retry_kwargs, task=task, async_mode=True,
+                route_info=route_info, started_at=request_started_at),
             _perform)
         if result is _RERAISE_ORIGINAL:
             raise

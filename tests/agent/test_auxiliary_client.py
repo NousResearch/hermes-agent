@@ -3,7 +3,9 @@
 import base64
 import json
 import logging
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -2290,6 +2292,162 @@ class TestTransientTransportRetry:
         )
 
 
+
+
+class TestAuxiliaryTimeoutDiagnostics:
+    """Timeout diagnostics are emitted once at the shared sync/async fallback seam."""
+
+    @staticmethod
+    def _timeout():
+        return TimeoutError("request timed out")
+
+    @staticmethod
+    def _primary():
+        client = MagicMock()
+        client.base_url = "https://user:primary-secret@primary.example/v1?api_key=hidden"
+        client.chat.completions.create.side_effect = TestAuxiliaryTimeoutDiagnostics._timeout()
+        return client
+
+    @staticmethod
+    def _fallback(async_mode=False):
+        client = MagicMock()
+        client.base_url = "https://user:fallback-secret@fallback.example/v1?token=hidden"
+        client.chat.completions.create = (
+            AsyncMock(return_value={"fallback": True}) if async_mode
+            else MagicMock(return_value={"fallback": True})
+        )
+        return client
+
+    def test_sync_timeout_logs_safe_selected_fallback_without_changing_execution(self, caplog):
+        primary, fallback = self._primary(), self._fallback()
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "primary-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "primary-model")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda response, _task, **_kwargs: response),
+            patch("agent.auxiliary_client._try_configured_fallback_chain",
+                  return_value=(fallback, "fallback-model", "fallback_chain[0](backup)")),
+            caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+        ):
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}])
+
+        assert result == {"fallback": True}
+        assert primary.chat.completions.create.call_count == 1
+        assert fallback.chat.completions.create.call_count == 1
+        diagnostics = [record.message for record in caplog.records if "timed out after" in record.message]
+        assert len(diagnostics) == 1
+        diagnostic = diagnostics[0]
+        assert "compression" in diagnostic
+        assert "primary.example" in diagnostic
+        assert "backup/fallback-model" in diagnostic
+        assert "fallback.example" in diagnostic
+        assert "primary-secret" not in diagnostic
+        assert "fallback-secret" not in diagnostic
+        assert "api_key" not in diagnostic
+        assert "token=hidden" not in diagnostic
+
+    @pytest.mark.asyncio
+    async def test_async_timeout_logs_safe_selected_fallback(self, caplog):
+        primary, fallback = self._primary(), self._fallback(async_mode=True)
+        primary.chat.completions.create = AsyncMock(side_effect=self._timeout())
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "primary-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "primary-model")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda response, _task, **_kwargs: response),
+            patch("agent.auxiliary_client._try_configured_fallback_chain",
+                  return_value=(fallback, "fallback-model", "fallback_chain[0](backup)")),
+            patch("agent.auxiliary_client._to_async_client", return_value=(fallback, "fallback-model")),
+            caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+        ):
+            result = await async_call_llm(
+                task="compression", messages=[{"role": "user", "content": "summarize"}])
+
+        assert result == {"fallback": True}
+        diagnostics = [record.message for record in caplog.records if "timed out after" in record.message]
+        assert len(diagnostics) == 1
+        assert "(async)" in diagnostics[0]
+        assert "primary.example" in diagnostics[0]
+        assert "fallback.example" in diagnostics[0]
+
+    def test_timeout_with_no_fallback_logs_none(self, caplog):
+        primary = self._primary()
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "primary-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "primary-model")),
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+            caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+            pytest.raises(TimeoutError),
+        ):
+            call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}])
+
+        diagnostic = next(record.message for record in caplog.records if "timed out after" in record.message)
+        assert "fallback=none" in diagnostic
+
+    def test_real_delayed_http_timeout_reaches_server_and_logs_exhausted_route(self, caplog):
+        from openai import APITimeoutError
+
+        request_seen = threading.Event()
+        release_request = threading.Event()
+
+        class SlowHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                request_seen.set()
+                release_request.wait(timeout=1)
+
+            def log_message(self, _format, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
+        server.daemon_threads = True
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}/v1"
+        try:
+            with (
+                patch("agent.auxiliary_client._transient_retry_count", return_value=0),
+                patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+                patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+                caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+                pytest.raises(APITimeoutError),
+            ):
+                call_llm(
+                    task="title_generation", provider="custom", model="slow-model", base_url=endpoint,
+                    api_key="local-test-key", timeout=0.05,
+                    messages=[{"role": "user", "content": "title this"}],
+                )
+        finally:
+            release_request.set()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=1)
+
+        assert request_seen.is_set(), "the real SDK request must reach the delayed local server"
+        diagnostic = next(record.message for record in caplog.records if "timed out after" in record.message)
+        assert "127.0.0.1" in diagnostic
+        assert "fallback=none" in diagnostic
+        assert "local-test-key" not in diagnostic
+
+    def test_non_timeout_provider_failure_keeps_existing_diagnostics(self, caplog):
+        primary = MagicMock()
+        primary.base_url = "https://primary.example/v1"
+        primary.chat.completions.create.side_effect = ConnectionError("connection refused")
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "primary-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "primary-model")),
+            patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+            patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+            caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+            pytest.raises(ConnectionError),
+        ):
+            call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}])
+
+        assert not any("timed out after" in record.message for record in caplog.records)
 
 
 class TestAuxClientNoSdkRetries:

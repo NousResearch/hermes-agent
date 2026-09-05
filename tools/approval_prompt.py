@@ -274,11 +274,17 @@ def _transport_choice(attempt: dict, *, pattern_key: str, description: str):
     )
 
 
+# "expired" = turn teardown expired the prompt unanswered: cancel, not a user decline.
+_CONSENT_BY_CHOICE = {"once": "accept", "session": "accept", "always": "accept"}
+
+
 def _consent(choice, unresolved: str) -> str:
     """Map an approval choice to an elicitation verdict; *unresolved* is the no-answer outcome."""
-    if choice in ("once", "session", "always"):
-        return "accept"
-    return unresolved if choice in ("timeout", "cancelled") else "decline"
+    if choice == "timeout":
+        return unresolved
+    if choice in ("cancelled", "expired"):
+        return "cancel"
+    return _CONSENT_BY_CHOICE.get(choice, "decline")
 
 
 def request_elicitation_consent(message: str, description: str, *,

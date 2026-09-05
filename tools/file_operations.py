@@ -990,6 +990,43 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
         return ReadResult(content=raw_content, file_size=file_size)
 
+    def read_outline_window(self, path: str, offset: int, budget: int, signature: tuple) -> dict:
+        """Read one byte window in the selected backend, rejecting stale continuations."""
+        path = self._expand_path(path)
+        marker = "outline-" + secrets.token_hex(12) + ":"
+        snippet = (
+            "import os, stat, json, base64\n"
+            "def version(s):\n"
+            "    return (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)\n"
+            "try:\n"
+            f"    fd = os.open({path!r}, os.O_RDONLY | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0))\n"
+            "    with os.fdopen(fd, 'rb') as stream:\n"
+            "        info = os.fstat(stream.fileno())\n"
+            "        if not stat.S_ISREG(info.st_mode):\n"
+            "            raise ValueError('Outline requires a regular file')\n"
+            f"        if {signature!r} and version(info) != {signature!r}:\n"
+            "            raise ValueError('File changed; restart outline without cursor')\n"
+            f"        stream.seek({offset})\n"
+            f"        data = stream.read({budget})\n"
+            "        if version(info) != version(os.fstat(stream.fileno())):\n"
+            "            raise ValueError('File changed while scanning; restart outline')\n"
+            "        value = dict(data=base64.b64encode(data).decode('ascii'), signature=version(info), size=info.st_size)\n"
+            "except (OSError, ValueError) as error:\n"
+            "    value = dict(error=str(error))\n"
+            f"print({marker!r} + json.dumps(value))\n"
+        )
+        execution = self._run_python_snippet(snippet)
+        # Backend transports can merge interpreter startup warnings into stdout.
+        try:
+            value = json.loads(execution.stdout.split(marker, 1)[1].splitlines()[0])
+            if "error" not in value:
+                data = base64.b64decode(value["data"], validate=True)
+                if offset == 0 and self._is_likely_binary_bytes(data[:1000]):
+                    return {"error": describe_binary_file(data[:1000], value["size"])}
+            return value
+        except (IndexError, KeyError, ValueError, binascii.Error):
+            return {"error": "Backend could not return an outline byte window"}
+
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
         """Read binary-safe bytes (as base64) from any shell-backed environment."""
         path = self._expand_path(path)

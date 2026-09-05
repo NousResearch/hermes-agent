@@ -585,6 +585,9 @@ export const zh: Translations = {
       toursDesc: '让 Hermes 带你熟悉应用：调暗界面并逐步高亮每个位置。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
+      requireModifierToOpenLinksTitle: '需 ⌘/Ctrl-点击才能打开聊天链接',
+      requireModifierToOpenLinksDesc:
+        '在 Mac 上用 ⌘-点击、在其他系统用 Ctrl-点击打开聊天中的路径和网址（包括代码片段）。普通点击用于选择文本。焦点在链接上时按 Enter 仍会打开。',
       vibeHeartsTitle: '心情爱心',
       vibeHeartsDesc: '当你说谢谢、爱你、good bot 或发送爱心时飘出的爱心。与上方的消息回应是两回事。',
       embedsTitle: '内嵌预览',

@@ -11,6 +11,7 @@ import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { InlinePathLink, InlineUrlLink } from '@/components/chat/inline-path-link'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -33,6 +34,7 @@ import {
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from '@/lib/media'
+import { classifyCodeSpan, pathFromMarkdownHref } from '@/lib/path-refs'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
@@ -291,6 +293,18 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <SessionRefLink value={sessionRef} />
   }
 
+  // A bare path the agent wrote mid-sentence (`linkifyBarePaths`). Inline,
+  // not a card: the sentence it sits in must still read as a sentence.
+  const barePath = pathFromMarkdownHref(href)
+
+  if (barePath) {
+    return (
+      <InlinePathLink className={className} path={barePath}>
+        {children}
+      </InlinePathLink>
+    )
+  }
+
   const target = href ? normalizeExternalUrl(href) : href
 
   if (!target || !/^https?:\/\//i.test(target)) {
@@ -341,7 +355,13 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
 
   return (
-    <PrettyLink className={cn('wrap-anywhere', className)} fallbackLabel={fallbackLabel} href={target} {...props} />
+    <PrettyLink
+      className={cn('wrap-anywhere', className)}
+      fallbackLabel={fallbackLabel}
+      href={target}
+      {...props}
+      applyInlineOpenPreference
+    />
   )
 }
 
@@ -571,9 +591,41 @@ function MarkdownTextSurface({
         // mirroring the CSS isolate that already keeps it out of the
         // plaintext scan. Fenced code never reaches this override; it goes
         // through the code plugin's CodeCard path.
-        inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
-          <code className={className} dir="ltr" {...props} />
-        ),
+        inlineCode: ({ children, className, ...props }: ComponentProps<'code'>) => {
+          // A code span that IS a path or URL (`` `/tmp/report.md` ``,
+          // `` `http://localhost:8931/` ``) is the agent's favourite way to
+          // hand one over, and was dead text. Keep the code styling — the
+          // agent chose it — but make it a link. Anything else in a code span
+          // (a command, a symbol) stays inert.
+          const spanText = childrenToText(children)
+          const kind = spanText ? classifyCodeSpan(spanText) : null
+
+          if (kind === 'path') {
+            return (
+              <InlinePathLink path={spanText}>
+                <code className={className} dir="ltr" {...props}>
+                  {children}
+                </code>
+              </InlinePathLink>
+            )
+          }
+
+          if (kind === 'url') {
+            return (
+              <InlineUrlLink url={spanText}>
+                <code className={className} dir="ltr" {...props}>
+                  {children}
+                </code>
+              </InlineUrlLink>
+            )
+          }
+
+          return (
+            <code className={className} dir="ltr" {...props}>
+              {children}
+            </code>
+          )
+        },
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
         // Lists and blockquotes have chrome that sits *beside* the text

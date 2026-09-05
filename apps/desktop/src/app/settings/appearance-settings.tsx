@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
+import { $requireModifierToOpenInlineLinks, setRequireModifierToOpenInlineLinks } from '@/store/inline-link-open'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -401,6 +402,7 @@ export function AppearanceSettings() {
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
+  const requireModifierToOpenInlineLinks = useStore($requireModifierToOpenInlineLinks)
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
@@ -806,6 +808,13 @@ export function AppearanceSettings() {
             description={a.composerPopoutDesc}
             label={a.composerPopoutTitle}
             onChange={setComposerPopoutGesturesEnabled}
+          />
+
+          <ToggleRow
+            checked={requireModifierToOpenInlineLinks}
+            description={a.requireModifierToOpenLinksDesc}
+            label={a.requireModifierToOpenLinksTitle}
+            onChange={setRequireModifierToOpenInlineLinks}
           />
 
           <ResumeLastSessionSetting />

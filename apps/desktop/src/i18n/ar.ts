@@ -480,6 +480,9 @@ export const ar = defineLocale({
       toursDesc: 'دع Hermes يرشدك في التطبيق، مع تعتيم الشاشة وإبراز كل خطوة.',
       composerPopoutTitle: 'محرر عائم',
       composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عطّل هذا الخيار لإبقائه مثبتًا في الأسفل.',
+      requireModifierToOpenLinksTitle: 'يتطلب ⌘/Ctrl-نقرة لفتح روابط المحادثة',
+      requireModifierToOpenLinksDesc:
+        '⌘-نقرة على Mac أو Ctrl-نقرة في الأنظمة الأخرى تفتح المسارات والعناوين في المحادثة بما في ذلك رقائق الشفرة. النقرة العادية تحدد النص. Enter على رابط مُركَّز ما زال يفتحه.',
       vibeHeartsTitle: 'قلوب المزاج',
       vibeHeartsDesc: 'قلوب عائمة عند قول شكراً أو أحبك أو good bot أو إرسال قلب. منفصلة عن تفاعلات الرسائل أعلاه.',
       embedsTitle: 'التضمينات المضمّنة',

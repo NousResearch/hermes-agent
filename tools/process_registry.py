@@ -1154,6 +1154,16 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
+        # The reader thread has drained the pipe at this point (EOF reached
+        # before _move_to_finished runs). Release the retained Popen/PTY
+        # handles now so finished sessions stop holding OS file descriptors —
+        # otherwise every finished-but-unpruned session keeps its stdout pipe
+        # (or PTY master) FD open until the finished-process TTL elapses, and
+        # heavy background churn can exhaust the gateway's FD limit.
+        # poll()/wait()/read_log() serve output from the buffered
+        # ``output_buffer``, never from the pipe, so closing the handles here
+        # is lossless.
+        self._release_finished_handles(session)
         session._completion_event.set()
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
@@ -1180,6 +1190,31 @@ class ProcessRegistry:
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
         }
+
+    def _release_finished_handles(self, session: ProcessSession):
+        """Close a finished session's OS handles (Popen pipes / PTY master).
+
+        Best-effort and idempotent: the session may have no local Popen (env
+        backends, detached recovery), or the handles may already be closed by
+        the reader loop / kill path. Closing a Popen's stream objects does not
+        kill anything — the child has already exited — it only releases the
+        parent's pipe FDs, which is exactly the retained-resource leak.
+        """
+        proc = getattr(session, "process", None)
+        if proc is not None:
+            for stream_name in ("stdout", "stderr", "stdin"):
+                stream = getattr(proc, stream_name, None)
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+        pty = getattr(session, "_pty", None)
+        if pty is not None:
+            try:
+                pty.close()
+            except Exception:
+                pass
 
     # ----- Query Methods -----
 

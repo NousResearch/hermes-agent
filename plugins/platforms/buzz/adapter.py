@@ -1552,10 +1552,19 @@ class BuzzAdapter(BasePlatformAdapter):
             return None
         import httpx
         try:
+            headers = {"Accept-Encoding": "identity", "User-Agent": "OpenAI File Downloader, XaiImageApiFetch/1.0"}
+            media_path = re.fullmatch(r"/media/([0-9a-f]{64})(?:\.[a-z0-9]{1,8}|\.thumb\.jpg)?", parsed_url.path)
+            # Extra attachment hosts are public sources, never recipients of relay credentials.
+            if origin == _attachment_origin(self.relay_url) and media_path:
+                headers["Authorization"] = _nostr_auth.build_blossom_get_auth_header(
+                    private_key=self._private_key, sha256=media_path[1],
+                )
+                if self._auth_tag:
+                    headers["x-auth-tag"] = self._auth_tag
             timeout = httpx.Timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT)
             async with (
                 asyncio.timeout(_ATTACHMENT_DOWNLOAD_TIMEOUT),
-                httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers={"Accept-Encoding": "identity"}) as client,
+                httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers=headers) as client,
                 client.stream("GET", url) as response,
             ):
                 if response.status_code != 200:

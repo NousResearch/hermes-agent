@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -163,6 +164,76 @@ class TestStreamResponseFormat:
 
 
 @pytest.mark.integration
+class TestNonblockingTaskEndToEnd:
+    def test_acknowledgement_progress_and_final_result(self, monkeypatch):
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.a2a.adapter import A2AAdapter
+
+        port = _free_port()
+        monkeypatch.setenv("A2A_PORT", str(port))
+        adapter = A2AAdapter(PlatformConfig(enabled=True))
+        base = f"http://127.0.0.1:{port}"
+        allow_finish = threading.Event()
+
+        async def fake_handle_message(event):
+            await adapter.send(event.source.chat_id, "reviewing inputs", metadata={})
+            await asyncio.to_thread(allow_finish.wait, 2)
+            await adapter.send(
+                event.source.chat_id,
+                "review complete",
+                metadata={"notify": True},
+            )
+
+        adapter.handle_message = fake_handle_message  # type: ignore
+        adapter._message_handler = object()  # type: ignore[assignment]
+
+        async def run():
+            assert await adapter.connect() is True
+            body = _send_body("long review", method="SendMessage")
+            body["params"]["configuration"] = {"returnImmediately": True}
+            acknowledgement = await asyncio.to_thread(_post_json, base + "/", body)
+            task = protocol.unwrap_send_message_response(acknowledgement["result"])
+            assert task["status"]["state"] == protocol.STATE_WORKING
+            task_id = task["id"]
+
+            saw_progress = False
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                response = await asyncio.to_thread(
+                    _post_json,
+                    base + "/",
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "poll",
+                        "method": "GetTask",
+                        "params": {"id": task_id},
+                    },
+                )
+                current = response["result"]
+                state = current["status"]["state"]
+                if state == protocol.STATE_WORKING:
+                    progress = protocol.extract_text(current["status"].get("message", {}))
+                    saw_progress = saw_progress or progress == "reviewing inputs"
+                    if saw_progress:
+                        allow_finish.set()
+                if state == protocol.STATE_COMPLETED:
+                    assert protocol.extract_text(current["artifacts"][0]) == "review complete"
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                raise AssertionError("non-blocking A2A task did not complete")
+
+            assert saw_progress is True
+            allow_finish.set()
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+
+@pytest.mark.integration
 class TestStreamingEndToEnd:
     def test_message_stream_v1_events(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
@@ -200,7 +271,7 @@ class TestStreamingEndToEnd:
 
         asyncio.run(run())
 
-    def test_tasks_subscribe_replays_terminal_state(self, monkeypatch):
+    def test_tasks_subscribe_rejects_terminal_state(self, monkeypatch):
         monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
         monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
         adapter, base = _make_live_adapter(monkeypatch)
@@ -210,17 +281,11 @@ class TestStreamingEndToEnd:
             resp = await asyncio.to_thread(_post_json, base + "/", _send_body("hello"))
             task = resp["result"]
 
-            payloads, events = await asyncio.to_thread(_post_sse, base + "/", {
+            response = await asyncio.to_thread(_post_json, base + "/", {
                 "jsonrpc": "2.0", "id": "2", "method": "tasks/subscribe",
                 "params": {"taskId": task["id"]},
             })
-            states = [p["statusUpdate"]["status"]["state"]
-                      for p in payloads if "statusUpdate" in p]
-            assert "TASK_STATE_COMPLETED" in states
-            artifacts = [p for p in payloads if "artifactUpdate" in p]
-            assert artifacts and "ECHO:" in protocol.extract_text(
-                artifacts[0]["artifactUpdate"]["artifact"])
-            assert events == []  # v1.0: stream closure is the terminal signal, no event frame
+            assert response["error"]["code"] == protocol.ERR_UNSUPPORTED_OPERATION
             await adapter.disconnect()
 
         asyncio.run(run())

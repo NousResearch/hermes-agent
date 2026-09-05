@@ -401,6 +401,14 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
         cat.pairs.append([k, _clip(str(info.get("description", "Skill")))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
+        # Skill commands must enter `canon` so the TUI exact-match resolver can
+        # find them; otherwise a built-in whose name is a prefix of a skill name
+        # (e.g. built-in `/logs` shadowing a skill named `log`) wins resolution
+        # and the skill is unreachable via its bare slash name (#96972). Guard so
+        # an exact name collision with a built-in keeps the built-in canonical
+        # (same policy as plugin / TUI-extra commands).
+        if k.lower() not in cat.canon:
+            cat.canon[k.lower()] = k
 
 
 @_rpc("commands.catalog", 5020)

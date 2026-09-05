@@ -11276,6 +11276,93 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
     assert resp["result"]["skill_count"] == len(skills)
 
 
+def test_commands_catalog_puts_skill_commands_in_canon_exact_match_map(monkeypatch):
+    """A skill whose name is a prefix of a built-in/TUI command gets its OWN
+    canon entry, so the TUI exact-match resolver can find it instead of the
+    built-in shadowing it (e.g. skill `log` vs built-in `/logs`). #96972."""
+    monkeypatch.setattr(
+        server,
+        "_skill_usage_lookup",
+        lambda: (lambda name: 0, lambda name: "local"),
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.scan_skill_commands",
+        lambda: {
+            "/log": {"name": "log", "description": "Append a log line"},
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    canon = resp["result"]["canon"]
+    # The built-in `/logs` (TUI extra) is still present and canonical.
+    assert canon["/logs"] == "/logs"
+    # The skill is now exact-matchable in canon, not merely in the display list.
+    assert canon["/log"] == "/log"
+    # And it is advertised + ranked as before.
+    assert "/log" in dict(resp["result"]["pairs"])
+    assert "/log" in resp["result"]["skills"]
+
+
+def test_commands_catalog_skill_canon_does_not_clobber_builtin(monkeypatch):
+    """Dedup-guard: a skill whose slash name collides exactly with a built-in
+    (or built-in alias) never overwrites the built-in's canon entry — the
+    built-in stays canonical, the skill is still advertised. #96972."""
+    monkeypatch.setattr(
+        server,
+        "_skill_usage_lookup",
+        lambda: (lambda name: 0, lambda name: "local"),
+    )
+    # `/q` is an alias of the built-in `/queue` (canon -> /queue).
+    monkeypatch.setattr(
+        "agent.skill_commands.scan_skill_commands",
+        lambda: {
+            "/q": {"name": "q", "description": "Quick queue"},
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    canon = resp["result"]["canon"]
+    # Built-in alias resolution is preserved, not clobbered to the skill.
+    assert canon["/q"] == "/queue"
+    # The skill is still advertised/ranked (it just cannot win exact-match).
+    assert "/q" in dict(resp["result"]["pairs"])
+    assert "/q" in resp["result"]["skills"]
+
+
+def test_commands_catalog_skill_canon_coexists_with_registry_builtin(monkeypatch):
+    """A skill whose name is a prefix of a *registry* built-in (not just a TUI
+    extra) also gets its own canon entry without removing the built-in — e.g.
+    a skill `pro` vs the built-in `/profile`. #96972."""
+    monkeypatch.setattr(
+        server,
+        "_skill_usage_lookup",
+        lambda: (lambda name: 0, lambda name: "local"),
+    )
+    monkeypatch.setattr(
+        "agent.skill_commands.scan_skill_commands",
+        lambda: {
+            "/pro": {"name": "pro", "description": "Promote to profile"},
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    canon = resp["result"]["canon"]
+    # Built-in /profile is untouched and still resolves.
+    assert canon["/profile"] == "/profile"
+    # The skill `pro` is now independently exact-matchable.
+    assert canon["/pro"] == "/pro"
+    assert "/pro" in dict(resp["result"]["pairs"])
+
+
 def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
     """A broken/absent .usage.json degrades to no ranking, never a broken menu."""
     monkeypatch.setattr(

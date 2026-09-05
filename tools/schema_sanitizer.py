@@ -213,7 +213,11 @@ def collapse_const_unions(schema: Any) -> Any:
 
 _BARE_TYPE_NAMES = frozenset({"object", "string", "number", "integer", "boolean", "array", "null"})
 # Values that are NOT schemas (recursing would treat a required name like "path" as a bare schema).
-_NON_SCHEMA_LIST_KEYS = frozenset({"required", "enum", "examples", "dependentRequired"})
+# ``default``/``const`` hold a single literal instance value of any JSON type, so a container-valued
+# ``default`` of ["read", "write"] would otherwise recurse and come back as [{"type": "object"}, ...].
+_NON_SCHEMA_LIST_KEYS = frozenset(
+    {"required", "enum", "examples", "dependentRequired", "default", "const"}
+)
 
 
 def _normalize_type_array(value: list, out: dict) -> None:

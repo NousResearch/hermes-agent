@@ -668,7 +668,9 @@ anchors the artifact — not the manifest's `name`, `version:` or
 
 `hermes plugins update` runs a **staged transaction**: the remote is fetched
 into a private quarantine tree (`~/.hermes/.plugin-updates/`) and the live
-checkout is never modified before authorization.
+checkout is never modified before authorization. The staged candidate is a
+fresh checkout of the remote — local mutable state (untracked files,
+`*.example`-derived configs) never rides into the artifact snapshot.
 
 - **Already up to date** (remote current, live tree verified equal to the
   recorded consent) → no prompt, nothing to review.
@@ -679,7 +681,17 @@ checkout is never modified before authorization.
   with `y`; non-interactive sessions require `--accept-update`. Decline or
   interrupt leaves the live tree untouched at the last consented revision — the
   candidate is discarded, never adopted. Only an accepted candidate is promoted
-  into the live location atomically (rollback on failure).
+  into the live location atomically (rollback on failure) under a per-plugin
+  process-safe commit lock, so two accepts of different candidates staged from
+  the same revision cannot both land.
+- **Scan before promotion** — the plugin security scan runs on the exact staged
+  candidate before the commit decision: a `dangerous` verdict refuses the update
+  (CLI and Dashboard alike — there is no promote-without-scan path), while
+  `caution` findings are shown and the accepted update proceeds. On accept,
+  `*.example`-derived untracked files (e.g. a `config.yaml` copied from
+  `config.yaml.example`) are replayed from the live tree with their exact
+  current bytes; a file deleted from untracked state after the review was staged
+  is not resurrected.
 - **Stable-version tripwire** — if code changed while the declared `version:`
   did not, a loud “possible unauthorized update (code changed under a stable
   version)” warning is printed on top of the review. This is the exact signature
@@ -693,7 +705,10 @@ checkout is never modified before authorization.
 - **Dashboard** — the Dashboard update button rides the same transaction: it
   stages and surfaces the review (`review_required` + changed files + candidate
   identity), and promotion happens only when you accept that exact reviewed
-  candidate (same review-token path as the CLI).
+  candidate (same review-token path as the CLI). Capability re-consent and the
+  pre-promotion scan settle through the same surface-neutral policy — the
+  Dashboard returns the same outcome for the same candidate (no
+  promote-and-return-success bypass).
 
 Capability re-consent (declared `capabilities:` grew/changed) is orthogonal and
 still fires as before. Pinned (`--ref <SHA>`) installs still refuse `update`

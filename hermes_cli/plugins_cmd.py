@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import json
 import logging
 import os
@@ -13,15 +12,24 @@ import subprocess
 import sys
 import tempfile
 import urllib.parse
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli.plugin_treehash import (
-    diff_manifest_hook_declarations,
-    diff_registration_inventories,
-    git_tree_id,
-    tree_sha256,
+# The staged plugin-update security transaction (artifact identity / staging /
+# activation / settlement / post-accept policy) lives in plugin_update_txn; this
+# facade binds its API at module level so ``plugins_cmd.<name>`` references and
+# monkeypatch seams keep working (leaf-sibling rule: plugin_update_txn never
+# imports this module at module level).
+from hermes_cli.plugin_update_txn import (
+    PluginConsentDrift,
+    _commit_staged_plugin_update,
+    _consent_record,
+    _decline_staged_update,
+    _plugin_artifact_identity,
+    _plugin_update_root,
+    _review_live_drift,
+    _run_plugin_update_diff_gate,
+    _stage_plugin_update,
 )
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -455,93 +463,10 @@ def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
 
 
 # ── Artifact (content) consent records ──────────────────────────────────────
-# ``consent`` binds the plugin's trust anchor to its *artifact identity*, not to
-# its declared identity. For git checkouts the identity is the canonical git
-# tree id (``HEAD^{tree}``: bytes + mode + path + type — see plugin_treehash).
-# Non-git/manual trees fall back to the noise-excluded whole-tree sha256.
-# Written at install/reinstall and at every successful update consent, so a
-# baseline always exists. Legacy records without a consent key are treated as
-# "no baseline" by the update gate (one re-consent).
-
-_CONSENT_SCOPES = ("install", "update", "reinstall")
-_ARTIFACT_KIND_GIT_TREE = "git_tree"
-_ARTIFACT_KIND_SHA256 = "sha256"
-
-
-def _granted_at() -> str:
-    """ISO-8601 UTC timestamp for a consent record."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def _consent_record(artifact_kind: str, artifact_id: str, revision: Optional[str], *, scope: str) -> dict:
-    """One artifact-consent record; *revision* is the git SHA or 'manual'."""
-    if scope not in _CONSENT_SCOPES:
-        raise ValueError(f"consent scope must be one of {_CONSENT_SCOPES}, got {scope!r}")
-    if artifact_kind not in (_ARTIFACT_KIND_GIT_TREE, _ARTIFACT_KIND_SHA256):
-        raise ValueError(f"artifact identity kind must be git_tree or sha256, got {artifact_kind!r}")
-    return {
-        "identity": artifact_kind,
-        "artifact_id": artifact_id,
-        "revision": revision or "manual",
-        "granted_at": _granted_at(),
-        "scope": scope,
-    }
-
-
-def _plugin_artifact_identity(target: Path, *, is_git: bool, git_exe: Optional[str]) -> tuple[str, str]:
-    """``(kind, id)`` artifact identity of an installed plugin tree.
-
-    Git checkouts use the canonical git tree id (``HEAD^{tree}``) — tamper
-    evident over every tracked entry's bytes + mode + path + type. When git is
-    unavailable (or the tree is not a usable checkout) the identity falls back
-    to the noise-excluded whole-tree sha256 — the identity for non-git/manual
-    trees, where there is no index separating artifact from noise.
-    """
-    if is_git:
-        tree_id = git_tree_id(target, git_exe)
-        if tree_id:
-            return (_ARTIFACT_KIND_GIT_TREE, tree_id)
-    return (_ARTIFACT_KIND_SHA256, tree_sha256(target))
-
-
-def _consent_artifact_matches(target: Path, consent: dict, *, git_exe: Optional[str]) -> Optional[bool]:
-    """True when *target*'s live artifact equals the recorded consent artifact.
-
-    ``None`` when *consent* carries no usable artifact (no baseline). The
-    comparison re-derives the identity exactly as the consent write did, so the
-    ``live tree == last consented artifact`` invariant is checked with the same
-    function that recorded it.
-    """
-    artifact_id = consent.get("artifact_id")
-    if not isinstance(artifact_id, str) or not artifact_id:
-        return None
-    if consent.get("identity") == _ARTIFACT_KIND_GIT_TREE:
-        live_id = git_tree_id(target, git_exe)
-        return live_id is not None and live_id == artifact_id.lower()
-    if consent.get("identity") == _ARTIFACT_KIND_SHA256:
-        return tree_sha256(target) == artifact_id
-    return None
-
-
-def _record_accepted_tree_consent(plugin_key: str, artifact_kind: str, artifact_id: str, revision: str, *, scope: str) -> None:
-    """Persist the accepted artifact + revision for *plugin_key* (read-modify-write).
-
-    Called only after a reviewed update was promoted (or a drifted live tree was
-    reviewed in place), so the consent baseline always describes the tree the
-    operator just authorized.
-    """
-    metadata = _read_install_metadata()
-    record = metadata.setdefault(plugin_key, {})
-    record["revision"] = revision
-    record["consent"] = _consent_record(artifact_kind, artifact_id, revision, scope=scope)
-    _write_install_metadata(metadata)
-
-
-def _consent_from_record(record: dict) -> dict:
-    """The ``consent`` sub-record of an install-metadata record, or {}."""
-    consent = record.get("consent")
-    return consent if isinstance(consent, dict) else {}
-
+# Moved to hermes_cli.plugin_update_txn.py (the single update owner). The
+# consent/identity helpers are imported at module level below; install still
+# records the baseline through _consent_record/_plugin_artifact_identity at
+# tree-swap time, and the update gate compares against it.
 
 def _normalize_exact_revision(ref: str) -> str:
     """Lowercase a full 40-hex commit SHA; anything else is a PluginOperationError."""
@@ -878,438 +803,20 @@ def cmd_install(
     console.print()
 
 
-# ── Update staged transaction (G1, reworked per review) ──────────────────────
-# ``hermes plugins update`` must never mutate the enabled live checkout before
-# authorization. The update is staged in a private quarantine copy: the remote
-# is fetched there, the review is bound to (plugin key, old revision, candidate
-# revision, candidate artifact identity), and the candidate is promoted into the
-# live location ONLY after an explicit token-bound accept (TTY ``y`` /
-# ``--accept-update`` / Dashboard review-token POST). Decline, interrupt, or a
-# non-TTY run without the flag leaves the live tree untouched at the last
-# consented revision. CLI and Dashboard ride this ONE carrier; the staged
-# transaction shape is adapted from #37977 (coygeek).
-#
-# The live tree is verified against the recorded consent on EVERY code path —
-# including the no-op ("already up to date") path — so the invariant
-# ``live executable tree == last consented artifact`` cannot be laundered by a
-# stale remote, a crash between stage and promote, or an out-of-band edit.
-
-_TD_WARNING = "possible unauthorized update (code changed under a stable version)"
-
-
-class PluginConsentDrift(PluginOperationError):
-    """The live tree no longer matches the recorded consent artifact.
-
-    Raised by the stage step before anything is fetched: the update cannot be
-    reviewed against a baseline the live tree does not actually sit on. The
-    caller reviews the drifted live state itself (re-consent or fail closed).
-    ``dirty`` distinguishes uncommitted tracked edits (the operator's own local
-    changes — abort without disabling so they are never destroyed) from a clean
-    content/revision drift (out-of-band commit or crashed promote — review).
-    """
-
-    def __init__(self, message: str, *, consent: dict, old_record: dict, git_exe: Optional[str], dirty: bool = False):
-        super().__init__(message)
-        self.consent = consent
-        self.old_record = old_record
-        self.git_exe = git_exe
-        self.dirty = dirty
-
-
-def _plugin_update_root() -> Path:
-    """Private quarantine root for staged plugin updates (never the live tree).
-
-    Lives under HERMES_HOME so it is profile-local and on the same filesystem as
-    the plugin dir (atomic ``os.replace`` promotion). chmod 700: staged
-    candidates can hold an unreviewed upstream tree.
-    """
-    root = get_hermes_home() / ".plugin-updates"
-    root.mkdir(parents=True, exist_ok=True)
-    try:
-        root.chmod(0o700)
-    except OSError:
-        pass
-    return root
-
-
-def _stage_plugin_update(name: str, target: Path) -> dict:
-    """Fetch an update into a private quarantine tree; bind review to the candidate.
-
-    The live tree is never touched. Returns an ``unchanged`` payload when the
-    remote is current (only after the live tree was verified to equal the
-    recorded consent — the no-op path cannot launder), or a ``review_required``
-    payload carrying the review token bound to ``(key, old revision, candidate
-    revision, candidate artifact identity)`` plus the diff/registration review
-    content. Raises :class:`PluginOperationError` on refusals and
-    :class:`PluginConsentDrift` when the live tree drifted from its consent.
-    """
-    from rich.markup import escape
-
-    git_exe = _resolve_git_executable()
-    if not git_exe:
-        raise PluginOperationError("git is not installed or not in PATH.")
-    if not (target / ".git").is_dir():
-        raise PluginOperationError(
-            f"Plugin '{name}' was not installed from git (no .git directory). Cannot update.")
-
-    metadata = _read_install_metadata()
-    old_record = dict(metadata.get(name) or {})
-    if old_record.get("pinned") is True:
-        raise PluginOperationError(
-            f"Plugin '{name}' is pinned to {old_record.get('revision')}. To move it, run "
-            f"`hermes plugins install {escape(str(old_record.get('source', '<source>')))} "
-            "--force --ref <40-character commit SHA>`.")
-
-    consent = _consent_from_record(old_record)
-    consent_artifact = consent.get("artifact_id")
-    if isinstance(consent_artifact, str) and consent_artifact:
-        # No-op / stale-remote safety: refuse to stage from a live tree that is
-        # not the consented artifact (out-of-band commit/edit, crashed prior
-        # promote). The caller reviews that drifted state instead.
-        if _consent_artifact_matches(target, consent, git_exe=git_exe) is not True:
-            raise PluginConsentDrift(
-                f"Plugin '{name}' live tree no longer matches its recorded consent "
-                f"(consented {consent_artifact[:12]}…). Review the drifted state before "
-                "updating again — run the update in an interactive session or pass "
-                "--accept-update after reviewing the diff below.",
-                consent=consent, old_record=old_record, git_exe=git_exe)
-        if _plugin_checkout_tracked_dirty(target, git_exe):
-            raise PluginConsentDrift(
-                f"Plugin '{name}' has uncommitted tracked changes; the live executable "
-                "tree differs from the consented artifact. Commit or stash the local "
-                "changes, or accept re-consenting the current live tree with "
-                "`hermes plugins update <name>` in an interactive session.",
-                consent=consent, old_record=old_record, git_exe=git_exe, dirty=True)
-    elif _plugin_checkout_tracked_dirty(target, git_exe):
-        raise PluginConsentDrift(
-            f"Plugin '{name}' has uncommitted tracked changes and no consent baseline; "
-            "review the tree before updating it.",
-            consent=consent, old_record=old_record, git_exe=git_exe, dirty=True)
-
-    old_revision = str(old_record.get("revision") or "").strip().lower() or None
-    if old_revision is None:
-        old_revision = _git_head_revision(target, git_exe)  # legacy record without revision
-    old_manifest = _read_manifest(target)
-    # The live artifact the review is based on. With a consent baseline the
-    # drift checks above already proved live == consent; legacy records (no
-    # baseline) are anchored to the live tree as it is. Recorded so activation
-    # can revalidate that the live tree did not change between review and
-    # promote.
-    live_kind, live_artifact = _plugin_artifact_identity(target, is_git=True, git_exe=git_exe)
-
-    root = _plugin_update_root()
-    work_dir = Path(tempfile.mkdtemp(prefix="stage-", dir=str(root)))
-    candidate = work_dir / "candidate"
-    try:
-        shutil.copytree(target, candidate, symlinks=True)
-        ok, output = _git_pull_plugin_dir(candidate)
-        if not ok:
-            raise PluginOperationError(output)
-        new_revision = _git_head_revision(candidate, git_exe)
-        if new_revision == old_revision:
-            shutil.rmtree(work_dir, ignore_errors=True)
-            return {
-                "ok": True,
-                "name": name,
-                "output": output,
-                "unchanged": True,
-                "review_required": False,
-            }
-
-        new_manifest = _read_manifest(candidate)
-        declared_name = str(new_manifest.get("name") or name)
-        if declared_name != str(old_manifest.get("name") or name):
-            shutil.rmtree(work_dir, ignore_errors=True)
-            raise PluginOperationError(
-                f"Plugin manifest name changed from '{old_manifest.get('name') or name}' "
-                f"to '{declared_name}'; refusing the staged update.")
-        _check_manifest_version(new_manifest, declared_name)
-
-        candidate_kind, candidate_artifact = _plugin_artifact_identity(
-            candidate, is_git=True, git_exe=git_exe)
-        changed_lines = _update_changed_file_lines(candidate, git_exe, old_revision)
-        version_unchanged = ((old_manifest.get("version") or None)
-                             == (new_manifest.get("version") or None))
-        td_signature = version_unchanged and _update_touched_code(candidate, git_exe, old_revision)
-        reg_lines = _update_registration_review_lines(
-            candidate, git_exe, old_revision, old_manifest, new_manifest)
-
-        # Review token bound to (plugin key, old revision, candidate revision,
-        # candidate artifact identity). ``name`` is the metadata/directory key
-        # (== target.name for CLI; dashboard passes the same discovered key).
-        token = hashlib.sha256(
-            f"{name}\0{old_revision}\0{new_revision}\0{candidate_artifact}".encode("utf-8")
-        ).hexdigest()
-        staged_path = root / token
-        metadata_path = root / f"{token}.json"
-        if staged_path.exists():
-            shutil.rmtree(staged_path, ignore_errors=True)
-        candidate.rename(staged_path)
-        shutil.rmtree(work_dir, ignore_errors=True)
-        stage_meta = {
-            "name": name,
-            "target": str(target.resolve()),
-            "old_revision": old_revision,
-            "old_revision_artifact": live_artifact,
-            "old_artifact_kind": live_kind,
-            "candidate_revision": new_revision,
-            "candidate_artifact": candidate_artifact,
-            "candidate_artifact_kind": candidate_kind,
-            "old_manifest": old_manifest,
-            "new_manifest": new_manifest,
-            "changed_files": changed_lines,
-            "td_signature": td_signature,
-            "review_lines": reg_lines,
-        }
-        metadata_path.write_text(json.dumps(stage_meta, indent=2, sort_keys=True), encoding="utf-8")
-        return {
-            "ok": True,
-            "name": name,
-            "output": output,
-            "unchanged": False,
-            "review_required": True,
-            "review_token": token,
-            "old_revision": old_revision,
-            "candidate_revision": new_revision,
-            "candidate_artifact": candidate_artifact,
-            "candidate_artifact_kind": candidate_kind,
-            "old_artifact_id": live_artifact,
-            "old_artifact_kind": live_kind,
-            "changed_files": changed_lines,
-            "td_signature": td_signature,
-            "review_lines": reg_lines,
-            "old_manifest": old_manifest,
-            "new_manifest": new_manifest,
-        }
-    except Exception:
-        if work_dir.exists():
-            shutil.rmtree(work_dir, ignore_errors=True)
-        raise
-
-
-def _read_stage_metadata(token: str) -> dict:
-    """Metadata sidecar of a staged update; raises when the stage is gone."""
-    root = _plugin_update_root()
-    staged_path = root / token
-    metadata_path = root / f"{token}.json"
-    if not staged_path.is_dir() or not metadata_path.is_file():
-        raise PluginOperationError(
-            "The staged plugin update no longer exists (it may have been superseded "
-            "by a newer stage); review the update again.")
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    if not isinstance(metadata, dict):
-        raise PluginOperationError("The staged plugin update record is corrupt.")
-    return metadata
-
-
-def _discard_staged_update(token: str) -> None:
-    """Remove a staged candidate + its metadata (decline / superseded). Never raises."""
-    root = _plugin_update_root()
-    shutil.rmtree(root / token, ignore_errors=True)
-    (root / f"{token}.json").unlink(missing_ok=True)
-
-
-def _activate_staged_plugin_update(name: str, target: Path, review_token: str) -> dict:
-    """Atomically promote a reviewed staged update into the live plugin path.
-
-    Revalidates the live tree (still the old revision + old artifact, clean) and
-    the staged tree (still the candidate revision + candidate artifact) BEFORE
-    the swap — the review decision is bound to the exact artifacts it was made
-    against. Promotion renames live → backup and staged → live on the same
-    filesystem; any failure (including a metadata-write failure) rolls the tree
-    and the metadata sidecar back. The consent baseline for the new artifact is
-    recorded in the same atomic step as the promote.
-    """
-    if len(review_token) != 64 or any(ch not in "0123456789abcdef" for ch in review_token):
-        raise PluginOperationError("Invalid plugin update review token.")
-    git_exe = _resolve_git_executable()
-    if not git_exe:
-        raise PluginOperationError("git is not installed or not in PATH.")
-    root = _plugin_update_root()
-    staged_path = root / review_token
-    stage_meta = _read_stage_metadata(review_token)
-    if stage_meta.get("name") != name or stage_meta.get("target") != str(target.resolve()):
-        raise PluginOperationError("The staged plugin update does not match this plugin.")
-
-    # Revalidate live: still exactly what the review was based on.
-    if _git_head_revision(target, git_exe) != stage_meta.get("old_revision"):
-        raise PluginOperationError(
-            "The live plugin revision changed after review; review a fresh update.")
-    old_kind, old_artifact = _plugin_artifact_identity(target, is_git=True, git_exe=git_exe)
-    if old_artifact != stage_meta.get("old_revision_artifact"):
-        raise PluginOperationError(
-            "The live plugin content changed after review; review a fresh update.")
-    if _plugin_checkout_tracked_dirty(target, git_exe):
-        raise PluginOperationError(
-            "The live plugin has uncommitted tracked changes after review; review a fresh update.")
-
-    # Revalidate staged: still exactly the reviewed candidate.
-    if _git_head_revision(staged_path, git_exe) != stage_meta.get("candidate_revision"):
-        raise PluginOperationError("The staged plugin revision changed after review.")
-    cand_kind, cand_artifact = _plugin_artifact_identity(staged_path, is_git=True, git_exe=git_exe)
-    if (cand_artifact != stage_meta.get("candidate_artifact")
-            or cand_kind != stage_meta.get("candidate_artifact_kind")):
-        raise PluginOperationError("The staged plugin content changed after review.")
-
-    # The review bound to (key, old rev, candidate rev, candidate artifact); the
-    # live old artifact is recorded at stage time and re-checked above.
-    old_metadata = _read_install_metadata()
-    old_record = dict(old_metadata.get(name) or {})
-    new_metadata = {
-        **old_metadata,
-        name: {
-            **old_record,
-            "revision": stage_meta["candidate_revision"],
-            "consent": _consent_record(
-                cand_kind, cand_artifact, stage_meta["candidate_revision"], scope="update"),
-        },
-    }
-
-    backup = root / f"backup-{review_token}"
-    if backup.exists():
-        shutil.rmtree(backup, ignore_errors=True)
-    replaced_existing = target.exists()
-    try:
-        if replaced_existing:
-            os.replace(target, backup)
-        os.replace(staged_path, target)
-        _write_install_metadata(new_metadata)
-    except Exception:
-        if target.exists():
-            shutil.rmtree(target, ignore_errors=True)
-        if replaced_existing and backup.exists():
-            os.replace(backup, target)
-        if old_record:
-            _write_install_metadata(old_metadata)
-        raise
-    finally:
-        _discard_staged_update(review_token)
-        if backup.exists():
-            shutil.rmtree(backup, ignore_errors=True)
-
-    return {
-        "ok": True,
-        "name": name,
-        "accepted": True,
-        "candidate_revision": stage_meta["candidate_revision"],
-        "candidate_artifact": cand_artifact,
-        "output": "",
-    }
-
-
-def _review_live_drift(console, target: Path, key: str, name: str, drift: PluginConsentDrift, *, accept_update: bool) -> None:
-    """Review a live tree that drifted from its recorded consent (out-of-band edit/commit).
-
-    The staged transaction cannot review an update against a baseline the live
-    tree no longer sits on, so the drifted live state itself is reviewed: the
-    diff since the consented revision is shown and an explicit accept re-consents
-    the tree as it is. Decline restores the consented revision when the checkout
-    is clean; otherwise the plugin is disabled (fail closed) — the unreviewed
-    live state is never left silently active under a stale consent.
-    """
-    git_exe = drift.git_exe
-    consent = drift.consent
-    old_revision = str(consent.get("revision") or "").strip().lower() or None
-    old_record = drift.old_record
-    pre_drift_dirty = _plugin_checkout_tracked_dirty(target, git_exe) if git_exe else True
-    live_manifest = _read_manifest(target)
-    live_kind, live_artifact = _plugin_artifact_identity(target, is_git=True, git_exe=git_exe)
-
-    # Best-effort tripwire against the manifest at the consented revision.
-    old_manifest: dict = {}
-    version_unchanged = False
-    if git_exe and old_revision:
-        rel = _native_manifest_file(target)
-        rel = rel.relative_to(target).as_posix() if rel else ("plugin.json" if (target / "plugin.json").exists() else None)
-        old_text = _update_blob_at(target, git_exe, old_revision, rel) if rel else None
-        if old_text is not None:
-            try:
-                old_manifest = _parse_yaml_text(old_text)
-            except Exception:
-                old_manifest = {}
-            version_unchanged = ((old_manifest.get("version") or None)
-                                 == (live_manifest.get("version") or None))
-
-    td_signature = version_unchanged and _update_touched_code(target, git_exe, old_revision)
-    accepted = _run_plugin_update_diff_gate(
-        console, target, name, old_revision,
-        str(consent.get("artifact_id") or "") or None,
-        live_artifact, old_manifest or {}, live_manifest,
-        td_signature=td_signature, accept_update=accept_update)
-    if not accepted:
-        _decline_drifted_live(
-            console, target, key, old_record, old_revision, pre_drift_dirty,
-            consent, git_exe)
-        return
-    live_revision = _git_head_revision(target, git_exe) if git_exe else None
-    _record_accepted_tree_consent(key, live_kind, live_artifact, live_revision or "", scope="update")
-    console.print(
-        f"[green]✓[/green] Reviewed the drifted tree of [bold]{key}[/bold] and recorded "
-        f"consent for revision {live_revision or 'HEAD'} — no update was fetched.")
-
-
-def _parse_yaml_text(text: str) -> dict:
-    """``yaml.safe_load`` of manifest text; {} when empty."""
-    import yaml
-    return yaml.safe_load(text) or {}
-
-
-def _decline_drifted_live(
-    console,
-    target: Path,
-    key: str,
-    old_record: dict,
-    old_revision: Optional[str],
-    pre_drift_dirty_tracked: bool,
-    consent: dict,
-    git_exe: Optional[str],
-) -> None:
-    """Fail closed after a declined drift review: restore or disable the live tree."""
-    restored = False
-    if git_exe and old_revision and not pre_drift_dirty_tracked:
-        try:
-            _git_or_raise(
-                git_exe, target, "reset", "--hard", old_revision,
-                failure_prefix=(
-                    f"Could not restore '{target.name}' to the previously "
-                    f"consented revision {old_revision}:\n"))
-            restored = True
-        except PluginOperationError:
-            restored = False
-    if restored:
-        restored = _consent_artifact_matches(target, consent, git_exe=git_exe) is True
-    if restored:
-        console.print(
-            f"[yellow]✗ Update declined.[/yellow] Plugin [bold]{key}[/bold] was restored to "
-            f"the previously consented revision {old_revision} — no changes were adopted.")
-        return
-    _set_plugin_enabled(key, enable=False)
-    console.print(
-        f"[red bold]✗ Update declined and '{key}' could not be restored to its consented "
-        f"tree, so it has been DISABLED (fail closed).[/red bold] "
-        f"[red]Inspect {target} before re-enabling: it holds unreviewed content. "
-        f"Re-run `hermes plugins enable {key}` only after restoring the tree you trust.[/red]")
-
-
-def _decline_staged_update(console, key: str, name: str, token: str, old_revision: Optional[str]) -> None:
-    """Drop a declined staged candidate; the live tree was never touched."""
-    _discard_staged_update(token)
-    console.print(
-        f"[yellow]✗ Update declined.[/yellow] Plugin [bold]{name}[/bold] stays on the "
-        f"previously consented revision {old_revision or 'HEAD'} — no changes were adopted.")
-
-
 def cmd_update(name: str, *, accept_update: bool = False) -> None:
     """Update an installed plugin through the staged candidate-tree transaction.
 
     The remote is fetched into a private quarantine tree; the live checkout is
     never mutated before authorization. Any artifact change (canonical git tree
     id drift — bytes, mode, path, type) is reviewed and requires an explicit
-    accept (TTY ``y`` / ``--accept-update``); the candidate is then promoted
-    atomically with rollback. Decline / interrupt / non-TTY-without-flag leave
-    the live tree at the last consented revision. If the live tree already
-    drifted from its recorded consent, the drifted state is reviewed instead of
-    silently laundered by a no-op update.
+    accept (TTY ``y`` / ``--accept-update``); the candidate is then committed
+    under the per-plugin lock with rollback. The security scan runs on the
+    exact staged candidate BEFORE promotion (dangerous → refused; the live
+    tree stays at the consented revision) and capability re-consent settles
+    through the same surface-neutral policy the Dashboard uses. Decline /
+    interrupt / non-TTY-without-flag leave the live tree at the last consented
+    revision. If the live tree already drifted from its recorded consent, the
+    drifted state is reviewed instead of silently laundered by a no-op update.
     """
     console = _console()
     target = _require_installed_plugin(name, _plugins_dir(), console)
@@ -1361,255 +868,60 @@ def cmd_update(name: str, *, accept_update: bool = False) -> None:
         return
 
     try:
-        activated = _activate_staged_plugin_update(name, target, token)
+        policy = _commit_staged_plugin_update(name, target, token, console=console)
     except PluginOperationError as exc:
         _fail(console, f"[red]Error:[/red] {exc}")
         return  # unreachable (_fail exits); satisfies the flow analyzer
 
-    _rescan_after_update(target, name, console)
-    _post_pull_housekeeping(target, console)
+    if not policy.committed:
+        # Scan-blocked refusal: render the SAME policy outcome the Dashboard
+        # returns — a dangerous candidate is never promoted and the live tree
+        # stays at the last consented revision.
+        console.print()
+        console.print(f"[red bold]✗ Update refused.[/red bold] {policy.reason}")
+        _render_scan_findings(console, policy)
+        console.print(
+            f"[dim]Plugin [bold]{name}[/bold] stays on the previously consented "
+            f"revision {old_revision or 'HEAD'} — no changes were adopted.[/dim]")
+        return
 
-    # Re-consent when the new version declares capabilities the granted set lacks or the
-    # declared set changed; additions stay ungranted until the user says yes (fail closed).
-    # See #64228.
+    # Caution findings are rendered (never blocking): the review-gate acceptance
+    # was the operator's confirmation, exactly as installs treat caution.
+    _render_scan_findings(console, policy)
+
+    # Re-consent when the candidate declares capabilities the granted set lacks;
+    # additions stay ungranted until the user says yes (fail closed). See #64228.
+    # The owner already settled declared-set bookkeeping; only genuinely pending
+    # capabilities reach this interactive tail (Dashboard leaves them pending).
     plugin_id = new_manifest.get("name") or target.name
     declared_caps = _declared_capabilities_from_manifest(new_manifest, plugin_id)
-    if declared_caps:
-        from hermes_cli.plugin_capabilities import declared_set_changed, pending_capabilities
-        if pending_capabilities(plugin_id, declared_caps) or declared_set_changed(plugin_id, declared_caps):
-            _run_capability_consent(console, plugin_id, declared_caps, context="update")
+    if declared_caps and policy.pending_capabilities:
+        _run_capability_consent(console, plugin_id, declared_caps, context="update")
 
     console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] updated.")
-    console.print(f"[dim]Now at revision {activated['candidate_revision']}.[/dim]")
+    console.print(f"[dim]Now at revision {policy.candidate_revision}.[/dim]")
     if staged.get("output"):
         console.print(f"[dim]{staged['output']}[/dim]")
 
 
-def _plugin_checkout_tracked_dirty(target: Path, git_exe: Optional[str]) -> bool:
-    """True when tracked files differ from HEAD (porcelain lines other than ``??``)."""
-    if not git_exe:
-        return True  # cannot tell → treat as dirty (decline disables instead of resetting)
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain", timeout=15)
-    if status.returncode != 0:
-        return True  # cannot tell → treat as dirty (decline disables instead of resetting)
-    return any(line and not line.startswith("??") for line in status.stdout.splitlines())
-
-
-def _git_capture(target: Path, git_exe: Optional[str], *args: str) -> Optional[str]:
-    """stdout of a best-effort git read command inside a plugin checkout, else None."""
-    if not git_exe:
-        return None
-    try:
-        result = _run_plugin_git(git_exe, target, *args, timeout=30)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout
-
-
-def _update_changed_file_lines(target: Path, git_exe: Optional[str], old_rev: Optional[str]) -> Optional[list[str]]:
-    """``git diff --name-status old..HEAD`` lines, or None when unavailable."""
-    if not old_rev:
-        return None
-    out = _git_capture(target, git_exe, "diff", "--name-status", f"{old_rev}..HEAD")
-    if out is None:
-        return None
-    lines = [line.strip() for line in out.splitlines() if line.strip()]
-    return lines or None
-
-
-def _update_diff_stat(target: Path, git_exe: Optional[str], old_rev: Optional[str]) -> Optional[list[str]]:
-    """``git diff --stat old..HEAD`` lines, or None when unavailable."""
-    if not old_rev:
-        return None
-    out = _git_capture(target, git_exe, "diff", "--stat", f"{old_rev}..HEAD")
-    if out is None:
-        return None
-    lines = [line for line in out.splitlines() if line.strip()]
-    return lines or None
-
-
-def _update_log_lines(target: Path, git_exe: Optional[str], old_rev: Optional[str]) -> Optional[list[str]]:
-    """``git log --oneline old..HEAD`` lines, or None when unavailable."""
-    if not old_rev:
-        return None
-    out = _git_capture(target, git_exe, "log", "--oneline", "-n", "20", f"{old_rev}..HEAD")
-    if out is None:
-        return None
-    lines = [line for line in out.splitlines() if line.strip()]
-    return lines or None
-
-
-def _update_blob_at(target: Path, git_exe: Optional[str], rev: Optional[str], relpath: str) -> Optional[str]:
-    """Text of one tracked file at *rev* (``git show rev:path``), else None."""
-    if not rev:
-        return None
-    return _git_capture(target, git_exe, "show", f"{rev}:{relpath}")
-
-
-def _update_touched_code(target: Path, git_exe: Optional[str], old_rev: Optional[str]) -> bool:
-    """True when the pulled diff touches a code file (conservative when unknown)."""
-    from tools.plugin_guard import CODE_FILE_EXTENSIONS
-
-    changed = _update_changed_file_lines(target, git_exe, old_rev)
-    if changed is None:
-        return True  # no previous revision / git failure → assume code changed
-    for line in changed:
-        parts = line.split(None, 1)
-        if len(parts) == 2 and Path(parts[1]).suffix.lower() in CODE_FILE_EXTENSIONS:
-            return True
-    return False
-
-
-def _update_registration_review_lines(
-    target: Path, git_exe: Optional[str], old_rev: Optional[str],
-    old_manifest: dict, new_manifest: dict,
-) -> list[str]:
-    """Review lines for hook/tool/command registration changes in the pull.
-
-    Combines the manifest ``provides_hooks`` / ``hooks:`` declaration diff with a
-    static AST scan (no import) of every changed ``.py`` file between *old_rev*
-    and HEAD. Best-effort: an unavailable previous revision yields only the
-    declarations diff, never an error.
-    """
-    lines: list[str] = []
-    decl_lines = diff_manifest_hook_declarations(old_manifest or {}, new_manifest or {})
-    lines.extend(decl_lines)
-    changed = _update_changed_file_lines(target, git_exe, old_rev)
-    if not changed:
-        return lines
-    old_sources: dict[str, str] = {}
-    new_sources: dict[str, str] = {}
-    for line in changed:
-        parts = line.split(None, 1)
-        if len(parts) != 2 or not parts[1].endswith(".py"):
-            continue
-        rel = parts[1]
-        old_text = _update_blob_at(target, git_exe, old_rev, rel)
-        new_text = _update_blob_at(target, git_exe, "HEAD", rel)
-        if old_text is not None:
-            old_sources[rel] = old_text
-        if new_text is not None:
-            new_sources[rel] = new_text
-    lines.extend(diff_registration_inventories(old_sources, new_sources))
-    return lines
-
-
-def _run_plugin_update_diff_gate(
-    console,
-    target: Path,
-    name: str,
-    old_revision: Optional[str],
-    consent_tree_hash: Optional[str],
-    post_tree_hash: str,
-    old_manifest: dict,
-    new_manifest: dict,
-    *,
-    td_signature: bool,
-    accept_update: bool,
-) -> bool:
-    """Review-and-accept gate for a pulled-but-unconsented plugin tree.
-
-    Prints the update diff (changed files, ``--stat``, commits, hook
-    registrations) and the stable-version tripwire, then requires explicit
-    consent: TTY ``y``, or ``--accept-update`` anywhere. Returns True only when
-    the caller may adopt the new tree and record the consent baseline.
-    """
-    from rich.markup import escape
-
-    console.print()
-    if consent_tree_hash:
-        console.print(
-            f"[yellow]Plugin '{escape(name)}' content changed since the last consent "
-            f"(tree {consent_tree_hash[:12]}… → {post_tree_hash[:12]}…). "
-            f"Review the update before accepting:[/yellow]")
+def _render_scan_findings(console, policy) -> None:
+    """Render a commit policy's scan findings (caution report / refusal report)."""
+    if not policy.scan_findings or policy.scan_verdict is None:
+        return
+    if policy.scan_blocked:
+        console.print("[yellow]⚠ Security scan findings:[/yellow]")
     else:
+        console.print(f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {policy.reason}")
+    for finding in policy.scan_findings:
+        loc = finding.get("file") or ""
+        if finding.get("line"):
+            loc = f"{loc}:{finding['line']}"
         console.print(
-            f"[yellow]Plugin '{escape(name)}' content changed and has no recorded consent "
-            f"baseline (installed before content consent existed). "
-            f"Review the update before accepting:[/yellow]")
-
-    if td_signature:
-        console.print()
-        console.print(f"[red bold]⚠ {_TD_WARNING}[/red bold]")
-        console.print(
-            f"[red]The plugin's code changed but its declared version stayed "
-            f"{old_manifest.get('version')!r}. A code change under a stable version "
-            f"is the exact signature of a trojanized update. Decline unless you "
-            f"expected this update from a source you trust.[/red]")
-
-    git_exe = _resolve_git_executable()
-    changed_lines = _update_changed_file_lines(target, git_exe, old_revision)
-    stat_lines = _update_diff_stat(target, git_exe, old_revision)
-    log_lines = _update_log_lines(target, git_exe, old_revision)
-    if stat_lines:
-        console.print("\n  [bold]Diff stat:[/bold]")
-        for line in stat_lines:
-            console.print(f"    {line}")
-    if changed_lines:
-        console.print("\n  [bold]Changed files:[/bold]")
-        for line in changed_lines:
-            console.print(f"    {line}")
-    if log_lines:
-        console.print("\n  [bold]Commits:[/bold]")
-        for line in log_lines:
-            console.print(f"    {line}")
-    if old_revision is None and changed_lines is None:
-        console.print("\n  [dim](git history is unavailable for this checkout — "
-                      "review the plugin tree above)[/dim]")
-
-    reg_lines = _update_registration_review_lines(
-        target, git_exe, old_revision, old_manifest, new_manifest)
-    if reg_lines:
-        console.print("\n  [bold]Hook / tool / command registrations changed by the update:[/bold]")
-        for line in reg_lines:
-            console.print(f"    {line}")
-    elif old_revision:
-        console.print("\n  [dim]No added or removed hook / tool / command "
-                      "registrations detected in the changed files.[/dim]")
-
-    console.print()
-    if accept_update:
-        console.print("[green]✓[/green] --accept-update given; adopting the reviewed update.")
-        return True
-    if not _is_tty():
-        console.print(
-            "[red]Non-interactive session: update NOT accepted (fail closed).[/red] "
-            "Review the diff above, then re-run with "
-            "`hermes plugins update <name> --accept-update` to adopt it.")
-        return False
-    return _ask_yes("\n  Accept this update and record consent for the new content? [y/N] ", console.input)
-
-
-def _rescan_after_update(target: Path, name: str, console) -> None:
-    """Re-scan after ``git pull``: the tree is already mutated, so a dangerous verdict disables
-    the plugin rather than leaving it active."""
-    if not _scan_on_install_enabled():
-        return
-    from tools.plugin_guard import format_scan_report, scan_plugin, should_allow_plugin_install
-    scan_result = scan_plugin(target, source=name)
-    allowed, reason = should_allow_plugin_install(scan_result)
-    if allowed is True:
-        return
-    console.print()
-    console.print(f"[yellow]⚠ Security scan flagged the updated plugin:[/yellow] {reason}")
-    console.print(format_scan_report(scan_result))
-    if scan_result.verdict == "dangerous":
-        if name in _get_enabled_set() or name not in _get_disabled_set():
-            _set_plugin_enabled(name, enable=False)
-        console.print(
-            f"[red]Plugin '{name}' has been disabled.[/red] Review the "
-            f"findings, then re-enable with `hermes plugins enable {name}` "
-            f"if you trust them.")
-
-
-def _post_pull_housekeeping(target: Path, console) -> None:
-    """After ``git pull``: drop stale ``__pycache__`` and copy any new ``.example`` files."""
-    # Same stale-bytecode class as the main checkout (#6207/#60242): the pull just changed .py files under
-    # this plugin dir, so drop any __pycache__ compiled from the previous revision.
-    _clear_plugin_bytecode(target)
-    _copy_example_files(target, console)
+            f"  [bold]{finding.get('severity') or '?'}[/bold] "
+            f"{finding.get('category') or '?'} {loc} — {finding.get('description') or ''}")
+    console.print(
+        "[dim]Review the findings above. Scanning is configured via "
+        "plugins.scan_on_install in config.yaml.[/dim]")
 
 
 def _remove_plugin_core(target: Path) -> None:
@@ -2565,15 +1877,34 @@ def dashboard_update_user_plugin(name: str, *, review_token: Optional[str] = Non
         return {"ok": False, "error": f"Plugin '{name}' was not found under {_plugins_dir()}."}
     try:
         if review_token:
-            activated = _activate_staged_plugin_update(name, target, review_token)
-            _post_pull_housekeeping(target, _console())
+            policy = _commit_staged_plugin_update(name, target, review_token)
+            if not policy.committed:
+                # One surface-neutral policy outcome: a dangerous candidate is
+                # refused at commit (scan_blocked) — the live tree stays at the
+                # last consented revision and the plugin is NOT promoted.
+                return {
+                    "ok": False,
+                    "name": name,
+                    "accepted": False,
+                    "error": policy.reason,
+                    "scan_blocked": policy.scan_blocked,
+                    "scan_verdict": policy.scan_verdict,
+                    "scan_findings": policy.scan_findings,
+                    "pending_capabilities": policy.pending_capabilities,
+                }
             return {
                 "ok": True,
                 "name": name,
                 "accepted": True,
                 "unchanged": False,
                 "review_required": False,
-                "candidate_revision": activated["candidate_revision"],
+                "candidate_revision": policy.candidate_revision,
+                "candidate_artifact": policy.candidate_artifact,
+                "outcome": policy.outcome,
+                "scan_verdict": policy.scan_verdict,
+                "scan_findings": policy.scan_findings,
+                "pending_capabilities": policy.pending_capabilities,
+                "capabilities_changed": policy.capabilities_changed,
             }
         staged = _stage_plugin_update(name, target)
         return {
@@ -2597,118 +1928,11 @@ def dashboard_update_user_plugin(name: str, *, review_token: Optional[str] = Non
         return {"ok": False, "error": str(exc)}
 
 
-def _clear_plugin_bytecode(target: Path) -> int:
-    """Remove ``__pycache__`` dirs under a just-updated plugin checkout. Plugin dirs sit outside
-    the repo, so the launch-time bytecode sweep never covers them and stale bytecode after a pull
-    can ImportError in the next process. Never raises.
-
-    See #60242, #6207.
-    """
-    removed = 0
-    try:
-        for cache_dir in target.rglob("__pycache__"):
-            if cache_dir.is_dir():
-                shutil.rmtree(cache_dir, ignore_errors=True)
-                removed += 0 if cache_dir.exists() else 1
-    except OSError:
-        pass
-    return removed
-
-
 def _run_plugin_git(git_exe: str, target: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
     """Run one git command inside a plugin checkout (non-interactive)."""
     return subprocess.run(
         [git_exe, *args], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
         cwd=str(target), stdin=subprocess.DEVNULL, env=noninteractive_git_env())
-
-
-def _stash_ref(git_exe: str, target: Path) -> str:
-    """Current ``refs/stash`` commit, or empty string when no stash exists."""
-    probe = _run_plugin_git(git_exe, target, "rev-parse", "--verify", "refs/stash")
-    return probe.stdout.strip() if probe.returncode == 0 else ""
-
-
-def _reapply_stash(git_exe: str, target: Path) -> bool:
-    """``stash apply`` the autostash; drop it on a clean apply. False when it applied with
-    errors or left unmerged paths (the stash entry is kept in that case)."""
-    restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}")
-    unmerged = _run_plugin_git(git_exe, target, "diff", "--name-only", "--diff-filter=U")
-    if restore.returncode != 0 or unmerged.stdout.strip():
-        return False
-    _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}")
-    return True
-
-
-def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
-    """Stash local edits before a pull. Returns ``(stash_created, error)``; a non-empty error means
-    the tree is dirty but nothing was saved, so the pull must not run."""
-    status = _run_plugin_git(git_exe, target, "status", "--porcelain")
-    if status.returncode != 0 or not status.stdout.strip():
-        return False, ""
-    pre_stash = _stash_ref(git_exe, target)
-    push = _run_plugin_git(
-        git_exe, target, "stash", "push", "--include-untracked", "-m", "hermes-plugin-update-autostash")
-    post_stash = _stash_ref(git_exe, target)
-    if not post_stash or post_stash == pre_stash:
-        err = _safe_git_error(push)
-        return False, (
-            "Local changes in the plugin checkout could not be "
-            "stashed; update aborted before touching the checkout."
-            + (f"\n{err}" if err else ""))
-    if push.returncode != 0:
-        # Saved-but-couldn't-clean (undeletable untracked files): the stash entry is complete;
-        # reset tracked mods so the pull isn't blocked by a still-dirty tree.
-        _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
-    return True, ""
-
-
-def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
-    """``git pull --ff-only`` a plugin checkout, autostashing local edits (users patch installed
-    plugins in place, and a plain ff-only pull would then refuse forever).
-
-    Users tweak installed plugins in place (config constants, small patches), and a plain ``pull --ff-only``
-    then aborts with "Your local changes ... would be overwritten by merge" — making the plugin permanently
-    un-updatable until they hand-run git. Same UX class Factory Droid fixed in v0.188 ("Updating a plugin
-    marketplace now succeeds when its checkout has local changes"), and the same autostash approach ``hermes
-    update`` already uses for the main checkout (PR #70161).
-    """
-    git_exe = _resolve_git_executable()
-    if not git_exe:
-        return False, "git is not installed or not in PATH."
-    try:
-        stash_created, err = _autostash_dirty_tree(git_exe, target)
-        if err:
-            return False, err
-        result = _run_plugin_git(git_exe, target, "pull", "--ff-only")
-        if result.returncode != 0:
-            err = _safe_git_error(result) or "git pull failed."
-            if not stash_created:
-                return False, err
-            # Put the user's edits back before reporting the failure.
-            if _reapply_stash(git_exe, target):
-                note = "Local changes were restored."
-            else:
-                note = "Local changes are preserved in git stash (restore with: git stash pop)."
-            return False, f"{err}\n{note}"
-
-        pulled = result.stdout.strip()
-        if not stash_created:
-            return True, pulled
-        if _reapply_stash(git_exe, target):
-            return True, pulled + "\nLocal changes were re-applied on top of the update."
-
-        # Conflicted re-apply: leave the plugin importable on the updated
-        # revision; the user's edits stay safe in the stash entry.
-        _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
-        return True, pulled + (
-            "\n⚠ Local changes in this plugin conflicted with the update and "
-            "were NOT re-applied. They are preserved in git stash — inspect "
-            "with `git stash show -p stash@{0}` and re-apply with "
-            f"`git stash pop` inside {target}.")
-    except FileNotFoundError:
-        return False, "git is not installed or not in PATH."
-    except subprocess.TimeoutExpired:
-        return False, "Git operation timed out after 60 seconds."
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:

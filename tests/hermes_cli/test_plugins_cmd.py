@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from hermes_cli.plugin_update_txn import _consent_artifact_matches
+
 from hermes_cli.plugins_cmd import (
     PluginOperationError,
     _copy_example_files,
@@ -144,158 +146,6 @@ class TestResolveGitExecutable:
                     assert pc._resolve_git_executable() == "/usr/local/bin/git"
 
 
-    def test_git_pull_uses_resolved_executable(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-        with patch.object(
-            pc,
-            "_resolve_git_executable",
-            return_value="/resolved/git",
-        ):
-            with patch.object(pc.subprocess, "run") as run:
-                # First call is `git status --porcelain` (clean tree),
-                # second is the pull itself.
-                run.side_effect = [
-                    MagicMock(returncode=0, stdout="", stderr=""),
-                    MagicMock(returncode=0, stdout="Already up to date\n", stderr=""),
-                ]
-                ok, msg = pc._git_pull_plugin_dir(tmp_path)
-        assert ok is True
-        assert run.call_count == 2
-        for call in run.call_args_list:
-            assert call.args[0][0] == "/resolved/git"
-        assert run.call_args_list[1].args[0][1:] == ["pull", "--ff-only"]
-
-    def test_git_pull_clean_tree_never_stashes(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        _resolve_git_executable.cache_clear()
-        with patch.object(pc, "_resolve_git_executable", return_value="/g"):
-            with patch.object(pc.subprocess, "run") as run:
-                run.side_effect = [
-                    MagicMock(returncode=0, stdout="", stderr=""),      # status
-                    MagicMock(returncode=0, stdout="Updated\n", stderr=""),  # pull
-                ]
-                ok, msg = pc._git_pull_plugin_dir(tmp_path)
-        assert ok is True
-        assert msg == "Updated"
-        commands = [c.args[0][1] for c in run.call_args_list]
-        assert "stash" not in commands
-
-
-class TestGitPullPluginDirAutostash:
-    """Real-git E2E: local edits in a plugin checkout must not block updates."""
-
-    @staticmethod
-    def _make_repos(tmp_path):
-        import subprocess as sp
-
-        def git(cwd, *args):
-            r = sp.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
-            assert r.returncode == 0, r.stderr
-            return r.stdout
-
-        origin = tmp_path / "origin"
-        origin.mkdir()
-        git(origin, "init", "-q", "-b", "main")
-        git(origin, "config", "user.email", "t@t")
-        git(origin, "config", "user.name", "t")
-        pad = "\n".join(f"# pad {i}" for i in range(12))
-        (origin / "plugin.py").write_text(
-            f"VALUE = 1\n{pad}\nOTHER = 'a'\n", encoding="utf-8"
-        )
-        git(origin, "add", ".")
-        git(origin, "commit", "-qm", "init")
-
-        checkout = tmp_path / "checkout"
-        git(tmp_path, "clone", "-q", str(origin), str(checkout))
-        git(checkout, "config", "user.email", "t@t")
-        git(checkout, "config", "user.name", "t")
-        return origin, checkout, git
-
-    @staticmethod
-    def _set_line(repo, prefix, new_line):
-        """Replace the line starting with ``prefix`` in plugin.py, keep the rest."""
-        f = repo / "plugin.py"
-        lines = f.read_text(encoding="utf-8").splitlines()
-        lines = [new_line if ln.startswith(prefix) else ln for ln in lines]
-        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    def test_dirty_checkout_pulls_and_reapplies_local_edit(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        if not pc._resolve_git_executable():
-            pytest.skip("git not available")
-        origin, checkout, git = self._make_repos(tmp_path)
-
-        # Upstream changes one line; local edit touches a DIFFERENT line.
-        self._set_line(origin, "VALUE", "VALUE = 2")
-        git(origin, "commit", "-qam", "bump value")
-        self._set_line(checkout, "OTHER", "OTHER = 'local'")
-
-        ok, msg = pc._git_pull_plugin_dir(checkout)
-        assert ok is True
-        content = (checkout / "plugin.py").read_text(encoding="utf-8")
-        assert "VALUE = 2" in content        # update landed
-        assert "OTHER = 'local'" in content  # local edit survived
-        assert "re-applied" in msg
-        # Clean re-apply drops the autostash entry.
-        assert git(checkout, "stash", "list").strip() == ""
-
-    def test_conflicting_local_edit_is_preserved_in_stash(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        if not pc._resolve_git_executable():
-            pytest.skip("git not available")
-        origin, checkout, git = self._make_repos(tmp_path)
-
-        # Upstream and local both change the SAME line → re-apply conflicts.
-        self._set_line(origin, "VALUE", "VALUE = 2")
-        git(origin, "commit", "-qam", "bump value")
-        self._set_line(checkout, "VALUE", "VALUE = 99")
-
-        ok, msg = pc._git_pull_plugin_dir(checkout)
-        assert ok is True
-        content = (checkout / "plugin.py").read_text(encoding="utf-8")
-        # Checkout is importable on the updated revision — no conflict markers.
-        assert "<<<<<<<" not in content
-        assert "VALUE = 2" in content
-        assert "preserved in git stash" in msg
-        # The local edit is recoverable from the kept stash entry.
-        stash_list = git(checkout, "stash", "list")
-        assert "hermes-plugin-update-autostash" in stash_list
-        stash_diff = git(checkout, "stash", "show", "-p", "stash@{0}")
-        assert "VALUE = 99" in stash_diff
-
-    def test_untracked_local_file_survives_update(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        if not pc._resolve_git_executable():
-            pytest.skip("git not available")
-        origin, checkout, git = self._make_repos(tmp_path)
-
-        self._set_line(origin, "VALUE", "VALUE = 2")
-        git(origin, "commit", "-qam", "bump value")
-        (checkout / "local_notes.txt").write_text("keep me\n", encoding="utf-8")
-
-        ok, msg = pc._git_pull_plugin_dir(checkout)
-        assert ok is True
-        assert (checkout / "local_notes.txt").read_text(encoding="utf-8") == "keep me\n"
-        assert "VALUE = 2" in (checkout / "plugin.py").read_text(encoding="utf-8")
-
-    def test_clean_checkout_unchanged_behavior(self, tmp_path):
-        import hermes_cli.plugins_cmd as pc
-
-        if not pc._resolve_git_executable():
-            pytest.skip("git not available")
-        origin, checkout, git = self._make_repos(tmp_path)
-
-        ok, msg = pc._git_pull_plugin_dir(checkout)
-        assert ok is True
-        assert "Already up to date" in msg
-
-
 # ── _repo_name_from_url ──────────────────────────────────────────────────
 
 
@@ -408,7 +258,8 @@ class TestCmdUpdate:
 
     def test_update_unchanged_noop_never_runs_gate(self, capsys):
         """A remote-current no-op is reported only after the stage verified the live
-        tree equals the recorded consent; the review gate and consent writes never run."""
+        tree equals the recorded consent; the review gate and the commit step
+        (scan/promote/settle) never run on the no-op path."""
         import hermes_cli.plugins_cmd as pc
 
         target = self._mock_target()
@@ -418,14 +269,12 @@ class TestCmdUpdate:
                  "unchanged": True, "review_required": False,
              }) as stage, \
              patch.object(pc, "_run_plugin_update_diff_gate") as gate, \
-             patch.object(pc, "_record_accepted_tree_consent") as record_consent, \
-             patch.object(pc, "_post_pull_housekeeping") as housekeeping:
+             patch.object(pc, "_commit_staged_plugin_update") as commit:
             pc.cmd_update("test-plugin")
 
         stage.assert_called_once_with("test-plugin", target)
         gate.assert_not_called()
-        record_consent.assert_not_called()
-        housekeeping.assert_not_called()
+        commit.assert_not_called()
         assert "already up to date" in capsys.readouterr().out
 
     def test_update_plugin_not_found(self):
@@ -1166,7 +1015,7 @@ class TestStagedUpdateTransaction:
         assert "content changed since the last consent" not in out
         assert self._git_head(pc, target) == new_rev
         assert name not in pc._get_disabled_set()
-        assert pc._consent_artifact_matches(
+        assert _consent_artifact_matches(
             target, pc._read_install_metadata()[name]["consent"],
             git_exe=pc._resolve_git_executable()) is True
         assert "http://evil.example/exfil" in (target / "__init__.py").read_text()
@@ -1209,7 +1058,7 @@ class TestStagedUpdateTransaction:
         record = pc._read_install_metadata()[name]
         assert record["revision"] == new_rev
         assert record["consent"]["scope"] == "update"
-        assert pc._consent_artifact_matches(
+        assert _consent_artifact_matches(
             target, record["consent"], git_exe=pc._resolve_git_executable()) is True
         assert name not in pc._get_disabled_set()
 
@@ -1317,3 +1166,382 @@ class TestStagedUpdateTransaction:
         assert consent_after["identity"] == "git_tree"
         assert self._git_head(pc, target) == new_rev
         assert _os.stat(target / "payload.sh").st_mode & 0o111  # executable after accept
+
+# ── Round-3 rework E2E (second maintainer review of #103497) ─────────────────
+#  B1 — stage ONLY the git artifact; acceptance replays the *current* allowed
+#       untracked mutable state (the *.example-derived class) from the live
+#       tree with its exact latest bytes, and never resurrects a file deleted
+#       from untracked state after staging.
+#  B2 — the plugin security scan + capability delta settle in ONE
+#       surface-neutral policy inside the update owner; CLI and Dashboard
+#       return the same outcome for the same candidate (no promote-and-return
+#       bypass).
+#  B3 — the commit transaction is process-safe per-plugin locked; two accepts
+#       of different candidates staged from the same revision race and exactly
+#       one commits — the loser settles stale/refused and final live tree +
+#       consent.artifact_id + revision describe the same candidate.
+
+_CONST_MANIFEST_V2_101 = """\
+name: consent-test
+manifest_version: 1
+version: 1.0.1
+description: benign consent-gate fixture
+provides_hooks:
+  - pre_tool_call
+"""
+
+_CONST_MANIFEST_V2_CAPS = """\
+name: {name}
+manifest_version: 1
+version: 1.1.0
+description: capability-expanding fixture
+capabilities:
+  - tools.override
+"""
+
+
+def _txn_git_head(pc, target) -> str:
+    return pc._git_head_revision(target, pc._resolve_git_executable())
+
+
+class TestUpdateMutableStateSplit:
+    """B1: immutable artifact vs mutable local state are separate coordinates."""
+
+    def _install_with_example(self, tmp_path) -> tuple:
+        import hermes_cli.plugins_cmd as pc
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _consent_git(origin, "init", "-q", "-b", "main")
+        (origin / "plugin.yaml").write_text(_CONSENT_MANIFEST_V1, encoding="utf-8")
+        (origin / "__init__.py").write_text(_CONSENT_BENIGN_V1, encoding="utf-8")
+        (origin / "config.yaml.example").write_text("key: default\n", encoding="utf-8")
+        _consent_git(origin, "add", "-A")
+        _consent_git(origin, "commit", "-qm", "v1 with example")
+        target, _manifest, name = pc._install_plugin_core(f"file://{origin}", force=False)
+        pc._set_plugin_enabled(name, enable=True)
+        # Install's _copy_example_files materialized the untracked config copy.
+        assert (target / "config.yaml").exists()
+        assert (target / "config.yaml").read_text(encoding="utf-8") == "key: default\n"
+        return pc, target, name, origin
+
+    def _advance(self, origin, *, extra_example=None) -> str:
+        """Advance the remote to v1.0.1 (version bump keeps output free of the TD tripwire)."""
+        (origin / "plugin.yaml").write_text(_CONST_MANIFEST_V2_101, encoding="utf-8")
+        (origin / "__init__.py").write_text(
+            _CONSENT_BENIGN_V1 + "\n# advanced to v2\n", encoding="utf-8")
+        if extra_example is not None:
+            (origin / "config_extra.yaml.example").write_text(extra_example, encoding="utf-8")
+        _consent_git(origin, "add", "-A")
+        _consent_git(origin, "commit", "-qm", "advance v2")
+        return _consent_git(origin, "rev-parse", "HEAD")
+
+    def test_untracked_config_edited_after_staging_preserved_exact_bytes(self, tmp_path):
+        """An untracked config edited after the candidate was staged must reach the
+        promoted artifact with its exact latest bytes — never the staged copy."""
+        pc, target, name, origin = self._install_with_example(tmp_path)
+        new_rev = self._advance(origin)
+
+        staged = pc.dashboard_update_user_plugin(name)
+        assert staged["review_required"] is True
+        # The candidate is a fresh checkout; the live untracked config was NOT
+        # copied into it (staging never copies the live directory).
+        assert (target / "config.yaml").read_text(encoding="utf-8") == "key: default\n"
+
+        # User edits the untracked config AFTER the review was staged.
+        edited = "key: edited-after-staging\nvalue: 42\n"
+        (target / "config.yaml").write_text(edited, encoding="utf-8")
+
+        accepted = pc.dashboard_update_user_plugin(name, review_token=staged["review_token"])
+        assert accepted["ok"] is True and accepted["accepted"] is True
+        assert _txn_git_head(pc, target) == new_rev
+        # Exact latest bytes preserved (not the staged/older copy).
+        assert (target / "config.yaml").read_text(encoding="utf-8") == edited
+        record = pc._read_install_metadata()[name]
+        assert record["revision"] == new_rev
+        assert record["consent"]["artifact_id"] == staged["candidate_artifact"]
+        assert _consent_artifact_matches(
+            target, record["consent"], git_exe=pc._resolve_git_executable()) is True
+        assert name not in pc._get_disabled_set()
+
+    def test_untracked_config_deleted_after_staging_not_resurrected(self, tmp_path):
+        """A file deleted from untracked state after staging is NOT resurrected —
+        neither by the replay step nor by the example-file copy on promotion. A
+        genuinely NEW example shipped by the update is still materialized."""
+        pc, target, name, origin = self._install_with_example(tmp_path)
+        new_rev = self._advance(origin, extra_example="extra: 1\n")
+
+        staged = pc.dashboard_update_user_plugin(name)
+        assert staged["review_required"] is True
+
+        # User deletes the untracked config AFTER the review was staged.
+        (target / "config.yaml").unlink()
+
+        accepted = pc.dashboard_update_user_plugin(name, review_token=staged["review_token"])
+        assert accepted["ok"] is True and accepted["accepted"] is True
+        assert _txn_git_head(pc, target) == new_rev
+        # Deleted-after-staging untracked file is gone for good.
+        assert not (target / "config.yaml").exists()
+        assert (target / "config.yaml.example").exists()  # artifact example intact
+        # The genuinely-new example shipped by R2 is still materialized (it was
+        # never present in the stage-time untracked snapshot).
+        assert (target / "config_extra.yaml").read_text(encoding="utf-8") == "extra: 1\n"
+        record = pc._read_install_metadata()[name]
+        assert record["consent"]["artifact_id"] == staged["candidate_artifact"]
+        assert _consent_artifact_matches(
+            target, record["consent"], git_exe=pc._resolve_git_executable()) is True
+
+
+class TestUpdatePolicyParity:
+    """B2: the scan + capability policy settle inside the owner; CLI and
+    Dashboard return the same outcome for the same candidate."""
+
+    def _origin(self, tmp_path: Path, manifest: str, code: str) -> Path:
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _consent_git(origin, "init", "-q", "-b", "main")
+        (origin / "plugin.yaml").write_text(manifest, encoding="utf-8")
+        (origin / "__init__.py").write_text(code, encoding="utf-8")
+        _consent_git(origin, "add", "-A")
+        _consent_git(origin, "commit", "-qm", "v1")
+        return origin
+
+    @staticmethod
+    def _install(pc, origin) -> tuple:
+        target, _m, name = pc._install_plugin_core(f"file://{origin}", force=False)
+        pc._set_plugin_enabled(name, enable=True)
+        return target, name
+
+    def _advance_dangerous(self, origin) -> str:
+        """R2 adds a tracked docs file whose content plugin_guard scores critical
+        (read_secrets_file → dangerous on the staged candidate)."""
+        (origin / "plugin.yaml").write_text(_CONST_MANIFEST_V2_101, encoding="utf-8")
+        (origin / "__init__.py").write_text(
+            _CONSENT_BENIGN_V1 + "\n# advanced\n", encoding="utf-8")
+        (origin / "README.md").write_text(
+            "# operator notes\n\nBackup command used by operators:\ncat ~/.hermes/.env\n",
+            encoding="utf-8")
+        _consent_git(origin, "add", "-A")
+        _consent_git(origin, "commit", "-qm", "add dangerous readme")
+        return _consent_git(origin, "rev-parse", "HEAD")
+
+    def test_dangerous_candidate_blocked_identically_cli_and_dashboard(self, tmp_path, capsys):
+        """The same dangerous candidate is refused at commit through BOTH
+        entrypoints — the live tree stays at the consented revision and nothing
+        is promoted/enabled."""
+        import hermes_cli.plugins_cmd as pc
+
+        origin = self._origin(tmp_path, _CONSENT_MANIFEST_V1, _CONSENT_BENIGN_V1)
+        target, name = self._install(pc, origin)
+        old_rev = _txn_git_head(pc, target)
+        consent_before = pc._read_install_metadata()[name]["consent"]
+        new_rev = self._advance_dangerous(origin)
+
+        # CLI: explicit --accept-update hits the pre-promotion scan → refused.
+        capsys.readouterr()
+        pc.cmd_update(name, accept_update=True)
+        out = capsys.readouterr().out
+        assert "content changed since the last consent" in out
+        assert "Update refused" in out
+        assert "Security scan blocked the plugin update" in out
+        assert _txn_git_head(pc, target) == old_rev
+        body = (target / "__init__.py").read_text(encoding="utf-8")
+        assert "advanced" not in body
+        record = pc._read_install_metadata()[name]
+        assert record["consent"] == consent_before and record["revision"] == old_rev
+        assert name not in pc._get_disabled_set()
+
+        # Dashboard: the same candidate staged again, accepted → same refusal.
+        staged = pc.dashboard_update_user_plugin(name)
+        assert staged["review_required"] is True
+        assert staged["candidate_revision"] == new_rev
+        refused = pc.dashboard_update_user_plugin(name, review_token=staged["review_token"])
+        assert refused["ok"] is False
+        assert refused["accepted"] is False
+        assert refused["scan_blocked"] is True
+        assert refused["scan_verdict"] == "dangerous"
+        assert any(f["pattern_id"] == "read_secrets_file" for f in refused["scan_findings"])
+        assert _txn_git_head(pc, target) == old_rev
+        assert (target / "__init__.py").read_text(encoding="utf-8") == _CONSENT_BENIGN_V1
+        record = pc._read_install_metadata()[name]
+        assert record["consent"] == consent_before and record["revision"] == old_rev
+        assert name not in pc._get_disabled_set()
+        # The refused stage was discarded — it cannot be accepted later.
+        assert not (pc._plugin_update_root() / staged["review_token"]).exists()
+
+    def test_capability_expanding_candidate_settles_identically(self, tmp_path, capsys):
+        """A candidate whose declared capability set expands settles through the
+        same shared policy on both surfaces: committed, capabilities pending and
+        ungranted in any non-interactive accept (fail closed)."""
+        import hermes_cli.plugins_cmd as pc
+        from hermes_cli.plugin_capabilities import granted_capabilities
+
+        manifest_cli = _CONST_MANIFEST_V2_CAPS.format(name="parity-cli")
+        manifest_dash = _CONST_MANIFEST_V2_CAPS.format(name="parity-dash")
+        origin_cli = tmp_path / "origin-cli"
+        origin_cli.mkdir()
+        _consent_git(origin_cli, "init", "-q", "-b", "main")
+        (origin_cli / "plugin.yaml").write_text(
+            manifest_cli.replace("1.1.0", "1.0.0"), encoding="utf-8")
+        (origin_cli / "__init__.py").write_text(_CONSENT_BENIGN_V1, encoding="utf-8")
+        _consent_git(origin_cli, "add", "-A")
+        _consent_git(origin_cli, "commit", "-qm", "v1 no caps")
+        target_cli, name_cli = self._install(pc, origin_cli)
+        # v2 declares tools.override (+ version bump), benign code.
+        (origin_cli / "plugin.yaml").write_text(manifest_cli, encoding="utf-8")
+        (origin_cli / "__init__.py").write_text(
+            _CONSENT_BENIGN_V1 + "\n# caps v2\n", encoding="utf-8")
+        _consent_git(origin_cli, "add", "-A")
+        _consent_git(origin_cli, "commit", "-qm", "v2 declares caps")
+
+        # Same fixture under a second name for the Dashboard arm.
+        origin_dash = tmp_path / "origin-dash"
+        origin_dash.mkdir()
+        _consent_git(origin_dash, "init", "-q", "-b", "main")
+        (origin_dash / "plugin.yaml").write_text(
+            manifest_dash.replace("1.1.0", "1.0.0"), encoding="utf-8")
+        (origin_dash / "__init__.py").write_text(_CONSENT_BENIGN_V1, encoding="utf-8")
+        _consent_git(origin_dash, "add", "-A")
+        _consent_git(origin_dash, "commit", "-qm", "v1 no caps")
+        target_dash, name_dash = self._install(pc, origin_dash)
+        (origin_dash / "plugin.yaml").write_text(manifest_dash, encoding="utf-8")
+        (origin_dash / "__init__.py").write_text(
+            _CONSENT_BENIGN_V1 + "\n# caps v2\n", encoding="utf-8")
+        _consent_git(origin_dash, "add", "-A")
+        _consent_git(origin_dash, "commit", "-qm", "v2 declares caps")
+
+        # CLI arm: explicit non-interactive accept — committed, capabilities pending.
+        old_cli_rev = _txn_git_head(pc, target_cli)
+        capsys.readouterr()
+        pc.cmd_update(name_cli, accept_update=True)
+        out = capsys.readouterr().out
+        assert "now requests the following capabilities" in out
+        assert "Non-interactive session: capabilities NOT granted (fail closed)" in out
+        assert _txn_git_head(pc, target_cli) != old_cli_rev
+        assert name_cli not in pc._get_disabled_set()
+        assert set(granted_capabilities(name_cli)) == set()
+
+        # Dashboard arm: same candidate shape accepted → same outcome: committed
+        # with capabilities pending/ungranted (the explicit-grant path is a human
+        # step; both surfaces leave grants off when it is not taken).
+        staged = pc.dashboard_update_user_plugin(name_dash)
+        assert staged["review_required"] is True
+        accepted = pc.dashboard_update_user_plugin(name_dash, review_token=staged["review_token"])
+        assert accepted["ok"] is True and accepted["accepted"] is True
+        assert accepted["outcome"] == "pending"
+        assert accepted["pending_capabilities"] == ["tools.override"]
+        assert accepted["capabilities_changed"] is True
+        assert set(granted_capabilities(name_dash)) == set()
+        assert name_dash not in pc._get_disabled_set()
+        # Both surfaces recorded the same artifact consent for the same candidate.
+        rec_cli = pc._read_install_metadata()[name_cli]["consent"]
+        rec_dash = pc._read_install_metadata()[name_dash]["consent"]
+        assert rec_cli["identity"] == rec_dash["identity"] == "git_tree"
+        assert _consent_artifact_matches(
+            target_cli, rec_cli, git_exe=pc._resolve_git_executable()) is True
+        assert _consent_artifact_matches(
+            target_dash, rec_dash, git_exe=pc._resolve_git_executable()) is True
+
+
+def _race_accept_worker(name: str, token: str, out_path) -> None:
+    """One OS process racing an accept of *token*; writes its outcome as JSON."""
+    import json
+
+    import hermes_cli.plugins_cmd as pc
+
+    try:
+        result = pc.dashboard_update_user_plugin(name, review_token=token)
+    except Exception as exc:  # pragma: no cover - a worker must never die silently
+        result = {"ok": False, "_raised": f"{type(exc).__name__}: {exc}"}
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(result, handle, sort_keys=True)
+
+
+class TestUpdateCommitLock:
+    """B3: the commit transaction is process-safe per-plugin locked — two accepts
+    of different candidates staged from the same revision cannot both commit."""
+
+    def test_concurrent_accepts_exactly_one_commits(self, tmp_path):
+        import json
+        import multiprocessing as mp
+
+        import hermes_cli.plugins_cmd as pc
+        from hermes_cli.plugin_update_txn import _read_stage_metadata
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _consent_git(origin, "init", "-q", "-b", "main")
+        (origin / "plugin.yaml").write_text(_CONSENT_MANIFEST_V1, encoding="utf-8")
+        (origin / "__init__.py").write_text(_CONSENT_BENIGN_V1, encoding="utf-8")
+        _consent_git(origin, "add", "-A")
+        _consent_git(origin, "commit", "-qm", "R1")
+        target, _m, name = pc._install_plugin_core(f"file://{origin}", force=False)
+        pc._set_plugin_enabled(name, enable=True)
+        old_rev = _txn_git_head(pc, target)
+
+        def _advance(code_suffix: str) -> str:
+            (origin / "plugin.yaml").write_text(_CONST_MANIFEST_V2_101, encoding="utf-8")
+            (origin / "__init__.py").write_text(
+                _CONSENT_BENIGN_V1 + f"\n# {code_suffix}\n", encoding="utf-8")
+            _consent_git(origin, "add", "-A")
+            _consent_git(origin, "commit", "-qm", f"advance {code_suffix}")
+            return _consent_git(origin, "rev-parse", "HEAD")
+
+        # Stage R2 and R3 — both candidates are based on the SAME live R1
+        # (staging never advances the live tree), so both old-generation gates
+        # hold until one commit lands.
+        rev2 = _advance("R2")
+        staged2 = pc.dashboard_update_user_plugin(name)
+        rev3 = _advance("R3")
+        staged3 = pc.dashboard_update_user_plugin(name)
+        assert staged2["review_required"] and staged3["review_required"]
+        token2, token3 = staged2["review_token"], staged3["review_token"]
+        assert token2 != token3
+        meta2 = _read_stage_metadata(token2)
+        meta3 = _read_stage_metadata(token3)
+        assert meta2["old_revision"] == meta3["old_revision"] == old_rev
+        assert _txn_git_head(pc, target) == old_rev  # live untouched by both stages
+
+        ctx = mp.get_context("fork")
+        barrier = ctx.Barrier(3)
+        out2, out3 = tmp_path / "racer2.json", tmp_path / "racer3.json"
+
+        def _race(token: str, out_path: Path):
+            barrier.wait()
+            _race_accept_worker(name, token, out_path)
+
+        procs = [
+            ctx.Process(target=_race, args=(token2, out2)),
+            ctx.Process(target=_race, args=(token3, out3)),
+        ]
+        for proc in procs:
+            proc.start()
+        barrier.wait()  # release both racers simultaneously
+        for proc in procs:
+            proc.join(180)
+        assert all(proc.exitcode == 0 for proc in procs)
+
+        results = [json.loads(p.read_text(encoding="utf-8")) for p in (out2, out3)]
+        committed = [r for r in results if r.get("ok") is True and r.get("accepted") is True]
+        refused = [r for r in results if not (r.get("ok") is True and r.get("accepted") is True)]
+        assert len(committed) == 1, results
+        assert len(refused) == 1, results
+
+        # Final state: live tree + consent.artifact_id + revision describe the
+        # SAME candidate (the winner's), and the loser settled stale/refused.
+        final_rev = _txn_git_head(pc, target)
+        winner = committed[0]
+        loser = refused[0]
+        assert final_rev == winner["candidate_revision"] in {rev2, rev3}
+        assert final_rev != loser.get("candidate_revision") or not loser.get("accepted")
+        assert "changed after review" in (loser.get("error") or "")
+        record = pc._read_install_metadata()[name]
+        assert record["revision"] == final_rev
+        assert record["consent"]["revision"] == final_rev
+        assert record["consent"]["artifact_id"] == winner["candidate_artifact"]
+        assert _consent_artifact_matches(
+            target, record["consent"], git_exe=pc._resolve_git_executable()) is True
+        assert name not in pc._get_disabled_set()
+        # The loser's stage was discarded by its own refusal path.
+        assert not (pc._plugin_update_root() / token2).exists()
+        assert not (pc._plugin_update_root() / token3).exists()

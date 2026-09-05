@@ -16,10 +16,12 @@ Now:
 - the runner arms one timer per adapter identity; the slot stays occupied until the
   timer ends, only the running timer may arm its successor into it, and it re-arms
   for whatever is still waiting;
-- a flood refusal of a single-message reply proves non-delivery, so that redelivery
-  carries no duplicate marker; a chunked reply may have been partly accepted and
-  carries one that names the rate limit; a claimed row's stale refusal is cleared so an interrupted resend is
-  seen as uncertain by the next boot;
+- every flood redelivery carries a marker that names the rate limit (the platform may
+  have accepted earlier chunks, and the stored text's raw length cannot tell: MarkdownV2
+  escaping alone can turn a one-message reply into two requests); a claimed row's stale
+  refusal is cleared so an interrupted resend is seen as uncertain by the next boot; a
+  claim released unsent (resume flag not clearable, adapter gone) keeps its flood error
+  and so its place on the timer;
 - at boot, a dead owner's not-yet-due flood row is adopted rather than resent early.
 """
 
@@ -146,18 +148,28 @@ def test_flood_not_before_is_the_refusal_time_plus_the_platform_wait():
     assert dl.flood_not_before(None, "flood_control:9") == pytest.approx(9.0)
 
 
-def test_non_delivery_is_certain_only_for_a_single_message_reply():
-    assert dl.flood_non_delivery_is_certain("flood_control:9", "x" * 4096) is True
-    assert dl.flood_non_delivery_is_certain("flood_control:9", "x" * 4097) is False
-    assert dl.flood_non_delivery_is_certain("flood_control:9", "\U0001F600" * 2049) is False, "UTF-16 units, not chars"
-    assert dl.flood_non_delivery_is_certain("send_path_degraded", "x") is False
+@pytest.mark.parametrize("content", ["x" * 10, "." * 3000, "word " * 1200])
+def test_every_flood_redelivery_carries_the_rate_limit_marker(clock, monkeypatch, content):
+    """Raw length proves nothing about how many requests the adapter made: MarkdownV2 escaping turns 3000
+    dots into 6000 UTF-16 units, two Telegram messages, and the send result does not say which chunk was
+    refused. So there is no length-based certainty; the marker is unconditional, at runtime and at boot."""
+    _record("ob-runtime", content=content)
+    dl.mark_failed("ob-runtime", "flood_control:9")
+    (runtime_row,) = dl.sweep_failed_for_runtime("telegram", now=T0 + 20)
+    assert runtime_row["needs_marker"] is True and runtime_row["marker"] == dl.FLOOD_MARKER
+
+    _record("ob-boot", content=content)
+    dl.mark_failed("ob-boot", "flood_control:9")
+    monkeypatch.setattr(dl, "_owner_alive", lambda pid, started: False)
+    boot_rows = {row["obligation_id"]: row for row in dl.sweep_recoverable(now=T0 + 20)}
+    assert boot_rows["ob-boot"]["needs_marker"] is True and boot_rows["ob-boot"]["marker"] == dl.FLOOD_MARKER
 
 
 # ---------------------------------------------------------------------------
 # The runtime sweep: which rows it claims, when, and how it marks them.
 # ---------------------------------------------------------------------------
 
-def test_runtime_sweep_claims_a_due_flood_row_plainly_and_clears_the_stale_refusal(clock):
+def test_runtime_sweep_claims_a_due_flood_row_under_the_rate_limit_marker_and_clears_the_stale_refusal(clock):
     _record("ob-flood")
     dl.mark_failed("ob-flood", "flood_control:185.0")
     _record("ob-degraded")
@@ -168,10 +180,12 @@ def test_runtime_sweep_claims_a_due_flood_row_plainly_and_clears_the_stale_refus
     claimed = {row["obligation_id"]: row for row in dl.sweep_failed_for_runtime("telegram", now=T0 + 200)}
 
     assert set(claimed) == {"ob-flood", "ob-degraded"}, "a permanent rejection must never be replayed"
-    assert claimed["ob-flood"]["needs_marker"] is False, "a 429 of a single message was never accepted"
-    assert "marker" not in claimed["ob-flood"]
+    assert claimed["ob-flood"]["needs_marker"] is True
+    assert claimed["ob-flood"]["marker"] == dl.FLOOD_MARKER
+    assert claimed["ob-flood"]["last_error"] == "flood_control:185.0", "the pre-claim error rides along for a release"
     assert claimed["ob-degraded"]["needs_marker"] is True
     assert claimed["ob-degraded"]["marker"] == dl.RECONNECTED_MARKER
+    assert claimed["ob-degraded"]["last_error"] == "send_path_degraded"
     flood = _row("ob-flood")
     assert flood["state"] == "attempting" and flood["attempts"] == 1
     assert flood["last_error"] is None, "the claim is a fresh attempt; the old refusal must not survive it"
@@ -219,7 +233,7 @@ def test_boot_sweep_adopts_a_dead_owners_flood_row_inside_its_wait(clock, monkey
     assert dl.pending_flood_retries(now=T0 + 30)[0]["not_before"] == pytest.approx(T0 + 185)
 
 
-def test_boot_sweep_resends_a_due_flood_row_plainly_and_a_midsend_row_with_the_marker(clock, monkeypatch):
+def test_boot_sweep_resends_a_due_flood_row_under_the_rate_limit_marker_and_a_midsend_row_under_the_restart_one(clock, monkeypatch):
     _record("ob-flood")
     dl.mark_failed("ob-flood", "flood_control:185.0")
     _record("ob-midsend")  # crashed mid-await: the platform MAY have it
@@ -227,8 +241,10 @@ def test_boot_sweep_resends_a_due_flood_row_plainly_and_a_midsend_row_with_the_m
 
     claimed = {row["obligation_id"]: row for row in dl.sweep_recoverable(now=T0 + 300)}
 
-    assert claimed["ob-flood"]["needs_marker"] is False
+    assert claimed["ob-flood"]["needs_marker"] is True
+    assert claimed["ob-flood"]["marker"] == dl.FLOOD_MARKER
     assert claimed["ob-midsend"]["needs_marker"] is True
+    assert "marker" not in claimed["ob-midsend"], "a crash mid-send is the runner's restart marker"
     flood = _row("ob-flood")
     assert flood["state"] == "attempting" and flood["last_error"] is None and flood["attempts"] == 1
 
@@ -245,12 +261,12 @@ def test_boot_sweep_keeps_the_marker_for_a_chunked_flood_refused_reply(clock, mo
 
 
 def test_an_interrupted_flood_resend_gets_the_marker_on_the_next_boot(clock, monkeypatch):
-    """Runtime claim, platform accepts, process dies before mark_delivered: the next boot must not treat
-    the old refusal as proof of non-delivery."""
+    """Runtime claim, platform accepts, process dies before mark_delivered: the next boot must see an
+    ordinary interrupted send (restart marker), not a flood row."""
     _record("ob-flood")
     dl.mark_failed("ob-flood", "flood_control:9")
     (claimed,) = dl.sweep_failed_for_runtime("telegram", now=T0 + 20)
-    assert claimed["needs_marker"] is False
+    assert claimed["marker"] == dl.FLOOD_MARKER
     monkeypatch.setattr(dl, "_owner_alive", lambda pid, started: False)  # that process is gone
 
     (recovered,) = dl.sweep_recoverable(now=T0 + 60)
@@ -315,7 +331,7 @@ async def test_schedule_flood_redelivery_does_nothing_after_shutdown(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_timer_delivers_the_refused_reply_plainly_end_to_end(fake_sleep):
+async def test_timer_delivers_the_refused_reply_under_the_rate_limit_marker_end_to_end(fake_sleep):
     _record("ob-flood", content="Here is the plan for today.")
     dl.mark_failed("ob-flood", "flood_control:185.0")
     adapter = _adapter(success=True)
@@ -325,8 +341,8 @@ async def test_timer_delivers_the_refused_reply_plainly_end_to_end(fake_sleep):
     await _drain_timers(runner)
 
     sent = adapter.send.call_args.kwargs
-    assert sent["content"] == "Here is the plan for today."
-    assert "Recovered reply" not in sent["content"]
+    assert sent["content"] == dl.FLOOD_MARKER + "Here is the plan for today."
+    assert "restarted" not in sent["content"] and "reconnected" not in sent["content"]
     assert _row("ob-flood")["state"] == "delivered"
     assert fake_sleep == [pytest.approx(187.0)]
 
@@ -396,7 +412,7 @@ async def test_a_shorter_sibling_timer_does_not_send_the_longer_row_early(fake_s
     await _drain_timers(runner)
 
     contents = [c.kwargs["content"] for c in adapter.send.await_args_list]
-    assert contents == ["short one", "long one"]
+    assert contents == [dl.FLOOD_MARKER + "short one", dl.FLOOD_MARKER + "long one"]
     assert fake_sleep[0] == pytest.approx(12.0)
     assert fake_sleep[1] == pytest.approx(175.0), "re-armed for the longer row's REMAINING wait, plus slack"
     assert _row("ob-short")["attempts"] == 1 and _row("ob-long")["attempts"] == 1
@@ -415,8 +431,43 @@ async def test_boot_redelivery_arms_a_timer_for_an_adopted_flood_row(fake_sleep,
     assert n == 0, "nothing is due at boot"
     assert len(runner._flood_redelivery_tasks) == 1
     await _drain_timers(runner)
-    assert adapter.send.call_args.kwargs["content"] == "adopted at boot"
+    assert adapter.send.call_args.kwargs["content"] == dl.FLOOD_MARKER + "adopted at boot"
     assert _row("ob-flood")["state"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_resume_flag_clear_keeps_the_flood_row_on_the_timer(fake_sleep):
+    """Review finding on the first cut: the unsent claim was released as ``send_path_degraded``, which
+    dropped the row from ``pending_flood_retries`` and ended the timer, stranding the reply until a reconnect
+    or restart. Released with its own flood error, it waits the platform's figure again and is then sent."""
+    _record("ob-flood", content="the plan")
+    dl.mark_failed("ob-flood", "flood_control:30")
+    adapter = _adapter(success=True)
+    runner = _runner(adapter)
+    runner._async_session_store.clear_resume_pending = AsyncMock(
+        side_effect=[RuntimeError("session store locked"), None])
+
+    runner._schedule_flood_redelivery(Platform.TELEGRAM, error="flood_control:30")
+    await _drain_timers(runner)
+
+    assert adapter.send.await_count == 1
+    assert _row("ob-flood") == {"state": "delivered", "attempts": 1, "last_error": None, "owner_pid": os.getpid()}, \
+        "the released claim spent no attempt"
+    assert fake_sleep == [pytest.approx(32.0), pytest.approx(32.0)], "re-armed for the platform's figure, not dropped"
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_claim_whose_adapter_vanished_is_released_with_its_flood_error(clock):
+    _record("ob-flood")
+    dl.mark_failed("ob-flood", "flood_control:9")
+    (row,) = dl.sweep_failed_for_runtime("telegram", now=T0 + 20)
+    runner = _runner(_adapter())
+    runner.adapters = {}  # the reconnect that armed the timer is gone again
+
+    assert await runner._obligation_adapter(row) is None
+
+    assert _row("ob-flood") == {"state": "failed", "attempts": 0, "last_error": "flood_control:9", "owner_pid": os.getpid()}
+    assert dl.pending_flood_retries()[0]["platform"] == "telegram", "still the flood timer's business"
 
 
 # ---------------------------------------------------------------------------

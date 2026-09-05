@@ -291,11 +291,15 @@ class GatewayStartupMixin:
         return claimed
 
     @staticmethod
-    async def _release_runtime_claim_quiet(obligation_id, log_fmt: str) -> None:
-        """Release a runtime delivery-ledger claim as ``send_path_degraded``; log-only on failure."""
+    async def _release_runtime_claim_quiet(obligation_id, log_fmt: str, error: str = "send_path_degraded") -> None:
+        """Release an unsent runtime delivery-ledger claim; log-only on failure. ``error`` is what the row
+        goes back to ``failed`` with: the claim's own pre-claim error when the caller knows it, so a
+        flood-refused row keeps its ``flood_control:<seconds>`` and stays on the flood timer's list (the
+        release re-stamps ``updated_at``, so it waits the platform's figure once more); else
+        ``send_path_degraded`` (ledger-flood-retry)."""
         from gateway.delivery_ledger import release_runtime_claim
         try:
-            await asyncio.to_thread(release_runtime_claim, obligation_id, "send_path_degraded")
+            await asyncio.to_thread(release_runtime_claim, obligation_id, error)
         except Exception:
             logger.debug(log_fmt, obligation_id, exc_info=True)
 
@@ -438,7 +442,8 @@ class GatewayStartupMixin:
         # attempt; startup claims keep their state (attempts cap + stale cutoff bound retries).
         if adapter is None and row.get("runtime_recovery"):
             await self._release_runtime_claim_quiet(
-                row["obligation_id"], "failed to release undispatched runtime obligation %s"
+                row["obligation_id"], "failed to release undispatched runtime obligation %s",
+                error=row.get("last_error") or "send_path_degraded",
             )
         return adapter
 
@@ -471,7 +476,8 @@ class GatewayStartupMixin:
         for row in claimed:
             if row["obligation_id"] not in sendable_ids:
                 await self._release_runtime_claim_quiet(
-                    row["obligation_id"], "failed to release runtime delivery claim %s"
+                    row["obligation_id"], "failed to release runtime delivery claim %s",
+                    error=row.get("last_error") or "send_path_degraded",
                 )
         return await self._redeliver_claimed_obligations(sendable)
 

@@ -39,19 +39,21 @@ _MAX_ROWS = 500
 RECOVERED_MARKER = "♻️ Recovered reply — the gateway restarted during delivery, so this may be a duplicate:\n\n"
 RECONNECTED_MARKER = ("♻️ Recovered reply — the messaging platform reconnected after the original "
                       "delivery failed, so this may be a duplicate:\n\n")
-# A chunked reply refused by flood control: the platform may have accepted the first chunk(s) before
-# refusing the rest, and the send result does not say which landed. Neither of the markers above tells
-# the truth here (no restart, no reconnect), so the rate limit gets its own.
-FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original before "
-                "every part was accepted, so this may repeat some of it:\n\n")
+# A reply refused by flood control may have gone out as several requests (the adapter chunks long replies,
+# and MarkdownV2 escaping alone can push a reply that fits one message into two), and the platform may have
+# accepted the first chunk(s) before refusing the rest; the send result does not say which landed. The raw
+# length of the stored text says nothing about that, so every flood redelivery carries a marker, and neither
+# of the markers above tells the truth here (no restart, no reconnect): the rate limit gets its own.
+FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit refused the original, so part of "
+                "it may already have arrived above:\n\n")
 
 # Runtime replay is fail-closed: only errors whose send contract proves they are transient reconnect
 # failures. Permanent rejects (blocked bot, bad auth, missing chat) must not be retried on reconnect.
 _RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
 
-# A final send the platform refused with flood control is the other transient case, and an unambiguous
-# one: a 429 means the message was never accepted, so redelivering it needs no duplicate marker, and the
-# platform said how long to wait. Adapters fail such sends closed as ``flood_control:<seconds>`` on
+# A final send the platform refused with flood control is the other transient case: a 429 means the refused
+# request was never accepted, and the platform said how long to wait. Adapters fail such sends closed as
+# ``flood_control:<seconds>`` on
 # purpose (#91969) so that this ledger owns the wait instead of the send coroutine sleeping through it.
 # Before this the row simply sat in ``failed`` until the next restart's sweep, which then redelivered it
 # hours late under the "gateway restarted during delivery" marker (ledger-flood-retry).
@@ -59,10 +61,6 @@ FLOOD_ERROR_PREFIX = "flood_control:"
 FLOOD_RETRY_DEFAULT_SECONDS = 60.0
 FLOOD_RETRY_CAP_SECONDS = 15 * 60.0
 FLOOD_RETRY_SLACK_SECONDS = 2.0
-# Telegram's message cap in UTF-16 code units. A reply that fits in one message is one request, so a flood
-# refusal of it proves nothing reached the chat. A longer reply is chunked and the send result does not say
-# which chunks landed before the refusal, so those keep the duplicate marker.
-FLOOD_SINGLE_MESSAGE_UNITS = 4096
 
 
 def is_flood_error(error: Any) -> bool:
@@ -102,15 +100,6 @@ def flood_not_before(updated_at: Any, last_error: Any) -> float:
     except (TypeError, ValueError):
         stamp = 0.0
     return stamp + flood_wait_seconds(last_error)
-
-
-def _utf16_units(text: Any) -> int:
-    return len(str(text or "").encode("utf-16-le")) // 2
-
-
-def flood_non_delivery_is_certain(last_error: Any, content: Any) -> bool:
-    """A flood refusal proves non-delivery only for a reply that went out as one message."""
-    return is_flood_error(last_error) and _utf16_units(content) <= FLOOD_SINGLE_MESSAGE_UNITS
 
 
 def _runtime_retryable(last_error: Any) -> bool:
@@ -290,15 +279,19 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
 
 
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
-                 needs_marker: bool, runtime: bool = False, flood: bool = False) -> Dict[str, Any]:
-    """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a chunked
-    reply the rate limit refused part-way) gets FLOOD_MARKER at boot or at runtime, a ``runtime`` reconnect
-    replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's restart marker default."""
+                 needs_marker: bool, runtime: bool = False, flood: bool = False,
+                 last_error: Optional[str] = None) -> Dict[str, Any]:
+    """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
+    the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
+    ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
+    restart marker default. ``last_error`` is the row's pre-claim error, carried so a runtime claim that is
+    released unsent goes back to ``failed`` with the same error and keeps its retry eligibility."""
     marker = FLOOD_MARKER if flood else (RECONNECTED_MARKER if runtime else None)
     return {"obligation_id": oid, "session_key": session_key, "platform": platform, "chat_id": chat_id,
             "thread_id": thread_id, "content": content, "needs_marker": needs_marker,
             **({"marker": marker} if needs_marker and marker else {}), "profile": profile,
-            **({"runtime_recovery": True} if runtime else {}), "attempts": attempts + 1}
+            **({"runtime_recovery": True} if runtime else {}),
+            **({"last_error": last_error} if last_error else {}), "attempts": attempts + 1}
 
 
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
@@ -355,12 +348,11 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
                 (pid, started, now, 1 if flood_row else 0, 1 if flood_row else 0, oid, owner_pid, owner_pid))
             if cursor.rowcount:
-                # pending = never started, redeliver plainly; a flood refusal of a single-message reply =
-                # never accepted, likewise plain; anything else (crashed mid-await, other rejection, a
-                # chunked reply the platform may have partly accepted) carries the marker.
-                plain = state == "pending" or (flood_row and flood_non_delivery_is_certain(last_error, content))
+                # pending = never started, redeliver plainly; anything else (crashed mid-await, other
+                # rejection, a flood refusal whose earlier chunks the platform may have accepted) carries
+                # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile, needs_marker=not plain, flood=flood_row))
+                                            adapter_profile, needs_marker=state != "pending", flood=flood_row))
     return claimed
 
 
@@ -374,8 +366,8 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     rejected with ``send_path_degraded`` would stay stranded when only the adapter reconnects; this closes
     that gap without weakening ownership: only rows stamped to this exact process instance, only
     allowlisted transient errors, same attempts/staleness bounds, every update guarded by the prior owner
-    stamp and ``failed`` state. Claimed rows always carry the reconnect marker (the failed send's ack is
-    not safe to infer)."""
+    stamp and ``failed`` state. Claimed rows always carry a marker (the failed send's ack is not safe to
+    infer): the reconnect one, or the rate-limit one for a flood-refused row."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     if started is None:  # PID alone cannot distinguish this process from a stale row left after PID
         return []        # reuse; runtime replay is optional, so fail closed (startup recovery remains).
@@ -412,12 +404,12 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
                    WHERE obligation_id=? AND state='failed'
                      AND owner_pid IS ? AND owner_started_at IS ?""", owner_guard)
             if cursor.rowcount:
-                # A reconnect-retryable failure's ack may have been lost, so it carries the marker; a flood
-                # refusal of a single-message reply was never accepted, so it is redelivered plainly.
+                # The failed send's ack may have been lost (reconnect) or its earlier chunks accepted
+                # (flood): every runtime redelivery carries a marker. The pre-claim error rides along so a
+                # claim released unsent keeps its flood retry eligibility.
                 claimed.append(_claimed_row(oid, session_key, row_platform, chat_id, thread_id, content,
-                                            attempts, adapter_profile,
-                                            needs_marker=not flood_non_delivery_is_certain(last_error, content),
-                                            runtime=True, flood=is_flood_error(last_error)))
+                                            attempts, adapter_profile, needs_marker=True, runtime=True,
+                                            flood=is_flood_error(last_error), last_error=last_error))
     return claimed
 
 

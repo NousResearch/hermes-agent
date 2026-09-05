@@ -6,6 +6,7 @@ import codecs
 import io
 import logging
 import os
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -50,6 +51,8 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     """KEY names assigned in a dotenv file (including empty ``KEY=``). A fast line scanner (works in early
     bootstrap without python-dotenv); decode errors fall back to latin-1 like ``_load_dotenv_with_fallback``."""
     keys: set[str] = set()
+    if not path.is_file():
+        return keys
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -67,16 +70,17 @@ def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     return keys
 
 
-def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
+def _clear_known_keys_missing_from_dotenv(path: Path, *, defined: set[str] | None = None) -> None:
     """After ``.env`` loaded with override, delete inherited ``_PROFILE_MANAGED_ENV_KEYS`` it does not
     define. Deliberately NARROW: only keys that change *which provider path* is used.
 
     Does **not** run when the ``.env`` file does not exist (bare-profile case, which follows ``#66930`` /
     ``#67027`` semantics).
     """
-    if not path.exists():
-        return
-    defined = _env_keys_defined_in_dotenv(path)
+    if defined is None:
+        if not path.is_file():
+            return
+        defined = _env_keys_defined_in_dotenv(path)
     for key in _PROFILE_MANAGED_ENV_KEYS:
         if key not in defined and key in os.environ:
             del os.environ[key]
@@ -224,7 +228,60 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
-def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+def _read_credential_fifo(path: Path) -> str:
+    """Read one complete provider response; never persist it or wait indefinitely.
+
+    EOF after data completes a response. An absent writer, a writer that never
+    closes, or an oversized response fails before any environment is changed.
+    """
+    import select
+    import time
+
+    deadline = time.monotonic() + 5.0
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    payload = bytearray()
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            raise OSError("credential FIFO changed type before loading")
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], min(0.05, max(0, deadline - time.monotonic())))
+            if not ready:
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                continue
+            if chunk:
+                payload.extend(chunk)
+                if len(payload) > 1024 * 1024:
+                    raise ValueError("credential FIFO provider response exceeds 1 MiB")
+            elif payload:
+                break
+            else:
+                # A writerless FIFO can report EOF immediately. Avoid spinning
+                # while waiting for its provider to open the write end.
+                time.sleep(0.01)
+        else:
+            raise TimeoutError("credential FIFO provider did not supply a complete response within 5 seconds; check that the credential provider is running and unlocked")
+    finally:
+        os.close(fd)
+    try:
+        return bytes(payload).decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return bytes(payload).removeprefix(codecs.BOM_UTF8).decode("latin-1")
+
+
+def _load_dotenv_with_fallback(path: Path, *, override: bool) -> set[str] | None:
+    if stat.S_ISFIFO(path.stat().st_mode):
+        from dotenv import dotenv_values
+
+        text = _read_credential_fifo(path)
+        defined = set(dotenv_values(stream=io.StringIO(text), interpolate=False))
+        load_dotenv(stream=io.StringIO(text), override=override)
+        _sanitize_loaded_credentials()
+        return defined
+    if not path.is_file():
+        raise OSError("credential path must be a regular file or provider FIFO")
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
         # first key name and silently drop it from os.environ under its canonical name.
@@ -241,7 +298,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
     decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
     we never fall through to the errors=replace corruption path."""
-    if not path.exists():
+    if not path.is_file():
         return
     try:
         from hermes_cli.config import _sanitize_env_lines
@@ -347,9 +404,9 @@ def load_hermes_dotenv(
         _sanitize_env_file_if_needed(project_env_path)
 
     if user_env.exists():
-        _load_dotenv_with_fallback(user_env, override=True)
+        defined = _load_dotenv_with_fallback(user_env, override=True)
         loaded.append(user_env)
-        _clear_known_keys_missing_from_dotenv(user_env)  # mirrors reload_env(): inherited keys must not leak
+        _clear_known_keys_missing_from_dotenv(user_env, defined=defined)  # mirrors reload_env(): inherited keys must not leak
 
     # .op.env AFTER .env so .env wins, but the bootstrap OP_SERVICE_ACCOUNT_TOKEN reaches
     # apply_onepassword_secrets() even in cron with no shell state; gitignored so the token never enters

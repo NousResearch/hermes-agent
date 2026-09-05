@@ -290,7 +290,7 @@ describe('ModelSettings', () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    const fastSwitch = await screen.findByRole('switch')
+    const fastSwitch = await screen.findByRole('switch', { name: 'Fast' })
     fireEvent.click(fastSwitch)
 
     await waitFor(() =>
@@ -316,7 +316,9 @@ describe('ModelSettings', () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
-    expect(screen.queryByRole('switch')).toBeNull()
+    // Fast/speed defaults hidden when the model reports no capabilities; the
+    // always-present cron drift-guard switch must not be mistaken for it.
+    expect(screen.queryByRole('switch', { name: 'Fast' })).toBeNull()
   })
 
   it('renders the auxiliary task rows', async () => {
@@ -408,6 +410,88 @@ describe('ModelSettings', () => {
 
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
+  })
+})
+
+describe('ModelSettings cron defaults', () => {
+  it('renders the cron section with the drift guard on by default and saves a toggle', async () => {
+    getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
+    await renderModelSettings()
+
+    expect(await screen.findByText('Cron jobs')).toBeTruthy()
+
+    const drift = screen.getByRole('switch', { name: 'Cron drift guard' })
+    expect(drift).toBeTruthy()
+
+    fireEvent.click(drift)
+
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+    const saved = saveHermesConfig.mock.calls[0][0] as Record<string, unknown>
+    expect(saved).toMatchObject({ cron: { model_drift_guard: false } })
+  })
+
+  it('shows the fleet provider/model dropdowns and saves them via the Save button', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4', 'hermes-4-mini'],
+          authenticated: true,
+          capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+        },
+        {
+          name: 'OpenRouter',
+          slug: 'openrouter',
+          models: ['anthropic/claude-opus-4.8'],
+          authenticated: true
+        }
+      ]
+    })
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' },
+      cron: { model: 'hermes-4', model_provider: 'nous', model_drift_guard: false }
+    })
+    await renderModelSettings()
+
+    expect(await screen.findByText('Cron jobs')).toBeTruthy()
+
+    // Provider dropdown shows the saved provider's model pre-populated.
+    const providerSelect = screen.getByRole('combobox', { name: 'Cron fleet provider' })
+    expect(providerSelect).toBeTruthy()
+
+    fireEvent.click(providerSelect)
+    const openRouterOption = await screen.findByRole('option', { name: 'OpenRouter' })
+    fireEvent.click(openRouterOption)
+
+    const modelSelect = screen.getByRole('combobox', { name: 'Cron fleet model' })
+    fireEvent.click(modelSelect)
+    const claudeOption = await screen.findByRole('option', { name: 'anthropic/claude-opus-4.8' })
+    fireEvent.click(claudeOption)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+    const saved = saveHermesConfig.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect(saved).toMatchObject({
+      cron: { model: 'anthropic/claude-opus-4.8', model_provider: 'openrouter' }
+    })
+  })
+
+  it('clears the fleet model/provider via the Clear button', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      agent: { reasoning_effort: 'medium', service_tier: 'normal' },
+      cron: { model: 'hermes-4', model_provider: 'nous', model_drift_guard: false }
+    })
+    await renderModelSettings()
+
+    expect(await screen.findByText('Cron jobs')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+    const saved = saveHermesConfig.mock.calls.at(-1)![0] as Record<string, unknown>
+    expect(saved).toMatchObject({ cron: { model: '', model_provider: '' } })
   })
 })
 

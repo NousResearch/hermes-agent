@@ -36,13 +36,63 @@ export function validateCronEditor(input: CronEditorValidationInput): CronEditor
 
 export interface CronEditorSaveValues {
   deliver: string
-  /** Per-job model override ('' = follow the global default at fire time). */
+  /** Per-job model override ('' = follow the cron/global default at fire time). */
   model: string
   name: string
   prompt: string
   /** Provider for the model override ('' = none). Always paired with model. */
   provider: string
   schedule: string
+}
+
+/**
+ * Routing status for an agent job's inference model, mirroring the backend's
+ * fire-time resolution (per-job pin > cron.model > global model.default).
+ * Drift-guard visibility (#89513): a job with no explicit pin may resolve to
+ * the cron-fleet default (cron.model) rather than the global chat model.
+ */
+export type CronModelRoutingKind = 'pinned' | 'fleet' | 'global'
+
+export interface CronFleetConfig {
+  model: string
+  provider: string
+}
+
+export function jobModelRouting(
+  job: Pick<CronJob, 'model' | 'provider'>,
+  fleet: CronFleetConfig | null
+): { kind: CronModelRoutingKind; label: string } {
+  const model = String(job.model ?? '').trim()
+  const provider = String(job.provider ?? '').trim()
+
+  if (model) {
+    return { kind: 'pinned', label: provider ? `${provider} · ${model}` : model }
+  }
+
+  const fleetModel = fleet?.model?.trim()
+
+  if (fleetModel) {
+    const fleetProvider = fleet?.provider?.trim()
+
+    return { kind: 'fleet', label: fleetProvider ? `${fleetProvider} · ${fleetModel}` : fleetModel }
+  }
+
+  return { kind: 'global', label: 'Global default' }
+}
+
+/** Sentinel for the cron-fleet default (cron.model) in the model picker. */
+export const MODEL_FLEET_VALUE = '__fleet__'
+
+export function cronModelChoiceLabel(choice: string, fleet: CronFleetConfig | null): string {
+  if (choice === MODEL_FLEET_VALUE) {
+    const fleetLabel = fleet?.model?.trim() || ''
+    const fleetProvider = fleet?.provider?.trim()
+    const rendered = fleetProvider && fleetLabel ? `${fleetProvider} · ${fleetLabel}` : fleetLabel
+
+    return rendered ? `Fleet default (cron.model): ${rendered}` : 'Fleet default (cron.model)'
+  }
+
+  return 'Default (global model)'
 }
 
 export function parseCronDeliveryTargets(value: string): string[] {

@@ -366,17 +366,19 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
   return (
     <Section
       action={
-        <Button
-          aria-label={editing ? k.cancelEdit : k.editDescription}
-          onClick={() => {
-            setDraft(body ?? '')
-            setEditing(!editing)
-          }}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <Codicon name={editing ? 'close' : 'edit'} size="0.75rem" />
-        </Button>
+        <Tip label={editing ? k.cancelEdit : k.editDescription}>
+          <Button
+            aria-label={editing ? k.cancelEdit : k.editDescription}
+            onClick={() => {
+              setDraft(body ?? '')
+              setEditing(!editing)
+            }}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name={editing ? 'close' : 'edit'} size="0.75rem" />
+          </Button>
+        </Tip>
       }
       label={k.description}
     >
@@ -688,9 +690,11 @@ export function TaskDrawer({
             <span className="font-mono text-sm text-(--ui-text-tertiary)">{shortId(id)}</span>
           )}
           {task && (
-            <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
-              {shortId(task.id)}
-            </span>
+            <Tip label={k.taskIdTip(task.id)}>
+              <span className="cursor-help font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
+                {shortId(task.id)}
+              </span>
+            </Tip>
           )}
           <div className="ml-auto flex items-center gap-0.5">
             {task && (

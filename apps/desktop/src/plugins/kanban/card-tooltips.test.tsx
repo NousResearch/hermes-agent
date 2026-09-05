@@ -87,7 +87,7 @@ async function hoverTip(trigger: Element) {
   })
 }
 
-async function renderBoard() {
+async function renderBoard(waitForTitle = 'Card with every field') {
   const { KanbanBoardPage } = await import('./board')
 
   render(
@@ -96,7 +96,7 @@ async function renderBoard() {
     </QueryClientProvider>
   )
 
-  await screen.findByText('Card with every field')
+  await screen.findByText(waitForTitle)
 }
 
 describe('board card tooltips', () => {
@@ -125,15 +125,85 @@ describe('board card tooltips', () => {
     expect(screen.getByRole('tooltip').textContent).toContain('2 comments on this task')
   })
 
-  it('shows a tooltip on the "blocks N" references count, distinct from the dependency-remaining wording', async () => {
+  it('shows a tooltip on the links count with a direction-neutral claim matching the badge total (children-only fixture)', async () => {
     await renderBoard()
 
     const trigger = document.querySelector('.codicon-references')!.closest('[data-slot="tooltip-trigger"]')!
     await hoverTip(trigger)
 
     const text = screen.getByRole('tooltip').textContent
-    expect(text).toContain('Blocks 3 other tasks')
+    // Badge shows parents+children = 0+3 = 3; copy must match that total and
+    // break it down, not make a directional "Blocks" claim.
+    expect(text).toContain('Linked to 3 other tasks')
+    expect(text).toContain('0 parents')
+    expect(text).toContain('3 children')
+    expect(text).not.toContain('Blocks')
     expect(text).not.toContain('blocking this card')
+  })
+
+  it('shows the links tooltip matching the total for a parents-only fixture', async () => {
+    const parentsOnlyBoard: KanbanBoard = {
+      ...testBoard,
+      columns: [
+        {
+          name: 'done',
+          tasks: [
+            {
+              ...testBoard.columns[0].tasks[0],
+              id: 't_parentsonly',
+              link_counts: { children: 0, parents: 2 },
+              title: 'Parents-only links card'
+            }
+          ]
+        }
+      ]
+    }
+    const api = await import('./api')
+    ;(api.fetchBoard as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(parentsOnlyBoard)
+
+    await renderBoard('Parents-only links card')
+
+    const trigger = document.querySelector('.codicon-references')!.closest('[data-slot="tooltip-trigger"]')!
+    await hoverTip(trigger)
+
+    const text = screen.getByRole('tooltip').textContent
+    // Badge total is 2+0 = 2. A children-only binding (the M6 mutation) would
+    // render "0" here instead — this fixture is the one that kills it.
+    expect(text).toContain('Linked to 2 other tasks')
+    expect(text).toContain('2 parents')
+    expect(text).toContain('0 children')
+  })
+
+  it('shows the links tooltip matching the combined total for a mixed parents+children fixture', async () => {
+    const mixedBoard: KanbanBoard = {
+      ...testBoard,
+      columns: [
+        {
+          name: 'done',
+          tasks: [
+            {
+              ...testBoard.columns[0].tasks[0],
+              id: 't_mixedlinks1',
+              link_counts: { children: 3, parents: 1 },
+              title: 'Mixed links card'
+            }
+          ]
+        }
+      ]
+    }
+    const api = await import('./api')
+    ;(api.fetchBoard as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mixedBoard)
+
+    await renderBoard('Mixed links card')
+
+    const trigger = document.querySelector('.codicon-references')!.closest('[data-slot="tooltip-trigger"]')!
+    await hoverTip(trigger)
+
+    const text = screen.getByRole('tooltip').textContent
+    // Badge total is 1+3 = 4, not 3 (children-only) and not directional.
+    expect(text).toContain('Linked to 4 other tasks')
+    expect(text).toContain('1 parent,')
+    expect(text).toContain('3 children')
   })
 
   it('shows a tooltip on the warnings badge including the highest severity', async () => {
@@ -143,6 +213,37 @@ describe('board card tooltips', () => {
     await hoverTip(trigger)
 
     expect(screen.getByRole('tooltip').textContent).toContain('critical')
+  })
+
+  it('omits the severity clause entirely when highest_severity is null', async () => {
+    const nullSeverityBoard: KanbanBoard = {
+      ...testBoard,
+      columns: [
+        {
+          name: 'done',
+          tasks: [
+            {
+              ...testBoard.columns[0].tasks[0],
+              id: 't_nullsev0001',
+              title: 'Null severity card',
+              warnings: { count: 1, highest_severity: null }
+            }
+          ]
+        }
+      ]
+    }
+    const api = await import('./api')
+    ;(api.fetchBoard as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(nullSeverityBoard)
+
+    await renderBoard('Null severity card')
+
+    const trigger = document.querySelector('.codicon-warning')!.closest('[data-slot="tooltip-trigger"]')!
+    await hoverTip(trigger)
+
+    const text = screen.getByRole('tooltip').textContent
+    expect(text).toContain('1 warning. Open the card for details.')
+    expect(text).not.toContain('highest severity')
+    expect(text).not.toContain('highest severity: .')
   })
 
   it('shows a tooltip on the short task id revealing the full id', async () => {
@@ -156,10 +257,12 @@ describe('board card tooltips', () => {
   it('shows a tooltip on the plain assignee avatar (native title= converted to Tip)', async () => {
     await renderBoard()
 
-    const avatar = screen.getByTitle('alice')
-    expect(avatar.closest('[data-slot="tooltip-trigger"]')).toBeTruthy()
+    const avatarInitials = screen.getByText('A')
+    expect(avatarInitials.closest('span')?.hasAttribute('title')).toBe(false)
+    const trigger = avatarInitials.closest('[data-slot="tooltip-trigger"]')!
+    expect(trigger).toBeTruthy()
 
-    await hoverTip(avatar.closest('[data-slot="tooltip-trigger"]')!)
+    await hoverTip(trigger)
 
     expect(screen.getByRole('tooltip').textContent).toContain('Assigned to alice')
   })

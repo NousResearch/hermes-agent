@@ -145,4 +145,20 @@ describe('drawer tooltips', () => {
     await hoverTip(reclaimBtn)
     expect(screen.getByRole('tooltip').textContent).toContain('Reclaim this task')
   })
+
+  it('shows a tooltip on the edit-description button', async () => {
+    await renderDrawer()
+
+    await hoverTip(screen.getByRole('button', { name: 'Edit description' }))
+
+    expect(screen.getByRole('tooltip').textContent).toContain('Edit description')
+  })
+
+  it('shows a tooltip on the drawer short task id revealing the full id', async () => {
+    await renderDrawer()
+
+    await hoverTip(screen.getByText('drawer').closest('[data-slot="tooltip-trigger"]')!)
+
+    expect(screen.getByRole('tooltip').textContent).toContain('t_drawertest1')
+  })
 })

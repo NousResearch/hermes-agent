@@ -44,8 +44,8 @@ type KanbanMessages = {
   priorityTip: (n: number) => string
   progressTip: (done: number, total: number) => string
   commentCountTip: (n: number) => string
-  blocksTip: (n: number) => string
-  warningsTip: (n: number, severity: string) => string
+  blocksTip: (n: number, parents: number, children: number) => string
+  warningsTip: (n: number, severity: null | string | undefined) => string
   taskIdTip: (id: string) => string
   expand: (label: string) => string
   collapse: (label: string) => string
@@ -270,8 +270,12 @@ export const en: KanbanMessages = {
     `Priority ${n} — higher numbers are picked first when several ready tasks share an assignee.`,
   progressTip: (done, total) => `${done} of ${total} child tasks done.`,
   commentCountTip: n => `${n} comment${n === 1 ? '' : 's'} on this task.`,
-  blocksTip: n => `Blocks ${n} other task${n === 1 ? '' : 's'} — they wait until this one is done.`,
-  warningsTip: (n, severity) => `${n} warning${n === 1 ? '' : 's'} — highest severity: ${severity}. Open the card for details.`,
+  blocksTip: (n, parents, children) =>
+    `Linked to ${n} other task${n === 1 ? '' : 's'}: ${parents} parent${parents === 1 ? '' : 's'}, ${children} child${children === 1 ? '' : 'ren'}.`,
+  warningsTip: (n, severity) =>
+    severity
+      ? `${n} warning${n === 1 ? '' : 's'} — highest severity: ${severity}. Open the card for details.`
+      : `${n} warning${n === 1 ? '' : 's'}. Open the card for details.`,
   taskIdTip: id => `Full id: ${id}.`,
   expand: label => `Expand ${label}`,
   collapse: label => `Collapse ${label}`,
@@ -494,8 +498,10 @@ const ja: KanbanMessages = {
   priorityTip: n => `優先度 ${n} — 同じ担当の Ready タスクが複数あるとき、数値が大きいものから先に実行されます。`,
   progressTip: (done, total) => `子タスク ${done}/${total} 件完了。`,
   commentCountTip: n => `このタスクへのコメント ${n} 件。`,
-  blocksTip: n => `他の ${n} 件のタスクをブロック中 — このカードが完了するまで待機します。`,
-  warningsTip: (n, severity) => `警告 ${n} 件 — 最高深刻度: ${severity}。詳細はカードを開いてください。`,
+  blocksTip: (n, parents, children) =>
+    `他の ${n} 件のタスクとリンク: 親 ${parents} 件、子 ${children} 件。`,
+  warningsTip: (n, severity) =>
+    severity ? `警告 ${n} 件 — 最高深刻度: ${severity}。詳細はカードを開いてください。` : `警告 ${n} 件。詳細はカードを開いてください。`,
   taskIdTip: id => `完全な ID: ${id}。`,
   expand: label => `${label} を展開`,
   collapse: label => `${label} を折りたたむ`,
@@ -716,8 +722,10 @@ const zh: KanbanMessages = {
   priorityTip: n => `优先级 ${n} — 多个就绪任务共享负责人时，数字越大越先被处理。`,
   progressTip: (done, total) => `子任务已完成 ${done}/${total}。`,
   commentCountTip: n => `此任务有 ${n} 条评论。`,
-  blocksTip: n => `阻塞其他 ${n} 个任务 — 它们要等此卡片完成。`,
-  warningsTip: (n, severity) => `${n} 条警告 — 最高严重级别：${severity}。打开卡片查看详情。`,
+  blocksTip: (n, parents, children) =>
+    `已关联其他 ${n} 个任务：${parents} 个父任务，${children} 个子任务。`,
+  warningsTip: (n, severity) =>
+    severity ? `${n} 条警告 — 最高严重级别：${severity}。打开卡片查看详情。` : `${n} 条警告。打开卡片查看详情。`,
   taskIdTip: id => `完整 ID：${id}。`,
   expand: label => `展开 ${label}`,
   collapse: label => `折叠 ${label}`,
@@ -936,8 +944,10 @@ const zhHant: KanbanMessages = {
   priorityTip: n => `優先順序 ${n} — 多個就緒任務共用負責人時，數字越大越先被處理。`,
   progressTip: (done, total) => `子任務已完成 ${done}/${total}。`,
   commentCountTip: n => `此任務有 ${n} 則留言。`,
-  blocksTip: n => `阻擋其他 ${n} 個任務 — 它們要等此卡片完成。`,
-  warningsTip: (n, severity) => `${n} 個警告 — 最高嚴重程度：${severity}。開啟卡片查看詳情。`,
+  blocksTip: (n, parents, children) =>
+    `已關聯其他 ${n} 個任務：${parents} 個父任務，${children} 個子任務。`,
+  warningsTip: (n, severity) =>
+    severity ? `${n} 個警告 — 最高嚴重程度：${severity}。開啟卡片查看詳情。` : `${n} 個警告。開啟卡片查看詳情。`,
   taskIdTip: id => `完整 ID：${id}。`,
   expand: label => `展開 ${label}`,
   collapse: label => `摺疊 ${label}`,

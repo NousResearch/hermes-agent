@@ -188,7 +188,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
       ) : task.assignee ? (
         <Tip label={k.assignedToTip(task.assignee)}>
           <span className="cursor-help">
-            <Avatar name={task.assignee} size="1.125rem" />
+            <Avatar name={task.assignee} size="1.125rem" title={false} />
           </span>
         </Tip>
       ) : null}
@@ -238,14 +238,14 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </Tip>
         )}
         {links > 0 && (
-          <Tip label={k.blocksTip(links)}>
+          <Tip label={k.blocksTip(links, task.link_counts?.parents ?? 0, task.link_counts?.children ?? 0)}>
             <span className="cursor-help">
               <Meta icon="references">{links}</Meta>
             </span>
           </Tip>
         )}
         {task.warnings && task.warnings.count > 0 && (
-          <Tip label={k.warningsTip(task.warnings.count, task.warnings.highest_severity ?? '')}>
+          <Tip label={k.warningsTip(task.warnings.count, task.warnings.highest_severity)}>
             <span className="inline-flex cursor-help items-center gap-0.5 text-destructive">
               <Codicon name="warning" size="0.7rem" />
               {task.warnings.count}

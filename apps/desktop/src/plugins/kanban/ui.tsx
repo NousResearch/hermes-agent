@@ -163,7 +163,18 @@ function initials(name: string): string {
   return `${parts[0]?.[0] ?? '?'}${parts[1]?.[0] ?? ''}`.toUpperCase()
 }
 
-export function Avatar({ name, size = '1.25rem' }: { name: string; size?: string }) {
+export function Avatar({
+  name,
+  size = '1.25rem',
+  title = true
+}: {
+  name: string
+  size?: string
+  /** Set false when the caller already wraps this Avatar in a `<Tip>` — a
+   *  native title= would otherwise stack a second, un-themed OS tooltip on
+   *  top of the Tip's own chip. */
+  title?: boolean
+}) {
   // Same identity hue the rest of the app uses (profileColor); default/empty
   // profiles are neutral. Soft tag fill + colored glyph, per the app's tags.
   const color = profileColor(name)
@@ -178,7 +189,7 @@ export function Avatar({ name, size = '1.25rem' }: { name: string; size?: string
         height: size,
         width: size
       }}
-      title={name}
+      title={title ? name : undefined}
     >
       {initials(name)}
     </span>

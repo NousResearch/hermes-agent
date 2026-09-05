@@ -34,10 +34,12 @@ def _scan(tmp_path: Path, content: str):
     return scan_skill(skill_dir, source="community/test")
 
 
-# The scanner version moved to v2 precisely so cached v1 dangerous verdicts
-# for previously-blocked skills are invalidated and re-scanned.
+# The version moves whenever scan results change meaning, so cached attestations
+# from the previous scanner are invalidated and re-scanned: v2 for the #92021
+# agent-config tiering, v3 once a bundle's own `.skillignore` stopped narrowing
+# the scan (a cached v2 "safe" would otherwise still let that bundle install).
 def test_scanner_version_bumped():
-    assert SCANNER_VERSION == "skills-guard-v2"
+    assert SCANNER_VERSION == "skills-guard-v3"
 
 
 class TestFalsePositivesUnblocked:

@@ -1130,7 +1130,9 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         return
 
     c.print(f"[bold]Scanning '{name}' before publish...[/]")
-    result = scan_skill(path, source="self")
+    # The only local-author path: `path` is the author's own working copy, so their `.skillignore`
+    # (docs/, node_modules/, ...) still applies. Every fetched-bundle path scans the whole tree.
+    result = scan_skill(path, source="self", honor_ignore_file=True)
     c.print(format_scan_report(result))
     if result.verdict == "dangerous":
         c.print("[bold red]Cannot publish a skill with DANGEROUS verdict.[/]\n")

@@ -501,7 +501,15 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         # looks identical to a hang and users reboot mid-install).
         return _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
-    r1 = _install_web_deps(silent=True)
+    # Silent npm ci can sit with no stdout for ~10 minutes (it deletes
+    # node_modules first). Heartbeat so a Desktop `--gateway` update is
+    # not killed at the 600s idle ceiling while this step is healthy.
+    from hermes_cli.update_cmd import _update_progress_heartbeat
+
+    with _update_progress_heartbeat(
+        "  … still installing web UI dependencies ({elapsed}s elapsed)"
+    ):
+        r1 = _install_web_deps(silent=True)
     if r1.returncode != 0:
         return _report_web_build_failure("npm install", r1, fatal=fatal)
     r2 = _build()

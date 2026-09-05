@@ -6,12 +6,13 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 """
 
 import logging
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import os
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
 import subprocess
 import sys
+import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
@@ -409,31 +410,118 @@ def _filter_non_gateway_concurrent_instances(matches: list[tuple[int, str]]) -> 
 
 
 def _log_only_write(text: str) -> None:
-    """Write to update.log only: reaches past the ``_UpdateOutputStream`` stdout mirror so
-    loud, low-signal subprocess output stays debuggable without flooding the terminal."""
+    """Write ``text`` to ``~/.hermes/logs/update.log`` only, never the terminal.
+
+    During ``hermes update`` ``sys.stdout`` is an ``_UpdateOutputStream`` that
+    mirrors to both the terminal and ``update.log``. Loud, low-signal
+    subprocess output (npm installs, the Electron/vite build, the cua-driver
+    installer's "Next steps" wall) should be captured and tucked into the log
+    so failures stay debuggable, without flooding the user's terminal. This
+    reaches past the mirroring stream straight to the underlying log handle.
+
+    When the wrapper is absent (a wrap-setup failure, or a caller outside
+    ``cmd_update``), fall through to the same log path. Windows Desktop's
+    idle watchdog watches that file; a silent no-op here is how a live
+    Electron rebuild used to be killed at 600s with exit 124.
+    """
     if not text:
         return
+    payload = text if text.endswith("\n") else text + "\n"
     stream = _m().sys.stdout
     log_file = getattr(stream, "_log", None)
-    if log_file is None:
-        return
-    with suppress(Exception):
-        log_file.write(text if text.endswith("\n") else text + "\n")
-        log_file.flush()
+    if log_file is not None:
+        try:
+            log_file.write(payload)
+            log_file.flush()
+            return
+        except Exception:
+            pass
+    try:
+        logs_dir = get_hermes_home() / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        with (logs_dir / "update.log").open("a", encoding="utf-8") as fh:
+            fh.write(payload)
+    except Exception:
+        pass
+
+
+@contextmanager
+def _update_progress_heartbeat(message: str, *, interval_seconds: int = 30):
+    """Print a flushed elapsed-time line so idle watchdogs see progress.
+
+    Windows Desktop's hand-off kills ``hermes update`` after 600s of
+    silence on both stdout and ``logs/update.log``. ``npm --progress=false``
+    and captured Electron builds are routinely quiet that long. *message*
+    must contain ``{elapsed}``.
+    """
+    done = threading.Event()
+    start = _time.time()
+
+    def _beat() -> None:
+        while not done.wait(interval_seconds):
+            elapsed = int(_time.time() - start)
+            line = message.format(elapsed=elapsed)
+            print(line, flush=True)
+            # The hangup tee mirrors print() into update.log. When stdout
+            # is not wrapped (gateway mode today, wrap-setup failure), still
+            # tick the file the Windows Desktop idle watchdog watches.
+            if getattr(sys.stdout, "_log", None) is None:
+                _log_only_write(line)
+
+    t = threading.Thread(target=_beat, daemon=True, name="update-heartbeat")
+    t.start()
+    try:
+        yield
+    finally:
+        done.set()
+        t.join(timeout=0.2)
 
 
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):
-    """Run ``cmd`` with combined output captured into update.log only; returns the
-    ``CompletedProcess`` so the caller can surface the output on failure."""
-    # Check if there are updates. On shallow checkouts `rev-list --count` walks the truncated graph and can
-    # report the entire remote ancestry (e.g. "Found 9980 new commit(s)" on a depth-1 install — #53479). The
-    # zero/nonzero gate is still sound (HEAD == origin/<branch> counts 0), so keep it, but treat the shallow
-    # NUMBER as unknown and recover the real one via the GitHub compare API when possible.
-    result = subprocess.run(
-        cmd, cwd=cwd, env=env, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace")
-    _log_only_write(result.stdout or "")
-    return result
+    """Run ``cmd`` capturing combined output into update.log (not the terminal).
+
+    Output is streamed to the log as it arrives so the Windows Desktop
+    hand-off idle watchdog (600s, watches ``logs/update.log`` growth) can
+    see a 40-minute Electron/vite build as progress. Buffering until
+    ``subprocess.run`` returned made every rebuild look stalled.
+
+    Returns the ``CompletedProcess`` (with ``stdout`` populated) so the caller
+    can decide whether to surface the captured output on failure.
+    """
+    chunks: list[str] = []
+    child_env = dict(env) if env is not None else os.environ.copy()
+    # Python children block-buffer stdout when it is a pipe; without this
+    # the line loop below still sees nothing until the child exits.
+    child_env.setdefault("PYTHONUNBUFFERED", "1")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except OSError as exc:
+        return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
+
+    try:
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                chunks.append(line)
+                _log_only_write(line)
+        returncode = proc.wait()
+    except Exception:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        raise
+    return subprocess.CompletedProcess(cmd, returncode, stdout="".join(chunks), stderr=None)
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):

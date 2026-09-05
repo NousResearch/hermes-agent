@@ -78,6 +78,69 @@ def _patch_managed_uv(request):
         yield
 
 
+_CMD_UPDATE_NEEDS_NODE = (
+    "TestUpdateNodeDependencies",
+    "TestNodeRuntimeNpmResolution",
+    "TestCmdUpdateNpmLockfileCache",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_npm_during_cmd_update(request, monkeypatch):
+    """cmd_update e2e tests must not run a real npm ci / Electron rebuild.
+
+    ``_resolve_node_runtime_npm`` prefers a Hermes-managed npm under
+    HERMES_HOME, so patching ``shutil.which`` is not enough: a temp home
+    with ``node/npm.cmd`` starts ``npm ci`` against PROJECT_ROOT and hangs
+    the 300s file timeout. Classes that actually test Node/npm keep the
+    real resolver.
+    """
+    cls = getattr(request.node, "cls", None)
+    if cls is not None and cls.__name__ in _CMD_UPDATE_NEEDS_NODE:
+        yield
+        return
+    monkeypatch.setattr("hermes_cli.main._resolve_node_runtime_npm", lambda: None)
+    monkeypatch.setattr(
+        "tools.browser_tool.warm_agent_browser_npx_cache",
+        lambda *a, **k: True,
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _logged_subprocess_respects_run_mocks(monkeypatch):
+    """Desktop rebuild now streams via Popen, not subprocess.run.
+
+    End-to-end cmd_update tests mock ``subprocess.run`` and used to intercept
+    the Electron spawn that way. Without this, an unstubbed desktop rebuild
+    starts a real ``hermes desktop --build-only``.
+    """
+    import hermes_cli.update_cmd as uc
+
+    real = uc._run_logged_subprocess
+
+    def _via_run_when_mocked(cmd, *, cwd=None, env=None):
+        run = subprocess.run
+        if getattr(run, "side_effect", None) is None and getattr(run, "return_value", None) is None:
+            return real(cmd, cwd=cwd, env=env)
+        try:
+            return run(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except TypeError:
+            return run(cmd, cwd=cwd, env=env)
+
+    monkeypatch.setattr(uc, "_run_logged_subprocess", _via_run_when_mocked)
+    monkeypatch.setattr("hermes_cli.main._run_logged_subprocess", _via_run_when_mocked)
+
+
 @pytest.fixture(autouse=True)
 def _patch_gateway_discovery():
     """Keep cmd_update's gateway auto-restart phase off this machine's gateways.

@@ -32,18 +32,16 @@ _SILENT_BACKGROUND_HINT = (
 _HOMEBREW_CI_POLLER_HINT = (
     'This looks like a homebrewed CI poller built from `gh pr view --json statusCheckRollup` '
     'and/or `gh pr checks | jq`. That shape has burned us repeatedly in hermes-agent dev work '
-    '(PRs #31329, #31448, #31695, #31709, #31745, #32264, #33131) — stdout buffering kills '
+    '(PRs #31329, #31448, #31695, #31709, #31745, #32264, #33131). Stdout buffering kills '
     'output capture, jq null-key edge cases silently exit the loop, conclusion-vs-status field '
-    'confusion exits early with bogus all-green verdicts, TTY-only summary banners never '
-    'appear when piped. Use the canonical snippets in the green-ci-policy skill instead: the '
-    'exit-code-driven `gh pr checks $PR >/dev/null` (rc 0 = green, 8 = pending, else fail) for '
-    'exit-on-first-fail behavior, or the column-2 awk-on-tabs poller (`awk -F"\\t" '
-    '"$2==\\"pending\\""`) for sharded matrices. Load '
-    "skill_view(name='github/hermes-agent-dev', file_path='references/green-ci-policy.md') for "
-    'the verbatim snippets. If you must roll a custom loop with rich structured output, write '
-    "each tick to a known file (`tee -a /tmp/ci.log`) and rely on `process(action='log')` to "
-    'read THAT file — do not rely on background-process stdout capture for line-buffered shell '
-    'loops.'
+    'confusion exits early with bogus all-green verdicts, and TTY-only summary banners never '
+    'appear when piped. green-ci-policy: use one of these instead. (1) Exit-code-driven: '
+    '`gh pr checks $PR >/dev/null; rc=$?` then branch on rc (0 = green, 8 = pending, '
+    'anything else = failed). (2) Column-2 awk-on-tabs for sharded matrices: '
+    '`awk -F"\\t" "$2==\\"pending\\""` counts pending rows from the actual tab-separated '
+    'status column. For a custom loop with richer output, write each tick to a known file '
+    "(`tee -a /tmp/ci.log`) and read THAT file with `process(action='log')` rather than "
+    'trusting background-process stdout capture for a line-buffered shell loop.'
 )
 
 _ASYNC_UNSUPPORTED_NOTE = (

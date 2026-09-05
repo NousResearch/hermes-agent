@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 
@@ -127,17 +127,19 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
 
 # Provenance rank for the dedup OR-merge in _resolve_delivery_targets (higher = stronger mirror
 # claim). Broadcasts rank 0 so "origin,all"/"all,origin" keep the origin tag regardless of order.
-_MIRROR_PROVENANCE_RANK = {"origin": 3, "origin_fallback": 2, "explicit": 1}
+_MIRROR_PROVENANCE_RANK = {"origin": 3, "origin_fallback": 2, "home": 2, "explicit": 1}
 
 
 def _target_mirror_eligible(
     job: dict, target: dict, *, global_mirror: bool, origin_match: Optional[bool] = None) -> bool:
     """Whether a resolved delivery target may receive the transcript mirror. Origin targets:
     always. ``origin_fallback`` (deliver=origin with no captured origin → home channel, standing
-    in for the primary conversation): same flags as a true origin. ``explicit``
-    ``platform:chat_id``: ONLY with per-job ``attach_to_session: true`` — the global flag must
-    never write transcripts into arbitrary explicitly-addressed chats. Untagged broadcasts
-    (``all``, bare-platform home) are never eligible. ``origin_match`` may be precomputed."""
+    in for the primary conversation) and ``home`` (user-written bare-platform token, e.g.
+    ``deliver: slack`` — deliberately addresses that platform's home channel): same flags as a
+    true origin. ``explicit`` ``platform:chat_id``: ONLY with per-job ``attach_to_session: true``
+    — the global flag must never write transcripts into arbitrary explicitly-addressed chats.
+    Untagged broadcast expansions (``all``) are never eligible. ``origin_match`` may be
+    precomputed."""
     if origin_match is None:
         origin = _resolve_origin(job) or {}
         origin_match = _target_matches_origin(
@@ -145,7 +147,7 @@ def _target_mirror_eligible(
     if origin_match:
         return True
     resolved_from = target.get("_resolved_from")
-    if resolved_from == "origin_fallback":
+    if resolved_from in ("origin_fallback", "home"):
         # Same precedence as _cron_mirror_delivery_enabled (keep in sync): a per-job False must
         # beat a global True even for callers that don't pre-merge `global_mirror`.
         per_job = job.get("attach_to_session")
@@ -557,8 +559,15 @@ def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] 
     return target
 
 
-def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
-    """Resolve one concrete auto-delivery target for a cron job."""
+def _resolve_single_delivery_target(
+    job: dict, deliver_value: str, *, from_broadcast: bool = False
+) -> Optional[dict]:
+    """Resolve one concrete auto-delivery target for a cron job.
+
+    ``from_broadcast`` marks a bare-platform token that was produced by expanding a broadcast
+    token (``all``) rather than written by the user; broadcast expansions carry no mirror
+    provenance (fan-out is never continuable), while a user-written bare platform token is a
+    deliberate home-channel address and gets the ``home`` tag."""
     origin = _resolve_origin(job)
     if deliver_value == "local":
         return None
@@ -615,10 +624,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "_resolved_from": "explicit",  # mirror-eligible only under attach_to_session opt-in
         }
     platform_name = deliver_value
+    home_provenance = None if from_broadcast else "home"
     if origin and origin.get("platform") == platform_name:
         chat_id = _get_home_target_chat_id(platform_name)
         if chat_id:
-            return _home_target(platform_name, chat_id)
+            return _home_target(platform_name, chat_id, home_provenance)
+        # No home configured: falls back to the origin chat. No tag needed — the
+        # origin-match check in _target_mirror_eligible already covers this target.
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
@@ -627,7 +639,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if not _is_known_delivery_platform(platform_name):
         return None
     chat_id = _get_home_target_chat_id(platform_name)
-    return _home_target(platform_name, chat_id) if chat_id else None
+    return _home_target(platform_name, chat_id, home_provenance) if chat_id else None
 
 
 def _get_bot_chat_delivery_timeout() -> int:
@@ -773,12 +785,15 @@ def _resolve_bot_chat_target(job: dict, profile_arg: str) -> Optional[dict]:
         return None
 
 
-def _expand_routing_tokens(part: str) -> List[str]:
+def _expand_routing_tokens(part: str) -> List[Tuple[str, bool]]:
     """Expand ``all`` to every home-target platform with a configured chat_id; non-tokens pass
-    through as a single-element list."""
+    through as a single-element list. Each entry is ``(token, from_broadcast)`` — the flag marks
+    tokens produced by a broadcast expansion so the resolver can withhold mirror provenance from
+    them (a user-WRITTEN bare platform token gets the ``home`` tag; an ``all`` expansion of the
+    same platform never does)."""
     if part.lower() not in _ROUTING_TOKENS:
-        return [part]
-    return [p for p in _iter_home_target_platforms() if _get_home_target_chat_id(p)]
+        return [(part, False)]
+    return [(p, True) for p in _iter_home_target_platforms() if _get_home_target_chat_id(p)]
 
 
 def _delivery_lane_value(job: dict, *, for_failure: bool = False):
@@ -802,15 +817,15 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     if deliver == "local":
         return []
 
-    parts: List[str] = []
+    parts: List[Tuple[str, bool]] = []
     for raw in deliver.split(","):
         if raw.strip():
             parts.extend(_expand_routing_tokens(raw.strip()))
 
     seen = {}
     targets = []
-    for part in parts:
-        target = _resolve_single_delivery_target(job, part)
+    for part, from_broadcast in parts:
+        target = _resolve_single_delivery_target(job, part, from_broadcast=from_broadcast)
         if not target:
             continue
         key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))

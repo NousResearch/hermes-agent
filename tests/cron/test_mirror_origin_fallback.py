@@ -66,11 +66,18 @@ class TestMirrorEligibilityResolution:
         for t in targets:
             assert not _target_mirror_eligible(job, t, global_mirror=True)
 
-    def test_bare_platform_target_is_not_eligible(self):
+    def test_bare_platform_target_is_eligible_as_home(self):
+        """A user-WRITTEN bare-platform token deliberately addresses the
+        home channel — same conversation semantics as origin_fallback,
+        so the same eligibility flags apply (field report 2026-09-02:
+        managed ``deliver: slack`` crons delivered but never injected).
+        Broadcast expansions from ``all`` remain ineligible — see
+        test_all_expansion_is_never_eligible."""
         job = {"deliver": "slack", "origin": None}
         targets = _resolve_delivery_targets(job)
         assert len(targets) == 1
-        assert not _target_mirror_eligible(job, targets[0], global_mirror=True)
+        assert _target_mirror_eligible(job, targets[0], global_mirror=True)
+        assert not _target_mirror_eligible(job, targets[0], global_mirror=False)
 
     def test_explicit_target_not_eligible_under_global_flag(self):
         """Global mirror_delivery must not write sessions into arbitrary

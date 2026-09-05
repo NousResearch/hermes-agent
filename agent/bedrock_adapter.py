@@ -615,12 +615,49 @@ def _tool_call_ns(tool_use_id: str, name: str, input_dict) -> SimpleNamespace:
     )
 
 
+def _assemble_reasoning(ordered_blocks: List[Dict[str, Any]]) -> Optional[str]:
+    """Join reasoning across BLOCKS, which is the unit ``"\n\n"`` belongs to.
+
+    Both normalizers reach this, and only one of them could ever have used a
+    flat per-call accumulator safely. :func:`normalize_converse_response` calls
+    ``absorb_reasoning`` once per content block, so appending per call meant
+    appending per block -- correct. The streaming path calls it once per
+    ``reasoningContent`` DELTA, and a delta is a fragment, routinely a fragment
+    of a single word, so the same append put the block separator between every
+    streamed token.
+
+    Measured against ``us.anthropic.claude-sonnet-4-5-20250929-v1:0`` on
+    Converse with thinking enabled, one reply arrived as 45 deltas beginning
+    ``"Let"``, ``" me check if 91 is prime"``, ... ``" div"``,
+    ``"iding by small primes:"`` -- so joining them welded 44 copies of
+    ``"\n\n"`` into the text, 88 characters the model never emitted, one of
+    them inside the word "dividing" (#98468).
+
+    ``ordered_blocks`` is the one input that means the same thing on both
+    paths: a real content block on the sync path, and a per-block accumulation
+    on the streaming path (``absorb_reasoning`` already concatenates into
+    ``block["text"]`` with no separator). Deriving from it therefore fixes the
+    streaming path and leaves the sync path byte-identical, instead of teaching
+    two callers to disagree about what they are appending.
+
+    The live display was never affected: ``on_reasoning_delta`` receives each
+    raw chunk. Only the stored copy was corrupted -- the one feeding history,
+    compression, ``/resume`` replay and token accounting.
+    """
+    texts = [
+        text
+        for block in ordered_blocks
+        if isinstance(block.get("reasoningContent"), dict)
+        and (text := block["reasoningContent"].get("text"))
+    ]
+    return "\n\n".join(texts) if texts else None
+
+
 class _ResponseParts:
     """Accumulator shared by the sync and streaming normalizers."""
 
     def __init__(self) -> None:
         self.text_parts: List[str] = []
-        self.reasoning_parts: List[str] = []
         self.reasoning_details: List[Dict[str, Any]] = []
         self.tool_calls: List[SimpleNamespace] = []
 
@@ -630,7 +667,6 @@ class _ResponseParts:
             return
         thinking_text = reasoning.get("text", "")
         if thinking_text:
-            self.reasoning_parts.append(str(thinking_text))
             if on_text:
                 on_text(thinking_text)
             block["text"] = block.get("text", "") + str(thinking_text)
@@ -645,7 +681,7 @@ class _ResponseParts:
         msg = SimpleNamespace(
             role="assistant", content="\n".join(self.text_parts) if self.text_parts else None,
             tool_calls=self.tool_calls or None, reasoning_details=self.reasoning_details or None,
-            reasoning_content="\n\n".join(self.reasoning_parts) if self.reasoning_parts else None,
+            reasoning_content=_assemble_reasoning(ordered_blocks),
             bedrock_content_blocks=ordered_blocks or None,
         )
         cache_read_tokens, cache_write_tokens, output_tokens = (

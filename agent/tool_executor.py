@@ -1367,6 +1367,10 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             error_preview=lambda res: _multimodal_text_summary(res)[:200],
         )
         if committed is None:
+            _append_skipped_tool_results(
+                agent, messages, [_pc.tool_call for _pc in batch.parsed_calls[i + 1:]], effective_task_id,
+                content="[Tool execution skipped — previous tool result could not be persisted]",
+            )
             return False
         _persisted, display_function_result, risk_metadata = committed
 
@@ -1388,6 +1392,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     num_tools = len(tool_calls)
     _tool_budget = _budget_for_agent(agent)  # once per turn, not per result
 
+    if getattr(agent, "_incremental_persistence_failed", False):
+        _append_skipped_tool_results(
+            agent, messages, tool_calls, effective_task_id,
+            content="[Tool execution skipped — previous tool result could not be persisted]",
+        )
+        return
     if agent._interrupt_requested:
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         _append_skipped_tool_results(
@@ -1647,6 +1657,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
     for i, tool_call in enumerate(tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
+            _append_skipped_tool_results(agent, messages, tool_calls[i - 1:], effective_task_id,
+                                         content="[Tool execution skipped — previous tool result could not be persisted]")
             return
         # Check interrupt BEFORE each tool so a "stop" during the previous one skips the rest.
         if agent._interrupt_requested:
@@ -1679,6 +1691,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_start_time=tool_start_time,
         )
         if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i, budget=_tool_budget):
+            _append_skipped_tool_results(agent, messages, tool_calls[i:], effective_task_id,
+                                         content="[Tool execution skipped — previous tool result could not be persisted]")
             return
 
         if agent._interrupt_requested and i < len(tool_calls):
@@ -1708,13 +1722,27 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    for segment_index, (kind, calls) in enumerate(segments):
         if getattr(agent, "_incremental_persistence_failed", False):
+            remaining = list(calls)
+            for _, later_calls in segments[segment_index + 1:]:
+                remaining.extend(later_calls)
+            _append_skipped_tool_results(
+                agent, messages, remaining, effective_task_id,
+                content="[Tool execution skipped — previous tool result could not be persisted]",
+            )
             return
         segment_message = SimpleNamespace(tool_calls=list(calls))
         run_segment = execute_tool_calls_concurrent if kind == "parallel" else execute_tool_calls_sequential
         run_segment(agent, segment_message, messages, effective_task_id, api_call_count, finalize=False)
         if getattr(agent, "_incremental_persistence_failed", False):
+            later: list = []
+            for _, later_calls in segments[segment_index + 1:]:
+                later.extend(later_calls)
+            _append_skipped_tool_results(
+                agent, messages, later, effective_task_id,
+                content="[Tool execution skipped — previous tool result could not be persisted]",
+            )
             return
 
     total_tools = len(assistant_message.tool_calls)

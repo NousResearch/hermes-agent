@@ -381,6 +381,18 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     ]
 
 
+def test_incremental_persistence_failure_still_pairs_all_unstarted_calls():
+    agent = _make_agent()
+    calls = [_mock_tool_call(call_id=f"persist-{i}") for i in range(3)]
+    agent._incremental_persistence_failed = True
+    messages = []
+    with patch("model_tools.handle_function_call") as dispatch:
+        agent._execute_tool_calls_sequential(SimpleNamespace(tool_calls=calls), messages, "task-1")
+    dispatch.assert_not_called()
+    assert [m["tool_call_id"] for m in messages] == ["persist-0", "persist-1", "persist-2"]
+    assert all("skipped" in m["content"].lower() for m in messages)
+
+
 def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     """A KeyboardInterrupt mid-batch must not leave dangling tool_calls.
 

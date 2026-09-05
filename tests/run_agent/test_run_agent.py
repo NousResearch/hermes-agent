@@ -2687,11 +2687,99 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
-    def test_summary_retries_share_relay_identity(self, agent):
-        agent.client.chat.completions.create.side_effect = [
-            _mock_response(content=""),
-            _mock_response(content="Summary"),
+    def test_summary_request_is_bounded_for_large_history(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Safe handoff"
+        )
+        raw_marker = "RAW_TOOL_BULK_7f3b"
+        messages = [
+            {"role": "user", "content": "Investigate the checkout failure"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_large",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_large",
+                "content": raw_marker * 10_000,
+            },
+            {"role": "assistant", "content": "Wrote findings to /tmp/report.txt"},
+            {"role": "user", "content": "Continue; blocked by the fixture"},
         ]
+        original_messages = json.loads(json.dumps(messages))
+
+        agent._handle_max_iterations(messages, 90)
+
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs[
+            "messages"
+        ]
+        sent_text = json.dumps(sent_messages)
+        assert len(sent_text) < 20_000
+        assert raw_marker not in sent_text
+        assert "Investigate the checkout failure" in sent_text
+        assert "/tmp/report.txt" in sent_text
+        assert "blocked by the fixture" in sent_text
+        assert messages == original_messages
+
+    def test_summary_request_replaces_unfinished_tool_protocol_with_handoff(
+        self, agent
+    ):
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+        messages = [
+            {"role": "user", "content": "do stuff"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_no_result",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
+
+        assert agent._handle_max_iterations(messages, 60) == "Summary"
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs[
+            "messages"
+        ]
+        assert not any(
+            message.get("role") == "tool" or message.get("tool_calls")
+            for message in sent_messages
+        )
+        assert "terminal" in json.dumps(sent_messages)
+
+    @pytest.mark.parametrize(
+        "think_only",
+        [
+            "<think>internal reasoning only</think>",
+            "<THINK>internal reasoning only</THINK>",
+            "<think>internal reasoning only",
+        ],
+    )
+    def test_think_only_summary_returns_local_handoff(self, agent, think_only):
+        agent.client.chat.completions.create.return_value = _mock_response(content=think_only)
+        messages = [
+            {"role": "user", "content": "THINK_ONLY_TASK_ANCHOR"},
+            {"role": "assistant", "content": "Saved /tmp/think-only.txt"},
+        ]
+
+        result = agent._handle_max_iterations(messages, 90)
+
+        assert agent.client.chat.completions.create.call_count == 1
+        assert "THINK_ONLY_TASK_ANCHOR" in result
+        assert "/tmp/think-only.txt" in result
+        assert "internal reasoning only" not in result
+
+    def test_empty_summary_is_not_retried(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(content="")
         agent._cached_system_prompt = "You are helpful."
         relay_calls = []
 
@@ -2708,16 +2796,14 @@ class TestHandleMaxIterations:
                 60,
             )
 
-        assert result == "Summary"
-        assert [call["metadata"]["retry_count"] for call in relay_calls] == [0, 1]
-        assert relay_calls[0]["metadata"]["api_request_id"] == (
-            relay_calls[1]["metadata"]["api_request_id"]
-        )
+        assert agent.client.chat.completions.create.call_count == 1
+        assert "do stuff" in result
+        assert [call["metadata"]["retry_count"] for call in relay_calls] == [0]
         assert relay_calls[0]["metadata"]["call_role"] == "iteration_summary"
         assert all(call["defer_logical_completion"] is True for call in relay_calls)
         complete_logical.assert_called_once_with(
             relay_calls[0]["metadata"]["api_request_id"],
-            outcome="success",
+            outcome="failed",
         )
 
     def test_suppress_status_output_keeps_iteration_warning_off_stdout(self, agent, capsys):
@@ -2756,15 +2842,21 @@ class TestHandleMaxIterations:
         combined = "\n".join(printed) + capsys.readouterr().out
         assert "Reached maximum iterations" in combined
 
-    def test_api_failure_returns_error(self, agent):
-        agent.client.chat.completions.create.side_effect = Exception("API down")
+    def test_api_failure_returns_safe_local_handoff(self, agent):
+        raw_error = "Your input exceeds the context window of this model"
+        agent.client.chat.completions.create.side_effect = Exception(raw_error)
         agent._cached_system_prompt = "You are helpful."
-        messages = [{"role": "user", "content": "do stuff"}]
+        messages = [
+            {"role": "user", "content": "Investigate the checkout failure"},
+            {"role": "assistant", "content": "Wrote /tmp/report.txt; blocked by fixture"},
+        ]
         with patch("agent.relay_llm.complete_logical_call") as complete_logical:
             result = agent._handle_max_iterations(messages, 60)
-        assert isinstance(result, str)
-        assert "error" in result.lower()
-        assert "API down" in result
+        assert agent.client.chat.completions.create.call_count == 1
+        assert "Investigate the checkout failure" in result
+        assert "/tmp/report.txt" in result
+        assert "blocked by fixture" in result
+        assert raw_error not in result
         complete_logical.assert_called_once()
         assert complete_logical.call_args.kwargs == {"outcome": "failed"}
 
@@ -2843,10 +2935,54 @@ class TestHandleMaxIterations:
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
 
+    def test_anthropic_summary_uses_one_bounded_handoff_call(self, agent):
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.model = "claude-sonnet-4-20250514"
+        raw_marker = "RAW_ANTHROPIC_TOOL_BULK_7f3b"
+        messages = [
+            {"role": "user", "content": "Investigate the checkout failure"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_large",
+                "content": raw_marker * 10_000,
+            },
+        ]
+        original_messages = json.loads(json.dumps(messages))
+        transport = MagicMock()
+        transport.build_kwargs.return_value = {
+            "model": agent.model,
+            "messages": [],
+        }
+        transport.normalize_response.return_value = SimpleNamespace(
+            content="Anthropic summary"
+        )
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.create.return_value = object()
 
+        with (
+            patch.object(agent, "_get_transport", return_value=transport),
+            patch.object(
+                agent,
+                "_try_refresh_anthropic_client_credentials",
+                return_value=False,
+            ),
+        ):
+            result = agent._handle_max_iterations(messages, 90)
 
-
-
+        assert result == "Anthropic summary"
+        agent._anthropic_client.messages.create.assert_called_once()
+        agent._anthropic_client.messages.stream.assert_not_called()
+        sent_messages = transport.build_kwargs.call_args.kwargs["messages"]
+        sent_text = json.dumps(sent_messages)
+        assert len(sent_text) < 20_000
+        assert raw_marker not in sent_text
+        assert "Investigate the checkout failure" in sent_text
+        assert not any(
+            message.get("role") == "tool" or message.get("tool_calls")
+            for message in sent_messages
+        )
+        assert messages == original_messages
 
     def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
         agent.api_mode = "codex_responses"
@@ -2858,8 +2994,9 @@ class TestHandleMaxIterations:
         agent._cached_system_prompt = "You are helpful."
         captured = {}
 
-        def fake_run_codex_stream(kwargs):
+        def fake_run_codex_stream(kwargs, *, max_retries):
             captured.update(kwargs)
+            captured["max_retries"] = max_retries
             return SimpleNamespace(
                 status="completed",
                 output=[
@@ -2884,12 +3021,31 @@ class TestHandleMaxIterations:
             result = agent._handle_max_iterations(messages, 90)
 
         assert result == "Summary"
+        assert captured["max_retries"] == 0
+        assert not {"tools", "tool_choice", "parallel_tool_calls"} & captured.keys()
         input_items = captured["input"]
         assert not any(
             item.get("type") == "function_call_output"
             and item.get("call_id") == "call_orphan"
             for item in input_items
         )
+
+    def test_codex_stream_zero_retries_makes_one_provider_call(self):
+        from agent.codex_runtime import run_codex_stream
+
+        client = MagicMock()
+        client.responses.create.side_effect = ConnectionError("provider unavailable")
+        fake_agent = SimpleNamespace(_interrupt_requested=False)
+
+        with pytest.raises(ConnectionError):
+            run_codex_stream(
+                fake_agent,
+                {"model": "gpt-test"},
+                client=client,
+                max_retries=0,
+            )
+
+        client.responses.create.assert_called_once()
 
     def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
         messages = [

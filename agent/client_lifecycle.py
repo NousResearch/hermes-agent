@@ -846,7 +846,9 @@ class ClientLifecycleMixin:
             logger.debug("custom-provider TLS resolution skipped on credential rotation", exc_info=True)
         self._apply_client_headers_for_base_url(self.base_url, apply_user_headers=not route_changed)
 
-    def _anthropic_messages_create(self, api_kwargs: dict, *, client: Any = None):
+    def _anthropic_messages_create(
+        self, api_kwargs: dict, *, client: Any = None, prefer_stream: bool | None = None,
+    ):
         # A supplied request-local client was already refreshed in _create_request_anthropic_client.
         if client is None and self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
@@ -855,7 +857,8 @@ class ClientLifecycleMixin:
         # on_response: rate-limit + credits state live in response headers, which the parsed Message drops.
         return create_anthropic_message(
             client or self._anthropic_client, api_kwargs, log_prefix=getattr(self, "log_prefix", ""),
-            prefer_stream=not bool(getattr(self, "_disable_streaming", False)),
+            prefer_stream=(not bool(getattr(self, "_disable_streaming", False))
+                           if prefer_stream is None else prefer_stream),
             on_response=self._capture_anthropic_response_headers,
         )
 

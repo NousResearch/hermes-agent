@@ -2248,9 +2248,10 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
 
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
-        codex_kwargs = agent._build_api_kwargs(api_messages)
-        codex_kwargs.pop("tools", None)
-        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
+        codex_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=[])
+        for key in ("tools", "tool_choice", "parallel_tool_calls"):
+            codex_kwargs.pop(key, None)
+        return _summary_text(agent, agent._run_codex_stream(codex_kwargs, max_retries=0))
     return _attempt
 
 
@@ -2261,7 +2262,11 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
-        response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
+        response = _managed_summary_call(
+            agent, api_request_id, ant_kw,
+            lambda request: agent._anthropic_messages_create(request, prefer_stream=False),
+            retry_count=retry_count,
+        )
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
@@ -2295,33 +2300,28 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     summary_api_request_id = f"iteration-summary:{uuid.uuid4()}"
     summary_call_outcome = "failed"
 
-    # Shared constant so compaction recognizers can identify this runtime nudge by its stable
-    # content after SessionDB projection strips metadata flags.
-    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
-    append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
+    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST, build_static_handoff
+    local_handoff = build_static_handoff(
+        messages, reason=f"iteration budget exhausted ({api_call_count}/{agent.max_iterations})",
+    )
+    api_messages = [
+        {"role": "system", "content": (
+            "Return a concise user-facing final status from the supplied handoff. "
+            "Do not call tools and do not invent work."
+        )},
+        {"role": "user", "content": f"{MAX_ITERATIONS_SUMMARY_REQUEST}\n\n{local_handoff}"},
+    ]
 
     try:
-        api_messages = _iteration_summary_api_messages(agent, messages)
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
-
-        # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
-        final_response = _EMPTY_SUMMARY_RESPONSE
-        for retry_count in (0, 1):
-            text = attempt(retry_count)
-            if not text:
-                continue
-            if "<think>" in text:
-                text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
-            if text:
-                summary_call_outcome = "success"
-                append_message(messages, {"role": "assistant", "content": text})
-                final_response = text
-            break
+        text = agent._strip_think_blocks(attempt(0)).strip()
+        final_response = text or local_handoff
+        summary_call_outcome = "success" if text else "failed"
 
     except Exception as e:
         logger.warning("Failed to get summary response: %s", e)
-        final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
+        final_response = local_handoff
     finally:
         from agent import relay_llm
         relay_llm.complete_logical_call(summary_api_request_id, outcome=summary_call_outcome)

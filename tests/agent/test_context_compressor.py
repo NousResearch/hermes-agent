@@ -410,6 +410,116 @@ class TestCompress:
             f"#49307), found {count}x:\n{summary}"
         )
 
+    def test_static_handoff_is_bounded_redacted_and_keeps_anchors(
+        self, compressor, monkeypatch
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        secret = "ghp_" + "a" * 40
+        turns = [
+            {
+                "role": "assistant",
+                "content": "Inspecting the failure",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": (
+                                '{"workdir":"/tmp/project","command":"pytest"}'
+                            ),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": f"fatal timeout writing /tmp/report.md with {secret}",
+            },
+            *(
+                {"role": "assistant", "content": "x" * 1_000}
+                for _ in range(20)
+            ),
+            {"role": "user", "content": "Continue the long task safely"},
+        ]
+
+        handoff = compressor._build_static_fallback_summary(
+            turns,
+            reason=f"provider failed: {secret}",
+        )
+
+        assert len(handoff) <= 8_000
+        assert "Continue the long task safely" in handoff
+        assert "/tmp/project" in handoff
+        assert "/tmp/report.md" in handoff
+        assert "fatal timeout" in handoff
+        assert secret not in handoff
+
+    def test_static_handoff_preserves_error_at_end_of_long_tool_result(
+        self, compressor
+    ):
+        anchor = "TAIL_RECOVERY_ANCHOR ValueError: checkout fixture exploded"
+        handoff = compressor._build_static_fallback_summary(
+            [
+                {"role": "user", "content": "Diagnose the fixture"},
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "content": "x" * 2_000 + anchor,
+                },
+            ]
+        )
+
+        assert anchor in handoff
+        assert "## Blocked" in handoff
+
+    def test_static_handoff_keeps_head_and_recovery_tail_when_saturated(
+        self, compressor
+    ):
+        final_anchor = "FINAL_TURN_ANCHOR RuntimeError: final failure"
+        turns = [{"role": "user", "content": "LATEST_TASK_ANCHOR"}]
+        turns.extend(
+            {"role": "assistant", "content": f"turn-{idx}-" + "x" * 1_000}
+            for idx in range(30)
+        )
+        turns.append(
+            {"role": "tool", "content": "y" * 1_000 + final_anchor}
+        )
+
+        handoff = compressor._build_static_fallback_summary(turns)
+
+        assert len(handoff) <= 8_000
+        assert "LATEST_TASK_ANCHOR" in handoff
+        assert final_anchor in handoff
+        assert "## Blocked" in handoff
+        assert "## Last Dropped Turns" in handoff
+
+    def test_static_handoff_force_redacts_secret_when_live_redaction_is_disabled(
+        self, compressor, monkeypatch
+    ):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        secret = "ghp_" + "a" * 40
+        handoff = compressor._build_static_fallback_summary(
+            [{"role": "user", "content": f"Continue safely; token {secret}"}],
+            reason=f"provider failed with {secret}",
+        )
+
+        assert secret not in handoff
+        assert "[REDACTED]" in handoff
+
+    def test_static_handoff_classifies_runtimeerror_as_blocker(self, compressor):
+        anchor = "RuntimeError: final failure"
+        handoff = compressor._build_static_fallback_summary(
+            [
+                {"role": "user", "content": "Continue the task"},
+                {"role": "tool", "content": anchor},
+            ]
+        )
+        blocked = handoff.split("## Blocked", 1)[1].split("\n## ", 1)[0]
+
+        assert anchor in blocked
+
     def test_threshold_below_window_at_minimum_ctx(self):
         """Regression for #14690: at context_length == MINIMUM_CONTEXT_LENGTH
         the floored threshold used to equal the whole window, so

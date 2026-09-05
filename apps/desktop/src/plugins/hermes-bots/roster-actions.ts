@@ -23,10 +23,6 @@ import { botCanonicalSessionId } from './row-helpers'
 import { bumpBotOpenGeneration, getBotOpenGeneration, getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
-// last_active watermark per source-qualified bot, seeded on first poll so a
-// fresh mount doesn't mark ancient history unread.
-let watermarksSeeded = false
-
 /** User pref: toast on every new bot activity. Default OFF — a busy roster
  *  (cron runs, bot-to-bot chatter) turns the toasts into a firehose, and the
  *  unread badge already carries the signal. Persisted via ctx.storage. */
@@ -54,17 +50,15 @@ export function setActivityToasts(enabled: boolean) {
  *  own unread watermark iterates, and deliveries from the CLI, cron, another
  *  bot, or another machine never touch this window's live turn edge either. */
 export function trackInboundActivity(roster: RosterRow[]) {
-  const seeding = !watermarksSeeded
-  watermarksSeeded = true
-
   for (const bot of roster) {
     const key = botSelectionKey(bot)
     const activity = botActivitySession(bot)
     const ts = activity?.last_active || 0
+    const seeded = rosterWatermarks.has(key)
     const prev = rosterWatermarks.get(key) || 0
     rosterWatermarks.set(key, Math.max(prev, ts))
 
-    if (seeding || ts <= prev) {
+    if (!seeded || ts <= prev) {
       continue
     }
 
@@ -232,12 +226,6 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     openGroupChat(currentGroup)
   }
 
-  // The persisted half of clear-on-open. The transient dot is retired by
-  // core's own selection path once the chat lands; this retires the marker,
-  // which the selection listener alone would file against the wrong profile —
-  // a bot open deliberately leaves the gateway on the launch profile.
-  ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
-
   const fronted = focusExistingBotTab(bot)
 
   if (fronted) {
@@ -245,6 +233,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
+    ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
 
     // Fronting is presentation-only: the pane keeps whatever transcript it
     // last painted, which can predate rows the bot wrote while the user was
@@ -295,6 +284,11 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
+      // Reading acknowledgement follows a successful foreground transition.
+      // A failed source lookup/open leaves the persisted marker intact so
+      // Retry still tells the truth. The owner hint is required because a bot
+      // open deliberately leaves the gateway on the launch profile.
+      ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
 
       return true
     }

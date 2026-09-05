@@ -523,6 +523,32 @@ def test_unlink_refuses_delegated_children(monkeypatch, worker_env):
     assert "not Kanban run owners" in out["error"]
 
 
+def test_unlink_refuses_non_dispatcher_owned_inherited_worker(monkeypatch, worker_env):
+    from agent.delegation_context import non_dispatcher_owned_context
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    conn = kbc.connect()
+    try:
+        child = kb.create_task(conn, title="inherited child", assignee="x", parents=[worker_env])
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    from model_tools import handle_function_call
+    with non_dispatcher_owned_context():
+        out = json.loads(handle_function_call("kanban_unlink", {
+            "parent_id": worker_env, "child_id": child,
+        }))
+
+    assert "non-dispatcher-owned" in out["error"]
+    conn = kbc.connect()
+    try:
+        assert kb.parent_ids(conn, child) == [worker_env]
+    finally:
+        conn.close()
+
+
 def test_unlink_is_registered_and_exposed(worker_env):
     from tools.registry import invalidate_check_fn_cache, registry
     from toolsets import resolve_toolset

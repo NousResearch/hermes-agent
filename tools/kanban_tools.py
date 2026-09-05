@@ -962,6 +962,8 @@ def _handle_unlink(args: dict, **kw) -> str:
     _check(parent_id != child_id, "kanban_unlink: parent_id and child_id must differ")
     env_task = os.environ.get("HERMES_KANBAN_TASK")
     if env_task:
+        _check(_is_dispatcher_owned_worker(),
+               "kanban_unlink: non-dispatcher-owned execution cannot mutate a worker edge")
         _check(env_task in (parent_id, child_id),
                f"worker is scoped to task {env_task}; refusing to mutate this edge")
         pinned_board = os.environ.get("HERMES_KANBAN_BOARD")

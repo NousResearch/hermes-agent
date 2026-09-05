@@ -199,6 +199,9 @@ def _make_compressor(config=None):
     # Provide a simple token counter for tests (1 token per 4 chars)
     compressor.tokenizer = MagicMock()
     compressor.tokenizer.encode = lambda text: [0] * (len(text) // 4)
+    compressor.tokenizer.apply_chat_template = lambda messages, **kwargs: [
+        0 for message in messages for _ in range(len(message["content"]) // 4)
+    ]
     return compressor
 
 

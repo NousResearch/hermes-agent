@@ -35,7 +35,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openai/gpt-5.6-terra", "openai/gpt-5.6-terra-pro", "openai/gpt-5.6-luna", "openai/gpt-5.6-luna-pro",
         "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.6", "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4-flash-0731",
         "qwen/qwen3.8-max-0902", "qwen/qwen3.8-flash", "moonshotai/kimi-k3", "minimax/minimax-m3", "z-ai/glm-5.3",
         "z-ai/glm-5.3-flash", "z-ai/glm-5.2", "xiaomi/mimo-v2.5-pro", "tencent/hy4-preview", "tencent/hy3",
         "stepfun/step-3.7-flash", "nvidia/nemotron-3-super-120b-a12b", "meta/muse-spark-1.2",

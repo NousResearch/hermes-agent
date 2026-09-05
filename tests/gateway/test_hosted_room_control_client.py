@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from gateway import hosted_room_controls, hosted_room_grant_state, hosted_rooms
+from gateway import hosted_room_controls, hosted_rooms
 from gateway.hosted_room_control_client import (
     RoomControlHTTPClient,
     RoomControlClientError,
@@ -242,22 +242,14 @@ def test_partial_revoke_survives_reservation_gc_and_retries_the_bearer(
         now=now,
     ).link
 
-    original_revoke = hosted_rooms.revoke_room_grant_scope
-
-    def fail_profile_store(db_path, **kwargs):
-        if str(db_path) == str(profile_db):
-            raise RuntimeError("profile revoke unavailable")
-        return original_revoke(db_path, **kwargs)
-
-    monkeypatch.setattr(
-        hosted_rooms, "revoke_room_grant_scope", fail_profile_store
-    )
-    with pytest.raises(RuntimeError, match="profile revoke unavailable"):
-        hosted_room_grant_state.revoke_grant_state(
-            (db, profile_db),
-            claims=claims,
-            expires_at=reservation_expiry,
-        )
+    # Exercise the shared-store commit followed by a real second-store failure
+    # without importing a coordinator owned by the separate route-repair PR.
+    profile_db.mkdir()
+    with pytest.raises(sqlite3.OperationalError):
+        for path in (db, profile_db):
+            hosted_rooms.revoke_room_grant_scope(
+                path, claims=claims, expires_at=reservation_expiry
+            )
 
     retained = hosted_room_controls.load_peer_control_links(
         db, include_inactive=True, now=now + 1

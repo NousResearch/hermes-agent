@@ -2816,6 +2816,7 @@ RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
+ExecStop=-{python_path} -m hermes_systemd_planned_stop $MAINPID
 ExecStopPost=-{python_path} -m gateway.cgroup_cleanup
 TimeoutStopSec={restart_timeout}
 StandardOutput=journal

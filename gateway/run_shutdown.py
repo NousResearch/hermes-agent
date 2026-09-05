@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shlex
+import signal
 import sys
 import threading
 import time
@@ -29,6 +30,37 @@ from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_wa
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _classify_shutdown_signal(received_signal=None) -> tuple[bool, bool]:
+    """Return ``(planned_takeover, planned_stop)`` for a shutdown signal.
+
+    Keep the marker decisions in one function shared by the real POSIX signal
+    handler and its Windows/file-watcher equivalent. In particular, a SIGTERM
+    preceded by systemd's ``ExecStop`` marker must take the planned-stop path,
+    not the unexpected-signal path that asks the service manager to restart us.
+    """
+    planned_takeover = False
+    try:
+        from gateway.status import consume_takeover_marker_for_self
+
+        planned_takeover = consume_takeover_marker_for_self()
+    except Exception as exc:
+        logger.debug("Takeover marker check failed: %s", exc)
+
+    if received_signal == signal.SIGINT:
+        return planned_takeover, True
+    if planned_takeover:
+        return planned_takeover, False
+
+    try:
+        from gateway.status import consume_planned_stop_marker_for_self
+
+        return planned_takeover, consume_planned_stop_marker_for_self()
+    except Exception as exc:
+        logger.debug("Planned stop marker check failed: %s", exc)
+        return planned_takeover, False
+
 
 # Windows has no bash/setsid chain: a tiny detached Python watcher waits for the gateway PID to
 # exit (bounded), then spawns ``hermes gateway restart``.

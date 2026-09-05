@@ -1,16 +1,34 @@
 import asyncio
+import os
+import signal
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import gateway.run as gateway_run
+import gateway.run_shutdown as gateway_shutdown
+from gateway import status
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 from tools import browser_tool_lifecycle as bt_lifecycle
+
+
+def test_sigterm_with_planned_stop_marker_is_classified_as_planned(tmp_path, monkeypatch):
+    """The handler's SIGTERM path consumes and classifies the marker as planned."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert status.write_planned_stop_marker(os.getpid()) is True
+
+    planned_takeover, planned_stop = gateway_shutdown._classify_shutdown_signal(
+        signal.SIGTERM
+    )
+
+    assert planned_takeover is False
+    assert planned_stop is True
+    assert not (tmp_path / ".gateway-planned-stop.json").exists()
 
 
 @pytest.mark.asyncio

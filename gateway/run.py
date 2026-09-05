@@ -4891,24 +4891,15 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdown: list):
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     def shutdown_signal_handler(received_signal=None):
-        # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
-        def _takeover() -> bool:
-            from gateway.status import consume_takeover_marker_for_self
-            return consume_takeover_marker_for_self()
+        from gateway.run_shutdown import _classify_shutdown_signal
 
-        # Planned stop: CLI marks first, else its SIGTERM looks like an external kill. SIGINT = Ctrl+C.
-        def _planned_stop() -> bool:
-            from gateway.status import consume_planned_stop_marker_for_self
-            return consume_planned_stop_marker_for_self()
+        planned_takeover, planned_stop = _classify_shutdown_signal(received_signal)
 
         # Fast (<10ms) sync snapshot: stdlib + /proc, no subprocesses (`ps aux` here once blocked ~3s).
         def _snapshot():
             from gateway.shutdown_forensics import snapshot_shutdown_context
             return snapshot_shutdown_context(received_signal)
 
-        planned_takeover = bool(_best_effort(_takeover, "Takeover marker check failed: %s"))
-        planned_stop = received_signal == signal.SIGINT or (
-            not planned_takeover and bool(_best_effort(_planned_stop, "Planned stop marker check failed: %s")))
         _shutdown_ctx = _best_effort(_snapshot, "snapshot_shutdown_context failed: %s")
         sig_name = _shutdown_ctx["signal"] if _shutdown_ctx else None
 

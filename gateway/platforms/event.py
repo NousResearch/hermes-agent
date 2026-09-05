@@ -111,6 +111,9 @@ class MessageEvent:
     # ``message_id`` with new text, so native admission keys it apart from the original send.
     # Appended for positional compat (see the field-order rule above).
     edit_revision: Optional[str] = None
+    # Trusted adapters may request one skill-command expansion before generic busy routing.
+    # This is not serialized and is appended last for positional compatibility.
+    preprocess_skill_command_before_busy: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

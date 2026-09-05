@@ -5215,6 +5215,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, TelegramTopicRoutingMixin, BaseP
             target = metadata["telegram_media_recovery"]
             event.auto_skill = None
             metadata["preserve_command_args"] = True
+            event.preprocess_skill_command_before_busy = True
             event.text = (
                 f"/{skill} Recover the exact oversized Telegram {label} through the "
                 "configured canonical recovery path. The trusted transport target is "

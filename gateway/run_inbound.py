@@ -1127,6 +1127,22 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             logger.debug("Skill command check failed (non-fatal): %s", e)
         return None
 
+    def _hm_pre_busy_skill_rewrite(
+        self, event: "MessageEvent", source: SessionSource, quick_key: str
+    ) -> Optional[str]:
+        """Expand a trusted adapter-generated skill command before busy routing.
+
+        Busy sessions bypass idle slash dispatch, so leaving the synthetic
+        command untouched would steer/queue raw ``/<skill>`` text instead of
+        loading the configured skill.
+        """
+        if getattr(event, "preprocess_skill_command_before_busy", False) is not True:
+            return None
+        command = event.get_command()
+        if not command:
+            return None
+        return self._hm_skill_slash_rewrite(event, source, quick_key, command)
+
     async def _hm_pending_reply_intercepts(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> Optional[str]:
@@ -1264,9 +1280,16 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
-        _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
-        if _reply is not None:
-            return _reply
+        _preprocess_before_busy = bool(
+            getattr(event, "preprocess_skill_command_before_busy", False)
+        )
+        _rewrite_reply = self._hm_pre_busy_skill_rewrite(event, source, _quick_key)
+        if _rewrite_reply is not None:
+            return _rewrite_reply
+        if not _preprocess_before_busy:
+            _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
+            if _reply is not None:
+                return _reply
 
         _owned, _authority_reply = await self._hm_authority_admission(event, source, _quick_key, is_internal)
         if _owned:

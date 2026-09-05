@@ -109,6 +109,14 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     if not expected_sha:
         return False
 
+    # An out-of-band catch-up restart records the SHA it discharged the
+    # obligation against. Honour it: without this the empty-``fleet`` +
+    # failed-``outcome`` receipt below falls back to a pre-pull plan SHA
+    # that can never match HEAD, so the warning re-fires forever even after
+    # the fleet was verifiably restarted.
+    if str(receipt.get("fleet_restart_resolved_sha") or "") == str(expected_sha):
+        return False
+
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 
@@ -282,6 +290,36 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
+def _record_catchup_fleet_resolution() -> None:
+    """Tell the owing receipt that the catch-up restart happened.
+
+    ``_clear_fleet_restart_pending_marker()`` only removes the breadcrumb
+    file. ``_pending_fleet_restart_needed()`` ALSO consults the receipt, and
+    a receipt with an empty ``fleet`` and a failed/partial ``outcome`` falls
+    back to ``plan.runtimes[].code_sha`` — captured before the pull, so it
+    can never match the post-pull checkout. Recording the restart against
+    the current HEAD is what actually discharges the obligation. Never
+    raises: a failure here costs one redundant restart, not a broken update.
+    """
+    try:
+        from hermes_cli.update_receipt import (
+            collect_fleet_versions,
+            record_fleet_resolution,
+        )
+
+        expected_sha = _current_checkout_sha()
+        if not expected_sha:
+            return
+        try:
+            fleet = collect_fleet_versions()
+        except Exception as exc:
+            logger.debug("Catch-up fleet probe failed: %s", exc)
+            fleet = None
+        record_fleet_resolution(fleet, expected_sha)
+    except Exception as exc:
+        logger.debug("Could not record catch-up fleet resolution: %s", exc)
+
+
 def _apply_pending_fleet_restart_catchup() -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
@@ -296,6 +334,7 @@ def _apply_pending_fleet_restart_catchup() -> None:
     print("→ Running the pending fleet restart...")
     if _run_pending_fleet_restart():
         _clear_fleet_restart_pending_marker()
+        _record_catchup_fleet_resolution()
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
     sys.exit(1)

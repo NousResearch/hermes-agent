@@ -543,3 +543,83 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+def _write_owing_receipt(disk_sha: str, old_sha: str):
+    """A failed receipt with an empty fleet — the shape that owes a restart."""
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "started_at": "T0",
+                "exit_code": 1,
+                "stop_reason": "sys.exit(1)",
+                "outcome": "failed",
+                "fleet": [],
+                "plan": {
+                    "expected_sha": disk_sha,
+                    "runtimes": [
+                        {"kind": "gateway", "profile": "default",
+                         "pid": 4242, "code_sha": old_sha}
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_catchup_restart_discharges_the_receipt_obligation(monkeypatch):
+    """The catch-up must clear the condition, not just the marker.
+
+    Regression: ``_apply_pending_fleet_restart_catchup`` cleared only the
+    breadcrumb file, so a failed receipt with an empty ``fleet`` kept
+    falling back to its pre-pull ``plan.runtimes[].code_sha`` — which can
+    never match HEAD — and the "did not restart running gateways" warning
+    re-fired on every CLI startup even after the fleet was verifiably
+    restarted. Proven red on base: without the receipt discharge, the
+    post-catch-up assertion below fails.
+    """
+    disk_sha = "1" * 40
+    old_sha = "2" * 40
+    # Patch where production reads: the catch-up late-imports from update_cmd;
+    # the recorder uses update_cmd_fleet's own module-level binding.
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", lambda: True)
+
+    update_cmd._write_fleet_restart_pending_marker()
+    _write_owing_receipt(disk_sha, old_sha)
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+    # Clearing the marker alone must NOT be enough (the original bug).
+    update_cmd_fleet._clear_fleet_restart_pending_marker()
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True
+
+    # The real catch-up entry point discharges the receipt obligation too.
+    update_cmd._write_fleet_restart_pending_marker()
+    update_cmd_fleet._apply_pending_fleet_restart_catchup()
+    assert update_cmd_fleet._pending_fleet_restart_needed() is False
+
+
+def test_catchup_resolution_is_rearmed_by_a_later_pull(monkeypatch):
+    """A resolution is scoped to the SHA it discharged, not forever: a later
+    pull moves HEAD and the obligation must come back."""
+    from hermes_cli.update_receipt import record_fleet_resolution
+
+    disk_sha = "3" * 40
+    old_sha = "4" * 40
+    newer_sha = "5" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    _write_owing_receipt(disk_sha, old_sha)
+    assert record_fleet_resolution(
+        [{"state": "current", "code_sha": disk_sha}], disk_sha
+    ) is True
+    assert update_cmd_fleet._pending_fleet_restart_needed() is False
+
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: newer_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: newer_sha)
+    assert update_cmd_fleet._pending_fleet_restart_needed() is True

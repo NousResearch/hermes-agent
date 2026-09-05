@@ -206,6 +206,56 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
     return finalize_update_receipt(outcome, stop_reason=stop_reason)
 
 
+def record_fleet_resolution(
+    fleet: "list[dict[str, Any]] | None", resolved_sha: str
+) -> bool:
+    """Stamp a completed out-of-band fleet restart onto the latest receipt.
+
+    The pending-fleet-restart catch-up restarts gateways OUTSIDE any open
+    receipt (the already-up-to-date path never begins one), so the receipt
+    that owed the restart is never told the debt was paid. Recording the
+    discharge against ``resolved_sha`` is what actually clears
+    ``_receipt_reports_stale_runtime()``; a later pull moves HEAD and
+    correctly re-arms the obligation. Never raises.
+    """
+    if not resolved_sha:
+        return False
+    try:
+        directory = _receipt_dir()
+        latest = directory / "latest.json"
+        if not latest.is_file():
+            return False
+        data = json.loads(latest.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        if fleet:
+            data["fleet"] = fleet
+        data["fleet_restart_resolved_sha"] = str(resolved_sha)
+        data["fleet_restart_resolved_at"] = _utc_now_iso()
+        payload = json.dumps(data, indent=2, default=str)
+        latest.write_text(payload, encoding="utf-8")
+        # Keep the timestamped twin in sync when it mirrors this receipt, so
+        # the archived copy does not contradict the pointer.
+        try:
+            stamped = sorted(
+                (p for p in directory.glob("update_*.json") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if stamped:
+                twin = json.loads(stamped[0].read_text(encoding="utf-8"))
+                if isinstance(twin, dict) and twin.get("started_at") == data.get(
+                    "started_at"
+                ):
+                    stamped[0].write_text(payload, encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            logger.debug("Could not sync timestamped receipt twin: %s", exc)
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Could not record fleet resolution: %s", exc)
+        return False
+
+
 def _prune_old_receipts(directory: Path) -> None:
     with suppress(Exception):
         receipts = (p for p in directory.glob("update_*.json") if p.is_file())

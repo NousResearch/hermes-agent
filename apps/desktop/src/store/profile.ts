@@ -419,6 +419,14 @@ export function prewarmProfileBackend(name: string): void {
     return
   }
 
+  // ponytail: in "all" scope the rail+list expose every profile (5+). Hover pre-warm across the
+  // whole list spawned one backend per profile → CPU saturation. Keep it lazy/on-demand:
+  // only the active profile's backend warms eagerly; others open on click/selection.
+  // Reuses existing throttle + openGatewayForProfile helper; upgrade to intersection-visible if needed.
+  if ($showAllProfiles.get()) {
+    return
+  }
+
   const now = Date.now()
 
   if (now - (prewarmedAt.get(key) ?? 0) < PREWARM_MIN_INTERVAL_MS) {

@@ -15,31 +15,63 @@ class CopilotProfile(ProviderProfile):
     """GitHub Copilot / GitHub Models — editor headers + reasoning."""
 
     def build_api_kwargs_extras(
-        self, *, model: str | None = None, reasoning_config: dict | None = None,
-        supports_reasoning: bool = False, **ctx,
+        self,
+        *,
+        model: str | None = None,
+        reasoning_config: dict | None = None,
+        supports_reasoning: bool = False,
+        api_key: str | None = None,
+        **ctx,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if not (supports_reasoning and model):
-            return {}, {}
-        try:
-            from hermes_cli.models import clamp_reasoning_effort_to_supported, github_model_reasoning_efforts
+        extra_body: dict[str, Any] = {}
+        if supports_reasoning and model:
+            try:
+                # Resolve supported efforts through the cached catalog helper, not
+                # the bare ``github_model_reasoning_efforts(model)``. The bare call
+                # has no catalog/api_key, so it falls through to the static
+                # GPT/o-series table and returns ``[]`` for Copilot-hosted Claude,
+                # silently dropping ``reasoning_effort`` even though the live
+                # ``/models`` catalog advertises it. ``get_copilot_reasoning_efforts``
+                # consults the live catalog (1-hour cache) and degrades to the
+                # static table only on fetch failure. (PR #51953 fixed the gate and
+                # the legacy path but not this registered-profile path.)
+                from hermes_cli.models import get_copilot_reasoning_efforts
 
-            supported = github_model_reasoning_efforts(model)
-            if not supported:
-                return {}, {}
-            if not reasoning_config:
-                return {"reasoning": {"effort": "medium"}}, {}
-            effort = reasoning_config.get("effort", "medium")
-            # Honor a level the live catalog lists; otherwise clamp to the nearest WEAKER
-            # supported level (never drop straight to medium, which inverted the ladder:
-            # ultra < high). Bespoke levels the ladder can't place fall to medium (or [0]).
-            # See #74295.
-            if effort not in supported:
-                effort = clamp_reasoning_effort_to_supported(effort, list(supported))
-                if effort not in supported:
-                    effort = "medium" if "medium" in supported else supported[0]
-            return {"reasoning": {"effort": effort}}, {}
-        except Exception:
-            return {}, {}
+                supported_efforts = get_copilot_reasoning_efforts(model, api_key)
+                if supported_efforts and reasoning_config:
+                    effort = reasoning_config.get("effort", "medium")
+                    # Honor the requested level when the live Copilot catalog
+                    # lists it as supported: gpt-5.5/gpt-5.4 DO support
+                    # ``xhigh``. Otherwise clamp to the nearest WEAKER
+                    # supported level via the shared ladder helper — the old
+                    # ad-hoc rules dropped everything unrecognized to
+                    # ``medium``, which inverted the ladder: ``ultra`` (the
+                    # strongest ask) resolved weaker than an explicit
+                    # ``high`` (#74295).
+                    if effort not in supported_efforts:
+                        from hermes_cli.models import (
+                            clamp_reasoning_effort_to_supported,
+                        )
+
+                        effort = clamp_reasoning_effort_to_supported(
+                            effort, list(supported_efforts)
+                        )
+                        if effort not in supported_efforts:
+                            # Unrecognized/bespoke level the ladder can't
+                            # place — fall back to medium, then to the
+                            # catalog's first entry.
+                            effort = (
+                                "medium"
+                                if "medium" in supported_efforts
+                                else supported_efforts[0]
+                            )
+                    if effort in supported_efforts:
+                        extra_body["reasoning"] = {"effort": effort}
+                elif supported_efforts:
+                    extra_body["reasoning"] = {"effort": "medium"}
+            except Exception:
+                pass
+        return extra_body, {}
 
 
 copilot = CopilotProfile(

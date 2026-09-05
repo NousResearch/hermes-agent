@@ -448,7 +448,8 @@ class ChatCompletionsTransport(ProviderTransport):
         extra_body_from_profile, top_level_from_profile = profile.build_api_kwargs_extras(
             reasoning_config=reasoning_config, supports_reasoning=params.get("supports_reasoning", False),
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
-            base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
+            base_url=params.get("base_url"), api_key=params.get("api_key"),
+            ollama_num_ctx=params.get("ollama_num_ctx"),
             session_id=params.get("session_id"),
         )
         api_kwargs.update(top_level_from_profile)

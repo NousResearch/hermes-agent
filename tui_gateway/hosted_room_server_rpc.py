@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import itertools
+import logging
 import stat
 import threading
 from collections.abc import Mapping, Sequence
@@ -17,6 +18,7 @@ from gateway import hosted_room_driver as state
 from gateway import hosted_rooms
 
 _LockType = type(threading.Lock())
+logger = logging.getLogger(__name__)
 
 
 class HostedRoomSessionError(RuntimeError):
@@ -45,8 +47,10 @@ class HostedRoomServerRPC:
             envelope = {}
         error = envelope.get("error")
         if isinstance(error, dict):
+            code = int(error.get("code") or 5000)
+            logger.warning("Hosted Group Chat session operation refused: method=%s code=%d", method, code)
             raise HostedRoomSessionError(
-                method, int(error.get("code") or 5000),
+                method, code,
                 str(error.get("message") or "gateway rejected the request"))
         result = envelope.get("result")
         if not isinstance(result, dict):

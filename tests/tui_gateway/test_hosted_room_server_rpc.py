@@ -175,17 +175,19 @@ def test_local_approval_snapshot_and_response_use_exact_request():
     }
 
 
-def test_rpc_errors_are_typed():
+def test_rpc_errors_are_typed(caplog):
     server, _calls = _server()
     server._methods["session.list"] = lambda rid, _params: {
         "id": rid,
-        "error": {"code": 4007, "message": "not found"},
+        "error": {"code": 4007, "message": "private_error_canary"},
     }
     rpc = HostedRoomServerRPC(server)
 
     with pytest.raises(HostedRoomSessionError) as exc:
         rpc.resolve_exact(profile="ops", title="Group: room", source="bot_room")
     assert exc.value.code == 4007
+    assert "method=session.list code=4007" in caplog.text
+    assert "private_error_canary" not in caplog.text
 
 
 def test_prompt_rejection_is_proven_not_admitted():

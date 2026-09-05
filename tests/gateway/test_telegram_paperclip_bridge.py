@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 import types
 import unittest
@@ -183,6 +184,20 @@ class TelegramPaperclipBridgeTests(unittest.TestCase):
         self.assertNotIn("internal-token-value", sent_text)
         adapter.handle_message.assert_not_awaited()
 
+    def test_bridge_credentials_can_come_from_process_environment(self):
+        adapter = FakeAdapter()
+        del adapter.config.extra["paperclip_bridge_bearer_token"]
+        del adapter.config.extra["paperclip_bridge_signing_secret"]
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_PAPERCLIP_BRIDGE_BEARER_TOKEN": "env-token",
+                "HERMES_PAPERCLIP_BRIDGE_SIGNING_SECRET": "env-secret",
+            },
+            clear=False,
+        ):
+            self.assertTrue(is_enabled(adapter))
+
     def test_insecure_remote_bridge_url_disables_integration(self):
         adapter = FakeAdapter()
         adapter.config.extra["paperclip_bridge_url"] = "http://bridge.example.test"
@@ -241,6 +256,23 @@ class TelegramPaperclipBridgeTests(unittest.TestCase):
             query.answer.assert_awaited_once_with(text="Rejected")
 
         self.assertEqual(keys[0], keys[1])
+
+    def test_log_a_job_to_phrase_is_natural_intake(self):
+        adapter = FakeAdapter()
+        event = FakeEvent("log a job to get the data you need")
+        bridge_payload = {
+            "status": "pending_approval",
+            "reply": {
+                "text": "Pending",
+                "buttons": [{"text": "Approve", "action": "approve", "target": "ghlog_jobphrase"}],
+            },
+        }
+
+        with patch("plugins.platforms.telegram.paperclip_bridge.post_json", return_value=(202, bridge_payload)) as post:
+            handled = asyncio.run(maybe_handle_command(adapter, event))
+
+        self.assertTrue(handled)
+        self.assertEqual(post.call_args.args[1]["message"]["command_text"], "get the data you need")
 
     def test_approve_callback_calls_bridge_and_edits_message(self):
         adapter = FakeAdapter()

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 from typing import Any
@@ -12,6 +13,11 @@ CALLBACK_PREFIX = "pcb:"
 BRIDGE_COMMANDS = {"log"}
 MAX_CALLBACK_BYTES = 64
 SAFE_CALLBACK_TARGET = re.compile(r"^[A-Za-z0-9_.-]{1,48}$")
+NATURAL_JOB_PATTERN = re.compile(
+    r"^\s*(?:(?:please|can you|could you|would you)\s+)?"
+    r"log (?:a )?(?:job|task) to\s+(?P<task>\S(?:.*\S)?)\s*$",
+    re.IGNORECASE,
+)
 NATURAL_LOG_PATTERN = re.compile(
     r"^\s*(?:(?:please|can you|could you|would you)\s+)?"
     r"(?:log this(?: in paperclip)?|add (?:this|a task) to paperclip|create (?:a )?paperclip task|put this (?:in|into) paperclip)"
@@ -21,9 +27,16 @@ NATURAL_LOG_PATTERN = re.compile(
 
 
 def _extra(adapter, key: str, default: Any = None) -> Any:
-    extra = getattr(getattr(adapter, "config", None), "extra", {}) or {}
+    secret_env = {
+        "paperclip_bridge_bearer_token": "HERMES_PAPERCLIP_BRIDGE_BEARER_TOKEN",
+        "paperclip_bridge_signing_secret": "HERMES_PAPERCLIP_BRIDGE_SIGNING_SECRET",
+    }
+    env_name = secret_env.get(key)
+    if env_name and os.getenv(env_name):
+        return os.environ[env_name]
+    config = getattr(adapter, "config", None)
+    extra = getattr(config, "extra", None) or {}
     return extra.get(key, default)
-
 
 def _validated_bridge_base_url(adapter) -> str:
     value = str(_extra(adapter, "paperclip_bridge_url", "") or "").strip().rstrip("/")
@@ -83,9 +96,10 @@ def post_json(url: str, body: dict[str, Any], headers: dict[str, str], timeout: 
 def _normalize_command(event) -> tuple[str | None, str]:
     text = str(getattr(event, "text", "") or "")
     if not text.lstrip().startswith("/"):
-        natural_log = NATURAL_LOG_PATTERN.match(text)
-        if natural_log:
-            return "log", natural_log.group("task")
+        for pattern in (NATURAL_JOB_PATTERN, NATURAL_LOG_PATTERN):
+            natural_log = pattern.match(text)
+            if natural_log:
+                return "log", natural_log.group("task")
         return None, ""
     command = event.get_command()
     if not command:

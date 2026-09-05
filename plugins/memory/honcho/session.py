@@ -72,6 +72,12 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
         self._auth_failure: str | None = None
         self._auth_notice_emitted = False
 
+        # base_url → True once a peer_perspective search has returned a
+        # non-empty result, proving the filter works on that server. Absent
+        # means unproven: empty perspective results keep paying the peer_id
+        # retry until proven otherwise.
+        self._perspective_supported: dict[str, bool] = {}
+
         # Behavior knobs copied from config (HonchoClientConfig defaults when absent); the
         # observation booleans map 1:1 to Honcho's SessionPeerConfig toggles.
         for name, default in (
@@ -375,6 +381,7 @@ class HonchoSessionManager(SessionAuthMixin, SessionPeersMixin, SessionContextMi
             return self._context_cache.pop(session_key, {})
 
 
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
@@ -384,3 +391,4 @@ from pathlib import Path  # noqa: F401,E402
 import hashlib  # noqa: F401,E402
 import re  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+

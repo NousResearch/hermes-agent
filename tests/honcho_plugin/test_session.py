@@ -111,6 +111,71 @@ class TestPeerLookupHelpers:
         assert "[assistant" in result
 
 
+    def test_search_context_falls_back_to_peer_id_filter_on_empty_perspective(self):
+        """Older API builds return empty for peer_perspective; retry with peer_id."""
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.base_url = "http://self-hosted"
+        honcho_client.search.side_effect = [
+            [],  # peer_perspective filter unsupported → silently empty
+            [SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1")],
+        ]
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "neuralancer")
+
+        # Peer_id retry returns content despite the empty perspective result.
+        assert "Robert runs neuralancer" in result
+        assert honcho_client.search.call_count == 2
+        first_args, first_kwargs = honcho_client.search.call_args_list[0]
+        second_args, second_kwargs = honcho_client.search.call_args_list[1]
+        assert first_kwargs["filters"] == {"peer_perspective": session.user_peer_id}
+        assert second_kwargs["filters"] == {"peer_id": session.user_peer_id}
+        # A peer_id result does NOT prove the perspective filter works.
+        assert mgr._perspective_supported.get("http://self-hosted") is None
+
+
+    def test_search_context_does_not_retry_when_perspective_returns_results(self):
+        """A non-empty perspective result is final; no peer_id double-probe."""
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.base_url = "http://test"
+        honcho_client.search.return_value = [
+            SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1"),
+        ]
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "neuralancer")
+
+        assert "Robert runs neuralancer" in result
+        assert honcho_client.search.call_count == 1
+        _args, kwargs = honcho_client.search.call_args
+        assert kwargs["filters"] == {"peer_perspective": session.user_peer_id}
+        # Non-empty perspective result marks the filter as supported.
+        assert mgr._perspective_supported.get("http://test") is True
+
+
+    def test_search_context_skips_retry_after_perspective_proven(self):
+        """Once perspective proves non-empty on a base_url, empties are final."""
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.base_url = "http://test"
+        honcho_client.search.side_effect = [
+            [SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1")],
+            [],  # genuinely empty afterwards — must NOT trigger peer_id retry
+        ]
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            first = mgr.search_context(session.key, "neuralancer")
+            second = mgr.search_context(session.key, "nothing")
+
+        assert "Robert runs neuralancer" in first
+        assert second == ""
+        assert honcho_client.search.call_count == 2
+        filters = [call.kwargs["filters"] for call in honcho_client.search.call_args_list]
+        assert filters == [
+            {"peer_perspective": session.user_peer_id},
+            {"peer_perspective": session.user_peer_id},
+        ]
+
+
     def test_create_conclusion_defaults_to_user_target(self):
         mgr, session = self._make_cached_manager()
         assistant_peer = MagicMock()

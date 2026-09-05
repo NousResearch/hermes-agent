@@ -187,6 +187,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # rg resolutions are cached (see SearchMixin._resolve_command).
         self._command_cache: Dict[str, bool] = {}
         self._rg_resolution_cache: Dict[str, str] = {}
+        self._rg_pcre2_capability: Dict[str, bool] = {}
         self._rg_modified_capability: Dict[str, Optional[str]] = {}
 
     def _exec(self, command: str, cwd: str = None, timeout: int = None,

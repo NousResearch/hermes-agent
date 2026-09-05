@@ -32,6 +32,7 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { $workspaceMode, resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
+import { nextTileSessionFocusStamp } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
@@ -54,7 +55,8 @@ import {
   setActiveSessionStoredIdRotation,
   setAwaitingResponse,
   setBusy,
-  setSessions
+  setSessions,
+  setTileSessionFocusStartedAt
 } from './session'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
@@ -1977,6 +1979,15 @@ $focusedStoredSessionId.listen(focused => {
     markSessionRead(focused)
     ackStoredSessionId(focused)
   }
+
+  // Statusbar Session timer: stamp "focused since" for non-primary tiles so
+  // they share the primary's contract instead of durable DB started_at (#103123).
+  const selected = $selectedStoredSessionId.get()
+  const primaryFocused = !focused || focused === selected
+
+  setTileSessionFocusStartedAt(previous =>
+    nextTileSessionFocusStamp(previous, focused, primaryFocused, Date.now())
+  )
 })
 
 // Cold-start restore is the one selection change that is NOT a navigation: the

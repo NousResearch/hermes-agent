@@ -1,10 +1,13 @@
 """Tests for hermes_logging — centralized logging setup."""
 import io
 import logging
+import multiprocessing
 import os
+import queue
 import stat
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +21,44 @@ import hermes_logging
 # (the #44873 fix) but keeps stdlib RotatingFileHandler on POSIX, so importing
 # the name from the module under test keeps the two in lockstep.
 from hermes_logging import RotatingFileHandler
+
+
+_MULTIPROCESS_LOG_RECORDS_PER_ROLE = 32
+_MULTIPROCESS_LOG_PAYLOAD = "多进程日志—Ω—" * 80
+_MULTIPROCESS_LOG_ROLES = (
+    ("supervisor", "tui_gateway.host_supervisor"),
+    ("compute-host", "tui_gateway.compute_host"),
+)
+
+
+def _multiprocess_log_message(role: str, index: int) -> str:
+    return (
+        f"MPLOG::{role}::{index:03d} "
+        f"{_MULTIPROCESS_LOG_PAYLOAD} "
+        f"END::{role}::{index:03d}"
+    )
+
+
+def _write_multiprocess_log_records(
+    hermes_home: str,
+    role: str,
+    logger_name: str,
+    ready_queue,
+    start_event,
+) -> None:
+    """Child entry point for the native-spawn logging integrity test."""
+    try:
+        hermes_logging.setup_logging(hermes_home=Path(hermes_home))
+        ready_queue.put(role)
+        if not start_event.wait(30.0):
+            raise TimeoutError(f"start signal not received for {role}")
+
+        child_logger = logging.getLogger(logger_name)
+        for index in range(_MULTIPROCESS_LOG_RECORDS_PER_ROLE):
+            child_logger.info(_multiprocess_log_message(role, index))
+        hermes_logging.flush_log_queue()
+    finally:
+        hermes_logging._reset_queued_handlers()
 
 
 @pytest.fixture(autouse=True)
@@ -339,6 +380,7 @@ class TestAddRotatingHandler:
             formatter=formatter,
         )
 
+
         rotating_handlers = [
             h for h in hermes_logging._queued_file_handlers
             if isinstance(h, RotatingFileHandler)
@@ -457,6 +499,105 @@ class TestWindowsConcurrentLogLockTimeout:
         finally:
             logger.removeHandler(handler)
             handler.close()
+
+    @pytest.mark.windows_only
+    def test_concurrent_processes_preserve_all_records_on_windows(
+        self, hermes_home
+    ):
+        """The formal logging path keeps every record from two OS processes."""
+        ctx = multiprocessing.get_context("spawn")
+        ready_queue = ctx.Queue()
+        start_event = ctx.Event()
+        processes = [
+            ctx.Process(
+                target=_write_multiprocess_log_records,
+                args=(str(hermes_home), role, logger_name, ready_queue, start_event),
+                name=f"hermes-log-{role}",
+            )
+            for role, logger_name in _MULTIPROCESS_LOG_ROLES
+        ]
+
+        ready_roles = []
+        alive_after_deadline = []
+        exit_codes = {}
+        started_processes = []
+        try:
+            for process in processes:
+                process.start()
+                started_processes.append(process)
+
+            ready_deadline = time.monotonic() + 30.0
+            for _ in processes:
+                remaining = max(0.01, ready_deadline - time.monotonic())
+                try:
+                    ready_roles.append(ready_queue.get(timeout=remaining))
+                except queue.Empty:
+                    pytest.fail(
+                        "logging children did not become ready: "
+                        f"ready={sorted(ready_roles)}"
+                    )
+
+            assert set(ready_roles) == {
+                role for role, _ in _MULTIPROCESS_LOG_ROLES
+            }
+            start_event.set()
+
+            completion_deadline = time.monotonic() + 30.0
+            for process in processes:
+                process.join(max(0.0, completion_deadline - time.monotonic()))
+
+            alive_after_deadline = [
+                process.name for process in processes if process.is_alive()
+            ]
+            exit_codes = {
+                process.name: process.exitcode for process in processes
+            }
+        finally:
+            start_event.set()
+            try:
+                for process in started_processes:
+                    if process.is_alive():
+                        process.terminate()
+                for process in started_processes:
+                    process.join(5.0)
+            finally:
+                ready_queue.close()
+                ready_queue.join_thread()
+
+        assert not alive_after_deadline, (
+            "logging children exceeded completion deadline: "
+            f"{alive_after_deadline}"
+        )
+        assert exit_codes == {
+            "hermes-log-supervisor": 0,
+            "hermes-log-compute-host": 0,
+        }
+
+        log_path = hermes_home / "logs" / "agent.log"
+        assert log_path.exists()
+        content = log_path.read_text(encoding="utf-8")
+        record_lines = [line for line in content.splitlines() if "MPLOG::" in line]
+        expected = {
+            f"MPLOG::{role}::{index:03d}": _multiprocess_log_message(role, index)
+            for role, _ in _MULTIPROCESS_LOG_ROLES
+            for index in range(_MULTIPROCESS_LOG_RECORDS_PER_ROLE)
+        }
+        problems = {
+            marker: {
+                "marker_count": content.count(marker),
+                "complete_count": content.count(message),
+            }
+            for marker, message in expected.items()
+            if content.count(marker) != 1 or content.count(message) != 1
+        }
+
+        expected_count = len(expected)
+        observed_count = len(record_lines)
+        if observed_count != expected_count:
+            pytest.fail(
+                f"expected {expected_count} records, observed {observed_count}"
+            )
+        assert not problems, f"incomplete, missing, or duplicate records: {problems}"
 
 
 

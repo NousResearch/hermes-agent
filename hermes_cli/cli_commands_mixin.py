@@ -2223,6 +2223,27 @@ class CLICommandsMixin:
         else:
             self._goal_set(mgr, arg)
 
+    # `/goal <text>` kicks the loop by queueing the goal text as the next user turn. When that text
+    # is what the user JUST said (a pasted handoff note, a plan the agent already has), re-sending
+    # it makes the agent spend a turn deciding it is a replay (11 API calls, 6 min, in one run) and
+    # duplicates ~2k tokens of context. A short pointer starts the loop just as well.
+    _GOAL_ALREADY_SEEN_KICK = "[Goal set] Continue with the goal you were just given; there is no need to re-read it."
+
+    def _goal_kick_prompt(self, goal: str) -> str:
+        """The goal text, or a short pointer when the last user message already carries it."""
+        last_user = ""
+        for msg in reversed(getattr(self, "conversation_history", None) or []):
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    content = " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+                last_user = str(content or "")
+                break
+        goal_norm = " ".join(goal.split())
+        if goal_norm and goal_norm in " ".join(last_user.split()):
+            return self._GOAL_ALREADY_SEEN_KICK
+        return goal
+
     def _kick_goal(self, prompt: str) -> bool:
         """Queue ``prompt`` as the next turn so the loop starts without a separate message."""
         try:
@@ -2310,7 +2331,7 @@ class CLICommandsMixin:
         _cp(_dim_line(f"After each turn, a judge model checks if the goal is done{against}. "
                       "Hermes keeps working until it is, you pause/clear it, or the budget is "
                       "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear."))
-        self._kick_goal(state.goal)
+        self._kick_goal(self._goal_kick_prompt(state.goal))
 
     def _print_goal_set(self, state, contract_label: str) -> None:
         _cp(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
@@ -2343,7 +2364,7 @@ class CLICommandsMixin:
         else:
             _cp(_dim_line("Couldn't draft a contract (aux model unavailable) — running as a "
                           "free-form goal. The per-turn judge still applies."))
-        self._kick_goal(state.goal)
+        self._kick_goal(self._goal_kick_prompt(state.goal))
 
     def _handle_loop_command(self, cmd: str) -> None:
         """Dispatch /loop — recurring in-session wakeups: ``/loop [interval] <prompt> [--times N]

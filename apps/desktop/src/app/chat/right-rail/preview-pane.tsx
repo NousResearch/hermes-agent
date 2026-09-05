@@ -54,7 +54,7 @@ import {
   waitAnnotateEvent
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
-import { PreviewBrowserBar } from './preview-browser-bar'
+import { PreviewBrowserBar, previewBrowserBarWindowAction } from './preview-browser-bar'
 import {
   clampConsoleHeight,
   compactUrl,
@@ -319,6 +319,13 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   // `about:blank` paints a white void that reads as broken next to the app's
   // dark chrome, so the pane says what it is instead.
   const isBlankPage = isWebPreview && !isRemoteHtml && (!currentUrl || /^about:blank\/?$/i.test(currentUrl))
+
+  const windowAction = previewBrowserBarWindowAction({
+    canOpenBrowserWindow: canOpenBrowserWindow(),
+    isBrowserWindow: isBrowserWindow(),
+    tabId,
+    targetKind: target.kind
+  })
 
   const previewLabel =
     target.label && target.label.replace(/\/$/, '') !== currentLabel.replace(/\/$/, '') ? target.label : currentLabel
@@ -1297,14 +1304,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onForward={goForward}
             onNavigate={navigateTo}
             onOpenExternal={
-              !isBrowserWindow() && !canOpenBrowserWindow()
-                ? () => void window.hermesDesktop?.openExternal(currentUrl)
-                : undefined
+              windowAction === 'open-external' ? () => void window.hermesDesktop?.openExternal(currentUrl) : undefined
             }
-            onPopIn={isBrowserWindow() ? () => window.close() : undefined}
-            onPopOut={
-              isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
-            }
+            onPopIn={windowAction === 'pop-in' ? () => window.close() : undefined}
+            onPopOut={windowAction === 'pop-out' && tabId ? () => popOutBrowserTab(tabId) : undefined}
             onReload={reloadPreview}
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}

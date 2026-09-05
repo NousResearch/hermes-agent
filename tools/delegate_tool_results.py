@@ -30,8 +30,9 @@ def _stringify_tool_content(content: Any) -> str:
 
 def _looks_like_error_output(content: Any) -> bool:
     """Conservative error detector for tool-result previews: structured JSON with
-    an ``error`` key or an error/failed ``status``, or a first line starting with a
-    classic error marker. (Substring "error" alone painted normal output red.)"""
+    an ``error`` key, a non-zero numeric ``exit_code``, or an error/failed
+    ``status``; otherwise a first line starting with a classic error marker.
+    (Substring "error" alone painted normal output red.)"""
     content = _stringify_tool_content(content)
     if not content:
         return False
@@ -40,10 +41,14 @@ def _looks_like_error_output(content: Any) -> bool:
             parsed = json.loads(content)
         except Exception:
             parsed = None
-        if isinstance(parsed, dict) and (
-            parsed.get("error") or str(parsed.get("status") or "").strip().lower() in {"error", "failed", "failure", "timeout"}
-        ):
-            return True
+        if isinstance(parsed, dict):
+            exit_code = parsed.get("exit_code")
+            if (
+                parsed.get("error")
+                or (isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0)
+                or str(parsed.get("status") or "").strip().lower() in {"error", "failed", "failure", "timeout"}
+            ):
+                return True
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return first.startswith(("error:", "failed:", "traceback ", "exception:"))
 

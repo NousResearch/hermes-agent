@@ -601,6 +601,41 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(trace[0]["status"], "ok")
             self.assertGreater(trace[0]["result_bytes"], 0)
 
+    def test_terminal_nonzero_exit_is_error_in_tool_trace(self):
+        """A terminal command can fail with empty output and ``error: null``;
+        its numeric exit code is the host-owned failure signal."""
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": "Everything passed.",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [
+                    {"role": "assistant", "tool_calls": [
+                        {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"command": "false"}'}},
+                        {"id": "tc_2", "function": {"name": "terminal", "arguments": '{"command": "true"}'}},
+                    ]},
+                    {"role": "tool", "tool_call_id": "tc_1",
+                     "content": '{"output":"","exit_code":1,"error":null}'},
+                    {"role": "tool", "tool_call_id": "tc_2",
+                     "content": '{"output":"","exit_code":0,"error":null}'},
+                ],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test terminal evidence", parent_agent=parent))
+            entry = result["results"][0]
+            trace = entry["tool_trace"]
+
+            self.assertEqual(entry["status"], "completed")
+            self.assertEqual([item["status"] for item in trace], ["error", "ok"])
+
     def test_parallel_tool_calls_paired_correctly(self):
         """Parallel tool calls should each get their own result via tool_call_id matching."""
         parent = _make_mock_parent(depth=0)

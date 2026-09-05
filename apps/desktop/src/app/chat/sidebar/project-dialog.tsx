@@ -36,7 +36,7 @@ import {
 // add-folder flows driven by the $projectDialog atom. Folders are chosen via
 // the native directory picker (reused from the default-project-dir setting).
 export function ProjectDialog() {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const p = t.sidebar.projects
   const state = useStore($projectDialog)
   const open = state !== null
@@ -71,7 +71,7 @@ export function ProjectDialog() {
       setName(state?.name ?? '')
       setFolders([])
       setIdea('')
-      setTemplates(randomIdeaTemplates())
+      setTemplates(randomIdeaTemplates(locale))
       setGeneratingIdea(false)
       setSubmitting(false)
 
@@ -79,7 +79,7 @@ export function ProjectDialog() {
         window.setTimeout(() => nameRef.current?.select(), 0)
       }
     }
-  }, [open, mode, state?.name])
+  }, [locale, open, mode, state?.name])
 
   const onOpenChange = (next: boolean) => {
     if (!next) {
@@ -295,7 +295,7 @@ export function ProjectDialog() {
                   aria-label={p.ideaShuffle}
                   className="size-5 text-(--ui-text-quaternary) hover:text-foreground"
                   disabled={submitting}
-                  onClick={() => setTemplates(randomIdeaTemplates())}
+                  onClick={() => setTemplates(randomIdeaTemplates(locale))}
                   size="icon-xs"
                   type="button"
                   variant="ghost"

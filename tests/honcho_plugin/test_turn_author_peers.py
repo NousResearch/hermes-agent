@@ -100,9 +100,27 @@ class TestResolveAuthorPeerId:
         assert mgr.resolve_author_peer_id("telegram:dm1", "bot:") == "bot-"
 
     def test_pin_peer_name_does_not_collapse_bot_authors(self):
-        """The pin unifies the operator's accounts; a bot's words never land under the human's peer."""
+        """The pin unifies the operator's accounts. A bot's words never land under the human's peer."""
         mgr = _manager(_config(pin_peer_name=True), runtime_id="7654321")
         assert mgr.resolve_author_peer_id("telegram:dm1", "bot:coder") == "coder"
+
+    def test_platform_bot_gets_its_own_peer_even_when_pinned(self):
+        """A Telegram bot arrives with a raw user id and the bot flag, never a ``bot:`` id."""
+        mgr = _manager(_config(pin_peer_name=True, runtime_peer_prefix="tg_"), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "5551234", "SomeBot", is_bot=True) == "tg_5551234"
+
+    def test_platform_bot_alias_wins(self):
+        mgr = _manager(_config(user_peer_aliases={"5551234": "coder"}), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "5551234", is_bot=True) == "coder"
+
+    def test_platform_bot_matching_the_session_peer_still_gets_its_own_peer(self):
+        """The session's runtime id is the human's. A bot claiming it must not inherit the human's peer."""
+        mgr = _manager(_config(), runtime_id="7654321")
+        assert mgr.resolve_author_peer_id("telegram:dm1", "7654321", is_bot=True) == "7654321"
+
+    def test_assistant_peer_id_matches_the_session_builder(self):
+        assert _manager(_config(ai_peer="My Agent")).assistant_peer_id() == "My-Agent"
+        assert _manager(_config(ai_peer="")).assistant_peer_id() == "hermes-assistant"
 
     def test_display_name_never_becomes_a_peer_id(self):
         """Display names are attacker-influenceable on most platforms."""
@@ -248,7 +266,7 @@ class TestProviderReadsTheAuthor:
         assert all(c[1]["author_peer_id"] == "alice" for c in user_calls)
 
     def test_sync_turn_prefers_the_turn_author_keyword(self):
-        """The manager passes the author with the turn; the stash is only a fallback."""
+        """The manager passes the author with the turn. The stash is only a fallback."""
         provider = self._provider()
         provider._session_initialized = True
         provider._manager.get_or_create.return_value = MagicMock()

@@ -42,7 +42,7 @@ class TestA2aRouting:
 
         _sync(provider, turn_author=BOT_AUTHOR)
 
-        provider._manager.get_or_create.assert_called_once_with("Bot-Chat:a2a:bot-coder", user_peer_id="coder")
+        provider._manager.get_or_create.assert_called_once_with(provider._a2a_session_key("bot:coder"), user_peer_id="coder")
         session = provider._manager.get_or_create.return_value
         roles = [c[0][0] for c in session.add_message.call_args_list]
         assert roles == ["user", "assistant"]
@@ -66,17 +66,17 @@ class TestA2aRouting:
         _sync(provider, turn_author=BOT_AUTHOR)
 
         keys = {c[0][0] for c in provider._manager.get_or_create.call_args_list}
-        assert keys == {"Bot-Chat:a2a:bot-coder"}
+        assert keys == {provider._a2a_session_key("bot:coder")}
 
     def test_two_bots_get_two_sessions(self):
         provider = _provider()
-        provider._manager.resolve_author_peer_id.side_effect = lambda key, author_id, name=None: author_id[4:]
+        provider._manager.resolve_author_peer_id.side_effect = lambda key, author_id, name=None, **kw: author_id[4:]
 
         _sync(provider, turn_author=BOT_AUTHOR)
         _sync(provider, turn_author={"id": "bot:writer", "name": "writer", "is_bot": True})
 
         keys = [c[0][0] for c in provider._manager.get_or_create.call_args_list]
-        assert keys == ["Bot-Chat:a2a:bot-coder", "Bot-Chat:a2a:bot-writer"]
+        assert keys == [provider._a2a_session_key("bot:coder"), provider._a2a_session_key("bot:writer")]
 
     def test_bot_author_without_an_id_is_skipped(self):
         provider = _provider()
@@ -85,14 +85,40 @@ class TestA2aRouting:
 
         provider._manager.get_or_create.assert_not_called()
 
-    def test_unresolvable_bot_peer_keeps_the_default_user_peer(self):
-        """When no author peer resolves, the a2a session still opens under the resolved peer."""
+    def test_bot_is_resolved_as_a_bot_whatever_its_id_looks_like(self):
+        """A platform bot carries a raw user id and the bot flag. The resolver must not treat it as a human."""
+        provider = _provider()
+        provider._manager.resolve_author_peer_id.return_value = "tg_5551234"
+
+        _sync(provider, turn_author={"id": "5551234", "name": "SomeBot", "is_bot": True})
+
+        provider._manager.resolve_author_peer_id.assert_called_once_with("Bot-Chat", "5551234", "SomeBot", is_bot=True)
+        provider._manager.get_or_create.assert_called_once_with(provider._a2a_session_key("5551234"), user_peer_id="tg_5551234")
+
+    def test_unresolvable_bot_peer_skips_the_write(self):
+        """A bot's words never land under the human's peer, so no peer means no write."""
         provider = _provider()
         provider._manager.resolve_author_peer_id.return_value = None
 
         _sync(provider, turn_author=BOT_AUTHOR)
 
-        provider._manager.get_or_create.assert_called_once_with("Bot-Chat:a2a:bot-coder")
+        provider._manager.get_or_create.assert_not_called()
+
+    def test_bot_colliding_with_this_agents_ai_peer_is_skipped(self):
+        """One peer cannot be both sides of a session."""
+        provider = _provider()
+        provider._manager.resolve_author_peer_id.return_value = "hermes"
+        provider._manager.assistant_peer_id.return_value = "hermes"
+
+        _sync(provider, turn_author=BOT_AUTHOR)
+
+        provider._manager.get_or_create.assert_not_called()
+
+    def test_ids_that_sanitize_alike_get_different_sessions(self):
+        provider = _provider()
+        keys = {provider._a2a_session_key(bot) for bot in ("bot:a.b", "bot:a-b", "bot:a_b", "bot:a:b")}
+        assert len(keys) == 4
+        assert all(key.startswith("Bot-Chat:a2a:bot-a") for key in keys)
 
     def test_long_session_key_stays_within_the_honcho_limit(self):
         provider = _provider()
@@ -104,6 +130,46 @@ class TestA2aRouting:
         key = provider._manager.get_or_create.call_args[0][0]
         assert len(key) <= 100
         assert key == provider._a2a_session_key("bot:coder")
+
+
+class TestToolWritesDuringBotTurn:
+    def _tools_provider(self, author: dict) -> HonchoMemoryProvider:
+        provider = _provider()
+        provider._turn_author = dict(author)
+        provider._manager.create_conclusion.return_value = True
+        provider._manager.delete_conclusion.return_value = True
+        provider._manager.set_peer_card.return_value = ["fact"]
+        provider._manager.list_conclusions.return_value = []
+        return provider
+
+    def test_conclude_and_delete_are_refused(self):
+        provider = self._tools_provider(BOT_AUTHOR)
+        assert "error" in json.loads(provider._tool_conclude({"conclusion": "likes tea"}))
+        assert "error" in json.loads(provider._tool_conclude({"delete_id": "c1"}))
+        provider._manager.create_conclusion.assert_not_called()
+        provider._manager.delete_conclusion.assert_not_called()
+
+    def test_listing_still_works(self):
+        provider = self._tools_provider(BOT_AUTHOR)
+        assert json.loads(provider._tool_conclude({"list": True})) == {"conclusions": []}
+
+    def test_profile_card_write_is_refused_but_read_works(self):
+        provider = self._tools_provider(BOT_AUTHOR)
+        assert "error" in json.loads(provider._tool_profile({"card": ["fact"]}))
+        provider._manager.set_peer_card.assert_not_called()
+        provider._manager.get_peer_card.return_value = ["fact"]
+        assert json.loads(provider._tool_profile({})) == {"result": ["fact"]}
+
+    def test_memory_mirror_is_skipped(self):
+        provider = self._tools_provider(BOT_AUTHOR)
+        provider.on_memory_write("add", "user", "likes tea")
+        assert provider._memwrite_thread is None
+        provider._manager.create_conclusion.assert_not_called()
+
+    def test_human_turn_writes_normally(self):
+        provider = self._tools_provider(HUMAN_AUTHOR)
+        assert json.loads(provider._tool_conclude({"conclusion": "likes tea"}))["result"].startswith("Conclusion saved")
+        assert "card" in json.loads(provider._tool_profile({"card": ["fact"]}))
 
 
 class TestFlagOff:
@@ -151,7 +217,7 @@ class TestManagerUserPeerOverride:
         mgr._get_or_create_peer = MagicMock(side_effect=lambda pid: MagicMock(name=f"peer:{pid}"))
         mgr._get_or_create_honcho_session = MagicMock(return_value=(MagicMock(), []))
 
-        session = mgr.get_or_create("Bot-Chat:a2a:bot-coder", user_peer_id="coder")
+        session = mgr.get_or_create("Bot-Chat:a2a:bot-coder-0123abcd", user_peer_id="coder")
 
         assert session.user_peer_id == "coder"
         assert session.assistant_peer_id == "hermes"

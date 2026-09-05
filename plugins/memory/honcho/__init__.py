@@ -8,6 +8,7 @@ Config chain: $HERMES_HOME/honcho.json -> ~/.honcho/config.json -> env vars.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -555,9 +556,10 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     _is_trivial_prompt = staticmethod(is_trivial_prompt)
 
     def identity_signature(self) -> Dict[str, Any]:
-        """Identity-mapping values from honcho.json that must bust a cached gateway agent when they
-        change. Reads config only, never the network, and memoizes on the file's mtime and size so the
-        per-message call stays a stat. ``{}`` when the config cannot be read."""
+        """Identity-mapping values from honcho.json that bust a cached gateway agent when they change.
+
+        Memoized on the file's mtime and size, so the per-message call is one stat. ``{}`` when the
+        config cannot be read."""
         try:
             path = resolve_config_path()
             try:
@@ -638,7 +640,7 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     ) -> None:
         """Record the conversation turn in Honcho (non-blocking), chunking messages that
         exceed the Honcho API limit. Honors saveMessages: false. ``turn_author`` names who wrote
-        the user side; the ``on_turn_start`` stash is the fallback for callers that never pass it.
+        the user side. The ``on_turn_start`` stash is the fallback for callers that never pass it.
         A bot author's turn is written into that bot's own a2a session, never the human's."""
         if not self._writes_enabled():
             return
@@ -667,11 +669,14 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
             if not author_id:
                 logger.debug("Honcho sync skipped a bot-authored turn that named no author id")
                 return
-            bot_peer_id = self._manager.resolve_author_peer_id(self._session_key, author_id, author.get("name"))
+            bot_peer_id = self._manager.resolve_author_peer_id(
+                self._session_key, author_id, author.get("name"), is_bot=True)
+            if not bot_peer_id or bot_peer_id == self._manager.assistant_peer_id():
+                logger.debug("Honcho sync skipped a bot-authored turn: author %s has no peer of its own", author_id)
+                return
             session_key = self._a2a_session_key(author_id)
             # The bot is the a2a session's own user peer, so its messages need no per-message author.
-            if bot_peer_id:
-                session_kwargs["user_peer_id"] = bot_peer_id
+            session_kwargs["user_peer_id"] = bot_peer_id
             author_peer_id = None
         else:
             session_key = self._session_key
@@ -692,10 +697,18 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._sync_thread = self._spawn_write(_sync, "honcho-sync", "Honcho sync_turn failed: %s")
 
     def _a2a_session_key(self, author_id: str) -> str:
-        """Honcho session for one sender bot's DMs into this agent, stable across turns. Rooms already
-        get their own session by title, so only DMs reroute."""
-        key = f"{self._session_key}:a2a:{re.sub(r'[^a-zA-Z0-9_-]', '-', author_id)}"
+        """Honcho session for one sender bot's turns into this agent, stable across turns.
+
+        The digest keeps two ids apart when sanitizing would make them equal."""
+        digest = hashlib.sha256(author_id.encode("utf-8")).hexdigest()[:8]
+        key = f"{self._session_key}:a2a:{re.sub(r'[^a-zA-Z0-9_-]', '-', author_id)}-{digest}"
         return HonchoClientConfig._enforce_session_id_limit(key, key)
+
+    def _bot_turn_write_refusal(self) -> Optional[str]:
+        """Refusal for memory writes while a bot-authored turn runs. Conclusions and cards describe the human."""
+        if self._turn_author.get("is_bot"):
+            return tool_error("Honcho memory writes are off during a bot-to-bot turn. Conclusions and profile edits describe the human.")
+        return None
 
     @staticmethod
     def _spawn_write(fn: Callable[[], None], name: str, fail_msg: str) -> threading.Thread:
@@ -716,6 +729,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         """Mirror built-in user-profile writes as Honcho conclusions (``metadata`` accepted
         for interface compatibility, not yet threaded into the conclusion payload)."""
         if action != "add" or target != "user" or not content:
+            return
+        if self._turn_author.get("is_bot"):
+            logger.debug("Honcho memory mirror skipped during a bot-authored turn")
             return
         if not self._writes_enabled() or not self._ready_or_kick_init():
             return
@@ -769,6 +785,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
     def _tool_profile(self, args: dict) -> str:
         peer = args.get("peer", "user")
         if card_update := args.get("card"):
+            if refusal := self._bot_turn_write_refusal():
+                return refusal
             result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
             if result is None:
                 return tool_error("Failed to update peer card.")
@@ -833,6 +851,8 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
 
         if list_mode:
             return json.dumps({"conclusions": self._manager.list_conclusions(self._session_key, query=query or None, peer=peer)})
+        if refusal := self._bot_turn_write_refusal():
+            return refusal
         if delete_id:
             if self._manager.delete_conclusion(self._session_key, delete_id, peer=peer):
                 return json.dumps({"result": f"Conclusion {delete_id} deleted."})

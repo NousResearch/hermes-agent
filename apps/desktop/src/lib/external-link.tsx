@@ -27,8 +27,27 @@ const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/
 const ERROR_TITLE_RE =
   /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|not found|request blocked|too many requests)\b/i
 
+// Wire-format directive wrapper. Only link-ish kinds unwrap here — `@file:` /
+// `@folder:` values are local paths, and unwrapping those would turn an
+// obviously-inert token into a plausible-looking link value (#93893 review).
+const DIRECTIVE_WRAPPER_RE = /^@(?:url|image):(`[^`\n]*`|"[^"\n]*"|'[^'\n]*'|\S+)/
+
 export function normalizeExternalUrl(value: string): string {
-  const trimmed = value.trim()
+  let trimmed = value.trim()
+
+  const wrapped = DIRECTIVE_WRAPPER_RE.exec(trimmed)
+
+  if (wrapped) {
+    const inner = wrapped[1]
+
+    trimmed = (
+      inner.length >= 2 && (inner[0] === '`' || inner[0] === '"' || inner[0] === "'") && inner.at(-1) === inner[0]
+        ? inner.slice(1, -1)
+        : // Bare (unquoted) form: peel trailing prose punctuation so
+          // `@url:https://example.com.` doesn't keep the dot as a host segment.
+          inner.replace(/[.,;:!?)\]}'"]+$/, '')
+    ).trim()
+  }
 
   if (!trimmed || /^https?:\/\//i.test(trimmed)) {
     return trimmed

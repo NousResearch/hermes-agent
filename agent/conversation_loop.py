@@ -28,7 +28,7 @@ from agent.prompt_caching import (
     strip_anthropic_tool_cache_control,
 )
 from agent.runtime_cwd import resolve_agent_cwd
-from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PreflightCompressionTimedOut, build_turn_context, compose_effective_system_tail
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
@@ -1045,7 +1045,7 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     if not isinstance(sp, str) or not sp:
         return active_system_prompt
     if api_messages and api_messages[0].get("role") == "system":
-        effective = (sp + "\n\n" + agent.ephemeral_system_prompt).strip() if agent.ephemeral_system_prompt else sp
+        effective = compose_effective_system_tail(agent, sp)
         if not _rewrite_system_content_blocks(api_messages[0], effective):
             api_messages[0]["content"] = effective
     return sp
@@ -1461,6 +1461,23 @@ def run_conversation(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+
+    # ── Per-turn clock ──
+    # Stamp the current time ONCE per turn as a transient attribute (never
+    # persisted, never cached). The system prompt itself must stay
+    # byte-stable for the provider prefix cache, so the timestamp rides on
+    # the ephemeral tail (appended AFTER the cached prefix at API-call
+    # time by compose_effective_system_tail). Dedicated attribute — do NOT
+    # mutate agent.ephemeral_system_prompt: on a cached gateway agent that
+    # would stack "ts2\nts1\nbase" across turns.
+    try:
+        from hermes_time import now as _hermes_now
+        _ts = _hermes_now()
+        agent._current_turn_timestamp = (
+            f"Current time: {_ts.strftime('%A %Y-%m-%d %H:%M %Z')}"
+        )
+    except Exception:
+        agent._current_turn_timestamp = ""
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

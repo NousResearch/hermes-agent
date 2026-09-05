@@ -767,6 +767,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._password: str = config.extra.get("password", "") or _startup_env_secret("MATRIX_PASSWORD")
         self._e2ee_mode: str = _resolve_e2ee_mode(config.extra)
         self._encryption: bool = self._e2ee_mode != "off"
+        self._e2ee_off_warned_rooms: set = set()  # one visibility warning per room (#84693)
         self._device_id: str = config.extra.get("device_id", "") or os.getenv("MATRIX_DEVICE_ID", "")
         self._device_id_unverified: bool = False
         self._client: Any = None  # mautrix.client.Client
@@ -1265,6 +1266,10 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message, wait_sync=True)
         client.add_event_handler(EventType.REACTION, self._on_reaction, wait_sync=True)
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
+        if not self._encryption:
+            # Without a crypto machine (mode off, or optional degraded by missing deps) the sync
+            # dispatcher finds no listener for m.room.encrypted and drops it silently (#84693).
+            client.add_event_handler(EventType.ROOM_ENCRYPTED, self._on_encrypted_event_e2ee_off, wait_sync=True)
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
@@ -1869,6 +1874,20 @@ class MatrixAdapter(BasePlatformAdapter):
                 "the startup grace filter to silently discard every incoming message. Run "
                 "`timedatectl set-ntp true` (or sync NTP) and restart the bot.", self._late_grace_drops, skew)
             self._clock_skew_warned = True
+
+    async def _on_encrypted_event_e2ee_off(self, event: Any) -> None:
+        """E2EE disabled or degraded: surface dropped m.room.encrypted events instead of failing
+        silently — a bot that joins an encrypted room and never replies otherwise leaves no log
+        line at all (#84693)."""
+        room_id = str(getattr(event, "room_id", "")) or "(unknown room)"
+        if room_id in self._e2ee_off_warned_rooms:
+            return
+        self._e2ee_off_warned_rooms.add(room_id)
+        reason = "E2EE dependencies are missing" if self._e2ee_mode != "off" else "E2EE is disabled"
+        logger.warning(
+            "Matrix: dropping encrypted event in %s — %s, so this room cannot be read. Set "
+            "MATRIX_E2EE_MODE=required (or MATRIX_ENCRYPTION=true) and restart to enable it. %s",
+            room_id, reason, "" if self._e2ee_mode == "off" else _E2EE_INSTALL_HINT)
 
     async def _on_room_message(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", ""))

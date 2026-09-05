@@ -126,7 +126,7 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     ``gateway.platforms.*`` → top-level ``platforms.*`` → ``gateway.<platform>`` subsections (nested
     first so top-level config keeps precedence, matching the gateway.streaming fallback). An
     ``enabled`` key in any block sets the ``_enabled_explicit`` marker consumed by the env pass.
-    Finally api_server's port/key/host/cors_origins/model_name are bridged into ``extra`` so
+    Finally api_server's server-specific keys are bridged into ``extra`` so
     ``gateway.api_server.port: 8642`` reaches the adapter (mirrors the env path).
     """
     platforms_data = _dict_slot(gw_data, "platforms")
@@ -155,7 +155,10 @@ def merge_platform_sections(yaml_cfg: dict, gateway_cfg: Any, gw_data: dict) -> 
     api_plat = platforms_data.get("api_server")
     if isinstance(api_plat, dict):
         api_extra = _dict_slot(api_plat, "extra")
-        for key in ("port", "key", "host", "cors_origins", "model_name"):
+        for key in (
+            "port", "key", "host", "cors_origins", "model_name",
+            "responses_client_managed_session_id",
+        ):
             if key in api_plat and key not in api_extra:
                 api_extra[key] = api_plat.pop(key)
     return platforms_data

@@ -288,13 +288,20 @@ class TestConcurrencyCap:
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
+def _make_adapter(
+    api_key: str = "",
+    cors_origins=None,
+    *,
+    responses_client_managed_session_id: bool = False,
+) -> APIServerAdapter:
     """Create an adapter with optional API key."""
     extra = {}
     if api_key:
         extra["key"] = api_key
     if cors_origins is not None:
         extra["cors_origins"] = cors_origins
+    if responses_client_managed_session_id:
+        extra["responses_client_managed_session_id"] = True
     config = PlatformConfig(enabled=True, extra=extra)
     return APIServerAdapter(config)
 
@@ -1618,6 +1625,53 @@ class TestResponsesEndpoint:
 
 class TestResponsesStreaming:
 
+    @pytest.mark.asyncio
+    async def test_stream_receives_client_managed_session_id(self):
+        adapter = _make_adapter(
+            api_key="sk-secret", responses_client_managed_session_id=True
+        )
+        app = _create_app(adapter)
+
+        class _FakeTask:
+            def add_done_callback(self, _callback):
+                pass
+
+        def _fake_ensure_future(coro):
+            coro.close()
+            return _FakeTask()
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock),
+                patch(
+                    "gateway.platforms.api_server.asyncio.ensure_future",
+                    side_effect=_fake_ensure_future,
+                ),
+                patch.object(
+                    adapter, "_write_sse_responses", new_callable=AsyncMock
+                ) as mock_write_sse,
+            ):
+                mock_write_sse.return_value = web.Response(status=200, text="ok")
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "X-Hermes-Session-Id": "openwebui-chat-42",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "input": "hi",
+                        "stream": True,
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_write_sse.call_args.kwargs["session_id"] == "openwebui-chat-42"
+            assert (
+                mock_write_sse.call_args.kwargs["client_session_id"]
+                == "openwebui-chat-42"
+            )
+
 
     @pytest.mark.asyncio
     async def test_stream_task_done_callback_enqueues_eos_for_responses(self, adapter):
@@ -2232,6 +2286,26 @@ class TestCORS:
             assert resp.status == 200
             assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
 
+    @pytest.mark.asyncio
+    async def test_cors_allows_hermes_session_headers(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.options(
+                "/v1/responses",
+                headers={
+                    "Origin": "http://localhost:3000",
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": (
+                        "X-Hermes-Session-Id, X-Hermes-Session-Key"
+                    ),
+                },
+            )
+            assert resp.status == 200
+            allowed = resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "X-Hermes-Session-Id" in allowed
+            assert "X-Hermes-Session-Key" in allowed
+
 
     @pytest.mark.asyncio
     async def test_cors_options_preflight_allowed_for_configured_origin(self):
@@ -2385,6 +2459,245 @@ class TestSessionIdHeader:
             assert call_kwargs["conversation_history"] == db_history
             assert call_kwargs["user_message"] == "new question"
 
+    @pytest.mark.asyncio
+    async def test_responses_session_header_is_disabled_by_default(self, auth_adapter):
+        """Responses ignores the extension until the operator enables it."""
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                auth_adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "X-Hermes-Session-Id": "openwebui-chat-42",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={"model": "hermes-agent", "input": "new question"},
+                )
+
+            assert resp.status == 200
+            session_id = mock_run.call_args.kwargs["session_id"]
+            assert session_id != "openwebui-chat-42"
+            assert resp.headers["X-Hermes-Session-Id"] == session_id
+
+    @pytest.mark.asyncio
+    async def test_enabled_responses_session_header_selects_client_session(self):
+        """An enabled Responses client owns the Hermes session identity."""
+        adapter = _make_adapter(
+            api_key="sk-secret", responses_client_managed_session_id=True
+        )
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "X-Hermes-Session-Id": "openwebui-chat-42",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "conversation_history": [
+                            {"role": "user", "content": "earlier question"},
+                            {"role": "assistant", "content": "earlier answer"},
+                        ],
+                        "input": "new question",
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["session_id"] == "openwebui-chat-42"
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "earlier question"},
+                {"role": "assistant", "content": "earlier answer"},
+            ]
+            assert resp.headers["X-Hermes-Session-Id"] == "openwebui-chat-42"
+
+    @pytest.mark.asyncio
+    async def test_responses_session_header_requires_configured_api_key(self):
+        adapter = _make_adapter(responses_client_managed_session_id=True)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={"X-Hermes-Session-Id": "openwebui-chat-42"},
+                    json={"model": "hermes-agent", "input": "new question"},
+                )
+
+            assert resp.status == 403
+            mock_run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_enabled_responses_session_header_outranks_stateful_chain(self):
+        """The explicit switch delegates identity to the client in every mode."""
+        adapter = _make_adapter(
+            api_key="sk-secret", responses_client_managed_session_id=True
+        )
+        adapter._response_store.put(
+            "resp_previous",
+            {
+                "response": {"id": "resp_previous", "status": "completed"},
+                "conversation_history": [
+                    {"role": "user", "content": "old question"},
+                    {"role": "assistant", "content": "old answer"},
+                ],
+                "session_id": "session-from-chain",
+            },
+        )
+        mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    headers={
+                        "X-Hermes-Session-Id": "stale-client-session",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "input": "new question",
+                        "previous_response_id": "resp_previous",
+                    },
+                )
+
+            assert resp.status == 200
+            assert resp.headers["X-Hermes-Session-Id"] == "stale-client-session"
+            assert mock_run.call_args.kwargs["session_id"] == "stale-client-session"
+
+    @pytest.mark.asyncio
+    async def test_stream_rotation_resumes_through_client_response_chain(self):
+        """A stable client ID resumes the effective session stored by SSE."""
+        adapter = _make_adapter(
+            api_key="sk-secret", responses_client_managed_session_id=True
+        )
+        app = _create_app(adapter)
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        first_result = {
+            "final_response": "first",
+            "messages": [],
+            "api_calls": 1,
+            "session_id": "session-after-compression",
+        }
+        second_result = {
+            "final_response": "second",
+            "messages": [],
+            "api_calls": 1,
+            "session_id": "session-after-compression",
+        }
+        headers = {
+            "X-Hermes-Session-Id": "openwebui-chat-42",
+            "Authorization": "Bearer sk-secret",
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new=AsyncMock(side_effect=[(first_result, usage), (second_result, usage)]),
+            ) as mock_run:
+                first = await cli.post(
+                    "/v1/responses",
+                    headers=headers,
+                    json={"model": "hermes-agent", "input": "first", "stream": True},
+                )
+                stream_events = [
+                    json.loads(line.removeprefix("data: "))
+                    for line in (await first.text()).splitlines()
+                    if line.startswith("data: {")
+                ]
+                completed = next(
+                    event
+                    for event in stream_events
+                    if event["type"] == "response.completed"
+                )
+                first_response_id = completed["response"]["id"]
+                second = await cli.post(
+                    "/v1/responses",
+                    headers=headers,
+                    json={
+                        "model": "hermes-agent",
+                        "input": "second",
+                        "previous_response_id": first_response_id,
+                        "conversation_history": [
+                            {"role": "user", "content": "first"},
+                            {"role": "assistant", "content": "first"},
+                        ],
+                    },
+                )
+
+        assert first.status == 200
+        assert first.headers["X-Hermes-Session-Id"] == "openwebui-chat-42"
+        assert second.status == 200
+        assert mock_run.await_args_list[0].kwargs["session_id"] == "openwebui-chat-42"
+        assert (
+            mock_run.await_args_list[1].kwargs["session_id"]
+            == "session-after-compression"
+        )
+        stored = adapter._response_store.get(first_response_id)
+        assert stored["client_session_id"] == "openwebui-chat-42"
+        assert stored["session_id"] == "session-after-compression"
+
+    @pytest.mark.asyncio
+    async def test_idempotency_is_scoped_by_client_session_headers(self):
+        adapter = _make_adapter(
+            api_key="sk-secret", responses_client_managed_session_id=True
+        )
+        app = _create_app(adapter)
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        results = [
+            {
+                "final_response": session_id,
+                "messages": [],
+                "api_calls": 1,
+                "session_id": session_id,
+            }
+            for session_id in ("session-a", "session-b")
+        ]
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new=AsyncMock(side_effect=[(result, usage) for result in results]),
+            ) as mock_run:
+                for session_id in ("session-a", "session-b"):
+                    resp = await cli.post(
+                        "/v1/responses",
+                        headers={
+                            "Authorization": "Bearer sk-secret",
+                            "Idempotency-Key": "responses-session-scope-regression",
+                            "X-Hermes-Session-Id": session_id,
+                        },
+                        json={"model": "hermes-agent", "input": "same input"},
+                    )
+                    assert resp.status == 200
+                    assert resp.headers["X-Hermes-Session-Id"] == session_id
+
+        assert mock_run.await_count == 2
 
 # ---------------------------------------------------------------------------
 # X-Hermes-Session-Key header (long-term memory scoping)
@@ -2459,6 +2772,17 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+            assert data["features"]["responses_client_managed_session_id"] is False
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_enabled_responses_session_header(self):
+        adapter = _make_adapter(responses_client_managed_session_id=True)
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["features"]["responses_client_managed_session_id"] is True
 
 
 # ---------------------------------------------------------------------------

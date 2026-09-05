@@ -381,7 +381,15 @@ API_KEY = "test-api-key"
 def live(tmp_path):
     """A real adapter behind real routes, with a scratch state.db attached."""
     adapter = APIServerAdapter(
-        PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "port": 0, "key": API_KEY})
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "host": "127.0.0.1",
+                "port": 0,
+                "key": API_KEY,
+                "responses_client_managed_session_id": True,
+            },
+        )
     )
     db = SessionDB(tmp_path / "state.db")
     adapter._session_db = db
@@ -425,10 +433,12 @@ def _spy_run_agent(adapter, seen):
     return _fake
 
 
-def _headers(session_key=None):
+def _headers(session_key=None, session_id=None):
     h = {"Authorization": f"Bearer {API_KEY}"}
     if session_key:
         h["X-Hermes-Session-Key"] = session_key
+    if session_id:
+        h["X-Hermes-Session-Id"] = session_id
     return h
 
 
@@ -489,8 +499,28 @@ class TestResponsesHandlerPrecedence:
         assert all(k["bind_declared_conversation"] is False for k in seen)
 
     @pytest.mark.asyncio
-    async def test_the_response_chain_outranks_the_header_and_records_nothing(self, live):
-        """The blocker: a chained turn carrying a foreign key must not rebind."""
+    async def test_session_header_outranks_declared_key_without_rebinding(self, live):
+        adapter, db, app = live
+        seen = []
+        adapter._run_agent = _spy_run_agent(adapter, seen)
+        _seed(db, "sess-keyed", key=KEY)
+
+        async with TestClient(TestServer(app)) as cli:
+            for _ in range(2):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi"},
+                    headers=_headers(KEY, session_id="sess-explicit"),
+                )
+                assert resp.status == 200
+
+        assert {call["session_id"] for call in seen} == {"sess-explicit"}
+        assert all(call["bind_declared_conversation"] is False for call in seen)
+        assert adapter._declared_conversation_session(KEY) == "sess-keyed"
+
+    @pytest.mark.asyncio
+    async def test_client_session_header_outranks_chain_without_rebinding(self, live):
+        """Client-managed identity wins without rewriting either routing key."""
         adapter, db, app = live
         seen = []
         adapter._run_agent = _spy_run_agent(adapter, seen)
@@ -514,13 +544,14 @@ class TestResponsesHandlerPrecedence:
                     "input": "hi",
                     "previous_response_id": "resp_A",
                 },
-                headers=_headers(OTHER_KEY),
+                headers=_headers(OTHER_KEY, session_id="sess-header"),
             )
             assert resp.status == 200
 
-        assert seen[0]["session_id"] == "sess-A"
+        assert seen[0]["session_id"] == "sess-header"
         assert seen[0]["bind_declared_conversation"] is False
-        # A keeps its own key; the header key cannot recover it.
+        # The stored chain keeps its original key, while the request's foreign
+        # key is not attached to the client-selected transcript.
         assert db.get_session("sess-A")["session_key"] == KEY
         assert adapter._declared_conversation_session(KEY) == "sess-A"
         assert adapter._declared_conversation_session(OTHER_KEY) is None

@@ -981,6 +981,25 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 The summary model **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override the model, verify its context length meets or exceeds your main model's.
 :::
 
+## API Server Client-Managed Session IDs
+
+The Responses API normally derives Hermes transcript identity from its response
+chain, named conversation, session key, or a generated ID. Enable the following
+option when the API client owns a stable conversation ID:
+
+```yaml
+gateway:
+  api_server:
+    responses_client_managed_session_id: true
+```
+
+The option defaults to `false` and affects only `/v1/responses`. When enabled,
+an authenticated `X-Hermes-Session-Id` is authoritative even if the request
+also contains `previous_response_id` or `conversation`. The header controls
+transcript identity; it does not provide conversation context. See
+[OpenAI-Compatible API Server](/user-guide/features/api-server#client-managed-session-id)
+for the full request and security contract.
+
 ## Gateway Turn Lease Timeout
 
 The gateway serializes turns by their resolved session ID so two routing keys

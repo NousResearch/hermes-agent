@@ -529,9 +529,9 @@ class TestLoadGatewayConfig:
 
     def test_api_server_port_bridged_into_extra(self, tmp_path, monkeypatch):
         """``gateway.api_server.port`` must land in PlatformConfig.extra —
-        the adapter reads port/key/host/cors_origins/model_name from extra
+        the adapter reads its server-specific settings from extra
         (gateway/platforms/api_server.py), and from_dict discards unknown
-        top-level keys, so without the bridge the port is silently lost."""
+        top-level keys, so without the bridge these values are silently lost."""
         self._clear_api_server_env(monkeypatch)
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -542,7 +542,8 @@ class TestLoadGatewayConfig:
             "    port: 8642\n"
             "    host: 0.0.0.0\n"
             "    key: sekrit\n"
-            "    model_name: my-hermes\n",
+            "    model_name: my-hermes\n"
+            "    responses_client_managed_session_id: true\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -554,6 +555,7 @@ class TestLoadGatewayConfig:
         assert extra["host"] == "0.0.0.0"
         assert extra["key"] == "sekrit"
         assert extra["model_name"] == "my-hermes"
+        assert extra["responses_client_managed_session_id"] is True
 
     def test_room_link_url_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """The supported config path advertises no endpoint until restart."""

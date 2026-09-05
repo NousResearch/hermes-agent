@@ -1023,6 +1023,9 @@ group_sessions_per_user: true
 #       enabled: true
 #       extra:
 #         key: "your-api-server-secret"
+#         # Let authenticated Responses API clients such as OpenWebUI select a
+#         # stable transcript with X-Hermes-Session-Id. Disabled by default.
+#         responses_client_managed_session_id: false
 #         model_routes:
 #           # Xiaozhi clients send model="minimax-m2" → routed to MiniMax via OpenRouter
 #           minimax-m2:

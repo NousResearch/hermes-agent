@@ -124,13 +124,15 @@ class _ResponsesStream:
 
     def __init__(self, adapter, response, *, response_id: str, model: str, created_at: int,
                  conversation_history: List[Dict[str, str]], user_message: str,
-                 instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str):
+                 instructions: Optional[str], conversation: Optional[str], store: bool,
+                 session_id: str, client_session_id: Optional[str] = None):
         from gateway.platforms import api_server as api
         self._api = api
         self.adapter, self.response, self.response_id = adapter, response, response_id
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
         self.user_message, self.instructions = user_message, instructions
         self.conversation, self.store, self.session_id = conversation, store, session_id
+        self.client_session_id = client_session_id
         self.final_text_parts: List[str] = []
         self.pending_tool_calls: List[Dict[str, Any]] = []  # open function_call items, in order
         self.emitted_items: List[Dict[str, Any]] = []  # output items so far (terminal payload)
@@ -178,7 +180,8 @@ class _ResponsesStream:
             "response": response_env,
             "conversation_history": self._history_with_user() if history is None else history,
             "instructions": self.instructions,
-            "session_id": session_id or self.session_id})
+            "session_id": session_id or self.session_id,
+            "client_session_id": self.client_session_id})
         if self.conversation:
             self.adapter._response_store.set_conversation(self.conversation, self.response_id)
 
@@ -452,23 +455,11 @@ class OpenAICompatRoutesMixin:
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
-        # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
-        # requires a configured API key or any client could read history by guessing ids.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        # X-Hermes-Session-Id continues an existing session (history from state.db, not the body).
+        provided_session_id, id_err = self._parse_session_id_header(request)
+        if id_err is not None:
+            return id_err
         if provided_session_id:
-            if not self._api_key:
-                logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity.")
-                return _error_response("Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature.", 403)
-            # Same guard as the native gateway: ids are interpolated into on-disk filenames.
-            from gateway.session import _is_path_unsafe
-            if re.search(r'[\r\n\x00]', provided_session_id) or _is_path_unsafe(provided_session_id):
-                return _invalid_request("Invalid session ID")
-            if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
-                return _invalid_request("Session ID too long")
             session_id = provided_session_id
             try:
                 db = await self._ensure_session_db_async()
@@ -675,7 +666,8 @@ class OpenAICompatRoutesMixin:
         self, request: "web.Request", response_id: str, model: str, created_at: int, stream_q,
         agent_task, agent_ref, conversation_history: List[Dict[str, str]], user_message: str,
         instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-        gateway_session_key: Optional[str] = None) -> "web.StreamResponse":
+        gateway_session_key: Optional[str] = None,
+        client_session_id: Optional[str] = None) -> "web.StreamResponse":
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
@@ -688,7 +680,8 @@ class OpenAICompatRoutesMixin:
         st = _ResponsesStream(
             self, response, response_id=response_id, model=model, created_at=created_at,
             conversation_history=conversation_history, user_message=user_message,
-            instructions=instructions, conversation=conversation, store=store, session_id=session_id)
+            instructions=instructions, conversation=conversation, store=store,
+            session_id=session_id, client_session_id=client_session_id)
         try:
             await st.emit_created()
             async for item in _iter_stream_items(stream_q, agent_task, response):
@@ -741,6 +734,11 @@ class OpenAICompatRoutesMixin:
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        provided_session_id = None
+        if self._responses_client_managed_session_id:
+            provided_session_id, id_err = self._parse_session_id_header(request)
+            if id_err is not None:
+                return id_err
         try:
             body = await request.json()
         except Exception:
@@ -791,14 +789,18 @@ class OpenAICompatRoutesMixin:
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
         stored_session_id = None
-        if not conversation_history and previous_response_id:
+        stored_client_session_id = None
+        if previous_response_id:
             stored = self._response_store.get(previous_response_id)
-            if stored is None:
+            if stored is None and not conversation_history:
                 return _error_response(f"Previous response not found: {previous_response_id}", 404)
-            conversation_history = list(stored.get("conversation_history", []))
-            stored_session_id = stored.get("session_id")
-            if instructions is None:
-                instructions = stored.get("instructions")
+            if stored is not None:
+                stored_session_id = stored.get("session_id")
+                stored_client_session_id = stored.get("client_session_id")
+                if not conversation_history:
+                    conversation_history = list(stored.get("conversation_history", []))
+                if instructions is None:
+                    instructions = stored.get("instructions")
         # All input messages but the last become history; the last is the user message.
         conversation_history.extend(input_messages[:-1])
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
@@ -807,14 +809,20 @@ class OpenAICompatRoutesMixin:
         if body.get("truncation") == "auto":
             conversation_history = _auto_truncate_response_history(conversation_history)
 
-        # Session precedence: previous_response_id chain > declared X-Hermes-Session-Key > fresh
-        # id. Binding the declared key follows the same precedence: a chain-selected session must
-        # not have its routing key rewritten to this header.
-        _declared_selected = not stored_session_id and bool(gateway_session_key)
+        # A client-managed id wins unless the matching response chain records an internal
+        # post-compression rotation; then resume that effective session transparently.
+        _resume_rotated_session = bool(
+            provided_session_id and stored_session_id
+            and stored_client_session_id == provided_session_id)
         session_id = (
+            stored_session_id if _resume_rotated_session else provided_session_id
+        ) or (
             stored_session_id
             or self._declared_conversation_session(gateway_session_key)
             or str(uuid.uuid4()))
+        client_session_id = provided_session_id or stored_client_session_id
+        _declared_selected = (
+            not provided_session_id and not stored_session_id and bool(gateway_session_key))
         stream = _coerce_request_bool(body.get("stream"), default=False)
         route, agent_overrides, selection_error = self._select_request_route(
             body, session_id=session_id, gateway_session_key=gateway_session_key,
@@ -851,13 +859,20 @@ class OpenAICompatRoutesMixin:
                 stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
                 conversation_history=conversation_history, user_message=user_message,
                 instructions=instructions, conversation=conversation, store=store,
-                session_id=session_id, gateway_session_key=gateway_session_key)
+                session_id=session_id, gateway_session_key=gateway_session_key,
+                client_session_id=client_session_id)
 
         async def _compute_response():
             return await self._run_agent(**run_kwargs)
+        fingerprint_body = dict(body)
+        fingerprint_body["_hermes_session_id"] = provided_session_id
+        fingerprint_body["_hermes_session_key"] = gateway_session_key
         outcome, err = await self._run_idempotent(
-            request, body, _compute_response, log_label="responses",
-            fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+            request, fingerprint_body, _compute_response, log_label="responses",
+            fingerprint_keys=[
+                "input", "instructions", "previous_response_id", "conversation", "model",
+                "provider", "model_options", "tools", "_hermes_session_id",
+                "_hermes_session_key"],
         )
         if err is not None:
             return err
@@ -886,7 +901,8 @@ class OpenAICompatRoutesMixin:
         if store:
             self._response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
-                "instructions": instructions, "session_id": _effective_session_id})
+                "instructions": instructions, "session_id": _effective_session_id,
+                "client_session_id": client_session_id})
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}

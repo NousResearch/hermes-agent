@@ -10,7 +10,7 @@ import { host } from '@hermes/plugin-sdk'
 
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, $groupNeedsYou, appendGroupChatEntry, updateGroupChat } from './group-chat'
-import type { GroupChatRoom } from './group-chat'
+import type { GroupChat, GroupChatRoom } from './group-chat'
 import { groupMemberKey, groupSessionOwner } from './group-membership'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
@@ -23,7 +23,26 @@ export function isGroupPassText(text: unknown) {
     return true
   }
 
-  return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
+  return /^\(?\s*pass\s*\)?\\.?$/i.test(trimmed)
+}
+
+/** #101568: resolve the live room name from its immutable roomId. Returns null
+ *  when no room in the atom has a matching roomId — the room may have been
+ *  disbanded or renamed mid-turn. Caller must treat null as \"room gone\". */
+function resolveGroupByRoomId(roomId: string | null | undefined): null | string {
+  if (!roomId) {
+    return null
+  }
+
+  const all = $groupChats.get()
+
+  for (const [name, room] of Object.entries(all)) {
+    if (room.roomId === roomId) {
+      return name
+    }
+  }
+
+  return null
 }
 
 /** One transcript entry in a `session.resume` snapshot, as the turn harvester
@@ -615,6 +634,9 @@ async function runGroupChatMemberTurnLeased(
   // #91868/#94569: remember the epoch this turn was dispatched under so the
   // poll loop below can tell an explicit stop from ordinary room churn.
   const dispatchEpoch = ($groupChats.get()[group] || {}).epoch || 0
+  // #101568: capture the immutable roomId so the poll can stay bound to the
+  // room even when it is renamed mid-turn.
+  const roomId = ($groupChats.get()[group] || {}).roomId
   const memberKey = groupMemberKey(member)
   recordGroupActivity(group, {
     kind: 'working',
@@ -717,7 +739,11 @@ async function runGroupChatMemberTurnLeased(
     // conditions on purpose: an ordinary newer send bumps the epoch WITHOUT
     // a hold, and that turn must keep polling so finished work can still be
     // delivered (the #93127 commit check decides its fate, not this loop).
-    const roomDuringPoll = $groupChats.get()[group] || {}
+    // #101568: resolve the live room name from roomId so a mid-turn rename
+    // keeps the poll bound to the relocated room instead of creating a fresh
+    // empty record under the retired display name.
+    const liveGroup = resolveGroupByRoomId(roomId) || group
+    const roomDuringPoll = $groupChats.get()[liveGroup] || {}
 
     if ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey]) {
       return null
@@ -743,14 +769,14 @@ async function runGroupChatMemberTurnLeased(
     // A clarify blocking inside the member's session is a question for the
     // HUMAN (#90694) — mirror it into the room store so a card renders, and
     // hold the turn open: the member isn't stalling, it's waiting on us.
-    const awaitingUser = syncGroupClarify(group, member, state)
+    const awaitingUser = syncGroupClarify(liveGroup, member, state)
     const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
       const replyText = pickGroupTurnReply(messages, before)
 
       if (replyText !== null) {
-        recordGroupActivity(group, {
+        recordGroupActivity(liveGroup, {
           kind: isGroupPassText(replyText) ? 'passed' : 'replied',
           member: member.name,
           thread
@@ -759,7 +785,7 @@ async function runGroupChatMemberTurnLeased(
         return replyText
       }
 
-      recordGroupActivity(group, {
+      recordGroupActivity(liveGroup, {
         kind: 'passed',
         member: member.name,
         thread
@@ -780,13 +806,16 @@ async function runGroupChatMemberTurnLeased(
   // clarify timeout runs its own course) and read as a pass, but remember the baseline + thread
   // (runtime-only) so the finished reply can be posted late into the RIGHT
   // thread instead of vanishing.
-  recordGroupActivity(group, {
+  // #101568: use live room name so timeout state lands under the renamed room.
+  const liveGroupOnTimeout = resolveGroupByRoomId(roomId) || group
+
+  recordGroupActivity(liveGroupOnTimeout, {
     kind: 'timed-out',
     member: member.name,
     thread
   })
-  syncGroupClarify(group, member, null)
-  updateGroupChat(group, (r: GroupChatRoom) => {
+  syncGroupClarify(liveGroupOnTimeout, member, null)
+  updateGroupChat(liveGroupOnTimeout, (r: GroupChatRoom) => {
     r.stranded = {
       ...(r.stranded || {}),
       [groupMemberKey(member)]: {
@@ -807,6 +836,9 @@ async function runGroupChatMemberTurnLeased(
 export async function harvestStrandedGroupReply(group: string, member: GroupMember) {
   const memberKey = groupMemberKey(member)
   const room = $groupChats.get()[group] || {}
+  // #101568: resolve the live room name so the harvest writes under the
+  // renamed room instead of resurrecting a retired display name.
+  const liveGroup = resolveGroupByRoomId(room.roomId) || group
   const marker = room.stranded?.[memberKey]
   // Markers were a bare number before threads; normalize both shapes.
   const strandedBefore = typeof marker === 'number' ? marker : marker?.before
@@ -834,12 +866,12 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
 
   // A stranded member blocked on a clarify is not "grinding" — surface the
   // question card (#90694) and keep the marker until it resolves.
-  if (syncGroupClarify(group, member, state)) {
+  if (syncGroupClarify(liveGroup, member, state)) {
     return
   }
 
   // Done (or dead): the marker is consumed either way.
-  updateGroupChat(group, (r: GroupChatRoom) => {
+  updateGroupChat(liveGroup, (r: GroupChatRoom) => {
     const next = {
       ...(r.stranded || {})
     }
@@ -858,13 +890,13 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
   const reply = pickGroupTurnReply(messages, strandedBefore)
 
   if (reply && !isGroupPassText(reply)) {
-    recordGroupActivity(group, {
+    recordGroupActivity(liveGroup, {
       kind: 'delivered',
       member: member.name,
       thread: strandedThread
     })
     appendGroupChatEntry(
-      group,
+      liveGroup,
       {
         kind: 'member',
         name: member.name,
@@ -877,7 +909,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       reply,
       strandedThread
     )
-    updateGroupChat(group, (r: GroupChatRoom) => {
+    updateGroupChat(liveGroup, (r: GroupChatRoom) => {
       r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
 
       return r

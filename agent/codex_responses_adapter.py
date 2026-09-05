@@ -733,6 +733,8 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
     ("reasoning", lambda v: isinstance(v, dict), None),
     ("include", lambda v: isinstance(v, list), None),
     ("service_tier", _nonblank, str.strip),
+    # Responses text controls (verbosity, structured-output format).
+    ("text", lambda v: isinstance(v, dict) and bool(v), None),
     ("max_output_tokens", lambda v: isinstance(v, (int, float)) and v > 0, int),
     ("timeout", lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < float("inf"), float),
     ("temperature", lambda v: isinstance(v, (int, float)), float),

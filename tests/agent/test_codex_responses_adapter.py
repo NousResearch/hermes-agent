@@ -625,3 +625,37 @@ def _xai_reasoning_only_response(reasoning_text):
             )
         ],
     )
+
+
+def test_preflight_passes_text_verbosity_through():
+    """``text`` survives preflight instead of failing the whole request.
+
+    ``_PREFLIGHT_ALLOWED_KEYS`` is derived from ``_PREFLIGHT_OPTIONAL_FIELDS``,
+    so before this entry existed a caller setting ``text.verbosity`` got
+    ``Codex Responses request has unsupported field(s): text.`` locally --
+    the request never reached the provider, which accepts the field.
+    """
+    normalized = _preflight_codex_api_kwargs({
+        "model": "gpt-5.6-sol",
+        "instructions": "hi",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "ping"}]}],
+        "store": False,
+        "text": {"verbosity": "high"},
+    })
+
+    assert normalized["text"] == {"verbosity": "high"}
+
+
+def test_preflight_drops_empty_or_malformed_text():
+    """Only a non-empty object is forwarded; anything else is dropped rather
+    than rejected, matching how the other optional fields behave."""
+    base = {
+        "model": "gpt-5.6-sol",
+        "instructions": "hi",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "ping"}]}],
+        "store": False,
+    }
+
+    for value in ({}, None, "high", 3):
+        normalized = _preflight_codex_api_kwargs(dict(base, text=value))
+        assert "text" not in normalized, value

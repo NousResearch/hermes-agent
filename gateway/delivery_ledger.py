@@ -51,12 +51,12 @@ FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit 
 # failures. Permanent rejects (blocked bot, bad auth, missing chat) must not be retried on reconnect.
 _RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
 
-# A final send the platform refused with flood control is the other transient case: a 429 means the refused
-# request was never accepted, and the platform said how long to wait. Adapters fail such sends closed as
-# ``flood_control:<seconds>`` on
-# purpose (#91969) so that this ledger owns the wait instead of the send coroutine sleeping through it.
-# Before this the row simply sat in ``failed`` until the next restart's sweep, which then redelivered it
-# hours late under the "gateway restarted during delivery" marker (ledger-flood-retry).
+# A final send the platform refused with flood control is the other transient case: a 429 means the
+# refused request was never accepted, and the platform said how long to wait. Adapters fail such sends
+# closed as ``flood_control:<seconds>`` on purpose (#91969) so that this ledger owns the wait instead of
+# the send coroutine sleeping through it. Before this the row simply sat in ``failed`` until the next
+# restart's sweep, which then redelivered it hours late under the "gateway restarted during delivery"
+# marker.
 FLOOD_ERROR_PREFIX = "flood_control:"
 FLOOD_RETRY_DEFAULT_SECONDS = 60.0
 FLOOD_RETRY_CAP_SECONDS = 15 * 60.0
@@ -305,7 +305,14 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
     must only be spent on a real send, else a platform that failed to connect burns one attempt per boot
     and hits the cap having never been sent once (the stale cutoff still bounds untouched rows).
     ``deliverable_targets`` further scopes multiplexed gateways by exact ``(platform, adapter_profile)``
-    so one connected bot cannot spend another disconnected bot's retry budget."""
+    so one connected bot cannot spend another disconnected bot's retry budget.
+
+    A flood-refused row still inside its wait is adopted (owner re-stamped, no attempt spent) and
+    returned flagged ``adopted`` with its ``not_before``: the caller clears its session's resume flag
+    like any other claimed row, since the answer is in the ledger, but must not send it; the flood
+    timer does once the wait has passed. A legacy row without ``adapter_profile`` is normalised to
+    ``'default'`` on claim or adoption (the caller only accepts such rows when it is not multiplexed),
+    because the runtime sweep matches profiles exactly and could otherwise never claim it."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
     claimed: List[Dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
@@ -332,17 +339,25 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
             if flood_row and now < flood_not_before(updated_at, last_error):
                 # Still inside the platform's wait: adopt the dead owner's row without spending an attempt
                 # (state and error kept) so this process's flood timer can claim it once the wait passes.
-                conn.execute(
+                cursor = conn.execute(
                     """UPDATE delivery_obligations
-                       SET owner_pid=?, owner_started_at=?
+                       SET owner_pid=?, owner_started_at=?,
+                           adapter_profile=COALESCE(adapter_profile, 'default')
                        WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
                     (pid, started, oid, owner_pid, owner_pid))
+                if cursor.rowcount:
+                    claimed.append({
+                        "obligation_id": oid, "session_key": session_key, "platform": platform,
+                        "chat_id": chat_id, "thread_id": thread_id, "content": content,
+                        "profile": adapter_profile or "default", "attempts": attempts,
+                        "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
                 continue
             # A claimed flood row is resent as a fresh attempt: clear the stale refusal so an interrupted
             # resend is seen as 'attempting' with no error by the next boot and gets the marker.
             cursor = conn.execute(
                 """UPDATE delivery_obligations
                    SET owner_pid=?, owner_started_at=?, attempts=attempts+1, updated_at=?,
+                       adapter_profile=COALESCE(adapter_profile, 'default'),
                        state=CASE WHEN ? THEN 'attempting' ELSE state END,
                        last_error=CASE WHEN ? THEN NULL ELSE last_error END
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
@@ -352,7 +367,8 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                 # rejection, a flood refusal whose earlier chunks the platform may have accepted) carries
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile, needs_marker=state != "pending", flood=flood_row))
+                                            adapter_profile or "default", needs_marker=state != "pending",
+                                            flood=flood_row))
     return claimed
 
 

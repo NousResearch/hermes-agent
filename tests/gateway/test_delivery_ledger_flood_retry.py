@@ -22,7 +22,10 @@ Now:
   refusal is cleared so an interrupted resend is seen as uncertain by the next boot; a
   claim released unsent (resume flag not clearable, adapter gone) keeps its flood error
   and so its place on the timer;
-- at boot, a dead owner's not-yet-due flood row is adopted rather than resent early.
+- at boot, a dead owner's not-yet-due flood row is adopted rather than resent early, and
+  returned flagged so its session's resume flag is cleared (the answer is in the ledger)
+  without the row being sent inside the penalty; a legacy row without a profile is
+  normalised to 'default' so the timer's runtime sweep can claim it.
 """
 
 from __future__ import annotations
@@ -73,6 +76,28 @@ def _row(oid):
             "SELECT state, attempts, last_error, owner_pid FROM delivery_obligations WHERE obligation_id=?", (oid,)
         ).fetchone()
     return None if r is None else {"state": r[0], "attempts": r[1], "last_error": r[2], "owner_pid": r[3]}
+
+
+def _owner(oid):
+    """(owner_pid, owner_started_at, adapter_profile) of a row."""
+    with dl._connect() as conn:
+        return conn.execute(
+            "SELECT owner_pid, owner_started_at, adapter_profile FROM delivery_obligations"
+            " WHERE obligation_id=?", (oid,)).fetchone()
+
+
+DEAD_OWNER = (999_999, 1)
+
+
+def _record_for_dead_owner(oid, error, **kwargs):
+    """A flood-refused row whose last owner is gone: what a restart finds in the ledger."""
+    live = dl._owner_stamp
+    dl._owner_stamp = lambda: DEAD_OWNER
+    try:
+        _record(oid, **kwargs)
+        dl.mark_failed(oid, error)
+    finally:
+        dl._owner_stamp = live
 
 
 def _runner(adapter):
@@ -221,16 +246,37 @@ def test_a_chunked_reply_refused_by_flood_control_keeps_the_marker(clock):
 # ---------------------------------------------------------------------------
 
 def test_boot_sweep_adopts_a_dead_owners_flood_row_inside_its_wait(clock, monkeypatch):
-    _record("ob-flood")
-    dl.mark_failed("ob-flood", "flood_control:185.0")
+    _record_for_dead_owner("ob-flood", "flood_control:185.0")
     monkeypatch.setattr(dl, "_owner_alive", lambda pid, started: False)
 
-    claimed = dl.sweep_recoverable(now=T0 + 30)
+    (adopted,) = dl.sweep_recoverable(now=T0 + 30)
 
-    assert claimed == [], "not due yet: resending now would burn an attempt inside the penalty"
+    assert adopted["adopted"] is True and adopted["not_before"] == pytest.approx(T0 + 185.0), \
+        "returned so the caller clears its resume flag, flagged so nothing sends it inside the penalty"
+    assert adopted["attempts"] == 0 and "marker" not in adopted
     row = _row("ob-flood")
-    assert row["state"] == "failed" and row["attempts"] == 0 and row["owner_pid"] == os.getpid()
-    assert dl.pending_flood_retries(now=T0 + 30)[0]["not_before"] == pytest.approx(T0 + 185)
+    assert row["state"] == "failed" and row["attempts"] == 0 and row["last_error"] == "flood_control:185.0"
+    assert _owner("ob-flood") == (os.getpid(), 202, "default"), "ownership moved from the dead process"
+
+
+def test_a_legacy_row_without_a_profile_is_normalised_so_the_timer_can_claim_it(clock, monkeypatch):
+    """Rows recorded before ``adapter_profile`` existed carry NULL. The boot sweep accepts them on a
+    non-multiplexed gateway, but the runtime sweep matches the profile exactly and the timer asks for
+    'default', so an adopted NULL row could only ever wake the timer without being sent."""
+    _record_for_dead_owner("ob-legacy", "flood_control:185.0")
+    with dl._connect() as conn:
+        conn.execute("UPDATE delivery_obligations SET adapter_profile=NULL WHERE obligation_id='ob-legacy'")
+    monkeypatch.setattr(dl, "_owner_alive", lambda pid, started: False)
+
+    (adopted,) = dl.sweep_recoverable(
+        now=T0 + 30, deliverable_platforms={"telegram"},
+        deliverable_targets={("telegram", "default"), ("telegram", None)})
+
+    assert adopted["profile"] == "default" and _owner("ob-legacy") == (os.getpid(), 202, "default")
+    assert dl.pending_flood_retries(now=T0 + 30) == [
+        {"platform": "telegram", "profile": "default", "not_before": pytest.approx(T0 + 185.0)}]
+    (claimed,) = dl.sweep_failed_for_runtime("telegram", now=T0 + 200, profile="default")
+    assert claimed["obligation_id"] == "ob-legacy" and claimed["marker"] == dl.FLOOD_MARKER
 
 
 def test_boot_sweep_resends_a_due_flood_row_under_the_rate_limit_marker_and_a_midsend_row_under_the_restart_one(clock, monkeypatch):
@@ -301,10 +347,10 @@ async def test_schedule_flood_redelivery_waits_then_runs_the_runtime_sweep(fake_
     runner._redeliver_failed_obligations_for_platform = AsyncMock(return_value=1)
 
     delay = runner._schedule_flood_redelivery(Platform.TELEGRAM, profile=None, error="flood_control:185.0")
-    again = runner._schedule_flood_redelivery(Platform.TELEGRAM, profile=None, error="flood_control:30")
+    again = runner._schedule_flood_redelivery(Platform.TELEGRAM, profile=None, error="flood_control:300")
 
     assert delay == pytest.approx(187.0)
-    assert again is None, "a second refusal while the timer is armed must not arm another"
+    assert again is None, "a refusal due no earlier than the armed timer must not arm another"
     assert len(runner._flood_redelivery_tasks) == 1
     await _drain_timers(runner)
 
@@ -365,7 +411,7 @@ async def test_a_chunked_reply_is_redelivered_under_the_rate_limit_marker(fake_s
 
 @pytest.mark.asyncio
 async def test_a_redelivery_refused_again_arms_a_successor_timer(fake_sleep):
-    """The bug Codex caught in the first cut: the running timer must not block its own re-arm."""
+    """A refusal during the sweep must not be blocked by the timer's own slot: it arms its successor."""
     _record("ob-flood")
     dl.mark_failed("ob-flood", "flood_control:10")
     adapter = _adapter(side_effect=[SendResult(success=False, error="flood_control:30.0"), SendResult(success=True)])
@@ -419,9 +465,52 @@ async def test_a_shorter_sibling_timer_does_not_send_the_longer_row_early(fake_s
 
 
 @pytest.mark.asyncio
+async def test_a_shorter_refusal_replaces_a_longer_timer_that_is_still_asleep(fake_sleep):
+    """Arrival order reversed: the 185s timer is armed first. Left alone it would hold the 10s row for
+    the full 185s. The shorter refusal replaces the sleeping timer and re-arms for the longer row."""
+    _record("ob-long", content="long one")
+    dl.mark_failed("ob-long", "flood_control:185")
+    _record("ob-short", content="short one")
+    dl.mark_failed("ob-short", "flood_control:10")
+    adapter = _adapter(success=True)
+    runner = _runner(adapter)
+
+    assert runner._schedule_flood_redelivery(Platform.TELEGRAM, error="flood_control:185") == pytest.approx(187.0)
+    assert runner._schedule_flood_redelivery(Platform.TELEGRAM, error="flood_control:10") == pytest.approx(12.0)
+    assert len(runner._flood_redelivery_tasks) == 1, "one live timer per identity, the shorter one"
+    await _drain_timers(runner)
+
+    contents = [c.kwargs["content"] for c in adapter.send.await_args_list]
+    assert contents == [dl.FLOOD_MARKER + "short one", dl.FLOOD_MARKER + "long one"]
+    assert fake_sleep == [pytest.approx(12.0), pytest.approx(175.0)], "the 187s sleep never happened"
+    assert _row("ob-short")["attempts"] == 1 and _row("ob-long")["attempts"] == 1
+    assert runner._flood_redelivery_tasks == {} and runner._flood_redelivery_slots == {}
+
+
+@pytest.mark.asyncio
+async def test_a_timer_already_sweeping_is_not_replaced(fake_sleep):
+    """Once the sleep is over the timer may be mid-send; a refusal arriving then arms nothing extra and
+    the successor logic (the running timer re-arming itself) takes over."""
+    runner = _runner(_adapter())
+    seen = []
+
+    async def _sweep(target, profile=None):
+        async def _refusal_from_another_task():
+            return runner._schedule_flood_redelivery(Platform.TELEGRAM, error="flood_control:1")
+
+        seen.append(await asyncio.create_task(_refusal_from_another_task()))
+        return 0
+
+    runner._redeliver_failed_obligations_for_platform = _sweep
+    runner._schedule_flood_redelivery(Platform.TELEGRAM, error="flood_control:60")
+    await _drain_timers(runner)
+
+    assert seen == [None], "a refusal from outside the running timer cannot cancel it mid-sweep"
+
+
+@pytest.mark.asyncio
 async def test_boot_redelivery_arms_a_timer_for_an_adopted_flood_row(fake_sleep, monkeypatch):
-    _record("ob-flood", content="adopted at boot")
-    dl.mark_failed("ob-flood", "flood_control:120")
+    _record_for_dead_owner("ob-flood", "flood_control:120", content="adopted at boot")
     monkeypatch.setattr(dl, "_owner_alive", lambda pid, started: False)
     adapter = _adapter(success=True)
     runner = _runner(adapter)
@@ -429,6 +518,10 @@ async def test_boot_redelivery_arms_a_timer_for_an_adopted_flood_row(fake_sleep,
     n = await runner._redeliver_pending_obligations()   # the boot path: claim + redeliver
 
     assert n == 0, "nothing is due at boot"
+    adapter.send.assert_not_awaited()
+    runner._async_session_store.clear_resume_pending.assert_awaited_once_with(
+        "agent:main:telegram:dm:5230977008"), "the answer is in the ledger: the turn must not be re-run"
+    assert _owner("ob-flood") == (os.getpid(), 202, "default")
     assert len(runner._flood_redelivery_tasks) == 1
     await _drain_timers(runner)
     assert adapter.send.call_args.kwargs["content"] == dl.FLOOD_MARKER + "adopted at boot"

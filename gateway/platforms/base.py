@@ -3752,7 +3752,7 @@ class BasePlatformAdapter(ABC):
         replacement adapter live, trigger another redelivery sweep (the watcher's may have run
         before this failure landed; atomic claiming keeps it idempotent). On a flood-control refusal
         arm the runner's timed redelivery, so the reply goes out once the penalty has passed instead
-        of waiting for the next restart (ledger-flood-retry)."""
+        of waiting for the next restart."""
         try:
             from gateway.delivery_ledger import is_flood_error, mark_delivered, mark_failed
             if getattr(result, "success", False):

@@ -86,3 +86,15 @@ async def test_busy_handler_authorizes_against_secondary_profile_allowlist(mux_h
 
     intruder_event = _feishu_event("primary-user")
     assert await handler(intruder_event, "sk") is False
+
+
+def test_busy_handler_logs_when_profile_home_unresolved(mux_home, monkeypatch, caplog):
+    """An unresolvable profile falls back to an unscoped (env-authorized) handler;
+    that degradation must be logged, not silent."""
+    runner = _runner(mux_home)
+    monkeypatch.setattr(runner, "_profile_home_or_none", lambda profile_name: None)
+
+    with caplog.at_level("DEBUG", logger="gateway.run"):
+        runner._make_profile_busy_session_handler("secondary")
+
+    assert "No profile home for secondary" in caplog.text

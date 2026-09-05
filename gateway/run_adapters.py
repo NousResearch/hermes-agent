@@ -1308,6 +1308,11 @@ class GatewayAdapterLifecycleMixin:
         (auth runs against the profile's own allowlist, same as the cold-path message handler)."""
         from gateway.run import _async_profile_runtime_scope
         profile_home = self._profile_home_or_none(profile_name)
+        if profile_home is None:
+            logger.debug(
+                "No profile home for %s; busy-session handler runs unscoped (env-authorized).",
+                profile_name,
+            )
 
         async def _handler(event, _session_key):
             self._stamp_event_profile(event, profile_name)

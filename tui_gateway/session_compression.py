@@ -262,6 +262,19 @@ def _compress_session_history(
         compressed = rejoin_compressed_head_and_tail(compressed, tail)
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
+            # A turn landed while compaction ran (the ~120s frontend timeout invites exactly this):
+            # the DB commit above already archived the snapshot, so dropping the result strands the
+            # live list on the stale base until restart (#102780). Rebase instead — replay the
+            # concurrently appended tail onto the compressed base. Non-append mutations
+            # (rewind/undo) still take the drop path so we never clobber them.
+            current = list(session.get("history", []))
+            if len(current) > len(before_messages) and current[: len(before_messages)] == before_messages:
+                merged = rejoin_compressed_head_and_tail(compressed, current[len(before_messages):])
+                session["history"] = merged
+                session["history_version"] = int(session.get("history_version", 0)) + 1
+                logger.info("Manual compress rebased onto %d concurrent message(s): %d->%d live",
+                            len(current) - len(before_messages), len(current), len(merged))
+                return len(before_messages) - len(compressed), _get_usage(agent)
             # External mutation during compaction — drop the result so we don't clobber concurrent edits.
             finalize_context_engine_compression_notification(agent, committed=False)
             return 0, _get_usage(agent)

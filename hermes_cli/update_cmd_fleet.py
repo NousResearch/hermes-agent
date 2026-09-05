@@ -78,12 +78,23 @@ def _current_checkout_sha() -> str | None:
 
 
 def _receipt_looks_unfinished(receipt: dict) -> bool:
-    """True when *receipt* is from an update that did not finish cleanly."""
+    """True when *receipt* is from an update that did not finish cleanly.
+
+    ``stop_reason`` is human-facing diagnostic text, not a status field: the
+    success path writes ``"completed at command boundary"`` while ``outcome`` and
+    ``exit_code`` both record a clean finish. A receipt that already records
+    ``outcome == "success"`` with ``exit_code`` 0/None is therefore finished
+    regardless of ``stop_reason``. See #103590.
+    """
+    outcome = receipt.get("outcome")
+    exit_code = receipt.get("exit_code")
+    if outcome == "success" and exit_code in (0, None):
+        return False
     gateway_restart = receipt.get("gateway_restart")
     return bool(
         receipt.get("stop_reason")
-        or receipt.get("exit_code") not in (0, None)
-        or receipt.get("outcome") in ("failed", "partial", "running")
+        or exit_code not in (0, None)
+        or outcome in ("failed", "partial", "running")
         or (isinstance(gateway_restart, dict) and gateway_restart.get("incomplete"))
     )
 

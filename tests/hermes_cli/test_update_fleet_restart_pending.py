@@ -254,6 +254,86 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_receipt_looks_unfinished_success_with_stop_reason_is_finished():
+    """#103590: the success path writes ``stop_reason='completed at command boundary'``.
+
+    A receipt that records ``outcome == 'success'`` and ``exit_code == 0`` is a clean
+    finish even though ``stop_reason`` is non-empty — it must not be misread as unfinished.
+    """
+    receipt = {
+        "outcome": "success",
+        "exit_code": 0,
+        "stop_reason": "completed at command boundary",
+        "gateway_restart": {},
+        "fleet": [],
+    }
+    assert update_cmd_fleet._receipt_looks_unfinished(receipt) is False
+
+
+def test_receipt_looks_unfinished_success_no_exit_code_with_stop_reason_is_finished():
+    """A success outcome with no exit_code recorded is still a clean finish (#103590)."""
+    receipt = {
+        "outcome": "success",
+        "stop_reason": "completed at command boundary",
+        "gateway_restart": {},
+    }
+    assert update_cmd_fleet._receipt_looks_unfinished(receipt) is False
+
+
+def test_receipt_looks_unfinished_failed_with_stop_reason_is_unfinished():
+    """Negative control: a genuinely failed receipt stays unfinished (#103590)."""
+    receipt = {
+        "outcome": "failed",
+        "exit_code": 1,
+        "stop_reason": "KeyboardInterrupt: ",
+        "gateway_restart": {},
+    }
+    assert update_cmd_fleet._receipt_looks_unfinished(receipt) is True
+
+
+def test_receipt_looks_unfinished_running_without_stop_reason_is_unfinished():
+    """A receipt still marked running is unfinished regardless of stop_reason (#103590)."""
+    receipt = {"outcome": "running", "exit_code": None}
+    assert update_cmd_fleet._receipt_looks_unfinished(receipt) is True
+
+
+def test_successful_receipt_with_stop_reason_does_not_retrigger(monkeypatch):
+    """End-to-end: a successful receipt carrying the success stop_reason sentinel with an
+    empty fleet matrix must NOT retrigger a restart via the pre-pull plan SHAs (#103590)."""
+    disk_sha = "n" * 40
+    old_sha = "o" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "success",
+                "exit_code": 0,
+                "stop_reason": "completed at command boundary",
+                "gateway_restart": {},
+                "fleet": [],
+                "plan": {
+                    "expected_sha": old_sha,
+                    "runtimes": [
+                        {
+                            "kind": "gateway",
+                            "profile": "default",
+                            "pid": 1,
+                            "code_sha": old_sha,
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
 def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     disk_sha = "n" * 40
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)

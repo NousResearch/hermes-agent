@@ -1170,3 +1170,82 @@ def emit_partial_update_hint(exc: BaseException, *, file=None) -> bool:
     for line in (f"Error: {exc}", *lines):
         print(line, file=sys.stderr if file is None else file)
     return True
+
+
+class ContainerRedirectedHomeError(RuntimeError):
+    """The Hermes home is redirected into an MSIX app-container overlay.
+
+    Raised by :func:`assert_home_not_container_redirected`.  Carries both the
+    nominal home and the overlay it redirects to so callers can report each.
+    """
+
+    def __init__(self, home, redirected_to) -> None:
+        self.home = Path(home)
+        self.redirected_to = Path(redirected_to)
+        super().__init__(
+            f"Hermes home {self.home} is redirected into an MSIX app-container "
+            f"overlay at {self.redirected_to}. Refusing to start: SQLite would "
+            f"create state.db's -wal/-shm sidecars in the overlay while state.db "
+            f"itself reads through to the real path, leaving two write-ahead logs "
+            f"over one database and corrupting it within minutes. Run hermes from "
+            f"a normal shell outside the app container (from a Claude session, "
+            f"spawn it via WMI Win32_Process.Create). Set "
+            f"HERMES_ALLOW_REDIRECTED_HOME=1 to override."
+        )
+
+
+_CONTAINER_OVERLAY_MARKERS = ("\\packages\\", "\\localcache\\")
+
+
+def _is_container_overlay_path(path) -> bool:
+    """True when *path* lies inside an MSIX package's LocalCache overlay."""
+    probe = os.path.normcase(str(path))
+    return all(marker in probe for marker in _CONTAINER_OVERLAY_MARKERS)
+
+
+def assert_home_not_container_redirected(home=None) -> None:
+    """Refuse to run when the Hermes home is MSIX-container redirected.
+
+    Windows-only, and a no-op unless the process really is being redirected.
+    Two distinct failure shapes are checked:
+
+    1. The home path *is* an overlay path.  Happens when something launches
+       hermes straight out of the package's LocalCache copy (a gateway was
+       started that way on 2026-07-05).
+    2. The home reads through to the real path but newly created files are
+       redirected.  This is the dangerous, invisible case: neither the home
+       directory nor an existing ``state.db`` reports a divergent realpath, so
+       the only reliable probe is a file we create ourselves.
+
+    Raises :class:`ContainerRedirectedHomeError` when either holds.  A home that
+    cannot be written at all is left alone --- that is an unrelated problem the
+    normal startup path reports with far better context.
+    """
+    if os.environ.get("HERMES_ALLOW_REDIRECTED_HOME", "").strip():
+        return
+    if sys.platform != "win32":
+        return
+
+    home = Path(home) if home is not None else get_hermes_home()
+
+    if _is_container_overlay_path(home):
+        raise ContainerRedirectedHomeError(home, home)
+
+    if not home.is_dir():
+        return
+
+    probe = home / f".hermes-container-probe-{os.getpid()}-{os.urandom(4).hex()}.tmp"
+    try:
+        try:
+            probe.touch()
+        except OSError:
+            return
+        actual = Path(os.path.realpath(str(probe)))
+        redirected = os.path.normcase(str(actual)) != os.path.normcase(str(probe))
+        if redirected and _is_container_overlay_path(actual):
+            raise ContainerRedirectedHomeError(home, actual.parent)
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass

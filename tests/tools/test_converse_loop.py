@@ -263,7 +263,7 @@ class _EchoSynth:
         yield text.encode("utf-8")
 
 
-def _run_driver(session, history, replies):
+def _run_driver(session, history, replies, idle_interval=0.0):
     """Drive drive_converse_turns to completion, returning the JSON frames sent."""
     sent: list = []
 
@@ -285,7 +285,7 @@ def _run_driver(session, history, replies):
         await drive_converse_turns(
             session=session, synth=_EchoSynth(), cap=4000, loop=loop,
             send_json=_send_json, send_bytes=_send_bytes,
-            run_turn=_run_turn, history=history)
+            run_turn=_run_turn, history=history, idle_interval=idle_interval)
 
     asyncio.run(_main())
     return sent
@@ -321,3 +321,50 @@ def test_drive_converse_turns_caps_history_tail():
     # The tail is retained: the last kept message is the final assistant reply.
     assert history[-1] == {"role": "assistant", "content": f"reply {n_turns - 1}."}
     assert history[0]["role"] == "user"  # cap preserves whole (user, assistant) pairs here
+
+
+def test_drive_converse_turns_emits_idle_and_keeps_socket_open():
+    # Session mode: no new utterance for a while. The driver emits periodic
+    # {"type":"idle"} with a growing quiet_seconds (it never closes the socket) until a
+    # real frame arrives; here the shutdown sentinel ends the loop after a few intervals.
+    session = _FakeConverseSession([])
+    session.transcripts = _queue.Queue()  # empty; no sentinel yet
+    threading.Timer(0.17, lambda: session.transcripts.put(None)).start()
+
+    sent = _run_driver(session, [], [], idle_interval=0.05)
+
+    idles = [f for f in sent if isinstance(f, dict) and f.get("type") == "idle"]
+    assert len(idles) >= 1
+    quiets = [f["quiet_seconds"] for f in idles]
+    assert all(isinstance(q, (int, float)) for q in quiets)
+    assert quiets == sorted(quiets)  # cumulative quiet grows across pings
+    assert not any(isinstance(f, dict) and f.get("type") == "turn_done" for f in sent)
+
+
+def test_drive_converse_turns_stop_word_ends_exchange(monkeypatch):
+    # Session mode: a spoken stop phrase is announced as {"type":"stop_word"} and the
+    # agent turn is SKIPPED (the client decides to re-arm/sleep).
+    monkeypatch.setattr(
+        "tools.voice_mode_transcript.is_voice_stop_phrase",
+        lambda t: t.strip().lower() == "goodbye")
+    session = _FakeConverseSession(["goodbye"])
+    history: list = []
+    sent = _run_driver(session, history, ["SHOULD NOT RUN"], idle_interval=1.0)
+
+    types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
+    assert types == ["transcript", "stop_word"]
+    assert sent[1] == {"type": "stop_word", "text": "goodbye"}
+    assert history == []  # the stop phrase never became a turn
+
+
+def test_drive_converse_turns_stop_word_ignored_in_continuous_mode(monkeypatch):
+    # Continuous mode (idle_interval=0): stop-word handling is off — "goodbye" is a
+    # normal turn with no {"type":"stop_word"}.
+    monkeypatch.setattr("tools.voice_mode_transcript.is_voice_stop_phrase", lambda t: True)
+    session = _FakeConverseSession(["goodbye"])
+    history: list = []
+    sent = _run_driver(session, history, ["Bye!"], idle_interval=0.0)
+
+    types = [f.get("type") if isinstance(f, dict) else "bytes" for f in sent]
+    assert "stop_word" not in types
+    assert types == ["transcript", "speaking", "bytes", "turn_done"]

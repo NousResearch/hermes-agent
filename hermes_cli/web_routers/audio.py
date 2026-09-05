@@ -626,12 +626,15 @@ async def converse_ws(ws: "WebSocket") -> None:
         return "", err
 
     async def _drive_turns():
-        from tools.voice_converse_loop import drive_converse_turns
+        from tools.voice_converse_loop import drive_converse_turns, parse_idle_interval
 
+        # ?idle_interval=<seconds>: session mode — periodic {"type":"idle"} during quiet
+        # (socket stays open) + spoken stop phrases become {"type":"stop_word"}. 0 = continuous.
         await drive_converse_turns(
             session=session, synth=synth, cap=cap, loop=loop,
             send_json=ws.send_json, send_bytes=ws.send_bytes,
-            run_turn=_run_turn, history=conversation_history)
+            run_turn=_run_turn, history=conversation_history,
+            idle_interval=parse_idle_interval(ws.query_params.get("idle_interval")))
 
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())

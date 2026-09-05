@@ -330,6 +330,26 @@ def split_text_for_tts_stream(text: str, cap: int) -> list:
 _HISTORY_MAX_MESSAGES = 40
 
 
+_IDLE_INTERVAL_MAX = 3600.0
+
+
+def parse_idle_interval(raw: Optional[str]) -> float:
+    """Parse the ``idle_interval`` query param → seconds of quiet between turns before an
+    ``{"type":"idle"}`` notification (which also enables stop-phrase → ``{"type":"stop_word"}``).
+
+    This is the SESSION-mode opt-in. Absent / invalid / ``<= 0`` → ``0.0`` = continuous mode:
+    no idle pings and no stop-word handling — the original always-listening behavior, so
+    existing clients are unaffected. A positive value enables session mode (clamped to a sane
+    max); a wake-word client passes e.g. ``15``."""
+    if raw is None:
+        return 0.0
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if val <= 0 else min(val, _IDLE_INTERVAL_MAX)
+
+
 async def drive_converse_turns(
     *,
     session: "ConverseSession",
@@ -340,6 +360,7 @@ async def drive_converse_turns(
     send_bytes: Callable[[bytes], Awaitable[Any]],
     run_turn: Callable[..., Awaitable[Tuple[str, Optional[str]]]],
     history: List[Dict[str, str]],
+    idle_interval: float = 0.0,
 ) -> None:
     """Run the per-transcript incremental-TTS turn loop shared by both WS hosts.
 
@@ -376,14 +397,36 @@ async def drive_converse_turns(
     """
     from tools.tts_streaming import SentenceChunker
     from tools.tts_text_normalize import _strip_markdown_for_tts
+    from tools.voice_mode_transcript import is_voice_stop_phrase
 
+    quiet = 0.0  # seconds of no NEW utterance while waiting between turns (session mode)
     while not session.stopped:
-        transcript = await loop.run_in_executor(None, session.transcripts.get)
+        if idle_interval > 0:
+            # Session mode (wake-word clients). Timed wait for the next utterance; on a
+            # quiet interval, notify the client and KEEP the socket open (streaming
+            # continues) — a periodic {"type":"idle"} hint a wake-word client uses to
+            # re-arm/sleep, and a continuous client ignores. Repeats every idle_interval
+            # of quiet; `quiet_seconds` is the cumulative quiet since the last utterance.
+            try:
+                transcript = await loop.run_in_executor(
+                    None, lambda: session.transcripts.get(timeout=idle_interval))
+            except queue.Empty:
+                quiet = round(quiet + idle_interval, 1)
+                await send_json({"type": "idle", "quiet_seconds": quiet})
+                continue
+        else:
+            transcript = await loop.run_in_executor(None, session.transcripts.get)
         if transcript is None:  # shutdown sentinel
             break
         if not transcript:
             continue
+        quiet = 0.0  # a real utterance resets the quiet clock
         await send_json({"type": "transcript", "text": transcript})
+        # Session mode: a spoken stop phrase ("goodbye"/"stop"/…) ends the exchange —
+        # tell the client and skip the agent turn (the client decides to re-arm/sleep).
+        if idle_interval > 0 and is_voice_stop_phrase(transcript):
+            await send_json({"type": "stop_word", "text": transcript})
+            continue
 
         # Clear any stale barge-in latch before this turn; capture it as the per-turn
         # interrupted note so a host that plumbs barge-in parity (the dashboard) can

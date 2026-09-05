@@ -196,6 +196,11 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
 
     profile = _api_request_profile.get()
     expected_key = self._expected_api_key()
+    from tools.voice_converse_loop import parse_idle_interval
+    # Session mode: ?idle_interval=<seconds> makes the loop emit periodic {"type":"idle"}
+    # during quiet (socket stays open) and treat spoken stop phrases as session-enders
+    # ({"type":"stop_word"}). Absent -> default; 0 -> continuous (neither), the original.
+    idle_interval = parse_idle_interval(request.query.get("idle_interval"))
 
     # (A) Subprotocol key: validated pre-prepare so a bad key rejects the upgrade.
     offered_key = _offered_key_protocol(request)
@@ -297,7 +302,8 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         await drive_converse_turns(
             session=session, synth=synth, cap=cap, loop=loop,
             send_json=ws.send_json, send_bytes=ws.send_bytes,
-            run_turn=_run_turn, history=conversation_history)
+            run_turn=_run_turn, history=conversation_history,
+            idle_interval=idle_interval)
 
     pump = asyncio.ensure_future(_pump_client())
     driver = asyncio.ensure_future(_drive_turns())

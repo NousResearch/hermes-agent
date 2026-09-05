@@ -15,6 +15,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $codeBlockCollapse, type CodeBlockCollapse, setCodeBlockCollapse } from '@/store/code-block-collapse'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
@@ -395,6 +396,7 @@ export function AppearanceSettings() {
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const reasoningCollapsedByDefault = useStore($reasoningCollapsedByDefault)
+  const codeBlockCollapse = useStore($codeBlockCollapse)
   const sessionListDensity = useStore($sessionListDensity)
   const tabStripDefault = useStore($tabStripDefault)
   const zoomPercent = useStore($zoomPercent)
@@ -473,6 +475,12 @@ export function AppearanceSettings() {
     { id: 'product', label: a.product },
     { id: 'technical', label: a.technical }
   ] as const
+
+  const codeBlockCollapseOptions = [
+    { id: 'compact', label: a.codeBlockCollapseCompact },
+    { id: 'tall', label: a.codeBlockCollapseTall },
+    { id: 'off', label: a.codeBlockCollapseOff }
+  ] as const satisfies readonly { id: CodeBlockCollapse; label: string }[]
 
   const sessionDensityOptions = [
     { id: 'compact', label: a.sessionDensityCompact },
@@ -930,6 +938,21 @@ export function AppearanceSettings() {
             }
             description={a.reasoningCollapsedDesc}
             title={a.reasoningCollapsedTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setCodeBlockCollapse(id)
+                }}
+                options={codeBlockCollapseOptions}
+                value={codeBlockCollapse}
+              />
+            }
+            description={a.codeBlockCollapseDesc}
+            title={a.codeBlockCollapseTitle}
           />
 
           <ListRow

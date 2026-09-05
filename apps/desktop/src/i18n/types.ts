@@ -440,6 +440,11 @@ export interface Translations {
       toolViewDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
+      codeBlockCollapseTitle: string
+      codeBlockCollapseDesc: string
+      codeBlockCollapseCompact: string
+      codeBlockCollapseTall: string
+      codeBlockCollapseOff: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string

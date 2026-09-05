@@ -29,6 +29,7 @@ from tools.environments.local_gitbash_probe import (
     _looks_like_msys_spawn_failure, _mandatory_aslr_enabled)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
+from tools.approval_detection import _scan_shell
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -161,6 +162,42 @@ def _quote_bash_path(path: str) -> str:
     """Quote *path* for safe interpolation into a Git Bash script on Windows."""
     import shlex
     return shlex.quote(_bash_safe_path(path))
+
+
+# --- cmd.exe-style NUL redirection (Git Bash turns it into a literal file) ---
+_NUL_REDIRECT_RE = re.compile(r"(\d*)(>>?)[ \t]*([Nn][Uu][Ll])(?![\w.-])")
+
+
+def _normalize_nul_redirections(cmd_string: str) -> str:
+    """Rewrite cmd.exe null-device redirection (``2>NUL``, ``>nul``, ``>>NUL``) to
+    ``/dev/null`` for Git Bash, where ``NUL`` is an ordinary filename and the
+    redirection silently dirties the workspace with a reserved-device-name file
+    (issue #103244).
+
+    Only unquoted redirection positions are rewritten: quoted text keeps its
+    characters and backslash escapes keep protecting literals (both at the top
+    level and inside ``$(...)`` / backtick spans, which are scanned as plain
+    unquoted text). Quote state is tracked flatly, so a literal ``2>NUL`` that is
+    quoted *inside* a nested substitution may be rewritten too — the polluting
+    form is exactly what callers want gone either way. The function is otherwise
+    a no-op, so callers can apply it unconditionally.
+    """
+    if "NUL" not in cmd_string.upper():
+        return cmd_string
+    pieces: list[str] = []
+    run_start: int | None = None
+    for kind, i, j, quote in _scan_shell(cmd_string):
+        if kind == "char" and quote is None:
+            if run_start is None:
+                run_start = i
+            continue
+        if run_start is not None:
+            pieces.append(_NUL_REDIRECT_RE.sub(r"\1\2/dev/null", cmd_string[run_start:i]))
+            run_start = None
+        pieces.append(cmd_string[i:j])
+    if run_start is not None:
+        pieces.append(_NUL_REDIRECT_RE.sub(r"\1\2/dev/null", cmd_string[run_start:]))
+    return "".join(pieces)
 
 
 def _cwd_usable(path: str) -> bool:
@@ -781,6 +818,10 @@ class LocalEnvironment(BaseEnvironment):
         # custom init files so nvm/asdf/pyenv land on PATH in the snapshot.
         if login:
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
+        # Models on a Windows host emit cmd.exe syntax (``2>NUL``) that Git Bash
+        # resolves as a literal ``NUL`` file instead of the null device (#103244).
+        if _IS_WINDOWS:
+            cmd_string = _normalize_nul_redirections(cmd_string)
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
         proc = subprocess.Popen(

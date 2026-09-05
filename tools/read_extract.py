@@ -463,12 +463,42 @@ def _extract_docx(path: str) -> str:
     with _open_zip(path, "DOCX") as zf:
         root = _zip_xml(zf, "word/document.xml")
     w = f"{{{_NS_W}}}"
-    breaks = {f"{w}tab": "\t", f"{w}br": "\n", f"{w}cr": "\n"}
+    p_tag, t_tag, tab_tag = f"{w}p", f"{w}t", f"{w}tab"
+    break_tags = {f"{w}br", f"{w}cr"}
+
+    # Paragraphs can nest inside text boxes and block-level content controls.
+    # Walk once in document order so nested text is not emitted by both its
+    # ancestor and itself: a nested paragraph interrupts and resumes its parent.
     lines: list[str] = []
-    for para in root.iter(f"{w}p"):
-        text = "".join(
-            (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "") for n in para.iter())
-        lines.extend(text.split("\n"))
+    buf: list[str] = []
+
+    def _flush() -> bool:
+        if not buf:
+            return False
+        lines.extend("".join(buf).split("\n"))
+        buf.clear()
+        return True
+
+    def _walk(node: ET.Element) -> None:
+        for child in node:
+            tag = child.tag
+            if tag == p_tag:
+                _flush()
+                marker = len(lines)
+                _walk(child)
+                if not _flush() and len(lines) == marker:
+                    lines.append("")  # preserve an empty paragraph as a blank line
+            elif tag == t_tag:
+                buf.append(child.text or "")
+            elif tag == tab_tag:
+                buf.append("\t")
+            elif tag in break_tags:
+                buf.append("\n")
+            else:
+                _walk(child)
+
+    _walk(root)
+    _flush()
     return _joined(lines, "DOCX contains no extractable text")
 
 

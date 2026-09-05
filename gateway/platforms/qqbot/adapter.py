@@ -975,9 +975,9 @@ class QQAdapter(BasePlatformAdapter):
         if not self._http_client:
             return None
         try:
-            resp = await self._http_client.get(url, timeout=30.0, headers=self._qq_media_headers())
-            resp.raise_for_status()
-            data = resp.content
+            data, _ = await self._download_media_with_cap(
+                url, headers=self._qq_media_headers()
+            )
         except Exception as exc:
             logger.debug("[%s] Download failed for %s: %s", self._log_tag, url[:80], exc)
             return None
@@ -1001,6 +1001,103 @@ class QQAdapter(BasePlatformAdapter):
         if ct == "file":
             return False
         return filename.strip().lower().endswith(_VOICE_EXTENSIONS)
+
+    # QQ media/voice bodies are remote and attacker-influenced: a server that
+    # omits Content-Length can stream an arbitrarily large payload, and reading
+    # `resp.content` buffers all of it before any size check runs (the #81046
+    # class, fixed there for vision downloads). Stream instead and abort as soon
+    # as the running byte count crosses the cap. Mirrors the matrix adapter's
+    # _download_external_media_with_cap; the bound is env-tunable for operators
+    # who legitimately relay large media.
+    _QQ_MAX_MEDIA_BYTES_DEFAULT = 100 * 1024 * 1024
+
+    def _qq_max_media_bytes(self) -> int:
+        """Byte ceiling for an inbound media download.
+
+        Resolution order, per AGENTS.md ("behavioral settings ... go in
+        config.yaml", platform knobs under ``extra``):
+
+        1. ``platforms.qqbot.extra.max_media_bytes`` — the documented knob,
+           read from the same ``config.extra`` block this adapter already uses
+           for its other settings.
+        2. ``QQBOT_MAX_MEDIA_BYTES`` — kept as an internal bridge for
+           env-only deployments; the rubric allows the bridge as long as the
+           user-facing surface is config.yaml.
+        3. The built-in default.
+
+        A non-positive or unparseable value at either layer is ignored rather
+        than honoured: disarming a size cap is not a sane reading of a typo.
+        """
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        if isinstance(extra, dict) and "max_media_bytes" in extra:
+            parsed = self._coerce_media_cap(
+                extra.get("max_media_bytes"), "platforms.qqbot.extra.max_media_bytes"
+            )
+            if parsed is not None:
+                return parsed
+        parsed = self._coerce_media_cap(
+            os.getenv("QQBOT_MAX_MEDIA_BYTES", "").strip() or None,
+            "QQBOT_MAX_MEDIA_BYTES",
+        )
+        if parsed is not None:
+            return parsed
+        return self._QQ_MAX_MEDIA_BYTES_DEFAULT
+
+    def _coerce_media_cap(self, value, source: str):
+        """Positive int from *value*, or None (with a warning) when unusable."""
+        if value is None or value == "":
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            logger.warning("[%s] Ignoring invalid %s=%r", self._log_tag, source, value)
+            return None
+        if parsed <= 0:
+            logger.warning(
+                "[%s] Ignoring non-positive %s=%r", self._log_tag, source, value
+            )
+            return None
+        return parsed
+
+    async def _download_media_with_cap(
+        self, url: str, *, headers: dict, follow_redirects: bool = False,
+        timeout: float = 30.0,
+    ) -> tuple[bytes, str]:
+        """GET *url* into memory, aborting once the body exceeds the cap.
+
+        Returns ``(body, content_type)``. Raises ``ValueError`` when the cap is
+        crossed so callers surface a bounded failure instead of an OOM. The
+        declared Content-Length is only an early-out hint; the streamed byte
+        count is the authoritative guard, because a hostile or broken server
+        can omit or understate the header.
+        """
+        cap = self._qq_max_media_bytes()
+        async with self._http_client.stream(
+            "GET", url, timeout=timeout, headers=headers,
+            follow_redirects=follow_redirects,
+        ) as resp:
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "") or ""
+            # Early-out on a declared oversize so we never open the body.
+            # A malformed header is not a size verdict: ignore it and let the
+            # streaming guard below decide.
+            try:
+                declared = int(resp.headers.get("content-length") or 0)
+            except (TypeError, ValueError):
+                declared = 0
+            if declared > cap:
+                raise ValueError(
+                    f"media exceeds {cap} byte cap (declared {declared})"
+                )
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > cap:
+                    raise ValueError(f"media exceeds {cap} byte cap")
+                chunks.append(chunk)
+        return b"".join(chunks), content_type
+
 
     def _qq_media_headers(self) -> Dict[str, str]:
         """Authorization header for QQ multimedia CDN downloads (required, else non-200)."""
@@ -1034,14 +1131,23 @@ class QQAdapter(BasePlatformAdapter):
             download_headers = self._qq_media_headers()  # QQ CDN requires Authorization
             logger.debug(
                 "[%s] STT: downloading voice from %s (pre_wav=%s, headers=%s)",
-                self._log_tag, download_url[:80], is_pre_wav, bool(download_headers))
-            resp = await self._http_client.get(
-                download_url, timeout=30.0, headers=download_headers, follow_redirects=True)
-            resp.raise_for_status()
-            audio_data = resp.content
+                self._log_tag,
+                download_url[:80],
+                is_pre_wav,
+                bool(download_headers),
+            )
+            audio_data, _voice_ct = await self._download_media_with_cap(
+                download_url,
+                headers=download_headers,
+                follow_redirects=True,
+            )
             logger.debug(
                 "[%s] STT: downloaded %d bytes, content_type=%s",
-                self._log_tag, len(audio_data), resp.headers.get("content-type", "unknown"))
+                self._log_tag,
+                len(audio_data),
+                _voice_ct or "unknown",
+            )
+
             if len(audio_data) < 10:
                 logger.warning("[%s] STT: downloaded data too small (%d bytes), skipping", self._log_tag, len(audio_data))
                 return None

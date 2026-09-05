@@ -1354,6 +1354,14 @@ platform_toolsets:
 #       # Omit either key to preserve Slack's default for that preview type.
 #       unfurl_links: false
 #       unfurl_media: false
+#   qqbot:
+#     extra:
+#       # Ceiling for an inbound image/voice/video download, in bytes. The
+#       # fetch is streamed and aborted the moment it crosses this, so a peer
+#       # that omits or understates Content-Length cannot exhaust gateway
+#       # memory. Default 104857600 (100 MB). Raise it only if you genuinely
+#       # relay larger media.
+#       max_media_bytes: 104857600
 #   webhook:
 #     extra:
 #       # Route scripts default to a 30 second timeout. Scripts must live under

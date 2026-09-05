@@ -34,6 +34,11 @@ def _norm(value: Optional[str]) -> str:
     return (value or "").strip().lower()
 
 
+def _is_named_custom_provider(value: str) -> bool:
+    """Return True for a saved ``custom:<name>`` provider identity."""
+    return value.startswith("custom:") and len(value) > len("custom:")
+
+
 @dataclass(frozen=True)
 class BackendIdentity:
     """Normalized identity of one (provider, model, endpoint) deployment.
@@ -101,6 +106,21 @@ def same_deployment(a: BackendIdentity, b: BackendIdentity) -> bool:
     same URL + model are still one deployment (same-host shim aliases) — unless both labels are
     first-class registry providers."""
     if not (a.provider and b.provider and a.provider == b.provider):
+        # Separate named custom entries may carry different API keys while
+        # sharing one URL/model. Do not strand those credential-separated
+        # fallback candidates; keep the legacy shim-alias guard below.
+        if (
+            a.model
+            and a.model == b.model
+            and a.base_url
+            and a.base_url == b.base_url
+            and (
+                (_is_named_custom_provider(a.provider) and b.provider == "custom")
+                or (_is_named_custom_provider(b.provider) and a.provider == "custom")
+                or (_is_named_custom_provider(a.provider) and _is_named_custom_provider(b.provider))
+            )
+        ):
+            return False
         return bool(
             a.base_url
             # Same-host different-label shims: same URL + same model IS the same deployment even when the

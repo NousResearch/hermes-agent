@@ -533,6 +533,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 _TOPLEVEL_BOOL_DEFAULTS = {
     "write_sessions_json": True, "always_log_local": True, "filter_silence_narration": True,
     "group_sessions_per_user": True, "thread_sessions_per_user": False,
+    "hosted_rooms_enabled": True,
 }
 
 
@@ -551,6 +552,14 @@ class GatewayConfig:
     # compatibility with external tooling and downgrade safety; set gateway.write_sessions_json: false in
     # config.yaml to stop producing the file.
     write_sessions_json: bool = True
+    # Whether the gateway starts the Group Chat (hosted rooms) worker. The
+    # worker operates on the install-wide shared state.db and runs in every
+    # profile gateway by default. On multi-profile installs, a fleet restart
+    # (e.g. `hermes update`) fires all workers back-to-back on the same
+    # shared state.db, which has corrupted the store in the field (#102120).
+    # Set to false to disable the worker entirely — the gateway will still
+    # serve real messages, just without Group Chat rooms.
+    hosted_rooms_enabled: bool = True
     always_log_local: bool = True  # Always save cron outputs to local files
     # Drop outbound "silence narration" (*(silent)*, 🔇, a bare ".") that ping-pongs in bot-to-bot
     # channels; a substrate guard that survives prompt drift.
@@ -590,7 +599,7 @@ class GatewayConfig:
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
-        "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
+        "write_sessions_json", "hosted_rooms_enabled", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles", "multiplex_profile_allowlist",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",

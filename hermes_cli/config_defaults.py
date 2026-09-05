@@ -1901,6 +1901,13 @@ DEFAULT_CONFIG = {
         # (primary copy: state.db gateway_routing table). True for external tooling and downgrade
         # safety; False stops producing the file.
         "write_sessions_json": True,
+        # Whether the gateway starts the Group Chat (hosted rooms) worker.
+        # The worker operates on the install-wide shared state.db and runs in
+        # every profile gateway by default. On multi-profile installs, a fleet
+        # restart fires all workers back-to-back on the same shared state.db,
+        # which has corrupted the store in the field (#102120). False
+        # disables the worker entirely.
+        "hosted_rooms_enabled": True,
         # Scale-to-zero idle TIMEOUT only. When an instance is opted in via the NAS "Labs" toggle
         # (HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent AND a wakeUrl is
         # registered, the relay transport goes dormant so the platform (e.g. Fly autostop) can

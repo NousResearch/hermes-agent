@@ -3393,9 +3393,12 @@ def main():
         return
 
     # A handler's int return code becomes the exit code (None = success).
+    # ``bool`` subclasses ``int``, so gate on an exact ``int`` -- external
+    # plugin handlers routinely return ``True``/``False`` to signal success
+    # and must not map to ``sys.exit(True)`` -> status 1.
     if hasattr(args, "func"):
         rc = args.func(args)
-        if isinstance(rc, int) and rc != 0:
+        if type(rc) is int and rc != 0:
             sys.exit(rc)
     else:
         parser.print_help()

@@ -250,3 +250,75 @@ class TestLoadGatewayConfigApiServerExplicitDisable:
         assert api_cfg is not None
         assert api_cfg.enabled is False
         assert api_cfg.extra.get("key") == "test-key-0123456789abcdef"
+
+    def test_api_server_enabled_env_false_disables_despite_usable_key(
+        self, tmp_path, monkeypatch
+    ):
+        """API_SERVER_ENABLED=false must win over the key-based force-enable.
+
+        Regression for #87856: a fresh install auto-generates a usable
+        API_SERVER_KEY, so the enable branch always fired and the documented
+        ``API_SERVER_ENABLED`` off switch was dead — the listener started
+        regardless.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "false")
+        monkeypatch.setenv("API_SERVER_KEY", "test-key-0123456789abcdef")
+        monkeypatch.chdir(tmp_path)
+
+        from gateway.config import Platform, load_gateway_config
+
+        config = load_gateway_config()
+        api_cfg = config.platforms.get(Platform.API_SERVER)
+        # The platform may still be materialized (key/extras recorded) but must
+        # not be enabled.
+        assert api_cfg is None or api_cfg.enabled is False
+
+    def test_api_server_enabled_env_false_overrides_config_yaml_true(
+        self, tmp_path, monkeypatch
+    ):
+        """An explicit deployment off switch beats a config.yaml ``enabled: true``.
+
+        The env var is the outer, deployment-level override; a fail-safe
+        ``false`` there must take a listener down even when config.yaml turned
+        it on.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  api_server:\n"
+            "    enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("API_SERVER_ENABLED", "false")
+        monkeypatch.setenv("API_SERVER_KEY", "test-key-0123456789abcdef")
+        monkeypatch.chdir(tmp_path)
+
+        from gateway.config import Platform, load_gateway_config
+
+        config = load_gateway_config()
+        api_cfg = config.platforms.get(Platform.API_SERVER)
+        assert api_cfg is not None
+        assert api_cfg.enabled is False
+
+    def test_api_server_unset_env_still_enables_with_usable_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Unset ``API_SERVER_ENABLED`` keeps the historical key-based enable."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("API_SERVER_ENABLED", raising=False)
+        monkeypatch.setenv("API_SERVER_KEY", "test-key-0123456789abcdef")
+        monkeypatch.chdir(tmp_path)
+
+        from gateway.config import Platform, load_gateway_config
+
+        config = load_gateway_config()
+        api_cfg = config.platforms.get(Platform.API_SERVER)
+        assert api_cfg is not None
+        assert api_cfg.enabled is True

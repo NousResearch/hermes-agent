@@ -135,6 +135,11 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
 
   const prior = all[group] || {}
 
+  if (!groupChatHostedGateway(prior)) {
+    const { retireClassicGroup } = await import('./classic-output')
+    await retireClassicGroup(prior)
+  }
+
   if (groupChatHostedGateway(prior)) {
     const roomId = String(prior.roomId || '')
     const alreadyDeleted = prior.hostedStatus?.state === 'deleted'

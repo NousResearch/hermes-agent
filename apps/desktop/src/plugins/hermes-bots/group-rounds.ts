@@ -1,3 +1,5 @@
+import { groupTurnText } from './classic-output'
+import type { GroupTurnReply } from './classic-output'
 /**
  * Room-level coordination: who speaks, in what order, for how long — the
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
@@ -21,6 +23,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
+import { GroupFileDeliveryError } from './group-file-delivery'
 import { durableGroupChatMembers, groupMemberKey } from './group-membership'
 import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import {
@@ -589,6 +592,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
   const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
   let posted = 0
   let continuations = 0
+  const deliveryFailed = new Set<string>()
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
   // passed with nothing pending); 'capped' means a round/message/continuation
   // cap forced the exit — the activity feed must tell those apart.
@@ -632,7 +636,9 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
       const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
-        (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+        (member: GroupMember) =>
+          !deliveryFailed.has(groupMemberKey(member)) &&
+          !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
       )
 
       let spokeThisRound = 0
@@ -729,7 +735,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
           return r
         })
-        let reply: null | string = null
+        let reply: null | GroupTurnReply = null
 
         try {
           reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
@@ -754,6 +760,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
               : {})
           })
           noteBotAttention(groupMemberKey(member), reason || error?.message || error)
+
+          if (error instanceof GroupFileDeliveryError) {
+            deliveryFailed.add(groupMemberKey(member))
+
+            continue
+          }
+
           reply = null // a failed turn is a pass, never a room error
         }
 
@@ -812,8 +825,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                   }
                 : {})
             },
-            reply,
-            thread
+            groupTurnText(reply),
+            thread,
+            typeof reply === 'object' ? reply.images : undefined,
+            typeof reply === 'object' ? reply.entryId : undefined
           )
           // Its own message counts as seen too.
           updateGroupChat(group, (r: GroupChatRoom) => {
@@ -848,7 +863,9 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
             const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
             const continuationResponders = citedMembers.filter(
-              (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+              (member: GroupMember) =>
+                !deliveryFailed.has(groupMemberKey(member)) &&
+                !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
             )
 
             for (const member of continuationResponders) {
@@ -896,10 +913,16 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
 
                 return r
               })
-              let continuationReply: null | string = null
+              let continuationReply: null | GroupTurnReply = null
 
               try {
-                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
+                continuationReply = await runGroupChatMemberTurn(
+                  group,
+                  member,
+                  prompt,
+                  thread,
+                  delta.flatMap((entry: GroupMessage) => entry.images || [])
+                )
 
                 if (continuationReply !== null) {
                   clearBotAttention(memberKey)
@@ -911,6 +934,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                   thread
                 })
                 noteBotAttention(memberKey, error?.message || error)
+
+                if (error instanceof GroupFileDeliveryError) {
+                  deliveryFailed.add(memberKey)
+
+                  continue
+                }
+
                 continuationReply = null
               }
 
@@ -936,8 +966,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
                         }
                       : {})
                   },
-                  continuationReply,
-                  thread
+                  groupTurnText(continuationReply),
+                  thread,
+                  typeof continuationReply === 'object' ? continuationReply.images : undefined,
+                  typeof continuationReply === 'object' ? continuationReply.entryId : undefined
                 )
                 updateGroupChat(group, (r: GroupChatRoom) => {
                   r.watermarks[markKey] = r.log.length

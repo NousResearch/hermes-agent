@@ -3,6 +3,7 @@
 import { Button, Codicon, host, Tip } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
+import { readClassicAttachment } from './classic-output'
 import { $groupChats } from './group-chat'
 import { GroupFileError, groupFileFailure, type GroupFileFailure, withGroupFileDeadline } from './group-file-errors'
 import { beginGroupFileDelivery, groupFileAccessCurrent, invalidateGroupFileAccess } from './group-files-access'
@@ -25,12 +26,14 @@ export async function downloadGroupChatAttachment(
   const delivery = beginGroupFileDelivery(room, signal)
 
   try {
-    const resolved = attachment.data
-      ? attachment
-      : await withGroupFileDeadline(
-          readHostedGroupChatAttachment(group, message, attachment, delivery.signal),
-          delivery.signal
-        )
+    const resolved = attachment.classicExport
+      ? await withGroupFileDeadline(readClassicAttachment(group, attachment), delivery.signal)
+      : attachment.data
+        ? attachment
+        : await withGroupFileDeadline(
+            readHostedGroupChatAttachment(group, message, attachment, delivery.signal),
+            delivery.signal
+          )
 
     if (!delivery.current()) {
       return

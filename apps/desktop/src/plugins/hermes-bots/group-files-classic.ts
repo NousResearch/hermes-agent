@@ -26,7 +26,8 @@ function retainedEntries(room: GroupChat): GroupMessage[] {
 
 function localAttachments(entry: GroupMessage) {
   return (Array.isArray(entry.images) ? entry.images.slice(0, 8) : []).filter(
-    attachment => typeof attachment.data === 'string' && attachment.data.startsWith('data:')
+    attachment =>
+      Boolean(attachment.classicExport) || (typeof attachment.data === 'string' && attachment.data.startsWith('data:'))
   )
 }
 

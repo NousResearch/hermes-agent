@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { ClassicFileRef, ClassicTurn } from './classic-output'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -136,6 +138,8 @@ export type GroupMember = Pick<
 export type AttachmentKind = 'file' | 'image' | 'pdf'
 
 export interface Attachment {
+  /** Non-secret, explicitly published producer reference. Never cache its bytes here. */
+  classicExport?: ClassicFileRef
   /** Local composer/preview data URL. Durable replay omits raw bytes. */
   data?: string
   /** Opaque gateway identity after durable staging. */
@@ -228,7 +232,7 @@ export interface GroupChat {
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  stranded?: Record<string, number | { before: number; thread?: string }>
+  stranded?: Record<string, number | { before: number; thread?: string; classicTurn?: ClassicTurn }>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean

@@ -1694,9 +1694,18 @@ export function appendGroupChatEntry(
   // byte-identical. Drop the echo instead of flooding the room. User
   // entries and non-adjacent repeats are never touched.
   const priorLog = ($groupChats.get()[group] || {}).log || []
+
+  if (entryId?.startsWith('classic-export:')) {
+    const existing = priorLog.find(item => item.id === entryId)
+
+    if (existing) {
+      return existing
+    }
+  }
+
   const lastEntry = priorLog[priorLog.length - 1]
 
-  if (isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
+  if (!entryId?.startsWith('classic-export:') && isDuplicateGroupAppend(lastEntry, from, entry.text, entry.thread)) {
     return lastEntry
   }
 

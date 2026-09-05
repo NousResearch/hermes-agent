@@ -344,12 +344,15 @@ def _yield_session_for_request(home, req: dict) -> None:
             return  # request was minted for a previous incarnation of this pid
     closed = False
     with _sessions_lock:
-        candidates = [
+        idle_candidates = [
             (sid, sess) for sid, sess in _sessions.items()
             if str(sess.get("session_key") or "") == wanted
             and not sess.get("running")
         ]
-    for sid, _sess in candidates:
+        still_busy = any(
+            str(sess.get("session_key") or "") == wanted and sess.get("running")
+            for sess in _sessions.values())
+    for sid, _sess in idle_candidates:
         if _close_session_by_id(
                 sid, end_reason="ws_orphan_reap",
                 predicate=lambda sess, w=wanted: (
@@ -359,8 +362,20 @@ def _yield_session_for_request(home, req: dict) -> None:
             logger.info(
                 "Auto-yield: honored cross-surface yield request for session %s (closed idle tab %s)",
                 wanted, sid)
-    if not closed:
-        logger.debug("Auto-yield: request for session %s matched no idle local session", wanted)
+    if closed:
+        return
+    if still_busy:
+        # The named session exists here but is mid-turn: requeue the request (same
+        # requested_at, so the original TTL still bounds it) so the next watcher poll
+        # retries once the turn ends. Dropping it here is what stranded a requester
+        # whose send landed during turn finalization.
+        try:
+            from hermes_cli.active_sessions import request_cross_surface_yield
+            request_cross_surface_yield(wanted, {"pid": os.getpid()}, registry_home=home)
+        except Exception:
+            pass
+        return
+    logger.debug("Auto-yield: request for session %s matched no idle local session", wanted)
 
 
 def _start_yield_watcher() -> None:

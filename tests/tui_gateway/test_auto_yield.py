@@ -153,7 +153,7 @@ def test_yield_request_roundtrip_holder_honors(gateway):
     assert "tab-idle" not in gateway._sessions
     assert "tab-busy" in gateway._sessions, "running session must survive"
 
-    # A request for the busy session leaves it alone.
+    # A request for the busy session leaves it alone and REQUEUES itself (retry when idle).
     ok = request_cross_surface_yield(
         "sess-b", {"pid": holder_pid_pid_of_self(), "process_start_time": None})
     assert ok
@@ -161,6 +161,10 @@ def test_yield_request_roundtrip_holder_honors(gateway):
     assert len(mine) == 1 and mine[0]["session_id"] == "sess-b"
     _yield_session_for_request(gateway_home(), mine[0])
     assert "tab-busy" in gateway._sessions
+    requeued = poll_yield_requests()
+    assert len(requeued) == 1 and requeued[0]["session_id"] == "sess-b", \
+        "busy session must requeue its yield request for a retry"
+    _yield_session_for_request(gateway_home(), requeued[0])  # consume the requeue
 
     # An expired request is dropped by the poll, never honored.
     from hermes_cli.active_sessions import _yield_request_dir

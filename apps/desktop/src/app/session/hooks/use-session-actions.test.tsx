@@ -1791,6 +1791,7 @@ function BranchHarness({
   activeSessionId = null,
   navigate = vi.fn(),
   onCurrentReady,
+  onLoadedReady,
   onReady,
   onRefs,
   requestGateway,
@@ -1799,6 +1800,7 @@ function BranchHarness({
   activeSessionId?: string | null
   navigate?: ReturnType<typeof vi.fn>
   onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
+  onLoadedReady?: (branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
   onRefs?: (refs: {
     activeSessionIdRef: MutableRefObject<string | null>
@@ -1835,7 +1837,15 @@ function BranchHarness({
   useEffect(() => {
     onReady(actions.branchStoredSession)
     onCurrentReady?.(actions.branchCurrentSession)
-  }, [actions.branchCurrentSession, actions.branchStoredSession, onCurrentReady, onReady])
+    onLoadedReady?.(actions.branchLoadedSession)
+  }, [
+    actions.branchCurrentSession,
+    actions.branchLoadedSession,
+    actions.branchStoredSession,
+    onCurrentReady,
+    onLoadedReady,
+    onReady
+  ])
 
   return null
 }
@@ -2277,6 +2287,50 @@ describe('branchStoredSession desktop source tagging', () => {
 
     await expect(branchCurrentSession!()).resolves.toBe(false)
     expect(requestGateway).not.toHaveBeenCalledWith('session.branch', expect.anything())
+  })
+
+  it('branches a loaded tile transcript through the clicked message', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.branch') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    const messages = [
+      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] },
+      { id: 'a2', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }] }
+    ]
+
+    setSessions([storedSession({ id: 'tile-stored', message_count: messages.length })])
+    let branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession'] | null = null
+    render(
+      <BranchHarness
+        onLoadedReady={branch => (branchLoadedSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchLoadedSession).not.toBeNull())
+
+    await expect(
+      branchLoadedSession!({
+        busy: false,
+        cwd: '/repo',
+        messageId: 'a1',
+        messages,
+        runtimeId: 'tile-runtime',
+        storedSessionId: 'tile-stored'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('session.branch', {
+      session_id: 'tile-runtime',
+      count: 2
+    })
   })
 
   // #67603: right-clicking a session outside the paginated sidebar window is a

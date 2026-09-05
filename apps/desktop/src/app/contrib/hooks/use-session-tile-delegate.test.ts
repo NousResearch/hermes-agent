@@ -2,6 +2,7 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesModule from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
 import { sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -41,22 +42,24 @@ const row = (over: Partial<SessionInfo>): SessionInfo =>
 
 function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
-  refs?: {
+  options: {
+    branchLoadedSession?: ReturnType<typeof vi.fn>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
-  }
+  } = {}
 ) {
   renderHook(() =>
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
+      branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
       branchStoredSession: vi.fn(async () => undefined),
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
-      runtimeIdByStoredSessionIdRef: (refs?.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
-      sessionStateByRuntimeIdRef: (refs?.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
-      updateSessionState: (refs?.updateSessionState ?? vi.fn()) as never
+      runtimeIdByStoredSessionIdRef: (options.runtimeIdByStoredSessionIdRef ?? { current: new Map() }) as never,
+      sessionStateByRuntimeIdRef: (options.sessionStateByRuntimeIdRef ?? { current: new Map() }) as never,
+      updateSessionState: (options.updateSessionState ?? vi.fn()) as never
     })
   )
 }
@@ -309,6 +312,41 @@ describe('useSessionTileDelegate resumeTile', () => {
     // The next resume goes cold instead of reusing the dead binding.
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-c')
     expect(runtimeId).toBe('runtime-fresh')
+  })
+
+  it('branches a tile from the live message array that rendered the clicked action', async () => {
+    const messages = [
+      { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
+      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] }
+    ]
+
+    const state = { ...createClientSessionState('stored-x', messages), cwd: '/repo' }
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), {
+      branchLoadedSession,
+      sessionStateByRuntimeIdRef: { current: new Map([['runtime-x', state]]) }
+    })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-x', 'a1')).resolves.toBe(true)
+    expect(branchLoadedSession).toHaveBeenCalledWith({
+      busy: false,
+      cwd: '/repo',
+      messageId: 'a1',
+      messages,
+      runtimeId: 'runtime-x',
+      storedSessionId: 'stored-x'
+    })
+  })
+
+  it('does not branch when the clicked tile no longer has live state', async () => {
+    const branchLoadedSession = vi.fn(async () => true)
+
+    renderTile(vi.fn(), { branchLoadedSession })
+
+    await expect(sessionTileDelegate()!.branchSessionAtMessage('stored-x', 'runtime-gone', 'a1')).resolves.toBe(false)
+    expect(branchLoadedSession).not.toHaveBeenCalled()
   })
 })
 

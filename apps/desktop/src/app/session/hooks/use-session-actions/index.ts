@@ -197,6 +197,16 @@ interface SessionActionsOptions {
   ) => ClientSessionState
 }
 
+export interface BranchLoadedSessionOptions {
+  busy: boolean
+  contextDrift?: () => null | string
+  cwd?: string
+  messageId?: string
+  messages: ChatMessage[]
+  runtimeId: null | string
+  storedSessionId: null | string
+}
+
 // Stored ids created in THIS renderer run. A brand-new session lives only in the
 // gateway's in-memory map until its first turn persists a state.db row — so if a
 // respawning/flapping backend drops it, both resume RPC and the REST transcript
@@ -2238,26 +2248,30 @@ export function useSessionActions({
     ]
   )
 
-  // Branch the open chat — optionally from a specific message — off its live transcript.
-  const branchCurrentSession = useCallback(
-    async (messageId?: string): Promise<boolean> => {
-      if (!activeSessionIdRef.current) {
+  // Branch a session whose live transcript is already loaded in this renderer.
+  // Both the main chat and session tiles use this path so a clicked message id
+  // is resolved against the exact message array that rendered the action bar.
+  const branchLoadedSession = useCallback(
+    async ({
+      busy,
+      contextDrift,
+      cwd,
+      messageId,
+      messages,
+      runtimeId,
+      storedSessionId
+    }: BranchLoadedSessionOptions) => {
+      if (!runtimeId) {
         notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNeedsChat })
 
         return false
       }
 
-      if (busyRef.current) {
+      if (busy) {
         notify({ kind: 'warning', title: copy.sessionBusy, message: copy.branchStopCurrent })
 
         return false
       }
-
-      const startingActiveSessionId = activeSessionIdRef.current
-      const messages = $messages.get()
-      const storedSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
-      const startingCwd = $currentCwd.get().trim()
 
       // The live atom may be a compacted model projection. Read the durable
       // display projection before choosing the branch prefix so a whole-chat
@@ -2286,18 +2300,10 @@ export function useSessionActions({
         }
       }
 
-      const drift = sessionContextDrift({
-        startRouteToken: startingRouteToken,
-        nowRouteToken: getRouteToken(),
-        startSelectedStoredId: storedSessionId,
-        nowSelectedStoredId: selectedStoredSessionIdRef.current
-      })
+      const drift = contextDrift?.()
 
-      const runtimeChanged = activeSessionIdRef.current !== startingActiveSessionId
-      const selectionChanged = selectedStoredSessionIdRef.current !== storedSessionId
-
-      if (drift || runtimeChanged || selectionChanged) {
-        console.warn('[branch-drift-abort]', drift ?? 'runtime-or-selection-changed', {
+      if (drift) {
+        console.warn('[branch-drift-abort]', drift, {
           phase: 'transcript-hydration'
         })
 
@@ -2314,20 +2320,54 @@ export function useSessionActions({
 
       clearNotifications()
 
-      // The open chat's owning profile, NOT the picker's / launch profile —
-      // /profile only retargets new chats, so a branch of an existing thread
-      // must stay on that thread's backend (cache hit for an open session).
       return forkBranch(
         branchMessages,
-        startingActiveSessionId,
+        runtimeId,
         storedSessionId,
-        startingCwd,
+        cwd?.trim(),
         profile,
         messageId ? branchMessages.length : undefined,
         ownerRoute
       )
     },
-    [activeSessionIdRef, busyRef, copy, forkBranch, getRouteToken, selectedStoredSessionIdRef]
+    [copy, forkBranch]
+  )
+
+  // Branch the open chat — optionally from a specific message — off its live transcript.
+  const branchCurrentSession = useCallback(
+    (messageId?: string): Promise<boolean> => {
+      const runtimeId = activeSessionIdRef.current
+      const storedSessionId = selectedStoredSessionIdRef.current
+      const routeToken = getRouteToken()
+
+      return branchLoadedSession({
+        busy: busyRef.current,
+        contextDrift: () => {
+          const drift = sessionContextDrift({
+            startRouteToken: routeToken,
+            nowRouteToken: getRouteToken(),
+            startSelectedStoredId: storedSessionId,
+            nowSelectedStoredId: selectedStoredSessionIdRef.current
+          })
+
+          if (drift) {
+            return drift
+          }
+
+          if (activeSessionIdRef.current !== runtimeId) {
+            return 'runtime-changed'
+          }
+
+          return selectedStoredSessionIdRef.current === storedSessionId ? null : 'selection-changed'
+        },
+        cwd: $currentCwd.get(),
+        messageId,
+        messages: $messages.get(),
+        runtimeId,
+        storedSessionId
+      })
+    },
+    [activeSessionIdRef, branchLoadedSession, busyRef, getRouteToken, selectedStoredSessionIdRef]
   )
 
   // Branch any listed session, not just the open one. Reads the target's stored
@@ -2618,6 +2658,7 @@ export function useSessionActions({
   return {
     archiveSession,
     branchCurrentSession,
+    branchLoadedSession,
     branchStoredSession,
     closeSettings,
     createBackendSessionForSend,

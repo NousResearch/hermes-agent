@@ -1301,6 +1301,8 @@ export interface SessionTileDelegate {
   archiveSession(storedSessionId: string): Promise<void>
   /** Branch a stored session into a new chat (the sidebar's branch). */
   branchSession(storedSessionId: string): Promise<void>
+  /** Branch a tile's live transcript through the clicked message. */
+  branchSessionAtMessage(storedSessionId: string, runtimeId: string, messageId: string): Promise<boolean>
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects — e.g.

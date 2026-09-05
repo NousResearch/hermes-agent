@@ -4,6 +4,7 @@ only (notification, timeout, kill and retry policy live elsewhere). Provenance i
 
 from __future__ import annotations
 
+import sys
 import time
 from contextlib import suppress
 from enum import Enum
@@ -43,6 +44,25 @@ def normalize_activity_provenance(provenance: Optional[ActivityProvenance | str]
         return ActivityProvenance((provenance or "").strip())
     except ValueError:
         return ActivityProvenance.UNKNOWN
+
+
+def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
+    """Render ``iteration N/M`` for user-facing status, or ``iteration N`` when the cap is unlimited.
+
+    ``AIAgent.max_iterations`` defaults to ``sys.maxsize`` ("unlimited"), so a naive ``N/M`` prints
+    ``iteration 7/9223372036854775807`` in busy acks, heartbeats and timeout diagnostics.
+    """
+    try:
+        count = int(api_call_count or 0)
+    except (TypeError, ValueError):
+        count = 0
+    try:
+        cap = int(max_iterations or 0)
+    except (TypeError, ValueError):
+        cap = 0
+    if cap <= 0 or cap >= sys.maxsize:
+        return f"iteration {count}"
+    return f"iteration {count}/{cap}"
 
 
 def reset_session_activity_persist_window(agent: Any) -> None:

@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
@@ -3165,6 +3166,7 @@ class GatewayTurnMixin:
         _cur_tool = _activity.get("current_tool")
         _iter_n = _activity.get("api_call_count", 0)
         _iter_max = _activity.get("max_iterations", 0)
+        _iter_label = format_iteration_progress(_iter_n, _iter_max)
         logger.error(
             "Agent idle for %.0fs (timeout %.0fs) in session %s "
             "| last_activity=%s | iteration=%s/%s | tool=%s",
@@ -3180,12 +3182,12 @@ class GatewayTurnMixin:
         if _cur_tool:
             _diag_lines.append(
                 f"The agent appears stuck on tool `{_cur_tool}` ({_secs_ago:.0f}s since last "
-                f"activity, iteration {_iter_n}/{_iter_max})."
+                f"activity, {_iter_label})."
             )
         else:
             _diag_lines.append(
                 f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                f"iteration {_iter_n}/{_iter_max}). "
+                f"{_iter_label}). "
                 "The agent may have been waiting on an API response."
             )
         _diag_lines.append(
@@ -3740,7 +3742,7 @@ class GatewayTurnMixin:
                 if _a:
                     _parts = []
                     if _want_iteration_detail:
-                        _parts.append(f"iteration {_a['api_call_count']}/{_a['max_iterations']}")
+                        _parts.append(format_iteration_progress(_a.get("api_call_count", 0), _a.get("max_iterations", 0)))
                     _action = _a.get("current_tool") or _a.get("last_activity_desc")
                     if _action:
                         _parts.append(str(_action))

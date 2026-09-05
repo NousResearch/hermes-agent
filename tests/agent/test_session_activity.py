@@ -7,6 +7,7 @@ from agent.session_activity import (
     ActivityProvenance,
     bound_activity_description,
     build_activity_snapshot,
+    format_iteration_progress,
     normalize_activity_provenance,
     reset_session_activity_persist_window,
 )
@@ -94,3 +95,18 @@ def test_build_activity_snapshot_preserves_compression_transition_provenances():
         assert snap["provenance"] == provenance.value
         assert snap["last_activity_description"] == desc
         assert snap["seconds_since_activity"] == 5.0
+
+
+def test_format_iteration_progress_hides_unlimited_cap():
+    import sys
+
+    # AIAgent.max_iterations defaults to sys.maxsize; the status must not print it.
+    assert format_iteration_progress(7, sys.maxsize) == "iteration 7"
+    assert format_iteration_progress(7, 0) == "iteration 7"
+    assert format_iteration_progress(7, None) == "iteration 7"
+
+
+def test_format_iteration_progress_keeps_finite_cap():
+    assert format_iteration_progress(3, 10) == "iteration 3/10"
+    assert format_iteration_progress("3", "10") == "iteration 3/10"
+    assert format_iteration_progress(None, "garbage") == "iteration 0"

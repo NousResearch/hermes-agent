@@ -224,18 +224,22 @@ one thing in the thread and resumes the rest of the task.
 When a command needs your approval, Hermes asks in plain language instead of
 telling you to type a slash command:
 
-```
+````
 ⚠️ This needs your OK first:
+```
 rm -rf ~/.cache/build
+```
 Why: recursive delete
 
-Reply "yes" to do it this once, "for this session" to stop asking until we're
-done, "always" to stop asking entirely, or "no" to skip it.
-```
+Reply "yes" to do it this once, "for this session" to stop asking until we're done, "always" to stop asking entirely, or "no" to skip it.
+````
+
+(The blank line means it arrives as two bubbles: the command, then the question.)
 
 Answer the way you would answer a person: `yes`, `sure, go ahead`, `do it`,
 `no`, `don't do that`, or a 👍 / 👎 tapback. `for this session` and `always`
-widen the approval; `/approve` and `/deny` still work if you prefer them.
+widen the approval; `/approve` and `/deny` still work if you prefer them. A bare
+`stop` is not read as an answer — it still means stop the agent, as elsewhere.
 
 Two deliberate limits:
 

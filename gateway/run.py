@@ -4034,6 +4034,17 @@ class GatewayRunner(
         adapter: Optional[Any] = None) -> Optional[Dict[str, Any]]:
         """Build thread metadata for synthetic sends that only have routing state."""
         if thread_id is None:
+            # #103429: a thread-less target can still carry an explicit reply
+            # anchor (e.g. a queued Telegram DM follow-up). Dropping it here
+            # made the answer quote the turn-opening message instead of the
+            # follow-up and lost the per-turn routing lane entirely.
+            if platform == Platform.TELEGRAM and chat_type == "dm" and reply_to_message_id is not None:
+                return {
+                    "telegram_dm_topic_reply_fallback": True,
+                    "telegram_reply_to_message_id": str(reply_to_message_id),
+                }
+            if reply_to_message_id is not None:
+                return {"reply_to_message_id": str(reply_to_message_id)}
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
         if self._is_telegram_dm_topic_target(

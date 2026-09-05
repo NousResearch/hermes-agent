@@ -1016,6 +1016,84 @@ class GatewayNotificationsMixin:
             return "retry"
         return "deliver"
 
+    _SELF_ECHO_TAIL_ROWS = 30
+
+    async def _self_echo_guard_redirect(self, evt: dict) -> bool:
+        """Redirect a genuine delegation that repeats the parent's own answer.
+
+        SDK background results never re-enter the model, but ordinary async
+        delegations still do.  If such a payload is exactly the normalized
+        text of a recent assistant row, reinjection would ask the model to
+        relay its own answer.  Redirect that narrow case to the direct
+        outbound lane.  Read failures fail open to the established path.
+        """
+        if evt.get("type") != "async_delegation":
+            return False
+        summary = evt.get("summary")
+        parent = str(evt.get("parent_session_id") or "").strip()
+        if not isinstance(summary, str) or not summary.strip() or not parent:
+            return False
+        db = getattr(self, "_session_db", None)
+        if db is None:
+            return False
+
+        def _normalized(text: str) -> str:
+            return " ".join(text.split())
+
+        try:
+            session = await db.get_session(parent)
+            if not session:
+                return False
+            count = int(session.get("message_count") or 0)
+            rows = await db.get_messages(
+                parent,
+                limit=self._SELF_ECHO_TAIL_ROWS,
+                offset=max(0, count - self._SELF_ECHO_TAIL_ROWS),
+            )
+            target = _normalized(summary)
+            matched = any(
+                row.get("role") == "assistant"
+                and isinstance(row.get("content"), str)
+                and _normalized(row["content"]) == target
+                for row in rows or []
+            )
+        except Exception:
+            logger.debug(
+                "self-echo guard read failed for session %s — failing open "
+                "to normal injection", parent, exc_info=True,
+            )
+            return False
+        if not matched:
+            return False
+        try:
+            from tools.process_registry import process_registry
+
+            process_registry.completion_queue.put({
+                "type": "sdk_background_result",
+                "payloads": [summary],
+                "session_key": str(evt.get("session_key") or ""),
+                "parent_session_id": parent,
+                "model": evt.get("model"),
+                "dispatched_at": evt.get("dispatched_at"),
+                "completed_at": evt.get("completed_at"),
+                # This exact text is already a transcript row.
+                "_projected": True,
+            })
+        except Exception:
+            logger.warning(
+                "self-echo guard matched delegation %s but redirect enqueue "
+                "failed — falling back to normal injection",
+                evt.get("delegation_id"), exc_info=True,
+            )
+            return False
+        logger.warning(
+            "self-echo guard: delegation %s payload is identical to recent "
+            "assistant text of session %s — injection skipped, payload "
+            "redirected to the direct outbound lane",
+            evt.get("delegation_id"), parent,
+        )
+        return True
+
     @staticmethod
     def _settle_durable_claim(kind: str, delegation_id: str, claim_id: str) -> None:
         """Best-effort ``drop``/``release`` of a durable completion claim."""
@@ -1067,6 +1145,20 @@ class GatewayNotificationsMixin:
                     "terminally dropping delivery (result remains in the delegation records).",
                     claim.delegation_id or "<legacy>", parent_session_id,
                 )
+                summary = evt.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    await self._project_result_payloads(
+                        [summary],
+                        session_id=parent_session_id,
+                        unavailable_reason="terminal_drop",
+                        failure_reason="terminal_drop",
+                        lane="terminal-drop delegation result",
+                        display_metadata={
+                            "orphaned": "terminal_drop",
+                            "delegation_id": claim.delegation_id or None,
+                            "completed_at": evt.get("completed_at"),
+                        },
+                    )
                 if claim.claim_id:
                     self._settle_durable_claim("drop", claim.delegation_id, claim.claim_id)
             else:
@@ -1098,9 +1190,10 @@ class GatewayNotificationsMixin:
             return None
         accepted = False
         try:
-            injection_result = await self._inject_watch_notification(synth_text, evt)
-            if injection_result is not True:
-                return injection_result
+            if not await self._self_echo_guard_redirect(evt):
+                injection_result = await self._inject_watch_notification(synth_text, evt)
+                if injection_result is not True:
+                    return injection_result
             accepted = True
             if identity is not None:
                 with self._completion_delivery_lock:
@@ -1339,13 +1432,15 @@ class GatewayNotificationsMixin:
         """Drain async-delegation completions and inject them as new turns (IDLE case).
 
         Background subagents run on the daemon executor with no per-process watcher, so their
-        completions would otherwise only be seen by the post-turn drain. Ignores non-async events.
+        completions would otherwise only be seen by the post-turn drain. SDK background-result
+        events share this queue but are delivered directly to the platform, never reinjected.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
         from tools.process_registry import process_registry as _pr
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
-                # Take async-delegation events only; requeue watch/completion events for their own drains.
+                # Take the two event kinds owned here; requeue watch/process
+                # events for their own drains.
                 requeue = []
                 async_events = []
                 while not _pr.completion_queue.empty():
@@ -1353,7 +1448,13 @@ class GatewayNotificationsMixin:
                         evt = _pr.completion_queue.get_nowait()
                     except Exception:
                         break
-                    (async_events if evt.get("type") == "async_delegation" else requeue).append(evt)
+                    (
+                        async_events
+                        if evt.get("type") in {
+                            "async_delegation", "sdk_background_result"
+                        }
+                        else requeue
+                    ).append(evt)
                 for evt in requeue:
                     _pr.completion_queue.put(evt)
                 # A fan-out finishing together yields N completions for one session; group by full route +
@@ -1364,6 +1465,17 @@ class GatewayNotificationsMixin:
                 groups: dict[tuple[str, ...], list[dict]] = {}
                 for evt in async_events:
                     self._enrich_async_delegation_routing(evt)
+                    if evt.get("type") == "sdk_background_result":
+                        try:
+                            delivered = await self._deliver_sdk_background_result(evt)
+                            if delivered is False:
+                                _pr.completion_queue.put(evt)
+                        except Exception as exc:
+                            _pr.completion_queue.put(evt)
+                            logger.error(
+                                "SDK background-result delivery error: %s", exc
+                            )
+                        continue
                     groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
                 for group in groups.values():
                     try:

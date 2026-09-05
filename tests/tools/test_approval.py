@@ -1686,6 +1686,49 @@ class TestConcurrentApprovalCoalescing:
             t.join(timeout=5)
         assert all(r is not None and r["choice"] == "once" for r in results)
 
+    def test_explicit_no_coalesce_keeps_correlated_prompts_distinct(
+        self, monkeypatch,
+    ):
+        from tools import approval as mod
+        monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 30)
+
+        notified = []
+        results = [None, None]
+        threads = []
+        for index, tool_use_id in enumerate(("toolu_A", "toolu_B")):
+            data = self._data()
+            data.update({"no_coalesce": True, "tool_use_id": tool_use_id})
+            thread = threading.Thread(
+                target=lambda idx=index, payload=data: results.__setitem__(
+                    idx,
+                    mod._await_gateway_decision(
+                        self.SESSION_KEY,
+                        notified.append,
+                        payload,
+                        surface="claude_sdk",
+                    ),
+                )
+            )
+            thread.start()
+            threads.append(thread)
+
+        for _ in range(400):
+            if len(notified) == 2:
+                break
+            time.sleep(0.005)
+        assert {item["tool_use_id"] for item in notified} == {"toolu_A", "toolu_B"}
+        assert len(mod._gateway_queues.get(self.SESSION_KEY, [])) == 2
+
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "once", tool_use_id="toolu_A"
+        ) == 1
+        assert mod.resolve_gateway_approval(
+            self.SESSION_KEY, "deny", tool_use_id="toolu_B"
+        ) == 1
+        for thread in threads:
+            thread.join(timeout=5)
+        assert sorted(result["choice"] for result in results) == ["deny", "once"]
+
     def test_different_commands_are_not_coalesced(self, monkeypatch):
         from tools import approval as mod
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 30)

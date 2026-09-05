@@ -194,8 +194,10 @@ class PluginDispatchMixin:
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
-                logger.warning(
-                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+                from hermes_cli.lifecycle import log_observer_failure
+                log_observer_failure(
+                    logger, "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)),
+                    exc, exc_info=False)
         return results
 
     def _run_hook_callback_bounded(

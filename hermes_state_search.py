@@ -895,7 +895,10 @@ class SessionSearchMixin:
         sql, params = self._fts_match_sql(table, match_query, order_by_sql, **kwargs)
         try:
             return [dict(row) for row in self._read_all(sql, params)]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            # A missing tokenizer is permanent: log it once instead of silently retrying on every CJK query.
+            if self._is_trigram_unavailable_error(exc):
+                self._warn_trigram_unavailable(exc)
             if operational_debug:
                 logger.debug(operational_debug, exc_info=True)
             return None

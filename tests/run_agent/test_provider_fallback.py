@@ -300,6 +300,35 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
 
+    @pytest.mark.parametrize(
+        ("entry", "expected_mode"),
+        [
+            (
+                {"provider": "claude-agent-sdk", "model": "claude-sonnet"},
+                "claude_agent_sdk",
+            ),
+            (
+                {
+                    "provider": "claude-agent-sdk",
+                    "model": "custom-proxy-model",
+                    "api_mode": "chat_completions",
+                },
+                "chat_completions",
+            ),
+        ],
+    )
+    def test_claude_sdk_fallback_mode_is_implicit_but_explicit_mode_wins(
+        self, entry, expected_mode
+    ):
+        agent = _make_agent(fallback_model=[entry])
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url=""), entry["model"]),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == expected_mode
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

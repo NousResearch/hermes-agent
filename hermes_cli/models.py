@@ -41,6 +41,7 @@ from hermes_cli.models_catalog_static import (
     _OPENAI_FAST_MODE_PREFIXES,
     _OPENROUTER_VARIANT_SUFFIXES,
     _PROVIDER_ALIASES,
+    _PROVIDER_CATALOG_DELEGATES,
     _PROVIDER_LABELS,
     _PROVIDER_MODELS,
     _PROVIDER_RETIRED_ALIASES,
@@ -743,7 +744,9 @@ def _provider_keys(provider: str) -> set[str]:
 
 
 def _provider_catalog_names(provider: str) -> tuple[str, ...]:
-    """Active picker models plus retired aliases recognized for detection."""
+    """Active picker models plus retired aliases recognized for detection; a catalog delegate
+    (``_PROVIDER_CATALOG_DELEGATES``) answers with its delegate's catalog."""
+    provider = _PROVIDER_CATALOG_DELEGATES.get(provider, provider)
     return tuple(_PROVIDER_MODELS.get(provider, [])) + _PROVIDER_RETIRED_ALIASES.get(provider, ())
 
 
@@ -776,7 +779,8 @@ def _resolve_static_model_alias(
     def _match(provider: str) -> Optional[str]:
         prefix = f"{identity.vendor}/{identity.family}" if provider in _AGGREGATOR_PROVIDERS else identity.family
         prefix = prefix.lower()
-        return next((m for m in _PROVIDER_MODELS.get(provider, []) if m.lower().startswith(prefix)), None)
+        models = _PROVIDER_MODELS.get(_PROVIDER_CATALOG_DELEGATES.get(provider, provider), [])
+        return next((m for m in models if m.lower().startswith(prefix)), None)
 
     # Current provider first, then native vendors, then aggregators / borrow-list providers the user
     # is already on — so `sonnet` resolves to anthropic before any re-exposing provider.

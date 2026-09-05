@@ -4579,7 +4579,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False) -> SendResult:
+        allow_session: bool = True, smart_denied: bool = False, tool_use_id: str = "") -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting agent thread — same
         mechanism as the text ``/approve`` flow."""

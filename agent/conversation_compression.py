@@ -67,6 +67,11 @@ COMPACTION_HEARTBEAT_STATUS = f"🗜️ {COMPACTION_STATUS_MARKER} — still sum
 
 COMPACTION_DONE_STATUS = "✓ Context compaction complete — continuing turn..."
 
+# Start and completion share a dedicated key so clients can replace one
+# compaction bubble in place without unrelated lifecycle statuses overwriting
+# it. End-of-turn progress cleanup still treats the bubble as ephemeral.
+COMPACTION_STATUS_KEY = "compaction"
+
 
 def _strip_marker_for_comparison(msgs: Any) -> Any:
     """Copy ``msgs`` with the ``_db_persisted`` marker removed for no-op comparison.
@@ -82,9 +87,11 @@ def _emit_compaction_done(agent: Any) -> None:
     """Emit the structured terminal edge for a started compaction."""
     status_callback = getattr(agent, "status_callback", None)
     if not status_callback:
+        logger.info("compaction done: no status_callback; completion notice not emitted")
         return
     with _swallow('status_callback error in compaction completion', exc_info=True):
-        status_callback("compacted", COMPACTION_DONE_STATUS)
+        status_callback(COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS)
+        logger.info("compaction done: completion notice emitted")
 
 
 # Every ROUTINE compression status line lives here: suppressed on chat platforms
@@ -137,8 +144,8 @@ ROUTINE_COMPRESSION_STATUS_SAMPLES = (
 def is_compaction_progress_status(text: str | None) -> bool:
     """True for in-progress auto-compaction lifecycle lines (not the done edge).
     The gateway re-tags matches as ``kind="compacting"`` for the whole pause; matching only the marker left
-    idle/preflight/retry lines looking hung. ``COMPACTION_DONE_STATUS`` is emitted as ``kind="compacted"`` and
-    must not match here."""
+    idle/preflight/retry lines looking hung. ``COMPACTION_DONE_STATUS`` is the terminal edge (emitted under
+    ``COMPACTION_STATUS_KEY``; the TUI maps it to ``compacted``) and must not match here."""
     body = text.strip() if isinstance(text, str) else ""
     if not body:
         return False
@@ -1806,7 +1813,19 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 )
             agent._compression_warning = msg
             agent._emit_status(msg)
-            logger.warning("No auxiliary LLM provider for compression — summaries will be unavailable.")
+            logger.warning(
+                "Auxiliary compression client unavailable (%s) — summaries "
+                "disabled; compression will drop middle turns without a "
+                "summary. configured_provider=%r aux_model=%r session=%s",
+                (
+                    "configured provider failed to resolve"
+                    if (_aux_cfg_provider and _aux_cfg_provider != "auto")
+                    else "no provider configured"
+                ),
+                _aux_cfg_provider or "",
+                aux_model or "",
+                getattr(agent, "session_id", None) or "none",
+            )
             return
         aux_base_url = str(getattr(client, "base_url", ""))
         # client.api_key may be a callable (Entra bearer); the resolver only needs a key
@@ -3533,7 +3552,9 @@ def _announce_compression_start(
             message_count=message_count, model=agent.model, focus_topic=focus_topic,
         )
     if status:
-        agent._emit_status(status)
+        # Never-raise wrapper: a status sink failure must not abort compaction.
+        with contextlib.suppress(Exception):
+            agent._emit_status_kind(COMPACTION_STATUS_KEY, status, origin="_announce_compression_start")
     return _CompactionLifecycle(agent, bool(status))
 
 
@@ -3565,6 +3586,23 @@ def compress_context(
     session state after its caller has moved on.
     """
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
+
+    # The Claude Code CLI owns the authoritative conversation and compacts it
+    # itself. Automatic Hermes compaction would rewrite only the local mirror,
+    # spend an auxiliary call, and rebuild the system prompt (forcing an SDK
+    # session respawn) without shrinking the provider context. Manual
+    # ``/compress`` remains an explicit request and therefore still runs.
+    if not force and getattr(agent, "api_mode", None) == "claude_agent_sdk":
+        attempt.restore_compressor(agent.context_compressor)
+        logger.info(
+            "claude-agent-sdk lane: skipping Hermes auto-compaction "
+            "(CLI owns context; use /compress to force). session=%s "
+            "messages=%d est_tokens=~%s",
+            getattr(agent, "session_id", None) or "none",
+            len(messages),
+            f"{approx_tokens:,}" if approx_tokens else "unknown",
+        )
+        return messages, _existing_system_prompt(agent, system_message)
 
     # Codex owns the real thread; route compaction to its own compact (config
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native
@@ -3786,7 +3824,7 @@ def _compress_context_via_codex_app_server(
         return messages, _existing_system_prompt(agent, system_message)
     logger.info("codex app-server compaction started: session=%s messages=%d tokens=~%s", _sid, len(messages), _tokens)
     with contextlib.suppress(Exception):
-        agent._emit_status(COMPACTION_STATUS)
+        agent._emit_status_kind(COMPACTION_STATUS_KEY, COMPACTION_STATUS, origin="codex_thread_compaction")
     _activity_heartbeat = _CompressionActivityHeartbeat(agent, emit_client_status=True).start()
     try:
         result = codex_session.compact_thread()
@@ -4009,7 +4047,7 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 
 __all__ = [
-    "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
+    "COMPACTION_STATUS", "COMPACTION_STATUS_KEY", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
     "check_compression_model_feasibility", "replay_compression_warning", "compress_context",
     "try_shrink_image_parts_in_messages",
 ]

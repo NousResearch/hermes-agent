@@ -69,7 +69,15 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.
-        logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
+        # Inside an observer_failure_log scope (SDK surface) the fixed message replaces the
+        # exception text, which can carry the untrusted payload.
+        from hermes_cli.lifecycle import current_observer_failure_log
+
+        fixed_log = current_observer_failure_log()
+        if fixed_log is not None:
+            logger.debug("%s", fixed_log)
+        else:
+            logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -193,6 +201,13 @@ def _should_fall_through_to_cli_approval(*, is_cli: bool, approval_callback, not
     skip the panel the user can actually answer."""
     return bool(is_cli and approval_callback is not None and notify_cb is None)
 
+
+# Fixed observer-failure messages for the SDK surface (``surface="claude_sdk"``): the exception
+# text can carry the hostile SDK payload the surface is redacting, so only these reach the log
+# (see ``hermes_cli.lifecycle.observer_failure_log``).
+SDK_PRE_OBSERVER_FAILURE_LOG = "SDK Smart pre-approval observer dispatch failed"
+SDK_POST_OBSERVER_FAILURE_LOG = "SDK Smart post-approval observer dispatch failed"
+SDK_GUARDIAN_FAILURE_LOG = "Smart approvals: LLM call failed, escalating"
 
 _VALID_MODES = ("manual", "smart", "off")
 

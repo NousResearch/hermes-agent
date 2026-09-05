@@ -208,11 +208,17 @@ def _idle_compaction(
         out.current_turn_user_idx = _reanchor(agent, out.messages, user_message)
 
 
-def _codex_native_auto_compaction(agent: Any) -> bool:
-    """Codex app-server threads are compacted by the codex agent itself; Hermes only
-    initiates compaction in "hermes" mode."""
+def provider_owns_context_for_auto_compression(agent: Any) -> bool:
+    """Whether automatic Hermes compression must leave a provider's live context alone.
+
+    Persistent provider runtimes own their actual context: the SDK lane's local
+    mirror includes full tool payloads that never reach the child, and the child
+    CLI performs its own native compaction, so Hermes must not announce or run
+    preflight compaction from that mirror.
+    """
+    if getattr(agent, "api_mode", None) == "claude_agent_sdk":
+        return True
     return (
-        # See #36801.
         getattr(agent, "api_mode", None) == "codex_app_server"
         and str(
             getattr(agent, "codex_app_server_auto_compaction", "native") or "native"
@@ -256,7 +262,7 @@ def _preflight_compression(
     _preflight_deferred = getattr(
         _compressor, "should_defer_preflight_to_real_usage", lambda _tokens: False
     )(_preflight_tokens)
-    _codex_native_auto = _codex_native_auto_compaction(agent)
+    _provider_native_context_auto = provider_owns_context_for_auto_compression(agent)
 
     if not _preflight_deferred:
         # Display-only seed: a real provider reading wins and the -1 sentinel stays
@@ -289,11 +295,11 @@ def _preflight_compression(
             # Over threshold but blocked by the summary-LLM cooldown — surface a warning.
             _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
             _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
-    elif _codex_native_auto:
+    elif _provider_native_context_auto:
         logger.info(
-            "Skipping Hermes preflight compression for codex app-server "
-            "(mode=%s); Hermes will not start thread compaction here.",
-            getattr(agent, "codex_app_server_auto_compaction", "native"),
+            "Skipping Hermes preflight compression for provider-native context "
+            "(api_mode=%s); Hermes will not announce or compact its mirror.",
+            getattr(agent, "api_mode", None),
         )
     else:
         _should_compress_now = _compressor.should_compress(_preflight_tokens)
@@ -325,8 +331,12 @@ def _preflight_compression(
         # Sub-threshold and unblocked — re-arm the overflow warning.
         _clear_overflow_warn(agent)
         # Engine maintenance only when NO skip-branch fired: cooldown, deferred
-        # estimate, or codex-native route keep the engine hook unconsulted.
-        if not (_compression_cooldown or _preflight_deferred or _codex_native_auto):
+        # estimate, or provider-native route keep the engine hook unconsulted.
+        if not (
+            _compression_cooldown
+            or _preflight_deferred
+            or _provider_native_context_auto
+        ):
             _engine_preflight_maintenance(
                 agent, out, _compressor, _preflight_tokens, system_message, effective_task_id
             )

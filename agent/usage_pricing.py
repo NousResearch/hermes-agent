@@ -325,6 +325,13 @@ def resolve_billing_route(
 
     if provider_name == "openai-codex":
         return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
+    if provider_name == "claude-agent-sdk":
+        return BillingRoute(
+            provider="claude-agent-sdk",
+            model=model,
+            base_url=url,
+            billing_mode="subscription_included",
+        )
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     if provider_name == "nous" or host("inference-api.nousresearch.com"):

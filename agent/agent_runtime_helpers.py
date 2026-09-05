@@ -1860,6 +1860,13 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         agent._client_kwargs = {}
         agent.client = build_moa_facade(agent, agent.model)
         return
+    if api_mode == "claude_agent_sdk":
+        # The Agent SDK owns both transport and subscription OAuth.
+        agent.client = None
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "claude-subscription-oauth"
+        agent.base_url = ""
+        return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
@@ -1929,11 +1936,16 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     if base_url:
         agent.base_url = base_url
     elif old_norm != new_norm:
-        raise ValueError(
-            f"switch_model: no base_url resolved for provider "
-            f"'{new_provider}' (switching from '{old_provider}'); "
-            "refusing to keep the previous provider's endpoint"
-        )
+        if api_mode == "claude_agent_sdk":
+            # This transport has no HTTP endpoint.  Clearing the previous
+            # provider's URL is required to avoid a mixed provider identity.
+            agent.base_url = ""
+        else:
+            raise ValueError(
+                f"switch_model: no base_url resolved for provider "
+                f"'{new_provider}' (switching from '{old_provider}'); "
+                "refusing to keep the previous provider's endpoint"
+            )
     agent.api_mode = api_mode
     # New api_mode may need a different transport.
     if hasattr(agent, "_transport_cache"):
@@ -2164,15 +2176,15 @@ def switch_model(
     _persist_switch_billing_route(agent)
 
 
-def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
-    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
+def _pre_tool_block_message(agent, function_name, function_args, middleware_trace, *, hook_ids):
+    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block.
+    ``hook_ids`` is the caller's per-call id snapshot (see ``tool_hook_ids``)."""
     try:
         from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
         block_message, modified_args = _dispatch_pre_tool_call_hooks(
-            function_name, function_args, task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            function_name,
+            function_args,
+            **hook_ids,
             middleware_trace=list(middleware_trace),
         )
         return block_message, (modified_args if modified_args is not None else function_args)
@@ -2207,22 +2219,24 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     block_message: Optional[str] = None
     if not pre_tool_block_checked:
         block_message, function_args = _pre_tool_block_message(
-            agent, function_name, function_args, effective_task_id, tool_call_id, _tool_middleware_trace
-        )
+            agent, function_name, function_args, _tool_middleware_trace, hook_ids=hook_ids)
     if block_message is not None:
         result = json.dumps({"error": block_message}, ensure_ascii=False)
         emit_terminal_post_tool_call(
             agent, function_name=function_name, function_args=function_args, result=result,
             effective_task_id=effective_task_id, tool_call_id=tool_call_id, status="blocked",
             error_type="plugin_block", error_message=block_message,
-            middleware_trace=_tool_middleware_trace,
+            middleware_trace=_tool_middleware_trace, hook_ids=hook_ids,
         )
         return result
     tool_start_time = time.monotonic()
     inline_executor = resolve_invoke_tool_executor(agent, function_name)
     if inline_executor is not None:
         inline_ctx = InlineToolContext(
-            effective_task_id=effective_task_id, tool_call_id=tool_call_id, messages=messages
+            effective_task_id=effective_task_id,
+            tool_call_id=tool_call_id,
+            messages=messages,
+            session_id=hook_ids["session_id"],
         )
 
         def _execute(next_args: dict) -> Any:
@@ -2232,15 +2246,16 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 function_args=next_args if isinstance(next_args, dict) else function_args,
                 result=result, effective_task_id=effective_task_id, tool_call_id=tool_call_id,
                 duration_ms=int((time.monotonic() - tool_start_time) * 1000),
-                middleware_trace=_tool_middleware_trace,
+                middleware_trace=_tool_middleware_trace, hook_ids=hook_ids,
             )
             return result
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(
-                tool_call_id=tool_call_id, session_id=agent.session_id or "",
-                turn_id=getattr(agent, "_current_turn_id", "") or "",
-                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                tool_call_id=tool_call_id,
+                session_id=hook_ids["session_id"],
+                turn_id=hook_ids["turn_id"],
+                api_request_id=hook_ids["api_request_id"],
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
                 skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),

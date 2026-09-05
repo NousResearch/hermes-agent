@@ -604,9 +604,9 @@ class GatewayTurnMixin:
             pass
         return hs
 
-    async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key):
+    async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key, api_mode: str = ""):
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
-        failure cooldown, in-flight compression)."""
+        failure cooldown, in-flight compression, provider-owned context)."""
         from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
         _hyg_context_length = await get_model_context_length_async(
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
@@ -652,6 +652,18 @@ class GatewayTurnMixin:
             logger.info(
                 "Session hygiene: skipping compression for %s; "
                 "another compression is already in flight", session_entry.session_id,
+            )
+            _needs_compress = False
+
+        if _needs_compress and api_mode == "claude_agent_sdk":
+            # compress_context() returns early on this lane: the Claude Code CLI owns the real
+            # conversation and runs its own compaction, so Hermes compaction is a guaranteed no-op —
+            # running hygiene anyway still builds a throwaway AIAgent, seeds a system prompt and
+            # restores the whole transcript for a result we already know.
+            logger.info(
+                "Session hygiene: skipping compression for %s; the claude-agent-sdk lane compacts "
+                "inside the CLI, so Hermes compaction cannot shrink it (use /compress to force a "
+                "local summary)", session_entry.session_id,
             )
             _needs_compress = False
 
@@ -1021,7 +1033,7 @@ class GatewayTurnMixin:
         session_entry, session_key, source, _quick_key, run_generation,
     ):
         """Adopt a finished hygiene compression, rebind the session + turn lease, record
-        streak/cooldown, and warn the user on abort."""
+        streak/cooldown, and warn the user on abort. Returns ``(rotated, in_place)``."""
         from gateway.run import _reset_hygiene_failure_streak, hygiene_compaction_recovered
         _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
             attempt, _compressed, history, plan, session_entry=session_entry, source=source,
@@ -1077,6 +1089,7 @@ class GatewayTurnMixin:
                 "check `auxiliary.compression.model` in config.yaml.",
                 "aux-model-fallback notice",
             )
+        return _hyg_rotated, _hyg_in_place
 
     async def _hmwa_hygiene_codex_compaction(self, hs, plan, history, session_entry, session_key, _hyg_runtime):
         """codex app-server runtime: the real context is the server-side thread, not the transcript
@@ -1143,6 +1156,7 @@ class GatewayTurnMixin:
         from agent.conversation_compression import CompressionCommitFence
         _hyg_agent, _hyg_session_db = await self._hmwa_hygiene_build_agent(_hyg_model, _hyg_runtime, session_entry)
         attempt.agent = _hyg_agent
+        _hyg_rotated = _hyg_in_place = False
         try:
             # Hygiene owns the session binding, so prefer in-place compaction over minting a
             # continuation child. Without a SessionDB this stays False.
@@ -1182,14 +1196,19 @@ class GatewayTurnMixin:
                 self._hmwa_hygiene_on_unwind(attempt, hs, session_entry, session_key)
                 raise
 
-            await self._hmwa_hygiene_apply_result(
+            _hyg_rotated, _hyg_in_place = await self._hmwa_hygiene_apply_result(
                 attempt, hs, _compressed, history, plan, session_entry=session_entry,
                 session_key=session_key, source=source, _quick_key=_quick_key,
                 run_generation=run_generation,
             )
         finally:
-            # Evict the cached agent so the next turn rebuilds its system prompt.
-            self._evict_cached_agent(session_key)
+            # Evict the cached agent so the next turn rebuilds its system prompt — ONLY when
+            # compression actually changed the transcript. A no-op compression still cost a full
+            # eviction: release_clients() drops the agent's provider session, and on the
+            # claude-agent-sdk lane that discards the CLI's prompt cache, so the next turn re-wrote
+            # the entire prefix to rebuild a prompt that did not change.
+            if _hyg_rotated or _hyg_in_place:
+                self._evict_cached_agent(session_key)
             if not attempt.cleanup_deferred:
                 await self._cleanup_agent_resources_off_loop(_hyg_agent, context="session hygiene")
 
@@ -1206,7 +1225,19 @@ class GatewayTurnMixin:
         hs = await self._hmwa_hygiene_settings(source, session_key)
         if not hs.compression_enabled:
             return history
-        plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
+        # The lane's api_mode gates the plan so a provider-owned context clears needs_compress
+        # before the "auto-compressing" log; a failed resolution leaves the gate open (the attempt
+        # below re-resolves and reports the failure).
+        _plan_runtime = {}
+        with suppress(Exception):
+            _, _plan_runtime = self._resolve_session_agent_runtime(
+                source=source, session_key=session_key,
+                user_config=hs.data if isinstance(hs.data, dict) else None,
+            )
+        plan = await self._hmwa_hygiene_plan(
+            hs, history, session_entry, session_key,
+            api_mode=str((_plan_runtime or {}).get("api_mode") or "").lower(),
+        )
         if not plan.needs_compress:
             return history
 
@@ -3741,7 +3772,15 @@ class GatewayTurnMixin:
                     _parts = []
                     if _want_iteration_detail:
                         _parts.append(f"iteration {_a['api_call_count']}/{_a['max_iterations']}")
-                    _action = _a.get("current_tool") or _a.get("last_activity_desc")
+                    _action = _a.get("current_tool")
+                    if _action:
+                        # The activity summary keeps the runtime's raw tool name; this is a
+                        # user-facing line, so canonicalize here — otherwise the heartbeat reads
+                        # "Bash" while the progress line above it reads "terminal".
+                        from agent.tool_identity import display_tool_label
+                        _action = display_tool_label(str(_action))
+                    else:
+                        _action = _a.get("last_activity_desc")
                     if _action:
                         _parts.append(str(_action))
                     if _parts:

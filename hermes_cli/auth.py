@@ -89,6 +89,7 @@ from hermes_cli.auth_qwen import (  # noqa: F401  re-exported
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
+from hermes_cli.auth_claude_sdk import get_claude_agent_sdk_auth_status  # noqa: F401  re-exported
 from hermes_cli.auth_constants import (  # noqa: F401  re-exported
     _decode_jwt_claims, AUTH_STORE_VERSION, AUTH_LOCK_TIMEOUT_SECONDS, DEFAULT_NOUS_PORTAL_URL,
     DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_CLIENT_ID, NOUS_BILLING_MANAGE_SCOPE,
@@ -1917,7 +1918,10 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 _BESPOKE_STATUS_FUNCTIONS: Dict[str, str] = {
     **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
     "spotify": "get_spotify_auth_status",
-    "azure-foundry": "_get_azure_foundry_auth_status"}
+    "azure-foundry": "_get_azure_foundry_auth_status",
+    # oauth_external plugin profile: _register_plugin_provider skips it, so the auth_type fallback
+    # below never sees claude-agent-sdk; its SDK-owned subscription login is probed structurally.
+    "claude-agent-sdk": "get_claude_agent_sdk_auth_status"}
 _STATUS_BY_AUTH_TYPE: Dict[str, str] = {
     "external_process": "get_external_process_provider_status",
     "api_key": "get_api_key_provider_status",

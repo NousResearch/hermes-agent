@@ -39,8 +39,14 @@ class CLIChatTurnMixin:
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
         self._last_turn_interrupted = False
+        # Human one-shot mode discards this method's return value, so retain a
+        # small, per-turn process-exit contract beside the interrupt state.
+        self._last_turn_failed = False
+        self._last_turn_failure_reason = None
 
         if not self._ensure_runtime_credentials():
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "credentials"
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
@@ -50,9 +56,13 @@ class CLIChatTurnMixin:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
                                 request_overrides=turn_route.get("request_overrides")):
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "init"
             return None
         agent = self.agent
         if agent is None:
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "init"
             return None
         message = self._chat_route_images(message, images)
 
@@ -87,6 +97,8 @@ class CLIChatTurnMixin:
             return self._chat_render_turn(turn, agent_thread, interrupt_msg)
         except Exception as e:
             print(f"Error: {e}")
+            self._last_turn_failed = True
+            self._last_turn_failure_reason = "exception"
             return None
         finally:
             self._chat_release_turn_audio(turn)
@@ -539,6 +551,9 @@ class CLIChatTurnMixin:
         _interrupted_this_turn = bool(turn.result and turn.result.get("interrupted"))
         # Post-turn hooks (e.g. goal continuation) skip themselves on a user-cancelled turn.
         self._last_turn_interrupted = _interrupted_this_turn
+        self._last_turn_failed = bool(turn.result and turn.result.get("failed"))
+        if self._last_turn_failed:
+            self._last_turn_failure_reason = turn.result.get("failure_reason")
         if _interrupted_this_turn:
             pending_message = turn.result.get("interrupt_message") or interrupt_msg
             _show_interrupt_marker = bool(response and pending_message)

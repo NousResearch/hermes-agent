@@ -611,6 +611,11 @@ class SessionSessionsMixin:
             (model_config_json, model, session_id),
         )
 
+    def update_claude_sdk_session_id(self, session_id: str, sdk_session_id: Optional[str]) -> None:
+        """Persist (or clear, with None) the claude-agent-sdk session id that resumes the SDK
+        conversation across gateway restarts and agent-cache eviction (#25267 continuity)."""
+        self._write_sql("UPDATE sessions SET claude_sdk_session_id = ? WHERE id = ?", (sdk_session_id, session_id))
+
     def update_system_prompt(self, session_id: str, system_prompt: Optional[str]) -> None:
         """Store the full assembled system prompt snapshot."""
         def _do(conn):

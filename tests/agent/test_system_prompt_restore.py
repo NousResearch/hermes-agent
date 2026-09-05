@@ -114,6 +114,30 @@ class TestStoredPromptReuse:
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
 
+class TestClaudeAgentSdkAuditSnapshot:
+    def test_continuation_builds_local_prompt_without_overwriting_effective_snapshot(self):
+        """The SDK's persisted sentinel describes the prompt actually sent.
+
+        A continuing live SDK session still needs Hermes' local prompt for
+        internal helpers, but writing that native prompt to SQLite would erase
+        the effective ``claude_code`` preset snapshot after the first turn.
+        """
+        db = MagicMock()
+        agent = _make_agent(session_db=db)
+        agent.api_mode = "claude_agent_sdk"
+
+        _restore_or_build_system_prompt(
+            agent,
+            None,
+            [{"role": "user", "content": "continuing"}],
+        )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.get_session.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Legitimate fresh-build paths (no history, no DB)
 # ---------------------------------------------------------------------------

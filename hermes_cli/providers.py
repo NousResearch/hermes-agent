@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class HermesOverlay:
     """Hermes-specific provider metadata layered on top of models.dev."""
 
-    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
+    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses | bedrock_converse | claude_agent_sdk
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
@@ -44,6 +44,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                                  base_url_override="acp://copilot", base_url_env_var="COPILOT_ACP_BASE_URL"),
     "github-copilot": HermesOverlay(extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN")),
     "anthropic": HermesOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
+    # Claude Agent SDK runtime: the SDK-managed Claude Code CLI subprocess self-authenticates with the
+    # Claude subscription (CLAUDE_CODE_OAUTH_TOKEN / ~/.claude); Hermes resolves NO credentials on this
+    # path (#25267). The env var is discovery metadata (doctor/status), never a key Hermes sends anywhere.
+    "claude-agent-sdk": HermesOverlay(transport="claude_agent_sdk", auth_type="oauth_external",
+                                      extra_env_vars=("CLAUDE_CODE_OAUTH_TOKEN",)),
     "zai": HermesOverlay(extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), base_url_env_var="GLM_BASE_URL"),
     "kimi-for-coding": HermesOverlay(base_url_env_var="KIMI_BASE_URL"),
     "stepfun": HermesOverlay(extra_env_vars=("STEPFUN_API_KEY",),
@@ -102,7 +107,7 @@ class ProviderDef:
 
     id: str
     name: str
-    transport: str                        # openai_chat | anthropic_messages | codex_responses
+    transport: str                        # openai_chat | anthropic_messages | codex_responses | bedrock_converse | claude_agent_sdk
     api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
     base_url: str = ""
     base_url_env_var: str = ""
@@ -121,6 +126,8 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "kimi-for-coding": ("kimi", "kimi-coding", "kimi-coding-cn", "moonshot"),
     "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
     "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
+    # claude-agent-sdk: same accepted spellings as the runtime_provider short-circuit.
+    "claude-agent-sdk": ("claude-sdk", "claude-code-sdk", "claude_agent_sdk"),
     "copilot-acp": ("github-copilot-acp",), "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
     "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"),
     "opencode-free": ("free", "opencode_free"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
@@ -143,6 +150,7 @@ ALIASES: Dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
+    "claude-agent-sdk": "Claude Agent SDK",
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
@@ -156,6 +164,9 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions", "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses", "bedrock_converse": "bedrock_converse",
+    # Agent-loop runtime via the official claude-agent-sdk — matches the api_mode the
+    # runtime_provider short-circuit returns (#25267).
+    "claude_agent_sdk": "claude_agent_sdk",
 }
 
 

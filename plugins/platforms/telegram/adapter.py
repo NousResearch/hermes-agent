@@ -512,7 +512,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: Dict[str, dict] = {}
-        self._approval_state: Dict[int, str] = {}  # message_id → session_key
+        self._approval_state: Dict[int, tuple[str, str]] = {}  # approval_id → (session_key, tool_use_id)
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -3620,6 +3620,16 @@ class TelegramAdapter(BasePlatformAdapter):
         logger.debug("[%s] Overflow split delivered %d chunks; last_id=%s", self.name, 1 + len(continuation_ids), last_id)
         return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids))
 
+    def _forget_status_message_id(self, chat_id: str, message_id: str) -> None:
+        """Prune the ``send_or_update_status`` cache when its bubble is deleted (end-of-turn
+        ``cleanup_progress``): a stale id costs two wasted edit round-trips (MarkdownV2 + plain retry)
+        before the fail-open resend. The cache keys by the raw chat id; deletes may carry the normalized one."""
+        target = str(message_id)
+        candidates = {str(chat_id), str(normalize_telegram_chat_id(chat_id))}
+        for key, cached in list(self._status_message_ids.items()):
+            if cached == target and str(key[0]) in candidates:
+                self._status_message_ids.pop(key, None)
+
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a bot-posted message (Bot API allows it within 48h); failures are non-fatal.
 
@@ -3632,6 +3642,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         try:
             await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
+            self._forget_status_message_id(chat_id, message_id)
             return True
         except Exception as e:
             logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))
@@ -3776,7 +3787,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+        smart_denied: bool = False, tool_use_id: str = "") -> SendResult:
         """Send an inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
         def build():
@@ -3792,8 +3803,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 if allow_permanent:
                     buttons.append(InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"))
             buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
-            return text, InlineKeyboardMarkup(
-                self._rows_of_two(buttons)), lambda msg: self._approval_state.__setitem__(approval_id, session_key)
+            # The prompt correlator rides this adapter-side map, not callback_data: Telegram caps callback_data
+            # at 64 bytes and toolu_ ids are not contractually bounded; the map also keeps int-parsing and
+            # stale pre-deploy buttons byte-identical.
+            return text, InlineKeyboardMarkup(self._rows_of_two(buttons)), lambda msg: self._approval_state.__setitem__(
+                approval_id, (session_key, tool_use_id or ""))
         return await self._send_prompt(
             "send_exec_approval", chat_id, metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(metadata), reply_to_mode=self._reply_to_mode)
@@ -4262,11 +4276,12 @@ class TelegramAdapter(BasePlatformAdapter):
         except (ValueError, IndexError):
             await query.answer(text="Invalid approval data.")
             return
-        session_key = await self._claim_callback_state(
+        entry = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, "⛔ You are not authorized to approve commands.",
             "This approval has already been resolved.")
-        if not session_key:
+        if not entry:
             return
+        session_key, tool_use_id = entry
         user_display = getattr(query.from_user, "first_name", "User")
         # Resolve FIRST (unblocks the agent thread), render after: a tap landing after the wait timed out
         # (count == 0) must NOT claim "Approved" — the command was already denied.
@@ -4275,7 +4290,9 @@ class TelegramAdapter(BasePlatformAdapter):
             # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
             # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            # tool_use_id present → resolve the MATCHING prompt (parallel prompts: FIFO let tap-B grant
+            # prompt A); absent → FIFO fallback, logged by tools.approval.
+            count = resolve_gateway_approval(session_key, choice, tool_use_id=tool_use_id or None)
             logger.info(
                 "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:

@@ -4128,16 +4128,38 @@ def _run_quiet_single_query(cli, effective_query):
     # Exit code 0/1 for automation wrappers. Kanban workers that failed purely on
     # rate-limit/billing exit with the EX_TEMPFAIL sentinel so the dispatcher releases
     # the task without counting a failure (a quota window must not trip the breaker).
-    _exit_code = 0
-    if isinstance(result, dict) and result.get("failed"):
-        _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
-            try:
-                from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
-                _exit_code = _RL_CODE
-            except Exception:
-                _exit_code = 1
-    sys.exit(_exit_code)
+    sys.exit(
+        _single_query_failure_exit_code(
+            failed=isinstance(result, dict) and bool(result.get("failed")),
+            failure_reason=result.get("failure_reason")
+            if isinstance(result, dict)
+            else None,
+        )
+    )
+
+
+def _single_query_failure_exit_code(*, failed: bool, failure_reason: str | None) -> int:
+    """Exit code for a completed one-shot turn, shared by ``-Q`` and the human ``-q`` path.
+
+    Kanban parity is load-bearing: non-goal-mode workers are spawned ``chat -q`` WITHOUT
+    ``-Q``, so this is their exit contract. A provider quota wall (failure_reason
+    rate_limit/billing) must exit EX_TEMPFAIL exactly like the ``-Q`` branch — a plain 1
+    would classify as "crashed", tick consecutive_failures, and let one 5-hour quota window
+    trip the circuit breaker across every in-flight card.
+    """
+    if not failed:
+        return 0
+    if os.environ.get("HERMES_KANBAN_TASK") and failure_reason in {
+        "rate_limit",
+        "billing",
+    }:
+        try:
+            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+
+            return KANBAN_RATE_LIMIT_EXIT_CODE
+        except Exception:
+            pass
+    return 1
 
 
 def _route_single_query_images(cli, query, effective_query, single_query_images, single_query_image_urls):
@@ -4455,6 +4477,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
         cli._print_exit_summary(clear_screen=False)
+        exit_code = _single_query_failure_exit_code(
+            failed=bool(getattr(cli, "_last_turn_failed", False)),
+            failure_reason=getattr(cli, "_last_turn_failure_reason", None),
+        )
+        if exit_code:
+            sys.exit(exit_code)
     finally:
         _finalize_single_query(cli)
 

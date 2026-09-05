@@ -1835,6 +1835,7 @@ class RelayAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        tool_use_id: str = "",
     ) -> SendResult:
         """Native-button exec approval over the relay (same choice set as native; the
         press resolves via tools.approval.resolve_gateway_approval). When the lane is

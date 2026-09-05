@@ -239,6 +239,89 @@ DEFAULT_CONFIG = {
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},
+        # Claude Agent SDK provider runtime (`provider: claude-agent-sdk`). Canonical defaults of
+        # the `agent.claude_agent_sdk` block, read by the provider through load_config_readonly();
+        # config.yaml is the only interface — behavioural settings, not secrets.
+        "claude_agent_sdk": {
+            # Emit the SDK's partial-message deltas into the gateway streaming pipeline (the
+            # top-level `streaming:` block still governs how they display). Default off —
+            # upstream-conservative.
+            "streaming": False,
+            # The provider defaults to the Claude subscription and refuses known metered lanes:
+            # API-key sources and enabled/active Extra Usage reported by the CLI. true allows
+            # metering explicitly (reported metered turns are labelled honestly).
+            "allow_metered_key": False,
+            # Operator persona/soul file appended to the system prompt ("" = none).
+            "append_file": "",
+            # Whole SDK system-prompt append budget in characters; null = the built-in 22000
+            # ceiling. Blocks are packed whole and evictions warn with a content-free block label.
+            # Invalid values warn and fall back rather than disabling the budget.
+            "append_total_max_chars": None,
+            # SDK permission mode literal: default | acceptEdits | plan | bypassPermissions |
+            # dontAsk | auto ("auto" is the SDK's own mode, not the HERMES_TERMINAL_SECURITY_MODE
+            # value). bypassPermissions is not forwarded verbatim: Hermes emulates it through the
+            # common audited callback only after exact request validation and immutable
+            # Bash/user-deny floors; other literals are forwarded unchanged. "" keeps the current
+            # HERMES_TERMINAL_SECURITY_MODE mapping; "default" routes SDK tool permissions through
+            # Hermes' approval flow without env archaeology. Invalid values are ignored with a
+            # warning (never silently loosened).
+            "permission_mode": "",
+            # Extra environment for the spawned Claude CLI (values stringified). Metered-billing
+            # vectors are rejected unless allow_metered_key is explicitly true.
+            "env": {},
+            # Per-query USD budget forwarded to the SDK's max_budget_usd: the turn stops with
+            # error_max_budget_usd once exceeded (surfaced honestly in the reply). null = no budget;
+            # non-numeric / non-positive values are ignored with a warning.
+            "max_budget_usd": None,
+            # Max size of one NDJSON message read from the Claude CLI. null = Hermes' built-in
+            # 10 MiB instead of the SDK's 1 MiB default, which can kill a turn on a large tool
+            # result. Invalid values warn and fall back to 10 MiB rather than disabling the OOM
+            # backstop.
+            "max_buffer_size": None,
+            # Deliver finished background Agent-task answers proactively via the gateway's
+            # async-delegation completion pipeline. false = the historical behaviour: the CLI's
+            # unsolicited completion turn is dropped with a WARN and the answer stays in the CLI
+            # session until the user asks again. Deployments whose users receive background work
+            # through chat (gateway bots) want true.
+            "deliver_background_results": False,
+            # SDK setting sources (claude-agent-sdk SettingSource literals: user | project | local).
+            # [] = full isolation — the spawned CLI loads NO filesystem settings, so ambient
+            # ~/.claude or project files can't re-permission tools underneath the configured
+            # posture. Deployments that keep tool grants in ~/.claude/settings.json (unattended cron
+            # turns with nobody to answer a prompt) opt back in, e.g. ["user"]. Invalid entries are
+            # dropped with a warning.
+            "setting_sources": [],
+            # Soft turn budget in seconds; null = the built-in 600. Activity-aware: fires only when
+            # no tool call is outstanding, no approval prompt awaits a human, AND the SDK stream has
+            # been quiet >= min(30s, budget) — a turn producing output or running tools is never
+            # killed at the wall. Raise it for legitimately long turns (keep under
+            # agent.gateway_timeout, the 1800s outer ceiling). 0/negative/non-numeric values are
+            # ignored with a warning.
+            "turn_timeout": None,
+            # Post-tool quiet watchdog in seconds: how long the stream may stay silent AFTER a tool
+            # result before the turn is declared wedged (codex-parity fast-fail). null = 90 when
+            # `streaming: true` (partial deltas prove liveness), DISABLED when streaming is off (a
+            # silent post-tool model call is indistinguishable from a wedge there). 0 = explicitly
+            # disabled; negative/non-numeric values are ignored with a warning.
+            "post_tool_quiet_timeout": None,
+            # Hybrid in-process MCP bridge (PR #56413 port). false keeps only the stdio
+            # `hermes-tools` wrapper registered, with direct third-party HTTP MCP passthrough
+            # disabled. true routes the full Hermes tool registry (proxified MCPs, agent-level
+            # tools) into the SDK via in-process MCP servers; headerless HTTP MCPs also pass through
+            # directly, header-bearing ones are refused because the SDK serializes their config into
+            # a process argument.
+            # Curated stdio-legacy tools keep the `hermes-tools` server name so existing
+            # ~/.claude/settings.json grants still match; everything else is exposed under
+            # `hermes-hybrid`.
+            "hybrid_mcp_bridge": False,
+            # Raw Hermes registry names (no `mcp__` prefix) dropped from BOTH bridge buckets
+            # (`hermes-tools` and `hermes-hybrid`) while the bridge is active: curation was a
+            # security choice on the stdio wrapper and the full registry includes stateful/
+            # high-blast tools (delegate_task, cron_*, read_terminal, terminal), so an operator can
+            # keep the wide bridge for proxified MCPs without inheriting a specific tool. Ignored
+            # when hybrid_mcp_bridge is false; empty = expose everything the bridge can reach.
+            "hybrid_mcp_bridge_exclude": [],
+        },
         # Preserve assistant `reasoning_content` on history replay. Echo families (DeepSeek,
         # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host; custom
         # providers and OpenAI-compatible gateways proxying them are not. Set `reasoning_echo: true`

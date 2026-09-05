@@ -47,10 +47,20 @@ class TurnResult:
     turn_id: Optional[str] = None
     thread_id: Optional[str] = None
     token_usage_last: Optional[dict[str, Any]] = None
+    token_usage_total: Optional[dict[str, Any]] = None
+    # Model actually reported by a whole-turn runtime.  The SDK uses this to
+    # backfill attribution when configuration intentionally leaves it unset.
+    model_last: Optional[str] = None
     model_context_window: Optional[int] = None
     compacted: bool = False
     # Codex likely wedged (turn timeout, watchdog, token refresh failure): caller respawns next turn.
     should_retire: bool = False
+    # Startup/auth refusals are terminal for the current runtime attempt and
+    # can be classified for replay-safe provider fallback.
+    fatal_reason: Optional[str] = None
+    # False when transport-local validation rejected the request before a
+    # model call; keeps usage and iteration accounting honest.
+    api_call_made: bool = True
 
 
 # Some codex versions stream ``<turn_aborted>`` as raw agentMessage text when an

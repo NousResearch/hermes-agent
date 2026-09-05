@@ -78,6 +78,26 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
 
 
 
+def test_claude_agent_sdk_routes_as_subscription_included():
+    """claude-agent-sdk is the subscription twin of openai-codex: the SDK
+    bills the Claude subscription (OAuth), so the billing route must be
+    subscription_included — never the metered anthropic docs snapshot."""
+    from agent.usage_pricing import resolve_billing_route
+
+    route = resolve_billing_route("claude-opus-4-8", provider="claude-agent-sdk")
+    assert route.provider == "claude-agent-sdk"
+    assert route.billing_mode == "subscription_included"
+
+    result = estimate_usage_cost(
+        "claude-opus-4-8",
+        CanonicalUsage(input_tokens=1000, output_tokens=500),
+        provider="claude-agent-sdk",
+        base_url="",
+    )
+    assert result.status == "included"
+    assert float(result.amount_usd) == 0.0
+
+
 
 
 

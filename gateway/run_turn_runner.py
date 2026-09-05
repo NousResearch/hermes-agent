@@ -202,27 +202,33 @@ class TurnRunner:
         command; "all"/"new" truncate to one line capped at ``tool_preview_length``. Consecutive
         terminal calls drop the repeated header so back-to-back commands render as adjacent blocks.
         """
+        from agent.tool_identity import canonical_tool_args, canonical_tool_name
+
+        canonical_name = canonical_tool_name(tool_name)
+        canonical_args = canonical_tool_args(tool_name, args)
         if not (
-            getattr(adapter, "supports_code_blocks", False) and tool_name == "terminal" and isinstance(args, dict)
-            and isinstance(args.get("command"), str) and args["command"].strip()
+            getattr(adapter, "supports_code_blocks", False)
+            and canonical_name == "terminal"
+            and isinstance(canonical_args.get("command"), str)
+            and canonical_args["command"].strip()
         ):
             return None, None
-        cmd_full = args["command"].rstrip()
-        header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+        cmd_full = canonical_args["command"].rstrip()
+        header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {canonical_name}\n"
         cap = self._preview_cap()
-        lines = cmd_full.splitlines()
-        cmd_short = lines[0] if lines else cmd_full
-        if len(cmd_short) > cap:
-            cmd_short = cmd_short[:cap - 3] + "..."
-        elif len(lines) > 1:
-            cmd_short += " ..."
+        from agent.display import build_terminal_preview_line
+
+        cmd_short = build_terminal_preview_line(cmd_full, cap)
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"
 
     def _progress_build_message(self, tool_name, preview, args) -> Optional[str]:
         """Render the progress line. Verbose mode queues directly (no dedup) and returns None."""
         ctx = self._ctx
         from agent.display import get_tool_emoji
+        from agent.tool_identity import display_tool_label
+
         emoji = get_tool_emoji(tool_name, default="⚙️")
+        display_label = display_tool_label(tool_name)
         try:
             adapter = self._runner._adapter_for_source(ctx.source)
         except Exception:
@@ -248,7 +254,7 @@ class TurnRunner:
         if code is not None:
             return code
         if not preview:
-            return f"{emoji} {tool_name}..."
+            return f"{emoji} {display_label}..."
         from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
         prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
@@ -256,7 +262,13 @@ class TurnRunner:
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
         verb = get_tool_verb(tool_name)
         if not verb:
-            return f"{emoji} {tool_name}: \"{preview}\""
+            # No curated verb, so the tool's own name is what the user sees — the one path where a raw
+            # wire name leaks. Strip the MCP scaffolding; a third-party server stays visible as
+            # "linear · get_issue". A tool with no preview rule yields no preview and the caller's
+            # fallback is the tool name itself, which rendered as `name: "name"` — say it once.
+            if preview in (tool_name, display_label):
+                return f"{emoji} {display_label}"
+            return f"{emoji} {display_label}: \"{preview}\""
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
     def _progress_emit(self, msg: str) -> None:
@@ -1007,12 +1019,24 @@ class TurnRunner:
             agent = self._build_fresh_agent(
                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
             )
+            displaced = None
             if cache_lock and cache is not None:
                 with cache_lock:
+                    # A fresh agent may DISPLACE a cached one under the same key (signature change,
+                    # session switch, memory-pressure rebuild). The eviction paths release what they
+                    # pop; a plain overwrite released nothing, so the displaced agent's provider
+                    # session — on the claude-agent-sdk lane its Claude Code CLI child — was dropped
+                    # to GC, which never reaps a live subprocess. Capture it, release it below.
+                    prev_entry = cache.get(ctx.session_key)
+                    prev = prev_entry[0] if isinstance(prev_entry, tuple) and prev_entry else None
+                    if prev is not None and prev is not agent:
+                        displaced = prev
                     # Record the snapshot's session_id with message_count so the cross-process guard
                     # can skip the meaningless count comparison if the active session_id switches.
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
+            if displaced is not None:
+                runner._release_displaced_agent(displaced, ctx.session_key)
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
         return agent, found.reused
 
@@ -1248,10 +1272,15 @@ class TurnRunner:
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if getattr(type(adapter), "send_exec_approval", None) is not None:
             try:
+                # The SDK prompt correlator rides on the card so a tap resolves the MATCHING prompt
+                # instead of queue[0]; only SDK approvals carry it (tools.approval sets it for
+                # pattern_key "claude_sdk_tool").
+                tool_use_id = approval_data.get("tool_use_id") or ""
+                send_flags = {**flags, "tool_use_id": tool_use_id} if tool_use_id else flags
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata, **send_flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1414,11 +1443,16 @@ class TurnRunner:
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
         from tools.approval import register_gateway_notify, unregister_gateway_notify
+        from tools.approval_session_notify import register_session_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
+        # The turn callback is removed below, but SDK background work may ask
+        # for permission between Hermes turns.  This session-scoped callback
+        # remains valid until the conversation boundary or gateway shutdown.
+        register_session_notify(session_key, self._approval_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}

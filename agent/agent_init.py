@@ -365,7 +365,7 @@ class CompressionSettings(SimpleNamespace):
 
 _EXPLICIT_API_MODES = {
     "chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse",
-    "codex_app_server",
+    "codex_app_server", "claude_agent_sdk",
 }
 
 
@@ -931,18 +931,38 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
 
+def _init_claude_agent_sdk_client(agent, api_key, base_url):
+    """The Agent SDK owns its subprocess and subscription OAuth: no OpenAI-compatible client or
+    HTTP endpoint exists on this route, so the agent carries no client and an empty base URL."""
+    agent.client = None
+    agent._client_kwargs = {}
+    agent.api_key = api_key or "claude-subscription-oauth"
+    agent.base_url = base_url or ""
+    if not agent.quiet_mode:
+        print(f"🤖 AI Agent initialized with model: {agent.model} (Claude Agent SDK, subscription)")
+
+
+# Wire-mode client initializers keyed by ``api_mode``; ``chat_completions``/``codex_responses`` and every
+# unknown mode take the OpenAI-compatible client. Each receives (agent, api_key, base_url, timeout).
+_CLIENT_INITIALIZERS = {
+    "anthropic_messages": lambda agent, api_key, base_url, timeout: _init_anthropic_client(agent, api_key, base_url, timeout),
+    "bedrock_converse": lambda agent, api_key, base_url, timeout: _init_bedrock_client(agent, base_url),
+    "claude_agent_sdk": lambda agent, api_key, base_url, timeout: _init_claude_agent_sdk_client(agent, api_key, base_url),
+}
+
+
 def _build_client(agent, api_key, base_url, fallback_model):
     # LLM client per wire mode (raw_codex=True: the main agent needs direct
     # responses.stream()). One provider/model timeout up front so every path applies it.
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
-    if agent.api_mode == "anthropic_messages":
-        _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
-    elif agent.provider == "moa":
+    initializer = _CLIENT_INITIALIZERS.get(agent.api_mode)
+    # The MoA virtual provider owns its client unless the wire mode is native Anthropic (which wins).
+    if agent.provider == "moa" and agent.api_mode != "anthropic_messages":
         _init_moa_client(agent, api_key)
-    elif agent.api_mode == "bedrock_converse":
-        _init_bedrock_client(agent, base_url)
+    elif initializer is not None:
+        initializer(agent, api_key, base_url, _provider_timeout)
     else:
         _init_openai_client(agent, api_key, base_url, fallback_model, _provider_timeout)
 

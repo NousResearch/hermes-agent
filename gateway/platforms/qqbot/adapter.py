@@ -1469,7 +1469,7 @@ class QQAdapter(BasePlatformAdapter):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False) -> SendResult:
+        smart_denied: bool = False, tool_use_id: str = "") -> SendResult:
         """Button-based exec-approval prompt (called by gateway/run.py while the
         agent blocks on approval); clicks resolve via _default_interaction_dispatch."""
         del metadata  # QQ has no thread_id / DM targeting overrides.

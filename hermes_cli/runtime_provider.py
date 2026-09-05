@@ -97,7 +97,10 @@ _HOST_MANDATED_API_MODES = {
 
 # codex_app_server is opt-in: hand the whole turn to a `codex app-server` subprocess (Codex's own
 # tool runtime), gated on `model.openai_runtime == "codex_app_server"` AND provider in {openai, openai-codex}.
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}
+# claude_agent_sdk: agent-loop runtime via the official claude-agent-sdk, selected by `provider: claude-agent-sdk`;
+# the SDK subprocess self-authenticates (subscription OAuth) and Hermes resolves no credentials (#25267).
+_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server",
+                    "claude_agent_sdk"}
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -725,6 +728,23 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
 
 _VERTEX_NAMES = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai")
 _LOCAL_BYPASS_CLOUD_HOSTS = ("openrouter.ai", "anthropic.com", "openai.com")
+_CLAUDE_AGENT_SDK_NAMES = ("claude-agent-sdk", "claude-sdk", "claude-code-sdk", "claude_agent_sdk")
+
+
+def _resolve_claude_agent_sdk_runtime(requested_provider: str, explicit_api_key, explicit_base_url, target_model) -> Dict[str, Any]:
+    """The official Agent SDK runtime resolves its OWN credentials (subscription OAuth via
+    CLAUDE_CODE_OAUTH_TOKEN / ~/.claude) inside the SDK-managed subprocess: nothing here may reach the
+    credential pool or the generic api_key resolver — there is no API key and no base_url on this path,
+    by design (#25267)."""
+    return _runtime("claude-agent-sdk", "claude_agent_sdk", "", "claude-subscription-oauth",
+                    source="claude-agent-sdk", requested_provider=requested_provider)
+
+
+# Requested name -> runtime builder, consulted before the name-keyed branches of
+# _resolve_requested_shortcuts; every accepted spelling of a provider maps to the one builder.
+_REQUESTED_SHORTCUTS: Dict[str, Callable[..., Dict[str, Any]]] = {
+    name: _resolve_claude_agent_sdk_runtime for name in _CLAUDE_AGENT_SDK_NAMES
+}
 
 
 def _raise_if_provider_disabled(requested_provider: str) -> None:
@@ -754,6 +774,9 @@ def _resolve_vertex_runtime(requested_provider: str) -> Dict[str, Any]:
 
 def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_base_url, target_model) -> Optional[Dict[str, Any]]:
     """Providers decided on the REQUESTED name alone, before custom / pool / generic paths."""
+    shortcut = _REQUESTED_SHORTCUTS.get(requested_provider)
+    if shortcut is not None:
+        return shortcut(requested_provider, explicit_api_key, explicit_base_url, target_model)
     if requested_provider == "moa":
         return _runtime("moa", "chat_completions", "moa://local", "moa-virtual-provider", source="moa-virtual-provider",
                         requested_provider=requested_provider)

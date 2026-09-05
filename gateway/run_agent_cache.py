@@ -601,6 +601,39 @@ class GatewayAgentCacheMixin:
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
         )
 
+    def _release_displaced_agent(self, displaced: Any, session_key: str) -> None:
+        """Release an agent that a rebuild displaced from the cache.
+
+        A fresh agent can overwrite a cached one under the same key (signature change, session switch,
+        memory-pressure rebuild). The eviction paths release whatever they pop; a plain overwrite
+        released nothing, so the displaced agent's provider session — on the claude-agent-sdk lane its
+        Claude Code CLI child — was dropped to GC, which never reaps a live subprocess. Soft release,
+        matching ``_evict_cached_agent``: frees the client pool and provider session but preserves the
+        session's terminal sandbox, browser daemon and tracked bg processes for the agent taking over.
+        Never touches an agent still serving a turn — its own completion path owns its teardown."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        if displaced is None or displaced is _AGENT_PENDING_SENTINEL:
+            return
+        try:
+            running_ids = self._running_agent_ids()
+        except Exception:
+            running_ids = set()
+        if id(displaced) in running_ids:
+            logger.debug("Displaced agent for %s is mid-turn; leaving it to its own completion path", session_key)
+            return
+        logger.info("Releasing agent displaced from the cache for session %s", session_key)
+
+        def _release() -> None:
+            # Contain failures: an exception on the daemon thread reaches threading.excepthook as a bare
+            # traceback with no session context.
+            try:
+                self._release_evicted_agent_soft(displaced)
+            except Exception:
+                logger.debug("Soft release of the agent displaced from %s failed", session_key, exc_info=True)
+
+        # Daemon thread: teardown can block on socket/subprocess shutdown and must not stall the turn.
+        self._spawn_release_thread(_release, (), f"agent-displaced-{str(session_key)[:24]}", inline_fallback=True)
+
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool) -> None:
         """Run a release on a daemon thread. ``inline_fallback`` runs it inline (best-effort) when no
         thread can start (interpreter shutdown); otherwise a spawn failure propagates, as on main."""

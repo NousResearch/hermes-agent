@@ -127,11 +127,16 @@ def test_retry_handoff_reopens_only_for_committed_output_with_fresh_input(tmp_pa
         service._append_room_status(service._room("workshop"), discussion.DiscussionDecision(
             "bounded", "max_rounds", discussion_event_id="followup", thread_id="workshop-thread"))
     elif gate == "stopped":
+        # The cancellation must not depend on whether a real-time backoff elapsed.
+        for retry in service.runtime._unavailable_route_retries.values():
+            retry["next_attempt_at"] = service.runtime.clock() + 60
         hosted_rooms.request_room_stop(service.db_path, room_id="workshop", cancel_id="stop-test",
                                         expected_gateway_id=room["authority_gateway_id"], expected_epoch=1)
         service.runtime._process_room(binding)
         service.prepare_room(binding)
         assert not _queued(service)
+        assert all(driver.get_task(service.db_path, task["identity"])["status"] == "cancelled"
+                   for task in retried)
         assert discussion.plan_next_task(room, service._events("workshop"),
                                          local_profiles=service.local_profiles()).status == "idle"
         return

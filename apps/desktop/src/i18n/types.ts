@@ -987,6 +987,7 @@ export interface Translations {
       installing: string
       installFailed: string
       hardwareTitle: string
+      hardwareTitleRemote: string
       hardwareLoading: string
       vram: (label: string) => string
       ram: (label: string) => string

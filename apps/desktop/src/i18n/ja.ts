@@ -1048,6 +1048,7 @@ export const ja = defineLocale({
       installing: 'ランタイムをインストール中…',
       installFailed: 'ランタイムのインストールに失敗しました',
       hardwareTitle: 'このマシン',
+      hardwareTitleRemote: 'バックエンドサーバー',
       hardwareLoading: 'ハードウェアを確認中…',
       vram: label => `GPU メモリ ${label}`,
       ram: label => `RAM ${label}`,

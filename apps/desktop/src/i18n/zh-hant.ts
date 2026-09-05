@@ -1008,6 +1008,7 @@ export const zhHant = defineLocale({
       installing: '正在安裝執行環境…',
       installFailed: '執行環境安裝失敗',
       hardwareTitle: '本機配置',
+      hardwareTitleRemote: '後端伺服器',
       hardwareLoading: '正在檢測硬體…',
       vram: label => `${label} 顯示記憶體`,
       ram: label => `${label} 記憶體`,

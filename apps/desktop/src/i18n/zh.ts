@@ -1343,6 +1343,7 @@ export const zh: Translations = {
       quickstartStageModel: '模型',
       quickstartStageFinish: '完成',
       hardwareTitle: '本机配置',
+      hardwareTitleRemote: '后端服务器',
       hardwareLoading: '正在检测硬件…',
       vram: label => `${label} 显存`,
       ram: label => `${label} 内存`,

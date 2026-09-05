@@ -47,6 +47,7 @@ import {
   watchLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
 import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus } from '@/types/hermes'
 
 import { ListRow, Pill, SettingsContent, SettingsSection, SettingsSkeleton } from './primitives'
@@ -88,6 +89,8 @@ function fitRank(model: LocalCatalogModel): number {
 export function LocalModelsSettings() {
   const { t } = useI18n()
   const copy = t.settings.localModels
+  const connection = useStore($connection)
+  const remoteBackend = connection?.mode === 'remote'
   const [status, setStatus] = useState<LocalModelsStatus | null>(null)
   const [hardware, setHardware] = useState<LocalHardware | null>(null)
   const [catalog, setCatalog] = useState<LocalCatalogModel[] | null>(null)
@@ -519,8 +522,8 @@ export function LocalModelsSettings() {
         {lastError?.kind === 'runtime-install' && <p className="text-[0.75rem] text-destructive">{lastError.error}</p>}
       </SettingsSection>
 
-      {/* ── This machine ── */}
-      <SettingsSection icon={Monitor} title={copy.hardwareTitle}>
+      {/* ── This machine (or the remote backend host) ── */}
+      <SettingsSection icon={Monitor} title={remoteBackend ? copy.hardwareTitleRemote : copy.hardwareTitle}>
         {hardware ? (
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1 py-1 text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
             {hardware.gpu_name && (

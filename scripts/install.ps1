@@ -2131,6 +2131,74 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Recover-DivergedUpdate {
+    param([Parameter(Mandatory = $true)][string]$RemoteRef)
+
+    # RemoteRef..HEAD is unsafe after a force-push because it includes old
+    # upstream commits that the remote discarded. The tracking ref's reflog
+    # identifies the old upstream tip; without that evidence, fail closed.
+    $forkOutput = @(git -c windows.appendAtomically=false merge-base --fork-point $RemoteRef HEAD 2>$null)
+    $forkExit = $LASTEXITCODE
+    $forkPoint = ($forkOutput -join "").Trim()
+    if (($forkExit -ne 0) -or (-not $forkPoint)) {
+        throw "Could not determine the previous upstream fork point; refusing to rewrite HEAD"
+    }
+
+    $headOutput = @(git -c windows.appendAtomically=false rev-parse --verify HEAD 2>$null)
+    $headExit = $LASTEXITCODE
+    $head = ($headOutput -join "").Trim()
+    if (($headExit -ne 0) -or (-not $head)) {
+        throw "Could not determine the current HEAD; refusing to rewrite it"
+    }
+    if ($head -eq $forkPoint) {
+        git -c windows.appendAtomically=false reset --hard "$RemoteRef"
+        if ($LASTEXITCODE -ne 0) { throw "git reset --hard $RemoteRef failed (exit $LASTEXITCODE)" }
+        return
+    }
+
+    # Git recreates merges during --rebase-merges. Content present in neither
+    # parent can disappear silently, so reject that range without changing HEAD.
+    $mergeCommits = @(git -c windows.appendAtomically=false rev-list --merges "$forkPoint..HEAD" 2>$null)
+    $mergeListExit = $LASTEXITCODE
+    if ($mergeListExit -ne 0) {
+        throw "Could not inspect carried merge commits; refusing to rewrite HEAD"
+    }
+    foreach ($mergeCommit in $mergeCommits) {
+        $mergePayload = @(git -c windows.appendAtomically=false diff-tree --cc --no-commit-id --name-only -r $mergeCommit 2>$null)
+        $mergePayloadExit = $LASTEXITCODE
+        if ($mergePayloadExit -ne 0) {
+            throw "Could not inspect carried merge content; refusing to rewrite HEAD"
+        }
+        if (($mergePayload -join "").Trim()) {
+            throw "Carried history contains merge-only content; refusing an automatic rebase that could lose it"
+        }
+    }
+
+    # Rebase preserves each commit's author, but Git still needs a committer.
+    # Reuse HEAD's author without changing repository or global configuration.
+    $committerNameOutput = @(git -c windows.appendAtomically=false show -s --format=%an HEAD 2>$null)
+    $committerNameExit = $LASTEXITCODE
+    $committerName = ($committerNameOutput -join "`n").Trim()
+    $committerEmailOutput = @(git -c windows.appendAtomically=false show -s --format=%ae HEAD 2>$null)
+    $committerEmailExit = $LASTEXITCODE
+    $committerEmail = ($committerEmailOutput -join "`n").Trim()
+    if (($committerNameExit -ne 0) -or (-not $committerName) -or
+        ($committerEmailExit -ne 0) -or (-not $committerEmail)) {
+        throw "Could not recover a committer identity from HEAD; refusing to rewrite it"
+    }
+
+    Write-Info "Preserving locally carried history and merge topology onto $RemoteRef..."
+    git -c windows.appendAtomically=false -c "user.name=$committerName" -c "user.email=$committerEmail" -c rebase.updateRefs=false rebase --rebase-merges --onto $RemoteRef $forkPoint
+    if ($LASTEXITCODE -eq 0) { return }
+
+    Write-Err "Rebase conflicted; aborting so the original checkout is restored."
+    git -c windows.appendAtomically=false rebase --abort 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Rebase failed and git rebase --abort also failed; recover the checkout manually"
+    }
+    throw "Rebase conflicted; original checkout restored"
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -2268,15 +2336,13 @@ function Install-Repository {
                 } else {
                     git -c windows.appendAtomically=false checkout $Branch
                     if ($LASTEXITCODE -ne 0) { throw "git checkout $Branch failed (exit $LASTEXITCODE)" }
-                    # Managed installs should follow origin/$Branch exactly. If
-                    # the checkout has diverged (or has local-only commits),
-                    # ff-only pull cannot succeed -- mirror ``hermes update`` and
-                    # reset to the fetched remote so bootstrap/install can recover.
+                    # Preserve unique local history by rebasing it onto the
+                    # fetched remote. Reset only when the recovered fork point
+                    # is HEAD itself.
                     git -c windows.appendAtomically=false pull --ff-only origin $Branch
                     if ($LASTEXITCODE -ne 0) {
-                        Write-Warn "Fast-forward not possible; resetting managed install to origin/$Branch..."
-                        git -c windows.appendAtomically=false reset --hard "origin/$Branch"
-                        if ($LASTEXITCODE -ne 0) { throw "git reset --hard origin/$Branch failed (exit $LASTEXITCODE)" }
+                        Write-Warn "Fast-forward not possible; checking for locally carried commits..."
+                        Recover-DivergedUpdate "origin/$Branch"
                     }
                 }
 

@@ -65,6 +65,8 @@ def _patch_gateway_discovery():
          patch("hermes_cli.update_inventory.report_unaccounted_runtimes", return_value=False), \
          patch.object(hermes_main, "_fleet_probe_expected_runtimes", lambda *a, **kw: False), \
          patch.object(hermes_main, "_purge_stale_hermes_modules", lambda *a, **kw: None), \
+         patch.object(update_cmd, "_restart_macos_launchd_gateways", lambda *a, **kw: None), \
+         patch("hermes_cli.update_cmd_fleet._restart_macos_launchd_gateways", lambda *a, **kw: None), \
          patch("hermes_cli.update_receipt.collect_fleet_versions", return_value=[]):
         yield
 
@@ -137,7 +139,7 @@ def test_reload_updated_runtime_modules_restores_new_hermes_constants_symbol(mon
 
 
 # ---------------------------------------------------------------------------
-# ff-only fallback to reset --hard on diverged history
+# ff-only recovery for diverged history
 # ---------------------------------------------------------------------------
 
 def _make_update_side_effect(
@@ -186,6 +188,8 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
         if "show-current" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "rev-parse" in joined and "--verify" in joined and "HEAD" in joined:
+            return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
         if "rev-parse" in joined and "HEAD" in joined:
             # First call = pre-pull HEAD, every later call = post-pull HEAD
             # (issue #79678's "did HEAD actually move" guard depends on these
@@ -200,6 +204,8 @@ def _make_update_side_effect(
             return SimpleNamespace(
                 stdout="2222222222222222222222222222222222222cafe\n", stderr="", returncode=0
             )
+        if "merge-base" in joined and "--fork-point" in joined:
+            return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -249,7 +255,7 @@ def _make_update_side_effect(
 
 
 # ---------------------------------------------------------------------------
-# reset --hard failure — don't attempt stash restore
+# failed divergence recovery — don't attempt stash restore
 # ---------------------------------------------------------------------------
 
 def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, capsys):
@@ -439,7 +445,7 @@ def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, 
 
     out = capsys.readouterr().out
     assert "orphan divergence" not in out
-    assert "Fast-forward not possible (history diverged), resetting to match remote" in out
+    assert "checking for locally carried commits" in out
 
 
 def test_cmd_update_orphan_rescue_ref_write_failure_is_non_fatal(monkeypatch, tmp_path, capsys):
@@ -583,6 +589,10 @@ def _setup_keep_stash_test(monkeypatch, tmp_path):
     # run into exit 1 (gateway_fleet_restart_incomplete).
     monkeypatch.setattr(
         "hermes_cli.gateway.find_gateway_pids", lambda **kw: [], raising=False
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_cmd._restart_macos_launchd_gateways",
+        lambda restarted, failed, timeout: None,
     )
     return restore_calls, discard_calls, park_calls
 

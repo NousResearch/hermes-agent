@@ -94,8 +94,8 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
-    _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
-    _sync_with_upstream_if_needed)
+    _prune_orphan_rescue_refs, _recover_diverged_update, _should_skip_upstream_prompt,
+    _sync_fork_with_upstream, _sync_with_upstream_if_needed)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE, _STALE_PURGE_PREFIXES,
     _STALE_PURGE_PROTECTED, _UPDATE_RUNTIME_RELOAD_MODULES, _clear_stale_sqlite_sidecars,
@@ -655,8 +655,8 @@ def _repair_current_checkout(
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
-    """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
-    same branch (rescue ref first when histories share no ancestor). ``sys.exit(1)`` on failure."""
+    """Fast-forward failed: merge on a custom branch; on the same branch recover locally
+    carried commits, or reset --hard after an orphan rescue ref. ``sys.exit(1)`` on failure."""
     # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
     # would discard that work: merge instead, stop on conflict.
     _cur_branch = (_git_run(git_cmd, ["branch", "--show-current"]).stdout or "").strip()
@@ -673,35 +673,52 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
     # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
-    # local graph, so park pre_pull_sha behind a rescue ref first.
+    # local graph, so park pre_pull_sha behind a rescue ref first, then reset.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
     has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
-    if not has_common_ancestor and pre_pull_sha:
-        from datetime import datetime as _dt, timezone
-        # SHA suffix so two updates in the same second get distinct refs.
-        rescue_ref = (
-            f"refs/hermes-update-backups/orphan-{branch}-"
-            f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
-        head = f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — "
-        if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode == 0:
-            print(
-                f"{head}backed up current HEAD to {rescue_ref} before resetting. "
-                f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
-        else:
-            # update-ref failure is intentionally non-fatal, but never claim a backup exists.
-            print(
-                f"{head}attempted to back up current HEAD to {rescue_ref} before resetting, "
-                f"but the backup write failed (pre-reset SHA was {pre_pull_sha}).")
-        _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
-    print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
-    reset_result = _git_run(git_cmd, ["reset", "--hard", f"origin/{branch}"])
-    if reset_result.returncode != 0:
-        print(f"✗ Failed to reset to origin/{branch}.")
-        if reset_result.stderr.strip():
-            print(f"  {reset_result.stderr.strip()}")
-        print(f"  Try manually: git fetch origin && git reset --hard origin/{branch}")
+    if not has_common_ancestor:
+        if pre_pull_sha:
+            from datetime import datetime as _dt, timezone
+            # SHA suffix so two updates in the same second get distinct refs.
+            rescue_ref = (
+                f"refs/hermes-update-backups/orphan-{branch}-"
+                f"{_dt.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{pre_pull_sha[:12]}")
+            head = f"  ⚠ Local history shares no common ancestor with origin/{branch} (orphan divergence) — "
+            if _git_run(git_cmd, ["update-ref", rescue_ref, pre_pull_sha]).returncode == 0:
+                print(
+                    f"{head}backed up current HEAD to {rescue_ref} before resetting. "
+                    f"This backup expires after {_ORPHAN_RESCUE_REF_MAX_AGE_DAYS} days.")
+            else:
+                # update-ref failure is intentionally non-fatal, but never claim a backup exists.
+                print(
+                    f"{head}attempted to back up current HEAD to {rescue_ref} before resetting, "
+                    f"but the backup write failed (pre-reset SHA was {pre_pull_sha}).")
+            _prune_orphan_rescue_refs(git_cmd, _m().PROJECT_ROOT, branch)
+        print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+        reset_result = _git_run(git_cmd, ["reset", "--hard", f"origin/{branch}"])
+        if reset_result.returncode != 0:
+            print(f"✗ Failed to reset to origin/{branch}.")
+            if reset_result.stderr.strip():
+                print(f"  {reset_result.stderr.strip()}")
+            print(f"  Try manually: git fetch origin && git reset --hard origin/{branch}")
+            sys.exit(1)
+        return
+    # Same branch with a common ancestor: rewritten upstream. Rebase only the
+    # locally carried range proven by the remote-tracking reflog — never reset
+    # --hard over local commits.
+    print(
+        "  ⚠ Fast-forward not possible (history diverged); "
+        "checking for locally carried commits..."
+    )
+    recovered, recovery_detail = _recover_diverged_update(
+        git_cmd, _m().PROJECT_ROOT, f"origin/{branch}"
+    )
+    if not recovered:
+        print("✗ Update stopped to preserve locally carried commits.")
+        if recovery_detail:
+            print(f"  {recovery_detail.splitlines()[0]}")
+        print("  Resolve/rebase the local commits, then run `hermes update` again.")
         sys.exit(1)
 
 

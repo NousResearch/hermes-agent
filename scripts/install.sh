@@ -1469,6 +1469,65 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+recover_diverged_update() {
+    local remote_ref="$1"
+    local fork_point head merge_commits merge_commit merge_payload committer_name committer_email
+
+    # remote_ref..HEAD is unsafe after a force-push because it includes old
+    # upstream commits that the remote intentionally discarded. The tracking
+    # ref's reflog identifies the old upstream tip; without it, fail closed.
+    if ! fork_point="$(git merge-base --fork-point "$remote_ref" HEAD)" || [ -z "$fork_point" ]; then
+        log_error "Could not determine the previous upstream fork point; refusing to rewrite HEAD."
+        return 1
+    fi
+    if ! head="$(git rev-parse --verify HEAD)" || [ -z "$head" ]; then
+        log_error "Could not determine the current HEAD; refusing to rewrite it."
+        return 1
+    fi
+    if [ "$head" = "$fork_point" ]; then
+        git reset --hard "$remote_ref"
+        return $?
+    fi
+
+    # --rebase-merges preserves safe topology, but Git recreates merges and can
+    # silently omit content present in neither parent. Reject such merge-only
+    # payload before changing HEAD; the user can preserve it manually.
+    if ! merge_commits="$(git rev-list --merges "$fork_point..HEAD")"; then
+        log_error "Could not inspect carried merge commits; refusing to rewrite HEAD."
+        return 1
+    fi
+    for merge_commit in $merge_commits; do
+        if ! merge_payload="$(git diff-tree --cc --no-commit-id --name-only -r "$merge_commit")"; then
+            log_error "Could not inspect carried merge content; refusing to rewrite HEAD."
+            return 1
+        fi
+        if [ -n "$merge_payload" ]; then
+            log_error "Carried history contains merge-only content; refusing an automatic rebase that could lose it."
+            return 1
+        fi
+    done
+
+    # Rebase preserves each commit's author, but Git still needs a committer.
+    # Reuse HEAD's author without changing repository or global configuration.
+    if ! committer_name="$(git show -s --format=%an HEAD)" || [ -z "$committer_name" ] ||
+       ! committer_email="$(git show -s --format=%ae HEAD)" || [ -z "$committer_email" ]; then
+        log_error "Could not recover a committer identity from HEAD; refusing to rewrite it."
+        return 1
+    fi
+
+    log_info "Preserving locally carried history and merge topology onto $remote_ref..."
+    if git -c "user.name=$committer_name" -c "user.email=$committer_email" \
+        -c rebase.updateRefs=false rebase --rebase-merges --onto "$remote_ref" "$fork_point"; then
+        return 0
+    fi
+
+    log_error "Rebase conflicted; aborting so the original checkout is restored."
+    if ! git rebase --abort; then
+        log_error "Could not abort the conflicted rebase. Recover the checkout manually before retrying."
+    fi
+    return 1
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
@@ -1519,13 +1578,15 @@ clone_repo() {
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
             git fetch origin "$BRANCH"
             git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
+            # Preserve unique local history by rebasing it onto the fetched
+            # remote. Reset only when the recovered fork point is HEAD itself.
             if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
+                log_warn "Fast-forward not possible; checking for locally carried commits..."
+                if ! recover_diverged_update "origin/$BRANCH"; then
+                    log_error "Update stopped to preserve locally carried commits."
+                    log_info "Resolve/rebase the local commits, then run the installer again."
+                    return 1
+                fi
             fi
 
             if [ -n "$autostash_ref" ]; then

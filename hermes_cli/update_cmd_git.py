@@ -214,6 +214,115 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
     return -1
 
 
+def _recover_diverged_update(
+    git_cmd: list[str], cwd: Path, remote_ref: str
+) -> tuple[bool, str]:
+    """Recover an ff-only failure without discarding or inventing history.
+
+    The fetched remote may have been force-pushed. Therefore ``remote..HEAD``
+    is not a safe definition of local work: it also contains commits discarded
+    by that force-push. ``--fork-point`` consults the remote-tracking reflog to
+    recover the old upstream tip and bounds the range we are allowed to carry.
+    If that evidence is unavailable, fail closed.
+
+    Safe merge topology is recreated with ``--rebase-merges``. A merge commit
+    with content absent from both parents would be silently lost when Git
+    recreates the merge, so such a range is rejected without changing HEAD.
+    """
+    fork_result = subprocess.run(
+        git_cmd + ["merge-base", "--fork-point", remote_ref, "HEAD"],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    fork_point = fork_result.stdout.strip() if fork_result.returncode == 0 else ""
+    if not fork_point:
+        return False, "could not determine the previous upstream fork point; refusing to rewrite HEAD"
+
+    head_result = subprocess.run(
+        git_cmd + ["rev-parse", "--verify", "HEAD"],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    head = head_result.stdout.strip() if head_result.returncode == 0 else ""
+    if not head:
+        return False, "could not determine the current HEAD; refusing to rewrite it"
+
+    if head == fork_point:
+        result = subprocess.run(
+            git_cmd + ["reset", "--hard", remote_ref],
+            cwd=cwd,
+            **_GIT_TEXT_KW,
+        )
+        detail = (result.stderr or result.stdout or "").strip()
+        return result.returncode == 0, detail
+
+    merges = subprocess.run(
+        git_cmd + ["rev-list", "--merges", f"{fork_point}..HEAD"],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    if merges.returncode != 0:
+        return False, "could not inspect carried merge commits; refusing to rewrite HEAD"
+    for merge_commit in merges.stdout.splitlines():
+        merge_payload = subprocess.run(
+            git_cmd
+            + ["diff-tree", "--cc", "--no-commit-id", "--name-only", "-r", merge_commit],
+            cwd=cwd,
+            **_GIT_TEXT_KW,
+        )
+        if merge_payload.returncode != 0:
+            return False, "could not inspect carried merge content; refusing to rewrite HEAD"
+        if merge_payload.stdout.strip():
+            return False, (
+                "carried history contains merge-only content; refusing an automatic "
+                "rebase that could lose the merge resolution"
+            )
+
+    identity_result = subprocess.run(
+        git_cmd + ["show", "-s", "--format=%an%x00%ae", "HEAD"],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    identity = identity_result.stdout.rstrip("\n").split("\0")
+    if identity_result.returncode != 0 or len(identity) != 2 or not all(identity):
+        return False, "could not recover a committer identity from HEAD; refusing to rewrite it"
+    committer_name, committer_email = identity
+
+    print(f"  → Preserving locally carried history and merge topology onto {remote_ref}...")
+    result = subprocess.run(
+        git_cmd
+        + [
+            "-c",
+            f"user.name={committer_name}",
+            "-c",
+            f"user.email={committer_email}",
+            "-c",
+            "rebase.updateRefs=false",
+            "rebase",
+            "--rebase-merges",
+            "--onto",
+            remote_ref,
+            fork_point,
+        ],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    if result.returncode == 0:
+        return True, ""
+
+    detail = (result.stderr or result.stdout or "").strip()
+    abort_result = subprocess.run(
+        git_cmd + ["rebase", "--abort"],
+        cwd=cwd,
+        **_GIT_TEXT_KW,
+    )
+    if abort_result.returncode != 0:
+        abort_detail = (abort_result.stderr or abort_result.stdout or "").strip()
+        if abort_detail:
+            detail = f"{detail}\nrebase abort failed: {abort_detail}" if detail else abort_detail
+    return False, detail or "rebase conflicted"
+
+
 def _should_skip_upstream_prompt() -> bool:
     """Check if user previously declined to add upstream."""
     from hermes_constants import get_hermes_home

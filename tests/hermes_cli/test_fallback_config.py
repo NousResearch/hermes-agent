@@ -1,7 +1,7 @@
 """Tests for hermes_cli/fallback_config.py — fallback entry API-key resolution."""
 
 from agent.secret_scope import reset_secret_scope, set_secret_scope
-from hermes_cli.fallback_config import resolve_entry_api_key
+from hermes_cli.fallback_config import get_fallback_chain, resolve_entry_api_key
 
 
 class TestResolveEntryApiKey:
@@ -37,3 +37,21 @@ class TestResolveEntryApiKey:
         # secret scope installed, resolution still reads os.environ.
         monkeypatch.setenv("FB_KEY", "env-key")
         assert resolve_entry_api_key({"key_env": "FB_KEY"}) == "env-key"
+
+
+class TestFallbackEntryMetadata:
+    def test_context_length_is_preserved_when_declared(self):
+        chain = get_fallback_chain({
+            "fallback_providers": [{
+                "provider": "custom",
+                "model": "qwen3-coder-next",
+                "context_length": 131_072,
+            }]
+        })
+        assert chain[0]["context_length"] == 131_072
+
+    def test_entries_without_context_length_remain_compatible(self):
+        chain = get_fallback_chain({
+            "fallback_providers": [{"provider": "custom", "model": "qwen3-coder-next"}]
+        })
+        assert chain == [{"provider": "custom", "model": "qwen3-coder-next"}]

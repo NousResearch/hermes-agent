@@ -1,12 +1,13 @@
 """Tests that _try_activate_fallback updates the context compressor."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
 
-def _make_agent_with_compressor() -> AIAgent:
+def _make_agent_with_compressor() -> Any:
     """Build a minimal AIAgent with a context_compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
 
@@ -70,5 +71,36 @@ def test_compressor_updated_on_fallback(mock_ctx_len, mock_resolve):
     assert c.provider == "openai"
     assert c.context_length == 128_000
     assert c.threshold_tokens == int(128_000 * c.threshold_percent)
+    assert getattr(agent, "_config_context_length") is None
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] is None
 
 
+@patch("agent.auxiliary_client.resolve_provider_client")
+@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+def test_fallback_entry_context_length_overrides_model_metadata(mock_ctx_len, mock_resolve):
+    """A fallback deployment window wins over the model family's native window."""
+    agent: Any = _make_agent_with_compressor()
+    agent._fallback_model = {
+        "provider": "custom",
+        "model": "qwen3-coder-next",
+        "base_url": "http://127.0.0.1:8092/v1",
+        "context_length": 131_072,
+    }
+    agent._fallback_chain = [agent._fallback_model]
+    agent._config_context_length = 240_000  # primary-only override; must not leak to fallback/UI state
+
+    fb_client = MagicMock()
+    fb_client.base_url = "http://127.0.0.1:8092/v1"
+    fb_client.api_key = ""
+    mock_resolve.return_value = (fb_client, None)
+
+    agent._is_direct_openai_url = lambda url: False
+    agent._emit_status = lambda msg: None
+
+    assert agent._try_activate_fallback() is True
+
+    # The deployment override is compressor-local; it must not leak into
+    # cross-turn UI preflight state.
+    assert agent._config_context_length is None
+    assert agent.context_compressor.context_length == 131_072
+    assert mock_ctx_len.call_args.kwargs["config_context_length"] == 131_072

@@ -37,7 +37,17 @@ fallback_providers:
     model: anthropic/claude-sonnet-4
 ```
 
-Each entry requires both `provider` and `model`. Entries missing either field are ignored.
+Each entry requires both `provider` and `model`. Entries missing either field are ignored. A deployment-specific `context_length` is optional but recommended for local or custom endpoints whose serving window is smaller than the model family's native maximum:
+
+```yaml
+fallback_providers:
+  - provider: custom
+    model: qwen3-coder-next
+    base_url: http://localhost:8092/v1
+    context_length: 131072  # must match the backend's actual serving window
+```
+
+Hermes uses this value to re-budget compression immediately after fallback, before it sends an oversized history to the smaller deployment.
 
 :::note `fallback_model` vs `fallback_providers`
 `fallback_providers` (plural, list) is the current config shape and supports multiple fallbacks tried in order. `fallback_model` (singular) is the legacy single-fallback key — Hermes still honors it for back-compat, but `hermes fallback` writes the current `fallback_providers` key and migrates legacy config on write. When both are set, `fallback_providers` takes priority.

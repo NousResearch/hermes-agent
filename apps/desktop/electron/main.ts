@@ -271,6 +271,7 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { createGatewayWsCookieStore } from './gateway-ws-cookie'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
@@ -7492,6 +7493,10 @@ async function hasLiveOauthSession(baseUrl) {
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
 
+  // Before anything else: the in-memory snapshot outlives the cookie jar, and
+  // a signed-out session must not keep riding renderer requests.
+  gatewayWsCookieStore.forget(baseUrl)
+
   if (!sess) {
     return
   }
@@ -8259,13 +8264,13 @@ async function freshGatewayWsUrl(profile) {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
     const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
 
-    rememberRemoteWsHeaders(wsUrl, connection.headers)
+    await rememberGatewayWsAuth(wsUrl, connection)
 
     return wsUrl
   }
 
   // Local/token: the cached wsUrl already carries the (long-lived) token.
-  rememberRemoteWsHeaders(connection.wsUrl, connection.headers)
+  await rememberGatewayWsAuth(connection.wsUrl, connection)
 
   return connection.wsUrl
 }
@@ -9149,6 +9154,41 @@ function rememberRemoteWsHeaders(wsUrl, headers = {}) {
   remoteWsHeaderStore.remember(wsUrl, headers)
 }
 
+// Forward-auth support for the renderer's gateway WebSocket: the proxy session
+// is attached to the exact freshly-minted upgrade url and nowhere else. See
+// gateway-ws-cookie.ts for the reasoning and the lifetime rules.
+const gatewayWsCookieStore = createGatewayWsCookieStore({
+  readCookies: async baseUrl => {
+    const sess = getOauthSessionForUrl(baseUrl)
+
+    if (!sess) {
+      return null
+    }
+
+    // A `persist:` jar hydrates lazily, so the first read on a fresh boot comes
+    // back empty for a signed-in user -- the same cold-start race
+    // hasOauthSessionCookie guards. Unwarmed, the upgrade went out
+    // unauthenticated on every cold start.
+    await warmOauthCookieStore(baseUrl)
+
+    return await sess.cookies.get({ url: baseUrl })
+  },
+  resolvePartition: resolveOauthPartitionForUrl,
+  onError: message => rememberLog(`[oauth] gateway ws cookie lookup failed: ${message}`)
+})
+
+// Single seam for "the renderer is about to open this gateway socket": bind the
+// static remote headers AND, for a cookie-authed gateway, the proxy session to
+// that exact url. Every mint site goes through here so no path can authorize a
+// url the others don't know about.
+async function rememberGatewayWsAuth(wsUrl, connection) {
+  rememberRemoteWsHeaders(wsUrl, connection?.headers)
+
+  if (connection?.authMode === 'oauth' && connection?.baseUrl) {
+    await gatewayWsCookieStore.register(wsUrl, connection.baseUrl)
+  }
+}
+
 function headersForRemoteRequest(requestUrl) {
   const exactWsHeaders = remoteWsHeaderStore.headersFor(requestUrl)
 
@@ -9176,7 +9216,17 @@ function installRemoteHeaderRules() {
 
   remoteHeaderRulesInstalled = true
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
+    // The gateway cookie is merged in the callback rather than returned by
+    // headersForRemoteRequest so it stays out of the header LRU: that store is
+    // for the static, user-configured remote headers, and a rotating session
+    // credential must never be cached per-URL alongside them.
+    applyRemoteRequestHeaders(
+      details,
+      response => {
+        callback(gatewayWsCookieStore.apply(details, response))
+      },
+      headersForRemoteRequest
+    )
   })
 }
 
@@ -10009,7 +10059,9 @@ async function buildRemoteConnection(
 
     const wsUrl = buildGatewayWsUrlWithTicket(baseUrl, ticket)
 
-    rememberRemoteWsHeaders(wsUrl, remoteHeaders)
+    // The renderer opens this socket on defaultSession, which holds none of the
+    // gateway's cookies; authorize this exact url to carry the proxy session.
+    await rememberGatewayWsAuth(wsUrl, { authMode: 'oauth', baseUrl, headers: remoteHeaders })
 
     return {
       baseUrl,
@@ -15662,7 +15714,7 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   ensureBackend: ensureRegistryBackend,
   mintTicket: mintGatewayWsTicket,
   buildTicketUrl: buildGatewayWsUrlWithTicket,
-  rememberHeaders: rememberRemoteWsHeaders
+  rememberHeaders: (wsUrl, _headers, connection) => rememberGatewayWsAuth(wsUrl, connection)
 })
 
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {

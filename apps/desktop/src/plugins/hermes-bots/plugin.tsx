@@ -412,8 +412,8 @@ export default {
     // keeps the pane's spot, so re-registering re-adopts it where it was.
     // host.paneVisibility is feature-detected: older desktops without the SDK
     // export keep the always-registered behavior.
-    const registerRoutinesPane = () =>
-      ctx.register({
+    const registerRoutinesPane = () => {
+      const dispose = ctx.register({
         id: 'routines',
         area: 'panes',
         // The app's noun for these, so the tab agrees with the pane header and
@@ -436,6 +436,15 @@ export default {
         },
         render: () => <RoutinesPane />
       })
+
+      // Close remembers the pane in dismissedPanes.v1, so a later register
+      // would otherwise stay invisible until a full layout reset (#102224).
+      if (typeof host.revealPane === 'function') {
+        host.revealPane(`${ID}:routines`)
+      }
+
+      return dispose
+    }
 
     if (typeof host.paneVisibility === 'function') {
       // The contribution-scoped pane id (`register` prefixes `${ID}:`).

@@ -1161,6 +1161,10 @@ export const host = {
     return close
   },
 
+  /** Undo a persisted Close for a contributed pane so adoption can re-add it.
+   *  Feature-detect on older desktops (`typeof host.revealPane === 'function'`). */
+  revealPane: (paneId: string) => revealTreePane(paneId),
+
   /** Name a workspace owner on its tabs (a bot's display name). A canonical
    *  chat's STORED title is an identity the backend resolves by name; this is
    *  the caption shown for it. Feature-detect on older desktops. */

@@ -61,12 +61,14 @@ _STRAY_TOOL_CALL_CLOSER_PATTERN = re.compile(
 # A tool-call opener with no closer, or GLM-style argument markup
 # (<arg_key>/<arg_value>) outside any closed block, means the stream was
 # cut mid-serialization of a text-channel tool call (#101899). The call
-# can't be recovered; strip from the block-boundary opener (or the line
-# holding the first stray argument tag) to the end of the text.
+# can't be recovered; strip from the block-boundary opener to the end of
+# the text. Stray argument tags are stripped line-wise, and only when the
+# text before the tag is tag-soup (no spaces) — ordinary prose mentioning
+# the tags keeps its line and everything after it (#102303).
 _UNTERMINATED_TOOL_CALL_PATTERN = re.compile(
     rf'(?:^|\n)[ \t]*<(?:{"|".join(_TOOL_CALL_TAG_NAMES)})\b[^>]*>.*$'
-    r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
-    re.DOTALL | re.IGNORECASE,
+    r'|(?:^|\n)[ \t]*\S*?</?arg_(?:key|value)\b[^\n]*$',
+    re.DOTALL | re.IGNORECASE | re.MULTILINE,
 )
 
 

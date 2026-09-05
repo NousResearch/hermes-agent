@@ -3,6 +3,9 @@
 import math
 import os
 from collections.abc import Mapping
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Iterator
 
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -17,6 +20,16 @@ GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 # and launchd's XPC_SERVICE_NAME, this survives wrappers that replace the child
 # environment (e.g. ``sudo env -i``).
 EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
+
+
+@contextmanager
+def restart_notification_marker_lock(hermes_home: str | Path) -> Iterator[None]:
+    """Serialize restart-marker compare/write/unlink operations across processes."""
+    from hermes_cli.active_sessions import _FileLock
+
+    lock_path = Path(hermes_home) / ".restart_notify.lock"
+    with _FileLock(lock_path):
+        yield
 
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(DEFAULT_CONFIG["agent"]["restart_drain_timeout"])
 DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT = float(DEFAULT_CONFIG["gateway"]["signal_interrupt_grace_timeout"])

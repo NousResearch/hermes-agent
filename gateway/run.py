@@ -3248,6 +3248,7 @@ class GatewayRunner(
     _restart_via_service: bool = False
     _detached_restart_helper_started: bool = False
     _restart_command_source: Optional[SessionSource] = None
+    _restart_notification_request_id: Optional[str] = None
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
@@ -3401,6 +3402,8 @@ class GatewayRunner(
         self._restart_requested = self._signal_initiated_shutdown = self._restart_task_started = False
         self._restart_detached = self._restart_via_service = self._detached_restart_helper_started = False
         self._restart_command_source: Optional[SessionSource] = None
+        self._restart_command_lock = asyncio.Lock()
+        self._restart_notification_request_id: Optional[str] = None
         # Construction clock: bounds the /restart redelivery guard's window (missing dedup marker = stale).
         self._startup_time: float = time.time()
         # True when booted from a chat /restart (.restart_notify.json existed). One-shot signal so the

@@ -193,7 +193,12 @@ class GatewayStartupMixin:
                 logger.log(level, message, exc_info=(type(exc), exc, exc.__traceback__))
         return _report
 
-    async def _await_startup_boot_sends(self, *, planned_restart_notification_pending: bool) -> None:
+    async def _await_startup_boot_sends(
+        self,
+        *,
+        restart_marker_payload: Optional[str],
+        planned_restart_notification_pending: bool,
+    ) -> None:
         """Run boot-path sends without letting them pin the inbound restore gate (one Telegram
         flood-control sleep must not freeze inbound on every platform): same bounded wait as the
         resume gate, sends finish in the background on timeout. The ledger claim + ``resume_pending``
@@ -206,22 +211,31 @@ class GatewayStartupMixin:
         from gateway.run import _clear_planned_restart_notification, _startup_restore_drain_timeout_secs
         claimed = await self._claim_pending_obligations()
 
-        async def _boot_sends() -> None:
-            await self._send_restart_notification()
-            if planned_restart_notification_pending:
+        boot_tasks: set[asyncio.Task] = set()
+        if restart_marker_payload is not None:
+            boot_tasks.add(asyncio.create_task(self._send_restart_notification(
+                claimed_marker_payload=restart_marker_payload,
+            )))
+
+        if planned_restart_notification_pending:
+            async def _send_planned_restart_notification() -> None:
                 try:
                     await self._send_home_channel_startup_notifications(skip_targets=None)
                 finally:
                     _clear_planned_restart_notification()
-            await self._redeliver_claimed_obligations(claimed)
 
-        boot_task = asyncio.create_task(_boot_sends())
+            boot_tasks.add(asyncio.create_task(_send_planned_restart_notification()))
+
+        # Delivery-ledger replay is independent of lifecycle notifications: a
+        # rate-limited restart message must not hold generated responses behind it.
+        boot_tasks.add(asyncio.create_task(self._redeliver_claimed_obligations(claimed)))
+
         timeout = _startup_restore_drain_timeout_secs()
         if timeout <= 0:
-            await boot_task  # unbounded: a failing send surfaces here (unlike the gate path)
+            await asyncio.gather(*boot_tasks)
             return
         await self._wait_bounded_or_release(
-            {boot_task}, timeout,
+            boot_tasks, timeout,
             "Boot-path sends still running after %.0fs; releasing inbound gate so other platforms are not "
             "frozen. Restart notification / obligation redelivery continue in the background.",
             "background boot-path send failed after gate release: see traceback", track=True,
@@ -1156,22 +1170,21 @@ class GatewayStartupMixin:
         ):
             self._schedule_update_notification_watch()
 
-    async def _start_finish_wiring(self, connected_count: int) -> None:
+    async def _start_finish_wiring(
+        self, connected_count: int, *, restart_marker_payload: Optional[str]
+    ) -> None:
         """Post-connect wiring: services, boot notifications, startup restore, recovered watchers."""
-        from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
+        from gateway.run import _planned_restart_notification_pending
         await self._start_post_connect_services(connected_count)
         # Let fresh adapters settle before lifecycle sends (helps Discord thread deliveries).
         if connected_count > 0:
             await asyncio.sleep(1.0)
-        # Before _send_restart_notification() unlinks the marker: did we boot from a chat /restart?
-        # One-shot signal for _is_stale_restart_redelivery.
-        if _restart_notification_pending():
-            self._booted_from_restart = True
         # Boot-path adapter.send() calls must not pin the inbound restore gate (a Telegram flood-
         # control sleep here once froze every platform).
         # Restart notification, home-channel startup notice, and obligation redelivery all call
         # adapter.send(). Bound them the same way _finish_startup_restore bounds resume turns. See #91969.
         await self._await_startup_boot_sends(
+            restart_marker_payload=restart_marker_payload,
             planned_restart_notification_pending=_planned_restart_notification_pending(),
         )
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
@@ -1237,7 +1250,26 @@ class GatewayStartupMixin:
 
     async def start(self) -> bool:
         """Start the gateway and all configured platform adapters."""
+        from gateway.run import _hermes_home
+
         logger.info("Starting Hermes Gateway...")
+        # Claim the exact restart-marker generation before adapters connect. A
+        # platform can accept another /restart as soon as connect() begins; the
+        # boot worker must never read that replacement as its own work.
+        restart_notify_path = _hermes_home / ".restart_notify.json"
+        restart_marker_payload: Optional[str] = None
+        if restart_notify_path.exists():
+            self._booted_from_restart = True
+            try:
+                restart_marker_payload = restart_notify_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self._booted_from_restart = False
+            except (OSError, UnicodeError) as exc:
+                logger.warning(
+                    "Could not claim restart notification marker at startup; "
+                    "preserving it for a later process: %s",
+                    exc,
+                )
         self._start_install_faulthandler()
         self._start_log_startup_environment()
         if await self._abort_startup_if_shutdown_requested():
@@ -1286,7 +1318,9 @@ class GatewayStartupMixin:
         self._running = True
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
-        await self._start_finish_wiring(connected_count)
+        await self._start_finish_wiring(
+            connected_count, restart_marker_payload=restart_marker_payload
+        )
         self._start_spawn_background_watchers()
         logger.info("Press Ctrl+C to stop")
         return True

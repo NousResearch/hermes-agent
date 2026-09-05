@@ -1,25 +1,16 @@
 """Shared Matrix tool policy; YAML wins over profile-scoped legacy env gates."""
 from agent.secret_scope import get_secret
-from hermes_constants import get_hermes_home
+from hermes_cli.config import load_config_readonly
 
 
 def tools_config() -> dict:
-    # Gate checks need explicit keys (merged defaults hide legacy env fallback).
-    # Unlike the general raw-config reader, malformed policy must not become an
-    # empty mapping that re-enables permissive legacy environment values.
-    import yaml
-
+    # The canonical owner preserves managed policy and environment expansion.
+    # Strict validation prevents malformed input from enabling legacy env gates.
+    # Matrix tool action defaults remain in gate(), not merged DEFAULT_CONFIG.
     try:
-        with (get_hermes_home() / "config.yaml").open(encoding="utf-8") as stream:
-            config = yaml.safe_load(stream)
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError, yaml.YAMLError) as exc:
+        config = load_config_readonly(strict=True)
+    except (OSError, ValueError, RuntimeError) as exc:
         raise ValueError("Cannot read Matrix tool policy; check config.yaml") from exc
-    if config is None:
-        return {}
-    if not isinstance(config, dict):
-        raise ValueError("Matrix tool policy requires a config mapping")
     matrix = config.get("matrix", {})
     if not isinstance(matrix, dict):
         raise ValueError("matrix must be a config mapping")

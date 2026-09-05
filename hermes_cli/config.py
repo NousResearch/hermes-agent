@@ -2016,10 +2016,16 @@ def load_config() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=True)
 
 
-def load_config_readonly() -> Dict[str, Any]:
+def load_config_readonly(*, strict: bool = False) -> Dict[str, Any]:
     """``load_config()`` without the defensive deepcopy (~half of the 265us cache-hit cost).
     **Mutating the returned dict (or any nested structure) corrupts the in-process cache for
-    every subsequent caller** — only for code paths that never write to the result."""
+    every subsequent caller** — only for code paths that never write to the result.
+    ``strict=True`` validates the current user file before consulting cached/default policy,
+    refusing unreadable, malformed or non-mapping input instead of a permissive fallback.
+    This validation does not write the configuration.
+    """
+    if strict:
+        require_readable_config_before_write()
     return _load_config_impl(want_deepcopy=False)
 
 

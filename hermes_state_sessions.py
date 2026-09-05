@@ -938,19 +938,22 @@ class SessionSessionsMixin:
         combined = " AND ".join(clauses)
         return (f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"), params
 
-    def _project_compression_tips(self, sessions: List[Dict[str, Any]], compact_rows: bool) -> List[Dict[str, Any]]:
+    def _project_compression_tips(
+        self, sessions: List[Dict[str, Any]], compact_rows: bool, recall_scope: object = None,
+    ) -> List[Dict[str, Any]]:
         """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
         for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
         hold a MIDDLE segment's id)."""
         chain_by_root: Dict[str, List[str]] = {}  # only roots whose tip differs from themselves
         for s in sessions:
             if s.get("end_reason") == "compression":
-                chain = self.get_compression_chain(s["id"])
+                chain = self.get_compression_chain(s["id"], recall_scope=recall_scope)
                 if chain and chain[-1] != s["id"]:
                     chain_by_root[s["id"]] = chain
         tip_rows = (
             self._get_session_rich_rows_batch(
                 {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
+                recall_scope=recall_scope,
             ) if chain_by_root else {}
         )
         projected = []
@@ -980,6 +983,7 @@ class SessionSessionsMixin:
         timeout_seconds: float = 3.0,
         candidate_limit: int = None,
         lineage_limit: int = None,
+        recall_scope: object = None,
     ) -> List[Dict[str, Any]]:
         """Latency-bounded recent-conversation browse (``session_search()``): preselect a small candidate set
         from the indexed durable activity timestamp (fallback ``started_at``), resolve only those across
@@ -1010,6 +1014,18 @@ class SessionSessionsMixin:
             candidate_params.extend(exclude_sources)
         candidate_where = " AND ".join(candidate_clauses)
 
+        # One scope-filtered relation feeds candidates, both lineage directions,
+        # and final projection. This keeps a mismatched compression child from
+        # contributing even an id/title/preview to the browse result.
+        scope_sql, scope_params = self._recall_scope_sql("s", recall_scope)
+        session_table = "sessions"
+        scope_cte = ""
+        if scope_sql:
+            session_table = "scoped_sessions"
+            scope_cte = (
+                f"scoped_sessions AS (SELECT s.* FROM sessions s WHERE {scope_sql}),"
+            )
+
         # A compression continuation is an implementation edge, unlike /new
         # reset and /branch children which are independent user-visible
         # conversations.  The same predicate is used in both directions so a
@@ -1027,9 +1043,10 @@ class SessionSessionsMixin:
 
         query = f"""
             WITH RECURSIVE
+            {scope_cte}
             recent_candidates(id) AS (
                 SELECT s.id
-                FROM sessions s
+                FROM {session_table} s
                 WHERE {candidate_where}
                 ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC,
                          s.started_at DESC, s.id DESC
@@ -1040,17 +1057,17 @@ class SessionSessionsMixin:
                 UNION
                 SELECT a.candidate_id, parent.id
                 FROM ancestors a
-                JOIN sessions child ON child.id = a.cur_id
-                JOIN sessions parent ON {compression_parent_edge}
+                JOIN {session_table} child ON child.id = a.cur_id
+                JOIN {session_table} parent ON {compression_parent_edge}
                 LIMIT ?
             ),
             candidate_roots(root_id) AS (
                 SELECT DISTINCT a.cur_id
                 FROM ancestors a
-                JOIN sessions child ON child.id = a.cur_id
+                JOIN {session_table} child ON child.id = a.cur_id
                 WHERE NOT EXISTS (
                     SELECT 1
-                    FROM sessions parent
+                    FROM {session_table} parent
                     WHERE {compression_parent_edge}
                 )
             ),
@@ -1059,8 +1076,8 @@ class SessionSessionsMixin:
                 UNION
                 SELECT c.root_id, child.id
                 FROM chain c
-                JOIN sessions parent ON parent.id = c.cur_id
-                JOIN sessions child ON {compression_parent_edge}
+                JOIN {session_table} parent ON parent.id = c.cur_id
+                JOIN {session_table} child ON {compression_parent_edge}
                 LIMIT ?
             ),
             chain_rows AS (
@@ -1070,8 +1087,8 @@ class SessionSessionsMixin:
                     {_sql_session_last_active_by_id('c.cur_id')} AS activity,
                     CASE WHEN EXISTS (
                         SELECT 1
-                        FROM sessions parent
-                        JOIN sessions child ON {compression_parent_edge}
+                        FROM {session_table} parent
+                        JOIN {session_table} child ON {compression_parent_edge}
                         WHERE parent.id = c.cur_id
                     ) THEN 0 ELSE 1 END AS is_tip
                 FROM chain c
@@ -1109,8 +1126,8 @@ class SessionSessionsMixin:
                 CASE WHEN s.id != tip.id THEN s.id ELSE NULL END
                     AS _lineage_root_id
             FROM ranked_tips rt
-            JOIN sessions s ON s.id = rt.root_id
-            JOIN sessions tip ON tip.id = rt.cur_id
+            JOIN {session_table} s ON s.id = rt.root_id
+            JOIN {session_table} tip ON tip.id = rt.cur_id
             WHERE rt.rank_in_root = 1
               AND s.archived = 0
               AND s.hidden = 0
@@ -1119,7 +1136,7 @@ class SessionSessionsMixin:
             ORDER BY rt.activity DESC, s.started_at DESC, tip.id DESC
             LIMIT ?
         """
-        params = candidate_params + [
+        params = scope_params + candidate_params + [
             candidate_limit,
             lineage_limit,
             lineage_limit,
@@ -1172,6 +1189,7 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str = None, search_query: str = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str = None, include_hidden: bool = False,
+        recall_scope: object = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
@@ -1184,6 +1202,10 @@ class SessionSessionsMixin:
         )
         if not include_hidden:
             where_clauses.append("s.hidden = 0")
+        scope_sql, scope_params = self._recall_scope_sql("s", recall_scope)
+        if scope_sql:
+            where_clauses.append(scope_sql)
+            params.extend(scope_params)
         where_sql = _where_sql(where_clauses)
         base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
         # Shared projection head of the three list queries (whitespace is part of the SQL text).
@@ -1204,6 +1226,8 @@ class SessionSessionsMixin:
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
+            child_scope_sql, child_scope_params = self._recall_scope_sql("child", recall_scope)
+            child_scope_clause = f" AND {child_scope_sql}" if child_scope_sql else ""
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -1216,6 +1240,7 @@ class SessionSessionsMixin:
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
                       AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
                       AND COALESCE(child.source, '') != 'tool'
+                      {child_scope_clause}
                 ),
                 chain_max AS (
                     SELECT
@@ -1233,7 +1258,9 @@ class SessionSessionsMixin:
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)
+            # WHERE binds twice (seed + outer); the recursive edge's scoped
+            # child predicate sits between them in SQL parameter order.
+            params = params + child_scope_params + params + id_params + [limit, offset]
         else:
             query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active
@@ -1264,7 +1291,8 @@ class SessionSessionsMixin:
                     seen_ids.add(s["id"])
                     sessions.append(s)
         if project_compression_tips and not include_children:
-            sessions = self._project_compression_tips(sessions, compact_rows)
+            sessions = self._project_compression_tips(
+                sessions, compact_rows, recall_scope=recall_scope)
         # last_read_at is lineage-stamped, so root and tip watermarks agree.
         for s in sessions:
             s["unread"] = self.session_unread(s)

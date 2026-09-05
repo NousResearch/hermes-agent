@@ -408,6 +408,20 @@ class OpenAICompatRoutesMixin:
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
+        return await self._handle_chat_completions_impl(
+            request, gateway_proxy_route=False)
+
+    async def _handle_gateway_proxy_chat_completions(
+        self, request: "web.Request",
+    ) -> "web.Response":
+        """Dedicated authenticated ingress for native gateway proxy turns."""
+        return await self._handle_chat_completions_impl(
+            request, gateway_proxy_route=True)
+
+    async def _handle_chat_completions_impl(
+        self, request: "web.Request", *, gateway_proxy_route: bool,
+    ) -> "web.Response":
+        """Shared OpenAI payload handling after route identity is fixed."""
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
@@ -417,6 +431,14 @@ class OpenAICompatRoutesMixin:
         limited = self._concurrency_limited_response()
         if limited is not None:
             return limited
+
+        gateway_proxy_origin: Optional[dict[str, str]] = None
+        gateway_proxy_session_key: Optional[str] = None
+        if gateway_proxy_route:
+            (gateway_proxy_origin, gateway_proxy_session_key,
+             proxy_context_err) = self._parse_gateway_proxy_context(request)
+            if proxy_context_err is not None:
+                return proxy_context_err
         try:
             body = await request.json()
         except Exception:
@@ -449,12 +471,19 @@ class OpenAICompatRoutesMixin:
 
         # X-Hermes-Session-Key scopes long-term memory per channel; independent of
         # X-Hermes-Session-Id (the key persists across transcripts, the id rotates on /new).
-        gateway_session_key, key_err = self._parse_session_key_header(request)
-        if key_err is not None:
-            return key_err
+        if gateway_proxy_route:
+            gateway_session_key = gateway_proxy_session_key
+        else:
+            gateway_session_key, key_err = self._parse_session_key_header(request)
+            if key_err is not None:
+                return key_err
         # X-Hermes-Session-Id continues an existing session (history from state.db, not the body);
         # requires a configured API key or any client could read history by guessing ids.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if gateway_proxy_route and not provided_session_id:
+            return _error_response(
+                "Gateway proxy context requires X-Hermes-Session-Id", 400,
+                code="gateway_proxy_session_required")
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
@@ -470,6 +499,14 @@ class OpenAICompatRoutesMixin:
             if len(provided_session_id) > self._MAX_SESSION_HEADER_LEN:
                 return _invalid_request("Session ID too long")
             session_id = provided_session_id
+            if gateway_proxy_route:
+                assert gateway_proxy_origin is not None
+                assert gateway_session_key is not None
+                proxy_scope_err = await self._verify_gateway_proxy_session_context(
+                    session_id=session_id, origin=gateway_proxy_origin,
+                    session_key=gateway_session_key)
+                if proxy_scope_err is not None:
+                    return proxy_scope_err
             try:
                 db = await self._ensure_session_db_async()
                 if db is not None:
@@ -494,7 +531,9 @@ class OpenAICompatRoutesMixin:
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
-            gateway_session_key=gateway_session_key, **agent_overrides, route=route)
+            gateway_session_key=gateway_session_key,
+            gateway_origin=gateway_proxy_origin,
+            **agent_overrides, route=route)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -531,9 +570,15 @@ class OpenAICompatRoutesMixin:
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
+        fingerprint_body = dict(body)
+        fingerprint_keys = [
+            "model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"]
+        if gateway_proxy_origin is not None:
+            fingerprint_body["_hermes_gateway_origin"] = gateway_proxy_origin
+            fingerprint_keys.append("_hermes_gateway_origin")
         outcome, err = await self._run_idempotent(
-            request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            request, fingerprint_body, _compute_completion, log_label="chat completions",
+            fingerprint_keys=fingerprint_keys,
         )
         if err is not None:
             return err

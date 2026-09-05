@@ -169,11 +169,13 @@ def resolve_remote_target(raw_target: str, roster: list[dict]) -> Any:
 
 
 def remote_target_forms(roster: list[dict]) -> list[str]:
-    """Target strings: bare handle when unique across connections, else
-    ``handle@connection`` (mirrors ``resolve_remote_target``)."""
-    handles = [row["handle"].lower() for row in roster]
-    return [f"{row['handle']}@{row['connection_id']}" if handles.count(h) > 1 else row["handle"]
-            for row, h in zip(roster, handles)]
+    """Unambiguous target strings for agents on other connections.
+
+    A handle unique within the remote roster can still collide with a profile
+    on this gateway (most importantly every gateway's ``@hermes`` default), so
+    remote forms always carry their connection id.
+    """
+    return [f"{row['handle']}@{row['connection_id']}" for row in roster]
 
 
 def _envelope_ttl_seconds() -> int:

@@ -89,6 +89,10 @@ def test_resolve_remote_target_forms(root):
     assert bot_relay.resolve_remote_target("default@cloud-1", roster)["profile"] == "default"
     assert bot_relay.resolve_remote_target("hermes@nope", roster) is None
     assert bot_relay.resolve_remote_target("ghost", roster) is None
+    assert bot_relay.remote_target_forms(roster) == [
+        "hermes@cloud-1",
+        "researcher@ssh-vps",
+    ]
 
 
 def test_resolve_ambiguous_handle_across_connections(root):
@@ -102,7 +106,7 @@ def test_resolve_ambiguous_handle_across_connections(root):
     assert match["connection_id"] == "ssh-vps"
     forms = bot_relay.remote_target_forms(roster)
     assert "researcher@ssh-vps" in forms and "researcher@cloud-1" in forms
-    assert "hermes" in forms  # unique handle stays bare
+    assert "hermes@cloud-1" in forms
 
 
 # ── outbox / replies ─────────────────────────────────────────────────────────
@@ -368,7 +372,7 @@ def test_protocol_section_lists_remote_teammates(tmp_path):
     ])
     section = bot_mode_probe.get_bot_mode_protocol_section(home, force_refresh=True)
     assert "OTHER connected machines" in section
-    assert "`@hermes` — on Hermes Cloud — Moxie" in section
+    assert "`@hermes@cloud-1` — on Hermes Cloud — Moxie" in section
 
 
 def test_capability_fingerprint_changes_with_relay_roster(tmp_path):

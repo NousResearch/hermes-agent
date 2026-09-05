@@ -672,6 +672,21 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "… [truncated]"
 
 
+def _truncate_judge_response(text: str, limit: int) -> str:
+    """Keep the response head and tail without exceeding the judge budget."""
+    if not text or limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    marker = "\n\n… [response middle truncated] …\n\n"
+    available = limit - len(marker)
+    if available < 2:
+        return text[:limit]
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    return f"{text[:head_chars]}{marker}{text[-tail_chars:]}"
+
+
 def _pid_alive(pid: int) -> bool:
     """Liveness via ``gateway.status._pid_exists`` (psutil + ctypes/POSIX fallback). Never uses
     ``os.kill(pid, 0)``: on Windows that routes to CTRL_C_EVENT and hard-kills the target's console
@@ -882,7 +897,7 @@ def judge_goal(
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
     common = dict(
         goal=_truncate(goal, 2000),
-        response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+        response=_truncate_judge_response(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
         background_block=_render_background_block(background_processes),
         current_time=datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z"),
     )

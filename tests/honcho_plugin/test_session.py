@@ -1,6 +1,7 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
 import json
+import os
 import sys
 import threading
 import time
@@ -8,6 +9,8 @@ import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -1335,7 +1338,7 @@ class TestSessionStartInjection:
 
 
 # ---------------------------------------------------------------------------
-# the logging key switches on the injection audit; it is off by default and never raises
+# the logging key switches on the injection audit. It is off by default and never raises
 # ---------------------------------------------------------------------------
 
 
@@ -1355,6 +1358,29 @@ class TestInjectionAuditLog:
         monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
         raw = {"logging": True, "hosts": {"hermes": {"logging": False}}}
         assert _provider_with_raw(raw)._injection_log_path is None
+
+    @pytest.mark.parametrize("value", ["false", "0", "no", "off", ""])
+    def test_string_false_values_keep_it_off(self, monkeypatch, value):
+        monkeypatch.delenv("HONCHO_LOGGING", raising=False)
+        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
+        assert _provider_with_raw({"logging": value})._injection_log_path is None
+
+    @pytest.mark.parametrize("value", ["true", "1", "yes", "on"])
+    def test_string_true_values_switch_it_on(self, monkeypatch, value):
+        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
+        assert _provider_with_raw({"logging": value})._injection_log_path is not None
+
+    def test_env_off_value_keeps_it_off(self, monkeypatch):
+        monkeypatch.setenv("HONCHO_LOGGING", "off")
+        monkeypatch.delenv("HONCHO_INJECTION_LOG", raising=False)
+        assert _provider_with_raw({})._injection_log_path is None
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+    def test_log_file_is_owner_only(self, tmp_path):
+        provider = _provider_with_raw({})
+        provider._injection_log_path = str(tmp_path / "injection.log")
+        provider._log_injection("injected", "payload")
+        assert (tmp_path / "injection.log").stat().st_mode & 0o777 == 0o600
 
     def test_explicit_path_env_overrides_destination(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HONCHO_INJECTION_LOG", str(tmp_path / "audit.log"))

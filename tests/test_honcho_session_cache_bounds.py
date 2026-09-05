@@ -291,3 +291,69 @@ def test_flush_does_not_resurrect_an_evicted_session():
     assert mgr._flush_session(session) is True
     assert "gone" not in mgr._cache
     assert all(m["_synced"] for m in session.messages)
+
+
+def _sdk_session():
+    return SimpleNamespace(add_messages=lambda messages: None)
+
+
+def test_flush_that_recreates_the_sdk_session_stores_its_observation_flags():
+    """After an eviction the flush path rebuilds the SDK session. The flags it configured must be kept."""
+    mgr = _manager()
+    session = _session(key="back")
+    session.add_message("user", "hello", _synced=False)
+    flags = {"user_observe_me": False, "user_observe_others": True, "ai_observe_me": True, "ai_observe_others": False}
+    mgr._get_or_create_peer = lambda peer_id: SimpleNamespace(message=lambda content: content)
+    mgr._get_or_create_honcho_session = lambda sid, user, assistant: (_sdk_session(), [], flags)
+
+    assert mgr._flush_session(session) is True
+    assert mgr._session_observation[session.honcho_session_id] == flags
+
+
+def test_cached_sdk_session_returns_the_flags_stored_for_it():
+    mgr = _manager()
+    flags = {"user_observe_me": True, "user_observe_others": False, "ai_observe_me": True, "ai_observe_others": True}
+    sdk = _sdk_session()
+    mgr._sessions_cache["hs-x"] = sdk
+    mgr._session_observation["hs-x"] = flags
+
+    assert mgr._get_or_create_honcho_session("hs-x", None, None) == (sdk, [], flags)
+
+
+def test_deferred_save_puts_an_evicted_session_back_in_the_cache():
+    """write_frequency "session" defers to flush_all(), which only sees cached sessions."""
+    mgr = _manager()
+    mgr._write_frequency = "session"
+    session = _session(key="evicted")
+    session.add_message("user", "unsynced", _synced=False)
+
+    mgr.save(session)
+
+    assert mgr._cache["evicted"] is session
+
+
+def test_deferred_save_of_a_fully_synced_evicted_session_stays_out_of_the_cache():
+    mgr = _manager()
+    mgr._write_frequency = "session"
+    session = _session(key="done")
+    session.add_message("user", "old", _synced=True)
+
+    mgr.save(session)
+
+    assert "done" not in mgr._cache
+
+
+def test_deferred_save_flushes_inline_when_a_newer_object_owns_the_key():
+    mgr = _manager()
+    mgr._write_frequency = "session"
+    newer = _session(key="k")
+    mgr._cache["k"] = newer
+    stale = _session(key="k")
+    stale.add_message("user", "late", _synced=False)
+    flushed = []
+    mgr._flush_session = lambda s: flushed.append(s) or True
+
+    mgr.save(stale)
+
+    assert flushed == [stale]
+    assert mgr._cache["k"] is newer

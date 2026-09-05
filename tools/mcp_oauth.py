@@ -29,6 +29,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover — Windows
+    _fcntl = None
+
+try:
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover — POSIX
+    _msvcrt = None
+
 from hermes_constants import secure_parent_dir
 from tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
 
@@ -92,6 +102,13 @@ _oauth_interactive_forced = contextvars.ContextVar("_oauth_interactive_forced", 
 # OAuthNonInteractiveError("user_skipped") so MCP setup continues without this server.
 _SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
 _USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
+
+# Cross-process refresh lock timeout. Bounds how long a second process waits
+# for the current holder of a single-use refresh token to finish rotating it
+# before giving up. Mirrors the spirit of AUTH_LOCK_TIMEOUT_SECONDS plus a
+# refresh-POST margin in hermes_cli/auth.py; the MCP token POST is bounded by
+# the SDK client timeout, so this is a generous ceiling, not a hot path.
+_REFRESH_LOCK_TIMEOUT_SECONDS = 30.0
 
 
 def _get_token_dir(hermes_home: str | Path | None = None) -> Path:
@@ -270,6 +287,80 @@ def _model_json(model: Any) -> dict:
     return model.model_dump(mode="json", exclude_none=True)
 
 
+class _AsyncCrossProcessLock:
+    """Cross-process advisory lock with event-loop-friendly acquisition.
+
+    Serializes a single-use refresh-token rotation across Hermes *processes*
+    (the gateway, a one-shot CLI, a cron job) that share one token file.
+    Mirrors the synchronous ``_file_lock`` helper in ``hermes_cli/auth.py``
+    but acquires asynchronously — non-blocking ``flock`` plus
+    ``await asyncio.sleep`` retries — so the MCP event loop stays responsive
+    while waiting for the current holder.
+
+    ``flock`` locks the open *file description*, so two independent
+    ``open()`` calls in the same process still contend. That is what lets the
+    concurrency test exercise the cross-process path with two providers in a
+    single interpreter.
+    """
+
+    def __init__(self, lock_path: Path, timeout_seconds: float) -> None:
+        self._lock_path = Path(lock_path)
+        self._timeout_seconds = max(1.0, float(timeout_seconds))
+        self._fh = None
+
+    async def acquire(self) -> None:
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fh = self._lock_path.open("a+", encoding="utf-8")
+        deadline = time.monotonic() + self._timeout_seconds
+        while True:
+            try:
+                if _fcntl is not None:
+                    _fcntl.flock(
+                        self._fh.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB
+                    )
+                elif _msvcrt is not None:
+                    # msvcrt byte-range locking needs >=1 byte at the cursor.
+                    if self._lock_path.stat().st_size == 0:
+                        try:
+                            self._fh.write(" ")
+                            self._fh.flush()
+                        except OSError:
+                            pass
+                    self._fh.seek(0)
+                    _msvcrt.locking(self._fh.fileno(), _msvcrt.LK_NBLCK, 1)
+                else:
+                    # No cross-process primitive available (neither fcntl nor
+                    # msvcrt): best-effort — proceed without serialization.
+                    return
+                return
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    self.release()
+                    raise TimeoutError(
+                        f"Timed out waiting for MCP OAuth refresh lock: "
+                        f"{self._lock_path}"
+                    )
+                await asyncio.sleep(0.05)
+
+    def release(self) -> None:
+        """Release the lock and close the fd (idempotent; synchronous)."""
+        if self._fh is None:
+            return
+        fh = self._fh
+        self._fh = None
+        try:
+            if _fcntl is not None:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+            elif _msvcrt is not None:
+                try:
+                    fh.seek(0)
+                    _msvcrt.locking(fh.fileno(), _msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        finally:
+            fh.close()
+
+
 class HermesTokenStorage:
     """Persist OAuth state as ``HERMES_HOME/mcp-tokens/<server_name>`` + ``.json`` (tokens),
     ``.client.json`` (client info), ``.meta.json`` (server metadata), ``.cimd-off`` (CIMD refused)."""
@@ -285,6 +376,24 @@ class HermesTokenStorage:
     _client_info_path = partialmethod(_path, ".client.json")
     _meta_path = partialmethod(_path, ".meta.json")
     _cimd_rejected_path = partialmethod(_path, ".cimd-off")
+
+    def _refresh_lock_path(self) -> Path:
+        return self._tokens_path().with_suffix(".lock")
+
+    def refresh_lock(
+        self, timeout_seconds: float | None = None
+    ) -> "_AsyncCrossProcessLock":
+        """Return the cross-process lock guarding this server's token refresh.
+
+        Serializes the read-fresh -> POST -> write-back sequence across
+        Hermes processes sharing this server's token file, so a single-use
+        refresh token is rotated by exactly one process and every other
+        process adopts the winner's fresh token instead of re-POSTing the
+        spent one.
+        """
+        if timeout_seconds is None:
+            timeout_seconds = _REFRESH_LOCK_TIMEOUT_SECONDS
+        return _AsyncCrossProcessLock(self._refresh_lock_path(), timeout_seconds)
 
     def _state_paths(self) -> tuple[Path, Path, Path]:
         return self._tokens_path(), self._client_info_path(), self._meta_path()

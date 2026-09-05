@@ -41,7 +41,7 @@ Environment variables:
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
     MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
     MATRIX_HISTORY_BACKFILL     Prepend recent room scrollback on mention (default: true)
-    MATRIX_HISTORY_BACKFILL_LIMIT  Max messages to scan backwards (default: 50)
+    MATRIX_HISTORY_BACKFILL_LIMIT  Max messages to scan backwards (default: 200)
     MATRIX_ALLOW_PUBLIC_ROOMS   Allow Matrix tools to create public rooms (default: false)
     MATRIX_MAX_MESSAGE_LENGTH   Outbound message chunk size in characters (default: 16000)
     MATRIX_APPROVAL_REQUIRE_SENDER
@@ -1232,6 +1232,8 @@ class MatrixAdapter(BasePlatformAdapter):
         # (within 60s), so varied-age backfill from freshly-invited rooms
         # doesn't trip the heuristic.
         self._late_grace_drops: int = 0
+        # display name cache: (room_id, user_id) → display_name
+        self._display_name_cache: Dict[tuple, str] = {}
         self._late_grace_skew: float = 0.0
         self._clock_skew_warned: bool = False
         self._last_sync_ts: float = 0.0
@@ -3398,7 +3400,7 @@ class MatrixAdapter(BasePlatformAdapter):
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             is_command = body.startswith("/")
-            logger.info(
+            logger.debug(
                 "Matrix: mention check — require=%s thread_require=%s "
                 "in_bot_thread=%s mentioned=%s free=%s sender=%s",
                 self._require_mention, self._thread_require_mention,
@@ -4609,7 +4611,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 if from_token:
                     params["from"] = from_token
 
-            async with aiohttp.ClientSession() as sess:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as sess:
                 async with sess.get(url, params=params, headers=headers) as resp:
                     data = await resp.json()
             chunk = data.get("chunk", [])
@@ -5066,7 +5070,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """
         escaped = re.escape(localpart)
         return (
-            r"(?:^|(?<![@\w-]))@?"
+            r"(?:^|(?<![@\w-]))@"
             + escaped
             + r"(?::[\w.-]+)?(?![\w-])"
         )
@@ -5136,6 +5140,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _get_display_name(self, room_id: str, user_id: str) -> str:
         """Get a user's display name in a room, falling back to user_id."""
+        cache_key = (room_id, user_id)
+        if cache_key in self._display_name_cache:
+            return self._display_name_cache[cache_key]
         state_store = (
             getattr(self._client, "state_store", None) if self._client else None
         )
@@ -5143,12 +5150,16 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 member = await state_store.get_member(room_id, user_id)
                 if member and getattr(member, "displayname", None):
+                    self._display_name_cache[cache_key] = member.displayname
                     return member.displayname
             except Exception:
                 pass
         # Strip the @...:server format to just the localpart.
         if user_id.startswith("@") and ":" in user_id:
-            return user_id[1:].split(":")[0]
+            name = user_id[1:].split(":")[0]
+            self._display_name_cache[cache_key] = name
+            return name
+        self._display_name_cache[cache_key] = user_id
         return user_id
 
     def _mxc_to_http(self, mxc_url: str) -> str:

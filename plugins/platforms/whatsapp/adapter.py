@@ -1470,7 +1470,33 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         When WhatsApp delivers rapid-fire messages (e.g. forwarded
         batches), this concatenates them and waits for a short quiet
         period before dispatching the combined message.
+
+        Messages that would land on an ACTIVE gateway turn bypass the
+        debounce entirely (``_busy_state_query``): the debounce coalesces
+        a quiet chat, but holding a follow-up 5-10s while a turn runs
+        delays the busy handshake (steer/redirect/interrupt) until the
+        turn finished — the user's "stop" arrives only after the task
+        completed, defeating interruption.  The immediate dispatch is
+        scheduled as a task so the sync poll-loop caller is not blocked.
         """
+        busy_query = getattr(self, "_busy_state_query", None)
+        if callable(busy_query):
+            try:
+                # Pass the EVENT (not the key): the gateway callback resolves
+                # the source's ROUTED profile (catch-all routes included)
+                # before building the session key — the adapter's own
+                # _text_batch_key resolves to agent:default:... under
+                # multiplex (source.profile is stamped later, inside the
+                # handler), so keying the busy check here would never match
+                # the routed agent:henrique:... turn.
+                if busy_query(event):
+                    asyncio.create_task(self.handle_message(event))
+                    return
+            except Exception:
+                logger.debug(
+                    "[%s] busy-state query failed; falling through to debounce",
+                    self.name, exc_info=True,
+                )
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")

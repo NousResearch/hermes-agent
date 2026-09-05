@@ -3328,6 +3328,8 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        # Optional gateway callback: session_key -> True when a turn is running.
+        self._busy_state_query: Optional[Callable[[str], bool]] = None
         # Owning profile for a multiplexed secondary adapter, installed by
         # ``GatewayRunner._configure_profile_adapter``. Adapter-level session
         # keys must carry the profile namespace, but ``source.profile`` is only
@@ -4009,6 +4011,20 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_busy_state_query(self, query: Optional[Callable[[str], bool]]) -> None:
+        """Set an optional callback reporting whether a session_key is busy.
+
+        ``query(session_key)`` returns True when the gateway holds a running
+        turn for that key. Adapters whose inbound path debounces text
+        (WhatsApp) use this to SKIP the debounce for messages that would
+        land on an active turn: the debounce is tuned for batch-coalescing
+        a QUIET chat, but holding a follow-up 5-10s while a turn is running
+        delays the busy-handshake (steer/redirect/interrupt) until after
+        the turn finished — the user sees "⚡ Interrupting current task"
+        arrive only when nothing is left to interrupt.
+        """
+        self._busy_state_query = query
 
     def set_reaction_handler(
         self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]

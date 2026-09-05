@@ -7546,6 +7546,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         state = self._peek_session_state(session_key)
         return state is not None and state.turn.agent is not None
 
+    def _make_busy_state_query(self):
+        """Return a busy-probe callback for adapters' ingress paths.
+
+        The probe resolves the event source's ROUTED profile
+        (``_profile_name_for_source`` — including catch-all routes) before
+        building the session key. Under multiplex, the adapter's poll loop
+        runs BEFORE ``source.profile`` is stamped by the message handler, so
+        a naive ``_is_session_running(self._text_batch_key(event))`` would
+        answer for the default-profile lane while the turn actually runs
+        under the routed profile's lane — the busy check would never fire
+        for routed DMs.
+        """
+
+        def _busy_for_event(event) -> bool:
+            try:
+                profile = self._profile_name_for_source(event.source)
+            except Exception:
+                profile = None
+            from gateway.session import build_session_key
+
+            try:
+                key = build_session_key(
+                    event.source,
+                    group_sessions_per_user=self.config.group_sessions_per_user,
+                    thread_sessions_per_user=getattr(
+                        self.config, "thread_sessions_per_user", False
+                    ),
+                    profile=profile or "default",
+                )
+            except Exception:
+                return False
+            return self._is_session_running(key)
+
+        return _busy_for_event
+
     def _running_agent_items(self) -> List[tuple]:
         """(session_key, agent) pairs for sessions with a running turn
         (including pending sentinels), matching the old ``_running_agents``
@@ -11416,6 +11451,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
+        # Same-account phone/LID flip (#clarify-family): the turn may be
+        # registered under the OTHER alias form of the same WhatsApp account
+        # (poll-loop scope canonizes via root lid-mappings; the turn's
+        # profile-scoped ingress had no mappings and keyed the session under
+        # the raw LID). The adapter's key and the live session's key are the
+        # SAME human under two keys — treat the session as busy when ANY
+        # alias variant holds a running turn.
+        if _busy_state is None or running_agent is None:
+            try:
+                from gateway.whatsapp_identity import expand_whatsapp_aliases
+                _prefix, _, _tail = session_key.rpartition(":")
+                if _prefix and ":whatsapp:" in session_key:
+                    for _v in expand_whatsapp_aliases(_tail):
+                        _vk = f"{_prefix}:{_v}"
+                        if _vk == session_key:
+                            continue
+                        _alt = self._peek_session_state(_vk)
+                        if _alt is not None and _alt.turn.agent is not None:
+                            _busy_state = _alt
+                            running_agent = _alt.turn.agent
+                            logger.info(
+                                "Busy-session alias variant matched for %s: turn "
+                                "registered under the other phone/LID form of the "
+                                "same account",
+                                _vk,
+                            )
+                            break
+            except Exception:
+                logger.debug("busy alias-variant probe failed", exc_info=True)
 
         busy_text_mode = self._effective_busy_text_mode(event.source)
         if (
@@ -11491,6 +11555,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as exc:
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
+                if steered:
+                    # Steer alone only surfaces the text at the NEXT
+                    # tool-result boundary — a long-running tool (build,
+                    # test suite, download) keeps running for its whole
+                    # natural duration before the user's message is even
+                    # seen, which reads as "the interruption never worked".
+                    # Signal the in-flight tool to abort so the loop
+                    # reaches the steer drain point promptly: the poll
+                    # loops in terminal/code-execution tools honor the
+                    # per-thread interrupt bit and return
+                    # "[Command interrupted]" immediately. The turn itself
+                    # continues — the steer text still guides the next
+                    # iteration; this is NOT a full interrupt().
+                    try:
+                        _tool_reason = "steered follow-up aborts the in-flight tool"
+                        _exec_tid = getattr(running_agent, "_execution_thread_id", None)
+                        if _exec_tid is not None:
+                            from tools.interrupt import set_interrupt as _set_interrupt
+
+                            _set_interrupt(True, _exec_tid, reason=_tool_reason)
+                        _tracker = getattr(running_agent, "_tool_worker_threads", None)
+                        _tracker_lock = getattr(
+                            running_agent, "_tool_worker_threads_lock", None
+                        )
+                        if _tracker is not None and _tracker_lock is not None:
+                            with _tracker_lock:
+                                _worker_tids = list(_tracker)
+                            for _wtid in _worker_tids:
+                                try:
+                                    from tools.interrupt import set_interrupt as _set_interrupt
+
+                                    _set_interrupt(True, _wtid, reason=_tool_reason)
+                                except Exception:
+                                    pass
+                        logger.info(
+                            "Steered session %s: in-flight tool abort signalled so the "
+                            "steer text is consumed at the next tool-result boundary",
+                            session_key,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "post-steer tool abort signal failed", exc_info=True
+                        )
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
@@ -11509,6 +11616,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.warning("Gateway redirect failed for session %s: %s", session_key, exc)
                 redirected = False
+            if redirected:
+                # redirect() degrades to steer() while a tool is executing:
+                # the text is only surfaced at the NEXT tool-result boundary,
+                # so a long-running tool keeps the user waiting for its whole
+                # natural duration before their correction is even seen.
+                # Signal the in-flight tool to abort (same per-thread bit
+                # /stop uses) so the loop reaches the steer drain promptly.
+                # The turn itself continues — this is NOT a full interrupt().
+                try:
+                    _tool_reason = "redirected follow-up aborts the in-flight tool"
+                    _exec_tid = getattr(running_agent, "_execution_thread_id", None)
+                    if _exec_tid is not None:
+                        from tools.interrupt import set_interrupt as _set_interrupt
+
+                        _set_interrupt(True, _exec_tid, reason=_tool_reason)
+                    _tracker = getattr(running_agent, "_tool_worker_threads", None)
+                    _tracker_lock = getattr(
+                        running_agent, "_tool_worker_threads_lock", None
+                    )
+                    if _tracker is not None and _tracker_lock is not None:
+                        with _tracker_lock:
+                            _worker_tids = list(_tracker)
+                        for _wtid in _worker_tids:
+                            try:
+                                from tools.interrupt import set_interrupt as _set_interrupt
+
+                                _set_interrupt(True, _wtid, reason=_tool_reason)
+                            except Exception:
+                                pass
+                    logger.info(
+                        "Redirected session %s: in-flight tool abort signalled so the "
+                        "correction is consumed at the next tool-result boundary",
+                        session_key,
+                    )
+                except Exception:
+                    logger.debug(
+                        "post-redirect tool abort signal failed", exc_info=True
+                    )
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -14318,6 +14463,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            _set_busy_query = getattr(adapter, "set_busy_state_query", None)
+            if callable(_set_busy_query):
+                _set_busy_query(self._make_busy_state_query())
             _set_reaction = getattr(adapter, "set_reaction_handler", None)
             if callable(_set_reaction):
                 _set_reaction(self._handle_reaction_event)
@@ -16189,6 +16337,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    _set_busy_query = getattr(adapter, "set_busy_state_query", None)
+                    if callable(_set_busy_query):
+                        _set_busy_query(self._make_busy_state_query())
                     _set_reaction = getattr(adapter, "set_reaction_handler", None)
                     if callable(_set_reaction):
                         _set_reaction(self._handle_reaction_event)
@@ -17496,6 +17647,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         adapter.set_busy_session_handler(
             self._make_profile_busy_session_handler(profile_name)
         )
+        _set_busy_query = getattr(adapter, "set_busy_state_query", None)
+        if callable(_set_busy_query):
+            _set_busy_query(self._make_busy_state_query())
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)

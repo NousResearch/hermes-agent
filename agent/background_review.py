@@ -822,6 +822,29 @@ def _fork_init_kwargs(agent: Any, rt: Dict[str, Any], routed: bool, max_iteratio
     return kwargs
 
 
+def _mirror_parent_tools(agent: Any, review_agent: Any) -> None:
+    """Advertise the parent's ``tools[]`` verbatim on a SAME-model fork (#103579).
+
+    The fork is built with ``skip_memory=True`` (#5129), so it never initializes an external
+    memory provider and ``inject_memory_provider_tools`` early-returns on it — the fork's own
+    surface silently lacks the parent's provider schemas (holographic ``fact_store`` /
+    ``fact_feedback``, ...) and the request misses the prefix cache this fork exists to reuse.
+    Copy, don't append: the parent's order is base -> memory-provider -> context-engine, so a
+    tail append would still diverge byte-wise. ``valid_tool_names`` is rebuilt from the copied
+    schemas exactly as init does. Deep copy so the fork's in-place message/schema sanitization
+    can never rewrite the parent's cached bytes. Dispatch stays restricted by
+    ``_review_tool_whitelist`` — advertising is not permission, and no provider instance is
+    created here."""
+    if getattr(agent, "_memory_manager", None) is None or getattr(agent, "tools", None) is None:
+        return
+    review_agent.tools = copy.deepcopy(agent.tools)
+    review_agent.valid_tool_names = {
+        tool["function"]["name"] for tool in review_agent.tools
+        if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        and tool["function"].get("name")
+    } if review_agent.tools else set()
+
+
 def build_cache_parity_fork(
     agent: Any, task_cfg: Optional[Dict[str, Any]] = None, *, max_iterations: int,
     write_origin: str = "background_review",
@@ -867,6 +890,7 @@ def build_cache_parity_fork(
     if not _routed:
         review_agent._cached_system_prompt = agent._cached_system_prompt
         review_agent.session_start = agent.session_start
+        _mirror_parent_tools(agent, review_agent)
     _detach_fork_compression(review_agent)
     # Compaction bounds a single request; this bounds the WHOLE review (checked in
     # conversation_loop via _review_input_budget_exhausted).

@@ -110,6 +110,7 @@ class TestKeepaliveProbe:
 
     async def test_keepalive_uses_ping_for_prompt_only_server(self):
         task = MCPServerTask("test")
+        task._config = {"url": "https://example.test/mcp"}
         task.initialize_result = _caps(prompts=SimpleNamespace())
         task.session = SimpleNamespace(
             list_tools=AsyncMock(),
@@ -126,6 +127,7 @@ class TestKeepaliveProbe:
     async def test_keepalive_uses_ping_legacy_fallback(self):
         """No captured capabilities → still pings (no spurious list_tools)."""
         task = MCPServerTask("test")
+        task._config = {"url": "https://example.test/mcp"}
         assert task.initialize_result is None
         task.session = SimpleNamespace(
             list_tools=AsyncMock(),
@@ -148,7 +150,7 @@ class TestKeepaliveInterval:
     async def _captured_interval(self, config):
         """Run one keepalive cycle and capture the ``asyncio.wait`` timeout."""
         task = MCPServerTask("test")
-        task._config = config
+        task._config = {"url": "https://example.test/mcp", **config}
         task.session = SimpleNamespace(send_ping=AsyncMock())
         captured = {}
         real_wait = asyncio.wait
@@ -183,6 +185,33 @@ class TestKeepaliveInterval:
             await self._captured_interval({"keepalive_interval": 0.1})
             == _MIN_KEEPALIVE_INTERVAL
         )
+
+    @pytest.mark.asyncio
+    async def test_default_stdio_connection_waits_without_keepalive(self):
+        """A healthy local pipe must not be probed solely because it is idle."""
+        task = MCPServerTask("test")
+        task._config = {"command": "example-mcp"}
+        task.session = SimpleNamespace(send_ping=AsyncMock())
+        captured = {}
+        real_wait = asyncio.wait
+
+        async def fake_wait(tasks, timeout=None, return_when=None):
+            captured["timeout"] = timeout
+            task._shutdown_event.set()
+            return await real_wait(
+                tasks, timeout=0.5, return_when=return_when or asyncio.FIRST_COMPLETED
+            )
+
+        import tools.mcp_tool as mcp_mod
+        orig = mcp_mod.asyncio.wait
+        mcp_mod.asyncio.wait = fake_wait
+        try:
+            assert await task._wait_for_lifecycle_event() == "shutdown"
+        finally:
+            mcp_mod.asyncio.wait = orig
+
+        assert captured["timeout"] is None
+        task.session.send_ping.assert_not_called()
 
 
 def _mcp_error(code, message="boom"):

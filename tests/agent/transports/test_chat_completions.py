@@ -140,6 +140,24 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_replayed_message_id(self, transport):
+        """Session replay re-exposes ``platform_message_id`` as a top-level
+        ``message_id`` alias (``_rows_to_conversation``, JSONL transcript
+        compat). That alias is not part of the Chat Completions schema;
+        strict providers (Fireworks-backed OpenCode Go, etc.) reject it with
+        HTTP 400 'Extra inputs are not permitted, field: messages[N].message_id'.
+        Regression test for #103769 (same bug class as #47868's ``timestamp``).
+        """
+        msgs = [
+            {"role": "user", "content": "hi", "message_id": "1545511361084129351"},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "message_id" not in result[0]
+        assert result[0]["content"] == "hi"
+        # Original list untouched (deepcopy-on-demand) — recovery dedup via
+        # has_platform_message_id still needs it in persisted history.
+        assert msgs[0]["message_id"] == "1545511361084129351"
+
     def test_convert_messages_strips_provider_replay_sidecars(self, transport):
         """Native-provider replay channels must not cross a provider boundary.
 

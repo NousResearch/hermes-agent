@@ -330,6 +330,9 @@ import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
   ensureHealthyPooledRemoteBackendForDispatch,
+  HOST_EVENT_BACKOFF_MS,
+  PooledRemoteDialGate,
+  RemoteHostEventTracker,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
   revalidatePooledRemoteBackends,
@@ -1400,6 +1403,13 @@ const backendConnectionState = createBackendConnectionState<ReturnType<typeof sp
 const remoteLiveness = new RemoteLivenessTracker()
 const remoteRevalidation = new RemoteRevalidationCoordinator()
 const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
+// One busy host makes every profile pooled on it miss its dispatch probe at
+// once; retiring each independently re-dials the whole fleet into the host
+// that was already saturated. These two bound that: the tracker classifies the
+// correlated misses as a host event so teardown is deferred and revalidated,
+// and the gate keeps recovery from landing as one burst of SSH handshakes.
+const registryHostEvents = new RemoteHostEventTracker()
+const registryDialGate = new PooledRemoteDialGate()
 // Single-owner reconnect/dial claim (#90812): reconnectGateway()'s in-flight
 // lock is per-renderer, so two windows racing one wake can both invoke the
 // backend ensure IPC and double-dial a pooled SSH backend. Main owns backend
@@ -11622,6 +11632,25 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
       ensureHealthyPooledRemoteBackendForDispatch({
         connectionPromise,
         currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
+        hostEvent: {
+          backoff: async () => {
+            await sleep(HOST_EVENT_BACKOFF_MS)
+          },
+          classify: () => registryHostEvents.recordProbeFailure(String(id), key),
+          // The transport this descriptor rides. `-O check` against the live
+          // master is far cheaper than the teardown it is deciding against; a
+          // non-SSH remote has no such handle, so its re-probe alone decides.
+          hostAlive: async () => {
+            if (source.kind !== 'ssh') {
+              return true
+            }
+
+            const ssh = sshConnections.get(key)?.ssh
+
+            return ssh ? Boolean(await ssh.isAlive()) : false
+          }
+        },
+        log: rememberLog,
         probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
         reconnect: () => ensureRegistryBackend(id, profile),
         retire: async (error: any) => {
@@ -11656,21 +11685,26 @@ async function ensureRegistryBackend(connectionId, profile, managedUpdateCorrela
     remoteBaseUrl: null
   }
 
-  entry.connectionPromise = connectRegistryBackend(
-    source,
-    profile,
-    key,
-    entry,
-    resolveRegistrySshConfig(),
-    source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null,
-    managedUpdateCorrelation
-  ).catch(error => {
-    if (backendPool.get(key) === entry) {
-      backendPool.delete(key)
-    }
+  // Resolve the dial's inputs now, before the gate can defer it: a queued dial
+  // must use the settings that were current when it was requested.
+  const dialSshConfig = resolveRegistrySshConfig()
+  const dialFingerprint = source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null
 
-    throw error
-  })
+  // Staggered through the per-connection gate: a fleet-wide retire round would
+  // otherwise hand this host every SSH handshake + remote backend boot at once.
+  // A dial that finds a free slot is not delayed at all, so a lone reconnect
+  // stays as fast as it was.
+  entry.connectionPromise = registryDialGate
+    .run(String(id), () =>
+      connectRegistryBackend(source, profile, key, entry, dialSshConfig, dialFingerprint, managedUpdateCorrelation)
+    )
+    .catch(error => {
+      if (backendPool.get(key) === entry) {
+        backendPool.delete(key)
+      }
+
+      throw error
+    })
   backendPool.set(key, entry)
   startPoolIdleReaper()
 
@@ -14774,6 +14808,27 @@ ipcMain.handle('hermes:connection:revalidate', async () => {
   return remoteRevalidation.run(connectionPromise, async () => {
     const [result] = await Promise.all([
       revalidateRemoteConnection({
+        // The primary connection is alone on its gateway, so it cannot use the
+        // pooled host-event vote. Give it the same grace by other means: pause,
+        // confirm the SSH master is still up, and re-probe once. A backend that
+        // answers after the pause was busy, not dead — and keeping it avoids a
+        // whole-app reload for a load spike.
+        confirmDrop: {
+          backoff: async () => {
+            await sleep(HOST_EVENT_BACKOFF_MS)
+          },
+          transportAlive: async () => {
+            const conn = await connectionPromise.catch(() => null)
+
+            if (conn?.remoteKind !== 'ssh') {
+              return true
+            }
+
+            const state = sshConnections.get(sshScopeKey(primaryProfileKey()))
+
+            return state?.ssh ? await state.ssh.isAlive().catch(() => false) : false
+          }
+        },
         connectionPromise,
         currentConnectionPromise: () => backendConnectionState.getPromise(),
         log: rememberLog,

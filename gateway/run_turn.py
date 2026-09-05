@@ -1456,16 +1456,55 @@ class GatewayTurnMixin:
 
     def _hmwa_runtime_footer_line(self, agent_result, source, _turn_seconds):
         """Runtime-metadata footer for the FINAL message of the turn; off by default
-        (display.runtime_footer.enabled=false)."""
+        (display.runtime_footer.enabled=false). Extends the default footer with
+        opt-in provider/account/quota/reasoning fields when configured."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         try:
-            from gateway.runtime_footer import build_footer_line as _bfl
+            from gateway.runtime_footer import build_footer_line as _bfl, resolve_footer_config as _rfc
+            _user_config = _load_gateway_config()
+            _platform_key = _platform_config_key(source.platform)
+            _account_usage = agent_result.get("account_usage")
+            _account_label = None
+            if _account_usage is not None:
+                _account_label = (
+                    getattr(_account_usage, "account_label", None)
+                    or getattr(_account_usage, "plan", None)
+                )
+            _footer_cfg = _rfc(_user_config, _platform_key)
+            if (
+                _footer_cfg.get("enabled")
+                and "quota" in (_footer_cfg.get("fields") or ())
+                and _account_usage is None
+            ):
+                from gateway.runtime_footer_usage import get_cached as _get_cached_usage
+                _account_usage = _get_cached_usage(
+                    agent_result.get("provider"),
+                    base_url=agent_result.get("base_url"),
+                    api_key=agent_result.get("api_key"),
+                )
+                if _account_usage is not None:
+                    _account_label = (
+                        getattr(_account_usage, "account_label", None)
+                        or getattr(_account_usage, "plan", None)
+                    )
+            _reasoning_effort = agent_result.get("reasoning_effort")
+            if _reasoning_effort is None:
+                _reasoning_cfg = getattr(self, "_reasoning_config", None)
+                if isinstance(_reasoning_cfg, dict):
+                    if _reasoning_cfg.get("enabled") is False:
+                        _reasoning_effort = "none"
+                    else:
+                        _reasoning_effort = _reasoning_cfg.get("effort")
             return _bfl(
-                user_config=_load_gateway_config(),
-                platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
+                user_config=_user_config,
+                platform_key=_platform_key, model=agent_result.get("model"),
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
+                provider=agent_result.get("provider"),
+                account_label=_account_label,
+                account_usage=_account_usage,
+                reasoning_effort=_reasoning_effort,
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)

@@ -1911,6 +1911,8 @@ class BasePlatformAdapter(ABC):
         self._typing_paused: set = set()
         # Per-chat status phrase; the regular _keep_typing refresh renders it (no extra API calls).
         self._status_text: Dict[str, str] = {}
+        # Outbound retry queue for responses that exhausted retries on transient network errors (#103575).
+        self._failed_outbound_queue: list[dict] = []
 
     @property
     def message_len_fn(self) -> Callable[[str], int]:
@@ -3207,8 +3209,9 @@ class BasePlatformAdapter(ABC):
                 server_retry_after = result.retry_after  # None unless the server asked again
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # non-transient now — fall through to plain-text fallback
-            else:  # retries exhausted — notify user
+            else:  # retries exhausted — notify user and persist in outbound queue for recovery
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                self._record_exhausted_send(chat_id=chat_id, content=content, reply_to=reply_to, metadata=metadata)
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent.")
@@ -3223,6 +3226,70 @@ class BasePlatformAdapter(ABC):
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
+
+    def _record_exhausted_send(
+        self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None
+    ) -> None:
+        """Store an exhausted transient-failure send in memory for redelivery on reconnect/recovery (#103575)."""
+        if not content or not str(content).strip():
+            return
+        # Don't queue delivery failure notices themselves
+        if "Message delivery failed after multiple attempts" in content:
+            return
+        if not hasattr(self, "_failed_outbound_queue") or self._failed_outbound_queue is None:
+            self._failed_outbound_queue = []
+        # Cap queue at 50 to prevent unbounded memory growth
+        if len(self._failed_outbound_queue) >= 50:
+            self._failed_outbound_queue.pop(0)
+        self._failed_outbound_queue.append({
+            "chat_id": str(chat_id),
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+            "queued_at": time.time(),
+        })
+        logger.debug("[%s] Queued failed response for %s for redelivery on recovery", self.name, chat_id)
+
+    async def flush_pending_failed_sends(self, chat_id: Optional[str] = None) -> int:
+        """Attempt redelivery of transiently failed responses after connectivity recovery (#103575)."""
+        if not getattr(self, "_failed_outbound_queue", None):
+            return 0
+
+        queue = getattr(self, "_failed_outbound_queue", [])
+        if not queue:
+            return 0
+
+        if chat_id is not None:
+            target_chat = str(chat_id)
+            candidates = [item for item in queue if item["chat_id"] == target_chat]
+            self._failed_outbound_queue = [item for item in queue if item["chat_id"] != target_chat]
+        else:
+            candidates = list(queue)
+            self._failed_outbound_queue.clear()
+
+        redelivered = 0
+        now = time.time()
+        for item in candidates:
+            # Drop items older than 2 hours (7200 seconds)
+            if now - item.get("queued_at", 0) > 7200:
+                continue
+            try:
+                res = await self.send(
+                    chat_id=item["chat_id"],
+                    content=item["content"],
+                    reply_to=item.get("reply_to"),
+                    metadata=item.get("metadata"),
+                )
+                if res.success:
+                    redelivered += 1
+                    logger.info("[%s] Redelivered recovered response to %s", self.name, item["chat_id"])
+                else:
+                    if res.retryable or self._is_retryable_error(res.error or ""):
+                        self._failed_outbound_queue.append(item)
+            except Exception as exc:
+                logger.debug("[%s] Error during failed response redelivery: %s", self.name, exc)
+                self._failed_outbound_queue.append(item)
+        return redelivered
 
     @staticmethod
     def _merge_caption(existing_text: Optional[str], new_text: str) -> str:

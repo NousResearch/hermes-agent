@@ -144,6 +144,27 @@ class TestSendWithRetryExhausted:
         # The notice content should mention delivery failure
         notice_content = adapter._send_calls[-1][1]
         assert "delivery failed" in notice_content.lower() or "Message delivery failed" in notice_content
+        # Response is saved in _failed_outbound_queue for redelivery on recovery (#103575)
+        assert len(adapter._failed_outbound_queue) == 1
+        assert adapter._failed_outbound_queue[0]["content"] == "hello"
+        assert adapter._failed_outbound_queue[0]["chat_id"] == "chat1"
+
+    @pytest.mark.asyncio
+    async def test_exhausted_send_is_redelivered_on_flush(self):
+        adapter = _StubAdapter()
+        network_err = SendResult(success=False, error="send_path_degraded", retryable=True)
+        adapter._send_results = [network_err, network_err, network_err, SendResult(success=True)]
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "long generated answer", max_retries=2, base_delay=0)
+        assert not result.success
+        assert len(adapter._failed_outbound_queue) == 1
+
+        # Simulate network recovery and flush
+        adapter._send_results = [SendResult(success=True, message_id="recovered_ok")]
+        redelivered = await adapter.flush_pending_failed_sends("chat1")
+        assert redelivered == 1
+        assert len(adapter._failed_outbound_queue) == 0
+        assert adapter._send_calls[-1] == ("chat1", "long generated answer")
 
 
 # ---------------------------------------------------------------------------

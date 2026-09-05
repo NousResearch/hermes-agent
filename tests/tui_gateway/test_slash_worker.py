@@ -11,6 +11,7 @@ import pytest
 
 import cli as cli_mod
 from tui_gateway import slash_worker
+from tui_gateway._env import env_float
 
 
 _MISSING = object()
@@ -94,7 +95,7 @@ def test_env_float_uses_valid_values_or_default(monkeypatch, raw, expected):
     else:
         monkeypatch.setenv(name, raw)
 
-    assert slash_worker._env_float(name, 1.5) == expected
+    assert env_float(name, 1.5) == expected
 
 
 @pytest.mark.parametrize("command", ["", "   ", None])

@@ -329,11 +329,68 @@ class A2AAdapter(BasePlatformAdapter):
             self._pending.clear()
             self._pending_order.clear()
 
+    def _fail_orphaned_tasks(self, timeout_seconds: int = _ORPHAN_TIMEOUT) -> list[str]:
+        """Fail stale tasks only when no in-process executor still owns them."""
+        with self._pending_lock:
+            active_task_ids = set(self._pending)
+        return self.tasks.fail_orphans(
+            timeout_seconds=timeout_seconds,
+            active_task_ids=active_task_ids,
+        )
+
+
+    @staticmethod
+    def _return_immediately(params: dict) -> bool:
+        """Read the v1 field while accepting the protobuf-style spelling."""
+        configuration = params.get("configuration") or {}
+        if not isinstance(configuration, dict):
+            return False
+        return (
+            configuration.get("returnImmediately") is True
+            or configuration.get("return_immediately") is True
+        )
+
+
+    def _finalize_task_in_background(self, pending: dict) -> Optional[dict]:
+        """Start a detached finalizer, or return its terminal failure Task.
+
+        Registration happens before the thread is started so the normal
+        outcome path must close the pending owner when ``start()`` fails.
+        """
+        task_id = str(pending["task_id"])
+
+        def wait_and_finalize() -> None:
+            try:
+                state, reply = pending["future"].result()
+                self._finalize_task(pending, state, reply)
+            except Exception as exc:
+                logger.exception("A2A: async task %s finalizer failed", task_id)
+                self.tasks.complete(
+                    task_id,
+                    protocol.STATE_FAILED,
+                    security.redact_outbound(f"Task finalization failed: {exc}"),
+                )
+                self._pop_pending(task_id)
+
+        try:
+            threading.Thread(
+                target=wait_and_finalize,
+                name=f"a2a-finalize-{task_id[:8]}",
+                daemon=True,
+            ).start()
+        except Exception as exc:
+            logger.exception("A2A: async task %s finalizer could not start", task_id)
+            return self._failed_pending_task(
+                pending, f"Task finalization failed: {exc}"
+            )
+        return None
+
+
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""
         while not self._watchdog_stop.wait(_WATCHDOG_INTERVAL):
             try:
-                for tid in self.tasks.fail_orphans(_ORPHAN_TIMEOUT):
+                for tid in self._fail_orphaned_tasks():
                     logger.warning("A2A: orphaned task %s marked failed (timeout %ds)", tid, _ORPHAN_TIMEOUT)
                     protocol.metrics.tasks_failed += 1
             except Exception:
@@ -491,44 +548,163 @@ class A2AAdapter(BasePlatformAdapter):
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
     def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
-        """Validate, register, and dispatch an inbound message (HTTP worker thread). Returns
-        (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
+        """Validate, register, and dispatch an inbound message.
+
+        Returns (terminal_task, None) when the task ends immediately
+        (rejected / not ready), else (None, pending) where pending carries
+        the future the caller must wait on. Runs on an HTTP worker thread.
+        """
         agent = agent or self._agents[""]
         text = protocol.extract_text(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
         task_id = protocol.new_task_id()
+
+        # Anti-loop ping-pong protection
         turn = self._turns.track(context_id)
-        max_turns = protocol.max_pingpong_turns()
-        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
-        if turn > max_turns:
+        if turn > protocol.max_pingpong_turns():
             protocol.metrics.anti_loop_triggers += 1
-            logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)
-            return self._end_task(rec, protocol.STATE_REJECTED, f"Anti-loop protection: context {context_id} exceeded "
-                                  f"{max_turns} turns. Start a new context or increase A2A_MAX_PINGPONG_TURNS.")
+            logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)",
+                           context_id, turn, protocol.max_pingpong_turns())
+            rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
+            explanation = (
+                f"Anti-loop protection: context {context_id} exceeded "
+                f"{protocol.max_pingpong_turns()} turns. Start a new context or "
+                "increase A2A_MAX_PINGPONG_TURNS."
+            )
+            return self._end_task(
+                rec, protocol.STATE_REJECTED, explanation, stored_reply=explanation
+            )
+
         if not text:
-            return self._end_task(rec, protocol.STATE_REJECTED, "Empty task — nothing to do.")
+            rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
+            explanation = "Empty task — nothing to do."
+            return self._end_task(
+                rec, protocol.STATE_REJECTED, explanation, stored_reply=explanation
+            )
+
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)
         protocol.persist_message(context_id, "user", text, task_id)
         protocol.metrics.inbound_total += 1
+
+        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
         self._register_inline_push(task_id, params, agent=agent)
-        if not agent.get("local", True):
-            reply, state = self._forward_to_profile(agent, peer, context_id, framed)
-            self._record_outcome(task_id, context_id, peer, state, reply)
-            return protocol.build_task(task_id, context_id, state, reply, created_at=rec["created_iso"]), None
-        if self._loop is None or self._message_handler is None:
-            return self._end_task(rec, protocol.STATE_FAILED, "Agent gateway not ready to accept A2A tasks.")
+
+        local_agent = bool(agent.get("local", True))
+        event_loop = self._loop
+        if local_agent and (event_loop is None or self._message_handler is None):
+            explanation = "Agent gateway not ready to accept A2A tasks."
+            return self._end_task(
+                rec, protocol.STATE_FAILED, explanation, stored_reply=explanation
+            )
+
         fut = self._add_pending(task_id, context_id)
-        event = MessageEvent(text=framed, message_type=MessageType.TEXT, message_id=task_id,
-                             source=self.build_source(chat_id=context_id, chat_name=f"a2a:{peer}", chat_type="dm", user_id=peer, user_name=peer))
+        pending = {
+            "task_id": task_id,
+            "context_id": context_id,
+            "peer": peer,
+            "future": fut,
+            "created_iso": rec["created_iso"],
+            "started": time.time(),
+        }
+        self.tasks.set_state(task_id, protocol.STATE_WORKING)
+
+        if not local_agent:
+            if not self._return_immediately(params):
+                try:
+                    reply, state = self._forward_to_profile(
+                        agent, peer, context_id, framed,
+                    )
+                except Exception as exc:
+                    reply = security.redact_outbound(
+                        f"Profile dispatch failed: {exc}"
+                    )
+                    state = protocol.STATE_FAILED
+                state, reply = self._finalize_task(pending, state, reply)
+                return protocol.build_task(
+                    task_id,
+                    context_id,
+                    state,
+                    reply,
+                    created_at=rec["created_iso"],
+                ), None
+
+            def forward_task() -> None:
+                try:
+                    reply, state = self._forward_to_profile(
+                        agent, peer, context_id, framed,
+                    )
+                except Exception as exc:
+                    reply = security.redact_outbound(
+                        f"Profile dispatch failed: {exc}"
+                    )
+                    state = protocol.STATE_FAILED
+                self._resolve_task(task_id, state, reply)
+
+            try:
+                threading.Thread(
+                    target=forward_task,
+                    name=f"a2a-forward-{task_id[:8]}",
+                    daemon=True,
+                ).start()
+            except Exception as exc:
+                return (
+                    self._failed_pending_task(
+                        pending, f"Profile dispatch failed: {exc}"
+                    ),
+                    None,
+                )
+            return None, pending
+
+        assert event_loop is not None
+        event = MessageEvent(
+            text=framed,
+            message_type=MessageType.TEXT,
+            source=self.build_source(
+                chat_id=context_id,
+                chat_name=f"a2a:{peer}",
+                chat_type="dm",
+                user_id=peer,
+                user_name=peer,
+            ),
+            message_id=task_id,
+        )
+
         try:
-            asyncio.run_coroutine_threadsafe(self.handle_message(event), self._loop)
+            dispatch_future = asyncio.run_coroutine_threadsafe(
+                self.handle_message(event), event_loop,
+            )
+            pending["dispatch_future"] = dispatch_future
+
+            def resolve_failed_dispatch(done: Future) -> None:
+                # BasePlatformAdapter.handle_message returns after scheduling the
+                # agent turn. A successful dispatch is not task completion;
+                # send() / on_processing_complete() own terminal resolution.
+                if fut.done():
+                    return
+                try:
+                    error = done.exception()
+                except Exception as exc:
+                    error = exc
+                if error is not None:
+                    self._resolve_task(
+                        task_id,
+                        protocol.STATE_FAILED,
+                        security.redact_outbound(f"Dispatch failed: {error}"),
+                    )
+
+            dispatch_future.add_done_callback(resolve_failed_dispatch)
         except Exception as e:
             self._pop_pending(task_id)
             msg = security.redact_outbound(f"Dispatch failed: {e}")
-            return self._end_task(rec, protocol.STATE_FAILED, msg, stored_reply=msg)
-        self.tasks.set_state(task_id, protocol.STATE_WORKING)
-        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time()}
+            self.tasks.complete(task_id, protocol.STATE_FAILED, msg)
+            protocol.metrics.tasks_failed += 1
+            return protocol.build_task(
+                task_id, context_id, protocol.STATE_FAILED, msg,
+                created_at=rec["created_iso"],
+            ), None
+
+        return None, pending
 
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
@@ -585,13 +761,24 @@ class A2AAdapter(BasePlatformAdapter):
         """Record a dispatched task's outcome; returns (state, reply) after redaction and
         input-required detection (a leading marker flags a clarification request)."""
         task_id, context_id, peer = pending["task_id"], pending["context_id"], pending["peer"]
-        self._pop_pending(task_id)
         reply = security.redact_outbound(reply or "")
         stripped = reply.lstrip()
         if state == protocol.STATE_COMPLETED and stripped.upper().startswith(protocol.INPUT_REQUIRED_MARKER):
             state, reply = protocol.STATE_INPUT_REQUIRED, stripped[len(protocol.INPUT_REQUIRED_MARKER):].strip()
         self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"])
+        self._pop_pending(task_id)
         return state, reply
+
+    def _failed_pending_task(self, pending: dict, message: str) -> dict:
+        """Close a registered pending task through the normal failed-outcome path."""
+        state, reply = self._finalize_task(pending, protocol.STATE_FAILED, message)
+        return protocol.build_task(
+            pending["task_id"],
+            pending["context_id"],
+            state,
+            reply,
+            created_at=pending["created_iso"],
+        )
 
     @staticmethod
     def _await_future(fut: Future, deadline: float, keepalive, on_timeout: tuple[str, str]) -> tuple[str, str]:
@@ -616,11 +803,33 @@ class A2AAdapter(BasePlatformAdapter):
                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
 
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
-        task, pending = self._prepare_task(params, peer, agent=agent)
-        if task is None:
-            state, reply = self._finalize_task(pending, *self._await_reply(pending))
-            task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
-        return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
+        terminal, pending = self._prepare_task(params, peer, agent=agent)
+        if terminal is not None:
+            result = protocol.send_message_response(terminal) if v1_response else terminal
+            return protocol.jsonrpc_result(req_id, result)
+        assert pending is not None
+        if self._return_immediately(params):
+            failure = self._finalize_task_in_background(pending)
+            if failure is not None:
+                result = protocol.send_message_response(failure) if v1_response else failure
+                return protocol.jsonrpc_result(req_id, result)
+            record = self.tasks.get(pending["task_id"])
+            task = protocol.TaskStore.to_task(record) if record else protocol.build_task(
+                pending["task_id"],
+                pending["context_id"],
+                protocol.STATE_WORKING,
+                created_at=pending["created_iso"],
+            )
+            result = protocol.send_message_response(task) if v1_response else task
+            return protocol.jsonrpc_result(req_id, result)
+        state, reply = self._await_reply(pending)
+        state, reply = self._finalize_task(pending, state, reply)
+        task = protocol.build_task(
+            pending["task_id"], pending["context_id"], state, reply,
+            created_at=pending["created_iso"],
+        )
+        result = protocol.send_message_response(task) if v1_response else task
+        return protocol.jsonrpc_result(req_id, result)
 
     @staticmethod
     def _sse_headers(handler) -> None:

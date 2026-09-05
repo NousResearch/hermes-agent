@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  $threadJumpButtonVisible,
-  $threadScrolledUp,
+  $threadJumpButtonVisibleBySession,
+  $threadScrolledUpBySession,
+  isThreadJumpButtonVisible,
+  isThreadScrolledUp,
   onScrollToBottomRequest,
   publishThreadAtBottom,
   requestScrollToBottom,
@@ -12,53 +14,73 @@ import {
 } from './thread-scroll'
 
 afterEach(() => {
-  resetThreadScroll()
+  $threadJumpButtonVisibleBySession.set({})
+  $threadScrolledUpBySession.set({})
 })
 
 describe('publishThreadAtBottom', () => {
   it('lets the visible pane flash the jump pill when the thread leaves the bottom', () => {
-    publishThreadAtBottom(false, { paneVisible: true })
+    publishThreadAtBottom(false, { paneVisible: true, sessionId: 'sess-a' })
 
-    expect($threadJumpButtonVisible.get()).toBe(true)
-    expect($threadScrolledUp.get()).toBe(true)
+    expect(isThreadJumpButtonVisible('sess-a')).toBe(true)
+    expect(isThreadScrolledUp('sess-a')).toBe(true)
   })
 
   it('ignores stick-to-bottom misses from a hidden keep-alive pane', () => {
-    setThreadAtBottom(true)
+    setThreadAtBottom(true, 'sess-a')
 
-    publishThreadAtBottom(false, { paneVisible: false })
+    publishThreadAtBottom(false, { paneVisible: false, sessionId: 'sess-a' })
 
-    expect($threadJumpButtonVisible.get()).toBe(false)
-    expect($threadScrolledUp.get()).toBe(false)
+    expect(isThreadJumpButtonVisible('sess-a')).toBe(false)
+    expect(isThreadScrolledUp('sess-a')).toBe(false)
   })
 
   it("keeps the visible pane's scrolled-up chrome when a hidden pane publishes", () => {
-    publishThreadAtBottom(false, { paneVisible: true })
+    publishThreadAtBottom(false, { paneVisible: true, sessionId: 'sess-a' })
 
-    publishThreadAtBottom(true, { paneVisible: false })
+    publishThreadAtBottom(true, { paneVisible: false, sessionId: 'sess-a' })
 
-    expect($threadJumpButtonVisible.get()).toBe(true)
-    expect($threadScrolledUp.get()).toBe(true)
+    expect(isThreadJumpButtonVisible('sess-a')).toBe(true)
+    expect(isThreadScrolledUp('sess-a')).toBe(true)
+  })
+
+  it('does not light the jump pill in a sibling split pane (#103586)', () => {
+    publishThreadAtBottom(true, { paneVisible: true, sessionId: 'sess-b' })
+    publishThreadAtBottom(false, { paneVisible: true, sessionId: 'sess-a' })
+
+    expect(isThreadJumpButtonVisible('sess-a')).toBe(true)
+    expect(isThreadJumpButtonVisible('sess-b')).toBe(false)
+    expect(isThreadScrolledUp('sess-b')).toBe(false)
   })
 })
 
 describe('resetPublishedThreadScroll', () => {
   it('clears the jump pill when the visible pane unmounts', () => {
-    setThreadAtBottom(false)
+    setThreadAtBottom(false, 'sess-a')
 
-    resetPublishedThreadScroll({ paneVisible: true })
+    resetPublishedThreadScroll({ paneVisible: true, sessionId: 'sess-a' })
 
-    expect($threadJumpButtonVisible.get()).toBe(false)
-    expect($threadScrolledUp.get()).toBe(false)
+    expect(isThreadJumpButtonVisible('sess-a')).toBe(false)
+    expect(isThreadScrolledUp('sess-a')).toBe(false)
   })
 
   it('does not clear the visible pane when a hidden list unmounts', () => {
-    setThreadAtBottom(false)
+    setThreadAtBottom(false, 'sess-a')
 
-    resetPublishedThreadScroll({ paneVisible: false })
+    resetPublishedThreadScroll({ paneVisible: false, sessionId: 'sess-a' })
 
-    expect($threadJumpButtonVisible.get()).toBe(true)
-    expect($threadScrolledUp.get()).toBe(true)
+    expect(isThreadJumpButtonVisible('sess-a')).toBe(true)
+    expect(isThreadScrolledUp('sess-a')).toBe(true)
+  })
+
+  it('does not clear a sibling pane when one split pane unmounts', () => {
+    setThreadAtBottom(false, 'sess-a')
+    setThreadAtBottom(false, 'sess-b')
+
+    resetPublishedThreadScroll({ paneVisible: true, sessionId: 'sess-a' })
+
+    expect(isThreadJumpButtonVisible('sess-a')).toBe(false)
+    expect(isThreadJumpButtonVisible('sess-b')).toBe(true)
   })
 })
 

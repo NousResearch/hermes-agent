@@ -599,8 +599,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     ? 'pt-[calc(var(--titlebar-height)+0.75rem)]'
     : 'pt-[calc(var(--titlebar-height)-0.5rem)]'
 
-  useEffect(() => publishThreadAtBottom(isAtBottom, { paneVisible }), [isAtBottom, paneVisible])
-  useEffect(() => () => resetPublishedThreadScroll({ paneVisible }), [paneVisible])
+  useEffect(
+    () => publishThreadAtBottom(isAtBottom, { paneVisible, sessionId }),
+    [isAtBottom, paneVisible, sessionId]
+  )
+  useEffect(() => () => resetPublishedThreadScroll({ paneVisible, sessionId }), [paneVisible, sessionId])
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom(), sessionId), [scrollToBottom, sessionId])

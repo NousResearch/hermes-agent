@@ -5,8 +5,9 @@ import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { $approvalRequest } from '@/store/prompts'
-import { $threadJumpButtonVisible, requestScrollToBottom } from '@/store/thread-scroll'
+import { $threadJumpButtonVisibleBySession, requestScrollToBottom } from '@/store/thread-scroll'
 
 /**
  * Floating "jump to bottom" control. Sits centered just above the composer,
@@ -30,7 +31,9 @@ import { $threadJumpButtonVisible, requestScrollToBottom } from '@/store/thread-
  */
 export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
-  const visible = useStore($threadJumpButtonVisible)
+  const visible = useStoreSelector($threadJumpButtonVisibleBySession, map =>
+    Boolean(map[sessionId ?? ''])
+  )
   const request = useStore($approvalRequest)
   // Scrolled away while an approval is pending → the inline Run/Reject bar is
   // below the fold. Relabel so the user knows the session needs them, not just

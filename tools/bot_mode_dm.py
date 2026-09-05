@@ -27,7 +27,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Top-level imports stay stdlib-only: this module also runs directly as the background
 # delivery runner (``python bot_mode_dm.py --run-delivery …``); Hermes helpers import lazily.
@@ -38,6 +38,36 @@ MESSAGE_AGENT_TOOL_NAME = "message_agent"
 
 # Message body cap — generous for real work, small enough that a runaway paste can't
 # turn one DM into a context bomb on the recipient.
+MESSAGE_MAX_CHARS = 16000
+
+# Live-owner delivery hooks: surfaces that host live Bot Chat sessions (the TUI/desktop
+# gateway) register a deliverer so message_agent can hand the turn to the target session's
+# existing owner instead of spawning a second CLI that the single-owner lease fences out
+# into a target_busy refusal (#103030, completing #101293's relay-path fix). Each hook is
+# ``fn(profile_name, content) -> ack dict | None``: an ack dict is returned to the sender
+# as the tool result; None means no live session for that profile here and the caller falls
+# back to the subprocess transport. Registration inversion mirrors tools/approval's
+# ``_gateway_notify_cbs`` — tools never import the server that hosts the sessions.
+_LIVE_DM_DELIVERERS: list[Callable[[str, str], Optional[dict[str, Any]]]] = []
+
+
+def register_live_dm_deliverer(fn: Callable[[str, str], Optional[dict[str, Any]]]) -> None:
+    """Register a live-owner deliverer; idempotent per function."""
+    if fn not in _LIVE_DM_DELIVERERS:
+        _LIVE_DM_DELIVERERS.append(fn)
+
+
+def _deliver_via_live_owner(profile: str, content: str) -> Optional[str]:
+    """Try each registered live-owner deliverer; the first ack wins, None = not handled."""
+    for fn in list(_LIVE_DM_DELIVERERS):
+        try:
+            receipt = fn(profile, content)
+        except Exception:
+            logger.warning("live DM deliverer failed for profile %s", profile, exc_info=True)
+            continue
+        if receipt is not None:
+            return json.dumps(receipt)
+    return None
 MESSAGE_MAX_CHARS = 16000
 # A runner owns and removes each DM file; this bounds residual plaintext lifetime if
 # the machine dies between spawn ack and the runner's finally.
@@ -229,6 +259,13 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _roster_err(f"No teammate named '{raw_target}' on this install, on a connected "
                            "machine, or on a registered peer. Pick a name from the roster "
                            "(roles are listed in your system prompt).")
+    # Live-owner handoff: when this process hosts the target's canonical Bot Chat session,
+    # submit through it (queued — never interrupts a turn in flight) instead of spawning a
+    # second CLI that the single-owner lease would fence into a target_busy refusal,
+    # dropping the message. See #103030.
+    live_receipt = _deliver_via_live_owner(resolved, content)
+    if live_receipt is not None:
+        return live_receipt
     return _start_delivery(["hermes", "-p", resolved, *BOT_CHAT_TURN_ARGS], content, f"@{_handle(resolved)}",
                            stdin_file=False, **delivery)
 

@@ -338,6 +338,58 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
     )
 
 
+# ── live-owner handoff (#103030) ─────────────────────────────────────────────
+
+
+def test_live_owner_delivery_skips_subprocess(tmp_path, monkeypatch):
+    """When a surface hosts the target's canonical Bot Chat live, message_agent hands the
+    DM to that owner instead of spawning a subprocess the single-owner lease fences out
+    into a target_busy refusal."""
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+    calls: list[tuple[str, str]] = []
+
+    def _live_deliverer(profile: str, content: str):
+        calls.append((profile, content))
+        return {"status": "sent", "to": f"@{profile}",
+                "detail": "Delivered into the recipient's open Bot Chat; the reply will appear there."}
+
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_DM_DELIVERERS", [_live_deliverer])
+    spawn = _capture_spawn(monkeypatch)
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent)
+    )
+
+    assert calls == [("researcher", "Message from 🤖 hermes (@hermes): ping")]
+    assert result["status"] == "sent"
+    assert "open Bot Chat" in result["detail"]
+    assert spawn == []  # the fenced-out subprocess transport never runs
+
+
+def test_live_owner_delivery_falls_back_when_no_live_session(tmp_path, monkeypatch):
+    """A deliverer that reports no live session leaves the subprocess transport untouched."""
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    agent = _FakeAgent(home, title="Bot Chat")
+    calls: list[tuple[str, str]] = []
+
+    def _no_live_session(profile: str, content: str):
+        calls.append((profile, content))
+        return None
+
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_DM_DELIVERERS", [_no_live_session])
+    spawn = _capture_spawn(monkeypatch)
+
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent)
+    )
+
+    assert calls == [("researcher", "Message from 🤖 hermes (@hermes): ping")]
+    assert result["status"] == "sent"
+    assert result["process_id"]
+    assert len(spawn) == 1
+
+
 def test_spawn_failure_reports_error(tmp_path, monkeypatch):
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")

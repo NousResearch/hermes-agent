@@ -86,14 +86,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
         # session via prompt.submit — the composer's choke point, so role alternation, persistence
         # and streaming behave as a typed message would.
         # (Nested per method_ctx rebinding.) See #100523.
-        from tools.bot_mode_probe import BOT_CHAT_TITLE
-        live_home = _profile_home(resolved)
-        want_home = str(live_home) if live_home is not None else None
-        live_sid = next((
-            live_sid for live_sid, record in list(_sessions.items())
-            if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
-            and _session_live_title(
-                record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
+        live_sid = _live_bot_chat_session_for_profile(resolved)
         if live_sid:
             # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
             # turn in flight (the default busy mode does); arrivals queue in order.

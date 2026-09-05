@@ -2619,6 +2619,21 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     return str(getattr(session.get("agent"), "session_id", None) or session.get("session_key") or fallback or "")
 
 
+def _live_bot_chat_session_for_profile(profile: str | None) -> str:
+    """The live session id of ``profile``'s canonical Bot Chat in THIS gateway, or "".
+
+    Shared by ``bot_relay.deliver`` and the local Bot Mode DM live-owner handoff (both must
+    agree on what "the target's Bot Chat is live here" means)."""
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+
+    home = _profile_home(profile)
+    want_home = str(home) if home is not None else None
+    return next((
+        sid for sid, record in list(_sessions.items())
+        if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
+        and _session_live_title(record, _session_lookup_key(record, fallback=sid)) == BOT_CHAT_TITLE), "")
+
+
 def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tuple[str, dict] | None:
     # Timestamp-based stored ids can exist in several profiles' stores; a bare-id match would hand
     # profile B's resume profile A's runtime, so profile-aware callers match on (profile_home, key).
@@ -3224,3 +3239,32 @@ for _m in (
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects):
     _m.register(sys.modules[__name__])
 del _m
+
+
+# ── Live-owner Bot Mode DM handoff (#103030; completes #101293's relay-path fix) ─────
+# The LOCAL delivery path (tools/bot_mode_dm.message_agent) spawns a second CLI for the
+# target's canonical Bot Chat; when THIS gateway hosts that chat live the single-owner
+# lease fences the subprocess out and the DM is refused (target_busy) with no turn ever
+# run. Registering this deliverer lets message_agent submit through prompt.submit
+# (queued=True: runs as the NEXT turn, never interrupts a turn in flight) instead —
+# the same mechanism bot_relay.deliver uses for relayed DMs. No live session here →
+# None → the subprocess transport runs exactly as before.
+def _deliver_dm_to_live_session(profile: str, content: str) -> dict | None:
+    live_sid = _live_bot_chat_session_for_profile(profile)
+    if not live_sid:
+        return None
+    submitted = _methods["prompt.submit"](0, {"session_id": live_sid, "text": content, "queued": True})
+    if "error" in submitted:
+        # Let the subprocess transport surface the failure — it owns the error shaping
+        # (target_busy refusal) and the retry policy. See #100523.
+        return None
+    from tools.bot_mode_probe import _handle
+
+    return {"status": "sent", "to": f"@{_handle(profile)}",
+            "detail": "Delivered into the recipient's open Bot Chat; the reply will appear there.",
+            "sent_at": int(time.time())}
+
+
+from tools.bot_mode_dm import register_live_dm_deliverer  # noqa: E402
+
+register_live_dm_deliverer(_deliver_dm_to_live_session)

@@ -735,11 +735,34 @@ _STREAM_DROP_MARKERS = (
 )
 
 
+def _quota_resume_plan(
+    agent: Any, classified: Any, *, error_context: Any, provider: Any
+) -> Optional[Dict[str, Any]]:
+    """Wire-form quota-resume descriptor for a terminal failure, or None.
+
+    Best-effort by construction: this decorates an already-failed turn, so any
+    problem resolving the deadline must leave the failure exactly as it was.
+    """
+    try:
+        from agent.quota_resume import plan_quota_resume
+
+        plan = plan_quota_resume(
+            failure_reason=classified.reason,
+            error_context=error_context,
+            provider=provider,
+            credential_pool=getattr(agent, "_credential_pool", None),
+        )
+    except Exception:
+        logger.debug("quota-resume planning failed", exc_info=True)
+        return None
+    return plan.to_dict() if (plan.eligible or plan.resume_at is not None) else None
+
+
 def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, error_context: Any = None,
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -854,6 +877,14 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    # Subscription quota wall: carry the provider's own reset deadline to the surfaces
+    # so a client can wait it out instead of handing the user a blind Retry. Only
+    # attached when a deadline was actually reported — never guessed.
+    _resume_plan = _quota_resume_plan(
+        agent, classified, error_context=error_context, provider=provider,
+    )
+    if _resume_plan is not None:
+        result["quota_resume"] = _resume_plan
     return result
 
 

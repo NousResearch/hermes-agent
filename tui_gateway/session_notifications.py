@@ -416,7 +416,7 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     emitted: set = set()  # dedup re-queued events so one completion isn't emitted 50 times while busy
     handle = lambda evt, deferred: _notif_handle_event(  # noqa: E731
         sid, session, evt, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_quota_resume_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
         # /loop wakeup driver: fire a due tick for THIS session while idle (same claim-under-lock as kanban dispatch).
@@ -427,6 +427,13 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
                 _maybe_fire_tui_loop_tick(sid, session)
             except Exception as loop_exc:
                 _notif_log_failure("loop wakeup poll failed", loop_exc)
+        # Provider quota window reopened: finish the turn its usage limit killed.
+        if now - last_quota_resume_poll >= _QUOTA_RESUME_POLL_SECONDS:
+            last_quota_resume_poll = now
+            try:
+                _maybe_fire_quota_resume(sid, session)
+            except Exception as quota_exc:
+                _notif_log_failure("quota resume poll failed", quota_exc)
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)

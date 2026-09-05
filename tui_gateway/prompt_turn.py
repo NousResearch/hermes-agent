@@ -9,6 +9,7 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -619,7 +620,7 @@ def _absorb_turn_result(
     return status_note
 
 
-def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None, cols: int):
+def _complete_turn_payload(sid: str, session: dict, st: _TurnRun, status_note: str | None, cols: int):
     """``(payload, raw, status)`` for message.complete; retains/clears the inflight turn and
     settles the hosted-room terminal receipt."""
     result, agent = st.result, st.agent
@@ -634,7 +635,24 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # Structured billing-wall descriptor: the client renders recovery without re-parsing text.
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block
-        payload["failure_reason"] = result.get("failure_reason")
+    # Classified reason for every failure, not just billing walls: a client can only
+    # tell a quota wall from an overload if the reason travels with the failure.
+    if status == "error" and (_failure_reason := result.get("failure_reason")):
+        payload["failure_reason"] = _failure_reason
+    # Provider-reported quota reset ({eligible, resume_at, source, provider, reason}) so
+    # the client can wait out the window instead of offering a blind Retry.
+    if _quota_resume := result.get("quota_resume"):
+        payload["quota_resume"] = dict(_quota_resume)
+        # Arm the backend-side resume so the turn finishes itself when the window
+        # reopens, and tell the client whether that actually happened — an armed
+        # resume is what the UI counts down against.
+        try:
+            payload["quota_resume"]["scheduled"] = _arm_quota_resume(
+                sid, session, _quota_resume, st.prompt_text
+            )
+        except Exception:
+            logger.debug("quota-resume arming failed", exc_info=True)
+            payload["quota_resume"]["scheduled"] = False
     if rendered := render_message(raw, cols):
         payload["rendered"] = rendered
     # Advisory {layer, code, retryable} descriptor; computed before the retain so resume
@@ -759,6 +777,11 @@ def _run_prompt_submit(
     if admitted is None:
         return False
     images, agent = admitted
+    # A new turn supersedes any pending quota resume: the user is driving again, and the
+    # resume note ("finish the interrupted request") would talk over what they just asked.
+    # The resume's own dispatch clears this first, so it never cancels itself.
+    with contextlib.suppress(Exception):
+        _clear_quota_resume(session)
     # The ONE INFO record proving a prompt was accepted by THIS process; ties ui sid,
     # session_key and the agent's live session_id together.  No prompt content is logged.
     _turn_started_monotonic = time.monotonic()
@@ -795,7 +818,7 @@ def _run_prompt_submit(
                 display_metadata)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
-            payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
+            payload, raw, status = _complete_turn_payload(sid, session, st, status_note, cols)
             _emit("message.complete", sid, payload)
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":

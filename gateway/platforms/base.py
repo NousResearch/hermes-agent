@@ -1839,6 +1839,12 @@ class BasePlatformAdapter(ABC):
     splits_long_messages: bool = False
     # Prefix users can always TYPE for Hermes commands ("!" where the client eats a leading "/").
     typed_command_prefix: str = "/"
+    # Button-less conversational surface (iMessage, SMS): approval prompts are worded in plain
+    # language ("reply yes") instead of advertising `/approve`, because a slash command reads as
+    # operating a machine in a text thread. The slash forms keep working either way — this only
+    # changes what we TELL the user to send. Adapters with interactive buttons leave this False and
+    # never reach the text fallback. Read generically via getattr() at the call site.
+    conversational_approval: bool = False
     # ``in_channel`` continuable-cron surface: job delivered FLAT, plain replies continue it via
     # the whole-channel bucket ``(platform, chat_id, None)``; needs a flat-reply outbound gate too
     # (Slack ``reply_in_thread: false``). False fails SAFE -> ``thread``.

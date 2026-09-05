@@ -511,6 +511,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
     SUPPORTS_MESSAGE_EDITING = False  # no edit API: streaming must not leave a stale cursor (▉)
+    conversational_approval = True  # iMessage: ask "reply yes", not "/approve"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
@@ -1707,6 +1708,16 @@ def register(ctx) -> None:
             "blank-line-separated sections so each section becomes an iMessage bubble; "
             "use single line breaks within a section. Put every bare URL on its own line "
             "so it becomes a full link-preview card. "
+            "Honor the boundary of what was asked: research verbs like find, check, "
+            "look up, compare, or see mean report back, so confirm before any step that "
+            "spends money, sends a message on the user's behalf, cancels or books "
+            "something, or changes an account. "
+            "After finishing an action, close with a short receipt naming the concrete "
+            "result — confirmation number, final time, amount charged, who you contacted, "
+            "or what changed — never just 'done'. "
+            "If you get blocked on a login code, a CAPTCHA, or a step only the user can "
+            "complete, say exactly what you need in this thread and keep the rest of the "
+            "task ready to resume; do not abandon the work or restart from scratch. "
             "Markdown is rendered (bold, italics, lists, code), but keep "
             "formatting light and conversational. Recipient identifiers are "
             "E.164 phone numbers; never expose them in responses unless the "

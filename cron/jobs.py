@@ -1575,7 +1575,7 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "script": _normalize_job_optional_text,
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
-    "enabled_toolsets": lambda v: _normalize_str_list(v) if v else None,
+    "enabled_toolsets": lambda v: None if v is None else [str(j).strip() for j in v if str(j).strip()],
     "workdir": _normalize_workdir,
     "no_agent": bool,
     "context_from": _normalize_context_from,

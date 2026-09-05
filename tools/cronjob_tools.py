@@ -565,15 +565,16 @@ def _action_create(a: Dict[str, Any]) -> str:
         context_from = _apply_continuity(context_from, a["continuity"])
 
     from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
+    origin = _origin_from_env()
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
-            deliver=_resolve_cron_context_deliver(deliver), origin=_origin_from_env(), skills=canonical_skills,
+            deliver=_resolve_cron_context_deliver(deliver), origin=origin, skills=canonical_skills,
             model=_normalize_optional_job_value(a["model"]), provider=_normalize_optional_job_value(a["provider"]),
             base_url=_normalize_optional_job_value(a["base_url"], strip_trailing_slash=True),
             script=_normalize_optional_job_value(script), context_from=context_from,
             enabled_toolsets=_clamp_enabled_toolsets_for_origin(
-                a["enabled_toolsets"] or None, _origin_from_env()),
+                a["enabled_toolsets"], origin),
             workdir=_normalize_optional_job_value(a["workdir"]),
             no_agent=_no_agent, attach_to_session=a["attach_to_session"],
             monitor_script=_normalize_optional_job_value(a["monitor_script"]),
@@ -775,7 +776,7 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
     """enabled_toolsets / attach_to_session / workdir / no_agent / repeat / schedule."""
     if a["enabled_toolsets"] is not None:
         updates["enabled_toolsets"] = _clamp_enabled_toolsets_for_origin(
-            a["enabled_toolsets"] or None, job.get("origin"))
+            a["enabled_toolsets"], job.get("origin"))
     if a["attach_to_session"] is not None:
         updates["attach_to_session"] = bool(a["attach_to_session"])
     if a["workdir"] is not None:

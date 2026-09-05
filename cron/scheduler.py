@@ -472,12 +472,14 @@ def clamp_cron_enabled_toolsets_to_origin(
 ) -> list[str] | None:
     """Create/update choke: never persist more toolsets than the origin platform.
 
-    Missing origin (CLI/dashboard) leaves the list unchanged. Lookup failure
-    refuses to persist the unclamped grant (returns None → inherit at fire).
+    ``None`` means the caller omitted a list (inherit at fire). ``[]`` is an
+    explicit empty grant — keep it, including when the origin intersection
+    is empty. Missing origin (CLI/dashboard) leaves the list unchanged.
+    Lookup failure refuses to persist the unclamped grant (returns None).
     """
-    requested = [str(t).strip() for t in (enabled_toolsets or []) if str(t).strip()]
-    if not requested:
+    if enabled_toolsets is None:
         return None
+    requested = [str(t).strip() for t in enabled_toolsets if str(t).strip()]
     plat = None
     if isinstance(origin, dict):
         raw = origin.get("platform")
@@ -496,8 +498,7 @@ def clamp_cron_enabled_toolsets_to_origin(
             exc,
         )
         return None
-    clamped = [t for t in requested if t in origin_tools]
-    return clamped or None
+    return [t for t in requested if t in origin_tools]
 
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
@@ -506,11 +507,14 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     Precedence:
     1. Origin platform (``job.origin.platform``) when present. Missing origin
        (CLI/dashboard) falls back to the ``cron`` platform.
-    2. If per-job ``enabled_toolsets`` is set, INTERSECT with that platform
-       list, then layer MCP via ``_merge_mcp_into_per_job_toolsets``. Without
-       an origin the per-job list still wins outright (#6130 for CLI jobs).
-    3. If no per-job list, use the origin platform list (or ``cron`` when
-       origin is missing).
+    2. If per-job ``enabled_toolsets`` is not None (including ``[]``), INTERSECT
+       with that platform list, then layer MCP via
+       ``_merge_mcp_into_per_job_toolsets``. ``[]`` stays empty — it is not
+       inherit. Without an origin the per-job list still wins outright
+       (#6130 for CLI jobs).
+    3. If per-job list is None and origin is present, use
+       ``origin ∩ cron`` so a chat origin cannot grant toolsets the cron
+       platform does not have (messaging, moa, …). Missing origin → ``cron``.
     4. Any lookup failure → ``[]`` (fail-closed). Never ``None``: that used
        to load the full default set, including terminal.
     """
@@ -524,14 +528,17 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
         if origin_plat:
             origin_tools = set(_get_platform_tools(cfg, origin_plat))
 
-        if per_job:
+        if per_job is not None:
             requested = [str(t).strip() for t in per_job if str(t).strip()]
             if origin_tools is not None:
                 requested = [t for t in requested if t in origin_tools]
+            if not requested:
+                return []
             return _merge_mcp_into_per_job_toolsets(requested, cfg)
 
         if origin_tools is not None:
-            return sorted(origin_tools)
+            cron_tools = set(_get_platform_tools(cfg, "cron"))
+            return sorted(origin_tools & cron_tools)
         return sorted(_get_platform_tools(cfg, "cron"))
     except Exception as exc:
         logger.warning(

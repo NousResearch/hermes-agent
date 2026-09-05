@@ -779,6 +779,46 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'token env var must not appear')
 })
 
+test('buildSpawnCommand exports HERMES_HOME for a named profile so the frozen DB path is the profile DB (#103467)', () => {
+  // tilde home: the profile HERMES_HOME must $HOME-expand at the remote shell.
+  const tildeCmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.match(tildeCmd, /env HERMES_DESKTOP=1 HERMES_HOME="\$HOME"'\/\.hermes\/profiles\/work' /)
+  // absolute home is shell-quoted verbatim.
+  const absCmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '/root/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.match(absCmd, /HERMES_HOME='\/root\/\.hermes\/profiles\/work'/)
+  // A profile home already ending in /profiles/<name> is not double-nested.
+  const nestedCmd = buildSpawnCommand('/x/hermes', 'work', {
+    hermesHome: '/root/.hermes/profiles/other',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.match(nestedCmd, /HERMES_HOME='\/root\/\.hermes\/profiles\/work'/)
+})
+
+test('buildSpawnCommand omits HERMES_HOME for the default (unnamed) profile', () => {
+  const cmd = buildSpawnCommand('/x/hermes', '', {
+    hermesHome: '~/.hermes',
+    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+  })
+  assert.doesNotMatch(cmd, /HERMES_HOME/)
+  assert.match(cmd, /env HERMES_DESKTOP=1 /)
+})
+
+test('buildSpawnCommand rejects a path-traversal profile name (fails closed)', () => {
+  assert.throws(
+    () => buildSpawnCommand('/x/hermes', '../../etc', {
+      hermesHome: '~/.hermes',
+      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
+    }),
+    /Unsafe remote/,
+  )
+})
+
 test('buildSpawnCommand always uses serve (legacy dashboard path removed)', () => {
   const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
   assert.match(cmd, /serve --isolated/)

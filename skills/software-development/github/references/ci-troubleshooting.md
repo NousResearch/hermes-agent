@@ -5,11 +5,12 @@ Common CI failure patterns and how to diagnose them from the logs.
 ## Reading CI Logs
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # With gh
 gh run view <RUN_ID> --log-failed
 
 # With curl — download and extract
-curl -sL -H "Authorization: token $GITHUB_TOKEN" \
+curl -sL -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/actions/runs/<RUN_ID>/logs \
   -o /tmp/ci-logs.zip && unzip -o /tmp/ci-logs.zip -d /tmp/ci-logs
 ```
@@ -175,9 +176,10 @@ CI Failed
 ## Re-running After Fix
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 git add <fixed_files> && git commit -m "fix: resolve CI failure" && git push
 
 # Then monitor
 gh pr checks --watch 2>/dev/null || \
-  echo "Poll with: curl -s -H 'Authorization: token ...' https://api.github.com/repos/.../commits/$(git rev-parse HEAD)/status"
+  echo "Poll with: curl -s -H '$GH_AUTH' https://api.github.com/repos/.../commits/$(git rev-parse HEAD)/status"
 ```

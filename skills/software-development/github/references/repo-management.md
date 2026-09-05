@@ -9,6 +9,7 @@ Create, clone, fork, configure, and manage GitHub repositories. Each section sho
 ### Setup
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 if command -v gh &>/dev/null && gh auth status &>/dev/null; then
   AUTH="gh"
 else
@@ -26,7 +27,7 @@ fi
 if [ "$AUTH" = "gh" ]; then
   GH_USER=$(gh api user --jq '.login')
 else
-  GH_USER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user | python -c "import sys,json; print(json.load(sys.stdin)['login'])")
+  GH_USER=$(curl -s -H "$GH_AUTH" https://api.github.com/user | python -c "import sys,json; print(json.load(sys.stdin)['login'])")
 fi
 ```
 
@@ -91,9 +92,10 @@ gh repo create my-project --source . --public --push
 **With git + curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Create the remote repo via API
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/user/repos \
   -d '{
     "name": "my-new-project",
@@ -119,8 +121,9 @@ git push -u origin main
 To create under an organization:
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/orgs/my-org/repos \
   -d '{"name": "my-new-project", "private": false}'
 ```
@@ -136,8 +139,9 @@ gh repo create my-new-app --template owner/template-repo --public --clone
 **With curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/owner/template-repo/generate \
   -d '{"owner": "'"$GH_USER"'", "name": "my-new-app", "private": false}'
 ```
@@ -153,9 +157,10 @@ gh repo fork owner/repo-name --clone
 **With git + curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Create the fork via API
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/owner/repo-name/forks
 
 # Wait a moment for GitHub to create it, then clone
@@ -196,9 +201,10 @@ gh search repos "machine learning" --language python --sort stars
 **With curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # View repo details
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO \
   | python -c "
 import sys, json
@@ -211,7 +217,7 @@ print(f\"Language: {r['language']}\")"
 
 # List your repos
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   "https://api.github.com/user/repos?per_page=20&sort=updated" \
   | python -c "
 import sys, json
@@ -243,8 +249,9 @@ gh repo edit --enable-auto-merge
 **With curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 curl -s -X PATCH \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO \
   -d '{
     "description": "Updated description",
@@ -255,7 +262,7 @@ curl -s -X PATCH \
 
 # Update topics
 curl -s -X PUT \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   -H "Accept: application/vnd.github.mercy-preview+json" \
   https://api.github.com/repos/$OWNER/$REPO/topics \
   -d '{"names": ["machine-learning", "python", "automation"]}'
@@ -264,14 +271,15 @@ curl -s -X PUT \
 ## 6. Branch Protection
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # View current protection
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/branches/main/protection
 
 # Set up branch protection
 curl -s -X PUT \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/branches/main/protection \
   -d '{
     "required_status_checks": {
@@ -302,9 +310,10 @@ gh secret delete API_KEY
 Secrets require encryption with the repo's public key — more involved via API:
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Get the repo's public key for encrypting secrets
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/secrets/public-key
 
 # Encrypt and set (requires Python with PyNaCl)
@@ -328,13 +337,13 @@ print(json.dumps({
 
 # Then PUT the encrypted secret
 curl -s -X PUT \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/secrets/API_KEY \
   -d '<output from python script above>'
 
 # List secrets (names only, values hidden)
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/secrets \
   | python -c "
 import sys, json
@@ -359,9 +368,10 @@ gh release download v1.0.0 --dir ./downloads
 **With curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Create a release
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/releases \
   -d '{
     "tag_name": "v1.0.0",
@@ -374,7 +384,7 @@ curl -s -X POST \
 
 # List releases
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/releases \
   | python -c "
 import sys, json
@@ -385,7 +395,7 @@ for r in json.load(sys.stdin):
 # Upload a release asset (binary file)
 RELEASE_ID=<id_from_create_response>
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   -H "Content-Type: application/octet-stream" \
   "https://uploads.github.com/repos/$OWNER/$REPO/releases/$RELEASE_ID/assets?name=binary-amd64" \
   --data-binary @./dist/binary-amd64
@@ -409,9 +419,10 @@ gh workflow run deploy.yml -f environment=staging
 **With curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # List workflows
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/workflows \
   | python -c "
 import sys, json
@@ -420,7 +431,7 @@ for w in json.load(sys.stdin)['workflows']:
 
 # List recent runs
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   "https://api.github.com/repos/$OWNER/$REPO/actions/runs?per_page=10" \
   | python -c "
 import sys, json
@@ -430,25 +441,25 @@ for r in json.load(sys.stdin)['workflow_runs']:
 # Download failed run logs
 RUN_ID=<run_id>
 curl -s -L \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs \
   -o /tmp/ci-logs.zip
 cd /tmp && unzip -o ci-logs.zip -d ci-logs
 
 # Re-run a failed workflow
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/runs/$RUN_ID/rerun
 
 # Re-run only failed jobs
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs
 
 # Trigger a workflow manually (workflow_dispatch)
 WORKFLOW_ID=<workflow_id_or_filename>
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/workflows/$WORKFLOW_ID/dispatches \
   -d '{"ref": "main", "inputs": {"environment": "staging"}}'
 ```
@@ -465,9 +476,10 @@ gh gist list
 **With curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Create a gist
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/gists \
   -d '{
     "description": "Useful script",
@@ -479,7 +491,7 @@ curl -s -X POST \
 
 # List your gists
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/gists \
   | python -c "
 import sys, json

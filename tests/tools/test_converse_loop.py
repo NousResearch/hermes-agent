@@ -227,6 +227,53 @@ def test_one_shot_fallback_yields_nothing_on_provider_failure(monkeypatch):
     assert list(synth.synth("x")) == []
 
 
+# ── output_rate resampling wrapper ──
+
+from tools.voice_converse_loop import resample_synth
+
+
+class _ToneSynth:
+    """A synth that yields a fixed number of int16 mono samples at ``sample_rate``."""
+
+    def __init__(self, sample_rate, n_samples=4800):
+        self.sample_rate = sample_rate
+        self._n = n_samples
+
+    def synth(self, text):
+        t = np.arange(self._n, dtype=np.float64) / self.sample_rate
+        pcm = (np.sin(2 * np.pi * 220.0 * t) * 10000).astype(np.int16).tobytes()
+        # Emit in a couple of chunks (and on an odd byte boundary) to exercise buffering.
+        yield pcm[:1001]
+        yield pcm[1001:]
+
+
+def test_resample_synth_is_noop_when_rates_match():
+    inner = _ToneSynth(24000)
+    wrapped = resample_synth(inner, 24000)
+    assert wrapped is inner  # identity — no wrapper allocated
+    assert wrapped.sample_rate == 24000
+
+
+def test_resample_synth_changes_byte_length_at_new_rate():
+    inner = _ToneSynth(24000, n_samples=4800)  # 4800 samples @24k = 200 ms
+    src_bytes = len(b"".join(inner.synth("hi")))
+    wrapped = resample_synth(inner, 12000)  # half rate -> ~half the samples/bytes
+    assert wrapped.sample_rate == 12000
+    out_bytes = len(b"".join(wrapped.synth("hi")))
+    assert out_bytes % 2 == 0  # int16-aligned
+    # 200 ms at 12 kHz ≈ 2400 samples = 4800 bytes; allow slack for resampler edge frames.
+    assert abs(out_bytes - src_bytes // 2) <= max(256, src_bytes // 10)
+    assert out_bytes < src_bytes  # downsampling actually shrank the stream
+
+
+def test_resample_synth_upsamples_to_more_bytes():
+    inner = _ToneSynth(16000, n_samples=3200)  # 200 ms @16k
+    src_bytes = len(b"".join(inner.synth("hi")))
+    wrapped = resample_synth(inner, 24000)  # 1.5x rate -> ~1.5x bytes
+    out_bytes = len(b"".join(wrapped.synth("hi")))
+    assert out_bytes > src_bytes
+
+
 # ── shared turn driver: history cap + control-frame ordering ──
 
 import asyncio

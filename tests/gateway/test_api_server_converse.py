@@ -36,6 +36,17 @@ def _key_protocol(key=API_KEY):
     return f"hermes-key.{key}"
 
 
+def _start_msg(key=None, **cfg):
+    """A JSON ``start`` frame — the client's mandatory first frame after connect.
+
+    ``key`` is the start.key auth field (omit on the subprotocol-key path, where it's
+    ignored); ``cfg`` carries optional session config (input_rate/output_rate/name/…)."""
+    frame = {"type": "start", **cfg}
+    if key is not None:
+        frame["key"] = key
+    return json.dumps(frame)
+
+
 class _FakeStreamer:
     sample_rate = 24000
     channels = 1
@@ -145,6 +156,7 @@ async def test_subprotocol_key_accept_full_turn(monkeypatch):
         try:
             # The accepted socket selects ONLY the base protocol — the key is not echoed.
             assert ws.protocol == VOICE_PROTOCOL
+            await ws.send_str(_start_msg())  # subprotocol path: start.key not needed
             await _drive_full_turn(ws, streamer)
         finally:
             await ws.send_str(json.dumps({"stop": True}))
@@ -179,6 +191,7 @@ async def test_turn_persists_voice_session_source(monkeypatch):
         ws = await client.ws_connect(
             "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
+            await ws.send_str(_start_msg())
             ready = await ws.receive_json()
             assert ready["type"] == "ready"
             for frame in _speech_then_silence_pcm():
@@ -246,6 +259,7 @@ async def test_no_streaming_provider_uses_one_shot_fallback(monkeypatch, tmp_pat
         ws = await client.ws_connect(
             "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
+            await ws.send_str(_start_msg())
             ready = await ws.receive_json()
             assert ready["type"] == "ready"
             assert ready["output"] == {"sample_rate": 24000, "format": "pcm16"}
@@ -272,20 +286,55 @@ async def test_no_streaming_provider_uses_one_shot_fallback(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_first_message_auth_accept_full_turn(monkeypatch):
+async def test_start_key_accept_full_turn(monkeypatch):
+    # No subprotocol (an ESP32-style device): start.key authenticates in the single start frame.
     adapter = _adapter()
     streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
     _patch_converse(monkeypatch, streamer, transcript="turn it on")
     _patch_run_agent(adapter, monkeypatch)
 
     async with TestClient(TestServer(_app(adapter))) as client:
-        # No key subprotocol -> first-message auth path.
         ws = await client.ws_connect("/v1/audio/converse")
         try:
-            await ws.send_str(json.dumps({"type": "auth", "key": API_KEY}))
+            await ws.send_str(_start_msg(key=API_KEY))
             await _drive_full_turn(ws, streamer)
         finally:
             await ws.send_str(json.dumps({"stop": True}))
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_start_bad_key_closes_unauthorized(monkeypatch):
+    # A start frame with a bad/missing key and no subprotocol -> unauthorized + close 4401.
+    adapter = _adapter()
+    async with TestClient(TestServer(_app(adapter))) as client:
+        ws = await client.ws_connect("/v1/audio/converse")
+        try:
+            await ws.send_str(_start_msg(key="nope"))
+            msg = await ws.receive()
+            assert msg.type == web.WSMsgType.TEXT
+            assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
+            closing = await ws.receive()
+            assert closing.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED)
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_non_start_first_frame_rejected_bad_start(monkeypatch):
+    # A valid subprotocol key, but the first frame is not a start frame -> bad_start close 4400.
+    adapter = _adapter()
+    async with TestClient(TestServer(_app(adapter))) as client:
+        ws = await client.ws_connect(
+            "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(json.dumps({"type": "auth", "key": API_KEY}))  # not a start frame
+            msg = await ws.receive()
+            assert msg.type == web.WSMsgType.TEXT
+            assert json.loads(msg.data) == {"type": "error", "error": "bad_start"}
+            closing = await ws.receive()
+            assert closing.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED)
+        finally:
             await ws.close()
 
 
@@ -300,14 +349,14 @@ async def test_bad_subprotocol_key_rejects_upgrade_401(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_credential_first_frame_closes_unauthorized(monkeypatch):
+async def test_no_credential_start_frame_closes_unauthorized(monkeypatch):
     adapter = _adapter()
     async with TestClient(TestServer(_app(adapter))) as client:
-        # No key subprotocol and a non-auth first frame -> error + close 4401,
+        # No key subprotocol and a start frame with no key -> error + close 4401,
         # with no `ready` and no session started.
         ws = await client.ws_connect("/v1/audio/converse")
         try:
-            await ws.send_str(json.dumps({"stop": True}))
+            await ws.send_str(_start_msg())  # start, but no key and no subprotocol
             msg = await ws.receive()
             assert msg.type == web.WSMsgType.TEXT
             assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
@@ -341,6 +390,7 @@ async def test_origin_guard_exempts_key_bearing_ws_only(monkeypatch):
             headers={"Origin": "null"})
         try:
             assert ws.protocol == VOICE_PROTOCOL
+            await ws.send_str(_start_msg())
             await _drive_full_turn(ws, streamer)
         finally:
             await ws.send_str(json.dumps({"stop": True}))
@@ -360,8 +410,8 @@ async def test_query_token_is_not_a_credential(monkeypatch):
     async with TestClient(TestServer(_app(adapter))) as client:
         ws = await client.ws_connect(f"/v1/audio/converse?token={API_KEY}")
         try:
-            # A ?token= grants nothing; the first non-auth frame is rejected.
-            await ws.send_str(json.dumps({"commit": True}))
+            # A ?token= grants nothing; a start frame with no key is rejected unauthorized.
+            await ws.send_str(_start_msg())
             msg = await ws.receive()
             assert msg.type == web.WSMsgType.TEXT
             assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
@@ -382,7 +432,7 @@ async def test_cookie_is_not_a_credential(monkeypatch):
         ws = await client.ws_connect(
             "/v1/audio/converse", headers={"Cookie": "session=pretend-valid"})
         try:
-            await ws.send_str(json.dumps({"commit": True}))
+            await ws.send_str(_start_msg())  # start, but no key: the cookie grants nothing
             msg = await ws.receive()
             assert msg.type == web.WSMsgType.TEXT
             assert json.loads(msg.data) == {"type": "error", "error": "unauthorized"}
@@ -390,13 +440,11 @@ async def test_cookie_is_not_a_credential(monkeypatch):
             await ws.close()
 
 
-@pytest.mark.asyncio
-async def test_turn_uses_voice_system_prompt(monkeypatch):
-    # Spoken replies must stay short: converse runs the turn with the voice-brevity
-    # ephemeral system prompt, while the user_message (transcript) is passed CLEAN.
-    from tools.voice_converse_loop import VOICE_SYSTEM_PROMPT
+async def _run_prompt_capture_turn(adapter, monkeypatch, *, start_cfg):
+    """Drive one full turn, capturing the ephemeral_system_prompt + clean user_message.
 
-    adapter = _adapter()
+    Connects on the subprotocol-key path, sends a ``start`` frame built from *start_cfg*,
+    runs the canned utterance to turn_done, and returns the captured dict."""
     streamer = _FakeStreamer([b"\x01\x02"])
     _patch_converse(monkeypatch, streamer, transcript="what time is it")
 
@@ -417,6 +465,7 @@ async def test_turn_uses_voice_system_prompt(monkeypatch):
         ws = await client.ws_connect(
             "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
         try:
+            await ws.send_str(_start_msg(**start_cfg))
             assert (await ws.receive_json())["type"] == "ready"
             for frame in _speech_then_silence_pcm():
                 await ws.send_bytes(frame)
@@ -431,6 +480,75 @@ async def test_turn_uses_voice_system_prompt(monkeypatch):
         finally:
             await ws.send_str(json.dumps({"stop": True}))
             await ws.close()
+    return seen
 
-    assert seen["prompt"] == VOICE_SYSTEM_PROMPT
+
+@pytest.mark.asyncio
+async def test_turn_uses_voice_system_prompt(monkeypatch):
+    # Spoken replies must stay short: converse runs the turn with the name-aware voice
+    # ephemeral system prompt, while the user_message (transcript) is passed CLEAN.
+    from tools.voice_converse_loop import voice_system_prompt
+
+    adapter = _adapter()
+    seen = await _run_prompt_capture_turn(adapter, monkeypatch, start_cfg={})
+    # Default name is "Sakura" — the prompt carries the identity + brevity block.
+    assert seen["prompt"] == voice_system_prompt("Sakura")
+    assert "Sakura" in seen["prompt"]
     assert seen["user_message"] == "what time is it"  # transcript is clean; prompt is separate
+
+
+@pytest.mark.asyncio
+async def test_start_name_injected_into_voice_prompt(monkeypatch):
+    # start.name flows into the turn's ephemeral_system_prompt.
+    from tools.voice_converse_loop import voice_system_prompt
+
+    adapter = _adapter()
+    seen = await _run_prompt_capture_turn(
+        adapter, monkeypatch, start_cfg={"name": "Sakura"})
+    assert seen["prompt"] == voice_system_prompt("Sakura")
+    assert "Sakura" in seen["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_equal_input_output_rates_reported_and_full_turn(monkeypatch):
+    # A single-clock device sets input_rate == output_rate: ready reports both, and a full
+    # turn still transcribes + returns PCM. output_rate == synth.sample_rate -> no resampling.
+    adapter = _adapter()
+    streamer = _FakeStreamer([b"\x01\x02\x03\x04", b"\x05\x06"])
+    streamer.sample_rate = 16000  # so output_rate=16000 is a no-op resample (bytes unchanged)
+    _patch_converse(monkeypatch, streamer, transcript="turn it on")
+    _patch_run_agent(adapter, monkeypatch)
+
+    async with TestClient(TestServer(_app(adapter))) as client:
+        ws = await client.ws_connect(
+            "/v1/audio/converse", protocols=(VOICE_PROTOCOL, _key_protocol()))
+        try:
+            await ws.send_str(_start_msg(input_rate=16000, output_rate=16000))
+            ready = await ws.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["input"] == {"sample_rate": 16000, "format": "pcm16", "block_ms": 30}
+            assert ready["output"] == {"sample_rate": 16000, "format": "pcm16"}
+
+            for frame in _speech_then_silence_pcm():
+                await ws.send_bytes(frame)
+            got_transcript = None
+            pcm: list[bytes] = []
+            while True:
+                msg = await ws.receive()
+                if msg.type == web.WSMsgType.BINARY:
+                    pcm.append(msg.data)
+                    continue
+                if msg.type == web.WSMsgType.TEXT:
+                    payload = json.loads(msg.data)
+                    if payload["type"] == "transcript":
+                        got_transcript = payload["text"]
+                    elif payload["type"] == "turn_done":
+                        break
+                    continue
+                if msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.CLOSED, web.WSMsgType.ERROR):
+                    break
+            assert got_transcript == "turn it on"
+            assert pcm == [b"\x01\x02\x03\x04", b"\x05\x06"]  # no-op resample: bytes unchanged
+        finally:
+            await ws.send_str(json.dumps({"stop": True}))
+            await ws.close()

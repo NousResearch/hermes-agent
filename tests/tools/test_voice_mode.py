@@ -1171,7 +1171,7 @@ class TestListenForSpeechCapture:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/barge.wav"),
+            staticmethod(lambda audio, **kw: written.update(audio=audio, **kw) or "/tmp/barge.wav"),
         )
         from tools.voice_mode import listen_for_speech
         stops = iter([False] * 200 + [True] * 10_000)
@@ -1221,7 +1221,7 @@ class TestFullDuplexListen:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/fd.wav"),
+            staticmethod(lambda audio, **kw: written.update(audio=audio, **kw) or "/tmp/fd.wav"),
         )
         from tools.voice_mode import full_duplex_listen
 

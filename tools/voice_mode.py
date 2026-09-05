@@ -1277,9 +1277,12 @@ def _vad_log(msg: str) -> None:
             print(f"[voice-vad] {msg}", file=sys.stderr, flush=True)
 
 
-def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int, max_blocks: int) -> str:
+def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: int,
+                         max_blocks: int, sample_rate: int = SAMPLE_RATE) -> str:
     """After a trip, read until *endpoint_blocks* of quiet (or *max_blocks*) and write
-    pre-roll + capture to a WAV. Playback was cut by the trigger, so silence endpointing works."""
+    pre-roll + capture to a WAV at *sample_rate*. Playback was cut by the trigger, so silence
+    endpointing works. *sample_rate* lets a network source that captured at a non-16 kHz rate
+    write a correctly-tagged WAV (Whisper resamples internally on transcription)."""
     frames: List[Any] = list(pre_roll)
     quiet = 0
     for _ in range(max_blocks):
@@ -1288,7 +1291,7 @@ def _capture_until_quiet(stream, np, block: int, pre_roll, *, endpoint_blocks: i
         quiet = quiet + 1 if _rms(np, data) < SILENCE_RMS_THRESHOLD else 0
         if quiet >= endpoint_blocks:
             break
-    return AudioRecorder._write_wav(np.concatenate(frames, axis=0))
+    return AudioRecorder._write_wav(np.concatenate(frames, axis=0), sample_rate=sample_rate)
 
 
 class _BargeDetector:

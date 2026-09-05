@@ -173,6 +173,7 @@ def test_no_streaming_provider_uses_one_shot_fallback(converse_client, monkeypat
     monkeypatch.setattr(cl, "run_voice_turn", _fake_run_turn)
 
     with converse_client.websocket_connect(_url()) as conn:
+        conn.send_json({"type": "start"})  # mandatory first frame (config; dashboard auth is the token)
         ready = conn.receive_json()
         assert ready["type"] == "ready"
         assert ready["output"] == {"sample_rate": 24000, "format": "pcm16"}
@@ -199,6 +200,7 @@ def test_full_turn_transcript_and_pcm(converse_client, monkeypatch):
     _patch_converse(monkeypatch, streamer, transcript="turn it on")
 
     with converse_client.websocket_connect(_url()) as conn:
+        conn.send_json({"type": "start"})
         ready = conn.receive_json()
         assert ready["type"] == "ready"
         assert ready["input"] == {"sample_rate": 16000, "format": "pcm16", "block_ms": 30}
@@ -239,6 +241,7 @@ def test_reply_is_synthesized_per_sentence(converse_client, monkeypatch):
     )
 
     with converse_client.websocket_connect(_url()) as conn:
+        conn.send_json({"type": "start"})
         assert conn.receive_json()["type"] == "ready"
         for frame in _speech_then_silence_pcm():
             conn.send_bytes(frame)

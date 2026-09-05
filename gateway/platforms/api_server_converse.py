@@ -7,22 +7,26 @@ client streams mic PCM16 @16 kHz as binary WS frames; the server does VAD → ST
 text frames carry control; barge-in is supported.
 
 Authentication uses the profile's ``API_SERVER_KEY`` (``_expected_api_key``),
-NOT the dashboard token, and never a ``?token=`` query param. Browser WebSocket
-clients can't set request headers, so the ``Authorization: Bearer`` path is out;
-instead the key is presented one of two ways (both validated constant-time), and
-the single handler flow supports both:
+NOT the dashboard token, and never a ``?token=`` query param. The client's FIRST
+frame is a single ``{"type":"start", ...}`` frame carrying auth + all session
+config (rates, idle_interval, name, profile); the key is presented one of two
+ways (both validated constant-time), so the single handler flow supports both:
 
-(A) Sec-WebSocket-Protocol (preferred): the client offers ``hermes-voice-v1``
-    plus ``hermes-key.<API_KEY>``. The key subprotocol is extracted from the
-    request header exactly like ``_handle_browser_control_ws`` reads its ticket,
-    compared constant-time, and — on success — the socket is accepted selecting
-    ONLY the base ``hermes-voice-v1`` protocol (the key-bearing one is never
-    echoed back). A mismatch rejects the upgrade with 401 before ``prepare``.
-(B) First-message auth (fallback, only when no ``hermes-key.`` subprotocol is
-    offered): the socket is accepted, then the client's FIRST frame must be
-    ``{"type":"auth","key":"<API_KEY>"}`` within 5 s. Missing/invalid/timed-out
-    → ``{"type":"error","error":"unauthorized"}`` and close 4401. No audio or
-    control frame is processed and no session starts until auth succeeds.
+(A) Sec-WebSocket-Protocol (browser clients, e.g. Caduceus): the client offers
+    ``hermes-voice-v1`` plus ``hermes-key.<API_KEY>``. The key subprotocol is
+    validated constant-time BEFORE ``prepare`` and — on success — the socket is
+    accepted selecting ONLY the base ``hermes-voice-v1`` protocol (the key-bearing
+    one is never echoed back). A mismatch rejects the upgrade with 401. With the
+    subprotocol key present, ``start.key`` is optional/ignored.
+(B) start.key (non-browser devices, e.g. ESP32): no subprotocol is offered, the
+    socket is accepted, and the ``start`` frame's ``key`` authenticates
+    constant-time. A non-``start`` first frame → ``{"error":"bad_start"}`` close
+    4400; a ``start`` with a bad/missing key → ``{"error":"unauthorized"}`` close
+    4401. No audio/control frame is processed until a valid ``start`` succeeds.
+
+Per-connection sample rates: ``start.input_rate`` (default 16000) sets the capture
+rate and ``start.output_rate`` (default 24000) the reply-PCM rate, so a single-clock
+device can make input == output. Rates are clamped to [8000, 48000].
 
 The framework-agnostic VAD/STT/mic core AND the per-turn incremental-TTS driver
 (:func:`tools.voice_converse_loop.drive_converse_turns`, shared with the dashboard)
@@ -33,7 +37,10 @@ follows the same modular pattern as :mod:`gateway.platforms.api_server_runs`:
 adapter.
 
 Protocol:
-  client → binary PCM16 @16 kHz mono frames (30 ms blocks preferred),
+  client → ``{"type":"start", "key":?, "input_rate":?, "output_rate":?,
+             "idle_interval":?, "name":?, "profile":?}`` (FIRST frame; all but
+             auth optional), then binary PCM16 mono frames at ``input_rate``
+             (30 ms blocks preferred),
            ``{"stop": true}`` to end, ``{"commit": true}`` to force endpoint
   server → ``{"type": "ready", "input": {...}, "output": {...}}``,
            ``{"type": "transcript", "text": ...}``,
@@ -63,9 +70,9 @@ logger = logging.getLogger("gateway.platforms.api_server")
 # is ever selected on the accepted socket (the key is never echoed back).
 _VOICE_WS_PROTOCOL = "hermes-voice-v1"
 _VOICE_KEY_PROTOCOL_PREFIX = "hermes-key."
-# First-message auth deadline (mechanism B): the client must send its auth frame
-# within this window before any audio/control frame or session start.
-_FIRST_MESSAGE_AUTH_TIMEOUT = 5.0
+# Start-frame deadline: the client must send its ``{"type":"start", ...}`` frame within this
+# window before any audio/control frame or session start.
+_FIRST_FRAME_TIMEOUT = 5.0
 
 
 def _key_ok(candidate: str, expected: str) -> bool:
@@ -123,55 +130,60 @@ def _converse_stt_model(self, profile: Optional[str]) -> Optional[str]:
         return stt.get("model")
 
 
-def _resolve_converse_session(self, profile: Optional[str]):
-    """Resolve ``(synth, cap, session)`` under the profile scope.
+def _resolve_converse_session(self, profile: Optional[str], input_rate: int, output_rate: int):
+    """Resolve ``(synth, cap, session)`` under the profile scope for the given rates.
 
     Blocking config/provider resolution — runs off the event loop. ``synth`` is a
     converse synthesizer (streaming when the provider has a chunked API, else the
-    one-shot fallback — NEVER ``None``, so any provider incl. edge works), ``cap``
-    its per-request max text length, ``session`` a fresh
-    :class:`~tools.voice_converse_loop.ConverseSession`.
+    one-shot fallback — NEVER ``None``, so any provider incl. edge works) wrapped to
+    emit int16 PCM at *output_rate*, ``cap`` its per-request max text length,
+    ``session`` a fresh :class:`~tools.voice_converse_loop.ConverseSession` that
+    captures at *input_rate*.
     """
     import numpy as np
     from tools.tts_tool import _get_provider, _load_tts_config, _resolve_max_text_length
-    from tools.voice_converse_loop import ConverseSession, resolve_converse_synthesizer
+    from tools.voice_converse_loop import (
+        ConverseSession, resample_synth, resolve_converse_synthesizer)
 
     stt_model = _converse_stt_model(self, profile)
     with self._profile_scope(profile):
         cfg = _load_tts_config()
-        synth = resolve_converse_synthesizer(cfg)
+        synth = resample_synth(resolve_converse_synthesizer(cfg), output_rate)
         cap = _resolve_max_text_length(_get_provider(cfg), cfg)
-    return synth, cap, ConverseSession(np, stt_model=stt_model)
+    return synth, cap, ConverseSession(np, stt_model=stt_model, input_rate=input_rate)
 
 
-async def _await_first_message_auth(ws: "web.WebSocketResponse", expected_key: str) -> bool:
-    """Mechanism B: require ``{"type":"auth","key":...}`` as the first frame within 5s.
+async def _await_start_frame(
+    ws: "web.WebSocketResponse", expected_key: str, *, subprotocol_authed: bool,
+) -> Optional[dict]:
+    """Require ``{"type":"start", ...}`` as the client's FIRST frame within 5s.
 
-    Returns True on success (the socket is authed and ready for audio/control),
-    else sends ``{"type":"error","error":"unauthorized"}``, closes 4401 and returns
-    False. No audio/control frame is processed here — the caller starts the session
-    only after this returns True.
+    Returns the parsed frame dict on success. On failure sends an error frame, closes and
+    returns ``None``: a non-JSON / non-``start`` first frame → ``bad_start`` + close 4400;
+    a valid ``start`` that fails auth (no subprotocol key AND bad/missing ``start.key``) →
+    ``unauthorized`` + close 4401. No audio/control frame is processed until this succeeds.
     """
-    async def _reject() -> bool:
+    async def _fail(error: str, code: int) -> None:
         with contextlib.suppress(Exception):
-            await ws.send_json({"type": "error", "error": "unauthorized"})
-            await ws.close(code=4401)
-        return False
+            await ws.send_json({"type": "error", "error": error})
+            await ws.close(code=code)
+        return None
 
     try:
-        msg = await asyncio.wait_for(ws.receive(), timeout=_FIRST_MESSAGE_AUTH_TIMEOUT)
+        msg = await asyncio.wait_for(ws.receive(), timeout=_FIRST_FRAME_TIMEOUT)
     except asyncio.TimeoutError:
-        return await _reject()
+        return await _fail("bad_start", 4400)
     if msg.type != web.WSMsgType.TEXT:
-        return await _reject()
+        return await _fail("bad_start", 4400)
     try:
         frame = json.loads(msg.data)
     except (ValueError, TypeError):
-        return await _reject()
-    if (not isinstance(frame, dict) or frame.get("type") != "auth"
-            or not _key_ok(str(frame.get("key") or ""), expected_key)):
-        return await _reject()
-    return True
+        return await _fail("bad_start", 4400)
+    if not isinstance(frame, dict) or frame.get("type") != "start":
+        return await _fail("bad_start", 4400)
+    if not subprotocol_authed and not _key_ok(str(frame.get("key") or ""), expected_key):
+        return await _fail("unauthorized", 4401)
+    return frame
 
 
 async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketResponse":
@@ -182,8 +194,10 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
     (A) a ``hermes-key.<KEY>`` subprotocol is validated BEFORE ``prepare`` (a
     mismatch rejects the upgrade with 401; success accepts selecting only the base
     ``hermes-voice-v1`` protocol); (B) if no key subprotocol is offered, the socket
-    is accepted and the first frame must be ``{"type":"auth","key":...}`` within 5s.
-    Only after auth do we resolve providers and run the client pump + turn driver.
+    is accepted and the ``start`` frame's ``key`` authenticates. The client's FIRST
+    frame is a single ``{"type":"start", ...}`` carrying auth + all session config
+    (input_rate/output_rate/idle_interval/name/profile). Only after a valid start do
+    we resolve providers and run the client pump + turn driver.
 
     BARGE-IN (v1 limitation): the shared turn driver
     (:func:`tools.voice_converse_loop.drive_converse_turns`) stops TTS PLAYBACK on a
@@ -194,15 +208,10 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
     """
     from gateway.platforms.api_server import _api_request_profile
 
-    profile = _api_request_profile.get()
     expected_key = self._expected_api_key()
-    from tools.voice_converse_loop import parse_idle_interval
-    # Session mode: ?idle_interval=<seconds> makes the loop emit periodic {"type":"idle"}
-    # during quiet (socket stays open) and treat spoken stop phrases as session-enders
-    # ({"type":"stop_word"}). Absent -> default; 0 -> continuous (neither), the original.
-    idle_interval = parse_idle_interval(request.query.get("idle_interval"))
 
-    # (A) Subprotocol key: validated pre-prepare so a bad key rejects the upgrade.
+    # (A) Subprotocol key: validated pre-prepare so a bad key rejects the upgrade. When
+    # present, the socket is subprotocol-authed and start.key is optional/ignored.
     offered_key = _offered_key_protocol(request)
     if offered_key is not None:
         if not _key_ok(offered_key, expected_key):
@@ -211,17 +220,26 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         # Accept selecting ONLY the base protocol — never echo the key-bearing one.
         ws = web.WebSocketResponse(heartbeat=30.0, protocols=(_VOICE_WS_PROTOCOL,))
         await ws.prepare(request)
+        subprotocol_authed = True
     else:
-        # (B) First-message auth: accept, then require an auth frame within 5s.
+        # (B) No subprotocol: accept, then require a start frame whose start.key authenticates.
         ws = web.WebSocketResponse(heartbeat=30.0)
         await ws.prepare(request)
-        if not await _await_first_message_auth(ws, expected_key):
-            return ws
+        subprotocol_authed = False
+
+    # The client's FIRST frame is the single start frame carrying auth + all session config.
+    frame = await _await_start_frame(ws, expected_key, subprotocol_authed=subprotocol_authed)
+    if frame is None:
+        return ws
+    from tools.voice_converse_loop import parse_start_config
+    input_rate, output_rate, idle_interval, name, start_profile = parse_start_config(frame)
+    # Profile: the start frame wins; else fall back to the request's own scope.
+    profile = start_profile if start_profile is not None else _api_request_profile.get()
 
     loop = asyncio.get_running_loop()
     try:
         synth, cap, session = await loop.run_in_executor(
-            None, lambda: _resolve_converse_session(self, profile))
+            None, lambda: _resolve_converse_session(self, profile, input_rate, output_rate))
     except Exception:
         logger.exception("converse setup failed")
         with contextlib.suppress(Exception):
@@ -231,8 +249,8 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
 
     await ws.send_json({
         "type": "ready",
-        "input": {"sample_rate": 16000, "format": "pcm16", "block_ms": 30},
-        "output": {"sample_rate": synth.sample_rate, "format": "pcm16"},
+        "input": {"sample_rate": input_rate, "format": "pcm16", "block_ms": 30},
+        "output": {"sample_rate": output_rate, "format": "pcm16"},
     })
 
     session.start()
@@ -287,10 +305,10 @@ async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketRes
         # NOTE: `interrupted` is accepted for the shared driver's signature but the
         # gateway does not plumb a barge-in note into _run_agent (dashboard parity is
         # dashboard-only), so it is intentionally unused here.
-        from tools.voice_converse_loop import VOICE_SYSTEM_PROMPT
+        from tools.voice_converse_loop import voice_system_prompt
         result, _usage = await self._run_agent(
             user_message=transcript, conversation_history=list(conversation_history),
-            ephemeral_system_prompt=VOICE_SYSTEM_PROMPT,
+            ephemeral_system_prompt=voice_system_prompt(name),
             stream_delta_callback=on_delta, session_id=session_id)
         if isinstance(result, dict) and result.get("failed"):
             return "", str(result.get("error") or "agent run failed")

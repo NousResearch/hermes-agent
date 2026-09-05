@@ -159,13 +159,17 @@ class ConverseSession:
 
     def __init__(
         self, np: Any, *, stt_model: Optional[str] = None,
-        barge_multiplier: Optional[float] = None,
+        barge_multiplier: Optional[float] = None, input_rate: int = 16000,
     ) -> None:
         from tools import voice_mode as _vm
 
         self._np = np
         self._vm = _vm
         self._stt_model = stt_model
+        # Per-connection capture rate. A single-clock device (ESP32) sets this so the
+        # capture WAV is written at the rate the client actually sends; Whisper resamples
+        # internally, so STT works at any rate. Block size is 30 ms worth of samples at it.
+        self._input_rate = int(input_rate)
         self._stop = threading.Event()
         self._playing = threading.Event()
         # Set by the handler while TTS is streaming so a barge-in can cut it.
@@ -175,7 +179,7 @@ class ConverseSession:
         # Transcripts ready for a turn (or the None sentinel on shutdown).
         self.transcripts: "queue.Queue[Optional[str]]" = queue.Queue()
 
-        self._block = int(_vm.SAMPLE_RATE * 0.03)  # 480 frames @16 kHz
+        self._block = int(self._input_rate * 0.03)  # 30 ms of samples at the input rate
         mult = float(barge_multiplier) if barge_multiplier else _vm.DEFAULT_BARGE_MULTIPLIER
         self._detector = _vm._BargeDetector(
             np, mult=mult,
@@ -285,6 +289,7 @@ class ConverseSession:
         wav_path = vm._capture_until_quiet(
             self.stream, np, self._block, self._pre_roll,
             endpoint_blocks=self._endpoint_blocks, max_blocks=self._max_blocks,
+            sample_rate=self._input_rate,
         )
         # _capture_until_quiet drained the pre-roll into the WAV; start fresh.
         self._pre_roll.clear()
@@ -332,24 +337,82 @@ _HISTORY_MAX_MESSAGES = 40
 
 _IDLE_INTERVAL_MAX = 3600.0
 
-# Voice replies are spoken aloud — keep them short and speakable. Passed as an ephemeral
-# system prompt for each converse turn (mirrors the CLI voice mode's brevity prefix in
-# hermes_cli.cli_chat_turn_mixin), so spoken replies don't balloon to full chat length.
-VOICE_SYSTEM_PROMPT = (
+# Per-connection sample-rate defaults + clamp range. A single-clock device (ESP32) can set
+# input_rate == output_rate; browsers keep the 16 kHz-in / 24 kHz-out split. Rates outside
+# this range are clamped to a sane telephony..studio window.
+DEFAULT_INPUT_RATE = 16000
+DEFAULT_OUTPUT_RATE = 24000
+_SAMPLE_RATE_MIN = 8000
+_SAMPLE_RATE_MAX = 48000
+
+
+def clamp_sample_rate(raw: Any, default: int) -> int:
+    """Coerce *raw* to an int sample rate in [8000, 48000]; *default* when unusable."""
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(_SAMPLE_RATE_MIN, min(val, _SAMPLE_RATE_MAX))
+
+
+# Default converse identity — the name a client gets when the start frame omits one.
+DEFAULT_CONVERSE_NAME = "Sakura"
+
+
+def parse_start_config(frame: Dict[str, Any]) -> Tuple[int, int, float, str, Optional[str]]:
+    """Resolve ``(input_rate, output_rate, idle_interval, name, profile)`` from a ``start`` frame.
+
+    All fields optional; defaults: input_rate=16000, output_rate=24000, idle_interval=0
+    (continuous), name="Sakura", profile=None. Rates are clamped to [8000, 48000] and
+    idle_interval via :func:`parse_idle_interval`. Shared by both WS hosts.
+    """
+    input_rate = clamp_sample_rate(frame.get("input_rate"), DEFAULT_INPUT_RATE)
+    output_rate = clamp_sample_rate(frame.get("output_rate"), DEFAULT_OUTPUT_RATE)
+    idle_interval = parse_idle_interval(frame.get("idle_interval"))
+    raw_name = frame.get("name")
+    name = str(raw_name).strip() if raw_name is not None and str(raw_name).strip() \
+        else DEFAULT_CONVERSE_NAME
+    profile = frame.get("profile") or None
+    return input_rate, output_rate, idle_interval, name, profile
+
+
+# Voice replies are spoken aloud — keep them short and speakable. Built per-turn as the
+# ephemeral system prompt (mirrors the CLI voice mode's brevity prefix), so spoken replies
+# don't balloon to full chat length. When a name is known it also carries wake handling.
+_VOICE_BREVITY_PROMPT = (
     "You are in a live voice conversation and your reply is spoken aloud. Answer concisely and "
     "conversationally — at most 2-3 short sentences of plain spoken text, with no code blocks, "
     "markdown, lists, or URLs. If the request is unclear or you only caught fragments, ask one "
     "short clarifying question instead of guessing or rambling."
 )
+
+
+def voice_system_prompt(name: Optional[str] = None) -> str:
+    """Ephemeral system prompt for one converse turn.
+
+    When *name* is given, prepend an identity + wake-word preamble (so the model knows what
+    it's called and treats a leading name / "hey <name>" as being addressed, not part of the
+    request) before the spoken-brevity rules. When *name* is ``None``/empty, just the brevity
+    rules. The default converse name is ``"Sakura"``, so most turns carry the identity block.
+    """
+    name = (str(name).strip() if name is not None else "")
+    if name:
+        identity = (
+            f"Your name is {name}. People talk to you by voice and get your attention by saying "
+            f"your name (or 'hey {name}') — treat that as being addressed, not part of the "
+            "request, and don't repeat it back. ")
+        return identity + _VOICE_BREVITY_PROMPT
+    return _VOICE_BREVITY_PROMPT
 # Safety cap on how much of ONE reply is ever synthesized to speech, so a runaway reply (a
 # model ignoring the brevity prompt, or a tool result read aloud) can't play for minutes.
 # Normal replies sit far under this; it only bounds the pathological case.
 _MAX_TTS_CHARS_PER_TURN = 1500
 
 
-def parse_idle_interval(raw: Optional[str]) -> float:
-    """Parse the ``idle_interval`` query param → seconds of quiet between turns before an
-    ``{"type":"idle"}`` notification (which also enables stop-phrase → ``{"type":"stop_word"}``).
+def parse_idle_interval(raw: Any) -> float:
+    """Clamp an ``idle_interval`` VALUE (from the ``start`` frame) → seconds of quiet between
+    turns before an ``{"type":"idle"}`` notification (which also enables stop-phrase →
+    ``{"type":"stop_word"}``). Accepts a number, numeric string, or ``None``.
 
     This is the SESSION-mode opt-in. Absent / invalid / ``<= 0`` → ``0.0`` = continuous mode:
     no idle pings and no stop-word handling — the original always-listening behavior, so
@@ -672,3 +735,61 @@ def resolve_converse_synthesizer(tts_config: Dict) -> Any:
     if streamer is not None:
         return _StreamingConverseSynth(streamer)
     return _OneShotConverseSynth()
+
+
+class _ResampledConverseSynth:
+    """Wrap a converse synth so ``.synth(text)`` yields int16 mono PCM at *output_rate*.
+
+    The inner synth yields int16 mono PCM at ``inner.sample_rate`` (e.g. 24 kHz); this feeds
+    each chunk through a stateful :class:`av.audio.resampler.AudioResampler` and yields the
+    resampled bytes, flushing at end-of-text. Used to serve a single-clock client (ESP32)
+    output at its own rate. A fresh resampler per ``synth`` call keeps turns independent.
+    """
+
+    def __init__(self, inner: Any, output_rate: int) -> None:
+        self._inner = inner
+        self.sample_rate: int = int(output_rate)
+        self._src_rate: int = int(inner.sample_rate)
+
+    def synth(self, text: str) -> Iterator[bytes]:
+        import av
+        import numpy as np
+
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=self.sample_rate)
+
+        def _feed(frame) -> Iterator[bytes]:
+            # PyAV 18: resample() returns a LIST of frames (may be empty). Use to_ndarray()
+            # (exact sample count) rather than bytes(planes[0]) — the plane buffer is
+            # over-allocated/padded, so raw plane bytes would append garbage per chunk.
+            for rs in resampler.resample(frame):
+                data = rs.to_ndarray().tobytes()
+                if data:
+                    yield data
+
+        carry = b""
+        for chunk in self._inner.synth(text):
+            if not chunk:
+                continue
+            carry += chunk
+            n = len(carry) - (len(carry) % 2)  # feed whole int16 samples only
+            if n == 0:
+                continue
+            buf, carry = carry[:n], carry[n:]
+            arr = np.frombuffer(buf, dtype=np.int16).reshape(1, -1)  # (channels, samples)
+            frame = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
+            frame.sample_rate = self._src_rate
+            yield from _feed(frame)
+        yield from _feed(None)  # flush the resampler's internal buffer
+
+
+def resample_synth(synth: Any, output_rate: int) -> Any:
+    """Return a synth whose ``.synth`` yields PCM at *output_rate*.
+
+    No-op (returns *synth* unchanged) when ``synth.sample_rate == output_rate``; otherwise
+    wraps it in :class:`_ResampledConverseSynth`. The result always exposes
+    ``.sample_rate == output_rate`` and the same ``.synth(text) -> Iterator[bytes]`` contract.
+    """
+    if int(output_rate) == int(synth.sample_rate):
+        return synth
+    return _ResampledConverseSynth(synth, output_rate)

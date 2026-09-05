@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
 from tools.environments.base_output import _popen_bash
 from tools.environments.docker_egress import (
@@ -41,6 +42,7 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = _SHELL_ENV_NAME_RE
+_ENVIRONMENT_LABEL_KEY = "hermes-environment"
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -119,6 +121,19 @@ def _container_identity(shared_key: str = "") -> str:
         return _sanitize_label_value(_get_active_profile_name())
     digest = hashlib.sha256(shared_key.encode("utf-8")).hexdigest()[:12]
     return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
+
+
+def _reuse_environment_fingerprint(*, image: str, mount_args: list[str], hermes_home: str) -> str:
+    """Hash immutable configuration so reuse cannot silently attach to stale mounts.
+
+    Hash requested values rather than exposing profile paths and volume sources in labels.
+    Keep mount order: later arguments can override earlier mount destinations.
+    """
+    normalized_home = os.path.normcase(os.path.abspath(os.path.expanduser(hermes_home)))
+    payload = json.dumps(
+        {"image": image, "mount_args": mount_args, "hermes_home": normalized_home},
+        sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 def reap_orphan_containers(
@@ -550,6 +565,12 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label}
+        # Explicit sharing opts into the first creator's settings. Otherwise,
+        # changed image/mount/home configuration must start a fresh container.
+        if not shared_container_key:
+            self._labels[_ENVIRONMENT_LABEL_KEY] = _reuse_environment_fingerprint(
+                image=image, mount_args=[*writable_args, *volume_args],
+                hermes_home=str(get_hermes_home()))
         # Saved for container recreation on "No such container" recovery.
         self._image = image
         self._image_uses_s6_init = image_uses_s6_init
@@ -919,7 +940,8 @@ class DockerEnvironment(BaseEnvironment):
     def _find_reusable_container(
         self, task_label: str, profile_label: str, egress_label: str) -> Optional[tuple[str, str]]:
         """``(container_id, state)`` of an existing container labeled for this task/profile/
-        egress posture, or ``None`` on miss or any failure. The egress posture is a label
+        egress posture and immutable environment, or ``None`` on miss or any failure.
+        Explicit shared keys opt out of the environment filter. The egress posture is a label
         FILTER for every posture, "off" included: a container built with egress on must not be
         reused after ``hermes egress disable`` (baked-in proxy env and CA mounts), and every
         container this class creates carries the label. The ``{{.Label "key"}}`` template
@@ -929,6 +951,8 @@ class DockerEnvironment(BaseEnvironment):
             "--filter", f"label=hermes-task-id={task_label}",
             "--filter", f"label=hermes-profile={profile_label}",
             "--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"]
+        if environment_label := self._labels.get(_ENVIRONMENT_LABEL_KEY):
+            filters.extend(["--filter", f"label={_ENVIRONMENT_LABEL_KEY}={environment_label}"])
         result = _docker_query(
             [self._docker_exe, "ps", "-a", *filters, "--format", "{{.ID}}\t{{.State}}"], timeout=10,
             fail="docker ps probe failed: %s — will start a fresh container",

@@ -372,6 +372,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-tldraw-offline',
                     'user-guide/skills/optional/creative/creative-touchdesigner-mcp',
                     'user-guide/skills/optional/creative/creative-unreal-mcp',
+                    'user-guide/skills/optional/creative/creative-video-shotcraft',
                   ],
                 },
                 {

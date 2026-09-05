@@ -342,3 +342,74 @@ def test_later_lmstudio_failure_restores_runtime_capabilities(monkeypatch):
     assert agent.provider == "openrouter"
     assert agent.client is original_client
     assert agent.runtime_capabilities == {"native_compaction": True}
+
+
+def _make_agent_with_autoraise_compressor(
+    *, initial_percent: float = 0.50, model: str = "primary-model",
+    provider: str = "openrouter", base_url: str = "https://openrouter.ai/api/v1",
+    api_key: str = "sk-primary",
+):
+    """Build a bare AIAgent with a real ContextCompressor for autoraise tests."""
+    agent = AIAgent.__new__(AIAgent)
+    agent.model = model
+    agent.provider = provider
+    agent.base_url = base_url
+    agent.api_key = api_key
+    agent.api_mode = "chat_completions"
+    agent.client = MagicMock()
+    agent.quiet_mode = True
+    agent._config_context_length = None
+    agent._primary_runtime = {}
+    agent.runtime_capabilities = {}
+    compressor = ContextCompressor(
+        model=model,
+        threshold_percent=initial_percent,
+        base_url=base_url,
+        api_key=api_key,
+        provider=provider,
+        quiet_mode=True,
+    )
+    agent.context_compressor = compressor
+    return agent
+
+
+def test_switch_model_applies_codex_autoraise_to_custom_codex_responses(monkeypatch):
+    """custom codex_responses route must receive the 0.85 Codex autoraise."""
+    agent = _make_agent_with_autoraise_compressor(initial_percent=0.50)
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 272000,
+    )
+    agent.switch_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_key="sk-new",
+        base_url="https://api.example-codex-proxy.invalid",
+        api_mode="codex_responses",
+    )
+    assert agent.context_compressor.threshold_percent == 0.85
+
+
+def test_switch_model_drops_autoraise_on_non_codex_switch(monkeypatch):
+    """Autoraise to 0.85 on a Codex route must DROP to the user's default (sub-512K
+    floor) on a non-Codex switch — the raise is per-model, never a sticky override."""
+    agent = _make_agent_with_autoraise_compressor(initial_percent=0.50)
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 272000,
+    )
+    agent.switch_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_key="sk-new",
+        base_url="https://api.example-codex-proxy.invalid",
+        api_mode="codex_responses",
+    )
+    assert agent.context_compressor.threshold_percent == 0.85
+    agent.switch_model(
+        "gpt-5.2",
+        "openrouter",
+        api_key="sk-new",
+        base_url="https://openrouter.ai/api/v1",
+    )
+    assert agent.context_compressor.threshold_percent == 0.75

@@ -1373,6 +1373,7 @@ def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
         )
         _model_cthresh = _cthresh_fn(
             agent.model, agent.provider, allow_codex_gpt55_autoraise=autoraise,
+            api_mode=agent.api_mode,
         )
         # Codex autoraises apply only when they RAISE; Arcee Trinity keeps its
         # unconditional override.
@@ -1381,8 +1382,8 @@ def _compression_threshold(agent, cfg: Dict[str, Any]) -> tuple[float, bool]:
             _model_cthresh,
             model=agent.model,
             is_codex_autoraise=(
-                _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
-                or _is_codex_spark_fn(agent.model, agent.provider)
+                _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider, api_mode=agent.api_mode)
+                or _is_codex_spark_fn(agent.model, agent.provider, api_mode=agent.api_mode)
             ),
         )
     return threshold, notice_enabled

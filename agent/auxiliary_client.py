@@ -598,14 +598,15 @@ _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 _CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
 
 
-def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6 (and the Daybreak Sol alias) on the Codex OAuth route only.
+def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None, *, api_mode: Optional[str] = None) -> bool:
+    """True for gpt-5.4/5.5/5.6 (and the Daybreak Sol alias) on the Codex OAuth route
+    or any custom provider speaking ``api_mode=codex_responses``.
 
     Other routes expose a larger window for the same slug and keep the user's threshold.
     Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
     picker variants are excluded. Name kept for the ``compression.codex_gpt55_autoraise`` key.
     """
-    bare = _codex_route_bare_model(model, provider)
+    bare = _codex_route_bare_model(model, provider, api_mode)
     if bare is None:
         return False
     from agent.model_metadata import is_codex_context_variant
@@ -616,14 +617,22 @@ def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = Non
         for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6"))
 
 
-def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:
-    """Lowercased bare model slug when ``provider`` is the Codex OAuth route, else None."""
-    return _bare_model(model) if (provider or "").strip().lower() == "openai-codex" else None
+def _codex_route_bare_model(model: Optional[str], provider: Optional[str], api_mode: Optional[str] = None) -> Optional[str]:
+    """Lowercased bare model slug when the route is the Codex OAuth backend OR any
+    provider explicitly speaking ``api_mode=codex_responses`` (custom codex_responses
+    providers forward to the same 272K-capped Codex endpoint family, so they share
+    its server-side compaction window), else None."""
+    if (provider or "").strip().lower() == "openai-codex":
+        return _bare_model(model)
+    if (api_mode or "").strip().lower() == "codex_responses":
+        return _bare_model(model)
+    return None
 
 
-def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for ``gpt-5.3-codex-spark`` on the Codex OAuth route (the slug exists nowhere else)."""
-    return _codex_route_bare_model(model, provider) == "gpt-5.3-codex-spark"
+def _is_codex_spark(model: Optional[str], provider: Optional[str] = None, *, api_mode: Optional[str] = None) -> bool:
+    """True for ``gpt-5.3-codex-spark`` on the Codex OAuth route or a custom
+    ``api_mode=codex_responses`` provider (the slug exists nowhere else)."""
+    return _codex_route_bare_model(model, provider, api_mode) == "gpt-5.3-codex-spark"
 
 
 def _fixed_temperature_for_model(
@@ -639,17 +648,20 @@ def _fixed_temperature_for_model(
 def _compression_threshold_for_model(
     model: Optional[str], provider: Optional[str] = None, *,
     allow_codex_gpt55_autoraise: bool = True,
+    api_mode: Optional[str] = None,
 ) -> Optional[float]:
     """Per-model/route compression threshold override (fraction of context used), or None.
 
     Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6
     → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
+    "Codex-route" covers both the OAuth backend (provider ``openai-codex``) and custom providers
+    speaking ``api_mode=codex_responses`` — both hit the same 272K-capped endpoint family.
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
-    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
+    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider, api_mode=api_mode):
         return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
-    if _is_codex_spark(model, provider):
+    if _is_codex_spark(model, provider, api_mode=api_mode):
         return _CODEX_SPARK_COMPACTION_THRESHOLD
     return None
 

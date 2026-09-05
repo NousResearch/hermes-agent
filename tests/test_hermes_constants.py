@@ -153,6 +153,31 @@ class TestGetProcessHermesHome:
         assert get_process_hermes_home() == home
 
 
+    @pytest.mark.parametrize(
+        "mountinfo",
+        [
+            "",
+            "malformed",
+            "35 2 0:52 / / rw containerd",
+            "35 2 8:2 / / rw,relatime - ext4 /dev/sda2 rw",
+            # Host root on a volume group that merely contains "docker" in the
+            # backing device name — the marker is in the mount source field,
+            # not in the fstype/super-options, so it must not be detected.
+            "35 2 253:0 / / rw,relatime - ext4 /dev/mapper/docker--vg-root rw",
+            "35 2 253:0 / / rw,relatime - xfs /dev/mapper/containers--vg-docker--pool rw",
+        ],
+    )
+    def test_non_container_or_malformed_root_is_not_detected(self, mountinfo):
+        assert hermes_constants._root_mount_has_container_runtime(mountinfo) is False
+
+    def test_runtime_marker_in_super_options_is_detected_despite_device_source(self):
+        # Marker lives in the super options (docker overlay upperdir) while the
+        # mount source itself is a docker-named host device — still a container.
+        mountinfo = (
+            "35 2 253:0 / / rw - overlay /dev/mapper/docker--vg-root/lowerdir "
+            "rw,upperdir=/var/lib/docker/overlay2/x/upper"
+        )
+        assert hermes_constants._root_mount_has_container_runtime(mountinfo) is True
 
 
 class TestHermesManagedNode:

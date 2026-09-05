@@ -125,10 +125,35 @@ class MyMemoryProvider(MemoryProvider):
 | `prefetch(query, *, session_id="")` | Before each API call | Return recalled context |
 | `queue_prefetch(query, *, session_id="")` | After each turn | Pre-warm for next turn |
 | `sync_turn(user, assistant, *, session_id="", messages=None)` | After each completed turn | Persist conversation |
+| `feature_capabilities()` | Agent startup/status | Advertise default-on additive features |
+| `on_turn_timing_start(turn_number, **kwargs)` | Before turn setup | Open privacy-safe task timing |
+| `on_turn_progress(turn_number, **kwargs)` | Active/wait/rework transition | Record phase timing |
+| `estimate_turn(**kwargs)` | Turn start and progress | Return aggregate ETA metadata |
+| `on_turn_finish(turn_number, **kwargs)` | Every turn exit | Close timing with an outcome |
+| `abort_open_turns()` | Shutdown or destructive session rotation | Repair/abort open timing state |
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+### Automatic task timing and ETA
+
+Providers may advertise `adaptive_eta`, `remaining_time`, and `phase_learning`
+through `feature_capabilities()`. Hermes then calls the timing hooks automatically;
+no provider-specific host code is required. The host owns task classification,
+clocks, status delivery, and outcome classification. Providers own only their
+private aggregate evidence.
+
+Timing hooks receive closed-domain `platform`, `subject`, `phase`, and `outcome`
+values plus an opaque session identifier. Providers must not persist raw prompts,
+tool arguments, credentials, or absolute paths. `estimate_turn()` should return
+`None` until it has enough completed samples and must exclude failed,
+interrupted, incomplete, and aborted runs from its cohort.
+
+Hermes treats every timing hook as best-effort. Provider failures are logged but
+never block the model response, tools, or another memory provider. On shutdown,
+`abort_open_turns()` runs before provider teardown so append-only ledgers can
+repair child phases before closing their parent task.
 
 ## Pre-Compress Checkpoints (fail-closed)
 

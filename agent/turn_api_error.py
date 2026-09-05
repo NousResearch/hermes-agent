@@ -133,6 +133,8 @@ def handle_api_error(
         return _verdict("continue")
 
     retry_count += 1
+    from agent.turn_timing import progress_turn_timing
+    progress_turn_timing(agent, "rework", iteration=api_call_count)
     elapsed_time = time.time() - api_start_time
     agent._touch_activity(f"API error recovery (attempt {retry_count}/{max_retries})")
 

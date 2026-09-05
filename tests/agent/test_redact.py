@@ -85,6 +85,51 @@ class TestKnownPrefixes:
         assert redact_sensitive_text(text) == text
 
 
+    # --- #66920 Google Gemini authorization keys (AQ. prefix) ---
+
+    def test_google_gemini_aq_bare_key(self):
+        # Bare 48-char AQ.-prefix key must be redacted by the known-prefix
+        # list. Before the fix the bare value passed through verbatim;
+        # after the fix it must differ from the input. No real credential
+        # is needed; the inner key chars are placeholders.
+        key = "AQ." + "B" * 48
+        result = redact_sensitive_text(key, force=True)
+        assert result != key
+        assert key not in result
+
+    def test_google_gemini_aq_labeled_key(self):
+        # Regression net for the env-assignment detector: the same
+        # value, when labelled, is masked to "***". Guards against a
+        # future refactor accidentally over-broadening the env fallback.
+        key = "AQ." + "B" * 48
+        assigned = "GEMINI_API_KEY=" + key
+        result = redact_sensitive_text(assigned, force=True)
+        assert result != assigned
+
+    def test_google_gemini_aq_short_unprefixed_unchanged(self):
+        # Below the 40-char floor the prefix must NOT mask --- protects
+        # against over-eager matching of short fragments or variable
+        # names that happen to begin with "AQ.".
+        short = "AQ." + "B" * 10
+        result = redact_sensitive_text(short, force=True)
+        assert result == short
+
+    def test_google_gemini_aq_ordinary_prose_unchanged(self):
+        # A bare "AQ." substring inside natural text must NOT be masked
+        # --- protects against over-eager matching of prose such as
+        # "the AQ. project spec" or "see the AQ. section for details".
+        # The 40-char floor only matches when followed by a real key
+        # payload; short "AQ." prefixes carry no credentials.
+        prose_samples = (
+            "See the AQ. section for the full project spec.",
+            "AQ. is a placeholder variable we never log.",
+            "Reading the AQ. appendix to learn more.",
+        )
+        for prose in prose_samples:
+            result = redact_sensitive_text(prose, force=True)
+            assert result == prose, (
+                f"prose redacted unexpectedly: {prose!r} -> {result!r}"
+            )
 
 
 class TestEnvAssignments:

@@ -1293,6 +1293,7 @@ class AIAgent(
             return execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._set_tool_execution_active(False)
+            self._apply_pending_steer_to_tool_results(messages, len(tool_calls))
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""

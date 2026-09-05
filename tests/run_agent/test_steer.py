@@ -136,6 +136,64 @@ class TestSteerAcceptance:
         assert outcome["accepted"] is False
         assert agent._pending_steer is None
 
+    def test_pending_commit_before_tool_window_closure_is_delivered(self):
+        agent = _bare_agent()
+        closure_attempted = threading.Event()
+        release_closure = threading.Event()
+        inner_drained = threading.Event()
+        real_lock = threading.Lock()
+        closure_gated = False
+
+        class GateLock:
+            def __enter__(self):
+                nonlocal closure_gated
+                if (
+                    threading.current_thread().name == "tool-worker"
+                    and inner_drained.is_set()
+                    and not closure_gated
+                ):
+                    closure_gated = True
+                    closure_attempted.set()
+                    assert release_closure.wait(timeout=1)
+                real_lock.acquire()
+                return self
+
+            def __exit__(self, *exc_info):
+                real_lock.release()
+
+        agent._pending_steer_lock = GateLock()
+        messages = []
+        outcome = {}
+
+        def execute_tools(*_args):
+            messages.append(
+                {"role": "tool", "content": "tool output", "tool_call_id": "call-1"}
+            )
+            outcome["inner_drained"] = agent._drain_pending_steer()
+            inner_drained.set()
+
+        agent._execute_tool_calls_sequential = execute_tools
+        assistant_message = type("AssistantMessage", (), {"tool_calls": [object()]})()
+        tool_worker = threading.Thread(
+            name="tool-worker",
+            target=lambda: agent._execute_tool_calls(
+                assistant_message, messages, "task-id"
+            ),
+        )
+        tool_worker.start()
+        assert closure_attempted.wait(timeout=1)
+
+        outcome["accepted"] = agent.steer("late correction")
+        release_closure.set()
+        tool_worker.join(timeout=1)
+
+        assert tool_worker.is_alive() is False
+        assert outcome == {"inner_drained": None, "accepted": True}
+        assert messages[-1]["content"] == (
+            "tool output" + format_steer_marker("late correction")
+        )
+        assert agent._pending_steer is None
+
 
 
 

@@ -1039,7 +1039,7 @@ class GatewayAdapterLifecycleMixin:
         adapter.set_message_handler(message_handler or self._primary_message_handler())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
-        adapter.set_busy_session_handler(busy_session_handler or self._handle_active_session_busy_message)
+        adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
@@ -1342,6 +1342,38 @@ class GatewayAdapterLifecycleMixin:
 
         return _handler
 
+    def _make_default_profile_busy_session_handler(self):
+        """Scope primary busy messages like normal routed messages.
+
+        A primary adapter admits a message under its own allowlist, while a
+        multiplex route can run its session under a secondary profile. Busy
+        callbacks bypass the normal handler, so carry both identities here.
+        """
+        from gateway.run import _async_profile_runtime_scope, get_hermes_home
+        default_home = Path(get_hermes_home())
+
+        async def _handler(event, _session_key):
+            source = event.source
+            source._authorization_profile_home = default_home
+            if (
+                not getattr(source, "profile", None)
+                and getattr(source, "profile_route_rejected", False) is not True
+                and not self._stamp_routed_profile(source)
+            ):
+                source.profile_route_rejected = True
+            if getattr(source, "profile_route_rejected", False) is True:
+                return True
+            profile_home = (
+                self._resolve_profile_home_for_source(source)
+                if getattr(source, "profile", None) else default_home
+            )
+            async with _async_profile_runtime_scope(profile_home):
+                return await self._handle_active_session_busy_message(
+                    event, self._session_key_for_source(source)
+                )
+
+        return _handler
+
     def _stamp_routed_profile(self, source) -> bool:
         """Stamp ``source.profile`` from ``profile_routes``; False when the route is rejected."""
         from gateway.profile_routing import ProfileRouteRejected
@@ -1354,6 +1386,13 @@ class GatewayAdapterLifecycleMixin:
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
         return self._make_default_profile_message_handler() if self._multiplex_on() else self._handle_message
+
+    def _primary_busy_session_handler(self):
+        """Return the correctly scoped busy-session handler for a primary adapter."""
+        return (
+            self._make_default_profile_busy_session_handler()
+            if self._multiplex_on() else self._handle_active_session_busy_message
+        )
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))

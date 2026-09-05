@@ -665,8 +665,9 @@ class GatewayBusySessionMixin:
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # See #17775.
-        if not self._is_user_authorized(event.source):
+        # See #17775. A primary transport can route a turn into a secondary
+        # profile, so authorize in the stamped transport scope.
+        if not self._is_user_authorized_for_source(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s", event.source.user_id, event.source.user_name,

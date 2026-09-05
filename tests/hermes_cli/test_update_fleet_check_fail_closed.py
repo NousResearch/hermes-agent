@@ -201,3 +201,22 @@ class TestCallSiteWiring:
             "elif not _fleet_snapshot and (restarted_services or killed_pids):"
             not in src
         )
+
+
+def test_unmapped_stops_are_not_expected_rows():
+    # A gateway stopped WITHOUT a successor is listed under "Restart manually" and never
+    # publishes a row; counting it made the probe demand rows that cannot exist and the
+    # update exited 1 after correctly stopping every unmapped gateway.
+    from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
+
+    out = _GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[101, 102], restarted_services=[],
+        failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids={101, 102}, stopped_unmapped_pids={101, 102},
+    )
+    pre, killed = out.fleet_probe_signals()
+    assert not _fleet_probe_expected_runtimes(_plan([]), pre, None, out.restarted_services, killed)
+    # A relaunched profile gateway (not unmapped) still predicts a row.
+    out.stopped_unmapped_pids.discard(102)
+    pre, killed = out.fleet_probe_signals()
+    assert _fleet_probe_expected_runtimes(_plan([]), pre, None, out.restarted_services, killed)

@@ -32,7 +32,14 @@ try:
 
     _MCP_SERVER_AVAILABLE = True
 except ImportError:
-    MCPServer = None  # type: ignore[assignment,misc]
+    try:
+        # mcp 1.x: FastMCP carries the same `@server.tool()` /
+        # `run_stdio_async()` surface under the pre-2.0 name.
+        from mcp.server import FastMCP as MCPServer
+
+        _MCP_SERVER_AVAILABLE = True
+    except ImportError:
+        MCPServer = None  # type: ignore[assignment,misc]
 
 
 # --- Helpers -----------------------------------------------------------------

@@ -23,8 +23,10 @@ def _kbc():
 
 
 def _kbd():
-    from hermes_cli import kanban_db_dispatch
-    return kanban_db_dispatch
+    # Keep the facade as the lookup surface so external plugins and tests that
+    # patch hermes_cli.kanban_db continue to affect the embedded dispatcher.
+    from hermes_cli import kanban_db
+    return kanban_db
 
 _CORRUPT_DB_MARKERS = ("file is not a database", "database disk image is malformed")
 

@@ -62,7 +62,7 @@ Notable skills (up to {skill_cap}):
 """
 
 
-_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE | re.IGNORECASE)
 
 
 @dataclass
@@ -166,6 +166,19 @@ def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Opt
         raw = ""
     parsed = _extract_json_blob(raw)
     if parsed is None:
+        # A response that is JSON-SHAPED (starts with `{`, once code fences are stripped) but
+        # failed to parse is a malformed/truncated structured reply -- e.g. the aux model or
+        # transport cut it off mid-object -- not free-form prose. Persisting it verbatim writes
+        # a raw JSON fragment (literal `{`, `\n` escapes, a sentence chopped mid-word) into
+        # profile.yaml's description field (#104067). Only fall back to "whole reply is prose"
+        # when the reply never looked like JSON in the first place.
+        stripped = _FENCE_RE.sub("", raw.strip())
+        if stripped.startswith("{"):
+            logger.info(
+                "describe: %s aux response looked JSON-shaped but failed to parse "
+                "(likely truncated) -- refusing to persist the raw fragment", canon,
+            )
+            return DescribeOutcome(canon, False, "LLM returned malformed/truncated JSON response")
         # Fall back: raw text trimmed to one paragraph.
         text = raw.strip().split("\n\n", 1)[0]
         if not text:

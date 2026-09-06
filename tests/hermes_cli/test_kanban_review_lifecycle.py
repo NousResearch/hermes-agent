@@ -478,6 +478,68 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_active_pr_guard_released_after_changes_requested(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rework after ``request_changes`` must re-spawn the implementer.
+
+    The canonical review cycle is: worker opens PR -> ``request_review`` ->
+    reviewer ``request_changes`` -> task lands back in ``ready`` for the SAME
+    implementer, who must push to the EXISTING PR. The PR URL from the
+    handoff is still inside the 24h window, so without a bypass the
+    ``active_pr`` guard defers every tick and the card is stuck until the
+    window elapses (NousResearch/hermes-agent#91614). The guard's rationale
+    ("re-spawning risks a duplicate PR") is inverted here: the rework is
+    *supposed* to touch that PR. A later plain re-queue with no review
+    verdict keeps the guard (a duplicate-PR risk is still real there).
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rework me", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        kb.add_comment(
+            conn, tid, author="worker",
+            body="Opened https://github.com/example/repo/pull/7 for review.",
+        )
+        assert kb.request_review(
+            conn, tid, summary="PR ready",
+            expected_run_id=claimed.current_run_id,
+        )
+        reviewer_run = kb.claim_review_task(conn, tid)
+        assert reviewer_run is not None
+        ok, implementer = kb.request_changes(
+            conn, tid, reason="fix wording",
+            expected_run_id=reviewer_run.current_run_id,
+        )
+        assert ok and implementer == "worker"
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready" and task.assignee == "worker"
+
+        # Rework lane: the changes_requested verdict releases the guard.
+        assert kbd.check_respawn_guard(conn, tid) is None
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert tid in [s[0] for s in res.spawned]
+        assert tid not in dict(res.respawn_guarded)
+
+        # Contrast: a task whose latest run is NOT a rework verdict stays guarded.
+        other = kb.create_task(conn, title="already PRed", assignee="worker")
+        kb.add_comment(
+            conn, other, author="worker",
+            body="Opened https://github.com/example/repo/pull/8 for review.",
+        )
+        assert kbd.check_respawn_guard(conn, other) == "active_pr"
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

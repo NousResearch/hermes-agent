@@ -1220,7 +1220,10 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        # id breaks the tie when two runs end within the same second (a
+        # review handoff + reviewer verdict routinely do) — without it the
+        # older run can shadow the newer verdict.
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
@@ -1272,8 +1275,13 @@ def check_respawn_guard(
     # 4. A recent GitHub PR comment only guards while the referenced PR is
     #    still active. Historical audit/evidence comments commonly retain URLs
     #    after the PR was merged or closed; those must not strand a task.
+    #    A fresh changes_requested verdict is an explicit rework handoff to
+    #    the same implementer, so its existing PR must be reused rather than
+    #    blocked by the duplicate-work guard.
     #    Unknown state fails closed so an unavailable `gh` or GitHub outage
     #    preserves the original duplicate-PR protection.
+    if latest_run is not None and latest_run["outcome"] == "changes_requested":
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     if _has_active_pr_comment(conn, task_id, pr_cutoff):
         return "active_pr"

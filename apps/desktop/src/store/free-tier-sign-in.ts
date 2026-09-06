@@ -59,6 +59,10 @@ export function freeTierSignInClaim() {
 
 let pollTimer: number | null = null
 let expiryTimer: number | null = null
+// Each begin/close bumps the generation. A continuation that resumes after an await (a poll that was
+// already in flight when the dialog closed, a start call for an abandoned attempt) compares its own
+// generation and drops out, so a stale attempt never publishes over the one now on screen.
+let attempt = 0
 
 function clearTimers() {
   if (pollTimer !== null) {
@@ -94,6 +98,7 @@ export function openFreeTierSignIn() {
 export function closeFreeTierSignIn() {
   const state = $freeTierSignIn.get()
 
+  attempt += 1
   clearTimers()
 
   if (state.status === 'code') {
@@ -139,8 +144,15 @@ async function openSignInUrl(url: string) {
  */
 export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   clearTimers()
+  const mine = ++attempt
+  const stale = () => mine !== attempt
 
   const status = await refreshFreeTierStatus(requestGateway)
+
+  if (stale()) {
+    return
+  }
+
   const minting = !status?.has_guest
 
   // No free-tier identity AND a real Nous account already connected: there is
@@ -150,6 +162,11 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   if (minting) {
     try {
       const { providers } = await listOAuthProviders()
+
+      if (stale()) {
+        return
+      }
+
       const nous = providers.find(provider => provider.id === NOUS_PROVIDER_ID)
 
       if (nous?.status.logged_in && nous.status.free_tier !== true) {
@@ -167,6 +184,14 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
   try {
     const start = await startOAuthLogin(NOUS_PROVIDER_ID)
 
+    if (stale()) {
+      // The user closed the dialog while the start call was out: do not leave the backend
+      // polling a session nobody is watching.
+      cancelOAuthSession(start.session_id).catch(() => undefined)
+
+      return
+    }
+
     if (start.flow !== 'device_code') {
       fail('error', null)
 
@@ -174,6 +199,12 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
     }
 
     await openSignInUrl(start.verification_url)
+
+    if (stale()) {
+      cancelOAuthSession(start.session_id).catch(() => undefined)
+
+      return
+    }
 
     set({
       code: start.user_code,
@@ -193,17 +224,21 @@ export async function beginFreeTierSignIn(requestGateway: FreeTierRequester) {
       fail('timed_out', null)
     }, ttlMs)
 
-    pollTimer = window.setInterval(() => void pollOnce(start.session_id, requestGateway), POLL_MS)
+    pollTimer = window.setInterval(() => void pollOnce(start.session_id, requestGateway, mine), POLL_MS)
   } catch (error) {
-    fail('error', error instanceof Error ? error.message : String(error))
+    if (!stale()) {
+      fail('error', error instanceof Error ? error.message : String(error))
+    }
   }
 }
 
-async function pollOnce(sessionId: string, requestGateway: FreeTierRequester) {
+async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mine: number) {
+  const stale = () => mine !== attempt
+
   try {
     const result = await pollOAuthSession(NOUS_PROVIDER_ID, sessionId)
 
-    if (result.status === 'pending') {
+    if (stale() || result.status === 'pending') {
       return
     }
 
@@ -224,13 +259,19 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester) {
     await requestGateway('reload.env').catch(() => undefined)
     await refreshFreeTierStatus(requestGateway)
 
+    if (stale()) {
+      return
+    }
+
     set({
       email: result.account_email ?? null,
       model: result.model ?? null,
       status: 'completed'
     })
   } catch (error) {
-    fail('error', error instanceof Error ? error.message : String(error))
+    if (!stale()) {
+      fail('error', error instanceof Error ? error.message : String(error))
+    }
   }
 }
 

@@ -720,10 +720,10 @@ async function applyFreeTierIntro(ctx: OnboardingContext, runtime: RuntimeReadin
 }
 
 /** "Begin" / "Sign in instead" / "Other providers" all consume the notice — the
- *  user has seen it. Best-effort: a failed write only means it is offered
- *  again, so nothing waits on it. */
-export async function ackFreeTierIntro(ctx: OnboardingContext) {
-  await ackFreeTierNotice(ctx.requestGateway)
+ *  user has seen it. Returns whether the backend recorded it: on a failed write
+ *  the ready screen stays up, because the flag it is keyed on is still pending. */
+export async function ackFreeTierIntro(ctx: OnboardingContext): Promise<boolean> {
+  return ackFreeTierNotice(ctx.requestGateway)
 }
 
 /** Take the ready screen down. Separate from the ack because the overlay plays

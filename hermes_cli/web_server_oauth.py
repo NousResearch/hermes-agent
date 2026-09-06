@@ -250,6 +250,16 @@ def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
     claim_code = str(sess.get("claim_code") or "")
     outcome: Dict[str, Any] = {}
+
+    def _cancelled() -> bool:
+        # The user abandoned this sign-in (DELETE /sessions/{id}) while this thread was blocked
+        # on the portal: nothing it learns afterwards may reach the auth store.
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                return True
+            return False
+
     with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
         expires_in = max(60, int(sess["expires_at"] - time.time()))
         if claim_code:
@@ -258,6 +268,8 @@ def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
                     client, portal_base_url, claim_code, expires_in=expires_in, interval=int(sess["interval"]))
             except anon_auth.AnonCredentialDead:
                 outcome = {"status": "voided", "reason": "account_retired"}
+            if _cancelled():
+                return
             if str(outcome.get("status")) != "completed":
                 with _profile_scope(_oauth_session_profile(session_id)):
                     _settle_promotion_failure(sess, outcome)
@@ -267,6 +279,8 @@ def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
             device_code=sess["device_code"], expires_in=expires_in,
             poll_interval=sess["interval"],
         )
+    if _cancelled():
+        return
     # Same post-processing as _nous_device_code_login (validate/refresh JWT)
     now = datetime.now(timezone.utc)
     token_ttl = int(token_data.get("expires_in") or 0)
@@ -289,7 +303,13 @@ def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
         full_state = refresh_nous_oauth_from_state(auth_state, timeout_seconds=15.0, force_refresh=False)
         if claim_code:
             full_state["auth_method"] = anon_auth.UPGRADED_AUTH_METHOD
-        persist_nous_credentials(full_state)
+        # The final cancellation check and the save share the session lock, so a cancel cannot
+        # land between them; the settle step (which may contact the portal) runs after the lock.
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                return
+            persist_nous_credentials(full_state)
         settled = anon_auth.settle_after_upgrade(full_state)
     with _oauth_sessions_lock:
         sess["account_email"] = str(outcome.get("account_email") or "") or None

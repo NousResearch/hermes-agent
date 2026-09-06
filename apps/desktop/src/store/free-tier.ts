@@ -52,15 +52,21 @@ export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): 
 
 /** Persist the one-time notice acknowledgement, then re-read so every surface
  *  keyed on `notice_pending` drops away together. */
-export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Promise<void> {
+export async function ackFreeTierNotice(requestGateway: FreeTierRequester): Promise<boolean> {
   try {
-    await requestGateway('free_tier.ack_notice')
+    const result = await requestGateway<{ acked?: boolean }>('free_tier.ack_notice')
+
+    if (result?.acked !== true) {
+      return false
+    }
   } catch {
-    // The notice is cosmetic; a failed ack just means it is offered again.
-    return
+    // A failed ack means the notice is still owed; the caller keeps its surface up.
+    return false
   }
 
   await refreshFreeTierStatus(requestGateway)
+
+  return true
 }
 
 /**

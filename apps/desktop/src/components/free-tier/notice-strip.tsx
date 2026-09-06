@@ -31,6 +31,14 @@ export function useFreeTierNoticeOwner(): boolean {
     return () => releaseFreeTierNotice(id)
   }, [id])
 
+  // When the owner unmounts it releases the claim; a composer still mounted takes it over,
+  // so the notice does not vanish until some later mount.
+  useEffect(() => {
+    if (claim === null) {
+      claimFreeTierNotice(id)
+    }
+  }, [claim, id])
+
   return claim === id
 }
 

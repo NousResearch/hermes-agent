@@ -58,3 +58,19 @@ describe('free-tier introduction branch table', () => {
     expect(freeTierStripPending($freeTierStatus.get(), $freeTierRoute.get())).toBe(false)
   })
 })
+
+describe('acknowledging the introduction', () => {
+  it('reports a failed ack so the ready screen stays up', async () => {
+    const { ackFreeTierIntro } = await import('@/store/onboarding')
+    const failing = async <T>(method: string): Promise<T> => {
+      if (method === 'free_tier.ack_notice') {
+        throw new Error('gateway away')
+      }
+
+      return READY as T
+    }
+
+    expect(await ackFreeTierIntro({ requestGateway: failing })).toBe(false)
+    expect(await ackFreeTierIntro({ requestGateway: gatewayReturning(READY) })).toBe(false) // status stub returns no {acked: true}
+  })
+})

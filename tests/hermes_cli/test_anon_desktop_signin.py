@@ -82,3 +82,27 @@ def test_status_routes_report_the_free_tier(portal):
     providers = client.get("/api/providers/oauth", headers=HEADERS).json()["providers"]
     nous = next(p for p in providers if p["id"] == "nous")
     assert nous["status"]["free_tier"] is True
+
+
+def test_a_sign_in_cancelled_while_waiting_never_persists_the_account(portal, free_account, monkeypatch):
+    """The poller is blocked on the transfer when the user cancels; when the wait returns completed,
+    nothing may reach the auth store."""
+    import threading
+    from hermes_cli import web_server_oauth
+    guest = anon_auth.ensure_portal_identity(blocking=True)
+    release = threading.Event()
+
+    def _wait_until_released(client, portal_base_url, claim_code, *, expires_in, interval):
+        release.wait(10)
+        return {"status": "completed", "user_id": "nas_user:9", "account_email": EMAIL}
+    monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait_until_released)
+
+    start = client.post("/api/providers/oauth/nous/start", headers=HEADERS).json()
+    assert client.delete(f"/api/providers/oauth/sessions/{start['session_id']}", headers=HEADERS).json()["ok"] is True
+    release.set()
+    for _ in range(100):
+        time.sleep(0.05)
+    assert portal.token_grants == 0
+    state = _load_auth_store()["providers"]["nous"]
+    assert state["anon_token"] == guest["anon_token"] and anon_auth.is_guest_state(state)
+    assert web_server_oauth._oauth_sessions.get(start["session_id"]) is None

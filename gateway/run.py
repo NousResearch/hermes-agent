@@ -3311,13 +3311,16 @@ class GatewayRunner(
     _shutdown_watchdog_done: Optional["threading.Event"] = None
     _platform_lock_takeover_on_start: bool = False
     _reconnect_watcher_task: Optional["asyncio.Task"] = None
+    pre_delivery_gate: Optional[Any] = None
 
-    def __init__(self, config: Optional[GatewayConfig] = None):
+    def __init__(self, config: Optional[GatewayConfig] = None, *, pre_delivery_gate=None):
         global _gateway_runner_ref
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.
         self.config = config if config is not None else load_gateway_config_for_runner()
+        # Supported host injection seam for optional response validation.  None preserves legacy behavior.
+        self.pre_delivery_gate = pre_delivery_gate
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
         try:

@@ -805,7 +805,7 @@ class TurnRunner:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
                     )
-                    pre_delivery_gate = getattr(self._runner, "_pre_delivery_gate", None)
+                    pre_delivery_gate = getattr(self._runner, "pre_delivery_gate", None)
                     if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict":
                         consumer_cfg.buffer_only = True
                     stream_consumer = GatewayStreamConsumer(
@@ -821,7 +821,14 @@ class TurnRunner:
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
+        strict_pre_delivery = (
+            getattr(self._runner, "pre_delivery_gate", None) is not None
+            and getattr(getattr(self._runner, "pre_delivery_gate", None), "mode", "legacy") == "strict"
+        )
+        if strict_pre_delivery and stream_consumer is not None:
+            stream_consumer.quarantine_content_delivery()
+        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None),
+                                     (None if strict_pre_delivery else stts)) if sc is not None]
         stream_delta_cb = None
         if delta_sinks:
             def stream_delta_cb(text: str) -> None:
@@ -1462,11 +1469,9 @@ class TurnRunner:
                 result["final_response"], result.get("messages", []), history_offset=len(agent_history),
             )
         ctx.result_holder[0] = result
-        if stream_consumer is None:
-            return
         # Strict pre-delivery validation runs before finish() so no buffered final can be sent
         # without approval. The gate is injected by the host; absent gate preserves legacy behavior.
-        pre_delivery_gate = getattr(self._runner, "_pre_delivery_gate", None)
+        pre_delivery_gate = getattr(self._runner, "pre_delivery_gate", None)
         _final_for_stream = None
         if (
             isinstance(result, dict) and not result.get("failed") and not result.get("interrupted")
@@ -1481,17 +1486,29 @@ class TurnRunner:
                 metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id)},
             )
             if not decision.allowed:
-                suppress = getattr(stream_consumer, "suppress_final_delivery", None)
-                if callable(suppress):
-                    suppress()
+                if stream_consumer is not None:
+                    suppress = getattr(stream_consumer, "suppress_final_delivery", None)
+                    if callable(suppress):
+                        suppress()
                 result["final_response"] = "⚠️ Response withheld because pre-delivery validation did not pass."
                 result["pre_delivery_blocked"] = True
-                stream_consumer.finish()
+                if stream_consumer is not None:
+                    stream_consumer.finish()
                 return
             if isinstance(decision.final_text, str):
                 _final_for_stream = decision.final_text
                 result["final_response"] = decision.final_text
+            if stream_consumer is not None:
+                release = getattr(stream_consumer, "release_content_delivery", None)
+                if callable(release):
+                    release()
+        if stream_consumer is None:
+            return
         if _final_for_stream is None:
+            if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict":
+                suppress = getattr(stream_consumer, "suppress_final_delivery", None)
+                if callable(suppress):
+                    suppress()
             stream_consumer.finish()
             return
         # Duck-type safe: test doubles / older consumers may expose a zero-arg finish().

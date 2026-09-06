@@ -147,7 +147,7 @@ def test_new_setup_does_not_ask_for_or_save_peer(
 
     def select(title, options, **kwargs):
         choices = {
-            "  OpenViking connection": 0 if credential == "service" else 1,
+            "  OpenViking connection": 0 if credential == "service" else 2,
             "  OpenViking credential": {"dev": 2, "user": 0, "root": 1}.get(
                 credential, 0
             ),

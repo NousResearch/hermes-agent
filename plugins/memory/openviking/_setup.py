@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from . import quick_local
+
 _SETUP_CANCELLED = object()
 _CANCEL_OPTION = ("Cancel setup", "no changes saved")
 
@@ -232,6 +234,7 @@ def _prompt_manual_connection_values(prompt, select, cancelled, *, service: bool
 
 def _link_ovcli_profile(*, config: dict, provider_config: dict, env_path: Path, ovcli_path: Path) -> None:
     ov = _ov()
+    quick_local.clear_managed_settings(provider_config)
     for key in ("endpoint", "api_key", "root_api_key", "account", "user", "agent", "api_key_type"):
         provider_config.pop(key, None)
     provider_config["use_ovcli_config"] = True
@@ -249,6 +252,7 @@ def _link_ovcli_profile(*, config: dict, provider_config: dict, env_path: Path, 
 
 def _save_hermes_only_config(*, config: dict, provider_config: dict, env_path: Path, values: dict) -> None:
     ov = _ov()
+    quick_local.clear_managed_settings(provider_config)
     provider_config["use_ovcli_config"] = False
     provider_config.pop("ovcli_config_path", None)
     # A newly selected connection must not inherit the previous YAML peer; a
@@ -328,12 +332,91 @@ def _mirror_manual_config_to_openviking_store(*, prompt, select, cancelled, valu
         return path
 
 
+def _run_quick_local_setup(*, config: dict, provider_config: dict, env_path: Path) -> bool:
+    ov = _ov()
+
+    def report_progress(event: quick_local.QuickLocalProgress) -> None:
+        _say(event.message)
+
+    setup = quick_local.QuickLocalSetup(
+        health_check=ov._validate_openviking_reachability,
+        progress=report_progress,
+    )
+    try:
+        preflight = setup.preflight(env_path.parent)
+    except quick_local.QuickLocalSetupError as exc:
+        _say(f"Quick Local preflight failed: {exc}")
+        return False
+
+    try:
+        result = setup.provision(hermes_home=env_path.parent, preflight=preflight)
+    except quick_local.QuickLocalSetupError as exc:
+        _say(f"Quick Local setup failed: {exc}")
+        return False
+
+    _link_ovcli_profile(
+        config=config,
+        provider_config=provider_config,
+        env_path=env_path,
+        ovcli_path=result.paths.ovcli_config,
+    )
+    provider_config.update(
+        deployment=quick_local.DEPLOYMENT,
+        server_config_path=str(result.paths.server_config),
+        server_command_path=str(result.paths.server_command),
+    )
+    if result.server_restart_required:
+        print("\n  Quick Local restart required")
+        _say(
+            "The running OpenViking server must restart to use the updated "
+            "runtime or Hermes LLM settings."
+        )
+        _say(f"Stop the Quick Local server at {result.endpoint}, then start Hermes again.")
+        _say(
+            "Hermes will restart it with the updated runtime and settings "
+            "when memory is first used."
+        )
+        _say(f"Config file: {result.paths.ovcli_config}")
+        print()
+    else:
+        action = "Reused" if result.reused else "Configured"
+        _print_openviking_ready(
+            f"{action} Quick Local at {result.endpoint}.",
+            result.paths.ovcli_config,
+        )
+    return True
+
+
 def _run_create_profile_setup(*, prompt, select, cancelled, config: dict, provider_config: dict, env_path: Path) -> bool | object:
-    source_choice = select("  OpenViking connection",
-                           [("OpenViking Service (VolcEngine Cloud)", "use the managed OpenViking endpoint"),
-                            ("Custom", "use a local, VPS, or self-hosted OpenViking server")],
-                           default=0, cancel_returns=cancelled)
+    source_choice = select(
+        "  OpenViking connection",
+        [
+            (
+                "OpenViking Service (VolcEngine Cloud)",
+                "Managed cloud service; API key required",
+            ),
+            (
+                "Quick Local Setup",
+                "Set up OpenViking with built-in local embeddings",
+            ),
+            (
+                "Connect to an existing server",
+                "Use a self-managed custom server (Remote/Local)",
+            ),
+        ],
+        default=0,
+        cancel_returns=cancelled,
+    )
     if source_choice == cancelled:
+        return _SETUP_CANCELLED
+
+    if source_choice == 1:
+        return _run_quick_local_setup(
+            config=config,
+            provider_config=provider_config,
+            env_path=env_path,
+        )
+    if source_choice not in {0, 2}:
         return _SETUP_CANCELLED
 
     values = _prompt_manual_connection_values(prompt, select, cancelled, service=(source_choice == 0))

@@ -10,6 +10,7 @@ import pytest
 
 import plugins.memory.openviking as openviking_module
 from plugins.memory.openviking import OpenVikingMemoryProvider, quick_local
+from plugins.memory.openviking import _setup as setup_flow
 
 
 def _preflight(tmp_path: Path) -> quick_local.QuickLocalPreflight:
@@ -810,11 +811,11 @@ def test_setup_menu_keeps_cloud_custom_paths_and_adds_quick_local(
         return 1
 
     quick_setup = MagicMock(return_value=True)
-    monkeypatch.setattr(openviking_module, "_run_quick_local_setup", quick_setup)
+    monkeypatch.setattr(setup_flow, "_run_quick_local_setup", quick_setup)
     config = {"memory": {}}
     provider_config = {}
 
-    result = openviking_module._run_create_profile_setup(
+    result = setup_flow._run_create_profile_setup(
         prompt=MagicMock(),
         select=select,
         cancelled=-1,
@@ -872,7 +873,7 @@ def test_quick_local_cli_links_private_profile_and_runtime_config(
     config = {"memory": {}}
     provider_config = {}
 
-    result = openviking_module._run_quick_local_setup(
+    result = setup_flow._run_quick_local_setup(
         config=config,
         provider_config=provider_config,
         env_path=tmp_path / ".env",
@@ -915,7 +916,7 @@ def test_quick_local_cli_reports_when_running_server_needs_restart(
     monkeypatch.setattr(quick_local, "QuickLocalSetup", FakeSetup)
 
     assert (
-        openviking_module._run_quick_local_setup(
+        setup_flow._run_quick_local_setup(
             config={"memory": {}},
             provider_config={},
             env_path=tmp_path / ".env",
@@ -938,7 +939,7 @@ def test_linking_a_self_managed_profile_clears_quick_local_runtime_settings(tmp_
         "server_command_path": "/old/openviking-server",
     }
 
-    openviking_module._link_ovcli_profile(
+    setup_flow._link_ovcli_profile(
         config={"memory": {}},
         provider_config=provider_config,
         env_path=tmp_path / ".env",

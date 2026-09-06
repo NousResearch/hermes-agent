@@ -30,7 +30,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import url2pathname
 
@@ -40,6 +40,8 @@ from agent.skill_commands import extract_user_instruction_from_skill_message
 from hermes_cli import __version__ as _HERMES_VERSION
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
+
+from . import quick_local
 
 try:
     import fcntl
@@ -552,6 +554,18 @@ def _resolve_ovcli_config_path(config_path: str = "") -> Path:
     return Path(chosen).expanduser() if chosen else _default_ovcli_config_path()
 
 
+def _provider_ovcli_config_path(provider_config: Mapping[str, Any]) -> Path:
+    config_path = _clean_config_value(provider_config.get("ovcli_config_path"))
+    if provider_config.get("deployment") == quick_local.DEPLOYMENT:
+        if not config_path:
+            raise _OpenVikingEndpointError(
+                "Quick Local's OpenViking profile link is missing. Rerun "
+                "`hermes memory setup openviking` to repair it."
+            )
+        return Path(config_path).expanduser()
+    return _resolve_ovcli_config_path(config_path)
+
+
 def _load_ovcli_config(path: Optional[Path] = None) -> dict:
     config_path = path or _resolve_ovcli_config_path()
     if not config_path.exists():
@@ -752,7 +766,7 @@ def _ovcli_values_for(provider_config: dict) -> dict:
     """Connection values from the linked ovcli profile, or {} when none is linked."""
     if not provider_config.get("use_ovcli_config"):
         return {}
-    ovcli_path = _resolve_ovcli_config_path(str(provider_config.get("ovcli_config_path") or ""))
+    ovcli_path = _provider_ovcli_config_path(provider_config)
     return _connection_values_from_ovcli(_load_ovcli_config(ovcli_path))
 
 
@@ -762,16 +776,17 @@ def _resolve_connection_settings(provider_config: Optional[dict] = None) -> dict
     comes from config.yaml."""
     provider_config = dict(provider_config or {})
     ovcli_values = _ovcli_values_for(provider_config)
+    ignore_environment = provider_config.get("deployment") == quick_local.DEPLOYMENT
 
     def layered(key: str, default: str = "", *, env_authoritative: bool = False) -> str:
-        env = os.environ.get(f"OPENVIKING_{key.upper()}")
+        env = None if ignore_environment else os.environ.get(f"OPENVIKING_{key.upper()}")
         if env is not None:
             env = env.strip()
             if env_authoritative:
                 return env
         return env or ovcli_values.get(key) or _clean_config_value(provider_config.get(key)) or default
 
-    api_key_env = os.environ.get("OPENVIKING_API_KEY")
+    api_key_env = None if ignore_environment else os.environ.get("OPENVIKING_API_KEY")
     return {
         "endpoint": _normalize_openviking_url(layered("endpoint", _DEFAULT_ENDPOINT)),
         "api_key": api_key_env.strip() if api_key_env is not None else ovcli_values.get("api_key", ""),
@@ -955,7 +970,12 @@ def _local_listener_suffix(endpoint: str) -> str:
     return f" The listener on {host}:{port} is {_describe_local_port_listener(host, port)}."
 
 
-def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
+def _start_local_openviking_server(
+    endpoint: str,
+    *,
+    config_path: Optional[Path] = None,
+    server_command_path: Optional[Path] = None,
+) -> tuple[str, str]:
     try:
         host, port = _local_openviking_bind(endpoint)
     except ValueError as e:
@@ -968,7 +988,16 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
             f"Port {host}:{port} is occupied by {_describe_local_port_listener(host, port)}. Hermes did not start "
             "openviking-server because the listener has not passed OpenViking's /health check."
         )
-    server_cmd = shutil.which("openviking-server")
+    if server_command_path is not None:
+        server_command_path = server_command_path.expanduser()
+        if not server_command_path.is_file():
+            return (
+                _LOCAL_SERVER_FAILED,
+                f"OpenViking server executable was not found: {server_command_path}",
+            )
+        server_cmd = str(server_command_path)
+    else:
+        server_cmd = shutil.which("openviking-server")
     if not server_cmd:
         return _LOCAL_SERVER_FAILED, "openviking-server was not found on PATH. Start it manually, then retry."
     log_path = _hermes_home_path() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
@@ -983,9 +1012,46 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
         # Hermes venv, aborting `hermes update` with access-denied on .pyd files. (#78153)
         child_env = os.environ.copy()
         child_env.pop("PYTHONPATH", None)
+        command = [server_cmd]
+        if config_path is not None:
+            config_path = config_path.expanduser()
+            if not config_path.is_file():
+                return (
+                    _LOCAL_SERVER_FAILED,
+                    f"OpenViking server config was not found: {config_path}",
+                )
+            command.extend(["--config", str(config_path)])
+        command.extend(["--host", host, "--port", str(port)])
         with log_path.open("ab") as log_file:
-            subprocess.Popen([server_cmd, "--host", host, "--port", str(port)], stdout=log_file, stderr=log_file,
-                             stdin=subprocess.DEVNULL, start_new_session=True, env=child_env)
+            common_kwargs: dict[str, Any] = {
+                "stdout": log_file,
+                "stderr": log_file,
+                "stdin": subprocess.DEVNULL,
+                "env": child_env,
+            }
+            if server_command_path is None:
+                subprocess.Popen(command, **common_kwargs, start_new_session=True)
+            else:
+                from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+
+                try:
+                    subprocess.Popen(
+                        command,
+                        **common_kwargs,
+                        **windows_detach_popen_kwargs(),
+                    )
+                except OSError:
+                    if os.name != "nt":
+                        raise
+                    from hermes_cli._subprocess_compat import (
+                        windows_detach_flags_without_breakaway,
+                    )
+
+                    subprocess.Popen(
+                        command,
+                        **common_kwargs,
+                        creationflags=windows_detach_flags_without_breakaway(),
+                    )
     except Exception as e:
         return _LOCAL_SERVER_FAILED, f"Could not start openviking-server: {e}"
     return _LOCAL_SERVER_STARTED, f"Started openviking-server on {host}:{port} in the background. Logs: {log_path}"
@@ -1201,7 +1267,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
         """The resolved ovcli config (default ~/.openviking/ovcli.conf) so endpoint/api-key
         survive backup/import. The backup walk itself drops paths outside $HOME."""
         try:
-            return [str(_resolve_ovcli_config_path())]
+            provider_config = _load_hermes_openviking_config()
+            return [str(_provider_ovcli_config_path(provider_config))]
         except Exception:
             return []
 
@@ -1288,17 +1355,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
         if not provider_config.get("use_ovcli_config"):
             return {key: "(set)" if key in ("api_key", "root_api_key") else value for key, value in provider_config.items()}
 
-        ovcli_path = _resolve_ovcli_config_path(str(provider_config.get("ovcli_config_path") or ""))
-        display = {"use_ovcli_config": True, "ovcli_config_path": str(ovcli_path)}
         try:
+            ovcli_path = _provider_ovcli_config_path(provider_config)
             settings = _resolve_connection_settings(provider_config)
         except Exception as e:
-            display["error"] = _format_openviking_exception(e)
-            return display
+            return {
+                "use_ovcli_config": True,
+                "ovcli_config_path": _clean_config_value(provider_config.get("ovcli_config_path")),
+                "error": _format_openviking_exception(e),
+            }
+        display = {"use_ovcli_config": True, "ovcli_config_path": str(ovcli_path)}
         display["endpoint"] = settings.get("endpoint") or _DEFAULT_ENDPOINT
         display.update({key: settings[key] for key in ("agent", "account", "user") if settings.get(key)})
-        if env_overrides := [key for key in _OPENVIKING_ENV_KEYS if key in os.environ]:
-            display["env_overrides"] = ", ".join(env_overrides)
+        if provider_config.get("deployment") != quick_local.DEPLOYMENT:
+            if env_overrides := [key for key in _OPENVIKING_ENV_KEYS if key in os.environ]:
+                display["env_overrides"] = ", ".join(env_overrides)
         return display
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -1375,7 +1446,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if self._shutting_down or self._runtime_start_pending or (self._runtime_start_thread and self._runtime_start_thread.is_alive()):
                 return
             self._runtime_start_pending = True
-            start_state, start_message = _start_local_openviking_server(endpoint)
+            provider_config = _load_hermes_openviking_config()
+            config_path = quick_local.managed_server_config_path(provider_config)
+            server_command_path = quick_local.managed_server_command_path(provider_config)
+            is_quick_local = provider_config.get("deployment") == quick_local.DEPLOYMENT
+            if is_quick_local and (config_path is None or server_command_path is None):
+                start_state = _LOCAL_SERVER_FAILED
+                start_message = (
+                    "Quick Local's private server configuration is incomplete. "
+                    "Rerun `hermes memory setup openviking` to repair it."
+                )
+            elif is_quick_local:
+                start_state, start_message = _start_local_openviking_server(
+                    endpoint,
+                    config_path=config_path,
+                    server_command_path=server_command_path,
+                )
+            else:
+                start_state, start_message = _start_local_openviking_server(endpoint)
             if start_state != _LOCAL_SERVER_STARTED:
                 self._runtime_start_pending = False
 

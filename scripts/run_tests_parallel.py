@@ -357,7 +357,12 @@ def _sandboxed_test_command(
             # macOS has no Linux-style PID namespace. Denying the signal
             # syscall at Seatbelt level prevents ctypes/native-code bypasses
             # from reaching any host process, including the live gateway.
+            # Restore signals only within this exact sandbox instance so
+            # tests can reap children they created; the Python lineage guard
+            # remains a second check before those syscalls.
             "(deny signal)",
+            "(allow signal (target self))",
+            "(allow signal (target same-sandbox))",
             # Credential and service APIs can bypass command/path guards by
             # calling securityd or launchd over Mach/XPC directly. No Hermes
             # test needs a host broker, so deny lookup broadly and fail closed.

@@ -82,6 +82,36 @@ def test_fault_block_spawns_one_smith_session_with_brief(mod, monkeypatch, tmp_p
     assert list((tmp_path / "briefs").glob("t_cap-*.md"))
 
 
+def test_overwatch_child_is_not_spawned_as_a_kanban_worker(mod, monkeypatch, tmp_path):
+    """2026-09-07, t_125dfa35 run 1143.
+
+    ``on_block`` runs inside the blocked worker's own process, so ``os.environ``
+    carries ``HERMES_KANBAN_TASK``/``HERMES_KANBAN_RUN_ID``. Inheriting them made
+    the overwatch assessor look like a kanban worker to
+    ``agent/kanban_checkpoint.py``: it got the per-turn ``[checkpoint]`` reminder
+    and the forced terminal-only finalize turn, and was steered toward a board
+    call overwatch must never make. The assessor's env must carry the overwatch
+    marker and NEITHER worker var.
+    """
+    db = _board(tmp_path, [("t_env", "Build X", "blocked", "capability", 0, "bob", 1.0)])
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_env")
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "1143")
+    envs = []
+    monkeypatch.setattr(mod.subprocess, "Popen",
+                        lambda argv, **kw: envs.append(kw.get("env") or {}))
+    mod.on_block(task_id="t_env", assignee="bob", reason="workspace is empty")
+    assert len(envs) == 1
+    child = envs[0]
+    assert child.get("HERMES_OVERWATCH_TASK") == "t_env"
+    assert "HERMES_KANBAN_TASK" not in child
+    assert "HERMES_KANBAN_RUN_ID" not in child
+    # Negative control: the parent process keeps its own env — the strip is on
+    # the child's copy only, so this test cannot pass by mutating os.environ.
+    import os as _os
+    assert _os.environ.get("HERMES_KANBAN_TASK") == "t_env"
+
+
 def test_hold_dependency_and_first_transient_spawn_nothing(mod, monkeypatch, tmp_path):
     db = _board(tmp_path, [("t_hold", "x", "blocked", "operator_hold", 0, "bob", 1.0),
                            ("t_dep", "x", "todo", "dependency", 0, "bob", 1.0),

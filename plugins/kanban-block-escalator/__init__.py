@@ -282,6 +282,16 @@ def _spawn(assessor: str, prompt: str, task_id: str) -> None:
     try:
         env = dict(os.environ)
         env["HERMES_OVERWATCH_TASK"] = task_id
+        # 2026-09-07: this hook runs INSIDE the blocked worker's process, so
+        # os.environ carries HERMES_KANBAN_TASK / HERMES_KANBAN_RUN_ID. Passing
+        # them on made the overwatch assessor look like a kanban worker to
+        # agent/kanban_checkpoint.py: it received the per-turn `[checkpoint]`
+        # reminder and the forced terminal-only finalize turn, and was steered
+        # toward a board call it must never make (overwatch assesses; it does
+        # not close cards). Observed live on t_125dfa35 run 1143, where the
+        # assessor reported "the checkpoint cut MY turn too".
+        for _worker_var in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID"):
+            env.pop(_worker_var, None)
         subprocess.Popen(
             [_hermes_bin(), "-p", assessor, "--cli", "chat", "-q", prompt],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

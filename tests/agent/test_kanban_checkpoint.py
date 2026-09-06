@@ -23,6 +23,7 @@ from agent.kanban_checkpoint import (
     mark_finalize_fired,
     mark_finalize_succeeded,
     maybe_append_checkpoint_reminder,
+    reminder_min_assistant_turns,
     reset_finalize_state,
     should_fire_finalize_turn,
     terminal_only_schemas,
@@ -156,19 +157,91 @@ def test_fired_latch_is_sticky_after_mark(worker_env):
 # ── 1. Per-turn checkpoint reminder ─────────────────────────────────
 
 
+def _oriented(n: int = 3) -> list:
+    """A message list that has already had ``n`` assistant turns, i.e. the
+    worker is past orientation and the reminder gate (2026-09-07) is open."""
+    msgs: list = [{"role": "user", "content": "work"}]
+    for i in range(n):
+        msgs.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": str(i), "type": "function",
+                     "function": {"name": "read_file", "arguments": "{}"}}
+                ],
+            }
+        )
+        msgs.append(
+            {"role": "tool", "name": "read_file", "tool_call_id": str(i), "content": "ok"}
+        )
+    return msgs
+
+
 def test_checkpoint_reminder_short_and_named(worker_env):
     rem = build_checkpoint_reminder("t_f7f99419")
     assert "t_f7f99419" in rem
     assert "kanban_complete" in rem or "kanban_block" in rem
     # A recency notice, not a paragraph.
-    assert len(rem) < 260
+    assert len(rem) < 420
+
+
+def test_checkpoint_reminder_is_conditional_not_an_order(worker_env):
+    """2026-09-07 regression guard for t_125dfa35.
+
+    The old text opened "End this worker with a terminal board tool" and a
+    deepseek-v4-flash worker obeyed it 13-19s into orientation, three runs
+    running, blocking the card with nothing written. The reminder must say
+    up front that it is not an instruction to stop now, and must tell the
+    worker to keep going until the work is actually done.
+    """
+    rem = build_checkpoint_reminder("t_f7f99419").lower()
+    assert "not an instruction to finish now" in rem
+    assert "keep working" in rem
+    # The bare imperative that caused the incident must be gone.
+    assert "end this worker with a terminal board tool" not in rem
+
+
+def test_reminder_suppressed_during_orientation(worker_env):
+    """The gate itself: before the worker has had enough assistant turns there
+    has been no recency decay to correct, so nothing is injected."""
+    msgs = [
+        {"role": "user", "content": "work"},
+        {"role": "tool", "name": "read_file", "tool_call_id": "1", "content": "ok"},
+    ]
+    out = maybe_append_checkpoint_reminder(msgs, "t_f7f99419")
+    assert out is msgs
+    assert all(not m.get("_kanban_checkpoint_reminder_synthetic") for m in out)
+
+
+def test_reminder_gate_opens_at_the_threshold(worker_env):
+    """One turn below the threshold: silent. At the threshold: injected. This
+    is the two-sided control — without it the gate could be permanently shut
+    and the test suite would not notice."""
+    below = _oriented(reminder_min_assistant_turns() - 1)
+    assert maybe_append_checkpoint_reminder(below, "t_f7f99419") is below
+
+    at = _oriented(reminder_min_assistant_turns())
+    out = maybe_append_checkpoint_reminder(at, "t_f7f99419")
+    assert out is not at
+    assert out[-1].get("_kanban_checkpoint_reminder_synthetic") is True
+
+
+def test_reminder_min_turns_env_override(worker_env):
+    """0 restores the pre-2026-09-07 behaviour; garbage falls back to the
+    default rather than raising inside a turn."""
+    worker_env.setenv("HERMES_KANBAN_REMINDER_MIN_TURNS", "0")
+    assert reminder_min_assistant_turns() == 0
+    msgs = [{"role": "tool", "name": "read_file", "tool_call_id": "1", "content": "ok"}]
+    out = maybe_append_checkpoint_reminder(msgs, "t_f7f99419")
+    assert out[-1].get("_kanban_checkpoint_reminder_synthetic") is True
+
+    worker_env.setenv("HERMES_KANBAN_REMINDER_MIN_TURNS", "not-a-number")
+    assert reminder_min_assistant_turns() == 3
 
 
 def test_reminder_appended_after_tool_result(worker_env):
-    msgs = [
-        {"role": "user", "content": "work"},
-        {"role": "tool", "name": "web_search", "tool_call_id": "1", "content": "ok"},
-    ]
+    msgs = _oriented()
     out = maybe_append_checkpoint_reminder(msgs, "t_f7f99419")
     assert out != msgs  # new list returned when appended
     assert len(out) == len(msgs) + 1
@@ -179,8 +252,9 @@ def test_reminder_appended_after_tool_result(worker_env):
 
 
 def test_reminder_skipped_when_terminal_already_called(worker_env):
-    msgs = [
-        {"role": "user", "content": "work"},
+    # Past the orientation gate, so this test measures the terminal check and
+    # not, vacuously, the 2026-09-07 min-turns gate.
+    msgs = _oriented() + [
         {
             "role": "assistant",
             "content": "",
@@ -206,7 +280,8 @@ def test_reminder_skipped_when_terminal_already_called(worker_env):
 
 def test_reminder_skipped_when_tail_is_user(worker_env):
     # Would create user→user on strict wire providers — must be skipped.
-    msgs = [{"role": "user", "content": "work"}, {"role": "user", "content": "next"}]
+    # Past the orientation gate so the tail check is what is being measured.
+    msgs = _oriented() + [{"role": "user", "content": "next"}]
     out = maybe_append_checkpoint_reminder(msgs, "t_f7f99419")
     assert out is msgs
     assert all(not m.get("_kanban_checkpoint_reminder_synthetic") for m in out)
@@ -215,7 +290,7 @@ def test_reminder_skipped_when_tail_is_user(worker_env):
 def test_reminder_not_stacked_across_appends(worker_env):
     # Appending again (a later turn's request copy) yields exactly one reminder
     # — it never accumulates a paragraph of repeated notices.
-    msgs = [{"role": "tool", "name": "web_search", "tool_call_id": "1", "content": "ok"}]
+    msgs = _oriented()
     out1 = maybe_append_checkpoint_reminder(msgs, "t_f7f99419")
     out2 = maybe_append_checkpoint_reminder(list(out1), "t_f7f99419")
     assert len([m for m in out2 if m.get("_kanban_checkpoint_reminder_synthetic")]) == 1

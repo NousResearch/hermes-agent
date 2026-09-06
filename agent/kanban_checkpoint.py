@@ -64,6 +64,41 @@ from agent.kanban_stop import _TERMINAL_KANBAN_TOOLS as _TERMINAL_TOOLS
 # so this should never happen).
 _REMINDER_FLAG = "_kanban_checkpoint_reminder_synthetic"
 
+# Assistant turns that must have happened before the reminder is injected at
+# all (2026-09-07). Defence in depth behind the wording fix, and it follows
+# directly from this module's own stated purpose: the reminder addresses
+# RECENCY DECAY — the opening system prompt's obligation drifting out of the
+# model's instruction-following window "late in a long tool loop". On the first
+# turns there has been no drift, so the reminder has nothing to do and can only
+# mislead a worker that is still orienting. Override with
+# HERMES_KANBAN_REMINDER_MIN_TURNS (0 restores the pre-2026-09-07 behaviour,
+# which is how the negative control neuters this gate).
+_REMINDER_MIN_ASSISTANT_TURNS_DEFAULT = 3
+
+
+def reminder_min_assistant_turns() -> int:
+    raw = (os.environ.get("HERMES_KANBAN_REMINDER_MIN_TURNS") or "").strip()
+    if not raw:
+        return _REMINDER_MIN_ASSISTANT_TURNS_DEFAULT
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _REMINDER_MIN_ASSISTANT_TURNS_DEFAULT
+
+
+def _assistant_turns_in(messages: Iterable[dict]) -> int:
+    """Count assistant turns already in a message list.
+
+    Never raises on an odd message shape — an accounting helper must not be
+    able to fail a turn.
+    """
+    n = 0
+    for msg in messages or []:
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            n += 1
+    return n
+
+
 # ---------- Reminder (recency fix) ---------------------------------------
 
 def kanban_checkpoint_enabled() -> bool:
@@ -80,13 +115,23 @@ def build_checkpoint_reminder(task_id: str) -> str:
 
     Deliberately NOT a re-statement of the whole contract — a handful of tokens
     kept near the recent tail, not a paragraph.
+
+    2026-09-07: the wording is CONDITIONAL, and says so first. The previous text
+    opened with the bare imperative "End this worker with a terminal board tool"
+    and a weak-hierarchy model read it as "end now": on t_125dfa35 a
+    deepseek-v4-flash worker obeyed it 13–19s into orientation, three runs
+    running, and called ``kanban_block`` with "Checkpoint requested a terminal
+    board state before implementation could begin" — no code was ever written.
+    The reminder exists to stop a FINISHED worker exiting on prose. It must
+    never read as permission, let alone instruction, to stop early.
     """
     tid = (task_id or "").strip() or worker_task_id() or "this task"
     return (
-        "[checkpoint] Task `%s` is still `running` — a plain-text reply is not "
-        "a terminal state. End this worker with a terminal board tool: "
-        "`kanban_complete`/`kanban_block`, or the handoffs "
-        "`kanban_request_review`/`kanban_request_changes`." % tid
+        "[checkpoint] Reminder about how to finish task `%s` — NOT an "
+        "instruction to finish now. Keep working until the task's own work is "
+        "actually done or you are genuinely blocked. At that point a plain-text "
+        "reply will not close it: call `kanban_complete`/`kanban_block`, or the "
+        "handoffs `kanban_request_review`/`kanban_request_changes`." % tid
     )
 
 
@@ -100,6 +145,9 @@ def maybe_append_checkpoint_reminder(api_messages: list, task_id: str) -> list:
     Skips when:
     * not a kanban worker (env unset), or
     * the session already called a terminal tool (no point re-minding), or
+    * fewer than ``reminder_min_assistant_turns()`` assistant turns have
+      happened yet — the worker is still orienting and there has been no
+      recency decay to correct (2026-09-07), or
     * the current tail is a ``user`` message (appending would make invalid
       user→user alternation on strict wire providers).
 
@@ -112,6 +160,8 @@ def maybe_append_checkpoint_reminder(api_messages: list, task_id: str) -> list:
     if _session_called_terminal_in(api_messages):
         return api_messages
     if not api_messages:
+        return api_messages
+    if _assistant_turns_in(api_messages) < reminder_min_assistant_turns():
         return api_messages
     tail = api_messages[-1]
     if isinstance(tail, dict) and tail.get("role") == "user":
@@ -238,6 +288,7 @@ def serialize_finalize_metrics(metrics: dict) -> str:
 
 __all__ = [
     "build_checkpoint_reminder",
+    "reminder_min_assistant_turns",
     "build_finalize_instruction",
     "finalize_metrics",
     "kanban_checkpoint_enabled",

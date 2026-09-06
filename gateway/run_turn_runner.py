@@ -1644,23 +1644,32 @@ class TurnRunner:
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
+        # Cached agents retain cumulative accounting across turns. Capture the
+        # exact pre-call baseline so the runtime footer reports this turn only.
+        runtime_usage_baseline = {
+            "uncached_input_tokens_start": getattr(agent, "session_input_tokens", 0) or 0,
+            "completion_tokens_start": getattr(agent, "session_completion_tokens", 0) or 0,
+            "cache_read_tokens_start": getattr(agent, "session_cache_read_tokens", 0) or 0,
+            "cache_write_tokens_start": getattr(agent, "session_cache_write_tokens", 0) or 0,
+            "usage_report_calls_start": getattr(agent, "session_usage_report_calls", 0) or 0,
+            "cache_usage_report_calls_start": getattr(agent, "session_cache_usage_report_calls", 0) or 0,
+            "context_usage_report_calls_start": getattr(agent, "session_context_usage_report_calls", 0) or 0,
+        }
         result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.
         # See the outer finally/completion section below. See #60671.
         final_response = result.get("final_response")
-        # Actual token counts from the agent instance used for this run.
+        # Final runtime identity plus provider-reported deltas for this turn.
         agent = ctx.agent_holder[0]
-        has_comp = bool(agent) and hasattr(agent, "context_compressor")
-        comp = agent.context_compressor if has_comp else None
-        usage = {
-            "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
-            "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
-            "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
-            "model": getattr(agent, "model", None) if agent else None,
-            "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
-        }
+        from gateway.runtime_footer import _gateway_turn_runtime_metadata
+
+        usage = _gateway_turn_runtime_metadata(
+            agent,
+            **runtime_usage_baseline,
+            result_api_calls=result.get("api_calls") if isinstance(result, dict) else None,
+        )
         compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
         # persistence). compression_deferred (soft lock-contention defer) is distinct from

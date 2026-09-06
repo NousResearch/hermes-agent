@@ -955,6 +955,43 @@ class QueuedFailedEmptyAgent:
         }
 
 
+class MissingUsageFooterAgent:
+    """One completed provider call returns no usable usage metadata."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+        self.model = "example-model"
+        self.reasoning_config = {"enabled": True, "effort": "max"}
+        self.session_prompt_tokens = 10_000
+        self.session_input_tokens = 10_000
+        self.session_completion_tokens = 500
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.session_usage_report_calls = 2
+        self.session_cache_usage_report_calls = 2
+        self.session_context_usage_report_calls = 2
+        self.session_last_prompt_tokens = 50_000
+        self.context_compressor = SimpleNamespace(context_length=1_000_000)
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class MixedUsageFooterAgent(MissingUsageFooterAgent):
+    """A two-call tool loop has usable usage for only one response."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        self.session_prompt_tokens += 50_000
+        self.session_input_tokens += 2_500
+        self.session_completion_tokens += 400
+        self.session_cache_read_tokens += 47_500
+        self.session_usage_report_calls += 1
+        self.session_cache_usage_report_calls += 1
+        self.session_context_usage_report_calls += 1
+        self.session_last_prompt_tokens = 50_000
+        return {"final_response": "done", "messages": [], "api_calls": 2}
+
+
 class BackgroundReviewAgent:
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
@@ -1255,6 +1292,30 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent_cls,expected_tokens,expected_status",
+    [
+        (MissingUsageFooterAgent, (None, None), None),
+        (MixedUsageFooterAgent, (2_500, 400), "reported_partial"),
+    ],
+)
+async def test_run_agent_labels_or_hides_incomplete_provider_usage(
+    monkeypatch, tmp_path, agent_cls, expected_tokens, expected_status
+):
+    _adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        agent_cls,
+        session_id=f"sess-{agent_cls.__name__}",
+        config_data={"display": {"tool_progress": "off"}},
+    )
+
+    assert result["final_response"] == "done"
+    assert (result["turn_input_tokens"], result["turn_output_tokens"]) == expected_tokens
+    assert result["token_usage_status"] == expected_status
 
 
 @pytest.mark.asyncio

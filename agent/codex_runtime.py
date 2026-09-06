@@ -78,8 +78,12 @@ def _queue_token_counts(agent, fail_msg: str, *fail_extra: Any, counts: Callable
 
 
 def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
-    """Translate Codex app-server token usage into Hermes accounting. Prompt bucket = uncached + cached
-    input (the protocol exposes no cache-write tokens); a turn with no usage still counts as one API call."""
+    """Translate Codex app-server token usage into Hermes accounting.
+
+    ``inputTokens`` is the full prompt bucket; subtract cache read/write input
+    before recording canonical uncached input. A turn with no usage still
+    counts as one API call.
+    """
     agent.session_api_calls += 1
     usage = getattr(turn, "token_usage_last", None)
     compressor = getattr(agent, "context_compressor", None)
@@ -94,9 +98,14 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
                             counts=lambda: billing(billing_mode="subscription_included"))
         return {}
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+    input_total = _coerce_usage_int(usage.get("inputTokens"))
+    cache_read_tokens = _coerce_usage_int(usage.get("cachedInputTokens"))
+    cache_write_tokens = _coerce_usage_int(usage.get("cacheWriteInputTokens"))
     canonical_usage = CanonicalUsage(
-        input_tokens=_coerce_usage_int(usage.get("inputTokens")), output_tokens=_coerce_usage_int(usage.get("outputTokens")),
-        cache_read_tokens=_coerce_usage_int(usage.get("cachedInputTokens")), cache_write_tokens=0,
+        input_tokens=max(0, input_total - cache_read_tokens - cache_write_tokens),
+        output_tokens=_coerce_usage_int(usage.get("outputTokens")),
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
         reasoning_tokens=_coerce_usage_int(usage.get("reasoningOutputTokens")), raw_usage=usage,
     )
     prompt_tokens = canonical_usage.prompt_tokens
@@ -115,6 +124,12 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
             logger.debug("codex app-server usage update failed", exc_info=True)
     for key, value in usage_dict.items():
         setattr(agent, f"session_{key}", getattr(agent, f"session_{key}") + value)
+    if prompt_tokens > 0:
+        agent.session_usage_report_calls += 1
+        agent.session_last_prompt_tokens = prompt_tokens
+        agent.session_context_usage_report_calls += 1
+        if "cachedInputTokens" in usage:
+            agent.session_cache_usage_report_calls += 1
     cost_result = estimate_usage_cost(
         agent.model, canonical_usage, provider=agent.provider, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
     )

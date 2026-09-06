@@ -7,8 +7,51 @@ from agent.usage_pricing import (
     get_pricing_entry,
     normalize_usage,
     resolve_billing_route,
+    usage_reports_cache_metrics,
+    usage_reports_full_prompt_metrics,
 )
 from decimal import Decimal
+
+
+def test_cache_metrics_distinguish_reported_zero_from_missing():
+    reported_zero = {
+        "prompt_tokens": 1_000,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    }
+    missing = {"prompt_tokens": 1_000}
+    null_detail = {
+        "prompt_tokens": 1_000,
+        "prompt_tokens_details": {"cached_tokens": None},
+    }
+
+    assert usage_reports_cache_metrics(reported_zero) is True
+    assert usage_reports_cache_metrics(missing) is False
+    assert usage_reports_cache_metrics(null_detail) is False
+
+
+def test_minimax_m3_cache_and_context_telemetry_are_route_aware():
+    usage = {"input_tokens": 1_000, "cache_read_input_tokens": 128}
+
+    for provider, base_url in (
+        ("minimax-oauth", ""),
+        ("custom", "https://api.minimax.io/anthropic"),
+    ):
+        kwargs = {
+            "provider": provider,
+            "api_mode": "anthropic_messages",
+            "model": "MiniMax-M3",
+            "base_url": base_url,
+        }
+        assert usage_reports_cache_metrics(usage, **kwargs) is False
+        assert usage_reports_full_prompt_metrics(usage, **kwargs) is False
+
+    reliable = {
+        "provider": "minimax-cn",
+        "api_mode": "anthropic_messages",
+        "model": "MiniMax-M2.7",
+    }
+    assert usage_reports_cache_metrics(usage, **reliable) is True
+    assert usage_reports_full_prompt_metrics(usage, **reliable) is True
 
 
 

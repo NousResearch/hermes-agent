@@ -108,7 +108,7 @@ def _message_turn(message: Any) -> Optional[Tuple[str, str]]:
 
 def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
     for role, text in turns:
-        if role == "user" and (line := text.strip().splitlines()[0].strip()):
+        if role == "user" and (line := text.strip().partition("\n")[0].strip()):
             return line[:_TITLE_MAX * 2]
     return None
 

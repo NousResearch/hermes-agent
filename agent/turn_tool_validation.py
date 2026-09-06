@@ -99,7 +99,7 @@ def _python_preflight_supported() -> bool:
         return False
 
 
-def _python_source_error(tool_name: str, args: Any) -> Optional[tuple[SyntaxError, str]]:
+def _python_source_error(tool_name: str, args: Any) -> Optional[tuple[Exception, str]]:
     """Return a local compile error for direct or tool-search-bridged execute_code."""
     if not isinstance(args, dict):
         return None
@@ -114,7 +114,7 @@ def _python_source_error(tool_name: str, args: Any) -> Optional[tuple[SyntaxErro
         return None
     try:
         compile(source, "<execute_code>", "exec")
-    except SyntaxError as exc:
+    except (SyntaxError, ValueError) as exc:
         return exc, source
     return None
 
@@ -299,9 +299,10 @@ def validate_tool_calls(
         agent._invalid_tool_payload_retries += 1
         n = agent._invalid_tool_payload_retries
         first_tc, first_error, _ = python_errors[0]
+        first_message = first_error.msg if isinstance(first_error, SyntaxError) else str(first_error)
         agent._buffer_vprint(
             f"⚠️  Python source in '{first_tc.function.name}' does not compile: "
-            f"{first_error.msg} ({n}/3)"
+            f"{first_message} ({n}/3)"
         )
         if n >= 3:
             agent._invalid_tool_payload_retries = 0
@@ -320,11 +321,14 @@ def validate_tool_calls(
             if error is None:
                 return "Skipped: another tool call in this response contained invalid Python source."
             exc, source = error
-            location = f"line {exc.lineno or '?'}, column {exc.offset or '?'}"
+            if isinstance(exc, SyntaxError):
+                detail = f"{exc.msg} at line {exc.lineno or '?'}, column {exc.offset or '?'}"
+            else:
+                detail = str(exc)
             return (
                 "Error: Python source did not compile, so no call in this batch was executed. "
                 f"Received {len(source)} characters / {len(source.encode('utf-8'))} bytes; "
-                f"{exc.msg} at {location}. Resend the complete source, or split it into smaller "
+                f"{detail}. Resend the complete source, or split it into smaller "
                 "independently complete calls; do not send only the missing closing syntax."
             )
 

@@ -107,9 +107,14 @@ def record_response_usage(
         # DIFFERENT instance than the one record_response_usage received (agent re-creation
         # between mid-turn calls and finalize), so instance attributes alone lose the value.
         try:
-            _ROUTED_MODEL_REGISTRY[str(getattr(agent, "session_id", "") or "")] = routed
-        except Exception:
-            pass
+            sid = str(getattr(agent, "session_id", "") or "")
+            _ROUTED_MODEL_REGISTRY[sid] = routed
+            # File-based fallback: survives agent/process boundaries unconditionally.
+            import json as _json
+            with open("/tmp/hermes-routed-model.json", "w") as _f:
+                _json.dump({"session_id": sid, "routed_model": routed}, _f)
+        except Exception as _persist_err:
+            logger.warning("routed_model persist failed: %s", _persist_err)
         logger.info("routed_model stamped: %s (requested %s)", routed, agent.model)
     except Exception as _rm_err:
         logger.warning("routed_model stamp failed: %s", _rm_err)

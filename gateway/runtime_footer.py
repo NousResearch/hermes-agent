@@ -104,6 +104,19 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
             return ""
 
     def model_full() -> str:
+        # Ground truth: the routed model captured from the live response object at stamp time
+        # (file-based, survives agent/process boundaries). Falls back to the routed_model kwarg,
+        # then the configured alias.
+        try:
+            import json as _json
+            with open("/tmp/hermes-routed-model.json") as _f:
+                _stamped = _json.load(_f).get("routed_model")
+            if _stamped:
+                return str(_stamped)
+        except Exception:
+            pass
+        if routed_model:
+            return routed_model
         # The owner wants the RESOLVED id, not the vendor-stripped short form.
         return model or ""
 

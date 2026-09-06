@@ -814,7 +814,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useGatewayBoot({
     beforeConnectionSwitch: () => {
-      startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null })
+      startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null, clearAllNotifications: true })
       resetOverlayReturnRoute()
       resetProjectTreeState()
       closeAllTerminals()

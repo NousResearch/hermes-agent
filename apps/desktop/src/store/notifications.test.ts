@@ -1,6 +1,49 @@
 import { beforeEach, expect, test } from 'vitest'
 
-import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError } from './notifications'
+import { clearAgentNotice, showAgentNotice } from './agent-notices'
+import {
+  $notifications,
+  clearNotifications,
+  dismissNotification,
+  isDiskFullErrorMessage,
+  notify,
+  notifyError
+} from './notifications'
+
+test('a sticky agent warning survives routine notification traffic until explicitly cleared', () => {
+  showAgentNotice({
+    key: 'context-maintenance:profile:session',
+    text: 'Compaction failed twice',
+    kind: 'sticky',
+    level: 'warn'
+  })
+
+  for (let index = 0; index < 6; index += 1) {
+    notify({ id: `routine-${index}`, message: 'Saved', kind: 'success' })
+  }
+
+  expect($notifications.get().filter(item => item.id === 'context-maintenance:profile:session')).toHaveLength(1)
+  expect($notifications.get().filter(item => item.id.startsWith('routine-'))).toHaveLength(4)
+  dismissNotification('context-maintenance:profile:session')
+  expect($notifications.get().some(item => item.id === 'context-maintenance:profile:session')).toBe(false)
+})
+
+test('context notices with matching remote database paths remain isolated by connection', () => {
+  const payload = {
+    key: 'context-maintenance:profile:session',
+    text: 'Compaction failed',
+    kind: 'sticky',
+    level: 'warn'
+  }
+
+  showAgentNotice(payload, 'connection-a')
+  showAgentNotice({ ...payload, text: 'Second connection' }, 'connection-b')
+  expect($notifications.get()).toHaveLength(2)
+
+  clearAgentNotice(payload.key, 'connection-a')
+  expect($notifications.get()).toHaveLength(1)
+  expect($notifications.get()[0].message).toBe('Second connection')
+})
 
 beforeEach(() => {
   clearNotifications()

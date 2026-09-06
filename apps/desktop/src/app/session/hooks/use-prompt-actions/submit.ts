@@ -19,7 +19,7 @@ import {
   terminalContextBlocksFromDraft
 } from '@/store/composer'
 import { $hudMode } from '@/store/hud'
-import { clearNotifications, notify, notifyError } from '@/store/notifications'
+import { clearTransientNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
@@ -489,7 +489,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         setMutableRef(busyRef, true)
         scope.setBusy(true)
         scope.setAwaitingResponse(true)
-        clearNotifications()
+        clearTransientNotifications()
       }
 
       // A route whose selected/runtime binding is incomplete or cross-wired

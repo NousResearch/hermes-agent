@@ -119,7 +119,7 @@ function TopCenterStack({
       aria-label={copy.region}
       className={cn(
         REGION_BASE,
-        'left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] w-[min(40rem,calc(100%-2rem))] -translate-x-1/2 flex-col'
+        'pointer-events-auto left-1/2 top-[calc(var(--titlebar-height,34px)+0.75rem)] max-h-[calc(100dvh-var(--titlebar-height,34px)-1.5rem)] w-[min(40rem,calc(100%-2rem))] -translate-x-1/2 flex-col overflow-y-auto overscroll-contain'
       )}
       role="region"
     >
@@ -152,7 +152,10 @@ function BottomRightStack({
   return createPortal(
     <div
       aria-label={copy.region}
-      className={cn(REGION_BASE, 'right-4 bottom-4 w-[min(24rem,calc(100%-2rem))] flex-col-reverse')}
+      className={cn(
+        REGION_BASE,
+        'pointer-events-auto right-4 bottom-4 max-h-[calc(100dvh-2rem)] w-[min(24rem,calc(100%-2rem))] flex-col-reverse overflow-y-auto overscroll-contain'
+      )}
       role="region"
     >
       {notifications.map(n => (

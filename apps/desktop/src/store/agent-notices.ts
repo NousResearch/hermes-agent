@@ -24,6 +24,8 @@ export interface AgentNoticePayload {
   ttl_ms?: null | number
   key?: string
   id?: string
+  state_revision?: number
+  state_key?: string
 }
 
 const LEVEL_TO_TOAST_KIND: Record<string, NotificationKind> = {
@@ -132,6 +134,7 @@ export function noticeToToast(payload: AgentNoticePayload | undefined): Notifica
     // sticky → 0 (never auto-dismiss); ttl with a ttl_ms → that value; a ttl
     // without a usable ttl_ms falls back to notify()'s per-kind default.
     durationMs: isTtl ? ttl : 0,
+    retainUntilDismissed: !isTtl,
     id: payload?.key || payload?.id,
     kind: LEVEL_TO_TOAST_KIND[payload?.level ?? 'info'] ?? 'info',
     message: primary,
@@ -155,11 +158,14 @@ export function splitMeta(text: string): [primary: string, meta: string | undefi
 }
 
 /** Render a `notification.show` notice as a toast (no-op when it has no text). */
-export function showAgentNotice(payload: AgentNoticePayload | undefined): void {
+export function showAgentNotice(payload: AgentNoticePayload | undefined, sourceScope?: string): void {
   const toast = noticeToToast(payload)
 
-  if (toast) {
-    notify(toast)
+  if (toast && acceptNoticeRevision(payload, sourceScope)) {
+    if (payload?.state_key && payload.key === payload.state_key) {
+      dismissNotification(scopedNoticeKey(`${payload.state_key}:recovered`, sourceScope)!)
+    }
+    notify({ ...toast, id: scopedNoticeKey(toast.id, sourceScope) })
   }
 }
 
@@ -167,10 +173,45 @@ export function showAgentNotice(payload: AgentNoticePayload | undefined): void {
  * Dismiss the toast a `notification.clear` targets. The clear only ever names a
  * `key`, which we used as the toast id, so this is a key-matched dismissal.
  */
-export function clearAgentNotice(key: string | undefined): void {
-  if (key) {
-    dismissNotification(key)
+export function clearAgentNotice(key: string | undefined, sourceScope?: string, state?: AgentNoticePayload): void {
+  if (key && acceptNoticeRevision({ ...state, key }, sourceScope)) {
+    dismissNotification(scopedNoticeKey(key, sourceScope)!)
+    if (state?.state_key) {
+      dismissNotification(scopedNoticeKey(`${state.state_key}:recovered`, sourceScope)!)
+    }
   }
+}
+
+// Publication seq orders transport, not the SQLite snapshot represented by a
+// frame. Keep a watermark after clear so a delayed compute/replay cannot revive
+// it. Recovery TTL and sticky warning share the same durable root revision.
+const noticeRevisions = new Map<string, number>()
+
+function acceptNoticeRevision(payload: AgentNoticePayload | undefined, sourceScope?: string): boolean {
+  const root = payload?.state_key || payload?.key
+
+  if (!root?.startsWith('context-maintenance:')) {
+    return true
+  }
+
+  const key = scopedNoticeKey(root, sourceScope)!
+  const previous = noticeRevisions.get(key)
+  const revision = payload?.state_revision
+
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
+    return previous === undefined
+  }
+  if (previous !== undefined && revision < previous) {
+    return false
+  }
+  noticeRevisions.set(key, revision)
+  return true
+}
+
+// Profile/session keys come from the backend. Two remote gateways can have
+// identical profile paths and session ids; keep their notices separate too.
+function scopedNoticeKey(key: string | undefined, sourceScope?: string): string | undefined {
+  return key?.startsWith('context-maintenance:') && sourceScope ? JSON.stringify([sourceScope, key]) : key
 }
 
 // Only these two credit notices are urgent enough to break through as a native

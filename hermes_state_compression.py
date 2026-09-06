@@ -341,6 +341,24 @@ class SessionCompressionMixin:
     def _write_session_column(self, column: str, session_id: str, value: Any) -> None:
         self._write_sql(f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id))
 
+    def get_context_notice_state(self, session_id: str) -> dict:
+        row = self._read_one("SELECT context_notice_state FROM sessions WHERE id = ?", (session_id,))
+        return json.loads(row[0]) if row and row[0] else {}
+
+    def update_context_notice_state(self, session_id: str, update_state) -> tuple[dict, dict]:
+        """Reduce notice-only state under BEGIN IMMEDIATE; never a read/increment/write race."""
+        def update(conn):
+            row = conn.execute("SELECT context_notice_state FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return {}, {}
+            before = json.loads(row[0]) if row[0] else {}
+            after = update_state(before)
+            if after != before:
+                after = {**after, "revision": before.get("revision", 0) + 1}
+                conn.execute("UPDATE sessions SET context_notice_state = ? WHERE id = ?", (json.dumps(after), session_id))
+            return before, after
+        return self._execute_write(update)
+
     def get_compression_fallback_streak(self, session_id: str) -> int:
         """Return the persisted deterministic-fallback streak."""
         return self._read_session_number("compression_fallback_streak", session_id, int, 0)

@@ -36,7 +36,7 @@ import {
 } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
-import { clearNotifications, notify, notifyError } from '@/store/notifications'
+import { clearNotifications, clearTransientNotifications, notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -330,6 +330,8 @@ async function desktopSessionCreateParams(
 }
 
 interface FreshSessionDraftOptions {
+  /** Gateway/account re-homing, not ordinary New Chat navigation. */
+  clearAllNotifications?: boolean
   preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
@@ -461,7 +463,13 @@ export function useSessionActions({
       busyRef.current = false
       setBusy(false)
       setAwaitingResponse(false)
-      clearNotifications()
+
+      if (draftOptions.clearAllNotifications) {
+        clearNotifications()
+      } else {
+        clearTransientNotifications()
+      }
+
       setIntroSeed(seed => seed + 1)
       // A fresh chat takes the screen. Front the workspace — and ONLY that:
       // `$terminalTakeover` is the terminal's open/closed state in every
@@ -890,7 +898,7 @@ export function useSessionActions({
       // also what use-route-resume's self-heal assumes ("set synchronously at
       // resume entry").
       setFreshDraftReady(false)
-      clearNotifications()
+      clearTransientNotifications()
       resetViewSync()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
@@ -1124,7 +1132,7 @@ export function useSessionActions({
           }
 
           setFreshDraftReady(false)
-          clearNotifications()
+          clearTransientNotifications()
           setSelectedStoredSessionId(storedSessionId)
           selectedStoredSessionIdRef.current = storedSessionId
           setActiveSessionId(cachedRuntimeId)
@@ -1507,7 +1515,7 @@ export function useSessionActions({
       busyRef.current = false
       setBusy(false)
       setAwaitingResponse(false)
-      clearNotifications()
+      clearTransientNotifications()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
@@ -2315,7 +2323,7 @@ export function useSessionActions({
         return false
       }
 
-      clearNotifications()
+      clearTransientNotifications()
 
       // The open chat's owning profile, NOT the picker's / launch profile —
       // /profile only retargets new chats, so a branch of an existing thread
@@ -2338,7 +2346,7 @@ export function useSessionActions({
   // right-click and nests under its parent.
   const branchStoredSession = useCallback(
     async (storedSessionId: string, sessionProfile?: string | null): Promise<boolean> => {
-      clearNotifications()
+      clearTransientNotifications()
 
       // Right-clicking a session outside the paginated sidebar window is a cache
       // miss: resolve it (cache → active backend → cross-profile) so the branch
@@ -2395,7 +2403,7 @@ export function useSessionActions({
 
   const removeSession = useCallback(
     async (storedSessionId: string) => {
-      clearNotifications()
+      clearTransientNotifications()
 
       // The row may live in the main list, the messaging/cron sidebar slices,
       // OR the archived view's own store (archived rows are excluded from
@@ -2547,7 +2555,7 @@ export function useSessionActions({
 
   const archiveSession = useCallback(
     async (storedSessionId: string) => {
-      clearNotifications()
+      clearTransientNotifications()
 
       const listed = findListedSession(storedSessionId)
       const archived = listed?.session

@@ -112,6 +112,42 @@ does not re-fire every turn. Two paths run a real attempt anyway:
   the cooldown is recorded normally.
 
 
+## Context-maintenance notices in Desktop
+
+Desktop surfaces repeated failures in the built-in, in-place Hermes compression
+path through its existing agent-notice channel. These are operational warnings, not assessments
+of the model's reasoning or task understanding.
+
+- **Repeated summary/commit failures:** a sticky notice appears after two failed
+  attempts and updates with the count and latest classified reason. Internal
+  retries and duplicate delivery of the same attempt do not count again.
+- **Repeated insufficient progress:** a separate counter tracks completed or
+  rejected rewrites that did not relieve pressure. Notices distinguish assembled
+  request estimates from provider-reported usage. Routine structural skips,
+  cooldown deferrals, lock contention and user cancellation are neutral.
+- **Recovery:** a healthy committed, non-fallback summary resets summary-failure
+  state. Pressure warnings require a positive provider-reported prompt count below
+  the active threshold. A generic `compacted` event or an expired cooldown is not
+  proof of recovery. When neither warning remains, Desktop clears it and briefly
+  shows recovery.
+
+Notice state lives alongside the session in the profile's `state.db`. Opening a
+pre-feature database adds the nullable state field through normal schema
+reconciliation. Resume, agent rebuild and event reconnect restore the current
+notice, including clearing a warning resolved while the client was disconnected.
+No local plugin, log watcher, extra LLM call or configuration change is required.
+
+Notice identity includes the profile database and durable session; Desktop also
+separates remote connection/profile sources. Sticky notices are retained until
+explicitly cleared or dismissed rather than evicted by routine notifications.
+Expanded stacks scroll within the viewport. Dismissing a warning does not repair
+compression or erase its backend state; resuming the session can show it again.
+
+The warning implementation and its regression tests are part of the normal code
+and Desktop build. An unmerged downstream patch is **not** update-safe: Desktop
+updates can stash local edits without reapplying them. Standard-update delivery
+requires a version containing this change upstream.
+
 ## Configuration
 
 All compression settings are read from `config.yaml` under the `compression` key:

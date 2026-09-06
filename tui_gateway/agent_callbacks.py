@@ -76,6 +76,8 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 
 def _agent_cbs(sid: str) -> dict:
+    from agent.context_notices import notice_revision_fields
+
     def _read_block(event: str, timeout: int):
         # read_terminal / read_preview (desktop GUI): blocking bridge like clarify; the preview
         # read gets longer since a URL tab extracts text from a live page.
@@ -98,8 +100,9 @@ def _agent_cbs(sid: str) -> dict:
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _emit(
             "notification.show", sid,
-            {"text": n.text, "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id}),
-        "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
+            {"text": n.text, "level": n.level, "kind": n.kind, "ttl_ms": n.ttl_ms, "key": n.key, "id": n.id,
+             **notice_revision_fields(n.key)}),
+        "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key, **notice_revision_fields(key)}),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
         "read_terminal_callback": _read_block("terminal.read.request", 30),
@@ -152,7 +155,25 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
 
 
+def _replay_context_notice(sid: str, *, db=None) -> None:
+    """Read the owning profile DB; isolated/watch sessions need no resident agent."""
+    from agent.context_notices import replay_context_notice
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if session is None:
+        return
+    try:
+        with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
+            if db is not None:
+                callbacks = _agent_cbs(sid)
+                replay_context_notice(db, session.get("session_key") or "",
+                                      callbacks["notice_callback"], callbacks["notice_clear_callback"])
+    except Exception:
+        logger.warning("Could not replay context notice for %s", sid, exc_info=True)
+
+
 def _wire_callbacks(sid: str):
+    _replay_context_notice(sid)
     from tools.terminal_tool import set_sudo_password_callback
     from tools.skills_tool import set_secret_capture_callback
     from tools.project_tools import set_project_workspace_callback

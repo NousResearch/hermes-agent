@@ -71,11 +71,13 @@ def record_response_usage(
     consume a pending compaction verdict. Returns the loop-visible outcome."""
     rearmed = False
     compressor = agent.context_compressor
+    from agent.context_notices import record_context_usage
     # Count every completed provider attempt, including providers that omit usage.
     # Token/cost accounting below stays gated on real usage, but the request itself
     # must remain observable.
     agent.session_api_calls += 1
     if not (hasattr(response, 'usage') and response.usage):
+        record_context_usage(agent)
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the
             # pending verdict so later readings aren't charged to it and
@@ -115,6 +117,7 @@ def record_response_usage(
         getattr(compressor, "_verify_compaction_cleared_threshold", False)
     )
     compressor.update_from_response(usage_dict)
+    record_context_usage(agent, aggregator_usage.prompt_tokens)
     # Usage-anchored accounting: snapshot exact provider usage against the durable
     # transcript (main-loop ONLY; MoA uses pre-fold aggregator usage). The display meter
     # anchors on the turn's FIRST response: later same-turn responses inflate

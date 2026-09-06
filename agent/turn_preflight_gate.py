@@ -81,6 +81,8 @@ def run_preflight_gate(
         # Stop proactive retries this turn without consuming the shared overflow-
         # recovery budget; the provider's error handler may still compact.
         v._preflight_compression_blocked = True
+        from agent.context_notices import record_insufficient_progress
+        record_insufficient_progress(agent)
         logger.warning(
             "Pre-API compression made insufficient progress: ~%s -> "
             "~%s request tokens; skipping additional preflight passes",

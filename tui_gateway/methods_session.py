@@ -647,6 +647,7 @@ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     # A lazy watch session never owns a run loop — overlay the child-run registry.
     if session.get("agent") is None and _child_run_active(ctx.target):
         payload.update(running=True, status="streaming")
+    _replay_context_notice(sid, db=ctx.db)
     return _ok(ctx.rid, payload)
 
 
@@ -666,6 +667,8 @@ def _resume_response(
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
+    if hydrating is None:
+        _replay_context_notice(sid, db=ctx.db)
     return _ok(ctx.rid, _attach_todo_state(payload, record))
 
 
@@ -704,6 +707,9 @@ def _resume_deferred(ctx: _Resume) -> dict:
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
+    # Read before transferring the handle: the hydration worker may close it
+    # before the response is assembled. Do not acquire/close a sibling handle.
+    _replay_context_notice(sid, db=ctx.db)
     _schedule_resume_hydration(sid, ctx.target, ctx.db, close_db=ctx.owns_db)
     ctx.owns_db = False  # the hydration worker now owns (and closes) the profile-scoped handle
     _schedule_session_cap_enforcement()
@@ -2142,6 +2148,7 @@ def _(rid, params: dict) -> dict:
     except (TypeError, ValueError):
         return _err(rid, -32602, "invalid params: last_seen must be an integer")
     from tui_gateway import event_replay as er
+    _replay_context_notice(sid)
     frames = er.events_since(sid, last_seen)
     # ``epoch``: in-process seq — clients reset watermarks when this differs from gateway.ready's.
     return _ok(rid, {"events": frames, "latest_seq": er.latest_seq(sid), "truncated": er.is_truncated(sid, last_seen),

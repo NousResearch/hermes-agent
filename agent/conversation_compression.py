@@ -369,6 +369,8 @@ class CompressionCommitFence:
     wins before mutation starts, or waits for an already-started commit to finish completely."""
 
     def __init__(self, total_ceiling_seconds: float | None = None) -> None:
+        self.notice_attempt: dict | None = None
+        self.notice_retry_of: str | None = None
         self._lock = threading.Lock()
         self._cancelled = False
         self._commit_started = False
@@ -817,7 +819,7 @@ def _retry_compression_on_fallback_chain(
     system_prompt_fallback: Any, idle_timeout_seconds: float, total_ceiling_seconds: float,
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     on_timeout_cause: Optional[Callable[[bool, bool], None]] = None, telemetry_agent: Any = None,
-    new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
+    new_fence: Optional[Callable[[], CompressionCommitFence]] = None, notice_retry_of: str | None = None,
 ) -> Optional[Tuple[list, str]]:
     """Re-run an aborted compression once with the summary route pinned.
     Returns ``(messages, system_prompt)`` on real compression, else ``None`` and the caller degrades as
@@ -860,6 +862,7 @@ def _retry_compression_on_fallback_chain(
             "hard-interrupt admission will read the aborted attempt's fence rather than the retry's commit boundary"
         )
         retry_fence = CompressionCommitFence()
+    retry_fence.notice_retry_of = notice_retry_of
     idle = float(route.get("timeout") or idle_timeout_seconds)
     ceiling = max(float(total_ceiling_seconds), idle)
     logger.warning(
@@ -1105,6 +1108,14 @@ def run_compress_context_with_progress_timeout(
         # the start of this wait slice. Waiting a full ``idle`` after progress that landed early in the
         # previous slice would allow silence to approach 2x the budget.
         since_progress = fence.seconds_since_progress()
+        # Notice bookkeeping is independent of cooldown/admission. Settle the
+        # primary before a backup can publish; that backup is not route recovery.
+        notice_attempt = getattr(fence, "notice_attempt", None)
+        if telemetry_agent is not None and notice_attempt:
+            from agent.context_notices import record_compression_outcome
+            record_compression_outcome(telemetry_agent, {
+                **notice_attempt, "commit_status": "aborted", "failure_class": "stall_interrupted",
+            })
         # Lease is free, so run the fallback BEFORE on_timeout: that callback records
         # the summary-failure cooldown, which would no-op the retry's summary call.
         if stall_fallback:
@@ -1112,9 +1123,11 @@ def run_compress_context_with_progress_timeout(
                 worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
+                notice_retry_of=notice_attempt.get("attempt_id") if notice_attempt else None,
             )
             if recovered is not None:
                 return recovered
+
         if on_timeout is not None:
             with _swallow('compress_context timeout callback failed', exc_info=True):
                 on_timeout(idle, waited, since_progress)
@@ -1184,12 +1197,13 @@ def _session_was_rotated_by_compression(session_db: Any, session_id: str) -> boo
 
 def _emit_compression_attempt_telemetry(
     agent: Any, *, started_at: float, commit_status: str, split_status: str, failure_class: str | None = None,
-    commit_started_at: float | None = None,
+    commit_started_at: float | None = None, captured_telemetry: dict | None = None,
 ) -> None:
     """Emit one content-free JSON log line for a compression attempt."""
     with _swallow('failed to emit compression attempt telemetry: %s'):
         compressor = agent.context_compressor
-        telemetry = getattr(compressor, "_last_compression_telemetry", None)
+        telemetry = (captured_telemetry if captured_telemetry is not None
+                     else getattr(compressor, "_last_compression_telemetry", None))
         if not isinstance(telemetry, dict):
             telemetry = {}
         payload = dict(telemetry)
@@ -1202,18 +1216,32 @@ def _emit_compression_attempt_telemetry(
         )
         if commit_started_at is not None:
             telemetry["commit_ms"] = payload["commit_ms"] = max(0, int((time.monotonic() - commit_started_at) * 1000))
-        if failure_class:
+        if failure_class and not (
+            failure_class == "summary_generation_aborted" and payload.get("failure_class") in {
+                "summary_auth_failure", "summary_network_failure", "summary_truncated_failure",
+                "summary_empty_content_failure",
+            }
+        ):
+            # Keep a typed summary cause when the host confirms the generic abort;
+            # host cancellation/commit failures must still override worker success.
             payload["failure_class"] = failure_class
         payload.setdefault("chunking", False)
         payload.setdefault("chunk_count", 0)
         payload["fallback_used"] = bool(
             payload.get("fallback_used")
-            or getattr(compressor, "_last_summary_fallback_used", False)
-            or getattr(compressor, "_last_aux_model_failure_model", None)
+            or (captured_telemetry is None and (
+                getattr(compressor, "_last_summary_fallback_used", False)
+                or getattr(compressor, "_last_aux_model_failure_model", None)
+            ))
         )
         logger.info(
             "context compression attempt telemetry: %s", json.dumps(payload, sort_keys=True, separators=(",", ":"))
         )
+        from agent.context_notices import record_compression_outcome
+        # Shared telemetry remains diagnostic only. Durable notices require a
+        # worker-owned verdict; a detached worker may be logging its successor.
+        if captured_telemetry is not None:
+            record_compression_outcome(agent, payload)
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:
@@ -1221,9 +1249,12 @@ def _existing_system_prompt(agent: Any, system_message: str) -> str:
     return getattr(agent, "_cached_system_prompt", None) or agent._build_system_prompt(system_message)
 
 
-def _emit_aborted_attempt_telemetry(agent: Any, started_at: float, failure_class: str | None) -> None:
+def _emit_aborted_attempt_telemetry(
+    agent: Any, started_at: float, failure_class: str | None, *, captured_telemetry: dict | None = None,
+) -> None:
     _emit_compression_attempt_telemetry(
-        agent, started_at=started_at, commit_status="aborted", split_status="aborted", failure_class=failure_class
+        agent, started_at=started_at, commit_status="aborted", split_status="aborted", failure_class=failure_class,
+        captured_telemetry=captured_telemetry,
     )
 
 
@@ -2821,7 +2852,7 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
 
 def _salvage_or_refuse_grown_transcript(
     agent: Any, messages: list, compressed: list, *, system_message: str, attempt_started_at: float,
-    attempt_snapshot: dict,
+    attempt_snapshot: dict, captured_telemetry: dict | None = None,
 ) -> Tuple[Optional[list], Optional[str]]:
     """Anti-growth guard at the COMMIT SITE (in-place commits before the gateway can inspect).
     Compares like-for-like rough estimates; on growth tries one mechanical salvage pass, else treats the
@@ -2867,7 +2898,7 @@ def _salvage_or_refuse_grown_transcript(
                 "shrinking it. No messages were dropped — conversation continues unchanged."
             )
         _existing_sp = _existing_system_prompt(agent, system_message)
-        _emit_aborted_attempt_telemetry(agent, attempt_started_at, "would_grow")
+        _emit_aborted_attempt_telemetry(agent, attempt_started_at, "would_grow", captured_telemetry=captured_telemetry)
         # Count the refusal as an ineffective-compaction strike so the anti-thrash
         # breaker latches; otherwise auto-compress retries the same summary every turn.
         with _swallow('could not record rejected-compaction strike', exc_info=True):
@@ -3132,7 +3163,7 @@ def _finish_compaction_boundary(
 
 def _candidate_rejected(
     agent: Any, compressed: Any, messages: list, messages_before_compression: list, *,
-    attempt_generation: Any, attempt_started_at: float,
+    attempt_generation: Any, attempt_started_at: float, captured_telemetry: dict | None = None,
 ) -> bool:
     """Reject an unusable compression candidate before any session mutation.
     Order matters: compressor-reported abort, no progress, empty transcript, superseded attempt. Each branch surfaces
@@ -3151,7 +3182,8 @@ def _candidate_rejected(
                 "Run /compress to retry, or /new to start a fresh session."
             )
         _emit_aborted_attempt_telemetry(
-            agent, attempt_started_at, _summary_error and "summary_generation_aborted"
+            agent, attempt_started_at, _summary_error and "summary_generation_aborted",
+            captured_telemetry=captured_telemetry,
         )
         return True
 
@@ -3245,7 +3277,7 @@ def _commit_compaction(
             _tail_tagged_ids = {id(m) for m in compressed if isinstance(m, dict) and m.pop("_compaction_tail", None)}
             compressed, _refused_sp = _salvage_or_refuse_grown_transcript(
                 agent, messages, compressed, system_message=system_message, attempt_started_at=attempt.started_at,
-                attempt_snapshot=attempt.snapshot,
+                attempt_snapshot=attempt.snapshot, captured_telemetry=attempt.notice_identity,
             )
             if compressed is None:
                 return _CommitOutcome(
@@ -3433,7 +3465,8 @@ def _run_summary_phase(
         _stop_heartbeat("context compression cancelled")
         lease.release()
         _emit_aborted_attempt_telemetry(
-            agent, attempt.started_at, (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt")
+            agent, attempt.started_at, (STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "explicit_interrupt"),
+            captured_telemetry=attempt.notice_identity,
         )
         return _SummaryPhase(messages=messages, abort_prompt=_existing_system_prompt(agent, system_message))
     except BaseException as _compress_exc:
@@ -3457,8 +3490,30 @@ class _Attempt:
     snapshot: dict
     generation: int
     started_at: float
+    attempt_id: str
+    session_id: str
+    notice_retry_of: str | None = None
     durable_cooldown_authoritative: Optional[bool] = None
     durable_cooldown_state: Optional[dict[str, Any]] = None
+
+    @property
+    def notice_identity(self) -> dict:
+        return {"attempt_id": self.attempt_id, "session_id": self.session_id,
+                **({"retry_of": self.notice_retry_of, "fallback_used": True} if self.notice_retry_of else {})}
+
+    def capture_notice_telemetry(self, compressor: Any) -> dict:
+        # Read only while this generation owns the fields, and only its own
+        # telemetry. Never let a late unwind consume a successor's terminal id.
+        with _COMPRESSOR_ATTEMPT_LOCK:
+            telemetry = getattr(compressor, "_last_compression_telemetry", None)
+            if (getattr(compressor, "_compression_attempt_generation", None) != self.generation
+                    or not isinstance(telemetry, dict) or telemetry.get("attempt_id") != self.attempt_id):
+                return self.notice_identity
+            return {**telemetry, **self.notice_identity, "fallback_used": bool(
+                self.notice_retry_of or telemetry.get("fallback_used")
+                or getattr(compressor, "_last_summary_fallback_used", False)
+                or getattr(compressor, "_last_aux_model_failure_model", None)
+            )}
 
     def restore_compressor(self, compressor: Any) -> None:
         """Roll the compressor back to this attempt's snapshot (durable cooldown included)."""
@@ -3498,7 +3553,7 @@ def _begin_compression_attempt(agent: Any, *, force: bool, defer_notification: b
             "attempt_id": attempt_id, "session_id": agent.session_id or "",
             "trigger_source": "manual" if force else "auto",
         }
-    return _Attempt(snapshot, generation, started_at)
+    return _Attempt(snapshot, generation, started_at, attempt_id, agent.session_id or "")
 
 
 def _route_codex_compaction(
@@ -3565,6 +3620,9 @@ def compress_context(
     session state after its caller has moved on.
     """
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
+    if commit_fence is not None:
+        attempt.notice_retry_of = getattr(commit_fence, "notice_retry_of", None)
+        commit_fence.notice_attempt = attempt.notice_identity
 
     # Codex owns the real thread; route compaction to its own compact (config
     # compression.codex_app_server_auto). Memory handoff is Hermes-only: no native
@@ -3646,6 +3704,7 @@ def compress_context(
         return phase.messages, phase.abort_prompt
     messages, compressed = phase.messages, phase.compressed
     messages_before_compression = phase.messages_before_compression
+    captured_telemetry = attempt.capture_notice_telemetry(agent.context_compressor)
     approx_tokens, _pre_msg_count = phase.approx_tokens, phase.pre_msg_count
     _commit_fence_entered = False
     try:
@@ -3657,7 +3716,7 @@ def compress_context(
         )
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
-            attempt_started_at=attempt.started_at,
+            attempt_started_at=attempt.started_at, captured_telemetry=captured_telemetry,
         ):
             return messages, _existing_system_prompt(agent, system_message)
         if commit_fence is not None:
@@ -3677,12 +3736,14 @@ def compress_context(
                 _emit_aborted_attempt_telemetry(
                     agent, attempt.started_at,
                     STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "commit_fence_cancelled",
+                    captured_telemetry=attempt.notice_identity,
                 )
                 return messages, _existing_sp
         _warn_summary_or_aux_fallback(agent)
         _fold_todo_snapshot(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
+        # The attempt-owned verdict predates session-end hooks in memory extraction.
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
@@ -3711,7 +3772,7 @@ def compress_context(
         _emit_compression_attempt_telemetry(
             agent, started_at=attempt.started_at, commit_status=lifecycle.commit_status, split_status=split_status,
             failure_class=("session_split_failed" if split_status in {"failed_not_indexed", "aborted"} else None),
-            commit_started_at=commit.commit_started_at,
+            commit_started_at=commit.commit_started_at, captured_telemetry=captured_telemetry,
         )
         return compressed, new_system_prompt
     finally:

@@ -45,6 +45,18 @@ def plumbing(session):
     return isinstance(config, dict) and config.get("room_plumbing") is True
 
 
+def tool_schema(agent):
+    """Resolve the classic grant without bypassing explicit tool policy."""
+    from agent.skill_utils import parse_config_string_list
+    from model_tools import get_tool_definitions
+    from tui_gateway import server
+
+    disabled = list(getattr(agent, "disabled_toolsets", None) or [])
+    disabled += parse_config_string_list((server._load_cfg().get("agent") or {}).get("disabled_toolsets"))
+    selected = get_tool_definitions(enabled_toolsets=["bot_room"], disabled_toolsets=disabled, quiet_mode=True)
+    return next((tool["function"] for tool in selected if tool["function"]["name"] == "share_group_file"), None)
+
+
 def install_schema(session):
     agent = session.get("agent")
     if agent is None or getattr(agent, "_classic_export_schema_checked", False):
@@ -56,6 +68,8 @@ def install_schema(session):
         eligible = False  # Missing metadata disables export, not ordinary chat construction.
     if eligible:
         from tools.hosted_room_artifact import ensure_share_group_file_tool
+        if tool_schema(agent) is None:
+            return
         agent._classic_export_enabled = ensure_share_group_file_tool(agent, force=True)
 
 
@@ -76,7 +90,8 @@ def preflight(sid, session, request, text):
     if owned(sid) is not session or not plumbing(session):
         raise RoomArtifactError("Classic exports require an owned group-plumbing session")
     agent = session.get("agent")
-    if agent is not None and not getattr(agent, "_classic_export_enabled", False):
+    if agent is not None and (not getattr(agent, "_classic_export_enabled", False)
+                              or "share_group_file" not in (getattr(agent, "valid_tool_names", None) or set())):
         raise RoomArtifactError("Reopen this group session on the updated backend to enable file sharing")
     if not isinstance(request, dict):
         raise RoomArtifactError("Invalid classic export request")

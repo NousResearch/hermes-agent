@@ -97,12 +97,20 @@ def refresh_agent_mcp_tools(
     dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
     from model_tools import get_tool_definitions
     from tools.registry import registry
+    previous_enabled = getattr(agent, "enabled_toolsets", None)
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)
     # Generation captured BEFORE the slow get_tool_definitions call (a slower caller holding an
     # OLDER set must not clobber a newer one); definitions computed OUTSIDE the lock.
     snapshot_generation = registry._generation
     new_defs = list(get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=quiet_mode) or [])
     new_names = {_def_name(t) for t in new_defs}
+    # Narrowing a selection can revoke the classic session's post-build grant;
+    # an unchanged/additive MCP reload is not a removal of that session capability.
+    if enabled_override is not None and getattr(agent, "_classic_export_enabled", False) is True:
+        narrowed = (not enabled_override or previous_enabled is None
+                    or not set(previous_enabled).issubset(enabled_override))
+        if narrowed and "share_group_file" not in new_names:
+            agent._classic_export_enabled = False
     # Post-build families re-appended on LOCALS only; live attributes untouched until publish.
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
     # Registry membership is read OUTSIDE ``_agent_tools_lock``: taking ``registry._lock``
@@ -111,6 +119,8 @@ def refresh_agent_mcp_tools(
     if preserve_prefix:
         try:
             prefix_registered = {entry.name for entry in registry.get_all_entries()}
+            if "share_group_file" not in new_names:
+                prefix_registered.discard("share_group_file")
         except Exception:  # noqa: BLE001
             pass  # fail open to the plain rebuild
     added = _publish_tool_snapshot(
@@ -193,7 +203,7 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
-    """Append memory-provider and context-engine tools onto the caller's staged ``tools_list``
+    """Append classic-export, memory-provider and context-engine tools onto the staged ``tools_list``
     / ``name_set`` (never the live agent attributes), mirroring ``agent_init``'s post-build
     injection. Idempotent and fail-soft. Returns the context-engine routing names THIS rebuild
     appended: a name already owned by a registry/plugin tool is not claimed, matching agent_init."""
@@ -210,6 +220,11 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
         return getter if callable(getter) else None
 
     enabled = getattr(agent, "enabled_toolsets", None)
+    if getattr(agent, "_classic_export_enabled", False) is True:
+        from tui_gateway.classic_exports import tool_schema
+        # Reuse classic admission's disabled-toolset, deregistration and deferral gates.
+        # The grant is only for this tool, never an inheritable bot_room selection.
+        _add(tool_schema(agent))
     try:
         get_mem_schemas = _schema_getter("_memory_manager", "get_all_tool_schemas")
         if get_mem_schemas is not None:

@@ -232,7 +232,7 @@ def test_summarize_api_error_does_not_accuse_subscribers():
 # ---------------------------------------------------------------------------
 # Fix D: _StreamErrorEvent xAI entitlement classified as auth, not retryable
 #
-# run_codex_create_stream_fallback raises _StreamErrorEvent (status_code=None)
+# run_codex_stream raises _StreamErrorEvent (status_code=None)
 # when the Responses stream emits a ``type=error`` SSE frame.  Before this
 # fix, classify_api_error had no match for "grok subscription" in its pattern
 # lists, so it returned FailoverReason.unknown (retryable=True) — burning

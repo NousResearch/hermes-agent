@@ -1475,10 +1475,27 @@ class GatewayTurnMixin:
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         try:
             from gateway.runtime_footer import build_footer_line as _bfl
+            # Session-aware effort: /reasoning --session overrides live in gateway memory
+            # (not config.yaml), so the footer must resolve through the gateway's own resolver.
+            try:
+                _session_model = agent_result.get("model") or ""
+                _effort_cfg = self._resolve_session_reasoning_config(
+                    source=source, model=_session_model,
+                )
+                if _effort_cfg is None:
+                    _effort_override = None
+                elif _effort_cfg.get("enabled") is False:
+                    _effort_override = "none"
+                else:
+                    _effort_override = str(_effort_cfg.get("effort") or "medium")
+            except Exception as _eff_err:
+                logger.debug("footer effort resolution failed: %s", _eff_err)
+                _effort_override = None
             _line = _bfl(
                 user_config=_load_gateway_config(),
                 platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
                 routed_model=agent_result.get("routed_model"),
+                effort_override=_effort_override,
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,

@@ -78,6 +78,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
                           turn_seconds: Optional[float] = None,
                           user_config: Optional[dict[str, Any]] = None,
+                          effort_override: Optional[str] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -87,6 +88,10 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         return ""
 
     def effort() -> str:
+        # A session-scoped /reasoning override (passed by the gateway) wins; else resolve
+        # per-model > global from config; else Hermes' documented medium default.
+        if effort_override is not None:
+            return effort_override
         try:
             from hermes_constants import resolve_reasoning_config
             agent_cfg = ((user_config or {}).get("agent") or {})
@@ -95,7 +100,7 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                 model or "",
             )
             if rc is None:
-                return "medium"  # Hermes' documented default when unset
+                return "medium"
             if rc.get("enabled") is False:
                 return "none"
             return str(rc.get("effort") or "medium")
@@ -143,7 +148,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
-                      routed_model: Optional[str] = None) -> str:
+                      routed_model: Optional[str] = None,
+                      effort_override: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -153,5 +159,5 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
         return ""
     return format_runtime_footer(model=routed_model or model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
-                                 user_config=user_config,
+                                 user_config=user_config, effort_override=effort_override,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

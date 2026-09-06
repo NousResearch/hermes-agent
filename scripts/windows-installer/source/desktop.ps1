@@ -1,4 +1,4 @@
-# Clear the cached Electron download + any half-written unpacked output so the
+# Clear the cached Electron download so the
 # next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
 # the per-user Electron download cache - most often a partial download resumed
 # into the same file, leaving concatenated junk - makes electron-builder's
@@ -9,8 +9,8 @@
 # We deliberately do not validate the zip ourselves: the common
 # prepended/concatenated-junk corruption slips past naive checks, so a
 # self-rolled gate would skip the real-world case. We unconditionally drop the
-# cached electron-*.zip (loose copy and any @electron/get hash-subdir copy) plus
-# the stale unpacked dir, then let the caller retry once - @electron/get
+# cached electron-*.zip (loose copy and any @electron/get hash-subdir copy),
+# then let the caller retry once - @electron/get
 # re-downloads with its own SHASUM verification, the real source of truth.
 #
 # Returns the removed paths. Best-effort: never throws.
@@ -35,16 +35,48 @@ function Clear-ElectronBuildCache {
         })
     }
 
-    # A half-written unpacked dir from an interrupted prior pack poisons the
-    # rename even after the zip is fixed (win-unpacked / win-arm64-unpacked).
-    $releaseDir = Join-Path $DesktopDir 'release'
-    if (Test-Path -LiteralPath $releaseDir) {
-        $removed += @(Get-ChildItem -LiteralPath $releaseDir -Directory -Filter '*-unpacked' -ErrorAction SilentlyContinue | ForEach-Object {
-            try { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop; $_.FullName } catch { }
-        })
-    }
+    # beforePack owns output cleanup and rollback acquisition. A failed builder
+    # may already have restored the known-good app here; deleting *-unpacked
+    # would destroy that recovery before the next download/retry even starts.
 
     return $removed
+}
+
+function Invoke-DesktopPack {
+    param([string]$NpmPath, [string]$DesktopDir)
+    $runner = Join-Path $DesktopDir 'scripts\desktop-pack-runner.mjs'
+    if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
+        throw 'Desktop packaging recovery module is missing; update the checkout before packaging'
+    }
+    $node = Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $journal = [IO.Path]::GetTempFileName()
+    $session = [guid]::NewGuid().ToString('N')
+    $previousSession = $env:HERMES_DESKTOP_PACK_SESSION
+    $previousJournal = $env:HERMES_DESKTOP_PACK_JOURNAL
+    $settled = $false
+    try {
+        $env:HERMES_DESKTOP_PACK_SESSION = $session
+        $env:HERMES_DESKTOP_PACK_JOURNAL = $journal
+        $result = Invoke-ProcessWithWallClockTimeout -FilePath $NpmPath -ArgumentList @('run', 'pack') `
+            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $DesktopDir -Label 'Desktop packaging'
+        if ($result.ExitCode -ne 0) {
+            # The native helper returns only after the old job is empty. A hard
+            # deadline can kill Node before its finally/settlement code runs;
+            # recover only the targets recorded for this exact invocation.
+            $recovery = Invoke-ProcessWithWallClockTimeout -FilePath $node.Source `
+                -ArgumentList @($runner, '--recover', $journal, $session) -TimeoutSec 60 `
+                -WorkingDirectory $DesktopDir -Label 'Desktop packaging rollback'
+            if ($recovery.TimedOut -or $recovery.ExitCode -ne 0) {
+                throw "Desktop packaging failed and rollback did not complete. Recovery journal retained at $journal (session $session)."
+            }
+        }
+        $settled = $true
+        return $result
+    } finally {
+        $env:HERMES_DESKTOP_PACK_SESSION = $previousSession
+        $env:HERMES_DESKTOP_PACK_JOURNAL = $previousJournal
+        if ($settled) { Remove-Item -LiteralPath $journal -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 # Last-resort Electron mirror after GitHub download fails (#47266).
@@ -329,8 +361,7 @@ function Install-Desktop {
         $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
         $env:WIN_CSC_LINK = ""
         $env:WIN_CSC_KEY_PASSWORD = ""
-        $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
-            -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+        $result = Invoke-DesktopPack -NpmPath $npmExe -DesktopDir $desktopDir
         [IO.File]::WriteAllText($buildLog, $result.Output)
         $code = $result.ExitCode
         if ($code -ne 0) {
@@ -343,8 +374,7 @@ function Install-Desktop {
             if ($restored) {
                 Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
                 foreach ($p in $purged) { Write-Info "  - $p" }
-                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
-                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                $result = Invoke-DesktopPack -NpmPath $npmExe -DesktopDir $desktopDir
                 [IO.File]::WriteAllText($buildLog, $result.Output)
                 $code = $result.ExitCode
             }
@@ -360,8 +390,7 @@ function Install-Desktop {
             $prevMirror = $env:ELECTRON_MIRROR
             $env:ELECTRON_MIRROR = $mirror
             try {
-                $result = Invoke-ProcessWithWallClockTimeout -FilePath $npmExe -ArgumentList @('run', 'pack') `
-                    -TimeoutSec $script:InstallerCommandTimeouts.Desktop -WorkingDirectory $desktopDir -Label 'Desktop packaging'
+                $result = Invoke-DesktopPack -NpmPath $npmExe -DesktopDir $desktopDir
                 [IO.File]::WriteAllText($buildLog, $result.Output)
                 $code = $result.ExitCode
             } finally {
@@ -513,4 +542,3 @@ function New-DesktopShortcuts {
         Write-Warn "Skipping shortcut creation: $($_.Exception.Message)"
     }
 }
-

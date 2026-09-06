@@ -76,3 +76,11 @@ jobs:
             powershell -NoProfile -ExecutionPolicy Bypass -File "scripts/tests/test-install-ps1-$fixture.ps1"
             if ($LASTEXITCODE -ne 0) { throw "$fixture failed ($LASTEXITCODE)" }
           }
+
+      - name: Desktop pack recovery through the installer (pwsh 7)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-pack-recovery.ps1
+
+      - name: Desktop pack recovery through the installer (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-pack-recovery.ps1

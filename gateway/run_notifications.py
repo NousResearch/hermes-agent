@@ -1172,10 +1172,16 @@ class GatewayNotificationsMixin:
         See #9290.
         """
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
-        from tools.process_registry import process_registry
-        # The watch scan temporarily dequeues delegation rows. Keep that scan
-        # inside the carrier's reservation so an active turn cannot miss a ready result.
-        with process_registry.completion_routing_lock:
+        from tools.process_registry import process_registry as _pr
+
+        # This watch-only drain still has to inspect and requeue delegation events.
+        # Keep that bounded dequeue/classify/requeue pass under the same routing
+        # reservation as the active carrier, even though formatting and adapter
+        # delivery remain outside it.  Standalone test queues need no global lock.
+        if completion_queue is _pr.completion_queue:
+            with _pr.completion_routing_lock:
+                watch_events = _drain_gateway_watch_events(completion_queue)
+        else:
             watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
             async with self._completion_event_scope(evt):

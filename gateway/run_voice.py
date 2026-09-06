@@ -253,8 +253,7 @@ class GatewayVoiceMixin:
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
-            logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",
-                        guild_id, user_id, transcript[:100])
+            logger.info("Suppressing duplicate voice transcript")
             return
         # Echo the transcript into the text channel (after auth, with mention sanitization).
         with suppress(Exception):

@@ -4446,7 +4446,7 @@ class TelegramAdapter(BasePlatformAdapter):
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)
-            logger.info("Telegram update prompt answered '%s' by user %s", answer, getattr(query.from_user, "id", "unknown"))
+            logger.info("Telegram update prompt answered")
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
 
@@ -5701,9 +5701,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
     def _log_blocked_user(self, msg, *, level=logging.WARNING, what: str = "unauthorized user") -> None:
-        logger.log(
-            level, "[Telegram] Blocked %s %s in chat %s", what, getattr(getattr(msg, "from_user", None), "id", None),
-            getattr(getattr(msg, "chat", None), "id", None))
+        logger.log(level, "[Telegram] Blocked %s", what)
 
     def _gate_or_observe(self, msg, update, msg_type: MessageType) -> bool:
         """Group trigger gate; observes unmentioned chatter when configured. True = proceed."""

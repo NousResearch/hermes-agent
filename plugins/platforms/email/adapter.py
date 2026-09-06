@@ -368,7 +368,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
         self._thread_context: Dict[str, Dict[str, str]] = {}
-        logger.info("[Email] Adapter initialized for %s", self._address)
+        logger.info("[Email] Adapter initialized")
 
     def _trim_seen_uids(self) -> None:
         """Keep only the highest half of UIDs once over the cap (UIDs are monotonic; UNSEEN prevents re-delivery)."""
@@ -577,7 +577,7 @@ class EmailAdapter(BasePlatformAdapter):
             sender_name = sender_name.split("<")[0].strip().strip('"')
         subject = _decode_header_value(msg.get("Subject", "(no subject)"))
         if _is_automated_sender(sender_addr, dict(msg.items())):
-            logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+            logger.debug("[Email] Skipping automated sender")
             return None
         # Verify From: while the trusted Authentication-Results header is in scope; the verdict is consumed at dispatch (GHSA-rxqh-5572-8m77).
         sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
@@ -606,26 +606,25 @@ class EmailAdapter(BasePlatformAdapter):
         if sender_addr == self._address.lower():
             return False
         if _is_automated_sender(sender_addr, {}):
-            logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
+            logger.debug("[Email] Dropping automated sender at dispatch")
             return False
         # Drop senders the gateway would never authorize before a MessageEvent (and thread context) exists —
         # otherwise a dispatch/authorization race can send a reply even though the handler returned None.
         allowed_raw = _get_secret("EMAIL_ALLOWED_USERS", "").strip()
         if not allowed_raw:
             if not self._allow_all_senders():
-                logger.debug("[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset and open access is not opted in: %s", sender_addr)
+                logger.debug("[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset and open access is not opted in")
                 return False
         elif sender_addr.lower() not in {a.strip().lower() for a in allowed_raw.split(",") if a.strip()}:
-            logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+            logger.debug("[Email] Dropping non-allowlisted sender at dispatch")
             return False
         # Reject spoofed senders (GHSA-rxqh-5572-8m77): the allowlist keys on the attacker-controlled
         # From:. Only matters when an allowlist GRANTS access and allow-all is off; fail-closed.
         if (self._require_authenticated_sender and self._allowlist_in_effect()
                 and not self._allow_all_senders() and not msg_data.get("sender_authenticated", False)):
-            logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s). If your mail server does not "
+            logger.warning("[Email] Dropping sender with unauthenticated From. If your mail server does not "
                            "stamp Authentication-Results, set platforms.email.require_authenticated_sender: false "
-                           "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
-                           sender_addr, msg_data.get("auth_reason", "no verdict"))
+                           "(or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.")
             return False
         return True
 
@@ -647,7 +646,7 @@ class EmailAdapter(BasePlatformAdapter):
             source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
-        logger.info("[Email] New message from %s: %s", sender_addr, subject)
+        logger.info("[Email] New message received (subject_chars=%d)", len(subject or ""))
         await self.handle_message(event)
 
     async def _run_send(self, fn, args: tuple, log_fmt: str, *log_args) -> SendResult:
@@ -660,7 +659,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed: %s")
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
@@ -699,7 +698,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Send an email via SMTP. Runs in executor thread."""
         msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
         self._smtp_send(msg)
-        logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
+        logger.info("[Email] Sent reply (subject_chars=%d)", len(subject or ""))
         return msg_id
 
     def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool) -> str:
@@ -748,7 +747,7 @@ class EmailAdapter(BasePlatformAdapter):
     def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
         msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
-        logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        logger.info("[Email] Sent multi-attachment email (%d files)", len(file_paths))
         return msg_id
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,

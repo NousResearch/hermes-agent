@@ -202,7 +202,7 @@ class _OAuthAddSpec:
     token: Callable[[dict], str]
     source: str
     fields: Callable[[dict, str], dict]
-    activate_first: bool = False
+    activate_first: bool = True
 
 
 _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
@@ -325,7 +325,10 @@ def _add_api_key_credential(args, provider: str, pool) -> None:
     entry = PooledCredential(
         provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=AUTH_TYPE_API_KEY,
         priority=0, source=SOURCE_MANUAL, access_token=token, base_url=_provider_base_url(provider))
+    first_credential = not pool.entries()
     pool.add_entry(entry)
+    if first_credential:
+        auth_mod.mark_provider_active_if_unset(provider)
     print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
 
 
@@ -352,6 +355,7 @@ def auth_add_command(args) -> None:
     if requested_type == AUTH_TYPE_API_KEY:
         _add_api_key_credential(args, provider, pool)
         return
+
     if provider == "nous":
         _add_nous_oauth_credential(args, provider)
         return
@@ -372,7 +376,7 @@ def auth_add_command(args) -> None:
         source=spec.source, access_token=token, **spec.fields(creds, provider))
     first_credential = not pool.entries()
     pool.add_entry(entry)
-    # The first Codex/xAI credential becomes the active provider (as the old singleton save path
+    # The first credential becomes the active provider (as the old singleton save path
     # did implicitly); subsequent adds leave the active provider as-is.
     if spec.activate_first and first_credential:
         auth_mod.mark_provider_active_if_unset(provider)

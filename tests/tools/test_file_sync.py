@@ -280,8 +280,8 @@ class TestConcurrency:
                 for path in sorted(tmp_path.glob("*.png"))
             ]
 
-        def upload(host_path, _remote_path):
-            if host_path == str(new_file):
+        def upload(_host_path, remote_path):
+            if remote_path == f"/root/.hermes/cache/images/{new_file.name}":
                 upload_started.set()
                 sync_back_transport_started.wait(timeout=1.0)
                 release_upload.set()

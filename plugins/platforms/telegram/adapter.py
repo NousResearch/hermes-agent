@@ -10,6 +10,7 @@ import os
 import html as _html
 import re
 import time
+from collections import OrderedDict
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
@@ -120,7 +121,7 @@ try:
         LinkPreviewOptions = None
     from telegram.ext import (
         Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler as TelegramMessageHandler,
-        ContextTypes, TypeHandler, filters)
+        PollAnswerHandler, ContextTypes, TypeHandler, filters)
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -128,6 +129,7 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
     Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
     CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
+    PollAnswerHandler = Any
     LinkPreviewOptions = filters = ParseMode = ChatType = None
 
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
@@ -229,6 +231,7 @@ def check_telegram_requirements() -> bool:
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
+    global PollAnswerHandler
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -245,6 +248,7 @@ def check_telegram_requirements() -> bool:
         LinkPreviewOptions = getattr(_tg, "LinkPreviewOptions", None)
         Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler = (
             getattr(_ext, n) for n in ("Application", "CommandHandler", "CallbackQueryHandler", "InlineQueryHandler", "MessageHandler"))
+        PollAnswerHandler = getattr(_ext, "PollAnswerHandler", None)
         ContextTypes, filters, TypeHandler = _ext.ContextTypes, _ext.filters, _ext.TypeHandler
         ParseMode, ChatType = _const.ParseMode, _const.ChatType
         HTTPXRequest = _req.HTTPXRequest
@@ -2600,6 +2604,8 @@ class TelegramAdapter(BasePlatformAdapter):
             if not source.user_id or not source.chat_id:
                 raise ValueError("gateway_platform_event message_edited requires editor and chat identities")
             return source
+        if getattr(update, "poll_answer", None) is not None:
+            return self._source_from_poll_answer_for_auth(update)
         raise ValueError("gateway_platform_event source extraction has no extractor for this update type")
 
     def _normalize_platform_event(self, update) -> Optional[Dict[str, Any]]:
@@ -2609,6 +2615,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return self._normalize_reaction_event(update)
         if getattr(update, "edited_message", None) is not None:
             return self._normalize_message_edited_event(update)
+        # Checked last on purpose: the Bot API fields are mutually exclusive
+        # on a real Update, and test doubles that stub only the fields they
+        # care about leave the others as truthy mocks.
+        if getattr(update, "poll_answer", None) is not None:
+            return self._normalize_poll_answer_event(update)
         return None
 
     @staticmethod
@@ -2679,6 +2690,479 @@ class TelegramAdapter(BasePlatformAdapter):
                 "text": text[:8192] if text is not None else None, "edited_at": edited_at},
         }
 
+    # ── Poll-answer harvesting (persist Mark-directed decision votes) ─────
+    #
+    # A ``poll_answer`` update carries only ``poll_id``, ``option_ids`` and the
+    # voter — never the chat/message the poll lives in. So votes on polls this
+    # adapter SENT can only be routed back to their owning session if the
+    # adapter remembered the origin at sendPoll time. The cache below is that
+    # memory: bounded (LRU), process-local, and populated by observing
+    # sendPoll responses on the bot request path
+    # (``_instrument_send_poll_capture``). Unknown/evicted poll ids are logged
+    # at WARNING and dropped — routing is never fabricated.
+
+    # Max remembered poll origins. Polled decisions are short-lived; 512
+    # entries bound memory at a few dozen KB while covering any realistic
+    # burst of open polls. Oldest entries evict first.
+    POLL_ORIGIN_CACHE_MAX = 512
+
+    def _poll_origin_cache(self) -> "OrderedDict[str, Dict[str, Any]]":
+        """Lazy accessor for the poll-origin LRU cache.
+
+        Lazy because tests construct the adapter via ``object.__new__()``
+        without ``__init__`` (see AGENTS.md), so every attribute used on the
+        poll path must self-heal.
+        """
+        cache = self.__dict__.get("_poll_origin_lru")
+        if cache is None:
+            cache = OrderedDict()
+            self._poll_origin_lru = cache
+        return cache
+
+    def _remember_sent_poll(
+        self,
+        poll_id: str,
+        *,
+        chat_id: str,
+        chat_type: str,
+        message_id: str,
+        thread_id: Optional[str],
+        question: str,
+        options: List[str],
+    ) -> None:
+        """Record the origin of a poll this adapter sent (LRU, bounded).
+
+        ``option_texts`` resolution later indexes ``options`` positionally,
+        matching the Bot API contract that ``option_ids`` index into the
+        options list in send order. Re-inserting an existing poll moves it to
+        the fresh end so live polls are never the eviction candidates.
+        """
+        cache = self._poll_origin_cache()
+        cache[str(poll_id)] = {
+            "poll_id": str(poll_id),
+            "chat_id": str(chat_id),
+            "chat_type": str(chat_type or "dm"),
+            "message_id": str(message_id),
+            "thread_id": str(thread_id) if thread_id is not None else None,
+            "question": str(question or "")[:200],
+            "options": [str(o)[:512] for o in (options or [])][:10],
+        }
+        cache.move_to_end(str(poll_id))
+        while len(cache) > self.POLL_ORIGIN_CACHE_MAX:
+            evicted_poll_id, _ = cache.popitem(last=False)
+            logger.debug(
+                "[%s] Evicted poll origin for poll_id=%s (cache cap %d)",
+                self.name, evicted_poll_id, self.POLL_ORIGIN_CACHE_MAX,
+            )
+
+    def _lookup_sent_poll(self, poll_id: str) -> Optional[Dict[str, Any]]:
+        """Return the cached origin for ``poll_id`` (touching LRU order)."""
+        cache = self._poll_origin_cache()
+        key = str(poll_id)
+        origin = cache.get(key)
+        if origin is not None:
+            cache.move_to_end(key)
+        return origin
+
+    def _poll_vote_display_text(
+        self, poll_answer: Any, origin: Dict[str, Any]
+    ) -> str:
+        """Render a poll vote as the human/agent-readable decision line.
+
+        ``option_ids`` are 0-based indexes into the options the bot sent.
+        Out-of-range indexes degrade to ``"option N"``; an empty list is a
+        retraction (Telegram sends poll_answer with no options when the user
+        un-votes).
+        """
+        options = origin.get("options") or []
+        raw_ids = getattr(poll_answer, "option_ids", None) or []
+        texts: List[str] = []
+        for idx in raw_ids:
+            if isinstance(idx, int) and not isinstance(idx, bool) and 0 <= idx < len(options):
+                texts.append(str(options[idx]))
+            elif isinstance(idx, int) and not isinstance(idx, bool):
+                texts.append(f"option {idx + 1}")
+        choice = ", ".join(texts) if texts else "(vote retracted)"
+        question = str(origin.get("question") or "").strip()
+        if not question:
+            question = "poll"
+        return f"[Poll vote] {question[:80]}: {choice}"
+
+    def _normalize_poll_answer_event(self, update) -> Optional[Dict[str, Any]]:
+        """Normalize a ``poll_answer`` update (event_type ``poll_vote``).
+
+        Payload contract (v1, additive): ``poll_id``, ``option_ids``,
+        ``option_texts`` (resolvable from the send-time options list; empty
+        on retraction), ``question``, ``user`` ``{id, name}``, origin
+        ``chat_id``/``thread_id``/``message_id`` from the send-time cache,
+        and ``update_id``. Returns ``None`` for unknown/evicted poll ids —
+        without an origin there is no honest routing target, so no event is
+        emitted (the WARNING lives in ``_handle_poll_answer``, the single
+        chokepoint that runs for every poll_answer regardless of hooks).
+        """
+        pa = getattr(update, "poll_answer", None)
+        if pa is None:
+            return None
+        poll_id = getattr(pa, "poll_id", None)
+        if isinstance(poll_id, bool) or not isinstance(poll_id, (str, int)):
+            return None
+        origin = self._lookup_sent_poll(str(poll_id))
+        if origin is None:
+            return None
+        user = getattr(pa, "user", None)
+        user_id = str(getattr(user, "id", "") or "").strip() or None
+        user_name = None
+        if user is not None:
+            user_name = (
+                str(
+                    getattr(user, "username", "")
+                    or getattr(user, "full_name", "")
+                    or getattr(user, "first_name", "")
+                ).strip()
+                or None
+            )
+        option_ids = [
+            int(i) for i in (getattr(pa, "option_ids", None) or [])
+            if isinstance(i, int) and not isinstance(i, bool)
+        ]
+        options = origin.get("options") or []
+        option_texts = [
+            str(options[i]) for i in option_ids if 0 <= i < len(options)
+        ]
+        update_id = getattr(update, "update_id", None)
+        if isinstance(update_id, bool) or not isinstance(update_id, int):
+            update_id = None
+        return {
+            "platform": "telegram",
+            "event_type": "poll_vote",
+            "payload": {
+                "poll_id": str(poll_id)[:128],
+                "option_ids": option_ids,
+                "option_texts": option_texts[:10],
+                "question": str(origin.get("question") or "")[:200],
+                "user": {"id": user_id, "name": user_name},
+                "chat_id": str(origin.get("chat_id") or "")[:128] or None,
+                "thread_id": origin.get("thread_id"),
+                "message_id": str(origin.get("message_id") or "")[:128] or None,
+                "update_id": update_id,
+            },
+        }
+
+    def _source_from_poll_answer_for_auth(self, update):
+        """Build the SessionSource for a ``poll_answer`` update's voter.
+
+        The vote must be authorized under the chat that owns the poll, so the
+        identity comes from ``PollAnswer.user`` combined with the send-time
+        origin cache (chat, type, thread). Raises ``ValueError`` when the
+        voter or origin is missing so the post-auth boundary fails closed.
+        """
+        pa = getattr(update, "poll_answer", None)
+        if pa is None:
+            raise ValueError(
+                "gateway_platform_event source extraction requires a "
+                "poll_answer update"
+            )
+        user = getattr(pa, "user", None)
+        user_id = str(getattr(user, "id", "") or "").strip() or None
+        user_name = (
+            str(
+                getattr(user, "username", "")
+                or getattr(user, "full_name", "")
+                or getattr(user, "first_name", "")
+            ).strip()
+            or None
+        )
+        poll_id = str(getattr(pa, "poll_id", "") or "")
+        origin = self._lookup_sent_poll(poll_id)
+        if not user_id or origin is None or not origin.get("chat_id"):
+            raise ValueError(
+                "gateway_platform_event poll_vote requires voter identity "
+                "and a cached poll origin"
+            )
+        return self.build_source(
+            chat_id=str(origin["chat_id"]),
+            chat_type=str(origin.get("chat_type") or "dm"),
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=origin.get("thread_id"),
+        )
+
+    def _observe_send_poll_result(
+        self, request_data: Any, result: Any
+    ) -> Optional[Dict[str, Any]]:
+        """Extract a sent poll's identity from a sendPoll response envelope.
+
+        Purely observational: PTB still parses the untouched payload and owns
+        any resulting exception. The response Message carries ``poll.id`` —
+        the same id future ``poll_answer`` updates cite — so the vote can be
+        mapped back to this exact message. The question and ordered options
+        come from the request parameters (what the API echoes is only counts),
+        which is what makes the harvested vote human-readable. Returns the
+        recorded origin dict (also useful to tests/callers), or ``None`` when
+        the envelope lacks a usable poll identity.
+        """
+        try:
+            status_code, payload = result
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(status_code, int) or not (200 <= status_code < 300):
+            return None
+        try:
+            if isinstance(payload, (bytes, bytearray)):
+                payload = payload.decode("utf-8", "replace")
+            envelope = json.loads(payload)
+        except Exception:
+            return None
+        if not isinstance(envelope, dict) or envelope.get("ok") is not True:
+            return None
+        message = envelope.get("result")
+        if not isinstance(message, dict):
+            return None
+        poll = message.get("poll")
+        if not isinstance(poll, dict):
+            return None
+        poll_id = str(poll.get("id") or "").strip()
+        chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+        chat_id = chat.get("id")
+        message_id = message.get("message_id")
+        if not poll_id or chat_id is None or message_id is None:
+            return None
+        # Resolve the options/question from the outgoing parameters when
+        # available (the normal capture path). Callers that already know them
+        # (e.g. the adapter's own send_poll) pass explicit kwargs — those win.
+        return self._remember_sent_poll_from_parts(
+            poll_id,
+            chat_id=chat_id,
+            chat_type=str(chat.get("type") or "dm"),
+            message_id=message_id,
+            thread_id=message.get("message_thread_id"),
+            parameters=getattr(request_data, "parameters", None),
+        )
+
+    def _remember_sent_poll_from_parts(
+        self,
+        poll_id: str,
+        *,
+        chat_id: Any,
+        chat_type: str,
+        message_id: Any,
+        thread_id: Any = None,
+        parameters: Any = None,
+        question: Optional[str] = None,
+        options: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Populate the poll-origin cache from send-time pieces.
+
+        Accepts either the raw Bot API request ``parameters`` mapping (where
+        ``options`` arrives as a JSON string of ``{"text": ...}`` objects) or
+        explicit ``question``/``options`` values. Shared by the do_request
+        observer and ``send_poll`` so both agree on one normalization.
+        """
+        if isinstance(parameters, dict):
+            if question is None:
+                question = parameters.get("question")
+            if options is None:
+                raw_options = parameters.get("options")
+                if isinstance(raw_options, str):
+                    try:
+                        parsed = json.loads(raw_options)
+                    except Exception:
+                        parsed = None
+                else:
+                    parsed = raw_options
+                if isinstance(parsed, list):
+                    options = []
+                    for entry in parsed:
+                        if isinstance(entry, dict):
+                            text = entry.get("text")
+                            if isinstance(text, str) and text.strip():
+                                options.append(text)
+                        elif isinstance(entry, str) and entry.strip():
+                            options.append(entry)
+        if isinstance(thread_id, bool):
+            thread_id = None
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id else "group"
+        elif normalized_chat_type == "group":
+            normalized_chat_type = "group"
+        self._remember_sent_poll(
+            str(poll_id),
+            chat_id=str(chat_id),
+            chat_type=normalized_chat_type,
+            message_id=str(message_id),
+            thread_id=str(thread_id) if thread_id is not None else None,
+            question=str(question or ""),
+            options=list(options or []),
+        )
+        return self._poll_origin_cache().get(str(poll_id))
+
+    def _instrument_send_poll_capture(self, request):
+        """Re-tag a PTB request object to observe ``sendPoll`` responses.
+
+        ``poll_answer`` updates reference a poll only by ``poll_id``; the
+        origin chat/thread/message must be recorded when the poll is sent,
+        including when the send comes through the shared ``Bot`` instance
+        (plugins, one-shot callers) rather than this adapter. The observation
+        is purely additive and cannot break the send path: any failure inside
+        the capture is logged at debug and the original result returned
+        untouched.
+
+        Uses the same ``__class__``-swap subclass pattern as
+        ``_instrument_polling_request`` — PTB request classes are slotted and
+        attribute assignment on instances raises on Python 3.13 (#64482).
+        """
+        adapter = self
+        base_cls = type(request)
+        if getattr(base_cls, "_hermes_poll_capture", False):
+            return request
+
+        class _PollCapturingRequest(base_cls):
+            __slots__ = ()
+            _hermes_poll_capture = True
+
+            # Positional-agnostic like _InstrumentedPollingRequest: PTB calls
+            # do_request with kwargs, but test doubles (and future callers)
+            # may pass positionally or partially.
+            async def do_request(self, *args, **kwargs):
+                result = await super().do_request(*args, **kwargs)
+                try:
+                    url = kwargs.get("url", args[0] if args else "")
+                    # URL shape: https://api.telegram.org/bot<token>/sendPoll
+                    if str(url).endswith("/sendPoll"):
+                        request_data = kwargs.get(
+                            "request_data", args[2] if len(args) > 2 else None
+                        )
+                        origin = adapter._observe_send_poll_result(
+                            request_data, result
+                        )
+                        if origin is not None:
+                            logger.info(
+                                "[%s] Recorded poll origin: poll_id=%s "
+                                "chat=%s message=%s thread=%s",
+                                adapter.name, origin.get("poll_id"),
+                                origin.get("chat_id"),
+                                origin.get("message_id"),
+                                origin.get("thread_id"),
+                            )
+                except Exception:
+                    logger.debug(
+                        "[%s] sendPoll origin capture failed",
+                        getattr(adapter, "name", "telegram"), exc_info=True,
+                    )
+                return result
+
+        request.__class__ = _PollCapturingRequest
+        return request
+
+    async def _handle_poll_answer(self, update, context) -> None:
+        """Route a voter's decision on a poll this bot sent back to its session.
+
+        The vote becomes a normal inbound turn in the session that owns the
+        poll's chat (``build_source`` applies the same profile routing a typed
+        message would get), so it is persisted to the session DB like any
+        user message and any agent can harvest the decision later. It is
+        marked ``internal`` for the same reason watch-completion injections
+        are: the gateway must never treat it as a pairing trigger or let it
+        interrupt a running turn (it queues and lands as the next turn,
+        preserving strict role alternation), and ``allow_gateway_control``
+        stays off so a poll option label can never be parsed as a slash
+        command. Authorization runs here (the voter against the poll's chat,
+        same bar as inline-button callbacks) because internal events skip the
+        runner's sender-auth step. Unknown/evicted poll ids are logged and
+        dropped — no cached origin means no honest routing target.
+        """
+        pa = getattr(update, "poll_answer", None)
+        if pa is None:
+            return
+        poll_id = str(getattr(pa, "poll_id", "") or "").strip()
+        raw_option_ids = list(getattr(pa, "option_ids", None) or [])
+        origin = self._lookup_sent_poll(poll_id) if poll_id else None
+        if origin is None:
+            logger.warning(
+                "[%s] Dropping poll_answer for unknown poll_id=%s "
+                "(user_id=%s option_ids=%s): no cached poll origin "
+                "(bot restart or cache eviction)",
+                self.name, poll_id or "?",
+                str(getattr(getattr(pa, "user", None), "id", "") or "?"),
+                raw_option_ids,
+            )
+            return
+        user = getattr(pa, "user", None)
+        user_id = str(getattr(user, "id", "") or "").strip()
+        user_name = None
+        if user is not None:
+            user_name = (
+                str(
+                    getattr(user, "username", "")
+                    or getattr(user, "full_name", "")
+                    or getattr(user, "first_name", "")
+                ).strip()
+                or None
+            )
+        if not user_id:
+            logger.warning(
+                "[%s] Dropping poll_answer for poll_id=%s: no voter identity",
+                self.name, poll_id,
+            )
+            return
+        if not self._is_callback_user_authorized(
+            user_id,
+            chat_id=origin["chat_id"],
+            chat_type=origin["chat_type"],
+            thread_id=origin.get("thread_id"),
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[%s] Ignoring poll vote from unauthorized user %s on poll_id=%s (chat=%s)",
+                self.name, user_id, poll_id, origin["chat_id"],
+            )
+            return
+        text = self._poll_vote_display_text(pa, origin)
+        source = self.build_source(
+            chat_id=origin["chat_id"],
+            chat_type=origin["chat_type"],
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=origin.get("thread_id"),
+        )
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            internal=True,
+            # Deliberately NO message_id: every vote on one poll shares the
+            # poll message id, and the runner's transcript dedupe
+            # (has_platform_message_id, #47237) would drop every vote after
+            # the first. The poll origin stays available via
+            # metadata["poll_vote"] + the INFO log line.
+            message_id=None,
+            platform_update_id=getattr(update, "update_id", None),
+            allow_gateway_control=False,
+            metadata={
+                "poll_vote": {
+                    "poll_id": poll_id,
+                    "option_ids": [
+                        i for i in raw_option_ids
+                        if isinstance(i, int) and not isinstance(i, bool)
+                    ],
+                    "option_texts": [
+                        str(t) for t in (
+                            self._normalize_poll_answer_event(update) or {}
+                        ).get("payload", {}).get("option_texts", [])
+                    ],
+                }
+            },
+        )
+        logger.info(
+            "[%s] Poll vote harvested: chat=%s thread=%s user=%s -> %r",
+            self.name, origin["chat_id"], origin.get("thread_id"),
+            user_id, text,
+        )
+        await self.handle_message(event)
+
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
         app.add_handler(TelegramMessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message))
@@ -2689,6 +3173,11 @@ class TelegramAdapter(BasePlatformAdapter):
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+        # Harvest votes on polls this bot sent: map poll_answer back to the
+        # origin chat via the sendPoll capture cache and inject the decision
+        # into the owning session as an internal user-role turn (see
+        # _handle_poll_answer).
+        app.add_handler(PollAnswerHandler(self._handle_poll_answer))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
         # gateway_platform_event observer: group 99 observes alongside, never displaces, core handlers.
@@ -2939,6 +3428,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 builder = builder.local_mode(True)
                 logger.info("[%s] Using Telegram local_mode (read files from disk)", self.name)
             request, get_updates_request = await self._build_ptb_requests()
+            # Observe sendPoll responses on the general request path so every
+            # poll this bot sends (adapter, plugins, one-shot callers using
+            # app.bot) records its origin for later poll_answer routing.
+            request = self._instrument_send_poll_capture(request)
+
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot

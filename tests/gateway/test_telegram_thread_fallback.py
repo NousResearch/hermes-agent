@@ -101,6 +101,7 @@ _fake_telegram_ext.CommandHandler = object
 _fake_telegram_ext.CallbackQueryHandler = object
 _fake_telegram_ext.InlineQueryHandler = object
 _fake_telegram_ext.MessageHandler = object
+_fake_telegram_ext.PollAnswerHandler = object
 _fake_telegram_ext.TypeHandler = object
 _fake_telegram_ext.ContextTypes = SimpleNamespace(DEFAULT_TYPE=object)
 _fake_telegram_ext.filters = object

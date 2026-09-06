@@ -2,9 +2,12 @@
 
 import http.server
 import json
+import subprocess
 import threading
 import time
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agent.verify.environment import (
     load_manifest,
@@ -126,73 +129,65 @@ class TestComposeGuard:
             evidence=["Detected docker-compose.yml"],
         )
 
-    def test_refuses_when_containers_are_running(self, tmp_path, monkeypatch):
-        fake_ps = MagicMock(returncode=0, stdout="myproject-db-1\nmyproject-web-1\n")
-        monkeypatch.setattr("subprocess.run", MagicMock(return_value=fake_ps))
-
-        result = run_verify(tmp_path, self._compose_recipe(), skip_start=True)
-
-        assert not result.ok
-        assert len(result.phases) == 1
-        assert "myproject-db-1" in result.phases[0].output_tail
-        assert "myproject-web-1" in result.phases[0].output_tail
-        assert "Refusing to run" in result.phases[0].output_tail
-
-    def test_does_not_actually_invoke_build_or_start_when_refusing(self, tmp_path, monkeypatch):
-        """The refusal must be a synthetic result -- the real build/start
-        commands (which would trigger the destructive replace) must never
-        actually be spawned."""
-        fake_ps = MagicMock(returncode=0, stdout="myproject-db-1\n")
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            pytest.param(MagicMock(returncode=0, stdout="myproject-db-1\nmyproject-web-1\n"), id="containers-running"),
+            pytest.param(subprocess.TimeoutExpired(cmd="docker", timeout=15), id="probe-timed-out"),
+            pytest.param(MagicMock(returncode=1, stdout="", stderr="permission denied on docker.sock"), id="probe-failed"),
+        ],
+    )
+    def test_refuses_and_spawns_nothing_mutating_when_live_state_cannot_be_ruled_out(
+        self, tmp_path, monkeypatch, probe
+    ):
         calls: list[list[str] | str] = []
 
         def tracking_run(cmd, *args, **kwargs):
             calls.append(cmd)
-            return fake_ps
+            if isinstance(probe, BaseException):
+                raise probe
+            return probe
 
         monkeypatch.setattr("subprocess.run", tracking_run)
 
-        run_verify(tmp_path, self._compose_recipe(), skip_start=False)
+        result = run_verify(tmp_path, self._compose_recipe(), skip_start=False)
 
-        # Only the read-only "docker compose ps" probe ran -- never
-        # "docker compose build" or "docker compose up" as an actual subprocess.
+        assert not result.ok
+        assert "Refusing to run" in result.phases[0].output_tail
+        if isinstance(probe, MagicMock) and probe.returncode == 0:
+            assert "myproject-db-1" in result.phases[0].output_tail
+            assert "myproject-web-1" in result.phases[0].output_tail
+        # Only the read-only probe ran -- never build or up.
         assert len(calls) == 1
         assert calls[0][:3] == ["docker", "compose", "ps"]
 
-    def test_proceeds_normally_with_no_running_containers(self, tmp_path, monkeypatch):
-        fake_ps = MagicMock(returncode=0, stdout="")
-        monkeypatch.setattr("subprocess.run", MagicMock(return_value=fake_ps))
-
-        with patch("agent.verify.runner._run_phase_command") as mock_phase:
-            mock_phase.return_value = MagicMock(ok=True, phase="build")
-            result = run_verify(tmp_path, self._compose_recipe(), phases=("build",))
-
-        assert mock_phase.called
-
-    def test_proceeds_when_the_docker_probe_itself_is_unavailable(self, tmp_path, monkeypatch):
-        """docker/compose not installed, or this isn't actually a compose
-        project's directory from docker's perspective -- must not block
-        verify on an unrelated environment gap."""
+    @pytest.mark.parametrize(
+        "probe",
+        [
+            pytest.param(MagicMock(returncode=0, stdout=""), id="none-running"),
+            pytest.param(FileNotFoundError("docker not found"), id="docker-absent"),
+        ],
+    )
+    def test_proceeds_when_no_live_containers_or_docker_is_absent(self, tmp_path, monkeypatch, probe):
         monkeypatch.setattr(
             "subprocess.run",
-            MagicMock(side_effect=FileNotFoundError("docker not found")),
+            MagicMock(side_effect=probe) if isinstance(probe, BaseException) else MagicMock(return_value=probe),
         )
 
         with patch("agent.verify.runner._run_phase_command") as mock_phase:
             mock_phase.return_value = MagicMock(ok=True, phase="build")
-            result = run_verify(tmp_path, self._compose_recipe(), phases=("build",))
+            run_verify(tmp_path, self._compose_recipe(), phases=("build",))
 
         assert mock_phase.called
 
-    def test_non_compose_recipes_are_unaffected(self, tmp_path, monkeypatch):
-        """The guard is scoped to kind == "compose" only -- a Node/Python/etc.
-        recipe must never even check for running compose containers."""
+    def test_guard_skipped_when_no_mutating_phase_selected(self, tmp_path, monkeypatch):
         probe = MagicMock()
         monkeypatch.setattr("agent.verify.runner._running_compose_containers", probe)
-        recipe = Recipe(name="x", kind="node", build=["true"])
 
-        result = run_verify(tmp_path, recipe, skip_start=True)
+        with patch("agent.verify.runner._run_phase_command") as mock_phase:
+            mock_phase.return_value = MagicMock(ok=True, phase="test")
+            run_verify(tmp_path, Recipe(name="x", kind="compose", test=["true"]), phases=("test",))
 
-        assert result.ok
         probe.assert_not_called()
 
     def test_result_to_dict(self, tmp_path):

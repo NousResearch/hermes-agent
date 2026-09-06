@@ -184,19 +184,26 @@ def _run_start_phase(
 
 def _running_compose_containers(root: Path) -> list[str] | None:
     """Names of currently-running containers for the compose project at *root*,
-    via ``docker compose ps`` (read-only; never mutates anything). ``None`` when the
-    check itself could not run (docker/compose unavailable, or not a compose
-    project here) -- callers must not treat that as "no running containers".
+    via ``docker compose ps`` (read-only; never mutates anything).
+
+    ``None`` only when docker itself is absent -- the build phase would fail the
+    same way, so there is nothing to protect. A hung daemon or a non-zero probe
+    is reported as a refusal: containers may be live and unobservable, which is
+    exactly the #103567 loss window, and ``docker compose build`` would not have
+    fared better against the same daemon.
     """
     try:
         result = subprocess.run(
             ["docker", "compose", "ps", "--status", "running", "--format", "{{.Name}}"],
             cwd=root, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
         return None
+    except subprocess.TimeoutExpired:
+        return ["<docker compose ps timed out after 15s; live containers cannot be ruled out>"]
     if result.returncode != 0:
-        return None
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        return [f"<docker compose ps failed (exit {result.returncode}): {detail[-1] if detail else 'no output'}>"]
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -220,7 +227,8 @@ def run_verify(
     selected = tuple(phases) if phases else PHASE_ORDER + ("start",)
     result = VerifyResult(recipe_name=recipe.name)
 
-    if recipe.kind == "compose":
+    mutating = ("build" in selected) or ("start" in selected and not skip_start)
+    if recipe.kind == "compose" and mutating:
         running = _running_compose_containers(root)
         if running:
             result.phases.append(PhaseResult(

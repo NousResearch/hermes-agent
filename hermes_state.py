@@ -3849,6 +3849,18 @@ def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
         return False
 
 
+class SessionDBClosedError(RuntimeError):
+    """A write was attempted after the SessionDB connection was closed.
+
+    ``close()`` nulls ``self._conn``; any worker thread still in flight that
+    reaches ``_execute_write`` would otherwise crash with a raw
+    ``AttributeError: 'NoneType' object has no attribute 'execute'``.  This
+    exception gives callers a catchable signal that the database is gone and
+    the write is moot (e.g. a teardown-time compression-cooldown restore on
+    a session that is being destroyed anyway).
+    """
+
+
 class CompressionSessionClosedError(RuntimeError):
     """A durable write targeted a parent already closed by compression."""
 
@@ -5298,6 +5310,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         while True:
             try:
                 with self._lock:
+                    if self._conn is None:
+                        raise SessionDBClosedError(
+                            "SessionDB write attempted after close() — the "
+                            "connection is gone; the write is moot."
+                        )
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         result = fn(self._conn)
@@ -7446,7 +7463,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         try:
             self._execute_write(_do)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, SessionDBClosedError) as exc:
             logger.warning(
                 "record_compression_failure_cooldown(%s) failed: %s",
                 session_id, exc,
@@ -7562,7 +7579,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"compression cooldown rollback session missing: {session_id}"
                 )
 
-        self._execute_write(_do)
+        try:
+            self._execute_write(_do)
+        except SessionDBClosedError:
+            logger.debug(
+                "compression cooldown rollback for session %s skipped — "
+                "SessionDB already closed (teardown race, write is moot)",
+                session_id,
+            )
+            return
         actual = self.get_compression_failure_cooldown_row(session_id)
         expected = {
             "session_exists": True,
@@ -7589,7 +7614,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         try:
             self._execute_write(_do)
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, SessionDBClosedError) as exc:
             logger.warning(
                 "clear_compression_failure_cooldown(%s) failed: %s",
                 session_id, exc,

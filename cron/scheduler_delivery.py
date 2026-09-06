@@ -615,7 +615,10 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "_resolved_from": "explicit",  # mirror-eligible only under attach_to_session opt-in
         }
     platform_name = deliver_value
-    if origin and origin.get("platform") == platform_name:
+    # Case-insensitive like every neighboring comparison: deliver="Telegram"
+    # with origin platform "telegram" must hit the origin fallback, not fall
+    # through to the home-only path and fail delivery when no home is set.
+    if origin and str(origin.get("platform") or "").lower() == str(platform_name).lower():
         chat_id = _get_home_target_chat_id(platform_name)
         if chat_id:
             return _home_target(platform_name, chat_id)

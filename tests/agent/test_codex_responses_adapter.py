@@ -48,6 +48,16 @@ def test_chat_content_keeps_images_on_user_role():
     }]
 
 
+def test_chat_content_rejects_video_instead_of_sending_text_only():
+    content = [
+        {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}},
+        {"type": "text", "text": "Describe the video"},
+    ]
+
+    with pytest.raises(ValueError, match="does not support video_url input"):
+        _chat_messages_to_responses_input([{"role": "user", "content": content}])
+
+
 def test_preflight_rewrites_raw_assistant_images_to_text_markers():
     raw = [{
         "role": "assistant",

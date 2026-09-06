@@ -376,9 +376,13 @@ class _HealPass:
     def heal_profile_singleton(self, profile_singleton: Optional[Path]) -> None:
         if profile_singleton is None or not profile_singleton.exists():
             return
-        from hermes_cli.auth import _is_same_auth_store
-        if self.root_singleton is not None and _is_same_auth_store(profile_singleton, self.root_singleton):
-            return  # an aliased singleton pair is one shared grant, not a fork: never self-compare/unlink
+        from hermes_cli.auth_store_identity import (
+            AUTH_STORE_IDENTITY_DIFFERENT, classify_auth_store_identity)
+        if self.root_singleton is not None:
+            identity = classify_auth_store_identity(profile_singleton, self.root_singleton)
+            if identity != AUTH_STORE_IDENTITY_DIFFERENT:
+                # Same store, or unknown identity: never self-compare/unlink.
+                return
         # See #101356.
         p_single = _singleton_as_row(profile_singleton)
         root_has_grant = bool(self.r_oauth) or self.root_singleton_row is not None
@@ -448,8 +452,11 @@ class _HealPass:
 def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str, Any]]:
     from hermes_cli.auth import (
         _auth_file_path, _auth_store_lock, _global_auth_file_path, _load_auth_store,
-        _is_same_auth_store, _oauth_heal_clean_marks, _oauth_heal_notices, _same_path,
+        _oauth_heal_clean_marks, _oauth_heal_notices, _same_path,
         _save_auth_store)
+    from hermes_cli.auth_store_identity import (
+        AUTH_STORE_IDENTITY_SAME, AUTH_STORE_IDENTITY_UNKNOWN,
+        classify_auth_store_identity)
     root_path = _global_auth_file_path()
     if root_path is None:
         return None  # classic mode: nothing to consolidate into
@@ -474,7 +481,8 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
     if fingerprint[1] is None and fingerprint[2] is None:
         _oauth_heal_clean_marks[provider_id] = fingerprint
         return None
-    if _is_same_auth_store(profile_path, root_path):
+    identity = classify_auth_store_identity(profile_path, root_path)
+    if identity == AUTH_STORE_IDENTITY_SAME:
         # The profile's auth.json IS the root store (symlink/hardlink alias — a deliberate way to
         # share one grant). Both "sides" would read the same file, every OAuth row would match
         # itself, and the strip would write through the alias and delete the shared credential.
@@ -482,6 +490,13 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[Dict[str,
         _oauth_heal_clean_marks[provider_id] = fingerprint
         # See #101356.
         logger.debug("%s: forked-OAuth heal skipped, %s is the root store", provider_id, profile_path)
+        return None
+    if identity == AUTH_STORE_IDENTITY_UNKNOWN:
+        # Resolve/stat/samefile failed. Treating unknown as "two copies" would
+        # write a stripped profile store through a shared alias into root.
+        logger.warning(
+            "%s: forked-OAuth heal skipped, store identity of %s vs %s is unknown",
+            provider_id, profile_path, root_path)
         return None
 
     # Lock order: active (profile) store first, then the root source store — the same order

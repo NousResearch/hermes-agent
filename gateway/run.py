@@ -13100,8 +13100,16 @@ class GatewayRunner:
             with _lock:
                 connected_servers = set(_servers.keys())
 
+            # FIX: Read MCP config to determine true removed servers
+            from hermes_cli.config import get_config_path
+            cfg_path = get_config_path()
+            import yaml as _yaml
+            with open(cfg_path, encoding="utf-8") as f_cfg:
+                full_cfg = _yaml.safe_load(f_cfg) or {}
+            mcp_cfg = full_cfg.get("mcp_servers") or {}
+            configured_servers = set(mcp_cfg.keys())
+            removed = old_servers - configured_servers
             added = connected_servers - old_servers
-            removed = old_servers - connected_servers
             reconnected = connected_servers & old_servers
 
             lines = [t("gateway.reload_mcp.header")]

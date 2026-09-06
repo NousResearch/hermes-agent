@@ -156,3 +156,139 @@ class TestFinalizeInterruptsOwnDelegations:
         kwargs = mock_int.call_args.kwargs
         assert kwargs["session_key"] == ""
         assert kwargs["origin_ui_session_id"] == "tab9"
+
+
+# ---------------------------------------------------------------------------
+# 3. Parked completions reach the owning session when it comes back
+#
+# Incident: the backend was reaped mid-delegation; on restart the recovered row was replayed
+# onto the shared queue while only an UNRELATED chat was open, whose poller dropped the
+# in-memory copy. The durable row stayed pending and nothing ever delivered it to the owner.
+# ---------------------------------------------------------------------------
+
+import queue as _queue
+import time as _time
+
+from tui_gateway import server as _server
+
+
+def _wait_for(predicate, timeout: float = 5.0) -> bool:
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if predicate():
+            return True
+        _time.sleep(0.02)
+    return False
+
+
+@pytest.fixture
+def _poller_harness(monkeypatch):
+    """Real poller threads against the temp HERMES_HOME ledger; pollers + sessions are reaped after."""
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    submits: list = []
+
+    def _fake_submit(rid, sid, session, text, **kwargs):
+        submits.append({"sid": sid, "text": text, **kwargs})
+        session["running"] = False  # the turn finished
+
+    monkeypatch.setattr(_server, "_emit", lambda event, sid, payload=None: None)
+    monkeypatch.setattr(_server, "_run_prompt_submit", _fake_submit)
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+    registered: list = []
+
+    def start(sid: str, session_key: str) -> dict:
+        session = {"session_key": session_key, "history_lock": threading.Lock(), "running": False,
+                   "_finalized": False}
+        with _server._sessions_lock:
+            _server._sessions[sid] = session
+        registered.append(sid)
+        session["_notif_stop"] = _server._start_notification_poller(sid, session)
+        return session
+
+    yield start, submits
+    pollers = [(stop, th) for stop, th in list(_server._notification_pollers) if th.is_alive()]
+    for stop, _th in pollers:
+        stop.set()
+    deadline = _time.time() + 3.0
+    for _stop, th in pollers:
+        th.join(timeout=max(0.0, deadline - _time.time()))
+    _server._notification_pollers[:] = [(s, th) for s, th in _server._notification_pollers if th.is_alive()]
+    with _server._sessions_lock:
+        for sid in registered:
+            _server._sessions.pop(sid, None)
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+
+def _park_row_from_dead_backend(delegation_id: str, session_key: str) -> None:
+    """The incident's durable state: dispatched by a backend that died, recovered as ``unknown``."""
+    ad._persist_dispatch({
+        "delegation_id": delegation_id, "goal": "reaped mid-work", "context": None, "toolsets": None,
+        "role": "leaf", "model": "m", "session_key": session_key, "origin_ui_session_id": "dead-ui-sid",
+        "parent_session_id": session_key, "status": "running", "dispatched_at": _time.time() - 5.0,
+        "completed_at": None, "interrupt_fn": None})
+    assert ad.recover_abandoned_delegations() == 1
+
+
+def test_parked_completion_is_delivered_when_the_owning_session_resumes(_poller_harness):
+    from tools.process_registry import process_registry
+    start, submits = _poller_harness
+    _park_row_from_dead_backend("d-incident", "owner-key")
+
+    # Process start: the recovered row is replayed onto the shared queue...
+    assert ad.restore_undelivered_completions(process_registry.completion_queue) == 1
+    # ...while only an unrelated chat is open: its poller must not deliver it (fail-closed drop).
+    start("sid-unrelated", "unrelated-key")
+    assert _wait_for(lambda: process_registry.completion_queue.empty())
+    _time.sleep(0.3)
+    assert submits == []
+    assert ad.get_durable_delegation("d-incident")["delivery_state"] == "pending"
+
+    # The owner comes back (session_key == the row's origin_session): its poller must deliver it.
+    start("sid-owner", "owner-key")
+    assert _wait_for(lambda: len(submits) == 1), "parked completion never reached the owning session"
+    assert submits[0]["sid"] == "sid-owner"
+    assert submits[0]["display_kind"] == "async_delegation_complete"
+    assert "d-incident" in submits[0]["text"]
+    assert _wait_for(lambda: ad.get_durable_delegation("d-incident")["delivery_state"] == "delivered")
+
+
+def test_parked_completion_is_not_replayed_to_a_session_that_does_not_own_it(_poller_harness):
+    start, submits = _poller_harness
+    _park_row_from_dead_backend("d-foreign", "owner-key")
+
+    start("sid-unrelated", "unrelated-key")
+    _time.sleep(0.5)
+    assert submits == []
+    assert ad.get_durable_delegation("d-foreign")["delivery_state"] == "pending"
+
+
+def test_replay_does_not_double_deliver_a_copy_still_queued_from_process_start(_poller_harness):
+    """Process-start copy still in memory + session-resume copy: exactly one turn, session left idle."""
+    from tools.process_registry import process_registry
+    start, submits = _poller_harness
+    _park_row_from_dead_backend("d-twice", "owner-key")
+    assert ad.restore_undelivered_completions(process_registry.completion_queue) == 1
+
+    session = start("sid-owner", "owner-key")
+    assert _wait_for(lambda: process_registry.completion_queue.empty()
+                     and ad.get_durable_delegation("d-twice")["delivery_state"] == "delivered")
+    _time.sleep(0.5)  # give a second copy every chance to be (wrongly) injected
+    assert len(submits) == 1
+    assert session["running"] is False
+
+
+class TestOwnershipAcrossCompressionLineage:
+    def test_row_stamped_with_tip_is_owned_by_a_session_resumed_at_an_ancestor(self):
+        """Resume at the root id while the delegation was dispatched under the compressed continuation."""
+        evt = {"type": "async_delegation", "origin_ui_session_id": "dead-ui-sid", "session_key": "tip_key"}
+        db = MagicMock()
+        db.resolve_resume_session_id.side_effect = lambda k: k
+        db.get_compression_lineage.side_effect = lambda k: ["root_key", "tip_key"] if k == "root_key" else [k]
+        with patch("tui_gateway.server._get_db", return_value=db):
+            assert _session_owns_notification_event("tabX", {"session_key": "root_key", "_finalized": False}, evt)
+            assert not _session_owns_notification_event(
+                "tabY", {"session_key": "other_key", "_finalized": False}, evt)

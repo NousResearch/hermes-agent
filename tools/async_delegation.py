@@ -47,6 +47,8 @@ _MAX_DELIVERY_ATTEMPTS = 8
 # Pending completions older than this are dropped on restart replay instead of
 # re-run as a full-context turn; 48h keeps weekend results deliverable.
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
+# A delivery claim older than this is stale (consumer died mid-turn) and may be re-claimed.
+_DELIVERY_CLAIM_WINDOW_S = 300.0
 _DB_LOCK = threading.Lock()
 
 # ── Stale-delegation detection (progress-based, on by default) ──────────────
@@ -268,29 +270,66 @@ def restore_undelivered_completions(target_queue) -> int:
     (#64484).
     """
     recover_abandoned_delegations()
-    now, restored = time.time(), 0
     with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
-               FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
-               ORDER BY completed_at, delegation_id""").fetchall()
-        for delegation_id, payload, completed_at, dispatched_at in rows:
-            age_basis = completed_at or dispatched_at
-            if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
-                conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
-                              delivery_claim=NULL, delivery_claimed_at=NULL,
-                              updated_at=?
-                       WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
-                logger.warning("Async delegation %s: pending completion is %.1fh old "
-                               "(cap %.1fh); terminally dropping the replay (result remains queryable).",
-                               delegation_id, (now - age_basis) / 3600.0, _MAX_COMPLETION_REPLAY_AGE_S / 3600.0)
-                continue
-            evt = json.loads(payload)
-            if isinstance(evt, dict):
-                evt["restored"] = True
-            target_queue.put(evt)
-            restored += 1
+        rows = conn.execute(f"{_PENDING_REPLAY_SELECT} ORDER BY completed_at, delegation_id").fetchall()
+        return _replay_pending_rows(conn, rows, target_queue)
+
+
+_PENDING_REPLAY_SELECT = """SELECT delegation_id, event_json, completed_at, dispatched_at
+       FROM async_delegations
+       WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL"""
+
+
+def _replay_pending_rows(conn: sqlite3.Connection, rows, target_queue) -> int:
+    """Re-enqueue pending completion rows as ``restored=True`` events (in memory only);
+    rows past the replay age cap are terminally dropped instead. Returns the enqueued count."""
+    now, restored = time.time(), 0
+    for delegation_id, payload, completed_at, dispatched_at in rows:
+        age_basis = completed_at or dispatched_at
+        if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
+            conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
+                          delivery_claim=NULL, delivery_claimed_at=NULL,
+                          updated_at=?
+                   WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
+            logger.warning("Async delegation %s: pending completion is %.1fh old "
+                           "(cap %.1fh); terminally dropping the replay (result remains queryable).",
+                           delegation_id, (now - age_basis) / 3600.0, _MAX_COMPLETION_REPLAY_AGE_S / 3600.0)
+            continue
+        evt = json.loads(payload)
+        if isinstance(evt, dict):
+            evt["restored"] = True
+        target_queue.put(evt)
+        restored += 1
     return restored
+
+
+def restore_pending_for_session(session_keys, target_queue) -> int:
+    """Re-enqueue the parked completions whose ``origin_session`` is one of ``session_keys``
+    (a session's key plus its compression lineage), for the session that just started or resumed.
+
+    The process-start replay puts every pending row on the shared queue once; when the owning
+    session is not open at that moment the poller that dequeues it drops the in-memory copy
+    (never adopt an orphan) while the durable row stays ``pending``. Without this call the
+    result would only ever be replayed at the next backend start and dropped again.
+
+    A row whose ``delivery_claim`` is younger than the claim window is being delivered right
+    now and is skipped. A row still queued in memory from the process-start replay CAN be
+    enqueued a second time here; that is harmless because ``claim_completion_delivery``
+    succeeds for exactly one copy — the other copy's claim finds the row already delivered (or
+    freshly claimed) and is discarded without a turn.
+    """
+    keys = sorted({str(k or "") for k in session_keys} - {""})
+    if not keys:
+        return 0
+    placeholders = ",".join("?" for _ in keys)
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute(
+            f"""{_PENDING_REPLAY_SELECT}
+                 AND origin_session IN ({placeholders})
+                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
+               ORDER BY completed_at, delegation_id""",
+            (*keys, time.time() - _DELIVERY_CLAIM_WINDOW_S)).fetchall()
+        return _replay_pending_rows(conn, rows, target_queue)
 
 
 def _update_delivery(sql: str, params: tuple) -> bool:
@@ -319,7 +358,7 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                       delivery_attempts=delivery_attempts+1, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
-            (claim_id, now, now, delegation_id, now - 300))
+            (claim_id, now, now, delegation_id, now - _DELIVERY_CLAIM_WINDOW_S))
         return cur.rowcount == 1
 
 

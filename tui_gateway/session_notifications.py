@@ -22,6 +22,38 @@ def _notif_current_keys(sid: str, session: dict) -> set:
     return {str(session.get("session_key") or ""), _session_lookup_key(session, fallback=sid)}
 
 
+def _notif_lineage_keys(keys) -> set:
+    """``keys`` plus every id on their compression lineage (root through tip): a delegation dispatched
+    under a pre-compression session id must still match the session now keyed by the continuation, and a
+    resume at an ancestor id must still match a row stamped with the tip. Falls back to ``keys`` alone
+    when the store is unavailable."""
+    out = {str(k or "") for k in keys} - {""}
+    try:
+        db = _get_db()
+        if db is not None:
+            for key in list(out):
+                out.update(db.get_compression_lineage(key) or ())
+    except Exception:
+        pass
+    return out
+
+
+def _replay_parked_delegations(sid: str, session: dict) -> int:
+    """Re-enqueue durable delegation completions parked for this session (its keys + compression lineage)
+    onto the shared queue the poller just started draining. A ledger failure must never break session start."""
+    try:
+        from tools.async_delegation import restore_pending_for_session
+        from tools.process_registry import process_registry
+        keys = _notif_lineage_keys(_notif_current_keys(sid, session))
+        replayed = restore_pending_for_session(keys, process_registry.completion_queue)
+    except Exception as exc:
+        logger.debug("Parked delegation replay skipped for session %s: %s", sid, exc)
+        return 0
+    if replayed:
+        logger.info("Re-enqueued %d parked async delegation completion(s) for session %s", replayed, sid)
+    return replayed
+
+
 def _notif_session_matches(s: dict, keys) -> bool:
     return str(s.get("session_key") or "") in keys or _session_lookup_key(s, fallback="") in keys
 
@@ -81,8 +113,13 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
         return True
     evt_key = str(evt.get("session_key") or "")
+    if not evt_key:
+        return False
     current_keys = _notif_current_keys(sid, session)
-    return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key) in current_keys)
+    if evt_key in current_keys or _notif_resolve_event_key(evt_key) in current_keys:
+        return True
+    # A parked completion stamped with the lineage TIP while this session resumed at an ancestor id.
+    return evt_key in _notif_lineage_keys(current_keys)
 
 
 def _notification_event_requires_owner(evt: dict) -> bool:
@@ -344,6 +381,9 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     """Run the claimed (running=True) agent turn for one notification event."""
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
     if (claim := claim_event_delivery(evt, "tui-poller")) is None:
+        # Another copy of this completion already claimed or delivered it (process-start replay +
+        # session-resume replay can both enqueue one row): give the turn back, no second injection.
+        _notif_release_turn(session)
         return
     kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
               if evt.get("type") == "async_delegation" else {})
@@ -373,7 +413,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred) -> 
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
         if deferred is None:
             (logger.warning if is_delegation else logger.debug)(
-                "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
+                "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s; "
+                "the payload stays parked in the durable ledger and is delivered when its own session is resumed",
                 evt_type, origin, key, sid)
         elif is_delegation:
             deferred.append(evt)
@@ -503,6 +544,7 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     t = threading.Thread(target=_notification_poller_loop, args=(stop, sid, session), daemon=True, name=f"tui-notif-poller-{sid}")
     _notification_pollers[:] = [(s, th) for (s, th) in _notification_pollers if th.is_alive()] + [(stop, t)]
     t.start()
+    _replay_parked_delegations(sid, session)
     return stop
 
 

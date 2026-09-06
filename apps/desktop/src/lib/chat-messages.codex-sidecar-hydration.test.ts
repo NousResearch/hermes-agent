@@ -15,8 +15,7 @@ const reasoningOnlyRow: SessionMessage = {
   id: 71,
   role: 'assistant',
   content: '',
-  reasoning:
-    'Here is the plan: first inspect the repo, then propose a fix, then run the tests.',
+  reasoning: 'Here is the plan: first inspect the repo, then propose a fix, then run the tests.',
   timestamp: 2
 }
 
@@ -64,7 +63,7 @@ describe('#68321 assistant rows whose reply persisted only in codex_message_item
       { id: 111, role: 'user', content: 'next', timestamp: 3 }
     ])
 
-    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
+    expect(messages.map(m => m.role)).toEqual(['user', 'assistant', 'user'])
     // The final-answer text is painted as the bubble's reply text...
     expect(chatMessageText(messages[1])).toContain('Here is the full response you saw live.')
     // ...and commentary / analysis narration (reasoning channel on the backend) is not.

@@ -1691,6 +1691,13 @@ DEFAULT_CONFIG = {
         # (long TTS audio, big exports) need more than 30s. Env: HERMES_CRON_MEDIA_SEND_TIMEOUT.
         # Keep in sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
         "media_send_timeout_seconds": 300,
+        # Restart-safety policy when the managed gateway has no user systemd session
+        # (containers/LXCs without linger): false (default) degrades cron jobs to a direct
+        # external subprocess with a once-per-process warning - process separation kept,
+        # cgroup isolation lost, a mid-job gateway restart kills the worker. True fails
+        # closed with the enable-linger remedy. The Kanban dispatcher always requires a
+        # scope regardless (see #102431).
+        "require_restart_safe_scope": False,
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per

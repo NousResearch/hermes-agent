@@ -3043,12 +3043,17 @@ def _wait_for_external_cron_worker(
 
 
 def _launch_external_cron_worker(job: dict) -> bool:
-    """Launch *job* outside a managed gateway cgroup when required.
+    """Launch *job* outside the managed gateway process when required.
 
     Returns ``False`` when the caller is not a managed systemd gateway and the
-    existing in-process path should be used.  In managed topology, failure to
-    establish the transient scope raises: falling back would recreate the
-    restart interruption this handoff exists to prevent.
+    existing in-process path should be used.  In managed topology the job is
+    always handed to an external worker with the #101940 ownership handoff:
+    either inside a transient user scope (isolated) or - when no user D-Bus
+    session exists and ``cron.require_restart_safe_scope`` is false (the
+    default) - as a direct subprocess (process separation without cgroup
+    isolation).  Setting ``cron.require_restart_safe_scope: true`` restores
+    fail-closed.  Falling back to in-process in managed topology would
+    recreate the restart interruption this handoff exists to prevent.
     """
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
@@ -3072,13 +3077,29 @@ def _launch_external_cron_worker(job: dict) -> bool:
         systemd_user_bus_env,
     )
 
+    cfg = load_config() or {}
+    require_restart_safe_scope = bool(
+        ((cfg.get("cron") or {}) if isinstance(cfg, dict) else {}).get(
+            "require_restart_safe_scope", False
+        )
+    )
     multiplex_active = is_multiplex_active()
-    scoped_command = restart_safe_gateway_child_argv(
+    dispatch = restart_safe_gateway_child_argv(
         command,
         unit_suffix=f"cron-{job_id}-exec-{execution_id}",
+        require_restart_safe_scope=require_restart_safe_scope,
     )
-    if scoped_command == command:
+    if dispatch.mode == "in_process":
+        # Not a managed systemd gateway: keep the existing in-process path.
         return False
+    # "scoped" AND "degraded" both launch an external worker with the same
+    # #101940 ownership handoff below.  Degraded only differs in isolation:
+    # the direct command runs in the gateway cgroup (documented in the
+    # warning), so a mid-job gateway restart kills it — but the execution
+    # ledger still records exactly what happened (failed/unknown) instead of
+    # the job silently never running.  Never fall back to in-process here:
+    # that would recreate the restart-interruption edge #101940 closed.
+    launch_command = dispatch.argv
 
     if mark_execution_handoff_pending(execution_id) is None:
         raise RuntimeError(
@@ -3115,7 +3136,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(
-            scoped_command,
+            launch_command,
             cwd=str(Path(__file__).resolve().parent.parent),
             env=worker_env,
             stdin=subprocess.DEVNULL,

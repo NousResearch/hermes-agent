@@ -49,7 +49,8 @@ export function submitPrompt(
   text: string,
   deps: SubmitPromptDeps,
   showUserMessage = true,
-  displayOverride?: string
+  displayOverride?: string,
+  opts: { skipDetectDrop?: boolean } = {}
 ): void {
   const sid = getUiState().sid
 
@@ -107,12 +108,17 @@ export function submitPrompt(
 
   // Always ask the backend whether this looks like a file drop. The backend's
   // _detect_file_drop handles paths with spaces, quotes, Windows drive letters,
-  // and escaped characters correctly.
+  // and escaped characters correctly. Literal submissions (startup -q queries)
+  // skip it: launcher-provided text must reach the agent untouched.
   //
   // No notice is emitted for a match: an image dropped into the composer already
   // shows as an `[[ Image N ]]` token, and a matched non-image path is rewritten
   // in place. Announcing it a second time above the status bar was the old
   // out-of-band attachment UI.
+  if (opts.skipDetectDrop) {
+    return startSubmit(text, deps.expand(text), showUserMessage)
+  }
+
   deps.gw
     .request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
     .then(r => {

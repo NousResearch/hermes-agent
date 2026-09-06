@@ -78,7 +78,7 @@ def test_search_memo_hit_within_ttl():
 def test_search_memo_miss_across_providers_and_buckets():
     memo = SearchMemo()
     memo.store("firecrawl", "q", 5, _ok_response())
-    assert memo.lookup("tavily", "q", 5) is None          # different provider
+    assert memo.lookup("keenable", "q", 5) is None        # different provider
     assert memo.lookup("firecrawl", "q", 15) is None      # different bucket
     assert memo.lookup("firecrawl", "other", 5) is None   # different query
 
@@ -184,13 +184,13 @@ def test_extract_cache_provider_participates_in_key(_isolated_cache):
     """Switching extract backends within the TTL must not serve the old
     backend's rendering (#94618 review, additional risk 3)."""
     extract_cache_put("https://e.com/p", "firecrawl version", provider="firecrawl")
-    assert extract_cache_get("https://e.com/p", provider="tavily") is None
+    assert extract_cache_get("https://e.com/p", provider="keenable") is None
     hit = extract_cache_get("https://e.com/p", provider="firecrawl")
     assert hit is not None and hit["content"] == "firecrawl version"
 
 
 def test_extract_cache_oversized_page_not_indexed(_isolated_cache):
-    import tools.web_tools as wt
+    from tools import web_tools_truncate as wt
     big = "x" * (wt.MAX_STORED_TEXT_CHARS + 1)
     extract_cache_put("https://big.com", big)
     assert extract_cache_get("https://big.com") is None

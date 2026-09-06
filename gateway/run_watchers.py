@@ -54,6 +54,11 @@ class GatewaySessionWatchersMixin:
                 expired = [
                     (key, entry) for key, entry in list(self.session_store._entries.items())
                     if not entry.expiry_finalized and await store._is_session_expired(entry)
+                    # Never finalize mid-turn: tearing down a running agent
+                    # crashes the turn and wipes approval/update registrations
+                    # the reply needs. The next pass finalizes after turn end
+                    # (same skip-not-kill norm as the cache cap/idle sweeps).
+                    and not self._is_session_running(key)
                 ]
                 if expired:
                     await self._finalize_expired_sessions(expired, finalize_failures)

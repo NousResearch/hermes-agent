@@ -95,3 +95,31 @@ def test_claw_migrate_no_backup_help_shows_active_hermes_home(monkeypatch, tmp_p
     assert "~/.hermes/backups/" not in flat_help_text
     assert "~/.hermes/" not in flat_help_text
     assert active_display in flat_help_text
+
+
+def test_claw_migrate_no_backup_help_handles_percent_in_home(monkeypatch, tmp_path, capsys):
+    # argparse's HelpFormatter applies %-templating to every action's help string
+    # (_expand_help() does `self._get_help_string(action) % params`), so a literal
+    # '%' anywhere in the interpolated HERMES_HOME path (e.g. an unusual profile
+    # name) would otherwise blow up --help with "unsupported format character" /
+    # "not enough arguments for format string" unless the '%' is escaped to '%%'
+    # before interpolation. This pins that escape as a live behavior contract.
+    from hermes_constants import display_hermes_home
+
+    custom_home = tmp_path / "profile%name"
+    custom_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    active_display = display_hermes_home()
+    assert "%" in active_display  # sanity: the fixture actually exercises a literal '%'
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_claw_parser(sub, cmd_claw=_h("claw"))
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["claw", "migrate", "--help"])
+    help_text = capsys.readouterr().out
+    flat_help_text = re.sub(r"\n\s*", "", help_text)
+
+    assert "~/.hermes/" not in flat_help_text
+    assert active_display in flat_help_text

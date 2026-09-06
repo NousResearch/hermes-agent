@@ -288,13 +288,9 @@ class _CuaDriverSession:
                         read, write = streams[0], streams[1]
                         self._startup_phase = "mcp-initialize"
                         async with ClientSession(read, write) as session:
-                            await session.initialize()
-                            _t_init = _time.monotonic()
-                            self._startup_phase = "capability-discovery"
-                            await self._populate_capabilities(session)
-                            self._session, self._startup_phase = session, "ready"
-                            self._ready_event.set()
-                            logger.info("remote cua-driver session ready in %.1fs", _t_init - _t0)
+                            await self._start_with_deadline(session, _t0)
+                            logger.info("remote cua-driver session ready in %.1fs",
+                                        _time.monotonic() - _t0)
                             await self._shutdown_event.wait()
                 return
 
@@ -312,15 +308,10 @@ class _CuaDriverSession:
             async with stdio_client(params) as (read, write):
                 self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    _t_init = _time.monotonic()
-                    # Capabilities BEFORE exposing the session: the first call sees them.
-                    self._startup_phase = "capability-discovery"
-                    await self._populate_capabilities(session)
-                    self._session, self._startup_phase = session, "ready"
-                    self._ready_event.set()
+                    await self._start_with_deadline(session, _t0, _t_manifest)
                     logger.info("cua-driver session ready in %.1fs (manifest=%.1fs, mcp_init=%.1fs)",
-                                _time.monotonic() - _t0, _t_manifest - _t0, _t_init - _t_manifest)
+                                _time.monotonic() - _t0, _t_manifest - _t0,
+                                _time.monotonic() - _t_manifest)
                     await self._shutdown_event.wait()
         except BaseException as e:
             # Ordinary errors and anyio CancelledError alike: start() surfaces this.
@@ -331,6 +322,38 @@ class _CuaDriverSession:
             # A session that dies for ANY reason must be re-enterable: the next call sees _started False and
             # rebuilds. Atomic bool write — stop() may hold _lock.
             self._session, self._started = None, False
+
+    # M2: bound the startup handshake (initialize + capability discovery) INSIDE the
+    # owning coroutine with a deadline slightly larger than start()'s ready-wait (30s).
+    # Without this, a hung session.initialize() blocks forever inside _lifecycle_coro;
+    # setting _shutdown_event is useless (the coro only checks it AFTER initialize), and
+    # the outer failure path's fut.result(timeout=5.0) times out, leaving the coro pending
+    # inside a closing loop with its transport context managers never unwound. With the
+    # in-coroutine deadline, anyio raises TimeoutError INSIDE the coro, the finally runs
+    # (unwinds the transport CMs), and the future completes normally — start() sees a
+    # finished future instead of abandoning a pending one. The anyio invariant is
+    # preserved: fail_after wraps only startup work in the SAME task that owns the
+    # transport, not across task boundaries.
+    _STARTUP_DEADLINE_S = 35.0  # 5s slack past the 30s ready-wait in _start_lifecycle_locked
+
+    async def _start_with_deadline(self, session: Any, _t0: float, _t_manifest: Optional[float] = None) -> None:
+        """Run initialize()+capability discovery inside an anyio.fail_after deadline."""
+        import time as _time
+        import anyio
+        try:
+            with anyio.fail_after(self._STARTUP_DEADLINE_S):
+                await session.initialize()
+                _t_init = _time.monotonic()
+                self._startup_phase = "capability-discovery"
+                await self._populate_capabilities(session)
+                self._session, self._startup_phase = session, "ready"
+                self._ready_event.set()
+        except TimeoutError as e:
+            # anyio.fail_after raises TimeoutError on deadline; surface as a setup
+            # error so start() reports the stuck phase, then unwind the transport CMs.
+            raise RuntimeError(
+                f"cua-driver startup handshake exceeded {self._STARTUP_DEADLINE_S:.0f}s "
+                f"(stuck in phase: {getattr(self, '_startup_phase', 'unknown')})") from e
 
     # Reset _started so a session that dies for ANY reason (MCP connection drop, driver crash, unexpected
     # coro exit) is re-enterable: the next start()/call sees _started False and rebuilds the session instead
@@ -421,7 +444,27 @@ class _CuaDriverSession:
             if fut is not None:
                 fut.result(timeout=5.0)
         except concurrent.futures.TimeoutError:
-            logger.warning("cua-driver session shutdown timed out (5s)")
+            # M2 backstop: the in-coroutine startup deadline (anyio.fail_after) makes a
+            # hung initialize() unwind on its own, so this branch should be rare. But if
+            # the transport CM *exit* itself hangs (or shutdown_event.wait never returns),
+            # do not abandon the coro pending inside a closing loop — cancel the task so
+            # anyio's cancel scopes raise CancelledError inside _lifecycle_coro, its
+            # finally unwinds the transport, and the future completes. Only fall through
+            # to the warning if the loop is gone or cancellation itself cannot be
+            # scheduled (loop closed/stopped).
+            loop = self._bridge._loop
+            if fut is not None and loop is not None and loop.is_running():
+                with contextlib.suppress(RuntimeError):
+                    fut.cancel()  # cancels the asyncio task the future wraps
+                try:
+                    fut.result(timeout=5.0)
+                except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+                    logger.warning("cua-driver session shutdown timed out (10s) "
+                                   "after cancel; coroutine abandoned")
+                except Exception as e:
+                    logger.debug("cua-driver shutdown completed after cancel: %s", e)
+            else:
+                logger.warning("cua-driver session shutdown timed out (5s)")
         except Exception as e:
             logger.warning("cua-driver shutdown error: %s", e)
 
@@ -467,13 +510,37 @@ class _CuaDriverSession:
         return self._capability_version
 
     # ── Error classification (instance-patchable seams; result-shape checks live at module level) ──
+    # mcp 2.0.0 streamable_http.py surfaces a 404 "Session not found" from the server-side
+    # streamable_http_manager (idle-expiry, default session_idle_timeout 1800s) as
+    # MCPError(code=INVALID_REQUEST, message="Session terminated") (verified against
+    # mcp 2.0.0: mcp.shared.exceptions.MCPError.__init__(code, message, data); str() ==
+    # message == "Session terminated"). This is a recoverable closed-session condition —
+    # the bridge expired an idle session and the next call must invalidate+rebuild the
+    # transport exactly as ClosedResourceError/EOF already do. Match by message text so
+    # the classifier is robust to the SDK's exception-class identity (defensive import —
+    # the file already late-imports mcp; MCPError may be unavailable in stubs/tests).
+    # A generic MCPError (e.g. INVALID_PARAMS) does NOT carry session-expiry semantics
+    # and must propagate — only session-expiry messages trigger a rebuild.
+    _MCP_CLOSED_SESSION_MESSAGES = ("session terminated", "session not found", "session expired")
+
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:
         """True for MCP/stdio failures that are recoverable by reconnecting."""
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
-        return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+        if (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+                or isinstance(exc, (BrokenPipeError, EOFError))):
+            return True
+        # mcp 2.0.0: bridge idle-expiry surfaces as MCPError("Session terminated"). Only
+        # session-expiry messages qualify — a generic MCPError (INVALID_PARAMS, etc.)
+        # is a genuine error that must propagate, not a recoverable closed-session.
+        # Match the message text (str(MCPError) == message) against the known phrases;
+        # the defensive import lets us also confirm the type when the SDK is present.
+        msg_lower = str(exc).lower()
+        if any(needle in msg_lower
+               for needle in _CuaDriverSession._MCP_CLOSED_SESSION_MESSAGES):
+            return True
+        return False
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:

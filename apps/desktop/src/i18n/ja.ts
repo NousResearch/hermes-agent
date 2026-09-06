@@ -2325,6 +2325,8 @@ export const ja = defineLocale({
     agents: 'エージェント',
     background: count => `バックグラウンド ${count} 件`,
     goalActive: '目標進行中',
+    needsYou: '回答が必要です',
+    needsYouCount: count => `回答が必要です · ${count} 件の質問`,
     goalBlocked: '目標がブロックされています',
     goalDone: '目標達成',
     goalPaused: '目標一時停止中',
@@ -3171,7 +3173,10 @@ export const ja = defineLocale({
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
       lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
-      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
+      lateAnswerHint:
+        'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。',
+      answerBelow: '入力欄のそばで回答してください',
+      answerBelowCount: count => `${count} 件の質問 — 入力欄のそばで回答してください`
     },
     tool: {
       copyCode: 'コードをコピー',

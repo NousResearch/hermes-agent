@@ -2736,6 +2736,8 @@ export const ru = defineLocale({
     agents: 'Агенты',
     background: count => `${count} ${RU_NOUN(count, 'фоновая задача', 'фоновые задачи', 'фоновых задач')}`,
     goalActive: 'Цель активна',
+    needsYou: 'Нужен ваш ответ',
+    needsYouCount: count => `Нужен ваш ответ · вопросов: ${count}`,
     goalBlocked: 'Цель заблокирована',
     goalDone: 'Цель выполнена',
     goalPaused: 'Цель на паузе',
@@ -3559,7 +3561,9 @@ export const ru = defineLocale({
       questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
       lateAnswer: (question, choice) => `Re: «${question}» — мой ответ: ${choice}`,
       lateAnswerTip: 'Составить этот ответ как продолжение',
-      lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.'
+      lateAnswerHint: 'Этот промпт больше не ждёт. Выберите вариант, чтобы составить его как сообщение-продолжение.',
+      answerBelow: 'Ответьте ниже, рядом с полем ввода',
+      answerBelowCount: count => `Вопросов: ${count} — ответьте ниже, рядом с полем ввода`
     },
     mcpSetup: {
       installTitle: server => `Добавить MCP-сервер ${server}?`,

@@ -16,6 +16,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
+import { sessionClarifyRequest } from '@/store/clarify'
 import {
   $statusItemsBySession,
   type ComposerStatusItem,
@@ -30,6 +31,7 @@ import { $sessionControlBySession, refreshSessionControl } from '@/store/session
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
+import { NeedsYouSection } from './needs-you-section'
 import { PreviewStatusRow } from './preview-row'
 import { SessionControlSections } from './session-control'
 import { useSessionValue } from './session-control-utils'
@@ -104,6 +106,8 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   const scrolledUp = useStore($threadScrolledUp)
   const billing = useStore($billingBlock)
+  const $clarify = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
+  const clarify = useStore($clarify)
 
   const isStructuredSupported = controlEntry?.capability === 'supported'
 
@@ -174,6 +178,14 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // (not as a composer-disable) so slash commands stay usable.
   if (billing && sessionId && billing.sessionId === sessionId) {
     sections.push({ key: 'billing', node: <BillingBanner sessionId={sessionId} /> })
+  }
+
+  // A pending question is the one status the user is REQUIRED to act on, so it
+  // is the first group and the only one that renders open with a live form.
+  // Below the billing wall (nothing can be answered on a blocked account)
+  // and above every passive status — the agent is parked until this resolves.
+  if (clarify && sessionId) {
+    sections.push({ key: 'needs-you', node: <NeedsYouSection sessionId={sessionId} /> })
   }
 
   const hasControlContent = Boolean(
@@ -294,7 +306,10 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
             // surface below it — the original look.
             'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
             'transition-opacity duration-200 ease-out',
-            scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+            // Scrolled up, the stack ghosts so the transcript reads through it —
+            // except while a question is docked: that is the one thing the user
+            // is required to act on, and a 30% "Needs you" is how it got missed.
+            scrolledUp && !clarify ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
           )}
         >
           {sections.map(section => (

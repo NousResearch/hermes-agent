@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 
+import { $clarifyRequests } from '@/store/clarify'
 import { $composerActionsBySession } from '@/store/composer-actions'
 import { $statusItemsBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
@@ -15,7 +16,11 @@ interface PresenceFeed {
 const FEEDS: PresenceFeed[] = [$statusItemsBySession, $composerActionsBySession, $previewStatusBySession]
 
 const subscribe = (onChange: () => void) => {
-  const offs = [...FEEDS.map(feed => feed.listen(onChange)), $sessionControlBySession.listen(onChange)]
+  const offs = [
+    ...FEEDS.map(feed => feed.listen(onChange)),
+    $sessionControlBySession.listen(onChange),
+    $clarifyRequests.listen(onChange)
+  ]
 
   return () => {
     for (const off of offs) {
@@ -25,9 +30,10 @@ const subscribe = (onChange: () => void) => {
 }
 
 /**
- * Whether a session has any status items, micro actions, previews, or
- * structured session controls (goal, loop, heartbeat), as a coarse *edge*:
- * the boolean only flips when the stack appears/disappears.
+ * Whether a session has any status items, micro actions, previews, a pending
+ * clarify (the docked "Needs you" panel), or structured session controls
+ * (goal, loop, heartbeat), as a coarse *edge*: the boolean only flips when
+ * the stack appears/disappears.
  * ChatBar uses it to toggle a styling data-attr — subscribing to the whole
  * `$statusItemsBySession` (a `computed` that rebuilds the entire map) /
  * `$previewStatusBySession` maps re-rendered the ~1.4k ChatBar on every
@@ -41,7 +47,7 @@ export function useSessionStatusPresence(sessionId: string | null): boolean {
       return false
     }
 
-    if (FEEDS.some(feed => (feed.get()[sessionId]?.length ?? 0) > 0)) {
+    if ($clarifyRequests.get()[sessionId] || FEEDS.some(feed => (feed.get()[sessionId]?.length ?? 0) > 0)) {
       return true
     }
 

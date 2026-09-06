@@ -158,11 +158,32 @@ def _child_dict(parent: dict, key: str) -> dict:
     return child
 
 
+def _write_raw_config_value(path: Tuple[str, ...], value: Any) -> None:
+    """Change one setting without canonicalizing unrelated user configuration."""
+    from hermes_cli import config as config_mod
+
+    with config_mod._CONFIG_LOCK:
+        if config_mod.is_managed():
+            config_mod.managed_error("save configuration")
+            return
+        config_mod._exit_if_key_managed(".".join(path), "set")
+        config_path = config_mod.get_config_path()
+        raw = config_mod.require_readable_config_before_write(config_path)
+        entry = raw
+        for segment in path[:-1]:
+            entry = _child_dict(entry, segment)
+        entry[path[-1]] = value
+        config_mod._write_user_config(config_path, raw)
+        config_mod._secure_file(config_path)
+        config_mod._RAW_CONFIG_CACHE.pop(str(config_path), None)
+        config_mod._LAST_EXPANDED_CONFIG_BY_PATH.pop(str(config_path), None)
+
+
 def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[str]) -> None:
     """Persist a consent decision: ``granted_capabilities`` (union with prior grants), the consent
     record (hash of the declared set the user saw + UTC timestamp), and the legacy ``allow_*`` key
     for each grant so existing enforcement sites keep working unchanged."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config
     config = load_config()
     entry = _child_dict(_child_dict(_child_dict(config, "plugins"), "entries"), plugin_id)
     previous = entry.get(GRANTED_KEY)
@@ -180,7 +201,14 @@ def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[st
             node = _child_dict(node, part)
         node[leaf] = True
 
-    save_config(config)
+    _write_raw_config_value(
+        ("plugins", "entries", plugin_id, GRANTED_KEY), entry[GRANTED_KEY])
+    _write_raw_config_value(
+        ("plugins", "entries", plugin_id, CONSENT_KEY), entry[CONSENT_KEY])
+    for cap in entry[GRANTED_KEY]:
+        *parents, leaf = CAPABILITY_REGISTRY[cap].legacy_path
+        _write_raw_config_value(
+            ("plugins", "entries", plugin_id, *parents, leaf), True)
     logger.info(
         "capability_consent plugin=%s granted=%s declared_hash=%s", plugin_id,
         ",".join(entry[GRANTED_KEY]) or "(none)", entry[CONSENT_KEY]["hash"][:12])

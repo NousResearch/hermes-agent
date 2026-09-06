@@ -19,7 +19,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.cli_output import line_input
 from hermes_cli.config import cfg_get
-from hermes_cli.plugin_capabilities import _child_dict
+from hermes_cli.plugin_capabilities import _child_dict, _write_raw_config_value
 from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text
 
@@ -110,27 +110,6 @@ def _config_name_set(*keys: str) -> set:
 def _config_str(*keys: str, default: str) -> str:
     """A string config key; empty/missing/failed reads coerce to *default*."""
     return _config_value(*keys, default=default) or default
-
-
-def _write_raw_config_value(path: tuple[str, ...], value: Any) -> None:
-    """Change one setting without canonicalizing unrelated user configuration."""
-    from hermes_cli import config as config_mod
-
-    with config_mod._CONFIG_LOCK:
-        if config_mod.is_managed():
-            config_mod.managed_error("save configuration")
-            return
-        config_mod._exit_if_key_managed(".".join(path), "set")
-        config_path = config_mod.get_config_path()
-        raw = config_mod.require_readable_config_before_write(config_path)
-        entry = raw
-        for segment in path[:-1]:
-            entry = _child_dict(entry, segment)
-        entry[path[-1]] = value
-        config_mod._write_user_config(config_path, raw)
-        config_mod._secure_file(config_path)
-        config_mod._RAW_CONFIG_CACHE.pop(str(config_path), None)
-        config_mod._LAST_EXPANDED_CONFIG_BY_PATH.pop(str(config_path), None)
 
 
 def _write_config_value(section: str, key: str, value: Any) -> None:
@@ -1772,20 +1751,20 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
     toolset_key = _get_plugin_toolset_key(name)
     if not toolset_key:
         return
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import load_config
     config = load_config()
     platform_toolsets = _child_dict(config, "platform_toolsets")
-    changed = False
-    for ts_list in platform_toolsets.values():
+    changed_toolsets = {}
+    for platform, ts_list in platform_toolsets.items():
         if isinstance(ts_list, list) and enable != (toolset_key in ts_list):
             (ts_list.append if enable else ts_list.remove)(toolset_key)
-            changed = True
+            changed_toolsets[platform] = ts_list
     # Enabling with no platform lists yet: seed "cli" at minimum.
-    if enable and not changed and not platform_toolsets:
+    if enable and not changed_toolsets and not platform_toolsets:
         platform_toolsets["cli"] = [toolset_key]
-        changed = True
-    if changed:
-        save_config(config)
+        changed_toolsets["cli"] = platform_toolsets["cli"]
+    for platform, toolsets in changed_toolsets.items():
+        _write_raw_config_value(("platform_toolsets", platform), toolsets)
 
 
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:

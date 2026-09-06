@@ -933,11 +933,20 @@ def resolve_per_model_reasoning_effort(model: str, overrides: dict | None) -> di
     """
     if not overrides or not isinstance(overrides, dict) or not model:
         return None
-    for variant in _canonical_model_variants(model):
+    for index, variant in enumerate(_canonical_model_variants(model)):
         if variant in overrides:
             result = parse_reasoning_effort(overrides[variant])
             if result is not None:
                 return result
+            if index == 0:
+                # An explicit exact entry with an unrecognized value is
+                # decisive: warn and stop instead of adopting a looser
+                # variant that can name a different model entirely.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Unknown reasoning_effort override '%s' for model '%s'; ignoring override",
+                    overrides[variant], model)
+                return None
     return None
 
 

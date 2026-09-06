@@ -450,6 +450,13 @@ class TestResolvePerModelReasoningEffort:
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "high"}
 
+    def test_invalid_exact_override_is_decisive(self):
+        """An explicit exact entry with an unrecognized value stops the
+        search instead of adopting a looser variant naming another model."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "bogus", "claude-opus-4-5": "low"}
+        assert resolve_per_model_reasoning_effort("claude-opus-4.5", overrides) is None
+
 
 
 

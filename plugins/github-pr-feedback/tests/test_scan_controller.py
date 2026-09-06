@@ -1922,7 +1922,7 @@ def test_scan_dispatches_local_ci_when_policy_requires_it_despite_hosted_actions
     ledger.close()
 
 
-def test_scan_dispatches_local_ci_newest_pull_request_first(tmp_path: Path) -> None:
+def test_scan_dispatches_local_ci_oldest_pull_request_first(tmp_path: Path) -> None:
     local_path, sha = initialized_repository(tmp_path)
     older = PullRequest(
         17, "OPEN", "acme/widgets", "acme/widgets", "owner", "codex/older", sha
@@ -1945,7 +1945,7 @@ def test_scan_dispatches_local_ci_newest_pull_request_first(tmp_path: Path) -> N
     assert result.created == 1
     assert result.skipped["local_ci_dispatch_cap"] == 1
     assert [task.title for task in kanban.tasks] == [
-        "Local PR CI audit: acme/widgets#18",
+        "Local PR CI audit: acme/widgets#17",
     ]
     ledger.close()
 
@@ -2264,8 +2264,8 @@ def test_required_local_ci_backlog_signal_counts_missing_receipts_below_read_cap
 
     assert getattr(result, "required_local_ci_backlog", 0) == 2
     assert result.skipped.get("local_ci_open_pr_scan_cap", 0) == 0
-    assert github.feedback_calls == [("acme/widgets", 18), ("acme/widgets", 17)]
-    assert github.current_calls == [("acme/widgets", 18)]
+    assert github.feedback_calls == [("acme/widgets", 17), ("acme/widgets", 18)]
+    assert github.current_calls == [("acme/widgets", 17)]
     ledger.close()
 
 
@@ -2371,7 +2371,7 @@ def test_required_local_ci_backlog_signal_ignores_read_cap_when_receipts_are_cur
     assert getattr(result, "required_local_ci_backlog", 0) == 0
     assert result.local_ci_catalogue_deferred == 1
     assert "local_ci_open_pr_scan_cap" not in result.skipped
-    assert github.feedback_calls == [("acme/widgets", 18)]
+    assert github.feedback_calls == [("acme/widgets", 17)]
     assert github.current_calls == []
     ledger.close()
 

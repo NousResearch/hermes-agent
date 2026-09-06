@@ -519,7 +519,7 @@ def test_terminal_refresh_binding_does_not_hold_slot_before_archived_recovery(
     ).scan()
 
     assert result.created == 1
-    assert result.skipped == {"base_refresh_serialized": 1}
+    assert result.skipped == {"duplicate": 1}
     assert [task.evidence["pr_number"] for task in kanban.tasks] == [18]
     assert any(
         binding.task_id == "repair-task"
@@ -558,7 +558,7 @@ def test_old_head_terminal_binding_does_not_hold_current_refresh_slot(
 
     assert result.created == 1
     assert result.skipped["base_refresh_serialized"] == 1
-    assert [task.evidence["pr_number"] for task in kanban.tasks] == [18]
+    assert [task.evidence["pr_number"] for task in kanban.tasks] == [17]
     ledger.close()
 
 
@@ -631,7 +631,7 @@ def test_unrelated_pending_feedback_does_not_consume_the_base_refresh_slot(
     ).scan()
 
     assert result.created == 1
-    assert result.skipped["base_refresh_serialized"] == 1
+    assert result.skipped["duplicate"] == 1
     assert kanban.tasks[0].evidence["pr_number"] == 18
     ledger.close()
 

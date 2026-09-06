@@ -1952,6 +1952,9 @@ def _run_merge_scan_for_policy(
     maintainer_task_dispatch_failed: list[int] = []
     tasks_created = 0
     degraded = False
+    from .pr_ordering import order_pull_requests
+
+    pull_requests = order_pull_requests(pull_requests)
     open_by_number = {pull_request.number: pull_request for pull_request in pull_requests}
     enrolled_numbers = ledger.enrolled_merge_pr_numbers(merge_policy.repository)
     pending_reader = getattr(ledger, "verification_required_merge_numbers", None)
@@ -1963,8 +1966,8 @@ def _run_merge_scan_for_policy(
         *pending_numbers,
         *(
             number
-            for number in enrolled_numbers
-            if number in open_by_number and number not in pending_set
+            for number in open_by_number
+            if number in enrolled_numbers and number not in pending_set
         ),
     )
     for number in numbers:

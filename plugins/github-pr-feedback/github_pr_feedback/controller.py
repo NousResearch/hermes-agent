@@ -1185,22 +1185,9 @@ class ScanController:
             except Exception:  # noqa: BLE001 - an adapter failure must not admit work.
                 skipped["github_error"] += 1
                 continue
-            # GitHub's list order is not a freshness contract. A PR comment,
-            # review, or synchronize event advances updated_at, so newest-first
-            # is the normal fallback order. Local-CI backlog selection below
-            # reserves this bounded window for older heads that still lack
-            # passed exact-head evidence, preventing the freshness window from
-            # starving historical open PRs forever.
-            pull_requests = tuple(
-                sorted(
-                    pull_requests,
-                    key=lambda pull: (
-                        pull.updated_at or datetime.min.replace(tzinfo=UTC),
-                        pull.number,
-                    ),
-                    reverse=True,
-                )
-            )
+            from .pr_ordering import order_pull_requests
+
+            pull_requests = order_pull_requests(pull_requests)
             self._label_batches.append((repository, target, pull_requests))
             required_local_ci_backlog += _required_local_ci_backlog_count(
                 self._policy,

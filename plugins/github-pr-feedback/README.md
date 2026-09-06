@@ -240,6 +240,16 @@ hermes github-pr-feedback merge-disable --repository owner/repository --pr-numbe
 outcome is ambiguous remains eligible for verification even if the PR is no longer open
 or its enrollment was later removed; this readback is required to reconcile durable state.
 
+PR intake prefers older PR numbers and places an open parent before its child when
+canonical repository/branch identities establish that dependency. Repair inspection
+rotates a durable 12-PR window across the catalogue, so repeated updates to newer PRs
+cannot exclude older work forever. Independent repairs remain concurrent within the
+configured worker limits; inexpensive clean-base refreshes retain priority among
+independent candidates. Merge evaluation uses the same dependency order after any
+outstanding merge-write verification. Every existing enrollment, exact-head, review,
+and CI gate still applies. Shared-base PRs need an explicit stack to express dependencies
+that cannot be determined from their GitHub base branches.
+
 `scan` is safe to repeat. It records durable receipt state and creates one
 Kanban card only for feedback that passes all admission checks. By default the
 card starts `blocked`. With the explicit `auto_dispatch: true` opt-in, it starts

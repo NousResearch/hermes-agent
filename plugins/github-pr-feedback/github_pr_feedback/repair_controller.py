@@ -194,35 +194,31 @@ class RepairController:
                     continue
             if retry_receipt is not None:
                 pulls = tuple(pull for pull in pulls if pull.number == retry_receipt.pr_number)
-            pulls = tuple(
-                sorted(
-                    pulls,
-                    key=lambda pull: (
-                        pull.updated_at or datetime.min.replace(tzinfo=UTC),
-                        pull.number,
-                    ),
-                    reverse=True,
-                )[:_MAX_REPAIR_SNAPSHOTS_PER_SCAN]
-            )
+            from .pr_ordering import repair_window
+
+            pulls = repair_window(self._ledger, repository, pulls, _MAX_REPAIR_SNAPSHOTS_PER_SCAN)
             with ThreadPoolExecutor(max_workers=min(2, max(1, len(pulls)))) as executor:
                 snapshots = executor.map(
                     lambda listed: self._read_snapshot(repository, listed), pulls
                 )
                 ordered_snapshots = tuple(snapshots)
-            repair_candidates = list(zip(pulls, ordered_snapshots, strict=True))
-            repair_candidates.sort(
-                key=lambda candidate: (
-                    candidate[1] is None or candidate[1] is _STILL_COMPUTING,
-                    bool(
-                        candidate[1] is not None
-                        and candidate[1] is not _STILL_COMPUTING
-                        and (
-                            not candidate[1][0].mergeable
-                            or candidate[1][0].merge_state_status == "DIRTY"
-                        )
-                    ),
+            from .pr_ordering import order_pull_requests
+
+            by_number = dict(zip((pull.number for pull in pulls), ordered_snapshots, strict=True))
+            # Preserve cheap clean-base refreshes among independent PRs; a
+            # parent's canonical branch relationship always wins this preference.
+            priority = {
+                number: (
+                    snapshot is None or snapshot is _STILL_COMPUTING,
+                    bool(snapshot is not None and snapshot is not _STILL_COMPUTING
+                         and (not snapshot[0].mergeable or snapshot[0].merge_state_status == "DIRTY")),
                 )
-            )
+                for number, snapshot in by_number.items()
+            }
+            repair_candidates = [
+                (pull, by_number[pull.number])
+                for pull in order_pull_requests(pulls, priority=priority)
+            ]
             refresh_executor = ThreadPoolExecutor(max_workers=2)
             pending_refreshes: list[tuple[object, object, object, object, object, object, object]] = []
             for listed, snapshot in repair_candidates:

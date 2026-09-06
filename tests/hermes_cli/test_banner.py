@@ -84,3 +84,30 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     out = console.export_text()
     assert "claude-opus-4.8" in out
     assert "MoA:" not in out
+
+
+def test_provider_org_label_falls_back_to_nous_research():
+    """Empty/nous/unknown providers keep the default install looking unchanged."""
+    assert banner._provider_org_label(None) == "Nous Research"
+    assert banner._provider_org_label("") == "Nous Research"
+    assert banner._provider_org_label("nous") == "Nous Research"
+    with patch("providers.get_provider_profile", return_value=None):
+        assert banner._provider_org_label("some-unknown-provider") == "Nous Research"
+
+
+def test_provider_org_label_uses_profile_display_name():
+    """Third-party providers show their own org, incl. the custom: prefix form."""
+    from types import SimpleNamespace
+    profile = SimpleNamespace(display_name="Google Antigravity")
+    with patch("providers.get_provider_profile", return_value=profile) as lookup:
+        assert banner._provider_org_label("antigravity") == "Google Antigravity"
+        assert banner._provider_org_label("custom:antigravity") == "Google Antigravity"
+    assert lookup.call_args_list[0].args[0] == "antigravity"
+    assert lookup.call_args_list[1].args[0] == "antigravity"
+
+
+def test_provider_org_label_capitalizes_id_without_display_name():
+    """Built-in providers lacking display_name still label sensibly."""
+    from types import SimpleNamespace
+    with patch("providers.get_provider_profile", return_value=SimpleNamespace(display_name="")):
+        assert banner._provider_org_label("anthropic") == "Anthropic"

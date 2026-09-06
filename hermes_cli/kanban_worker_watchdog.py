@@ -22,6 +22,8 @@ _TOKEN_COUNT_RE = re.compile(r"~?[\d,]+\s+tokens?", re.IGNORECASE)
 _WHITESPACE_RE = re.compile(r"\s+")
 _FAILED_EXIT_RE = re.compile(r"\[exit\s+(-?\d+)\]", re.IGNORECASE)
 _TOOL_PREFIX_RE = re.compile(r"(?:^|\s)[┊|]\s*[^$\n]*\$\s*(.+)")
+_EDIT_SUCCESS_RE = re.compile(r"^┊\s+(?:🔧\s+patch|✍️?\s+write)\s+.*\d+(?:\.\d+)?s$")
+_DIFF_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
 _PROVIDER_STALL_RE = re.compile(
     r"(?:waiting on .+no output yet|provider has been unresponsive|"
     r"consecutive stale attempts|auto-reconnect|"
@@ -175,7 +177,19 @@ def _finding(
 
 def _failed_tool_finding(lines: list[str], threshold: int) -> Optional[WatchdogFinding]:
     signatures: list[tuple[str, str]] = []
+    edit_pending = False
+    diff_pending = False
     for line in lines:
+        if line.startswith("┊") and line != "┊ review diff":
+            edit_pending = bool(_EDIT_SUCCESS_RE.fullmatch(line))
+            diff_pending = False
+        elif edit_pending and line == "┊ review diff":
+            diff_pending = True
+        elif diff_pending and _DIFF_HUNK_RE.match(line):
+            # Test-edit-test is progress. Require the renderer's actual diff,
+            # not a patch attempt, no-op result, or the worker's prose claim.
+            signatures.clear()
+            edit_pending = diff_pending = False
         exit_match = _FAILED_EXIT_RE.search(line)
         if exit_match is None or exit_match.group(1) == "0":
             continue

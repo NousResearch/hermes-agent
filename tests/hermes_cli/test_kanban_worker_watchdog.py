@@ -1,6 +1,7 @@
 """Behavior tests for deterministic Kanban worker-health supervision."""
 
 from __future__ import annotations
+import json
 from hermes_cli import kanban_db_dispatch as dispatch_impl
 
 from pathlib import Path
@@ -80,6 +81,36 @@ def test_repeated_failed_tool_call_is_detected() -> None:
     assert finding.category == "tool_failure_loop"
     assert finding.count == 3
     assert len(finding.fingerprint) == 16
+
+
+@pytest.mark.parametrize("edit", ["patch", "write_file"])
+def test_edit_and_retest_is_progress_but_unchanged_retries_still_block(edit) -> None:
+    from agent.display import render_edit_diff_with_delta
+
+    rendered = []
+    assert render_edit_diff_with_delta(
+        "patch", json.dumps({"diff": "--- a/module.py\n+++ b/module.py\n@@ -1 +1 @@\n-old\n+new\n"}),
+        print_fn=rendered.append,
+    )
+    label = "🔧 patch" if edit == "patch" else "✍️  write"
+    change = f"┊ {label} module.py  0.3s\n" + "\n".join(rendered)
+    failure = "┊ 💻 $ scripts/run_tests.sh tests/test_a.py  1.2s [exit 1]"
+    log = f"{failure}\n{change}\n{failure}\n{change}\n{failure}"
+    assert detect_log_finding(log, _config()) is None
+    finding = detect_log_finding(log + f"\n{failure}\n{failure}", _config())
+    assert finding is not None and finding.category == "tool_failure_loop"
+
+
+@pytest.mark.parametrize("interlude", [
+    "I patched module.py and will retry.",
+    "┊ 🔧 patch module.py  0.3s [Patch validation failed]",
+    "┊ 🔧 patch module.py  0.3s",  # No actual diff: no-op is not progress.
+    "┊ 💻 $ echo 'patched module.py'  0.3s",
+])
+def test_claimed_failed_or_noop_edits_do_not_erase_failures(interlude) -> None:
+    failure = "┊ 💻 $ scripts/run_tests.sh tests/test_a.py  1.2s [exit 1]"
+    finding = detect_log_finding(f"{failure}\n{interlude}\n{failure}\n{failure}", _config())
+    assert finding is not None and finding.category == "tool_failure_loop"
 
 
 def test_repeated_context_compression_is_detected() -> None:

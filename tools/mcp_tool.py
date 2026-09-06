@@ -7743,6 +7743,11 @@ def refresh_agent_mcp_tools(
             enabled_toolsets=enabled,
             disabled_toolsets=disabled,
             quiet_mode=quiet_mode,
+            # Without this the rebuild drops any platform-scoped tool_search
+            # override and republishes the FULL tool array over the one agent
+            # setup assembled — silently undoing the deferral for the rest of
+            # the session.
+            platform=getattr(agent, "platform", None),
         )
         or []
     )

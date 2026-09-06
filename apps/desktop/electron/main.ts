@@ -282,6 +282,13 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createKeepAwake } from './power-save'
 import { PreviewReachRegistry } from './preview-reach'
 import {
+  type PreviewUblockBrowserWindow,
+  type PreviewUblockGuestWebContents,
+  registerPreviewUblockIpc
+} from './preview-ublock-ipc'
+import { createPreviewUblockRuntime, type PreviewUblockRuntime } from './preview-ublock-runtime'
+import { runPreviewUblockSmoke } from './preview-ublock-smoke'
+import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
   runPrimaryBackendStartup
@@ -462,6 +469,9 @@ const GLASS_SUPPORTED = glassSupportedOn(process.platform, os.release())
 // there and Settings drops the row entirely.
 const TRANSLUCENCY_SUPPORTED = translucencySupportedOn(process.platform)
 const APP_ROOT = app.getAppPath()
+
+const previewUblockSettingsPath = path.join(app.getPath('userData'), 'preview-ublock.json')
+let previewUblockRuntime: PreviewUblockRuntime | null = null
 
 // Device-local preference: block F12 from opening DevTools.
 // Set dynamically via IPC from the renderer Settings → Advanced.
@@ -16511,6 +16521,7 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
+  void previewUblockRuntime?.dispose()
   destroyKeepaliveAgents()
 })
 
@@ -16682,6 +16693,15 @@ ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
   } catch (error) {
     rememberLog(`[disable-f12] write failed: ${error.message}`)
   }
+})
+
+registerPreviewUblockIpc({
+  browserWindowFromWebContents: sender =>
+    BrowserWindow.fromWebContents(sender as Electron.WebContents) as unknown as PreviewUblockBrowserWindow,
+  getRuntime: () => previewUblockRuntime,
+  ipcMain,
+  webContentsFromId: webContentsId =>
+    electronWebContents.fromId(webContentsId) as unknown as PreviewUblockGuestWebContents
 })
 
 ipcMain.handle('hermes:openExternal', (_event, url) => {
@@ -17328,7 +17348,72 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Load optional uBlock Origin Lite into Preview's exact persistent session
+  // before any Preview webview is created. Startup only reuses a verified
+  // local cache; an explicit Settings action is required for network access.
+  const previewSession = session.fromPartition('persist:hermes-preview')
+  previewUblockRuntime = createPreviewUblockRuntime({
+    createBootstrapWindow: () => {
+      const window = new BrowserWindow({ show: false, webPreferences: { session: previewSession } })
+
+      return {
+        destroy: () => window.destroy(),
+        executeJavaScript: code => window.webContents.executeJavaScript(code),
+        loadURL: url => window.loadURL(url)
+      }
+    },
+    createPopupWindow: options =>
+      new BrowserWindow({
+        backgroundColor: '#ffffff',
+        height: options.height,
+        parent: options.parent as unknown as BrowserWindow,
+        resizable: false,
+        show: false,
+        title: 'uBlock Origin Lite',
+        webPreferences: { session: options.session as Electron.Session },
+        width: options.width,
+        x: options.x,
+        y: options.y
+      }),
+    getOwnerWebContents: ownerWebContentsId => electronWebContents.fromId(ownerWebContentsId),
+    getPopupWorkArea: bounds => screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y }).workArea,
+    getStateWindows: () => BrowserWindow.getAllWindows(),
+    log: rememberLog,
+    openExternal: openExternalUrl,
+    previewSession,
+    settingsPath: previewUblockSettingsPath,
+    userDataPath: app.getPath('userData')
+  })
+  await previewUblockRuntime.initialize()
+
+  if (process.env.HERMES_UBOL_SMOKE === '1') {
+    try {
+      await runPreviewUblockSmoke(previewUblockRuntime, {
+        createOwnerWindow: () =>
+          new BrowserWindow({
+            show: false,
+            webPreferences: { session: previewSession, webviewTag: true }
+          }),
+        findPopupWindow: ownerWindow =>
+          BrowserWindow.getAllWindows().find(
+            window => window !== ownerWindow && window.webContents.session === previewSession
+          ) ?? null,
+        getGuest: webContentsId => electronWebContents.fromId(webContentsId),
+        previewSession
+      })
+      console.log('uBlock Origin Lite smoke test passed')
+      app.exit(0)
+
+      return
+    } catch (error) {
+      console.error(error)
+      app.exit(1)
+
+      return
+    }
+  }
+
   // Warm the login-shell PATH resolution immediately so it usually completes
   // before the backend start path awaits the same single-flight promise.
   void ensureLoginShellPath()

@@ -64,6 +64,7 @@
     "test:ui": "vitest run --project ui",
     "test:desktop:platforms": "vitest run --project electron",
     "test:find-in-page-native": "electron electron/find-in-page-native-fixture",
+    "test:preview-ublock-smoke": "HERMES_UBOL_SMOKE=1 node scripts/preview-ublock-smoke.mjs",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
     "check:test:ui": "npm run test:ui",

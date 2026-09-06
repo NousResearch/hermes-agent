@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
@@ -3156,9 +3157,7 @@ class GatewayTurnMixin:
     def _run_agent_timeout_result(self, worker, turn_ctx: TurnContext) -> dict:
         """Synthetic failed run dict for an inactivity timeout, with the activity-tracker diagnostic;
         interrupts the agent if it is still running so the thread pool worker is freed."""
-        from gateway.run import (
-            _INTERRUPT_REASON_TIMEOUT, _format_iteration_progress, request_hard_interrupt,
-        )
+        from gateway.run import _INTERRUPT_REASON_TIMEOUT, request_hard_interrupt
         session_key, result_holder, tools_holder = turn_ctx.session_key, turn_ctx.result_holder, turn_ctx.tools_holder
         _timed_out_agent = turn_ctx.agent_holder[0]
         _activity = self._agent_activity_summary(_timed_out_agent)
@@ -3167,8 +3166,7 @@ class GatewayTurnMixin:
         _cur_tool = _activity.get("current_tool")
         _iter_n = _activity.get("api_call_count", 0)
         _iter_max = _activity.get("max_iterations", 0)
-        # Operator-facing log keeps the raw resolved value for diagnostics; only the two
-        # user-facing _diag_lines below go through _format_iteration_progress (#102806).
+        # Operator-facing log keeps the raw resolved value; only the user-facing lines hide the sentinel.
         logger.error(
             "Agent idle for %.0fs (timeout %.0fs) in session %s "
             "| last_activity=%s | iteration=%s/%s | tool=%s",
@@ -3178,7 +3176,7 @@ class GatewayTurnMixin:
         if _timed_out_agent:
             request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
         _timeout_mins = int(worker.agent_timeout // 60) or 1
-        _iter_progress = _format_iteration_progress(_iter_n, _iter_max)
+        _iter_progress = format_iteration_progress(_iter_n, _iter_max)
         _diag_lines = [
             f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls or API responses."
         ]
@@ -3716,9 +3714,7 @@ class GatewayTurnMixin:
 
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
         long_running_notifications=off disables)."""
-        from gateway.run import (
-            _float_env, _format_iteration_progress, _interim_metadata, _non_conversational_metadata,
-        )
+        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -3747,9 +3743,7 @@ class GatewayTurnMixin:
                 if _a:
                     _parts = []
                     if _want_iteration_detail:
-                        _parts.append(
-                            _format_iteration_progress(_a["api_call_count"], _a["max_iterations"])
-                        )
+                        _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
                     _action = _a.get("current_tool") or _a.get("last_activity_desc")
                     if _action:
                         _parts.append(str(_action))

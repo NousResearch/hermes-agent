@@ -24,8 +24,10 @@ def _single_query_clarify_callback(question: str, choices=None, multi_select=Fal
     """
     prefix = f"[single-query mode: no user available to answer {question!r}. "
     if choices:
+        from tools.clarify_tool import choice_label
+        labels = [choice_label(c) for c in choices]
         what = "subset" if multi_select else "option"
-        return f"{prefix}Pick the best {what} from {choices} using your own judgment and continue.]"
+        return f"{prefix}Pick the best {what} from {labels} using your own judgment and continue.]"
     return f"{prefix}Make the most reasonable assumption you can and continue.]"
 
 

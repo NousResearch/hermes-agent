@@ -42,13 +42,29 @@ export const bareChoice = (choice: string): string =>
  * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
  * and returns an empty array when nothing usable survives — the caller then
  * falls back to a free-text answer instead of dead buttons.
+ *
+ * Phase 1: structured {label, description} choices (Claude Code style) are
+ * accepted and reduced to their label — descriptions ride the wire for
+ * Phase 2's subtitle rendering.
  */
 export function normalizeChoices(choices: unknown): string[] {
   if (!Array.isArray(choices)) {
     return []
   }
 
-  return choices.filter(
+  const labels = choices.map((c): string => {
+    if (typeof c === 'string') {
+      return c
+    }
+    if (typeof c === 'object' && c !== null) {
+      const row = c as Record<string, unknown>
+      const label = typeof row.label === 'string' ? row.label : ''
+      return label
+    }
+    return ''
+  })
+
+  return labels.filter(
     (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
   )
 }

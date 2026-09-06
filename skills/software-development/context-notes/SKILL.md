@@ -15,6 +15,11 @@ metadata:
 ## Why
 When a long session's context window fills, the built-in compressor summarizes history into a single dense block. Summaries lose the *reasoning* behind events: why a fix failed, how a component behaves, which approach was abandoned. Context notes fix this by splitting memory into two streams.
 
+## When to Use
+- Long or multi-session tasks that span multiple context windows (debugging, large refactors).
+- When you need to preserve the *reasoning* behind events (why a fix failed, how a component behaves) rather than just results.
+- Before compaction is about to fire, to sink detail into searchable notes first.
+
 ## Core rule
 **Keep the reasoning; recover the evidence.**
 - Notes store conclusions (why, how, what next) — never raw evidence.

@@ -19,6 +19,7 @@ Session keys prefer union_id (user_id_alt) over open_id (user_id) for stability.
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
 import concurrent.futures
 import hashlib
@@ -213,6 +214,10 @@ FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
 
 class _InvalidFeishuMessagePayload(ValueError):
     """Decoded Feishu message content is unsafe to normalize recursively."""
+
+
+class _FeishuWebhookCryptoUnavailable(RuntimeError):
+    """The pinned cryptography dependency is unavailable in a broken install."""
 
 
 def _json_containers_within_depth(value: Any, max_depth: int) -> bool:
@@ -2739,6 +2744,44 @@ class FeishuAdapter(BasePlatformAdapter):
             return web.json_response({"code": status, "msg": json_msg}, status=status)
         return web.Response(status=status, text=text)
 
+    def _decrypt_webhook_payload(self, encrypted: Any) -> bytes:
+        """Decrypt Feishu's IV-prefixed AES-CBC callback envelope."""
+        if not isinstance(encrypted, str) or not encrypted:
+            raise ValueError("encrypted payload must be a non-empty string")
+
+        try:
+            from cryptography.hazmat.primitives import padding
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        except ImportError as exc:
+            raise _FeishuWebhookCryptoUnavailable from exc
+
+        try:
+            ciphertext = base64.b64decode(encrypted, validate=True)
+            if (
+                len(ciphertext) < algorithms.AES.block_size // 8 * 2
+                or len(ciphertext) % (algorithms.AES.block_size // 8) != 0
+            ):
+                raise ValueError("invalid ciphertext length")
+
+            key = hashlib.sha256(self._encrypt_key.encode("utf-8")).digest()
+            iv = ciphertext[: algorithms.AES.block_size // 8]
+            decryptor = Cipher(
+                algorithms.AES(key),
+                modes.CBC(iv),
+            ).decryptor()
+            padded_plaintext = (
+                decryptor.update(ciphertext[algorithms.AES.block_size // 8 :])
+                + decryptor.finalize()
+            )
+            unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+            plaintext = unpadder.update(padded_plaintext) + unpadder.finalize()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid encrypted payload") from exc
+
+        if len(plaintext) > _FEISHU_WEBHOOK_MAX_BODY_BYTES:
+            raise ValueError("decrypted payload exceeds size limit")
+        return plaintext
+
     async def _handle_webhook_request(self, request: Any) -> Any:
         remote_ip = (getattr(request, "remote", None) or "unknown")
 
@@ -2776,8 +2819,9 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Webhook pre-auth rate limit exceeded for %s", remote_ip)
             return self._webhook_reject(remote_ip, "429-preauth", 429, "Too Many Requests")
 
-        # Authenticate supplied signatures against the exact request bytes.
-        # Unsigned URL verification must prove its embedded token.
+        # Check supplied signatures against the raw envelope before CBC decryption.
+        # Feishu omits signatures on URL verification; that path must prove its
+        # embedded token before reflecting a challenge.
         signature_valid = False
         if self._encrypt_key and headers.get("x-lark-signature"):
             signature_valid = self._is_webhook_signature_valid(headers, body_bytes)
@@ -2793,12 +2837,30 @@ class FeishuAdapter(BasePlatformAdapter):
         except (ValueError, UnicodeError, RecursionError):
             return self._webhook_reject(remote_ip, "400", 400, json_msg="invalid json")
 
-        if "encrypt" in payload:
-            return self._webhook_reject(remote_ip, "400-encrypted", 400, json_msg="encrypted webhook payloads are not supported")
-        header = payload.get("header")
-        if header is None:
-            header = {}
-        elif not isinstance(header, dict):
+        encrypted_request = "encrypt" in payload
+        try:
+            if encrypted_request:
+                if not self._encrypt_key:
+                    raise ValueError("missing encryption key")
+                plaintext = self._decrypt_webhook_payload(payload["encrypt"])
+                payload = json.loads(plaintext.decode("utf-8"))
+                if not isinstance(payload, dict) or not _json_containers_within_depth(
+                    payload, _FEISHU_WEBHOOK_MAX_JSON_DEPTH,
+                ):
+                    raise ValueError("invalid decrypted envelope")
+            header = payload.get("header")
+            if header is None:
+                header = {}
+            elif not isinstance(header, dict):
+                raise ValueError("invalid header")
+        except _FeishuWebhookCryptoUnavailable:
+            logger.error("[Feishu] Webhook encryption unavailable: cryptography dependency missing")
+            return self._webhook_reject(remote_ip, "503-encrypted", 503, json_msg="webhook encryption unavailable")
+        except (ValueError, UnicodeError, RecursionError):
+            # Do not expose padding, decoding, or parsing stages to unsigned CBC
+            # callers. This makes rejection responses uniform, not constant-time.
+            if encrypted_request:
+                return self._webhook_reject(remote_ip, "401-encrypted", 401, "Unauthorized")
             return self._webhook_reject(remote_ip, "400", 400, json_msg="invalid header")
 
         is_url_verification = payload.get("type") == "url_verification"

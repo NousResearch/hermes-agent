@@ -1,6 +1,7 @@
 """Tests for the Feishu gateway integration."""
 
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -35,6 +36,24 @@ class _FakeRequestContent:
         return self.body[:size]
 
 
+def _encrypted_webhook_body(payload: dict, encrypt_key: str) -> bytes:
+    """Build the IV-prefixed AES-CBC/PKCS7 envelope used by lark-oapi 1.6.8."""
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    plaintext = json.dumps(payload, separators=(",", ":")).encode()
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    padded_plaintext = padder.update(plaintext) + padder.finalize()
+    iv = b"0123456789abcdef"
+    encryptor = Cipher(
+        algorithms.AES(hashlib.sha256(encrypt_key.encode()).digest()),
+        modes.CBC(iv),
+    ).encryptor()
+    ciphertext = encryptor.update(padded_plaintext) + encryptor.finalize()
+    return json.dumps(
+        {"encrypt": base64.b64encode(iv + ciphertext).decode()},
+        separators=(",", ":"),
+    ).encode()
 
 
 def _mock_event_dispatcher_builder(mock_handler_class):
@@ -1905,12 +1924,257 @@ class TestWebhookSecurity(unittest.TestCase):
         self.assertEqual(adapter._verification_token, "token_from_extra")
         self.assertEqual(adapter._encrypt_key, "encrypt_from_extra")
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_ordinary_events_require_both_configured_secrets(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
+        encrypt_key = "expected-key"
+        auth_headers = {
+            "x-lark-request-timestamp": "1700000000",
+            "x-lark-request-nonce": "abc123",
+        }
 
+        def signed_request(body: bytes, signature: str | None = None):
+            if signature is None:
+                signature = hashlib.sha256(
+                    b"1700000000abc123expected-key" + body
+                ).hexdigest()
+            return self._webhook_request(
+                body,
+                remote="203.0.113.70",
+                headers={**auth_headers, "x-lark-signature": signature},
+            )
 
+        cases = (
+            ("both valid", "expected", None, 200, 1),
+            ("valid token, bad signature", "expected", "invalid", 401, 0),
+            ("bad token, valid signature", "invalid", None, 401, 0),
+        )
+        for name, token, signature, expected_status, expected_quota in cases:
+            adapter = FeishuAdapter(
+                PlatformConfig(
+                    extra={
+                        "verification_token": "expected",
+                        "encrypt_key": encrypt_key,
+                    }
+                )
+            )
+            body = _encrypted_webhook_body(
+                {"header": {"token": token, "event_type": "unknown"}},
+                encrypt_key,
+            )
+            with self.subTest(name=name):
+                response = asyncio.run(
+                    adapter._handle_webhook_request(
+                        signed_request(body, signature)
+                    )
+                )
 
+                self.assertEqual(response.status, expected_status)
+                self.assertEqual(
+                    sum(count for count, _started in adapter._webhook_rate_counts.values()),
+                    expected_quota,
+                )
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_encrypted_ordinary_event_supports_encrypt_key_only(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
+        encrypt_key = "expected-key"
+        body = _encrypted_webhook_body(
+            {"header": {"event_type": "unknown"}},
+            encrypt_key,
+        )
+        auth_headers = {
+            "x-lark-request-timestamp": "1700000000",
+            "x-lark-request-nonce": "abc123",
+        }
+        valid_signature = hashlib.sha256(
+            b"1700000000abc123expected-key" + body
+        ).hexdigest()
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"encrypt_key": encrypt_key}))
+        request = self._webhook_request(
+            body,
+            remote="203.0.113.71",
+            headers={**auth_headers, "x-lark-signature": valid_signature},
+        )
+        dispatch_names = (
+            "_on_message_event",
+            "_on_message_read_event",
+            "_on_bot_added_to_chat",
+            "_on_bot_removed_from_chat",
+            "_on_reaction_event",
+            "_on_card_action_trigger",
+            "_on_drive_comment_event",
+            "_on_meeting_invited_event",
+        )
+        patchers = [patch.object(adapter, name) for name in dispatch_names]
+        dispatch_targets = [patcher.start() for patcher in patchers]
+        try:
+            response = asyncio.run(adapter._handle_webhook_request(request))
+        finally:
+            for patcher in reversed(patchers):
+                patcher.stop()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            sum(count for count, _started in adapter._webhook_rate_counts.values()),
+            1,
+        )
+        for dispatch_target in dispatch_targets:
+            dispatch_target.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_encrypted_event_without_local_key_fails_before_quota_or_dispatch(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        body = _encrypted_webhook_body(
+            {"header": {"token": "expected", "event_type": "im.message.receive_v1"}},
+            "expected-key",
+        )
+        adapter = FeishuAdapter(
+            PlatformConfig(extra={"verification_token": "expected"})
+        )
+
+        with patch.object(adapter, "_on_message_event") as dispatch:
+            response = asyncio.run(
+                adapter._handle_webhook_request(
+                    self._webhook_request(
+                        body,
+                        remote="203.0.113.72",
+                    )
+                )
+            )
+
+        self.assertEqual(response.status, 401)
+        self.assertEqual(adapter._webhook_rate_counts, {})
+        dispatch.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_invalid_ciphertext_fails_uniformly_before_quota_or_dispatch(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(extra={"encrypt_key": "expected-key"})
+        )
+        bodies = (
+            b'{"encrypt":"not-base64!"}',
+            json.dumps(
+                {"encrypt": base64.b64encode(b"too-short").decode()}
+            ).encode(),
+        )
+
+        for body in bodies:
+            with self.subTest(body=body), patch.object(
+                adapter,
+                "_namespace_from_mapping",
+            ) as normalize:
+                response = asyncio.run(
+                    adapter._handle_webhook_request(
+                        self._webhook_request(
+                            body,
+                            remote="203.0.113.73",
+                        )
+                    )
+                )
+                self.assertEqual(response.status, 401)
+                self.assertEqual(
+                    response.body, b"Unauthorized",
+                )
+                self.assertEqual(adapter._webhook_rate_counts, {})
+                normalize.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_unsigned_ciphertext_rejections_do_not_reveal_decryption_stage(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        key = "expected-key"
+        adapter = FeishuAdapter(PlatformConfig(extra={
+            "encrypt_key": key, "verification_token": "expected",
+        }))
+        bodies = [
+            b'{"encrypt":"invalid!"}',
+            _encrypted_webhook_body({"type": "url_verification", "token": "wrong"}, key),
+            _encrypted_webhook_body({"header": {"token": "expected", "event_type": "unknown"}}, key),
+            _encrypted_webhook_body({"header": []}, key),
+            _encrypted_webhook_body({"token": "\\ud800"}, key),
+        ]
+        responses = [asyncio.run(adapter._handle_webhook_request(
+            self._webhook_request(body, remote="203.0.113.74")
+        )) for body in bodies]
+        self.assertEqual({(r.status, r.body) for r in responses}, {(401, b"Unauthorized")})
+        self.assertEqual(adapter._webhook_rate_counts, {})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_supplied_invalid_signature_is_rejected_before_decryption(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={
+            "encrypt_key": "key", "verification_token": "expected",
+        }))
+        body = _encrypted_webhook_body({
+            "type": "url_verification", "token": "expected", "challenge": "secret",
+        }, "key")
+        with patch.object(adapter, "_decrypt_webhook_payload", wraps=adapter._decrypt_webhook_payload) as decrypt:
+            response = asyncio.run(adapter._handle_webhook_request(self._webhook_request(
+                body, remote="203.0.113.75", headers={"x-lark-signature": "invalid"},
+            )))
+        self.assertEqual(response.status, 401)
+        decrypt.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_encryption_dependency_failure_is_controlled(self):
+        import builtins
+
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        body = _encrypted_webhook_body(
+            {
+                "type": "url_verification",
+                "token": "expected",
+                "challenge": "test_challenge_token",
+            },
+            "expected-key",
+        )
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "verification_token": "expected",
+                    "encrypt_key": "expected-key",
+                }
+            )
+        )
+        original_import = builtins.__import__
+
+        def import_without_crypto(name, *args, **kwargs):
+            if name.startswith("cryptography"):
+                raise ImportError("cryptography intentionally unavailable")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=import_without_crypto), patch.object(
+            adapter,
+            "_namespace_from_mapping",
+        ) as normalize:
+            response = asyncio.run(
+                adapter._handle_webhook_request(
+                    self._webhook_request(
+                        body,
+                        remote="203.0.113.74",
+                    )
+                )
+            )
+
+        self.assertEqual(response.status, 503)
+        self.assertEqual(adapter._webhook_rate_counts, {})
+        normalize.assert_not_called()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_nested_message_content_is_dropped_after_pairing_admission(self):
@@ -1994,7 +2258,61 @@ class TestWebhookSecurity(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertIn(b"test_challenge_token", response.body)
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_url_verification_with_both_secrets_remains_unsigned(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                extra={
+                    "verification_token": "expected",
+                    "encrypt_key": "expected-key",
+                }
+            )
+        )
+        body = _encrypted_webhook_body(
+            {
+                "type": "url_verification",
+                "token": "expected",
+                "challenge": "test_challenge_token",
+            },
+            "expected-key",
+        )
+
+        response = asyncio.run(
+            adapter._handle_webhook_request(
+                self._webhook_request(body, remote="203.0.113.29")
+            )
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertIn(b"test_challenge_token", response.body)
+        self.assertEqual([entry[0] for entry in adapter._webhook_rate_counts.values()], [1])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_url_verification_rejects_encrypt_key_only_configuration(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"encrypt_key": "expected-key"}))
+        body = _encrypted_webhook_body(
+            {
+                "type": "url_verification",
+                "token": "unconfigured",
+                "challenge": "attacker-challenge",
+            },
+            "expected-key",
+        )
+        response = asyncio.run(
+            adapter._handle_webhook_request(
+                self._webhook_request(body, remote="203.0.113.30")
+            )
+        )
+
+        self.assertEqual(response.status, 401)
+        self.assertNotIn(b"attacker-challenge", response.body)
+        self.assertEqual(adapter._webhook_rate_counts, {})
 
 
 @unittest.skipIf(_HAS_LARK_OAPI, "covered by the full Feishu SDK test surface")
@@ -2032,11 +2350,32 @@ class TestWebhookSecurityWithoutSdk(unittest.TestCase):
     test_webhook_request_rejects_malformed_nested_shapes_before_quota = (
         TestWebhookSecurity.test_webhook_request_rejects_malformed_nested_shapes_before_quota
     )
+    test_webhook_ordinary_events_require_both_configured_secrets = (
+        TestWebhookSecurity.test_webhook_ordinary_events_require_both_configured_secrets
+    )
+    test_webhook_encrypted_ordinary_event_supports_encrypt_key_only = (
+        TestWebhookSecurity.test_webhook_encrypted_ordinary_event_supports_encrypt_key_only
+    )
+    test_webhook_encrypted_event_without_local_key_fails_before_quota_or_dispatch = (
+        TestWebhookSecurity.test_webhook_encrypted_event_without_local_key_fails_before_quota_or_dispatch
+    )
+    test_webhook_invalid_ciphertext_fails_uniformly_before_quota_or_dispatch = (
+        TestWebhookSecurity.test_webhook_invalid_ciphertext_fails_uniformly_before_quota_or_dispatch
+    )
+    test_webhook_encryption_dependency_failure_is_controlled = (
+        TestWebhookSecurity.test_webhook_encryption_dependency_failure_is_controlled
+    )
     test_webhook_nested_message_content_is_dropped_after_pairing_admission = (
         TestWebhookSecurity.test_webhook_nested_message_content_is_dropped_after_pairing_admission
     )
     test_webhook_url_verification_challenge_passes_with_token_only = (
         TestWebhookSecurity.test_webhook_url_verification_challenge_passes_with_token_only
+    )
+    test_webhook_url_verification_with_both_secrets_remains_unsigned = (
+        TestWebhookSecurity.test_webhook_url_verification_with_both_secrets_remains_unsigned
+    )
+    test_webhook_url_verification_rejects_encrypt_key_only_configuration = (
+        TestWebhookSecurity.test_webhook_url_verification_rejects_encrypt_key_only_configuration
     )
 
 

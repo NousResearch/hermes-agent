@@ -166,12 +166,8 @@ def describe_profile(profile_name: str, *, overwrite: bool = False, timeout: Opt
         raw = ""
     parsed = _extract_json_blob(raw)
     if parsed is None:
-        # A response that is JSON-SHAPED (starts with `{`, once code fences are stripped) but
-        # failed to parse is a malformed/truncated structured reply -- e.g. the aux model or
-        # transport cut it off mid-object -- not free-form prose. Persisting it verbatim writes
-        # a raw JSON fragment (literal `{`, `\n` escapes, a sentence chopped mid-word) into
-        # profile.yaml's description field (#104067). Only fall back to "whole reply is prose"
-        # when the reply never looked like JSON in the first place.
+        # JSON-shaped but unparseable = the requested object got cut off (#104067); the prose
+        # fallback below is only for models that never attempted JSON.
         stripped = _FENCE_RE.sub("", raw.strip())
         if stripped.startswith("{"):
             logger.info(

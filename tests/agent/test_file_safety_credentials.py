@@ -150,7 +150,7 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
         path=str(fake_home),
         task_id="search-filter-credentials",
     )
-    out = json.loads(search_response.split("\n\n[Hint:", 1)[0])
+    out = json.loads(search_response)
     raw = json.dumps(out)
     returned_paths = {
         match["path"] for match in out.get("matches", [])

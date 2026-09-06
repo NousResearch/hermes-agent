@@ -1059,8 +1059,8 @@ def _build_replay_entry(
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
-    # Preserve exact sent content unless cleanup rewrote the body.
-    # Timestamp-only rendering is checked separately by the history builder.
+    # api_content sidecar keeps the request prefix byte-stable — ONLY if this pipeline did not rewrite
+    # content. The caller renders timestamps AFTER this check so a stamp alone never drops the sidecar.
     _sidecar = msg.get("api_content")
     if (
         role in ("user", "assistant")
@@ -1208,7 +1208,7 @@ def _build_gateway_agent_history(
             if msg.get("mirror"):
                 mirror_src = msg.get("mirror_source", "another session")
                 entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"
-                entry.pop("api_content", None)
+                entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
             agent_history.append(entry)
 
     # Strip interrupted tool-call tails so the LLM doesn't re-execute tools killed mid-flight.

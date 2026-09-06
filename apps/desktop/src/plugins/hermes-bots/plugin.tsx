@@ -24,12 +24,11 @@ import {
   $botsPaneVisible,
   $focusedBotOwner,
   $openBotChat,
-  $selectedBot,
   $selectedRosterHydrated,
   $selectedRosterKey,
   focusedMentionProfile
 } from './bot-state'
-import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
+import { canonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
 import { bindProfileSync, RoutinesPane } from './cron'
 import {
@@ -37,7 +36,6 @@ import {
   $lastRoster,
   botHandle,
   botMentionTag,
-  botSelectionKey,
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
@@ -660,20 +658,25 @@ export default {
           const slashNew = /^\/(new|reset)\s*$/.exec(text.trim())
 
           if (slashNew) {
-            const activeBot = $selectedBot.get()
             // Canonical identity is the profile's "Bot Chat" registry row —
-            // read it from the roster cache (canonical_session, resolved
-            // server-side by name), matching either the durable row id or
-            // the compression-lineage tip currently on screen.
+            // read it from the full roster cache (canonical_session, resolved
+            // server-side by name), matching either the durable row id or the
+            // compression-lineage tip currently on screen. The focused chat,
+            // not a potentially stale roster selection, is authoritative.
             const roster = $lastRoster.get()
-            const row = Array.isArray(roster) ? roster.find(bot => botSelectionKey(bot) === activeBot) : null
+
+            const row = canonicalChatOnScreen(
+              Array.isArray(roster) ? roster : null,
+              host.state.focusedStoredSessionId.get(),
+              host.state.focusedSessionOwner.get()
+            )
 
             // The STORED id, which is the id space canonical_session is keyed
             // in. `host.state.activeSessionId` is the runtime id and could
             // never match, so the guard read `host.activeSessionId` — no such
             // property — and silently resolved to null on every turn: /new
             // reset the forever-chat instead of compacting it.
-            if (activeBot && isCanonicalChatOnScreen(row, host.state.focusedStoredSessionId.get())) {
+            if (row) {
               host.notify({
                 kind: 'info',
                 title: 'This chat never resets',

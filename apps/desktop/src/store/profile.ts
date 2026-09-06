@@ -28,7 +28,7 @@ import { notifyError } from '@/store/notifications'
 import { $poolLimits } from '@/store/pool-limits'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
 import { clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
-import type { SessionOwnerRoute } from '@/store/session-request-router'
+import { isSessionOwnerRoute, type SessionOwnerRoute, type SessionOwnerScope } from '@/store/session-request-router'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
@@ -885,6 +885,35 @@ export function pinNewChatProfile(name: string): string {
   return target
 }
 
+function pinNewChatAgentRoute(route: AgentProfileRoute): AgentProfileRoute {
+  const captured = {
+    ...route,
+    connectionId: route.connectionId.trim(),
+    profile: normalizeProfileKey(route.profile),
+    ...(route.targetProfile ? { targetProfile: normalizeProfileKey(route.targetProfile) } : {})
+  }
+
+  if (!captured.connectionId) {
+    throw new Error('Agent profile route is missing connectionId')
+  }
+
+  $newChatProfile.set(captured.profile)
+  $newChatRoute.set(captured)
+  $newChatConnectionId.set(captured.connectionId)
+
+  return captured
+}
+
+/** Carry a focused session's owner into a fresh draft before the focused
+ * session is cleared. A stale profile-picker intent must not own `/new`. */
+export function pinNewChatOwner(owner: SessionOwnerScope): void {
+  if (isSessionOwnerRoute(owner)) {
+    pinNewChatAgentRoute(owner)
+  } else if (typeof owner === 'string' && owner.trim()) {
+    pinNewChatProfile(owner)
+  }
+}
+
 // Start a fresh session in `name` WITHOUT collapsing the "All profiles" browse
 // view. Unlike selectProfile, it leaves $showAllProfiles untouched, so the
 // unified sidebar stays put — used by the per-profile "+" in the all-profiles
@@ -906,20 +935,7 @@ export function newSessionInProfile(name: string): void {
  * only a presentation step; the route stays attached to the draft for the
  * eventual session.create request. */
 export function newSessionInAgent(route: AgentProfileRoute): void {
-  const captured = {
-    ...route,
-    connectionId: route.connectionId.trim(),
-    profile: normalizeProfileKey(route.profile),
-    ...(route.targetProfile ? { targetProfile: normalizeProfileKey(route.targetProfile) } : {})
-  }
-
-  if (!captured.connectionId) {
-    throw new Error('Agent profile route is missing connectionId')
-  }
-
-  $newChatProfile.set(captured.profile)
-  $newChatRoute.set(captured)
-  $newChatConnectionId.set(captured.connectionId)
+  const captured = pinNewChatAgentRoute(route)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
   void ensureGatewayAgent(captured.connectionId, captured.profile).catch((error: unknown) => {

@@ -42,7 +42,7 @@ vi.mock('./data', () => ({
 }))
 vi.mock('./shared', () => ({ getPluginCtx: () => null }))
 
-const { isCanonicalChatOnScreen } = await import('./canonical-chat')
+const { canonicalChatOnScreen, isCanonicalChatOnScreen } = await import('./canonical-chat')
 
 function bot(canonical: null | { id?: string; resolved_id?: string }): RosterRow {
   return { canonical_session: canonical, name: 'ops' } as RosterRow
@@ -78,5 +78,18 @@ describe('isCanonicalChatOnScreen', () => {
     expect(isCanonicalChatOnScreen(bot({ id: 'forever-chat' }), null)).toBe(false)
     expect(isCanonicalChatOnScreen(bot({ id: 'forever-chat' }), '')).toBe(false)
     expect(isCanonicalChatOnScreen(undefined, 'forever-chat')).toBe(false)
+  })
+})
+
+describe('canonicalChatOnScreen', () => {
+  it('finds the focused canonical chat without trusting a stale selected bot', () => {
+    const specter = { canonical_session: { id: 'specter-chat' }, name: 'default' } as RosterRow
+    const siren = { canonical_session: { id: 'siren-chat' }, name: 'siren' } as RosterRow
+
+    // The roster selection may still say Siren while Specter's canonical chat
+    // is visibly focused. The focused chat is authoritative for /new.
+    expect(
+      canonicalChatOnScreen([specter, siren], 'specter-chat', { connectionId: 'local', profile: 'default' })
+    ).toBe(specter)
   })
 })

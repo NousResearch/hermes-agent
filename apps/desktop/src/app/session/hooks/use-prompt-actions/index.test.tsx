@@ -13,6 +13,7 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
 import { $notifications, clearNotifications } from '@/store/notifications'
+import { $newChatConnectionId, $newChatProfile, $newChatRoute } from '@/store/profile'
 import {
   $busy,
   $connection,
@@ -120,6 +121,7 @@ function Harness({
   refreshSessions,
   requestGateway,
   resumeStoredSession,
+  startFreshSessionDraft,
   runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefProp,
   seedMessages,
   seedStreamId,
@@ -145,6 +147,7 @@ function Harness({
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
+  startFreshSessionDraft?: () => void
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   seedMessages?: unknown[]
   seedStreamId?: null | string
@@ -202,7 +205,7 @@ function Harness({
     resumeStoredSession: resumeStoredSession ?? (() => undefined),
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
-    startFreshSessionDraft: () => undefined,
+    startFreshSessionDraft: startFreshSessionDraft ?? (() => undefined),
     sttEnabled: false,
     updateSessionState: (sessionId, updater, storedSessionId) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
@@ -248,6 +251,57 @@ function Harness({
 
   return null
 }
+
+describe('usePromptActions /new owner routing', () => {
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    $newChatProfile.set(null)
+    $newChatRoute.set(null)
+    $newChatConnectionId.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('pins the fresh draft to the focused session owner instead of stale profile intent', async () => {
+    const focusedStoredSessionId = 'specter-chat'
+
+    const focusedRoute = {
+      connectionId: 'local:specter',
+      profile: 'default'
+    }
+
+    setSessions(() => [
+      sessionInfo({
+        connection_id: focusedRoute.connectionId,
+        id: focusedStoredSessionId,
+        profile: focusedRoute.profile
+      })
+    ])
+
+    $newChatProfile.set('siren')
+    $newChatRoute.set({ connectionId: 'local:siren', profile: 'siren' })
+    $newChatConnectionId.set('local:siren')
+
+    const startFreshSessionDraft = vi.fn()
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={value => (handle = value)}
+        refreshSessions={async () => undefined}
+        requestGateway={vi.fn(async () => ({} as never))}
+        selectedStoredSessionIdRef={{ current: focusedStoredSessionId }}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    await handle!.submitText('/new')
+
+    expect(startFreshSessionDraft).toHaveBeenCalledTimes(1)
+    expect($newChatProfile.get()).toBe('default')
+    expect($newChatRoute.get()).toEqual(focusedRoute)
+    expect($newChatConnectionId.get()).toBe(focusedRoute.connectionId)
+  })
+})
 
 describe('usePromptActions /title', () => {
   beforeEach(() => {

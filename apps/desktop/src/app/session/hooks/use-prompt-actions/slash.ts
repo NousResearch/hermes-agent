@@ -27,12 +27,14 @@ import {
   $newChatProfile,
   captureNewChatSource,
   ensureGatewayProfile,
-  normalizeProfileKey
+  normalizeProfileKey,
+  pinNewChatOwner
 } from '@/store/profile'
 import {
   $connection,
   $sessions,
   $yoloActive,
+  knownSessionOwner,
   setActiveSessionId,
   setCurrentUsage,
   setModelPickerOpen,
@@ -494,6 +496,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
         new: async () => {
+          const focusedStoredSessionId = selectedStoredSessionIdRef.current
+
+          if (focusedStoredSessionId) {
+            pinNewChatOwner(knownSessionOwner($sessions.get(), focusedStoredSessionId))
+          }
+
           startFreshSessionDraft()
         },
         branch: async () => {

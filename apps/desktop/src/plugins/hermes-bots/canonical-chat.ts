@@ -78,6 +78,35 @@ export function isCanonicalChatOnScreen(
   return [canonical.id, canonical.resolved_id].filter(Boolean).map(String).includes(String(storedSessionId))
 }
 
+/** Return the bot whose canonical forever-chat is focused, independent of
+ * roster selection. The focused stored session is authoritative: selection
+ * can lag after restoring a window or switching profiles. */
+export function canonicalChatOnScreen(
+  roster: null | RosterRow[] | undefined,
+  storedSessionId: null | string | undefined,
+  owner?: null | { connectionId: string; profile: string }
+): RosterRow | null {
+  const ownerMatches = (bot: RosterRow) => {
+    if (!owner) {
+      return true
+    }
+
+    const sameProfile = (bot.name || 'default').trim() === (owner.profile || 'default').trim()
+
+    if (!sameProfile) {
+      return false
+    }
+
+    return bot.sourceScoped || bot.remoteSource
+      ? String(bot.connectionId || '').trim() === String(owner.connectionId || '').trim()
+      : true
+  }
+
+  return (
+    roster?.find(bot => ownerMatches(bot) && isCanonicalChatOnScreen(bot, storedSessionId)) ?? null
+  )
+}
+
 async function openStoredBotChat(
   owner: RosterRow | string,
   storedId: string,

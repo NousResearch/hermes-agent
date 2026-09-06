@@ -60,7 +60,7 @@ const ROSTER = {
 }
 
 const { cache, hostMock, live } = vi.hoisted(() => {
-  const live = { focused: 'default', profile: 'default', stored: null as string | null }
+  const live = { connection: 'local', focused: 'default', profile: 'default', stored: null as string | null }
 
   return {
     cache: new Map<string, { key: unknown[]; value: unknown }>(),
@@ -70,6 +70,10 @@ const { cache, hostMock, live } = vi.hoisted(() => {
       requestProfile: vi.fn(async () => ({})),
       state: {
         connectionId: { get: () => 'local', listen: () => () => undefined },
+        focusedSessionOwner: {
+          get: () => ({ connectionId: live.connection, profile: live.focused }),
+          listen: () => () => undefined
+        },
         focusedSessionProfile: { get: () => live.focused, listen: () => () => undefined },
         focusedStoredSessionId: { get: () => live.stored, listen: () => () => undefined },
         gateway: { get: () => null, listen: () => () => undefined },
@@ -183,7 +187,7 @@ describe('Bot Chat reset guard', () => {
     { connectionId: 'local', sourceScoped: true },
     { connectionId: 'remote', remoteSource: true, sourceScoped: true },
     {}
-  ])('compacts only the selected bot canonical chat: %j', async source => {
+  ])('compacts only the focused bot canonical chat: %j', async source => {
     const { handler } = await contributions()
     const { $lastRoster } = await import('./data')
     const { saveSelectedRosterBot } = await import('./bot-state')
@@ -200,6 +204,8 @@ describe('Bot Chat reset guard', () => {
       selected
     ])
     saveSelectedRosterBot(selected)
+    live.focused = 'writer'
+    live.connection = source.connectionId || 'local'
 
     for (const stored of ['bot-root', 'bot-tip']) {
       live.stored = stored
@@ -222,6 +228,35 @@ describe('Bot Chat reset guard', () => {
         expect(hostMock.notify).not.toHaveBeenCalled()
       }
     }
+  })
+
+  it('keeps Specter focused when the selected roster bot is stale Siren', async () => {
+    const { handler } = await contributions()
+    const { $lastRoster } = await import('./data')
+    const { saveSelectedRosterBot } = await import('./bot-state')
+
+    const specter = {
+      connectionId: 'local',
+      name: 'default',
+      sourceScoped: true,
+      canonical_session: { id: 'specter-chat' }
+    } as RosterRow
+
+    const siren = {
+      connectionId: 'local',
+      name: 'siren',
+      sourceScoped: true,
+      canonical_session: { id: 'siren-chat' }
+    } as RosterRow
+
+    $lastRoster.set([specter, siren])
+    saveSelectedRosterBot(siren)
+    live.connection = 'local'
+    live.focused = 'default'
+    live.stored = 'specter-chat'
+
+    expect(await handler({ text: '/new' })).toEqual({ text: '/compact' })
+    expect(hostMock.notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'This chat never resets' }))
   })
 })
 

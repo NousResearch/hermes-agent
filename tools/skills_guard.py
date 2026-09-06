@@ -629,7 +629,7 @@ def _compute_docstring_lines(lines: list) -> set:
     one-line docstrings), so ``os.environ`` in prose is not scored. Computed structurally from Python-lexer
     tokens rather than quote counting: one unbalanced triple quote used to toggle the counter and let a
     bundle author mark arbitrary payload lines as prose. Any lexer failure fails closed — no line is
-    exempted, so every pattern still runs."""
+    exempted, so every pattern still runs. Callers scope the skip to ``_DOCSTRING_EXEMPT_PATTERN_IDS``."""
     doc_lines: set = set()
     try:
         for tok in tokenize.generate_tokens(io.StringIO('\n'.join(lines)).readline):
@@ -707,6 +707,11 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
     return out
 
 
+# Only python_os_environ was tuned for docstring prose; every other pattern must still fire inside a
+# triple-quoted string, since wrapping a payload in one is an evasion, not a false positive.
+_DOCSTRING_EXEMPT_PATTERN_IDS = frozenset({"python_os_environ"})
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
@@ -733,8 +738,10 @@ def scan_file(file_path: Path, rel_path: str = "") -> list[Finding]:
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
+            if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
+                continue
             scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
-            if i not in docstring_lines and pattern.search(scan_line):
+            if pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)

@@ -323,6 +323,8 @@ class SessionKernel:
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None
+        self.task_ids: set[str] = set()
+        self.task_ids_lock = threading.Lock()
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -462,10 +464,18 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
         if authority is None:
             return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
         return authority.dispatch(tool_name, tool_args)
+
+    def _cleanup_task_ids() -> list[str]:
+        authority = kernel.cell_authority
+        with kernel.task_ids_lock:
+            ids = set(kernel.task_ids)
+        if authority is not None and authority.task_id:
+            ids.add(authority.task_id)
+        return sorted(ids)
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch)
+                         dispatch=_dispatch, cleanup_task_ids=_cleanup_task_ids)
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
@@ -773,6 +783,11 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
     authority = CellAuthority(task_id)
+    from tools.code_execution_rpc import _clear_task_disconnected
+
+    _clear_task_disconnected(task_id)
+    with kernel.task_ids_lock:
+        kernel.task_ids.add(task_id)
     with kernel.lock:
         try:
             if kernel.proc is None:
@@ -802,3 +817,5 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             # The cell has settled on every path: its tool authority retires with it, so
             # nothing the cell left running can dispatch under it.
             authority.retire()
+            with kernel.task_ids_lock:
+                kernel.task_ids.discard(task_id)

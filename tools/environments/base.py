@@ -175,6 +175,8 @@ class BaseEnvironment(ABC):
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
         self._snapshot_passthrough_names: set[str] = set()
+        self._active_processes: dict[str, dict[int, ProcessHandle]] = {}
+        self._active_processes_lock = threading.Lock()
         # True when login bash is unusable (e.g. broken Git-for-Windows startup)
         # so execute() must fall back to non-login ``bash -c``, not ``bash -l``.
         self._prefer_nonlogin = False
@@ -482,7 +484,8 @@ class BaseEnvironment(ABC):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None,
+        task_id: str | None = None) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
@@ -528,10 +531,28 @@ class BaseEnvironment(ABC):
                 set_activity_callback(parent_activity_cb)
             spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
             proc_holder.append(spawned)
-            return self._wait_for_process(
-                spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
-                watch_interrupt_tid=parent_tid,
-                **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+            owner = task_id or "__unscoped__"
+            with self._active_processes_lock:
+                self._active_processes.setdefault(owner, {})[id(spawned)] = spawned
+            if task_id:
+                try:
+                    from tools.code_execution_rpc import _is_task_disconnected
+                    if _is_task_disconnected(task_id):
+                        self._kill_process(spawned)
+                except Exception:
+                    logger.debug("Failed to apply task disconnect cancellation", exc_info=True)
+            try:
+                return self._wait_for_process(
+                    spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
+                    watch_interrupt_tid=parent_tid,
+                    **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+            finally:
+                with self._active_processes_lock:
+                    active = self._active_processes.get(owner)
+                    if active is not None:
+                        active.pop(id(spawned), None)
+                        if not active:
+                            self._active_processes.pop(owner, None)
 
         def _on_timeout() -> None:
             if proc_holder:
@@ -563,6 +584,22 @@ class BaseEnvironment(ABC):
             if bounded.timed_out else bounded.value)
         self._update_cwd(result)
         return result
+
+    def kill_active_processes(self, task_id: str | None = None) -> int:
+        """Kill foreground commands owned by a task in this environment."""
+        with self._active_processes_lock:
+            if task_id is None:
+                active = tuple(proc for group in self._active_processes.values() for proc in group.values())
+            else:
+                active = tuple(self._active_processes.get(task_id, {}).values())
+        killed = 0
+        for proc in active:
+            try:
+                self._kill_process(proc)
+                killed += 1
+            except Exception:
+                logger.debug("Failed to reap disconnected terminal process", exc_info=True)
+        return killed
 
     def _kill_spawned_tree(self, spawned) -> None:
         """Best-effort kill of a wedged spawned process and its tree (backstop path)."""

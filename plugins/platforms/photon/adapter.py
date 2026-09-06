@@ -732,7 +732,10 @@ class PhotonAdapter(BasePlatformAdapter):
         return seen_at is not None and now - seen_at < _DEDUP_WINDOW_SECONDS
 
     def _mark_seen_message(self, msg_id: str) -> None:
-        """Persist a message ID only after inbound dispatch has succeeded."""
+        """Persist after successful dispatch; a crash before this write may replay it.
+
+        This is bounded at-least-once replay suppression, not exactly-once delivery.
+        """
         _bounded_put(self._seen_messages, msg_id, time.time(), _DEDUP_MAX_SIZE)
         self._persist_seen_messages()
 

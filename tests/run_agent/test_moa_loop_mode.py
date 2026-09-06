@@ -60,7 +60,13 @@ moa:
         ),
     )
 
-    result = agent.run_conversation("solve this")
+    resumed_history = [
+        {"role": "user", "content": "earlier question", "_db_persisted": True},
+        {"role": "assistant", "content": "earlier answer", "_db_persisted": True},
+    ]
+    result = agent.run_conversation(
+        "solve this", conversation_history=resumed_history
+    )
 
     assert result["final_response"] == "aggregator acted"
     assert agent.base_url == "moa://local"
@@ -69,6 +75,12 @@ moa:
         ("moa_aggregator", "openrouter", "anthropic/claude-opus-4.8"),
     ]
     assert calls[1]["tools"] is not None
+    assert all(
+        "_db_persisted" not in message
+        for call in calls
+        for message in call["messages"]
+    )
+    assert all(message["_db_persisted"] is True for message in resumed_history)
 
 
 def test_moa_runtime_provider_uses_virtual_endpoint():

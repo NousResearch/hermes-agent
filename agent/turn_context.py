@@ -930,6 +930,7 @@ def build_api_messages(
     replayed verbatim."""
     from agent.agent_runtime_helpers import fill_empty_non_final_wire_payload
     from agent.conversation_loop import _clone_message_for_send
+    from agent.context_compressor import _DB_PERSISTED_MARKER
 
     api_messages = []
     for idx, msg in enumerate(messages):
@@ -937,11 +938,11 @@ def build_api_messages(
         # persisted history via nested containers; see _clone_message_for_send.
         api_msg = _clone_message_for_send(msg)
         # api_content is bookkeeping (exact bytes sent), never a provider field — pop
-        # it from EVERY outgoing copy. display_* is display-only timeline metadata
-        # (strict OpenAI backends reject unknown keys); _row_id is the durable row id
-        # from _rows_to_conversation and only chat-completions strips underscore keys.
+        # it from EVERY outgoing copy. display_* is display-only timeline metadata;
+        # _row_id and _db_persisted are persistence state. Some paths (notably MoA)
+        # bypass the chat-completions transport's underscore-key sanitizer.
         _api_content = api_msg.pop("api_content", None)
-        for key in ("display_kind", "display_metadata", "_row_id"):
+        for key in ("display_kind", "display_metadata", "_row_id", _DB_PERSISTED_MARKER):
             api_msg.pop(key, None)
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)

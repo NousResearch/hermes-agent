@@ -98,7 +98,7 @@ class TestCheckClarifyRequirements:
 
 
 class TestClarifyDictChoices:
-    """Dict-shaped choices must be unwrapped to user-facing text at the source.
+    """Dict-shaped choices must never leak their repr onto a surface.
 
     LLMs sometimes emit [{"description": "..."}] instead of bare strings. The
     naive str(c) coercion leaked the Python dict repr onto every surface (CLI
@@ -130,14 +130,101 @@ class TestClarifyDictChoices:
             callback=cb,
         ))  # type: ignore
         assert seen == [
-            "Tight, covers all 3 points (Recommended)",
+            {"label": "Tight (Recommended)", "description": "Tight, covers all 3 points"},
             "Loose layout",
             "A plain string choice",
         ]
         # and the resolved answer is clean text, not a dict repr
-        assert result["user_response"] == "Tight, covers all 3 points"
+        assert result["user_response"] == "Tight"
         assert "{" not in result["user_response"]
-        assert all("{" not in c for c in result["choices_offered"])
+        assert all("{" not in c for c in result["choices_offered"] if isinstance(c, str))
+
+
+class TestClarifyStructuredChoices:
+    """{label, description} choices (Claude Code style) ride the wire as dicts.
+
+    Phase 1 contract: both fields present -> the dict survives to the callback
+    so future UI can render the subtitle; every answer and match resolves to
+    the label, so legacy surfaces keep working with zero changes.
+    """
+
+    def test_both_fields_stay_structured(self):
+        from tools.clarify_tool import _normalize_choice
+        assert _normalize_choice({"label": "A", "description": "Does A"}) == {
+            "label": "A", "description": "Does A"}
+
+    def test_single_field_stays_a_plain_string(self):
+        """Legacy payloads are untouched: no new shape where none is needed."""
+        from tools.clarify_tool import _normalize_choice
+        assert _normalize_choice({"label": "Just a label"}) == "Just a label"
+        assert _normalize_choice({"description": "Just a description"}) == "Just a description"
+        assert _normalize_choice({"name": "x", "value": "y"}) is None
+
+    def test_recommended_suffix_lands_on_the_label(self):
+        seen = []
+
+        def cb(question, choices):
+            seen.extend(choices or [])
+            return "Merge"
+
+        clarify_tool("Pick", choices=[
+            {"label": "Rebase", "description": "Linear history"},
+            {"label": "Merge", "description": "Keep context"},
+        ], callback=cb)
+        assert seen[0] == {"label": "Rebase (Recommended)", "description": "Linear history"}
+        assert seen[1] == {"label": "Merge", "description": "Keep context"}
+
+    def test_answer_by_label_text(self):
+        """Typing/picking the label resolves; the description never leaks into answers."""
+
+        def cb(question, choices):
+            return "Merge"
+
+        result = json.loads(clarify_tool("Pick", choices=[
+            {"label": "Rebase", "description": "Linear history"},
+            {"label": "Merge", "description": "Keep context"},
+        ], callback=cb))
+        assert result["user_response"] == "Merge"
+
+    def test_callback_echoing_the_dict_still_resolves(self):
+        """A callback returning the choice object itself answers with the label."""
+
+        def cb(question, choices):
+            return choices[1]
+
+        result = json.loads(clarify_tool("Pick", choices=[
+            {"label": "Rebase", "description": "Linear history"},
+            {"label": "Merge", "description": "Keep context"},
+        ], callback=cb))
+        assert result["user_response"] == "Merge"
+
+    def test_choices_offered_keep_descriptions_without_the_label(self):
+        def cb(question, choices):
+            return "Rebase"
+
+        result = json.loads(clarify_tool("Pick", choices=[
+            {"label": "Rebase", "description": "Linear history"},
+            "Merge",
+        ], callback=cb))
+        assert result["choices_offered"] == [
+            {"label": "Rebase", "description": "Linear history"},
+            "Merge",
+        ]
+
+    def test_batch_structured_choices(self):
+        seen = {}
+
+        def cb(question, choices, multi_select=False, questions=None):
+            seen["questions"] = questions
+            return {"answers": {"q0": "Rebase"}}
+
+        result = json.loads(clarify_tool("", questions=[{
+            "question": "Pick",
+            "choices": [{"label": "Rebase", "description": "Linear history"}, "Merge"],
+        }], callback=cb))
+        assert seen["questions"][0]["choices"][0] == {
+            "label": "Rebase (Recommended)", "description": "Linear history"}
+        assert result["responses"][0]["user_response"] == "Rebase"
 
 
 class TestClarifySchema:

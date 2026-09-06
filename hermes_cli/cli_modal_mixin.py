@@ -582,9 +582,17 @@ class CLIModalMixin:
         """
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
         from tools.clarify_gateway import resolve_clarify_timeout
+        from tools.clarify_tool import choice_label
 
         if questions:
-            return self._clarify_callback_batch(questions)
+            labeled = []
+            for e in questions:
+                row = dict(e)
+                if row.get("choices"):
+                    # Phase 1: prompt_toolkit modal shows labels only.
+                    row["choices"] = [choice_label(c) for c in row["choices"]]
+                labeled.append(row)
+            return self._clarify_callback_batch(labeled)
 
         # Canonical clarify timeout, shared with the gateway/TUI path; `<= 0` = unlimited.
         timeout = resolve_clarify_timeout(CLI_CONFIG)
@@ -593,7 +601,7 @@ class CLIModalMixin:
         effective_multi = multi_select and not is_open_ended
         self._clarify_state = {
             "question": question,
-            "choices": choices if not is_open_ended else [],
+            "choices": [choice_label(c) for c in choices] if not is_open_ended else [],
             "selected": 0,
             "multi_select": effective_multi,
             "selected_indices": set() if effective_multi else None,

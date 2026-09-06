@@ -112,15 +112,17 @@ export interface ConfirmReq {
   title: string
 }
 
+export type ClarifyChoice = string | { description?: string; label: string }
+
 export interface ClarifyBatchQuestion {
-  choices: string[] | null
+  choices: ClarifyChoice[] | null
   multiSelect?: boolean
   qid: string
   question: string
 }
 
 export interface ClarifyReq {
-  choices: string[] | null
+  choices: ClarifyChoice[] | null
   question: string
   requestId: string
   /** Batch (multi-question) clarify: present instead of question/choices. */

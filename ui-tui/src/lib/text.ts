@@ -358,9 +358,15 @@ export const estimateRows = (text: string, w: number, compact = false) => {
  * 1-based numbered list) so the persisted record reads identically to what was
  * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
  */
-export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
+export const formatAbandonedClarify = (
+  question: string,
+  choices: (string | { description?: string; label: string })[] | null,
+  reason: string
+) => {
   const head = `ask ${question.trim()}`
-  const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
+  // Phase 1: structured {label, description} choices reduce to labels.
+  const labels = (choices ?? []).map(c => (typeof c === 'string' ? c : c.label))
+  const opts = labels.map((c, i) => `  ${i + 1}. ${c}`)
 
   return [head, ...opts, `  (${reason} — no selection)`].join('\n')
 }

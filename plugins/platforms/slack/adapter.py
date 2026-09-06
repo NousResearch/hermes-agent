@@ -5046,6 +5046,7 @@ class SlackAdapter(BasePlatformAdapter):
                 session_key=session_key, metadata=metadata)
 
         def _build() -> Tuple[str, list]:
+            from tools.clarify_tool import choice_label
             # Escape mrkdwn control chars so the question renders literally;
             # budget against the 3000-char section cap.
             q = (question or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -5057,7 +5058,7 @@ class SlackAdapter(BasePlatformAdapter):
             # chunk anyway so larger lists degrade gracefully instead of 400ing.
             elements = []
             for idx, choice in enumerate(choices):
-                label = str(choice).strip() or f"Option {idx + 1}"
+                label = choice_label(choice) or f"Option {idx + 1}"
                 elements.append(
                     self._button(
                         label[:75], f"hermes_clarify_choice_{idx}",

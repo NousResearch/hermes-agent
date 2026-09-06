@@ -4,10 +4,18 @@ import { useEffect, useState } from 'react'
 import { isMac } from '../lib/platform.js'
 import { clarifyBatchRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
+import type { ApprovalReq, ClarifyChoice, ClarifyReq, ConfirmReq } from '../types.js'
 
 import { chipRowProps } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
+
+/**
+ * Label text of one clarify choice (Phase 1: structured {label, description}
+ * choices render label-only; descriptions land in Phase 2).
+ */
+export function clarifyChoiceLabel(choice: ClarifyChoice): string {
+  return typeof choice === 'string' ? choice : choice.label
+}
 
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 // tirith warning present → backend downgrades "always" to session scope, so drop it.
@@ -147,8 +155,9 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   const [sel, setSel] = useState(0)
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)
-  const choices = req.choices ?? []
-  const batch = req.questions ?? []
+  // Phase 1: structured choices reduce to labels (descriptions in Phase 2).
+  const choices = (req.choices ?? []).map(clarifyChoiceLabel)
+  const batch = (req.questions ?? []).map(q => ({ ...q, choices: (q.choices ?? []).map(clarifyChoiceLabel) }))
   const isBatch = batch.length > 0
 
   // ── Batch (A-compact) state: status list + one expanded active question.

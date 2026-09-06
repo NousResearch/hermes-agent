@@ -165,6 +165,20 @@ describe('normalizeChoices', () => {
     expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
     expect(normalizeChoices([])).toEqual([])
   })
+
+  it('reduces structured {label, description} choices to labels (Phase 1)', () => {
+    expect(
+      normalizeChoices([
+        { description: 'Linear history', label: 'Rebase' },
+        { description: 'Keep context', label: 'Merge' },
+        'Plain',
+      ])
+    ).toEqual(['Rebase', 'Merge', 'Plain'])
+  })
+
+  it('drops structured choices with a blank label', () => {
+    expect(normalizeChoices([{ description: 'no label', label: '   ' }, 'ok'])).toEqual(['ok'])
+  })
 })
 
 describe('normalizeQuestions', () => {

@@ -1494,44 +1494,59 @@ const localBackendSpawnCoordinator = new LocalBackendSpawnCoordinator(poolLimits
 // the queued ticket fails before the renderer does and the user sees why.
 const POOL_SLOT_WAIT_MS = 30_000
 
-function spawnPriorityFrom(value): LocalBackendSpawnPriority {
+function spawnPriorityFrom(value: unknown): LocalBackendSpawnPriority {
   return value === 'foreground' ? 'foreground' : 'background'
 }
 
-const pendingForegroundSpawns = new Set()
+// Foreground intent for a dial whose pool entry does not exist yet: a user
+// click that joins an in-flight backendDialClaims claim never re-enters
+// ensureBackend(), and the claim owner may still be awaiting poolStopper /
+// registry resolution before backendPool.set(). spawnPoolBackend() consumes the
+// mark on every path (local or remote) so it cannot outlive the dial.
+const pendingForegroundSpawns = new Set<string>()
 
-function markForegroundSpawn(poolKey): void {
-  if (poolKey) {
-    pendingForegroundSpawns.add(String(poolKey))
+function takeForegroundSpawn(...poolKeys: string[]): boolean {
+  let marked = false
+
+  for (const poolKey of poolKeys) {
+    marked = pendingForegroundSpawns.delete(poolKey) || marked
+  }
+
+  return marked
+}
+
+// Upgrade a pooled entry (running, spawning, or queued for a slot) to
+// foreground so a queued slot wait can take the reserved foreground slot.
+function promotePoolEntry(entry: any): void {
+  entry.spawnPriority = 'foreground'
+  entry.localBackendSpawnRequest?.promote?.('foreground')
+}
+
+// Land a spawn failure in desktop.log. A background slot-wait timeout is
+// routine under a saturated pool (the next hydration pass retries), so it is
+// logged as such instead of as a backend-start failure.
+function logPoolSpawnFailure(label: string, error: unknown): void {
+  if (isBackgroundSlotWaitTimeout(error)) {
+    rememberLog(`Profile backend ${label} slot wait timed out (background); will retry on the next hydration`)
+  } else {
+    rememberLog(
+      `Hermes backend for profile ${label} failed to start: ${error instanceof Error ? error.message : String(error)}`
+    )
   }
 }
 
-function takeForegroundSpawn(poolKey): boolean {
-  const key = String(poolKey || '')
-
-  if (!key || !pendingForegroundSpawns.has(key)) {
-    return false
-  }
-
-  pendingForegroundSpawns.delete(key)
-
-  return true
-}
-
-function promoteInFlightLocalSpawn(poolKey, spawnPriority: LocalBackendSpawnPriority): void {
+function promoteInFlightLocalSpawn(poolKey: string, spawnPriority: LocalBackendSpawnPriority): void {
   if (spawnPriority !== 'foreground') {
     return
   }
 
-  markForegroundSpawn(poolKey)
   const existing = backendPool.get(poolKey)
 
-  if (!existing) {
-    return
+  if (existing) {
+    promotePoolEntry(existing)
+  } else {
+    pendingForegroundSpawns.add(poolKey)
   }
-
-  existing.spawnPriority = 'foreground'
-  existing.localBackendSpawnRequest?.promote?.('foreground')
 }
 
 function poolMaxBackends() {
@@ -11460,8 +11475,7 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
     existing.lastActiveAt = Date.now()
 
     if (spawnPriority === 'foreground') {
-      existing.spawnPriority = 'foreground'
-      existing.localBackendSpawnRequest?.promote?.('foreground')
+      promotePoolEntry(existing)
     }
 
     const connection = await existing.connectionPromise
@@ -11485,19 +11499,11 @@ async function ensureBackend(profile, opts: { spawnPriority?: LocalBackendSpawnP
     spawnPriority
   }
 
-  entry.connectionPromise = spawnPoolBackend(key, entry, { spawnPriority }).catch(async error => {
+  entry.connectionPromise = spawnPoolBackend(key, entry).catch(async error => {
     // Land the failure in desktop.log: without this a spawn that dies before
     // its child exists (guard rejection, runtime resolution) leaves no trace
     // beyond renderer-side rejections users never see in a bundle.
-    if (isBackgroundSlotWaitTimeout(error)) {
-      rememberLog(
-        `Profile backend "${key}" slot wait timed out (background); will retry on the next hydration`
-      )
-    } else {
-      rememberLog(
-        `Hermes backend for profile "${key}" failed to start: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
+    logPoolSpawnFailure(`"${key}"`, error)
 
     await teardownFailedLocalBackend(key, entry)
     throw error
@@ -11647,8 +11653,7 @@ async function ensureRegistryBackend(
       existingLocal.lastActiveAt = Date.now()
 
       if (spawnPriority === 'foreground') {
-        existingLocal.spawnPriority = 'foreground'
-        existingLocal.localBackendSpawnRequest?.promote?.('foreground')
+        promotePoolEntry(existingLocal)
       }
 
       return existingLocal.connectionPromise
@@ -11671,20 +11676,11 @@ async function ensureRegistryBackend(
 
     localEntry.connectionPromise = spawnPoolBackend(profileKey, localEntry, {
       forceLocal: true,
-      poolKey: localRoute.poolKey,
-      spawnPriority
+      poolKey: localRoute.poolKey
     }).catch(async error => {
       // Same trace rule as the v1 pool path: a forced-local child whose spawn
       // rejects before the child exists must still land in desktop.log.
-      if (isBackgroundSlotWaitTimeout(error)) {
-        rememberLog(
-          `Profile backend "${profileKey}" (forced-local) slot wait timed out (background); will retry on the next hydration`
-        )
-      } else {
-        rememberLog(
-          `Hermes backend for profile "${profileKey}" (forced-local) failed to start: ${error instanceof Error ? error.message : String(error)}`
-        )
-      }
+      logPoolSpawnFailure(`"${profileKey}" (forced-local)`, error)
 
       await teardownFailedLocalBackend(localRoute.poolKey, localEntry)
       throw error
@@ -12487,12 +12483,14 @@ function teardownFailedLocalBackend(poolKey: string, entry: any): Promise<void> 
 // entry means THIS machine regardless of the v1 routing table); `opts.poolKey`
 // is the backendPool key when it differs from the profile name (composite
 // registry scopes) so the exit/error cleanup evicts the right entry.
-async function spawnPoolBackend(
-  profile,
-  entry,
-  opts: { forceLocal?: boolean; poolKey?: string; spawnPriority?: LocalBackendSpawnPriority } = {}
-) {
+async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; poolKey?: string } = {}) {
   const poolKey = opts.poolKey || profile
+
+  // The caller stamped entry.spawnPriority from its own request; a foreground
+  // dial that joined the claim before this entry existed left a mark instead.
+  if (takeForegroundSpawn(poolKey, profile)) {
+    entry.spawnPriority = 'foreground'
+  }
 
   await reapOrphanedBackendsOnce()
   profileDeletionGate.assertCanStart(profile)
@@ -12526,21 +12524,17 @@ async function spawnPoolBackend(
   // pool-idle window (10 min) would hold the pool key hostage and every
   // later click on the profile would join that stale wait. Failing here
   // surfaces the "all N slots busy" reason instead of a generic boot timeout.
-  const markedKey = takeForegroundSpawn(poolKey)
-  const markedProfile = takeForegroundSpawn(profile)
-  const spawnPriority =
-    entry.spawnPriority === 'foreground' ||
-    opts.spawnPriority === 'foreground' ||
-    markedKey ||
-    markedProfile
-      ? 'foreground'
-      : 'background'
-  entry.spawnPriority = spawnPriority
-  const spawnRequest = localBackendSpawnCoordinator.request(poolKey, { timeoutMs: POOL_SLOT_WAIT_MS, priority: spawnPriority })
+  const spawnPriority: LocalBackendSpawnPriority = spawnPriorityFrom(entry.spawnPriority)
+
+  const spawnRequest = localBackendSpawnCoordinator.request(poolKey, {
+    timeoutMs: POOL_SLOT_WAIT_MS,
+    priority: spawnPriority
+  })
+
   entry.localBackendSlotKey = poolKey
   entry.localBackendSpawnRequest = spawnRequest
 
-  if (localBackendSpawnCoordinator.queuedCount > 0) {
+  if (spawnRequest.queued) {
     rememberLog(
       `Profile backend "${profile}" waiting for a free local slot (${localBackendSpawnCoordinator.activeCount}/${poolMaxBackends()} busy, ${localBackendSpawnCoordinator.queuedCount} queued)`
     )
@@ -14806,11 +14800,15 @@ ipcMain.handle('hermes:connection', async (_event, profile, extra) => {
   // both land here. The claim key mirrors ensureBackend()'s own profile
   // normalization so every spelling of the primary coalesces onto one dial.
   const profileKey = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
-  const spawnPriority = spawnPriorityFrom(extra && typeof extra === 'object' ? extra.priority : undefined)
+  const spawnPriority = spawnPriorityFrom(extra?.priority)
   // A user click may join an in-flight hydration claim; promote the queued
   // slot wait before coalescing so it can take the reserved foreground slot.
   promoteInFlightLocalSpawn(profileKey, spawnPriority)
-  const connection = await backendDialClaims.run(backendScopeKey(null, profileKey), () => ensureBackend(profile, { spawnPriority }))
+
+  const connection = await backendDialClaims.run(backendScopeKey(null, profileKey), () =>
+    ensureBackend(profile, { spawnPriority })
+  )
+
   const connectionId = resolvedConnectionId(readDesktopConnectionsRegistry(), connection)
 
   return connectionId ? { ...connection, connectionId } : connection
@@ -14821,8 +14819,7 @@ ipcMain.handle('hermes:connection', async (_event, profile, extra) => {
 // forces a genuinely-local child when the v1 global mode is remote (the
 // registry 'local' entry always means this machine).
 ipcMain.handle('hermes:connection:for', async (_event, payload) => {
-  const { connectionId, profile, priority } =
-    payload && typeof payload === 'object' ? (payload as any) : ({} as any)
+  const { connectionId, profile, priority } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
   const registry = readDesktopConnectionsRegistry()
   const id = String(connectionId || '').trim() || registry.primary
   const spawnPriority = spawnPriorityFrom(priority)
@@ -14830,7 +14827,10 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   // (connectionId, profile) scope (#90812): concurrent registry dials for one
   // scope share the first spawn instead of bootstrapping duplicate remotes.
   promoteInFlightLocalSpawn(backendScopeKey(id, profile), spawnPriority)
-  const connection = await backendDialClaims.run(backendScopeKey(id, profile), () => ensureRegistryBackend(id, profile, '', { spawnPriority }))
+
+  const connection = await backendDialClaims.run(backendScopeKey(id, profile), () =>
+    ensureRegistryBackend(id, profile, '', { spawnPriority })
+  )
 
   return { ...connection, connectionId: id, registryScoped: true }
 })

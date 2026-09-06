@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url'
 
 import { test } from 'vitest'
 
-import { LocalBackendSlotWaitTimeoutError, LocalBackendSpawnCoordinator, releaseLocalBackendSlotAfterExit } from './pool-spawn-coordinator'
+import {
+  LocalBackendSlotWaitTimeoutError,
+  LocalBackendSpawnCoordinator,
+  releaseLocalBackendSlotAfterExit
+} from './pool-spawn-coordinator'
 
 const deferred = () => {
   let resolve!: () => void
@@ -306,7 +310,6 @@ test('setLimit rejects a non-positive or fractional cap', () => {
   assert.equal(coordinator.limit, 2)
 })
 
-
 test('cap 3: two background leases leave a reserved slot for foreground', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(3)
   const bg1 = await coordinator.request('bg-1', { priority: 'background' }).acquired
@@ -315,6 +318,7 @@ test('cap 3: two background leases leave a reserved slot for foreground', async 
   assert.equal(coordinator.queuedCount, 0)
 
   let fgGranted = false
+
   const fgPromise = coordinator.request('fg', { priority: 'foreground' }).acquired.then(release => {
     fgGranted = true
 
@@ -337,20 +341,25 @@ test('untagged acquire still fills the cap (foreground default)', async () => {
   const releases = await Promise.all(['a', 'b', 'c'].map(key => coordinator.acquire(key)))
   assert.equal(coordinator.activeCount, 3)
   assert.equal(coordinator.queuedCount, 0)
+
   for (const release of releases) {
     release()
   }
+
   assert.equal(coordinator.activeCount, 0)
 })
 
 test('foreground is granted the reserved slot ahead of a background hydration queue', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(3)
+
   const bgRunning = await Promise.all(
     ['bg-run-1', 'bg-run-2'].map(key => coordinator.request(key, { priority: 'background' }).acquired)
   )
+
   const queued = Array.from({ length: 20 }, (_, index) =>
     coordinator.request(`bg-wait-${index}`, { priority: 'background', timeoutMs: 5_000 })
   )
+
   await flush()
   assert.equal(coordinator.activeCount, 2)
   assert.equal(coordinator.queuedCount, 20)
@@ -365,11 +374,19 @@ test('foreground is granted the reserved slot ahead of a background hydration qu
   }
 
   releaseFg()
+
   for (const release of bgRunning) {
     release()
   }
 
-  await Promise.all(queued.map(request => request.acquired.then(() => undefined, () => undefined)))
+  await Promise.all(
+    queued.map(request =>
+      request.acquired.then(
+        () => undefined,
+        () => undefined
+      )
+    )
+  )
   assert.equal(coordinator.activeCount, 0)
   assert.equal(coordinator.queuedCount, 0)
 })
@@ -384,11 +401,13 @@ test('drain prefers a foreground waiter over an earlier background waiter', asyn
 
   let backgroundEntered = false
   let foregroundEntered = false
+
   const backgroundGrant = background.acquired.then(release => {
     backgroundEntered = true
 
     return release
   })
+
   const foregroundGrant = foreground.acquired.then(release => {
     foregroundEntered = true
 
@@ -439,6 +458,29 @@ test('background slot-wait timeout is distinguishable; foreground keeps a user-f
   assert.equal(coordinator.activeCount, 0)
 })
 
+test('request() reports whether the caller actually waited behind the queue', async () => {
+  const coordinator = new LocalBackendSpawnCoordinator(3)
+  const bg1 = coordinator.request('bg-1', { priority: 'background' })
+  const bg2 = coordinator.request('bg-2', { priority: 'background' })
+  const bgWait = coordinator.request('bg-3', { priority: 'background' })
+  assert.equal(bg1.queued, false)
+  assert.equal(bg2.queued, false)
+  assert.equal(bgWait.queued, true)
+
+  // The reserved slot is free: a foreground request is granted immediately
+  // even though a background waiter is queued.
+  const fg = coordinator.request('fg', { priority: 'foreground' })
+  assert.equal(fg.queued, false)
+  assert.equal(coordinator.activeCount, 3)
+
+  bgWait.cancel()
+  await bgWait.acquired.catch(() => undefined)
+  ;(await fg.acquired)()
+  ;(await bg1.acquired)()
+  ;(await bg2.acquired)()
+  assert.equal(coordinator.activeCount, 0)
+})
+
 test('promoting a queued background waiter lets it take the reserved foreground slot', async () => {
   const coordinator = new LocalBackendSpawnCoordinator(3)
   const bg1 = await coordinator.request('bg-1', { priority: 'background' }).acquired
@@ -485,7 +527,7 @@ test('promoting a queued background waiter lets it take the reserved foreground 
     assert.ok(slotWait < bootBudget, `slot wait ${slotWait}ms must be below the boot budget ${bootBudget}ms`)
     assert.match(
       mainSource,
-      /localBackendSpawnCoordinator\.request\(poolKey, \{ timeoutMs: POOL_SLOT_WAIT_MS, priority: spawnPriority \}\)/
+      /localBackendSpawnCoordinator\.request\(poolKey, \{\s*timeoutMs: POOL_SLOT_WAIT_MS,\s*priority: spawnPriority\s*\}\)/
     )
     assert.doesNotMatch(mainSource, /request\(poolKey, \{ timeoutMs: POOL_IDLE_MS \}\)/)
   })

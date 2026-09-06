@@ -6,6 +6,8 @@ export type LocalBackendSpawnRequest = {
   acquired: Promise<ReleaseLocalBackendSlot>
   cancel: () => boolean
   promote: (priority: LocalBackendSpawnPriority) => boolean
+  /** False when the slot was granted without waiting behind the queue. */
+  queued: boolean
 }
 
 type Waiter = {
@@ -37,21 +39,7 @@ export class LocalBackendSlotWaitTimeoutError extends Error {
 }
 
 export function isBackgroundSlotWaitTimeout(error: unknown): boolean {
-  if (!error || typeof error !== 'object') {
-    return false
-  }
-
-  const err = error as Error & { priority?: string; silent?: boolean }
-
-  if (err.name === 'LocalBackendSlotWaitTimeoutError' && (err.silent === true || err.priority === 'background')) {
-    return true
-  }
-
-  return (
-    typeof err.message === 'string' &&
-    err.message.includes('timed out while waiting for a free slot') &&
-    (err.silent === true || err.priority === 'background' || err.message.includes('(background)'))
-  )
+  return error instanceof LocalBackendSlotWaitTimeoutError && error.silent
 }
 
 export async function releaseLocalBackendSlotAfterExit(
@@ -127,7 +115,8 @@ export class LocalBackendSpawnCoordinator {
       return {
         acquired: Promise.resolve(this.#grant(priority)),
         cancel: () => false,
-        promote: () => false
+        promote: () => false,
+        queued: false
       }
     }
 
@@ -151,7 +140,8 @@ export class LocalBackendSpawnCoordinator {
       acquired,
       cancel: () =>
         this.#rejectWaiter(waiter, new Error(`Local backend start for "${key}" was cancelled while queued.`)),
-      promote: (nextPriority: LocalBackendSpawnPriority) => this.#promoteWaiter(waiter, nextPriority)
+      promote: (nextPriority: LocalBackendSpawnPriority) => this.#promoteWaiter(waiter, nextPriority),
+      queued: this.#queue.includes(waiter)
     }
   }
 

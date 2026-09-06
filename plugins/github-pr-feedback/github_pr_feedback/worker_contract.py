@@ -69,7 +69,10 @@ def _resolved_declared_hooks(
     )
     for candidate, key in candidates:
         if candidate.exists():
-            return _declared_hooks(candidate), key
+            # Override manifests are untrusted declarations. Do not claim the
+            # worker is protected unless the bundled artifact is the one in use;
+            # importing override code here would execute it during doctor checks.
+            return None, key
     return _declared_hooks(Path(__file__).resolve().parents[1]), _PLUGIN_NAME
 
 

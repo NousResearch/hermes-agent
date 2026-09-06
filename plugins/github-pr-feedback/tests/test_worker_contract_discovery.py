@@ -127,7 +127,7 @@ def test_worker_readiness_rejects_entrypoint_override_without_completion_hooks(t
     assert worker_contract_enabled(tmp_path, "worker") is False
 
 
-def test_worker_readiness_accepts_manifest_declared_hooks_without_importing_worker(tmp_path):
+def test_worker_readiness_rejects_manifest_declared_hooks_without_importing_worker(tmp_path):
     from github_pr_feedback.worker_contract import worker_contract_enabled
 
     worker = tmp_path / "profiles/worker"
@@ -140,11 +140,11 @@ def test_worker_readiness_accepts_manifest_declared_hooks_without_importing_work
     }))
     (plugin / "__init__.py").write_text("raise AssertionError('worker code imported')\n")
 
-    assert worker_contract_enabled(tmp_path, "worker") is True
+    assert worker_contract_enabled(tmp_path, "worker") is False
 
 
 @pytest.mark.parametrize("enabled", [["github-pr-feedback"], ["category/github-pr-feedback"]])
-def test_worker_readiness_accepts_bare_and_canonical_manifest_keys(tmp_path, enabled):
+def test_worker_readiness_rejects_untrusted_bare_and_canonical_manifest_keys(tmp_path, enabled):
     from github_pr_feedback.worker_contract import worker_contract_enabled
 
     worker = tmp_path / "profiles/worker"
@@ -156,7 +156,7 @@ def test_worker_readiness_accepts_bare_and_canonical_manifest_keys(tmp_path, ena
         "name": "github-pr-feedback", "provides_hooks": ["pre_tool_call", "pre_kanban_complete"]
     }))
 
-    assert worker_contract_enabled(tmp_path, "worker") is True
+    assert worker_contract_enabled(tmp_path, "worker") is False
 
 
 @pytest.mark.parametrize("managed,raw,expected", [

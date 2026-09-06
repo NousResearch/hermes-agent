@@ -7,10 +7,12 @@ Covers:
   web.keyless_fallback: false
 - _get_backend() keyless tier: strictly after every keyed candidate
 - check_web_api_key() lights up on a zero-credential install
+- only a _KEYLESS_RING member can be pinned; any other entering name
+  (a configured non-ring backend, a plugin provider) round-robins
 """
 
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -552,3 +554,63 @@ class TestKeylessFailover:
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == partial
         assert not called
+
+
+# ---------------------------------------------------------------------------
+# Non-ring entries must never be pinned (only a _KEYLESS_RING member can be)
+# ---------------------------------------------------------------------------
+
+
+class TestNonRingEntryNeverPinned:
+    """A name entering the ring via search_with_failover/extract_with_failover that
+    is not itself in _KEYLESS_RING must always round-robin, never pin to exa. This
+    is the shape a configured non-ring backend (searxng, brave-free, a plugin
+    provider) takes when core's rescue path (tools/web_tools_rescue.py) hands its
+    own name back into the ring."""
+
+    def _ring_ok(self, vendor):
+        return {"success": True, "data": {"web": [{"url": f"https://{vendor}.example"}]}}
+
+    @pytest.mark.parametrize("backend", ["searxng", "brave-free", "perplexity"])
+    def test_configured_non_ring_backend_round_robins(self, monkeypatch, backend):
+        # Config names *backend* -- the shape that pinned it to exa on main. The spy
+        # below proves the fix never consults _vendor_pinned for a non-ring name.
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": backend})
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda n: "auto")
+        monkeypatch.setattr(keyless_mcp, "_ring_cursor", 0)
+        pinned_spy = Mock(side_effect=keyless_mcp._vendor_pinned)
+        monkeypatch.setattr(keyless_mcp, "_vendor_pinned", pinned_spy)
+
+        starts = [keyless_mcp._ring_order(backend)[0] for _ in range(len(keyless_mcp._KEYLESS_RING))]
+
+        assert starts == ["exa", "parallel", "firecrawl", "keenable"]  # full cycle from cursor 0
+        assert keyless_mcp._ring_cursor == 0  # cursor wraps back after a full cycle
+        # _ring_order short-circuits on `name in _KEYLESS_RING` — a non-ring name
+        # never reaches (and never pays for) _vendor_pinned at all.
+        pinned_spy.assert_not_called()
+
+    def test_ring_vendor_pin_is_unchanged(self, monkeypatch):
+        """A ring vendor pinned by config still starts at itself, cursor untouched."""
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "keenable"})
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda n: "auto")
+        monkeypatch.setattr(keyless_mcp, "_ring_cursor", 0)
+
+        assert keyless_mcp._ring_order("keenable")[0] == "keenable"
+        assert keyless_mcp._ring_order("keenable")[0] == "keenable"
+        assert keyless_mcp._ring_cursor == 0  # pinned walk never touches the cursor
+
+    def test_search_with_failover_non_ring_served_by_rotates(self, monkeypatch):
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        monkeypatch.setattr(keyless_mcp, "provider_tier", lambda n: "auto")
+        monkeypatch.setattr(keyless_mcp, "_ring_cursor", 1)
+        for vendor in keyless_mcp._KEYLESS_RING:
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_SEARCHERS, vendor,
+                lambda q, l, v=vendor: self._ring_ok(v),
+            )
+
+        first = keyless_mcp.search_with_failover("searxng", "q")
+        second = keyless_mcp.search_with_failover("searxng", "q")
+
+        assert first["data"]["served_by"] == "parallel"
+        assert second["data"]["served_by"] == "firecrawl"

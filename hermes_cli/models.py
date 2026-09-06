@@ -47,6 +47,7 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
     _xai_finalize_catalog)
+from hermes_cli.models_bedrock import _bedrock_catalog
 from hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
@@ -1458,16 +1459,6 @@ def _custom_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     return fetch_api_models(api_key, base_url, api_mode=api_mode) or None
 
 
-def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
-    # Live discovery keyed by the resolved AWS region so EU/AP users see eu.*/ap.* ids.
-    try:
-        from agent.bedrock_adapter import bedrock_model_ids_or_none
-
-        return bedrock_model_ids_or_none()
-    except Exception:
-        return None
-
-
 def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     """Live ``GET <base>/models`` of the configured Azure Foundry resource (#27989).
 
@@ -1491,6 +1482,12 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
         return ids if ok and ids else None
     except Exception:
         return None
+
+
+def _opencode_free_catalog(normalized: str, force_refresh: bool) -> list[str]:
+    # Live keyless catalog filtered to the anonymous-servable `*-free` tier ourselves (models.dev's
+    # cost.input==0 lags reality); the curated floor applies only when the live fetch fails/is empty.
+    return _fetch_opencode_free_models(force_refresh=force_refresh) or list(_PROVIDER_MODELS.get(normalized, []))
 
 
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None

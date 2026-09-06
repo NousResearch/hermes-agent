@@ -1874,6 +1874,11 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Seconds to wait for an external provider's synchronous prefetch
+        # before skipping this turn. Default matches the historical 8s
+        # hard cap. Slow backends (cold recall, remote auth) should raise
+        # this rather than appearing "parked" for the session.
+        "external_prefetch_timeout": 8.0,
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

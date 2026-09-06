@@ -8,7 +8,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+from agent.memory_manager import (
+    MemoryManager,
+    _EXTERNAL_PREFETCH_TIMEOUT_S,
+    inject_memory_provider_tools,
+    memory_manager_from_config,
+    resolve_external_prefetch_timeout,
+)
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -310,6 +316,60 @@ class TestMemoryManager:
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
 
+    def test_timed_out_prefetch_is_delivered_next_turn_for_same_query(self):
+        """A slow-but-finite backend must not stay silent after the cap.
+
+        The first turn times out; when the in-flight call finishes, the
+        same query on the next turn receives the late result without
+        parking the provider for the rest of the session.
+        """
+        mgr = MemoryManager(external_prefetch_timeout=0.01)
+        builtin = FakeMemoryProvider("builtin")
+        builtin._prefetch_result = "builtin memory"
+        external = BlockingPrefetchProvider("hindsight")
+        external._prefetch_result = "late hindsight memory"
+        mgr.add_provider(builtin)
+        mgr.add_provider(external)
+
+        first = mgr.prefetch_all("same query")
+        assert first == "builtin memory"
+        assert external.started.wait(timeout=1.0)
+        external.release.set()
+
+        deadline = time.monotonic() + 1.0
+        while (
+            external.name in mgr._external_prefetch_threads
+            and mgr._external_prefetch_threads[external.name].is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        second = mgr.prefetch_all("same query")
+        assert second == "builtin memory\n\nlate hindsight memory"
+        assert external.prefetch_queries == ["same query"]
+
+    def test_resolve_external_prefetch_timeout_falls_back(self):
+        assert resolve_external_prefetch_timeout(None) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": 30}) == 30.0
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": "15"}) == 15.0
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": 0}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": -1}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+        assert resolve_external_prefetch_timeout({"external_prefetch_timeout": "nope"}) == _EXTERNAL_PREFETCH_TIMEOUT_S
+
+    def test_memory_manager_from_config_uses_resolved_timeout(self):
+        mgr = memory_manager_from_config({"external_prefetch_timeout": 30})
+        assert mgr._external_prefetch_timeout == 30.0
+        default_mgr = memory_manager_from_config({})
+        assert default_mgr._external_prefetch_timeout == _EXTERNAL_PREFETCH_TIMEOUT_S
+
+    def test_default_config_prefetch_timeout_matches_constant(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+        assert (
+            DEFAULT_CONFIG["memory"]["external_prefetch_timeout"]
+            == _EXTERNAL_PREFETCH_TIMEOUT_S
+        )
 
 
 class TestPluginMemoryDiscovery:

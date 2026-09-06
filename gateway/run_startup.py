@@ -1439,8 +1439,22 @@ class GatewayStartupMixin:
             "(home=%s, thread=%s, session_key=%s)",
             cli_session_id, dest.platform_name, dest.home.chat_id, dest.effective_thread_id, session_key,
         )
-        # Inline _handle_message keeps success/failure observable (handle_message would detach it).
-        response_text = await self._handle_message(synthetic_event)
+        typing_metadata = self._thread_metadata_for_source(dest.source)
+        # Relay typing needs an explicit logical-platform lane; do not risk setting a
+        # Slack status that its cache-gated stop path cannot clear.
+        typing_adapter = (None if getattr(dest.transport, "is_relay", False) is True
+                          else getattr(dest.transport, "adapter", None))
+        typing_task = None
+        if isinstance(typing_adapter, BasePlatformAdapter):
+            typing_task = typing_adapter._start_typing_refresh(
+                synthetic_event, asyncio.Event(), typing_metadata)
+        try:
+            # Inline _handle_message keeps success/failure observable (handle_message would detach it).
+            response_text = await self._handle_message(synthetic_event)
+        finally:
+            if isinstance(typing_adapter, BasePlatformAdapter):
+                await typing_adapter._stop_typing_refresh(
+                    dest.source.chat_id, typing_task, metadata=typing_metadata)
         if not response_text:
             # Streaming may have delivered inline; the agent ran without raising — success.
             return

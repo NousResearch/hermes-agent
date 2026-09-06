@@ -184,6 +184,51 @@ class FakeHistoryChannel(FakeTextChannel):
         return _iter()
 
 
+def test_unowned_participated_thread_keeps_mentionless_shortcut(adapter):
+    """No recorded owner: participation still skips @mention (upstream default)."""
+    thread = FakeThread(channel_id=555)
+    adapter._threads.mark("555")
+    message = make_message(channel=thread, content="follow up")
+    assert adapter._in_bot_thread(message) is True
+
+
+def test_other_bots_owner_blocks_mentionless_shortcut(adapter):
+    """Once another bot created the thread, participation is not enough."""
+    thread = FakeThread(channel_id=555)
+    adapter._threads.mark("555")
+    assert adapter._thread_owners.mark_owner("555", "111") is True
+    message = make_message(channel=thread, content="follow up")
+    assert adapter._in_bot_thread(message) is False
+
+
+def test_creating_bot_keeps_mentionless_shortcut(adapter):
+    thread = FakeThread(channel_id=555)
+    adapter._claim_created_thread("555")
+    message = make_message(channel=thread, content="follow up")
+    assert adapter._in_bot_thread(message) is True
+    assert adapter._thread_owners.owner_for("555") == "999"
+
+
+def test_owner_without_participation_is_not_mentionless(adapter):
+    adapter._thread_owners.mark_owner("555", "999")
+    message = make_message(channel=FakeThread(channel_id=555), content="follow up")
+    assert adapter._in_bot_thread(message) is False
+
+
+def test_thread_require_mention_overrides_owner_shortcut(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    adapter._claim_created_thread("555")
+    message = make_message(channel=FakeThread(channel_id=555), content="follow up")
+    assert adapter._in_bot_thread(message) is False
+
+
+def test_text_channel_is_never_a_bot_thread(adapter):
+    adapter._threads.mark("555")
+    adapter._claim_created_thread("555")
+    message = make_message(channel=FakeTextChannel(channel_id=555), content="hello")
+    assert adapter._in_bot_thread(message) is False
+
+
 @pytest.mark.asyncio
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")

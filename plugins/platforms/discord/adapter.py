@@ -257,7 +257,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
+    MessageDeduplicator, ThreadOwnerTracker, ThreadParticipationTracker,
+    convert_table_to_bullets,
 )
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
@@ -1042,6 +1043,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
+        # First Discord bot user id to *create* a thread. Unowned threads keep
+        # the participation shortcut; a recorded owner restricts it to that bot.
+        self._thread_owners = ThreadOwnerTracker("discord")
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -2171,14 +2175,41 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._finish_recovery_scan(scan_id, "failed", counts, error=str(exc))
             logger.warning("[%s] Missed-message backfill failed: %s", self.name, exc, exc_info=True)
 
+    def _discord_thread_owner_key(self) -> str | None:
+        user = getattr(self._client, "user", None) if self._client else None
+        user_id = getattr(user, "id", None)
+        return str(user_id) if user_id is not None else None
+
+    def _claim_created_thread(self, thread_id: str | None) -> None:
+        """Mark participation and, if possible, first-owner for a thread we created."""
+        if not thread_id:
+            return
+        thread_id = str(thread_id)
+        self._threads.mark(thread_id)
+        owner_key = self._discord_thread_owner_key()
+        if owner_key:
+            self._thread_owners.mark_owner(thread_id, owner_key)
+
     def _in_bot_thread(self, message: Any) -> bool:
         """Thread the bot already joined skips the mention check — unless
-        thread_require_mention (multi-bot threads) gates threads like channels."""
-        return (
-            isinstance(message.channel, discord.Thread)
-            and str(message.channel.id) in self._threads
-            and not self._discord_thread_require_mention()
-        )
+        thread_require_mention (multi-bot threads) gates threads like channels.
+
+        If another bot already owns the thread, participation is not enough:
+        this bot still needs an @mention. Unowned threads keep the existing
+        participation shortcut.
+        """
+        if not isinstance(message.channel, discord.Thread):
+            return False
+        if self._discord_thread_require_mention():
+            return False
+        thread_id = str(message.channel.id)
+        if thread_id not in self._threads:
+            return False
+        owner = self._thread_owners.owner_for(thread_id)
+        if owner is None:
+            return True
+        mine = self._discord_thread_owner_key()
+        return mine is not None and owner == mine
 
     async def _dispatch_recovered_message(self, message: Any) -> bool:
         """Run one recovered message through the live Discord ingress gates."""
@@ -4773,9 +4804,9 @@ class DiscordAdapter(BasePlatformAdapter):
         link = f"<#{thread_id}>" if thread_id else f"**{thread_name}**"
         if deferred_response:
             await interaction.followup.send(f"Created thread {link}", ephemeral=True)
-        # Track thread participation so follow-ups don't require @mention
+        # We created this thread, so claim first-owner for mention-free follow-ups.
         if thread_id:
-            self._threads.mark(thread_id)
+            self._claim_created_thread(thread_id)
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
@@ -6007,7 +6038,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
-                    self._threads.mark(thread_id)
+                    self._claim_created_thread(thread_id)
                     # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
                     # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
                     self._dedup.is_duplicate(str(thread.id))

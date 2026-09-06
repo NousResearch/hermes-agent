@@ -4,8 +4,10 @@ compilation, and fence-aware markdown chunking."""
 
 import json
 import logging
+import os
 import re
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from utils import atomic_json_write
@@ -119,6 +121,114 @@ class ThreadParticipationTracker:
 
     def clear(self) -> None:
         self._threads.clear()
+
+
+def _thread_owner_state_home() -> Path:
+    """Directory for Discord thread-owner maps.
+
+    Ownership is a Discord bot user id, not a Hermes profile name. Two
+    profiles in the same guild must see the same map, so this lives next to
+    ``profiles/`` (``~/.hermes``), not inside ``profiles/<name>``.
+    """
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    if home.parent.name == "profiles":
+        return home.parent.parent
+    return home
+
+
+@contextmanager
+def _exclusive_state_lock(path: Path):
+    """Hold a cross-process advisory lock for one state transaction."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        if os.name == "nt":  # pragma: no cover - Windows only
+            import msvcrt
+
+            handle.seek(0, 2)
+            if handle.tell() == 0:
+                handle.write("0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":  # pragma: no cover - Windows only
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+class ThreadOwnerTracker:
+    """First-writer Discord bot user id per thread (``<platform>_thread_owners.json``).
+
+    An unowned thread keeps the participation mention-free shortcut. Once an
+    owner is recorded, only that bot keeps the shortcut — other participating
+    bots still see the message when @mentioned.
+    """
+
+    def __init__(self, platform_name: str, max_tracked: int = 500):
+        self._platform = platform_name
+        self._max_tracked = max_tracked
+        self._owners = self._load()
+
+    def _state_path(self) -> Path:
+        return _thread_owner_state_home() / f"{self._platform}_thread_owners.json"
+
+    def _lock_path(self) -> Path:
+        return self._state_path().with_suffix(".lock")
+
+    def _load(self) -> dict[str, str]:
+        path = self._state_path()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            str(thread_id): str(owner)
+            for thread_id, owner in data.items()
+            if isinstance(thread_id, (str, int))
+            and isinstance(owner, (str, int))
+            and str(thread_id).isdigit()
+            and str(owner).isdigit()
+        }
+
+    def owner_for(self, thread_id: str) -> str | None:
+        self._owners = self._load()
+        return self._owners.get(str(thread_id))
+
+    def mark_owner(self, thread_id: str, owner: str) -> bool:
+        """Record *owner* as first owner. True if this owner holds the slot."""
+        thread_id = str(thread_id)
+        owner = str(owner)
+        if not thread_id.isdigit() or not owner.isdigit():
+            return False
+        with _exclusive_state_lock(self._lock_path()):
+            self._owners = self._load()
+            existing = self._owners.get(thread_id)
+            if existing is not None:
+                return existing == owner
+            if len(self._owners) >= self._max_tracked:
+                return False
+            self._owners[thread_id] = owner
+            atomic_json_write(self._state_path(), self._owners, indent=None)
+            return True
 
 
 def redact_phone(phone: str) -> str:

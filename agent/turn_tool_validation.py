@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -50,6 +52,73 @@ def _append_tool_error_results(messages, tool_calls, content_for) -> None:
         })
 
 
+def _json_structure_incomplete(raw: str) -> bool:
+    """Whether a malformed JSON value ended inside a string or container.
+
+    This distinguishes an interrupted serialization from complete-but-invalid text without
+    guessing from its final character (``not json`` does not become "truncated").
+    """
+    stack: List[str] = []
+    in_string = escaped = False
+    pairs = {"}": "{", "]": "["}
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char in pairs:
+            if not stack or stack[-1] != pairs[char]:
+                return False
+            stack.pop()
+    return in_string or bool(stack)
+
+
+def _python_preflight_supported() -> bool:
+    """Compile locally only when it exactly matches execute_code's target interpreter."""
+    try:
+        from tools.code_execution_env import _resolve_child_python
+        from tools.code_execution_tool import _get_execution_mode
+        from tools.terminal_tool import _get_env_config
+
+        if _get_env_config().get("env_type") != "local":
+            return False
+        child_python = _resolve_child_python(_get_execution_mode())
+        return os.path.normcase(os.path.realpath(child_python)) == os.path.normcase(
+            os.path.realpath(sys.executable)
+        )
+    except Exception:
+        logger.debug("Could not resolve execute_code interpreter for source preflight", exc_info=True)
+        return False
+
+
+def _python_source_error(tool_name: str, args: Any) -> Optional[tuple[SyntaxError, str]]:
+    """Return a local compile error for direct or tool-search-bridged execute_code."""
+    if not isinstance(args, dict):
+        return None
+    if tool_name == "tool_call":
+        if args.get("name") != "execute_code" or not isinstance(args.get("arguments"), dict):
+            return None
+        args = args["arguments"]
+    elif tool_name != "execute_code":
+        return None
+    source = args.get("code")
+    if not isinstance(source, str) or not source.strip():
+        return None
+    try:
+        compile(source, "<execute_code>", "exec")
+    except SyntaxError as exc:
+        return exc, source
+    return None
+
+
 def _partial_exit(agent, messages, conversation_history, api_call_count, final_response: str) -> Dict[str, Any]:
     """Terminal partial result. Prior retries or an earlier tool batch leave a tool-result
     tail; close it as interrupt aborts do so the next turn is not tool→user (#48879).
@@ -73,8 +142,8 @@ def validate_tool_calls(
     """Validate ``assistant_message.tool_calls`` in place (ids uniquified, names
     repaired, dict/empty args normalized to JSON strings). Strikes for invalid names
     advance only when a turn has NO valid call, so a degenerate model still halts at
-    3; args cut off mid-stream (routers rewrite ``length`` → ``tool_calls``) are refused
-    outright rather than retried."""
+    3. Incomplete payloads are rejected batch-wide and retried with one shared bounded
+    budget before any tool can run."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
     tool_calls = assistant_message.tool_calls
@@ -140,9 +209,11 @@ def validate_tool_calls(
     # Validate tool call arguments are valid JSON; empty strings become empty
     # objects (common model quirk).
     invalid_json_args = []
+    parsed_args = []
     for tc in tool_calls:
         args = tc.function.arguments
         if isinstance(args, (dict, list)):
+            parsed_args.append((tc, args))
             tc.function.arguments = json.dumps(args)
             continue
         if args is not None and not isinstance(args, str):
@@ -151,7 +222,7 @@ def validate_tool_calls(
             tc.function.arguments = "{}"
             continue
         try:
-            json.loads(args)
+            parsed_args.append((tc, json.loads(args)))
         except json.JSONDecodeError as e:
             # A mixed-batch invalid-name call never executes (error result later);
             # don't let its broken args trigger the whole-turn JSON retry.
@@ -160,38 +231,43 @@ def validate_tool_calls(
 
     if invalid_json_args:
         invalid_names = {n for n, _ in invalid_json_args}
-        # Routers may rewrite finish_reason "length" → "tool_calls", hiding
-        # truncation; args not ending in } or ] (stripped) were cut off
-        # mid-stream.
-        _truncated = any(
-            not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
+        # Routers may rewrite finish_reason "length" → "tool_calls". Inspect JSON
+        # structure rather than the final byte so complete malformed text keeps the
+        # established repair path.
+        _incomplete = any(
+            _json_structure_incomplete(tc.function.arguments or "")
             for tc in tool_calls if tc.function.name in invalid_names
         )
-        if _truncated:
+        if _incomplete:
+            agent._invalid_tool_payload_retries += 1
+            n = agent._invalid_tool_payload_retries
             agent._vprint(
-                f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
-                f"(finish_reason={finish_reason!r}) — refusing to execute.",
+                f"{agent.log_prefix}⚠️  Incomplete tool call arguments detected "
+                f"(finish_reason={finish_reason!r}) — retrying without execution ({n}/3).",
                 force=True,
             )
-            agent._invalid_json_retries = 0
+            if n < 3:
+                return _verdict("continue")
+            agent._invalid_tool_payload_retries = 0
             agent._cleanup_task_resources(effective_task_id)
             return _verdict("return", _partial_exit(
                 agent, messages, conversation_history, api_call_count,
-                "Response truncated due to output length limit",
+                "Model repeatedly generated invalid or incomplete tool-call payloads; "
+                "no tools from the invalid batches were executed",
             ))
 
-        agent._invalid_json_retries += 1
+        agent._invalid_tool_payload_retries += 1
         tool_name, error_msg = invalid_json_args[0]
         agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
 
-        if agent._invalid_json_retries < 3:
-            agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_json_retries}/3)...")
+        if agent._invalid_tool_payload_retries < 3:
+            agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_tool_payload_retries}/3)...")
             # Don't add anything to messages, just retry the API call
             return _verdict("continue")
         # Instead of returning partial, inject tool error results so the model can recover.
         # Using tool results (not user messages) preserves role alternation.
         agent._buffer_vprint("⚠️  Injecting recovery tool results for invalid JSON...")
-        agent._invalid_json_retries = 0  # Reset for next attempt
+        agent._invalid_tool_payload_retries = 0  # Reset for next attempt
         # Append the assistant message with its (broken) tool_calls, then one
         # error result per call.
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
@@ -209,6 +285,50 @@ def validate_tool_calls(
         _append_tool_error_results(messages, tool_calls, _json_error_result)
         return _verdict("continue")
 
-    # Reset retry counter on successful JSON validation
-    agent._invalid_json_retries = 0
+    python_errors = []
+    if any(tc.function.name in {"execute_code", "tool_call"} for tc, _ in parsed_args):
+        if _python_preflight_supported():
+            for tc, args in parsed_args:
+                error = _python_source_error(tc.function.name, args)
+                if error is not None:
+                    python_errors.append((tc, *error))
+
+    if python_errors:
+        agent._invalid_tool_payload_retries += 1
+        n = agent._invalid_tool_payload_retries
+        first_tc, first_error, _ = python_errors[0]
+        agent._buffer_vprint(
+            f"⚠️  Python source in '{first_tc.function.name}' does not compile: "
+            f"{first_error.msg} ({n}/3)"
+        )
+        if n >= 3:
+            agent._invalid_tool_payload_retries = 0
+            agent._cleanup_task_resources(effective_task_id)
+            return _verdict("return", _partial_exit(
+                agent, messages, conversation_history, api_call_count,
+                "Model repeatedly generated invalid or incomplete tool-call payloads; "
+                "no tools from the invalid batches were executed",
+            ))
+
+        append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
+        errors_by_call = {id(tc): (exc, source) for tc, exc, source in python_errors}
+
+        def _python_error_result(tc) -> str:
+            error = errors_by_call.get(id(tc))
+            if error is None:
+                return "Skipped: another tool call in this response contained invalid Python source."
+            exc, source = error
+            location = f"line {exc.lineno or '?'}, column {exc.offset or '?'}"
+            return (
+                "Error: Python source did not compile, so no call in this batch was executed. "
+                f"Received {len(source)} characters / {len(source.encode('utf-8'))} bytes; "
+                f"{exc.msg} at {location}. Resend the complete source, or split it into smaller "
+                "independently complete calls; do not send only the missing closing syntax."
+            )
+
+        _append_tool_error_results(messages, tool_calls, _python_error_result)
+        return _verdict("continue")
+
+    # Reset retry counter on a complete, valid payload batch.
+    agent._invalid_tool_payload_retries = 0
     return _verdict("ok")

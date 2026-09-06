@@ -283,10 +283,16 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
         assert secret not in comments[0].body
 
 
-def test_goal_mode_review_handoff_cannot_bypass_judge(
+def test_goal_mode_review_handoff_does_not_require_final_acceptance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """Review is an intermediate gate, so the final-goal judge must not run.
+
+    A card may intentionally require approval and merge in its final acceptance
+    criteria. Requiring those before entering review creates a circular
+    lifecycle: approval cannot happen until the review handoff succeeds.
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -298,6 +304,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
         tool_task = kb.create_task(
             conn,
             title="Goal-mode tool task",
+            body="Done when approved and merged.",
             assignee="builder",
             goal_mode=True,
         )
@@ -312,27 +319,24 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setattr(
         tools,
         "judge_goal",
-        lambda *args, **kwargs: (
-            "continue",
-            "acceptance evidence is missing",
-            False,
-            None,
-            False,
+        lambda *args, **kwargs: pytest.fail(
+            "final-goal judge must not gate an intermediate review handoff"
         ),
     )
-    rejected = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
-    assert "error" in rejected
-    assert "rejected by judge" in rejected["error"]
+    requested = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
+    assert requested["ok"] is True
+    assert requested["status"] == "review"
     with kbc.connect() as conn:
         tool_after = kb.get_task(conn, tool_task)
         assert tool_after is not None
-        assert tool_after.status == "running"
+        assert tool_after.status == "review"
 
-    # The shell/CLI path applies the same gate and must not bypass the tool.
+    # The shell/CLI path follows the same intermediate-handoff contract.
     with kbc.connect() as conn:
         cli_task = kb.create_task(
             conn,
             title="Goal-mode CLI task",
+            body="Done when approved and merged.",
             assignee="builder",
             goal_mode=True,
         )
@@ -352,14 +356,16 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setattr(
         goals,
         "judge_goal",
-        lambda *args, **kwargs: ("continue", "tests are missing", False, None, False),
+        lambda *args, **kwargs: pytest.fail(
+            "final-goal judge must not gate an intermediate review handoff"
+        ),
     )
     output = kc.run_slash(f"request-review {cli_task} --summary 'Looks ready.'")
-    assert "rejected by judge" in output
+    assert "Requested review" in output
     with kbc.connect() as conn:
         cli_after = kb.get_task(conn, cli_task)
         assert cli_after is not None
-        assert cli_after.status == "running"
+        assert cli_after.status == "review"
 
 
 def test_goal_loop_stops_after_reviewer_requests_changes(

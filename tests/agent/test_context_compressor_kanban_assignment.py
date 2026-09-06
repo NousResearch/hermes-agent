@@ -56,3 +56,15 @@ def test_assignment_summary_is_bounded_and_does_not_promote_unbound_text(case):
         assert len(parsed["task"]["body"].encode("utf-8")) <= 8 * 1024
         assert parsed["task"]["body"].startswith("receipt-first ")
         assert "protected_task_spec" not in parsed
+
+
+def test_pressure_demotes_noncurrent_kanban_projection():
+    task_id = "t_12345678"
+    body = "assignment details " + ("x" * 2000)
+    payload = {"task": {"id": task_id, "title": "Referenced card", "body": body}}
+    messages = [{"role": "tool", "tool_call_id": "show", "content": json.dumps(payload)}]
+    calls = {"show": ("kanban_show", json.dumps({"task_id": task_id}))}
+
+    assert ContextCompressor._demote_tool_result_at(messages, 0, calls, 0, pressure=True)
+    assert messages[0]["content"].startswith("[kanban_show]")
+    assert body not in messages[0]["content"]

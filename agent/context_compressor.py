@@ -2629,6 +2629,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
     def _demote_tool_result_at(
         result: List[Dict[str, Any]], idx: int, call_id_to_tool: Dict[str, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
+        pressure: bool = False,
     ) -> bool:
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
         ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
@@ -2655,7 +2656,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
                 return False
         from agent.context_compressor_kanban import newest_assignment_summary
 
-        summary = newest_assignment_summary(result, idx, call_id_to_tool)
+        summary = None if pressure else newest_assignment_summary(result, idx, call_id_to_tool)
         if summary is None:
             summary = _summarize_tool_result(tool_name, tool_args, content)
         if summary == content:
@@ -2682,7 +2683,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         def _shrink_at(i: int) -> None:
             # Each helper no-ops on the other role, so both may run unconditionally.
             nonlocal demoted, pressure_hits
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
+            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, pressure=True):
                 demoted += 1
                 pressure_hits += 1
             if self._truncate_tool_call_args_at(result, i):
@@ -2702,7 +2703,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             # Last resort: the newest body alone may exceed the soft budget; summarize it.
             if (
                 last_tool_idx is not None and last_tool_idx >= prune_boundary and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
+            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars, pressure=True):
                 demoted += 1
                 pressure_hits += 1
         if pressure_hits and not self.quiet_mode:

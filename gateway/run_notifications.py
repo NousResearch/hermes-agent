@@ -1331,9 +1331,65 @@ class GatewayNotificationsMixin:
                 self._settle_sibling_claims(siblings, release_event_delivery, "Could not release coalesced durable claim")
                 if delivered is None:
                     # Primary dropped/owned elsewhere: requeue just the siblings for the next tick.
-                    for evt, _claim_id in siblings:
-                        _pr.completion_queue.put(evt)
+                    with _pr.completion_routing_lock:
+                        for evt, _claim_id in siblings:
+                            _pr.completion_queue.put(evt)
         return delivered
+
+    def _reserve_idle_async_delegation_events(self, registry) -> list[dict]:
+        """Take only async completions that are genuinely idle-deliverable.
+
+        Dequeue, active-parent classification, and requeue happen under the same
+        short routing reservation used by the current-turn tool carrier and TUI.
+        A matching ``result_delivery=inject`` event therefore stays visible to
+        its active parent until that parent's safe tool-result boundary.  This
+        method performs no formatting, durable claims, adapter calls, or awaits.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        idle_events: list[dict] = []
+        requeue: list[dict] = []
+        with registry.completion_routing_lock:
+            try:
+                scan_count = registry.completion_queue.qsize()
+            except Exception:
+                scan_count = 0
+            for _ in range(max(0, scan_count)):
+                try:
+                    evt = registry.completion_queue.get_nowait()
+                except Exception:
+                    break
+                if evt.get("type") != "async_delegation":
+                    requeue.append(evt)
+                    continue
+
+                self._enrich_async_delegation_routing(evt)
+                session_key = str(evt.get("session_key") or "").strip()
+                parent = (getattr(self, "_running_agents", None) or {}).get(session_key)
+                delivery = str(evt.get("result_delivery") or "after_turn").strip().lower()
+                event_turn = str(evt.get("parent_turn_id") or "")
+                same_active_turn = bool(
+                    parent is not None
+                    and parent is not _AGENT_PENDING_SENTINEL
+                    and event_turn
+                    and str(getattr(parent, "_active_turn_id", "") or "") == event_turn
+                )
+
+                # A pending sentinel has not published the parent agent/turn yet,
+                # so it cannot be proven idle.  Any event for a live parent stays
+                # queued unless it is an inject event for some *other* turn.
+                if (
+                    parent is _AGENT_PENDING_SENTINEL
+                    or (parent is not None and delivery != "inject")
+                    or same_active_turn
+                ):
+                    requeue.append(evt)
+                else:
+                    idle_events.append(evt)
+
+            for evt in requeue:
+                registry.completion_queue.put(evt)
+        return idle_events
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async-delegation completions and inject them as new turns (IDLE case).
@@ -1345,17 +1401,7 @@ class GatewayNotificationsMixin:
         from tools.process_registry import process_registry as _pr
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
-                # Take async-delegation events only; requeue watch/completion events for their own drains.
-                requeue = []
-                async_events = []
-                while not _pr.completion_queue.empty():
-                    try:
-                        evt = _pr.completion_queue.get_nowait()
-                    except Exception:
-                        break
-                    (async_events if evt.get("type") == "async_delegation" else requeue).append(evt)
-                for evt in requeue:
-                    _pr.completion_queue.put(evt)
+                async_events = self._reserve_idle_async_delegation_events(_pr)
                 # A fan-out finishing together yields N completions for one session; group by full route +
                 # parent session so each group becomes ONE consolidated turn.
                 # A same-tick drain often carries several completions for the SAME originating session (a
@@ -1363,17 +1409,18 @@ class GatewayNotificationsMixin:
                 # coalesce. See #70300.
                 groups: dict[tuple[str, ...], list[dict]] = {}
                 for evt in async_events:
-                    self._enrich_async_delegation_routing(evt)
                     groups.setdefault(self._event_route_key(evt, self._ASYNC_GROUP_KEY_FIELDS), []).append(evt)
                 for group in groups.values():
                     try:
                         delivered = await self._deliver_async_delegation_group(group)
                         if delivered is False:
+                            with _pr.completion_routing_lock:
+                                for evt in group:
+                                    _pr.completion_queue.put(evt)
+                    except Exception as e:
+                        with _pr.completion_routing_lock:
                             for evt in group:
                                 _pr.completion_queue.put(evt)
-                    except Exception as e:
-                        for evt in group:
-                            _pr.completion_queue.put(evt)
                         logger.error("Async delegation injection error: %s", e)
             await asyncio.sleep(interval)
 

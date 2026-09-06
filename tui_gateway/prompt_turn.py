@@ -393,20 +393,31 @@ def _run_post_turn_followups(
             skip_poll_observed=False)
         for index, (_evt, synth) in enumerate(drained):
             with session["history_lock"]:
-                if session.get("running"):
+                busy = bool(session.get("running"))
+                if not busy:
+                    from tools.async_delegation import claim_event_delivery
+                    _claim = claim_event_delivery(_evt, "tui-post-turn")
+                    if _claim is not None:
+                        session["running"] = True
+                else:
+                    _claim = None
+            if busy:
+                # Never invert the poller's routing-lock -> history-lock order.
+                with process_registry.completion_routing_lock:
                     for pending_evt, _pending_synth in drained[index:]:
                         process_registry.completion_queue.put(pending_evt)
-                    break
-                session["running"] = True
-            from tools.async_delegation import (
-                claim_event_delivery, complete_event_delivery, release_event_delivery)
-            _claim = claim_event_delivery(_evt, "tui-post-turn")
+                break
             if _claim is None:
+                # Reconciliation may have settled the row from an already committed
+                # tool carrier.  Never leave ``running`` reserved in that case; only
+                # a still-pending competing lease goes back to the queue.
+                _notif_requeue_if_pending(process_registry, _evt)
                 continue
+            from tools.async_delegation import complete_event_delivery, release_event_delivery
             _dispatch_followup_turn(
                 rid, sid, session, synth, "completion notification dispatch",
-                on_done=lambda: complete_event_delivery(_evt, _claim),
-                on_error=lambda: release_event_delivery(_evt, _claim))
+                on_done=lambda evt=_evt, claim=_claim: complete_event_delivery(evt, claim),
+                on_error=lambda evt=_evt, claim=_claim: release_event_delivery(evt, claim))
     except Exception as _drain_exc:
         _hook_failure("completion queue drain", _drain_exc)
 

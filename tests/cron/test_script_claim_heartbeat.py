@@ -418,6 +418,47 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     mark_run.assert_not_called()
 
 
+def test_heartbeat_fence_timeout_does_not_cancel_current_owner(monkeypatch):
+    """A long side effect can defer renewal without revoking the durable owner."""
+    import cron.scheduler as scheduler
+
+    heartbeat_calls = 0
+    renewed_after_defer = threading.Event()
+    owner = "current-owner"
+
+    def _heartbeat(job_id: str, *, expected_owner: str) -> bool:
+        nonlocal heartbeat_calls
+        assert job_id == "long-delivery"
+        assert expected_owner == owner
+        heartbeat_calls += 1
+        if heartbeat_calls == 2:
+            return False
+        if heartbeat_calls > 2:
+            renewed_after_defer.set()
+        return True
+
+    def _run_body(_job, **kwargs):
+        assert renewed_after_defer.wait(timeout=2)
+        assert kwargs["fire_claim_lost"].is_set() is False
+        return True
+
+    job = {
+        "id": "long-delivery",
+        "fire_claim": {"at": "2026-07-12T12:00:00+00:00", "by": owner},
+    }
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(scheduler, "heartbeat_fire_claim", _heartbeat)
+    monkeypatch.setattr(
+        scheduler,
+        "get_job",
+        lambda job_id: {"id": job_id, "fire_claim": {"by": owner}},
+    )
+    monkeypatch.setattr(scheduler, "_run_one_job_body", _run_body)
+
+    assert scheduler.run_one_job(job) is True
+    assert heartbeat_calls >= 3
+
+
 def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatch):
     """A stale claimed snapshot rejected before body entry must close its ledger row."""
     import cron.scheduler as scheduler

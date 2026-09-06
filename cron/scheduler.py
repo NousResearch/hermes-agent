@@ -481,7 +481,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
+    clear_run_claim, get_due_jobs, get_job, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, create_execution, finish_execution, get_execution,
@@ -2452,6 +2452,18 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
                 if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                    # Delivery deliberately holds the fire fence across the network side effect.
+                    # If that send outlasts the fence acquisition timeout, our own heartbeat
+                    # cannot enter.  That is not ownership loss: the held fence prevents another
+                    # process from replacing the claim.  Confirm the durable owner without taking
+                    # the fire fence before deciding this runner is stale.
+                    current = get_job(job_id)
+                    current_claim = current.get("fire_claim") if isinstance(current, dict) else None
+                    if isinstance(current_claim, dict) and current_claim.get("by") == owner:
+                        logger.debug(
+                            "Job '%s': fire claim heartbeat deferred by its active side-effect fence",
+                            job_id)
+                        continue
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",

@@ -34,6 +34,8 @@ from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
+from agent.provider_redaction import _exact_secret_pattern_scope, redact_known_secret_values
+
 logger = logging.getLogger(__name__)
 
 
@@ -1002,7 +1004,8 @@ def _redact_compaction_text(text: Any) -> str:
     """Redact text that crosses a compaction summary boundary (strict mode).
     ``force=True`` overrides ``security.redact_secrets: false``; URL credentials are redacted too, since
     summaries persist and re-enter every later prompt."""
-    return redact_sensitive_text(text or "", force=True, redact_url_credentials=True)
+    redacted = redact_sensitive_text(text or "", force=True, redact_url_credentials=True)
+    return redact_known_secret_values(redacted, force=True)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -2953,6 +2956,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
 
+    @_exact_secret_pattern_scope()
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize turns into labeled, redacted text for the summarizer."""
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
@@ -3038,6 +3042,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             "last_dropped_turns": last_dropped_turns,
         }
 
+    @_exact_secret_pattern_scope()
     def _build_static_fallback_summary(
         self, turns_to_summarize: List[Dict[str, Any]], reason: str | None = None,
     ) -> str:
@@ -3049,7 +3054,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         active_task = f"User asked: {user_asks[-1]!r}" if user_asks else _NO_USER_TASK_SENTINEL
         previous_summary_note = ""
         if self._previous_summary:
-            previous_summary = redact_sensitive_text(self._previous_summary.strip())
+            previous_summary = _redact_compaction_text(self._previous_summary.strip())
             if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
                 previous_summary = (previous_summary[: _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS - 45].rstrip()
                                     + "\n...[previous summary snapshot truncated]")
@@ -3292,6 +3297,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             )
         return content
 
+    @_exact_secret_pattern_scope()
     def _generate_summary(
         self, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str] = None,
         memory_context: str = "", bypass_cooldown: bool = False,
@@ -4623,6 +4629,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._reset_proactive_prune_rearm()
         return compressed
 
+    @_exact_secret_pattern_scope()
     def compress(
         self, messages: List[Dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,

@@ -2444,8 +2444,8 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         if live is not None:
             if lease is not None:
                 lease.release()
-            # The winner is being reattached: a pending ws-orphan reap must not fire against the reclaimed client.
-            _cancel_ws_orphan_reap(live[0])
+            # The reap is cancelled by the guarded reuse (_reattach_refusal), not here: a rejected
+            # reattach must leave an in-flight orphan interrupt polling.
             return live
         with _sessions_lock:
             _sessions[sid] = record
@@ -2693,13 +2693,7 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
-            # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
-            # viewer becomes the transport instead of the drop sentinel.
-            session.setdefault("viewers", {})[transport] = time.time()
-            # See #83716.
-            if transport is not _detached_ws_transport:
-                _cancel_ws_orphan_reap(sid)  # the client is back — a pending ws-orphan reap must not fire
+            _rebind_live_transport(sid, session, transport)
         if touch:
             # #84417: do not re-fire the live turn's original user text from a stale server-queue
             # self-duplicate after settle.

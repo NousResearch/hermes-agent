@@ -70,7 +70,16 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
     of the other ('Google-chrome' vs 'chrome'). Unknown target -> None (fail open; the verify ladder catches it)."""
     last_app = getattr(backend, "_last_app", None)
     current, wanted = (last_app or "").strip().lower(), requested_app.strip().lower()
-    return None if not current or not wanted or wanted in current or current in wanted else last_app
+    if not current or not wanted or wanted in current or current in wanted:
+        return None
+        
+    alias = getattr(backend, "_last_app_alias", None)
+    if alias:
+        alias_str = alias.strip().lower()
+        if wanted in alias_str or alias_str in wanted:
+            return None
+            
+    return last_app
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).

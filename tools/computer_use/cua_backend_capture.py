@@ -296,6 +296,7 @@ class _CaptureMixin:
         # to the frontmost window.
         if app or not self._last_app:
             self._last_app = app_name or app or ""
+            self._last_app_alias = app or ""
         png_b64, image_mime_type, elements, window_title = (
             self._capture_vision() if mode == "vision" else self._capture_window_state())
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
@@ -367,6 +368,7 @@ class _CaptureMixin:
             return ActionResult(ok=False, action="focus_app", message=f"No on-screen window found for app '{app}'.")
         self._set_active_target(target := matched[0])
         self._last_app = target["app_name"] or app  # retained for back-compat diagnostics
+        self._last_app_alias = app or ""
         if not raise_window:
             return ActionResult(ok=True, action="focus_app", message=f"Targeted {target['app_name']} (pid "
                                 f"{self._active_pid}, window {self._active_window_id}) without raising window.")

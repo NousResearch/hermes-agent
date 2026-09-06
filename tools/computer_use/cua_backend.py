@@ -302,7 +302,7 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def _clear_active_target(self) -> None:
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
-        self._active_pid = self._active_window_id = self._last_app = self._last_target = None
+        self._active_pid = self._active_window_id = self._last_app = self._last_app_alias = self._last_target = None
         # Surface 6 of NousResearch/hermes-agent#47072: per-snapshot `element_index -> element_token` map
         # populated on capture(). Action tools (click/scroll/set_value/...) attach the matching token
         # alongside `element_index` so cua-driver detects "stale" explicitly instead of silently

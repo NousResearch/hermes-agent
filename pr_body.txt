@@ -1,0 +1,23 @@
+## Problem
+
+When an external plugin inherits from `ContextCompressor` and overrides `_generate_summary` with the legacy signature, the host calling `compress(..., bypass_cooldown=True)` passes `bypass_cooldown` to the override, throwing a TypeError and aborting compaction.
+
+## Root Cause
+
+There was no signature inspection at the internal dispatch boundary inside `_summarize_window` to check whether the subclass's `_generate_summary` actually supports the new `bypass_cooldown` keyword or accepts `**kwargs`.
+
+## Solution
+
+Added `inspect.signature` to the host dispatch inside `_summarize_window` to dynamically check if the `_generate_summary` hook accepts `bypass_cooldown` or `**kwargs`. If unsupported, the keyword is safely omitted, preserving backward compatibility.
+
+## Testing
+
+Added a regression test that verifies a legacy engine omitting `bypass_cooldown` from its signature does not throw when `compress(..., bypass_cooldown=True)` is called.
+
+## Risk
+
+None. Preserves compatibility for older plugins.
+
+## Issue
+
+Closes #104176

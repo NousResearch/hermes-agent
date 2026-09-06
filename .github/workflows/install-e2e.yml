@@ -19,9 +19,9 @@ name: Install & Update E2E
 #     update FROM changes, and the moment a broken updater would strand them;
 #   * manually, where you can pick the route and how many releases to sample.
 #
-# Deliberately NOT on pull_request: a leg takes ~11 minutes of real toolchain
-# installation, and the matrix multiplies that. Updating is release-shaped work,
-# so it is gated on releases and the clock instead.
+# Deliberately NOT on pull_request: the full release matrix takes ~11 minutes
+# per leg and multiplies across releases. A separate path-filtered acceptance
+# workflow runs one exact-head installer witness for relevant pull requests.
 
 on:
   workflow_dispatch:
@@ -95,7 +95,9 @@ jobs:
       install-ref: ${{ matrix.install-ref }}
 
   # Re-running the curl one-liner over an existing checkout: autostash + pull
-  # rather than the updater's own git handling.
+  # rather than the updater's own git handling. Browser/npm installation stays
+  # explicit here: this scheduled installer surface is the authority for the
+  # Node trust and proxy keep-alive boundary.
   installer:
     if: github.event_name != 'workflow_dispatch' || inputs.route != 'update'
     needs: pick-releases
@@ -108,3 +110,4 @@ jobs:
     with:
       route: installer
       install-ref: ${{ matrix.install-ref }}
+      include-browser: true

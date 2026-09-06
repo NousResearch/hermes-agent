@@ -21,14 +21,18 @@
 #
 # Usage:
 #   tests/install/install-update-e2e.sh --route update|installer
-#                                       [--install-ref REF] [--keep]
+#                                       [--install-ref REF]
+#                                       [--include-browser] [--keep]
 #
-#   --route         which update path to exercise (required):
-#                     update     `hermes update`
-#                     installer  re-running the curl one-liner over the checkout
-#   --install-ref   what to install first; anything git resolves (a branch, a
-#                   tag like v2026.7.7, or a SHA reachable from main).
-#                   Default: refs/heads/main.
+#   --route           which update path to exercise (required):
+#                       update     `hermes update`
+#                       installer  re-running the curl one-liner over the checkout
+#   --install-ref     what to install first; anything git resolves (a branch, a
+#                     tag like v2026.7.7, or a SHA reachable from main).
+#                     Default: refs/heads/main.
+#   --include-browser keep Node/npm/browser installation in scope even when the
+#                     sampled installer supports --skip-browser. The specialized
+#                     installer acceptance lanes use this to exercise npm trust.
 #
 # Requires a CLEAN worktree: every dev-sandbox invocation re-derives fake main
 # from the working copy, so uncommitted changes move the update target between
@@ -38,6 +42,7 @@ set -euo pipefail
 
 ROUTE=""
 INSTALL_REF="refs/heads/main"
+INCLUDE_BROWSER=false
 KEEP=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -47,8 +52,9 @@ while [ "$#" -gt 0 ]; do
     --install-ref)
       [ "$#" -ge 2 ] || { echo 'error: --install-ref needs a value' >&2; exit 1; }
       INSTALL_REF="$2"; shift 2 ;;
+    --include-browser) INCLUDE_BROWSER=true; shift ;;
     --keep) KEEP=true; shift ;;
-    -h|--help) sed -n '2,35p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -154,7 +160,12 @@ rm -rf -- "$SANDBOX_ROOT"
 # and argparse prints every option it accepts.
 update_supports() {
   local flag="$1"
-  in_sandbox "hermes update --help 2>&1" | grep -qF -- "$flag"
+  local help=""
+  help="$(in_sandbox "hermes update --help 2>&1")" || return 1
+  # Do not pipe a producer into grep -q under pipefail: grep exits as soon as it
+  # finds FLAG, the producer can receive SIGPIPE, and a supported flag is then
+  # misreported as absent.
+  grep -qF -- "$flag" <<<"$help"
 }
 
 # Does the installer at REF accept FLAG? Read it out of that ref's own
@@ -174,7 +185,9 @@ installer_supports() {
     git fetch -q --depth 1 "$UPSTREAM_URL" "$ref" 2>/dev/null || return 1
     script="$(git show FETCH_HEAD:scripts/install.sh 2>/dev/null)" || return 1
   }
-  printf '%s' "$script" | grep -qF -- "$flag"
+  # A here-string keeps grep's early success from SIGPIPE-ing a pipeline
+  # producer under `set -o pipefail`.
+  grep -qF -- "$flag" <<<"$script"
 }
 
 # Run the real install one-liner inside the sandbox. `ref` non-empty installs
@@ -188,13 +201,21 @@ install_in_sandbox() {
   local log="$LOG_DIR/$tag.log"
   local args=(install --persistent)
   [ -n "$ref" ] && args+=(--install-ref "$ref")
+  # astral.sh and its release mirrors intermittently return empty replies to
+  # GitHub runner egress IPs. Serve a runner-prefetched fixture through the same
+  # sandbox proxy so external bootstrap availability cannot prevent the test
+  # from reaching the Hermes-owned npm trust and keep-alive boundary.
+  if [ -n "$UV_INSTALLER_FIXTURE" ]; then
+    args+=(--http-root "$UV_INSTALLER_FIXTURE")
+  fi
 
   # Installer flags have to match the installer being run, not this checkout's.
   # Older releases reject options added later ("Unknown option: --skip-browser"),
   # and this test deliberately installs releases from months back. --skip-setup
   # goes back further than any tag we sample; anything newer is probed for.
   local installer_flags=(--skip-setup)
-  if [ -z "$ref" ] || installer_supports "$ref" --skip-browser; then
+  if [ "$INCLUDE_BROWSER" = false ] \
+      && { [ -z "$ref" ] || installer_supports "$ref" --skip-browser; }; then
     installer_flags+=(--skip-browser)
   fi
   # Sandbox flags must precede `--`; the rest goes to install.sh.
@@ -247,6 +268,56 @@ require_hermes_works() {
 }
 
 # ── install the earlier Hermes ─────────────────────────────────────────────
+# Prefetch the uv installer and binary so the sandbox can serve stable fixtures
+# for third-party bootstrap bytes. This keeps the Hermes acceptance lane focused
+# on Hermes-owned behavior while install.sh still performs a real uv/Python/Node
+# and venv installation. Best-effort: if prefetching fails, the in-sandbox curl
+# still attempts the public endpoints and the transcript remains authoritative.
+UV_INSTALLER_FIXTURE=""
+if command -v curl >/dev/null 2>&1; then
+  UV_FIXTURE_DIR="$LOG_DIR/http-fixture"
+  UV_SCRIPT="$UV_FIXTURE_DIR/astral.sh/uv/install.sh"
+  mkdir -p "$UV_FIXTURE_DIR/astral.sh/uv"
+  for _attempt in 1 2 3 4 5; do
+    if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+        https://astral.sh/uv/install.sh -o "$UV_SCRIPT" 2>/dev/null \
+        && [ -s "$UV_SCRIPT" ]; then
+      UV_INSTALLER_FIXTURE="$UV_FIXTURE_DIR"
+      break
+    fi
+    sleep 3
+  done
+fi
+
+# Cache the architecture-matched uv tarball for both download hosts the
+# installer tries. Unknown architectures retain only the script fixture and
+# exercise the binary download upstream rather than serving the wrong artifact.
+if [ -n "$UV_INSTALLER_FIXTURE" ]; then
+  UV_VER="$(grep -om1 'releases/download/[0-9][0-9.]*' "$UV_SCRIPT" | cut -d/ -f3)"
+  case "$(uname -m)" in
+    x86_64|amd64) UV_TARGET="x86_64-unknown-linux-gnu" ;;
+    aarch64|arm64) UV_TARGET="aarch64-unknown-linux-gnu" ;;
+    *) UV_TARGET="" ;;
+  esac
+  if [ -n "$UV_VER" ] && [ -n "$UV_TARGET" ]; then
+    _uv_rel="github/uv/releases/download/$UV_VER/uv-$UV_TARGET.tar.gz"
+    mkdir -p "$UV_FIXTURE_DIR/releases.astral.sh/$(dirname "$_uv_rel")" \
+             "$UV_FIXTURE_DIR/github.com/astral-sh/$(dirname "${_uv_rel#github/}")"
+    if curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+        "https://releases.astral.sh/$_uv_rel" \
+        -o "$UV_FIXTURE_DIR/releases.astral.sh/$_uv_rel" 2>/dev/null; then
+      cp "$UV_FIXTURE_DIR/releases.astral.sh/$_uv_rel" \
+         "$UV_FIXTURE_DIR/github.com/astral-sh/${_uv_rel#github/}"
+    else
+      rm -f "$UV_FIXTURE_DIR/releases.astral.sh/$_uv_rel"
+      echo "⚠ could not prefetch uv $UV_VER tarball; binary will fetch upstream" >&2
+    fi
+  fi
+  ok "prefetched uv installer for sandbox fixture"
+else
+  echo "⚠ could not prefetch uv installer; install will fetch astral.sh directly" >&2
+fi
+
 step "installing upstream $INSTALL_REF (real curl | install.sh: uv, Python, Node, venv)"
 install_in_sandbox "install of upstream $INSTALL_REF" "$INSTALL_REF" install
 

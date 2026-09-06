@@ -90,8 +90,8 @@ export function dismissPreviewArtifact(sid: string, id: string) {
 }
 
 export function clearPreviewArtifacts(sid: string) {
-  // Rewind/edit abandons the old timeline. A target produced again by the new
-  // timeline is new work and must be eligible to surface.
-  dismissedBySession.delete(sid)
+  // Rewind/edit abandons the visible rows, but surviving historical tool rows
+  // may remount afterward. Keep the user's session-scoped dismissals so those
+  // rows cannot resurrect a target the user already closed.
   writePreviews(sid, [])
 }

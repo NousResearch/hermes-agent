@@ -29,7 +29,7 @@ describe('recordPreviewArtifact', () => {
     expect(list[3].label).toBe('p5.html')
   })
 
-  it('keeps dismissed targets hidden until the session preview state is cleared', () => {
+  it('keeps dismissed targets hidden across preview clears without affecting another session', () => {
     recordPreviewArtifact('s1', '/a/index.html', '/work')
     recordPreviewArtifact('s1', '/a/about.html', '/work')
     dismissPreviewArtifact('s1', '/a/index.html')
@@ -40,6 +40,8 @@ describe('recordPreviewArtifact', () => {
     expect($previewStatusBySession.get().s1).toBeUndefined()
 
     recordPreviewArtifact('s1', '/a/index.html', '/work')
-    expect($previewStatusBySession.get().s1.map(i => i.id)).toEqual(['/a/index.html'])
+    recordPreviewArtifact('s2', '/a/index.html', '/work')
+    expect($previewStatusBySession.get().s1).toBeUndefined()
+    expect($previewStatusBySession.get().s2.map(i => i.id)).toEqual(['/a/index.html'])
   })
 })

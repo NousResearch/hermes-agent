@@ -178,10 +178,18 @@ def _redact_spill_file(path, total_chars, command) -> list[tuple[str, Any]]:
         with _quiet("spill unlink"):
             Path(path).unlink()
         return []
+    # The note is read by the AGENT, whose read_file/search_files run inside the
+    # active backend: render the path where docker/modal/ssh/... see the mounted
+    # cache, not the host path (#72389, #81984 — same class d78cdd7119 fixed for
+    # the web_extract/browser_snapshot/delegate_task footers). local and
+    # singularity see the host path unchanged.
+    from tools.credential_files import to_agent_visible_cache_path
+
+    visible_path = to_agent_visible_cache_path(str(path))
     note = ("Output exceeded the capture window (head+tail shown). "
-            f"Full output ({total_chars:,} chars) saved to {path} — search it with "
+            f"Full output ({total_chars:,} chars) saved to {visible_path} — search it with "
             "search_files or page it with read_file instead of re-running the command.")
-    return [("output_total_chars", total_chars), ("full_output_path", path), ("truncation_note", note)]
+    return [("output_total_chars", total_chars), ("full_output_path", visible_path), ("truncation_note", note)]
 
 
 def _verification_evidence(command, cwd, session_id, returncode, output) -> Optional[dict]:

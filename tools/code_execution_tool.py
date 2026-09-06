@@ -70,6 +70,13 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
                            "narrower output if the omitted data is required.")
     spill_path = _spill_full_stdout(stdout_text)
     if spill_path:
+        # The footer is read by the AGENT, whose read_file runs inside the active backend:
+        # render the path where docker/modal/ssh/... see the mounted cache, not the host path
+        # (#72389, #81984 — same class the web_extract/browser_snapshot/delegate_task footers
+        # fixed in d78cdd7119). local and singularity backends see the host path unchanged.
+        from tools.credential_files import to_agent_visible_cache_path
+
+        spill_path = to_agent_visible_cache_path(spill_path)
         metadata["stdout_spill_path"] = spill_path
         metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
                                f"script did run. FULL output saved to {spill_path} — page it "

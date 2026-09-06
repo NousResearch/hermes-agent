@@ -84,3 +84,21 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     out = console.export_text()
     assert "claude-opus-4.8" in out
     assert "MoA:" not in out
+
+def test_check_for_updates_opt_out_env(monkeypatch):
+    from hermes_cli import banner
+    monkeypatch.setenv("HERMES_DISABLE_UPDATE_CHECK", "1")
+    assert banner.check_for_updates() is None
+
+def test_check_for_updates_opt_out_config(monkeypatch):
+    from hermes_cli import banner
+    import hermes_cli.config
+    
+    def fake_load_config():
+        return {"updates": {"check": False}}
+        
+    monkeypatch.setattr(hermes_cli.config, "load_config", fake_load_config)
+    # Ensure env var is NOT set
+    monkeypatch.delenv("HERMES_DISABLE_UPDATE_CHECK", raising=False)
+    
+    assert banner.check_for_updates() is None

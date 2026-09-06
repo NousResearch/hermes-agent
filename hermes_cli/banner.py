@@ -328,6 +328,18 @@ def check_for_updates() -> Optional[int]:
     ``git ls-remote``; otherwise count commits behind ``origin/main`` in the local checkout.
     """
     cache_file = get_hermes_home() / ".update_check"
+    
+    if os.environ.get("HERMES_DISABLE_UPDATE_CHECK") == "1":
+        return None
+        
+    def _read_config_opt_out():
+        from hermes_cli.config import load_config
+        config = load_config()
+        return config.get("updates", {}).get("check", True) is False
+
+    if _quiet(_read_config_opt_out) is True:
+        return None
+
     embedded_rev = os.environ.get("HERMES_REVISION") or None
     # Docker images have no working tree (the image excludes `.git`) and set no HERMES_REVISION.
     # None makes both the Rich banner and the Ink badge show nothing, mirroring the dashboard's

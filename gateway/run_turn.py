@@ -1712,6 +1712,9 @@ class GatewayTurnMixin:
     ):
         """Final delivery decisions: intentional silence, voice reply, streamed-turn media/footer.
         Returns the text for the adapter to send, or ``None`` when already delivered."""
+        # Intentional silence is a successful turn, not an interrupted/errored empty result.
+        with suppress(Exception):
+            event._intentional_silence = _intentional_silence
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
@@ -1738,8 +1741,8 @@ class GatewayTurnMixin:
                     await adapter.send(source.chat_id, _footer_line, metadata=self._event_thread_metadata(event, source))
                 except Exception as _e:
                     logger.debug("trailing footer send failed: %s", _e)
-            # Return None so the body isn't sent twice; stash the delivered text on the event for the
-            # /loop and /goal hooks that read the return value.
+            # Keep the final text for /goal and /loop bookkeeping despite returning None
+            # (the body was already sent by the stream consumer).
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
             return None

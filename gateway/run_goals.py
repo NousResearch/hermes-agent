@@ -282,10 +282,11 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
-        # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
-        # still needs to be released and rescheduled.
+        # Empty interrupted/errored responses must not drive /goal. Successful silence
+        # uses the goal manager's existing empty-response continuation, without LLM judging.
+        # An in-flight /loop tick still needs to be released and rescheduled.
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip():
+        if final_text.strip() or getattr(event, "_intentional_silence", False):
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:

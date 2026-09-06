@@ -204,3 +204,161 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
     assert adapter._pending_messages[adapter_key].text.startswith(
         "[Continuing toward your standing goal]"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("already_sent", [False, True])
+@pytest.mark.parametrize("goal_state", ["active", "paused", "absent"])
+@pytest.mark.parametrize("marker", ["NO_REPLY", "[SILENT]"])
+async def test_silent_success_preserves_goal_bookkeeping_without_sending_marker(
+    hermes_home, monkeypatch, already_sent, goal_state, marker,
+):
+    """Silence is an output choice, not an interrupted/empty model result."""
+    from datetime import datetime
+    from gateway.turn_context import TurnContext
+    from unittest.mock import AsyncMock, MagicMock, Mock
+    import uuid
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from hermes_cli import goals
+
+    source = _slack_thread_source()
+    key = build_session_key(source)
+    entry = SessionEntry(
+        session_key=key, session_id=f"silent-goal-{uuid.uuid4().hex}",
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.SLACK, chat_type="channel",
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")})
+    runner._queued_events = {}
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = entry
+    runner.session_store._generate_session_key.return_value = key
+    runner._should_send_voice_reply = Mock(return_value=False)
+    adapter = _DrainProbeAdapter()
+    runner.adapters = {Platform.SLACK: adapter}
+    loop_completion = AsyncMock()
+    runner._post_turn_loop_completion = loop_completion
+    manager = goals.GoalManager(entry.session_id)
+    if goal_state != "absent":
+        manager.set("finish the outstanding work", max_turns=3)
+        if goal_state == "paused":
+            manager.pause(reason="user-paused")
+    judge = Mock(wraps=goals.judge_goal)
+    judge_llm = Mock(side_effect=AssertionError("silence must not invoke an auxiliary LLM"))
+    monkeypatch.setattr(goals, "judge_goal", judge)
+    monkeypatch.setattr(goals, "_call_goal_judge_llm", judge_llm)
+    continued = asyncio.Event()
+    send = adapter.send
+
+    async def record_send(chat_id, content, reply_to=None, metadata=None):
+        result = await send(chat_id, content, reply_to=reply_to, metadata=metadata)
+        if content == "next concrete step":
+            continued.set()
+        return result
+
+    adapter.send = record_send
+    handled = []
+
+    async def handler(event):
+        handled.append(event.text)
+        if len(handled) > 1:
+            return "next concrete step"
+        # The runner can deliver useful progress before recursively draining a
+        # queued notification whose final response is intentionally silent.
+        progress = {"final_response": "one part is complete; work remains"}
+        await runner._run_agent_deliver_first_response(
+            Mock(
+                spec=TurnContext,
+                session_key=key, stream_consumer_holder=[None], source=source,
+                _status_thread_metadata=None, event_message_id=None, run_generation=1,
+            ),
+            adapter, progress, progress, None,
+        )
+        result = {"final_response": marker, "already_sent": already_sent}
+        response = await runner._hmwa_deliver_turn_response(
+            event, source, entry, key, 1, result, [], marker, "", True,
+        )
+        await runner._run_post_turn_hooks(
+            agent_result=response, source=source, is_internal=True, event=event,
+        )
+        return response
+
+    adapter.set_message_handler(handler)
+    event = MessageEvent(text="background result", message_type=MessageType.TEXT, source=source, internal=True)
+    await adapter._process_message_background(event, key)
+    if goal_state == "active":
+        await asyncio.wait_for(continued.wait(), timeout=15)
+        judge.assert_called_once()
+        assert judge.call_args.args[1] == ""
+        assert any("Continuing toward goal" in content for content in adapter.sent)
+        assert len(handled) == 2
+        assert handled[1].startswith("[Continuing toward your standing goal]")
+        state = goals.load_goal(entry.session_id)
+        assert state is not None and state.turns_used == 1
+    else:
+        judge.assert_not_called()
+        assert handled == [event.text]
+        state = goals.load_goal(entry.session_id)
+        if goal_state == "absent":
+            assert state is None
+        else:
+            assert state is not None and state.status == "paused"
+    loop_completion.assert_awaited_once()
+    assert loop_completion.await_args is not None
+    assert loop_completion.await_args.kwargs["final_response"] == ""
+    judge_llm.assert_not_called()
+    assert adapter.sent.count("one part is complete; work remains") == 1
+    assert not any(marker in content for content in adapter.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [
+    {"final_response": "", "failed": True},
+    {"final_response": "", "interrupted": True},
+    {"final_response": ""},
+])
+async def test_genuinely_empty_results_do_not_revive_goal(hermes_home, monkeypatch, result):
+    """Preserving successful silence must not make errors self-retry forever."""
+    from datetime import datetime
+    from unittest.mock import MagicMock, Mock
+    import uuid
+
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry
+    from hermes_cli import goals
+
+    source = _slack_thread_source()
+    key = build_session_key(source)
+    entry = SessionEntry(
+        session_key=key, session_id=f"empty-goal-{uuid.uuid4().hex}",
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.SLACK, chat_type="channel",
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")})
+    runner._queued_events = {}
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = entry
+    runner.session_store._generate_session_key.return_value = key
+    runner._should_send_voice_reply = Mock(return_value=False)
+    adapter = _DrainProbeAdapter()
+    runner.adapters = {Platform.SLACK: adapter}
+    goals.GoalManager(entry.session_id).set("finish the outstanding work", max_turns=3)
+    judge = Mock()
+    monkeypatch.setattr(goals, "judge_goal", judge)
+    event = MessageEvent(text="continue", message_type=MessageType.TEXT, source=source)
+    response = await runner._hmwa_deliver_turn_response(
+        event, source, entry, key, 1, result, [], "", "", False,
+    )
+    await runner._run_post_turn_hooks(
+        agent_result=response, source=source, is_internal=False, event=event,
+    )
+    judge.assert_not_called()
+    state = goals.load_goal(entry.session_id)
+    assert state is not None and state.turns_used == 0
+    assert key not in adapter._pending_messages

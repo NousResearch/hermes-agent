@@ -43,9 +43,17 @@ def _poll_desktop_heartbeats_once() -> int:
                 with _session_profile_runtime_scope(session):
                     from hermes_cli.heartbeat import HeartbeatManager
 
-                    prompt = HeartbeatManager(session_key).due_prompt()
+                    manager = HeartbeatManager(session_key)
+                    state = manager.state
+                    if state is None:
+                        continue
+                    previous_last_fired_at = state.last_fired_at
+                    previous_fire_count = state.fire_count
+                    prompt = manager.due_prompt()
                     if not prompt:
                         continue
+                    claimed_last_fired_at = state.last_fired_at
+                    claimed_fire_count = state.fire_count
                     control = _snapshot_control(session_key)
                 session["running"] = True
         except Exception as exc:
@@ -59,6 +67,23 @@ def _poll_desktop_heartbeats_once() -> int:
         except Exception as exc:
             with lock:
                 session["running"] = False
+                try:
+                    with _session_profile_runtime_scope(session):
+                        from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
+
+                        current = HeartbeatManager(session_key).state
+                        # Do not resurrect a Heartbeat a user changed while dispatch was in flight.
+                        if (
+                            current is not None
+                            and current.status == "active"
+                            and current.last_fired_at == claimed_last_fired_at
+                            and current.fire_count == claimed_fire_count
+                        ):
+                            current.last_fired_at = previous_last_fired_at
+                            current.fire_count = previous_fire_count
+                            save_heartbeat(session_key, current)
+                except Exception:
+                    logger.debug("desktop heartbeat claim rollback failed for %s", sid, exc_info=True)
             logger.debug("desktop heartbeat dispatch failed for %s: %s", sid, exc)
     return fired
 

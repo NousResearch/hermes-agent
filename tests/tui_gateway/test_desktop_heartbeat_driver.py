@@ -65,7 +65,54 @@ def test_due_heartbeat_dispatches_a_desktop_turn_and_publishes_the_new_count(tmp
         goals._DB_CACHE.clear()
 
 
-def test_entry_starts_desktop_heartbeat_driver(monkeypatch):
+def test_failed_heartbeat_dispatch_releases_the_session_and_requeues_the_due_tick(tmp_path, monkeypatch):
+    """A failed Desktop dispatch must not consume a Heartbeat run."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from hermes_cli import goals
+    from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, save_heartbeat
+    from tui_gateway import server
+
+    goals._DB_CACHE.clear()
+    sid, key = "failed-desktop-heartbeat-sid", "failed-desktop-heartbeat-key"
+    session = {
+        "session_key": key,
+        "history_lock": threading.RLock(),
+        "running": False,
+        "queued_prompt": None,
+        "queued_prompts": [],
+        "_closing": False,
+        "agent": object(),
+        "attached_images": [],
+    }
+    server._sessions[sid] = session
+    save_heartbeat(
+        key,
+        HeartbeatState(
+            prompt="Retry a failed Desktop Heartbeat dispatch.",
+            interval_seconds=60,
+            created_at=time.time() - 61,
+        ),
+    )
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("transport lost")))
+    submitted: list[object] = []
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *args, **kwargs: submitted.append(args))
+
+    try:
+        assert server._poll_desktop_heartbeats_once() == 0
+        state = HeartbeatManager(key).state
+        assert state is not None
+        assert state.fire_count == 0
+        assert state.is_due()
+        assert session["running"] is False
+        assert submitted == []
+    finally:
+        server._sessions.pop(sid, None)
+        goals._DB_CACHE.clear()
+
     from hermes_cli import model_switch_providers
     from tui_gateway import entry, server
 

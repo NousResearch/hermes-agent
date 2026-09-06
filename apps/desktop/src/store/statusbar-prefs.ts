@@ -1,7 +1,11 @@
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
 const STATUSBAR_HIDDEN_STORAGE_KEY = 'hermes.desktop.statusbarHidden'
-const STATUSBAR_VISIBLE_STORAGE_KEY = 'hermes.desktop.statusbarVisible'
+// v1 (`hermes.desktop.statusbarVisible`) shipped a stretch where the bar was
+// opt-in, so many stores hold a `false` the user never chose. v2 is read fresh
+// and the v1 key is deliberately NOT seeded from: every existing install comes
+// back to "on" once, and hiding it again persists here.
+const STATUSBAR_VISIBLE_STORAGE_KEY = 'hermes.desktop.statusbarVisible.v2'
 
 // Whole-bar visibility, VS Code's `workbench.statusBar.visible`. On by default.
 // Hiding it unmounts the bar (its 15s status poll goes with it), so the way back

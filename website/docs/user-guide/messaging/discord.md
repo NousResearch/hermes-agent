@@ -280,6 +280,33 @@ The bot should come online in Discord within a few seconds. Send it a message â€
 You can run `hermes gateway` in the background or as a systemd service for persistent operation. See the deployment docs for details.
 :::
 
+## Scoped policies
+
+Optional `discord.scope_policies` entries resolve fieldwise from `platform.defaults` to `guilds.<guild_id>.defaults`, then channel and thread entries. Guild keys are only `defaults`, `channels`, and `threads`; channel/thread policy fields are direct. Supported fields are `require_mention`, `allow_humans`, `allow_bots`, and `conversation_trust` (`legacy`, `public`, `private`, or `full_trusted`). `full_trusted` is a privacy label, not authority: owner rights and secrets still require their normal grants. Explicit thread values remain authoritative even when the cache has no entry.
+
+```yaml
+discord:
+  scope_policies:
+    platform:
+      defaults:
+        require_mention: true
+        allow_humans: true
+        allow_bots: false
+        conversation_trust: private
+    guilds:
+      "123456789012345678":
+        defaults:
+          conversation_trust: public
+        channels:
+          "234567890123456789":
+            require_mention: false
+        threads:
+          "345678901234567890":
+            conversation_trust: private
+```
+
+Validate the complete block before restarting the gateway. A misplaced direct guild `conversation_trust` is invalid; use `.guilds.<guild_id>.defaults.conversation_trust`. Invalid scope policy configuration fails closed with an actionable error rather than silently changing legacy behavior. With no scope policy configured, native commands and legacy authorization remain unchanged.
+
 ## Configuration Reference
 
 Discord behavior is controlled through two files: **`~/.hermes/.env`** for credentials and env-level toggles, and **`~/.hermes/config.yaml`** for structured settings. Environment variables always take precedence over config.yaml values when both are set.

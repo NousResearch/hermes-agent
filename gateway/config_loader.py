@@ -301,6 +301,13 @@ def apply_plugin_yaml_hooks(yaml_cfg: dict, gateway_platforms: Any, platforms_da
             continue
         try:
             seeded = entry.apply_yaml_config_fn(yaml_cfg, platform_cfg)
+        except ValueError as e:
+            # Discord's plugin-owned scope schema is fail-closed. Other plugin
+            # hooks retain the loader's historical best-effort behavior.
+            if entry.name == "discord" or e.__class__.__name__ == "ScopePolicyValidationError":
+                raise
+            logger.debug("apply_yaml_config_fn for %s rejected a value", entry.name, exc_info=True)
+            continue
         except Exception as e:
             logger.debug("apply_yaml_config_fn for %s raised: %s", entry.name, e)
             continue

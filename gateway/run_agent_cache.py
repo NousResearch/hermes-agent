@@ -552,6 +552,7 @@ class GatewayAgentCacheMixin:
             src.platform.value if src.platform else "",
             _s(src.chat_id), _s(src.thread_id), _s(src.chat_type), _s(src.chat_name), _s(src.chat_topic),
             _s(src.user_name), _s(src.user_id), _s(getattr(src, "profile", None)),
+            _s(getattr(src, "conversation_trust", None)),
             bool(context.shared_multi_user_session), discord_ids, discord_tools, slack_tools,
             tuple(p.value for p in context.connected_platforms),
             tuple(

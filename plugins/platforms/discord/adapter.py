@@ -267,6 +267,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
+from .policy import ResolvedDiscordPolicy, resolve_scope_policy, validate_scope_policies
 from gateway.platforms._shared import profile_scoped as _profile_scoped_config_load
 
 
@@ -1363,9 +1364,22 @@ class DiscordAdapter(BasePlatformAdapter):
             return False, False
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False, False
+
+        scope_policy = self._scope_policy_for_message(message)
+        is_dm = isinstance(message.channel, discord.DMChannel) or getattr(message, "guild", None) is None
+        if not is_dm:
+            is_bot_author = bool(getattr(message.author, "bot", False))
+            if is_bot_author and scope_policy.allow_bots is False:
+                return False, False
+            if not is_bot_author and scope_policy.allow_humans is False:
+                return False, False
+            if scope_policy.require_mention is True and not self._self_is_raw_mentioned(message):
+                return False, False
         role_authorized = False
         if getattr(message.author, "bot", False):
             allow_bots = self._get_allow_bots()
+            if scope_policy.allow_bots is True:
+                allow_bots = "all"
             if allow_bots == "none":
                 return False, False
             if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
@@ -1414,6 +1428,23 @@ class DiscordAdapter(BasePlatformAdapter):
                     return False, False
         return True, role_authorized
 
+    def _scope_policy_for_message(self, message: Any) -> ResolvedDiscordPolicy:
+        guild = getattr(message, "guild", None)
+        if guild is None:
+            return ResolvedDiscordPolicy()
+        channel = getattr(message, "channel", None)
+        parent = self._get_parent_channel_id(channel)
+        return resolve_scope_policy(
+            self.config.extra.get("scope_policies"),
+            getattr(guild, "id", None), getattr(channel, "id", None), parent,
+        )
+
+    def _stamp_scope_trust(self, source: Any, *, guild_id: Any, channel_id: Any, parent_channel_id: Any = None) -> Any:
+        policy = resolve_scope_policy(self.config.extra.get("scope_policies"), guild_id, channel_id, parent_channel_id)
+        if policy.conversation_trust is not None:
+            setattr(source, "conversation_trust", policy.conversation_trust)
+        return source
+
     async def _dispatch_discord_message(self, message: Any) -> bool:
         """Apply Discord ingress policy and dispatch one live event."""
         if not self._ready_event.is_set():
@@ -1441,13 +1472,17 @@ class DiscordAdapter(BasePlatformAdapter):
     def _source_for_platform_event(
         self, *, chat_id: str, user_id: Optional[str], user_name: Optional[str],
         thread_id: Optional[str], guild_id: Optional[str], message_id: Optional[str] = None,
+        parent_chat_id: Optional[str] = None,
     ):
         """Build the SessionSource the gateway authorizes against; missing identity raises (fail closed)."""
         if not user_id or not chat_id:
             raise ValueError("gateway_platform_event requires actor and chat identities")
-        return self.build_source(
-            chat_id=chat_id, chat_type="thread" if thread_id else "group", user_id=user_id,
-            user_name=user_name, thread_id=thread_id, guild_id=guild_id, message_id=message_id,
+        return self._stamp_scope_trust(
+            self.build_source(
+                chat_id=chat_id, chat_type="thread" if thread_id else "group", user_id=user_id,
+                user_name=user_name, thread_id=thread_id, guild_id=guild_id, message_id=message_id,
+                parent_chat_id=parent_chat_id,
+            ), guild_id=guild_id, channel_id=chat_id, parent_channel_id=parent_chat_id,
         )
 
     async def _fire_platform_event(self, event: Dict[str, Any], source) -> None:
@@ -1503,6 +1538,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_id=str(chat_id), user_id=str(getattr(author, "id", "") or "") or None,
             user_name=getattr(author, "display_name", None), thread_id=thread_id,
             guild_id=str(getattr(guild, "id", "")) if guild else None, message_id=str(message_id),
+            parent_chat_id=(str(getattr(message.channel, "parent_id", "")) or None),
         )
 
     @staticmethod
@@ -1524,6 +1560,7 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_id=str(thread_id), user_id=str(owner_id) if owner_id is not None else None,
             user_name=None, thread_id=str(thread_id),
             guild_id=str(getattr(guild, "id", "")) if guild else None,
+            parent_chat_id=str(parent_id) if parent_id is not None else None,
         )
 
     async def _on_platform_message_edit(self, before, after) -> None:
@@ -4739,6 +4776,10 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
         )
+        source = self._stamp_scope_trust(
+            source, guild_id=self._interaction_guild_id(interaction),
+            channel_id=str(interaction.channel_id), parent_channel_id=parent_id or None,
+        )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)
         return MessageEvent(
@@ -4798,6 +4839,10 @@ class DiscordAdapter(BasePlatformAdapter):
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=_parent_id or None,
+        )
+        source = self._stamp_scope_trust(
+            source, guild_id=self._interaction_guild_id(interaction),
+            channel_id=thread_id, parent_channel_id=_parent_id or None,
         )
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         _channel_prompt = self._resolve_channel_prompt(thread_id, _parent_id or None)
@@ -6074,6 +6119,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 or self._derive_auto_thread_name(message.content or "")
             ) if auto_threaded_channel is not None else None,
         )
+        source = self._stamp_scope_trust(
+            source, guild_id=str(guild.id) if guild else None,
+            channel_id=str(effective_channel.id), parent_channel_id=parent_channel_id,
+        )
         media_urls, media_types, pending_text_injection = await self._collect_attachment_media(all_attachments)
         event_text = normalized_content
         if pending_text_injection:
@@ -7246,6 +7295,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
             if isinstance(candidate_extra, dict):
                 platform_extra_cfg = candidate_extra
     seeded_extra = {}
+    scope_policies_cfg = discord_cfg.get("scope_policies")
+    if scope_policies_cfg is not None:
+        seeded_extra["scope_policies"] = validate_scope_policies(scope_policies_cfg)
     # Gate keys are ALWAYS seeded into PlatformConfig.extra (per-profile lists); the os.environ writes
     # below are first-writer-wins for legacy consumers and skipped for profile-scoped multiplex loads.
     # The os.environ writes below remain first-writer-wins for legacy env-only consumers, but are skipped

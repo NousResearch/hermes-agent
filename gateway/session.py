@@ -10,7 +10,19 @@ import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Literal, Optional
+
+
+ConversationTrust = Literal["legacy", "public", "private", "full_trusted"]
+_VALID_CONVERSATION_TRUST = frozenset({"legacy", "public", "private", "full_trusted"})
+
+
+def _deserialize_conversation_trust(value: Any) -> Optional[ConversationTrust]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or value not in _VALID_CONVERSATION_TRUST:
+        raise ValueError(f"invalid conversation_trust: {value!r}")
+    return value  # type: ignore[return-value]
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
@@ -96,6 +108,7 @@ class SessionSource:
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
     delivered_via_upstream_relay: bool = False
+    conversation_trust: Optional[ConversationTrust] = None
 
     def __post_init__(self) -> None:
         # Mirror scope_id/guild_id onto each other (scope_id wins) so readers of EITHER agree.
@@ -142,6 +155,8 @@ class SessionSource:
         if self.auto_thread_created:
             d["auto_thread_created"] = True
         _optional(self._OPTIONAL_TAIL)
+        if self.conversation_trust is not None:
+            d["conversation_trust"] = self.conversation_trust
         return d
 
     @classmethod
@@ -156,6 +171,7 @@ class SessionSource:
             chat_type=data.get("chat_type", "dm"),
             scope_id=data.get("scope_id", data.get("guild_id")),
             auto_thread_created=bool(data.get("auto_thread_created", False)), **plain,
+            conversation_trust=_deserialize_conversation_trust(data.get("conversation_trust")),
         )
 
 
@@ -319,6 +335,11 @@ def _discord_platform_notes(context: SessionContext) -> List[str]:
             "asks, explain that you can only read messages sent directly to you and respond."
         )]
     # Static pointer: live voice-channel state goes on the user message (prompt-cache safety).
+    if context.source.conversation_trust is not None:
+        from agent.prompt_builder import format_conversation_trust_context
+        trust_note = format_conversation_trust_context(context.source.conversation_trust)
+        if trust_note:
+            lines += ["", trust_note]
     lines += ["", (
         "Voice-channel state, when relevant, appears in the current message as a "
         "`[Voice channel now: ...]` note."

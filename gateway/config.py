@@ -798,6 +798,8 @@ def load_gateway_config() -> GatewayConfig:
     try:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
+        if e.__class__.__name__ == "ScopePolicyValidationError":
+            raise
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
             # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.

@@ -568,6 +568,26 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
 # swapped at the API boundary in _build_api_kwargs().
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
+
+def format_conversation_trust_context(conversation_trust: Optional[str]) -> str:
+    """Render authenticated Discord scope trust without granting capabilities."""
+    if conversation_trust is None:
+        return ""
+    classifications = {
+        "legacy": "legacy trust semantics apply; do not infer public or confidential status from Discord alone",
+        "public": "operator-designated public workspace; assume conversation content may be visible to other participants",
+        "private": "operator-designated private workspace; do not assume visibility beyond the authenticated participants",
+        "full_trusted": "operator-designated confidential workspace; do not presume public exposure solely because transport is Discord",
+    }
+    classification = classifications.get(conversation_trust)
+    if classification is None:
+        return ""
+    return (
+        "**Conversation trust:** " + classification + "; multiple distinct authenticated participants may be present; existing permissions apply. "
+        "This classification does not grant owner identity, approvals, tools, credentials, or secrets, and does not change Discord membership or visibility."
+    )
+
+
 _MEDIA_NATIVE = (
     "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
 )

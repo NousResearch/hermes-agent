@@ -1394,6 +1394,7 @@ DEFAULT_CONFIG = {
     },
 
     "discord": {
+        "scope_policies": {},  # Optional guild/channel/thread overrides; empty preserves legacy behavior
         "require_mention": True,  # require @mention to respond in server channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)

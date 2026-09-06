@@ -231,6 +231,10 @@ def persist_session_workspace(session: dict) -> None:
         row = db.get_session(session["session_key"]) if db is not None else None
         if not row or row.get("cwd") != session["cwd"]:
             raise ValueError("Workspace session binding could not be persisted")
+    # The durable session row now owns the checkout; the claim is no longer an orphan candidate.
+    from hermes_cli import projects_db as pdb
+    with pdb.connect_closing(Path(home) / "projects.db") as conn:
+        pdb.set_workspace_claim_state(conn, session["coding_workspace"]["requestId"], "bound")
 
 
 def register_folder(pdb, conn, path: str):
@@ -270,6 +274,12 @@ def _ensure_managed_worktrees_ignored(root: str) -> None:
         raise ValueError("Project ignore rules override the managed checkout exclusion; add /.worktrees/ to those rules")
 
 
+def _discard_created_worktree(root: str, cwd: str, branch: str) -> None:
+    """Undo a checkout this call created so a failed prepare never leaves an orphan."""
+    git._git(root, ["worktree", "remove", "--force", cwd])
+    git._git(root, ["branch", "-D", branch])
+
+
 def prepare_workspace(pdb, conn, params: dict) -> dict:
     with _prepare_lock:
         info = inspect_workspace(str(params.get("path") or ""))
@@ -282,40 +292,68 @@ def prepare_workspace(pdb, conn, params: dict) -> dict:
         if not isinstance(request_id, str) or not request_id or len(request_id) > 256:
             raise ValueError("Workspace request identity is required")
         cwd = path
-        if mode == "worktree":
-            if not root:
-                raise ValueError("New worktree requires an existing Git repository")
-            # Profile ownership is part of identity, even on a shared repository.
-            digest = hashlib.sha256(f"{get_hermes_home()}\0{request_id}".encode()).hexdigest()[:24]
-            name, branch = f"task-{digest}", f"hermes/task-{digest}"
-            managed = Path(root) / ".worktrees"
-            if managed.resolve() != managed:
-                raise ValueError("Managed .worktrees directory must not be a symlink")
-            _ensure_managed_worktrees_ignored(root)
-            existing = next((t for t in info["worktrees"] if t["branch"] == branch), None)
-            if existing:
-                cwd = _directory(existing["path"])
-                if Path(cwd).parent != managed:
-                    raise ValueError("Retry checkout moved outside managed .worktrees")
-            else:
-                # Resolve to a commit before calling the existing primitive: no init,
-                # implicit root commit, remote fetch, or dirty-file inclusion.
-                base = str(params.get("base") or "HEAD")
-                commit = git._git_line(path, ["rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}"])
-                if not commit:
-                    raise ValueError("Worktree base must resolve to an existing commit")
-                cwd = git.worktree_add(root, {"name": name, "branch": branch, "base": commit})["path"]
-        elif mode == "existing":
-            cwd = _directory(str(params.get("existingPath") or ""))
-            if not any(_directory(t["path"]) == cwd for t in info["worktrees"]):
-                raise ValueError("Selected checkout is not an existing worktree of this repository")
-        elif mode == "current":
-            cwd = root or path
-        elif mode != "folder":
-            raise ValueError("Unknown checkout mode")
-        actual = inspect_workspace(cwd)
-        source = _git_output(path, ["rev-parse", "--show-toplevel"]).strip() if root else path
-        project = project or register_folder(pdb, conn, root or path)
+        # Set once THIS call owns a new claim; on failure the checkout it made (if any)
+        # and the claim are rolled back together so nothing ownerless survives.
+        rollback = None
+        try:
+            if mode == "worktree":
+                if not root:
+                    raise ValueError("New worktree requires an existing Git repository")
+                # Profile ownership is part of identity, even on a shared repository.
+                digest = hashlib.sha256(f"{get_hermes_home()}\0{request_id}".encode()).hexdigest()[:24]
+                name, branch = f"task-{digest}", f"hermes/task-{digest}"
+                managed = Path(root) / ".worktrees"
+                if managed.resolve() != managed:
+                    raise ValueError("Managed .worktrees directory must not be a symlink")
+                _ensure_managed_worktrees_ignored(root)
+                existing = next((t for t in info["worktrees"] if t["branch"] == branch), None)
+                if not existing and not pdb.get_workspace_claim(conn, request_id):
+                    # A fresh draft adopts a checkout whose owner died before session.create
+                    # rather than minting a sibling. The orphan's own requestId becomes this
+                    # draft's identity so session.create derives the same durable key.
+                    orphan = pdb.orphaned_workspace_claim(conn, root)
+                    orphan_tree = orphan and next((t for t in info["worktrees"] if t["branch"] == orphan["branch"]), None)
+                    if orphan_tree:
+                        request_id, branch = orphan["request_id"], orphan["branch"]
+                        name, existing = Path(orphan["path"]).name, orphan_tree
+                # Durable ownership precedes the first Git side effect: a crash between
+                # `worktree add` and `session.create` leaves a claim to recover, never an
+                # ownerless checkout. A prior claim for this request is the retry receipt.
+                claim = pdb.claim_workspace(conn, request_id, root=root, path=str(managed / name), branch=branch)
+                if existing:
+                    cwd = _directory(existing["path"])
+                    if Path(cwd).parent != managed:
+                        raise ValueError("Retry checkout moved outside managed .worktrees")
+                else:
+                    if claim is None:
+                        rollback = {"branch": branch}
+                    # Resolve to a commit before calling the existing primitive: no init,
+                    # implicit root commit, remote fetch, or dirty-file inclusion.
+                    base = str(params.get("base") or "HEAD")
+                    commit = git._git_line(path, ["rev-parse", "--verify", "--end-of-options", f"{base}^{{commit}}"])
+                    if not commit:
+                        raise ValueError("Worktree base must resolve to an existing commit")
+                    cwd = git.worktree_add(root, {"name": name, "branch": branch, "base": commit})["path"]
+                    if rollback is not None:
+                        rollback["cwd"] = cwd
+                pdb.set_workspace_claim_state(conn, request_id, "prepared")
+            elif mode == "existing":
+                cwd = _directory(str(params.get("existingPath") or ""))
+                if not any(_directory(t["path"]) == cwd for t in info["worktrees"]):
+                    raise ValueError("Selected checkout is not an existing worktree of this repository")
+            elif mode == "current":
+                cwd = root or path
+            elif mode != "folder":
+                raise ValueError("Unknown checkout mode")
+            actual = inspect_workspace(cwd)
+            source = _git_output(path, ["rev-parse", "--show-toplevel"]).strip() if root else path
+            project = project or register_folder(pdb, conn, root or path)
+        except BaseException:
+            if rollback is not None:
+                if "cwd" in rollback:
+                    _discard_created_worktree(root, rollback["cwd"], rollback["branch"])
+                pdb.release_workspace_claim(conn, request_id)
+            raise
         return {"cwd": actual["path"], "projectId": project.id, "requestId": request_id,
                 "sourcePath": source, "projectName": project.name, "mode": mode,
                 "branch": actual["branch"], "repoRoot": actual["repoRoot"]}

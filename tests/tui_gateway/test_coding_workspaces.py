@@ -327,3 +327,50 @@ def test_coding_session_persists_exact_cwd_and_refuses_missing_checkout(tmp_path
     assert session["coding_workspace"]["cwd"] == str(folder)
     assert call("session.workspace.verify", session_id=resumed["session_id"], cwd=str(folder))["gatewayCwd"] == str(folder)
     db.close()
+
+
+def _repo(tmp_path, name="repo"):
+    repo = tmp_path / name
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    git(repo, "-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "--allow-empty", "-m", "base")
+    return repo
+
+
+def _claims():
+    import sqlite3
+    from hermes_constants import get_hermes_home
+    with sqlite3.connect(get_hermes_home() / "projects.db") as db:
+        return {row[0]: row[1] for row in db.execute("SELECT request_id, state FROM workspace_claims")}
+
+
+def test_prepare_failure_after_worktree_creation_leaves_no_ownerless_checkout(tmp_path, monkeypatch):
+    from tui_gateway import coding_workspaces
+    repo = _repo(tmp_path)
+    worktrees_before = git(repo, "worktree", "list", "--porcelain")
+    branches_before = git(repo, "branch", "--list")
+
+    def explode(pdb, conn, path):
+        raise RuntimeError("registry unavailable after the checkout exists")
+    monkeypatch.setattr(coding_workspaces, "register_folder", explode)
+    result = server._methods["projects.workspace.prepare"](1, dict(path=str(repo), mode="worktree", requestId="doomed"))
+    assert "error" in result
+    assert git(repo, "worktree", "list", "--porcelain") == worktrees_before
+    assert git(repo, "branch", "--list") == branches_before
+    assert "doomed" not in _claims()
+
+
+def test_bound_worktree_is_never_adopted_by_a_later_draft(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
+    db = SessionDB(tmp_path / "state.db")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    repo = _repo(tmp_path)
+    prepared = call("projects.workspace.prepare", path=str(repo), mode="worktree", requestId="task-one")
+    assert _claims()["task-one"] == "prepared"
+    call("session.create", source="desktop", cwd=prepared["cwd"], coding_workspace=prepared)
+    assert _claims()["task-one"] == "bound"
+    later = call("projects.workspace.prepare", path=str(repo), mode="worktree", requestId="task-two")
+    assert later["cwd"] != prepared["cwd"] and later["requestId"] == "task-two"
+    db.close()

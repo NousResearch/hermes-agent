@@ -102,6 +102,21 @@ it will only work in DMs. Without `files:read`, Hermes can chat but **cannot rel
 These are the most commonly missed scopes.
 :::
 
+## Reading linked Slack messages
+
+In a Slack conversation, paste a Slack message permalink and ask Hermes about it. Hermes reads the
+exact linked message and a small, bounded thread window through the bot client already connected to
+the gateway. Linked message text is marked as untrusted Slack content; instructions inside it are
+not treated as instructions from the current user.
+
+The read uses the current workspace's bot identity and is limited to conversations Slack permits
+that bot to access. Public channels, private channels, DMs, and group DMs require the corresponding
+`channels:history`, `groups:history`, `im:history`, and `mpim:history` scopes listed above. A bot
+that is not in a channel receives Slack's normal access error.
+
+Hermes rejects links for another workspace. This capability does not use a browser session, create
+a second Slack client, request a write scope, or expose channel-history browsing.
+
 **Optional scopes:**
 
 | Scope | Purpose |

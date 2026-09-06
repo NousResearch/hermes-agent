@@ -36,7 +36,7 @@ import {
 import type { ClipboardEvent, DragEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { avatarColor, botAppearance, BotFace } from './avatar'
+import { botAppearance } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import {
   $botMeta,
@@ -97,6 +97,7 @@ import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify, stripPreviewMarkdown } from './labels'
+import { ProviderAvatar } from './provider-avatar'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -972,8 +973,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
         : display
 
-    // Speaker avatar: same appearance pipeline as the roster
-    // (custom image/pet, else deterministic shape+color face).
+    // Speaker avatar: use the model provider mark when the roster knows it,
+    // keeping the existing appearance pipeline as the fallback.
     // Remote speakers have no local meta and get the
     // deterministic face for their name — stable per bot.
     // Non-null exactly when !isUser — the user's own lines carry no avatar.
@@ -991,11 +992,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       >
         {appearance ? (
           <div className="mt-0.5 shrink-0">
-            <BotFace
-              color={avatarColor(appearance.color, entry.from.name)}
-              image={photo ? image : null}
+            <ProviderAvatar
+              appearance={{ ...appearance, image: photo ? image : null }}
+              model={member?.model}
               name={entry.from.name}
-              shape={appearance.shape}
+              provider={member?.provider}
               size={24}
             />
           </div>

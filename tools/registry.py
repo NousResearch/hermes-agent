@@ -211,6 +211,7 @@ _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
 _check_fn_cache_lock = threading.Lock()
+_check_fn_cache_generation = 0
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
 _BROWSER_IDENTITY_KEYS = (
@@ -231,14 +232,27 @@ def _fn_label(fn: Callable) -> object:
 
 def _prune_check_fn_caches(now: float) -> None:
     """Expire stale entries and cap profile-dimensional cache growth. Caller holds the lock."""
+    global _check_fn_cache_generation
+    changed = False
     for cache, ttl, stamp in (
         (_check_fn_cache, _CHECK_FN_TTL_SECONDS, lambda v: v[0]),
         (_check_fn_last_good, _CHECK_FN_FAILURE_GRACE_SECONDS, lambda v: v)):
         for key, value in list(cache.items()):
             if now - stamp(value) >= ttl:
                 cache.pop(key, None)
+                changed = True
         while len(cache) >= _CHECK_FN_CACHE_MAX:
             cache.pop(next(iter(cache)))
+            changed = True
+    if changed:
+        _check_fn_cache_generation += 1
+
+
+def check_fn_cache_generation() -> int:
+    """Version the outer tool-definition cache against check_fn expiry/invalidation."""
+    with _check_fn_cache_lock:
+        _prune_check_fn_caches(time.monotonic())
+        return _check_fn_cache_generation
 
 
 def check_fn_cache_scope() -> Optional[str]:
@@ -347,9 +361,11 @@ def _memo_check(fn: Callable, memo: Dict[Callable, bool]) -> bool:
 
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results (after config changes like ``hermes tools enable``)."""
+    global _check_fn_cache_generation
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+        _check_fn_cache_generation += 1
 
 
 def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:

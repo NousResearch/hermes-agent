@@ -35,6 +35,8 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 from agent.secret_scope import UnscopedSecretError, get_secret
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from hermes_cli.config import load_config_readonly
+from hermes_constants import get_hermes_home
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, ProcessingOutcome,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -90,6 +92,61 @@ def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
         elif isinstance(val, str) and val.strip().lower() in _BOOL_WORDS:
             kwargs[key] = val.strip().lower() in {"1", "true", "yes", "on"}
     return kwargs
+
+
+# Slack's bot avatar is app-global. ``chat:write.customize`` lets each message
+# carry the provider identity instead, which is important when several Hermes
+# profiles share a workspace but represent different model providers.
+_PROVIDER_ICON_URLS = {
+    "openai": "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-png/light/openai.png",
+    "claude": "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-png/light/claude.png",
+    "grok": "https://raw.githubusercontent.com/lobehub/lobe-icons/master/packages/static-png/light/grok.png",
+}
+
+
+_OPENAI_MARKERS = ("openai", "openai-codex", "chatgpt", "codex", "luna", "sol", "gpt-5", "gpt-4")
+_CLAUDE_MARKERS = ("anthropic", "claude", "fable")
+_GROK_MARKERS = ("xai-oauth", "xai", "grok")
+
+
+def _icon_for_identity(identity: str) -> Optional[str]:
+    blob = identity.lower()
+    if any(marker in blob for marker in _OPENAI_MARKERS):
+        return _PROVIDER_ICON_URLS["openai"]
+    if any(marker in blob for marker in _CLAUDE_MARKERS):
+        return _PROVIDER_ICON_URLS["claude"]
+    if any(marker in blob for marker in _GROK_MARKERS):
+        return _PROVIDER_ICON_URLS["grok"]
+    return None
+
+
+def _provider_icon_url(
+    provider: str = "", model: str = "", text: str = "",
+) -> Optional[str]:
+    """Return the provider icon for this message.
+
+    Session/turn identity (``model``, footer ``text``) wins over the profile
+    default so ``!model`` mid-thread can change the Slack avatar per post.
+    """
+    explicit = _icon_for_identity(f"{provider}:{model}")
+    if explicit:
+        return explicit
+    if text:
+        lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+        last = lines[-1] if lines else ""
+        if last and ("·" in last or " • " in last):
+            from_text = _icon_for_identity(last)
+            if from_text:
+                return from_text
+    try:
+        config = load_config_readonly()
+        model_config = config.get("model", {})
+        cfg_provider = str(model_config.get("provider", "")).strip().lower()
+        cfg_model = str(model_config.get("default", "")).strip().lower()
+    except Exception:  # pragma: no cover - icon decoration must never block delivery
+        logger.debug("[Slack] Could not resolve provider icon", exc_info=True)
+        return None
+    return _icon_for_identity(f"{cfg_provider}:{cfg_model}")
 
 
 async def _read_error_text_limited(
@@ -875,6 +932,7 @@ class SlackAdapter(BasePlatformAdapter):
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
     _STATUS_MESSAGE_IDS_MAX = 2000
+    _MUTED_THREADS_MAX = 5000
     _THREAD_CACHE_MAX = 2500
     _THREAD_CACHE_TTL = 60.0
     # Watchdog: poll interval; reconnect after N ping_intervals of silence (Slack pings idle
@@ -895,6 +953,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}
         self._team_bot_user_ids: Dict[str, str] = {}
         self._team_bot_names: Dict[str, str] = {}
+        self._team_domains: Dict[str, str] = {}
         # User/channel IDs are workspace-local: name/is_bot caches key by (team_id, id) so
         # multi-workspace processes never reuse another tenant's names (is_bot catches peer-agent
         # posts lacking bot_id/bot_message markers; DM channel IDs are per-user, hence bounded).
@@ -928,6 +987,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Bot-sent message ts / @mentioned threads: replies there get answered without a mention.
         self._bot_message_ts: set[str] = set()
         self._mentioned_threads: set[str] = set()
+        # Slack has no per-thread app membership. Persist an adapter-owned mute keyed by
+        # workspace, channel, and root timestamp so ``@this_bot !leave`` survives restarts.
+        self._thread_participation_path = get_hermes_home() / "slack_thread_participation.json"
+        self._muted_threads = self._load_muted_threads()
         # (team_id, channel_id, thread_ts) → Assistant thread metadata; lifecycle
         # events may precede message events and carry session-scoping identity.
         self._assistant_threads: Dict[Tuple[str, str, str], Dict[str, str]] = {}
@@ -973,6 +1036,60 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
+
+    def _load_muted_threads(self) -> set[str]:
+        try:
+            payload = json.loads(self._thread_participation_path.read_text(encoding="utf-8"))
+            entries = payload.get("muted_threads", []) if isinstance(payload, dict) else []
+            return {str(entry) for entry in entries if isinstance(entry, str)}
+        except FileNotFoundError:
+            return set()
+        except Exception:
+            logger.warning("[Slack] Could not load thread participation state", exc_info=True)
+            return set()
+
+    @staticmethod
+    def _thread_participation_key(team_id: str, channel_id: str, thread_ts: str) -> str:
+        return f"{team_id}:{channel_id}:{thread_ts}"
+
+    def _persist_muted_threads(self) -> None:
+        path = self._thread_participation_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        try:
+            tmp.write_text(
+                json.dumps({"muted_threads": sorted(self._muted_threads)}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                tmp.unlink()
+
+    def _set_thread_muted(self, key: str, muted: bool) -> bool:
+        previous = set(self._muted_threads)
+        if muted:
+            self._muted_threads.add(key)
+            if len(self._muted_threads) > self._MUTED_THREADS_MAX:
+                self._muted_threads = set(
+                    sorted(self._muted_threads, key=lambda item: self._slack_timestamp_sort_key(
+                        item.rsplit(":", 1)[-1]))[-self._MUTED_THREADS_MAX:]
+                )
+        else:
+            self._muted_threads.discard(key)
+        try:
+            self._persist_muted_threads()
+            return True
+        except Exception:
+            self._muted_threads = previous
+            logger.error("[Slack] Could not persist thread participation state", exc_info=True)
+            return False
+
+    def _clear_thread_wake_markers(self, team_id: str, thread_ts: str) -> None:
+        scoped = self._workspace_message_marker(team_id, thread_ts)
+        for entries in (self._mentioned_threads, self._bot_message_ts):
+            entries.discard(scoped)
+            entries.discard(thread_ts)
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1587,9 +1704,13 @@ class SlackAdapter(BasePlatformAdapter):
         bot_user_id = auth_response.get("user_id", "")
         bot_name = auth_response.get("user", "unknown")
         team_name = auth_response.get("team", "unknown")
+        team_url = str(auth_response.get("url") or "")
+        team_domain = team_url.split("://", 1)[-1].split(".", 1)[0].strip().lower()
         self._team_clients[team_id] = client
         self._team_bot_user_ids[team_id] = bot_user_id
         self._team_bot_names[team_id] = bot_name
+        if team_domain:
+            self._team_domains[team_id] = team_domain
         if self._bot_user_id is None:
             self._bot_user_id = bot_user_id
         if self._bot_display_name is None:
@@ -1649,6 +1770,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Reset so a reconnect with dropped/rotated tokens carries no stale identities.
             self._bot_user_id = self._bot_display_name = None
             self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
+            self._team_domains = {}
             self._app = AsyncApp(
                 token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
                 before_authorize=_slack_per_request_proxy_middleware(proxy_url))
@@ -1748,7 +1870,7 @@ class SlackAdapter(BasePlatformAdapter):
         await self._stop_socket_mode_handler()
         await self._close_workspace_clients()
         self._app = self._app_token = self._proxy_url = self._bot_user_id = None
-        self._team_clients, self._team_bot_user_ids = {}, {}
+        self._team_clients, self._team_bot_user_ids, self._team_domains = {}, {}, {}
         self._channel_team, self._dm_conversation_cache = {}, {}
         self._release_platform_lock()
         logger.info("[Slack] Disconnected")
@@ -1798,6 +1920,10 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and team_id in self._team_clients:
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
+
+    def workspace_domain_for_team(self, team_id: str) -> str:
+        """Authenticated Slack subdomain for one team, or empty when this adapter does not serve it."""
+        return self._team_domains.get(str(team_id or ""), "")
 
     def _client_for(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Any:
         """WebClient for ``chat_id``, workspace-scoped by outbound ``metadata``."""
@@ -2003,6 +2129,15 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             return await getattr(client_fn(), method)(**kwargs)
         except Exception as e:
+            if kwargs.get("icon_url") and self._is_custom_icon_payload_rejection(e):
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("icon_url", None)
+                logger.warning(
+                    "[Slack] Provider icon rejected; retrying %s with the app avatar. "
+                    "Grant chat:write.customize and reinstall the Slack app to enable provider icons: %s",
+                    verb, e)
+                return await self._call_with_block_fallback(
+                    client_fn, method, retry_kwargs, verb)
             if kwargs.get("blocks") and self._is_block_payload_rejection(e):
                 retry_kwargs = dict(kwargs)
                 if verb == "edit":
@@ -2013,6 +2148,18 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Block Kit payload rejected; retrying %s without blocks: %s", verb, e)
                 return await getattr(client_fn(), method)(**retry_kwargs)
             raise
+
+    @staticmethod
+    def _is_custom_icon_payload_rejection(exc: BaseException) -> bool:
+        """Whether Slack rejected only the per-message provider identity override."""
+        response = getattr(exc, "response", None)
+        payload = _slack_response_payload(response) if response is not None else {}
+        error = str(payload.get("error", "") or "").lower()
+        needed = str(payload.get("needed", "") or "").lower()
+        text = str(exc).lower()
+        if error == "missing_scope":
+            return "chat:write.customize" in needed or "icon_url" in text
+        return any(marker in text for marker in ("icon_url", "invalid_arg_name"))
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None,
@@ -2043,7 +2190,8 @@ class SlackAdapter(BasePlatformAdapter):
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
+            last_result = await self._post_chunks(
+                chat_id, team_id, content, formatted, thread_ts, metadata)
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
@@ -2071,7 +2219,8 @@ class SlackAdapter(BasePlatformAdapter):
                 retry_after=self._retry_after_from_exc(e) if _retryable else None)
 
     async def _post_chunks(
-        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
+        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
         Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
@@ -2085,6 +2234,14 @@ class SlackAdapter(BasePlatformAdapter):
             kwargs = {
                 "channel": chat_id, "text": chunk,
                 "mrkdwn": True, **_slack_unfurl_kwargs(self.config.extra)}
+            md = metadata or {}
+            provider_icon = _provider_icon_url(
+                provider=str(md.get("provider") or ""),
+                model=str(md.get("model") or ""),
+                text=content or formatted,
+            )
+            if provider_icon:
+                kwargs["icon_url"] = provider_icon
             if blocks and i == 0:
                 kwargs["blocks"] = blocks
             if thread_ts:
@@ -2340,6 +2497,13 @@ class SlackAdapter(BasePlatformAdapter):
             start_kwargs["recipient_team_id"] = str(team_id)
         if text:
             start_kwargs["markdown_text"] = text
+        provider_icon = _provider_icon_url(
+            provider=str(md.get("provider") or ""),
+            model=str(md.get("model") or ""),
+            text=text or "",
+        )
+        if provider_icon:
+            start_kwargs["icon_url"] = provider_icon
         response = await client.chat_startStream(**start_kwargs)
         ts = response.get("ts") if response else None
         if not ts:
@@ -4272,6 +4436,67 @@ class SlackAdapter(BasePlatformAdapter):
             or self._slack_message_matches_mention_patterns(routing_text))
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        # Participation controls are adapter routing, not model commands. Prefer an exact
+        # Slack mention token so one ``!leave`` cannot eject every auto-following bot.
+        # Also accept labeled mentions (``<@U123|name>``), configured display-name
+        # mention_patterns, and a bare ``!leave`` from a bot that already has an
+        # active session in this thread.
+        leave_kind = self._classify_thread_leave(routing_text, bot_uid or "")
+        if leave_kind == "other":
+            return
+        if leave_kind == "bare":
+            participating = bool(
+                is_thread_reply
+                and event_thread_ts
+                and self._has_active_session_for_thread(
+                    channel_id, str(event_thread_ts), str(user_id or ""),
+                    str(team_id or ""), chat_type=channel_type or "group"))
+            leave_kind = "self" if participating else ""
+        if leave_kind == "self":
+            if self._slack_allowed_channels() and channel_id not in self._slack_allowed_channels():
+                return
+            if not is_thread_reply:
+                await self.send(
+                    channel_id,
+                    "`!leave` only applies inside a thread.",
+                    metadata={"slack_team_id": team_id},
+                )
+                return
+            participation_key = self._thread_participation_key(
+                str(team_id or ""), channel_id, str(event_thread_ts)
+            )
+            if not self._set_thread_muted(participation_key, True):
+                await self.send(
+                    channel_id,
+                    "I couldn't save the thread leave state, so I am still participating.",
+                    reply_to=event_thread_ts,
+                    metadata={"slack_team_id": team_id},
+                )
+                return
+            await self.send(
+                channel_id,
+                "Leaving the thread.",
+                reply_to=event_thread_ts,
+                metadata={"slack_team_id": team_id},
+            )
+            # send() records its reply/root as wake markers, so clear after acknowledgment.
+            self._clear_thread_wake_markers(str(team_id or ""), str(event_thread_ts))
+            return
+        participation_key = self._thread_participation_key(
+            str(team_id or ""), channel_id, str(event_thread_ts or "")
+        )
+        if is_thread_reply and participation_key in self._muted_threads:
+            exact_self_mention = bool(bot_uid and f"<@{bot_uid}>" in routing_text)
+            if not exact_self_mention:
+                return
+            if not self._set_thread_muted(participation_key, False):
+                await self.send(
+                    channel_id,
+                    "I couldn't save the thread rejoin state, so I remain muted.",
+                    reply_to=event_thread_ts,
+                    metadata={"slack_team_id": team_id},
+                )
+                return
         # Internal triggers (reactions) skip the mention requirement but NOT
         # allowed_channels or user authorization.
         force_process = bool(event.get("_hermes_force_process"))
@@ -5333,6 +5558,152 @@ class SlackAdapter(BasePlatformAdapter):
     # ----- Thread context fetching -----
 
     @staticmethod
+    def _linked_message_error(code: str, message: str) -> Dict[str, Any]:
+        return {"success": False, "error": {"code": code, "message": message}}
+
+    @staticmethod
+    def _linked_message_api_error(exc: Exception) -> str:
+        response = getattr(exc, "response", None)
+        try:
+            code = str((response or {}).get("error") or "")
+        except Exception:
+            code = ""
+        if code == "ratelimited":
+            return "rate_limited"
+        return code if code in {
+            "channel_not_found", "not_in_channel", "missing_scope", "rate_limited"
+        } else "gateway_unavailable"
+
+    async def _linked_message_record(
+        self, msg: Dict[str, Any], *, channel_id: str, team_id: str,
+        relation: Optional[str] = None, permalink: str = "",
+    ) -> Dict[str, Any]:
+        user_id = str(msg.get("user") or "")
+        is_bot = bool(msg.get("bot_id") or msg.get("subtype") == "bot_message")
+        if user_id and not is_bot:
+            is_bot = await self._resolve_user_is_bot(user_id, chat_id=channel_id, team_id=team_id)
+        sender_id = user_id or str(msg.get("bot_id") or "")
+        if is_bot:
+            sender = str(msg.get("username") or await self._resolve_user_name(
+                user_id, chat_id=channel_id, team_id=team_id) or "bot")
+            authorized: Optional[bool] = True
+        else:
+            sender = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
+            authorized = self._is_sender_authorized(
+                user_id, chat_type="thread", chat_id=channel_id)
+        # Match the existing thread-context path: Slack text is readable but cannot forge
+        # structure with newlines or terminal/control characters.
+        from gateway.session import neutralize_untrusted_inline_text
+
+        rendered_text = self._render_message_text(
+            msg, bot_uid=self._team_bot_user_ids.get(team_id, self._bot_user_id or ""))
+        record: Dict[str, Any] = {
+            "ts": str(msg.get("ts") or ""),
+            "sender": sender or sender_id,
+            "sender_id": sender_id,
+            "sender_type": "bot" if is_bot else "human",
+            "authorized": authorized,
+            "text": neutralize_untrusted_inline_text(rendered_text, max_chars=0),
+            "content_trust": (
+                "unverified_untrusted_content" if authorized is False
+                else "untrusted_slack_content"),
+        }
+        if relation:
+            record["relation"] = relation
+        if permalink:
+            record["permalink"] = permalink
+        return record
+
+    async def read_linked_message(
+        self, *, channel_id: str, message_ts: str, thread_ts: str, team_id: str,
+        workspace_domain: str, permalink: str, context_limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Read an exact permalink target plus a bounded, provenance-marked thread window."""
+        expected_domain = self.workspace_domain_for_team(team_id)
+        if not expected_domain or expected_domain.lower() != workspace_domain.lower():
+            return self._linked_message_error(
+                "workspace_mismatch", "The permalink is not served by the current Slack workspace")
+        client = self._team_clients.get(team_id)
+        if client is None:
+            return self._linked_message_error(
+                "workspace_mismatch", "The current Slack workspace has no live client")
+        try:
+            is_reply = thread_ts != message_ts
+            root_has_thread = False
+            if is_reply:
+                response = await self._conversations_replies_with_backoff(
+                    channel_id, thread_ts, context_limit + 2, team_id)
+            else:
+                response = await client.conversations_history(
+                    channel=channel_id, oldest=message_ts, latest=message_ts,
+                    inclusive=True, limit=1)
+            messages = list((response or {}).get("messages") or [])
+            root_has_thread = bool(
+                not is_reply and messages and messages[0].get("reply_count") and context_limit)
+            if root_has_thread:
+                response = await self._conversations_replies_with_backoff(
+                    channel_id, thread_ts, context_limit + 1, team_id)
+                messages = list((response or {}).get("messages") or [])
+        except Exception as exc:
+            code = self._linked_message_api_error(exc)
+            return self._linked_message_error(code, f"Slack could not read the linked message ({code})")
+        target_msg = next((msg for msg in messages if str(msg.get("ts") or "") == message_ts), None)
+        if target_msg is None and is_reply:
+            try:
+                cursor = str(((response or {}).get("response_metadata") or {}).get("next_cursor") or "")
+                # Slack returns the parent first even when oldest/latest address a reply. Follow
+                # the real cursor chain, with a hard request cap, until the exact timestamp appears.
+                for _ in range(20):
+                    if not cursor:
+                        break
+                    exact_response = await self._conversations_replies_with_backoff(
+                        channel_id, thread_ts, 100, team_id, cursor=cursor)
+                    exact_messages = list((exact_response or {}).get("messages") or [])
+                    target_msg = next(
+                        (msg for msg in exact_messages if str(msg.get("ts") or "") == message_ts), None)
+                    if target_msg is not None:
+                        break
+                    next_cursor = str(
+                        ((exact_response or {}).get("response_metadata") or {}).get("next_cursor") or "")
+                    if not next_cursor or next_cursor == cursor:
+                        break
+                    cursor = next_cursor
+            except Exception as exc:
+                code = self._linked_message_api_error(exc)
+                return self._linked_message_error(
+                    code, f"Slack could not read the exact linked message ({code})")
+        if target_msg is None:
+            return self._linked_message_error(
+                "message_not_found", "Slack did not return the exact linked message")
+        target = await self._linked_message_record(
+            target_msg, channel_id=channel_id, team_id=team_id, permalink=permalink)
+        context: List[Dict[str, Any]] = []
+        if (is_reply or root_has_thread) and context_limit:
+            for msg in messages:
+                ts = str(msg.get("ts") or "")
+                if ts == message_ts:
+                    continue
+                relation = "thread_root" if ts == thread_ts else (
+                    "before_target" if ts < message_ts else "after_target")
+                context.append(await self._linked_message_record(
+                    msg, channel_id=channel_id, team_id=team_id, relation=relation))
+                if len(context) >= context_limit:
+                    break
+        has_more = bool((response or {}).get("has_more")) or (
+            (is_reply or root_has_thread) and len(messages) - 1 > len(context))
+        return {
+            "success": True,
+            "workspace_id": team_id,
+            "channel_id": channel_id,
+            "message_ts": message_ts,
+            "thread_ts": thread_ts,
+            "target": target,
+            "context": context,
+            "has_more": has_more,
+            "content_trust": "untrusted_slack_content",
+        }
+
+    @staticmethod
     def _render_message_text(msg: dict, bot_uid: str = "") -> str:
         """Display text for a message: ``text`` minus bot mentions plus readable block/attachment
         text, URLs and file markers (no JSON dump, unlike ``_serialize_slack_blocks_for_agent``)."""
@@ -5451,13 +5822,19 @@ class SlackAdapter(BasePlatformAdapter):
         return next((m for m in messages if m.get("ts", "") == thread_ts), None)
 
     async def _conversations_replies_with_backoff(
-        self, channel_id: str, thread_ts: str, limit: int, team_id: str) -> Any:
+        self, channel_id: str, thread_ts: str, limit: int, team_id: str,
+        *, cursor: str = "",
+    ) -> Any:
         """``conversations.replies`` with 1s/2s backoff on Tier-3 rate limits (429)."""
         client = self._get_client(channel_id, team_id=team_id)
         for attempt in range(3):
             try:
-                return await client.conversations_replies(
-                    channel=channel_id, ts=thread_ts, limit=limit, inclusive=True)
+                kwargs: Dict[str, Any] = {
+                    "channel": channel_id, "ts": thread_ts, "limit": limit, "inclusive": True,
+                }
+                if cursor:
+                    kwargs["cursor"] = cursor
+                return await client.conversations_replies(**kwargs)
             except Exception as exc:
                 err_str = str(exc).lower()
                 is_rate_limit = (
@@ -6025,6 +6402,32 @@ class SlackAdapter(BasePlatformAdapter):
     def _slack_message_matches_mention_patterns(self, text: str) -> bool:
         """Return True when ``text`` matches a configured wake-word pattern."""
         return bool(text) and any(p.search(text) for p in self._slack_mention_patterns())
+
+    def _classify_thread_leave(self, routing_text: str, bot_uid: str) -> str:
+        """Classify inbound text as a thread ``!leave`` control.
+
+        Returns ``self`` (this bot), ``other`` (another bot's mention), ``bare``
+        (no mention), or ``""`` (not a leave command).
+        """
+        text = (routing_text or "").strip()
+        if not text:
+            return ""
+        mention = re.match(r"\A<@([A-Z0-9]+)(?:\|[^>]+)?>\s+", text)
+        if mention:
+            rest = text[mention.end():]
+            if re.fullmatch(r"!leave\s*", rest, re.IGNORECASE):
+                return "self" if mention.group(1) == bot_uid else "other"
+            return ""
+        for pattern in self._slack_mention_patterns():
+            match = pattern.search(text)
+            if match is None or match.start() != 0:
+                continue
+            rest = text[match.end():].strip()
+            if re.fullmatch(r"!leave\s*", rest, re.IGNORECASE):
+                return "self"
+        if re.fullmatch(r"!leave\s*", text, re.IGNORECASE):
+            return "bare"
+        return ""
 
 
 # ── Plugin entry point + hooks (register, _standalone_send, interactive_setup,

@@ -9,11 +9,12 @@
 
 import { host, useValue, Wordmark } from '@hermes/plugin-sdk'
 
-import { avatarColor, botAppearance, BotFace } from './avatar'
+import { botAppearance } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { $botMeta, $lastRoster } from './data'
 import { useBots } from './i18n'
 import { displayName } from './labels'
+import { ProviderAvatar } from './provider-avatar'
 import { botRosterMeta } from './routing'
 import type { RosterRow } from './types'
 
@@ -74,7 +75,8 @@ export function BotChatEmpty({ sessionId }: { sessionId: string }) {
   // source-scoped bot's avatar actually lives under.
   const meta = botRosterMeta(bot, allMeta)
   const name = displayName(bot, meta)
-  const { color, image, shape } = botAppearance(bot.name, meta)
+  const appearance = botAppearance(bot.name, meta)
+  const { image } = appearance
   // Same rule the rows use: keep a real photo or pet, drop the SVG backfill so
   // the math face can animate.
   const photo = Boolean(image && !isBackfilledFacePng(image))
@@ -92,12 +94,11 @@ export function BotChatEmpty({ sessionId }: { sessionId: string }) {
     >
       <div className="w-full min-w-0">
         <div className="flex justify-center" style={{ marginBottom: FACE_GAP }}>
-          <BotFace
-            color={avatarColor(color, bot.name)}
-            image={photo ? image : null}
-            mood="idle"
+          <ProviderAvatar
+            appearance={{ ...appearance, image: photo ? image : null }}
+            model={bot.model}
             name={bot.name}
-            shape={shape}
+            provider={bot.provider}
             size={FACE_SIZE}
           />
         </div>

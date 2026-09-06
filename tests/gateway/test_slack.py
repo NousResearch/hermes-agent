@@ -1239,6 +1239,68 @@ class TestStandaloneSendUserDmResolution:
 
 
 # ---------------------------------------------------------------------------
+# TestProviderIdentity
+# ---------------------------------------------------------------------------
+
+
+class TestProviderIdentity:
+    @pytest.mark.parametrize(
+        ("provider", "model", "expected"),
+        [
+            ("openai-codex", "gpt-5.6-luna", "openai"),
+            ("xai-oauth", "grok-4.6", "grok"),
+            ("anthropic", "claude-fable-5-1", "claude"),
+        ],
+    )
+    def test_provider_icon_url_uses_active_model_provider(
+        self, monkeypatch, provider, model, expected
+    ):
+        monkeypatch.setattr(
+            _slack_mod,
+            "load_config_readonly",
+            lambda: {"model": {"provider": provider, "default": model}},
+        )
+
+        assert _slack_mod._provider_icon_url() == _slack_mod._PROVIDER_ICON_URLS[expected]
+
+    def test_provider_icon_url_uses_session_model_over_profile_default(self, monkeypatch):
+        monkeypatch.setattr(
+            _slack_mod,
+            "load_config_readonly",
+            lambda: {"model": {"provider": "xai-oauth", "default": "grok-4.6"}},
+        )
+
+        assert (
+            _slack_mod._provider_icon_url(model="gpt-5.6-luna")
+            == _slack_mod._PROVIDER_ICON_URLS["openai"]
+        )
+        assert (
+            _slack_mod._provider_icon_url(text="ok\ngrok-4.6 · 12% · 3s")
+            == _slack_mod._PROVIDER_ICON_URLS["grok"]
+        )
+        assert (
+            _slack_mod._provider_icon_url(text="ok\ngpt-5.6-luna · 40% · 9s")
+            == _slack_mod._PROVIDER_ICON_URLS["openai"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_posts_provider_icon_url(self, adapter, monkeypatch):
+        monkeypatch.setattr(
+            _slack_mod,
+            "load_config_readonly",
+            lambda: {"model": {"provider": "openai-codex", "default": "gpt-5.6-luna"}},
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts-provider"})
+
+        result = await adapter.send("C123", "provider identity")
+
+        assert result.success is True
+        call_args = adapter._app.client.chat_postMessage.await_args
+        assert call_args is not None
+        assert call_args.kwargs["icon_url"] == _slack_mod._PROVIDER_ICON_URLS["openai"]
+
+
+# ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
 

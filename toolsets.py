@@ -44,6 +44,7 @@ _FEISHU_TOOLS = [
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 ]
 _YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
+_SLACK_TOOLS = ["slack_read_message"]
 
 
 def _ts(description, tools=(), includes=(), **extra):
@@ -152,6 +153,7 @@ TOOLSETS = {
         [t for t in _HERMES_CORE_TOOLS if t.startswith("kanban_")],
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
+    "slack": _ts("Read Slack message permalinks through the live workspace gateway", _SLACK_TOOLS),
     "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
@@ -202,7 +204,7 @@ TOOLSETS = {
         ["discord", "discord_admin"],
     ),
     "hermes-whatsapp": _bundle("WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)"),
-    "hermes-slack": _bundle("Slack bot toolset - full access for workspace use (terminal has safety checks)"),
+    "hermes-slack": _bundle("Slack bot toolset - full access for workspace use (terminal has safety checks)", _SLACK_TOOLS),
     "hermes-signal": _bundle("Signal bot toolset - encrypted messaging platform (full access)"),
     "hermes-bluebubbles": _bundle("BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server"),
     "hermes-homeassistant": _bundle("Home Assistant bot toolset - smart home event monitoring and control"),

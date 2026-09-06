@@ -78,7 +78,10 @@ export interface BotMeta {
 }
 
 export interface RosterRow {
+  /** Model identity from `profiles.list`; older gateways may omit both. */
+  model?: string
   name: string
+  provider?: string
   canonical_session?: CanonicalSession | null
   connectionId?: string
   connectionKind?: string
@@ -115,7 +118,9 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'model'
   | 'name'
+  | 'provider'
   | 'remoteSource'
   | 'route'
   | 'sourceMissing'

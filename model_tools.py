@@ -18,7 +18,10 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
+from tools.registry import (
+    CHECK_FN_CACHE_BYPASS, check_fn_cache_generation, check_fn_cache_scope,
+    discover_builtin_tools, registry, tool_error,
+)
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
@@ -274,6 +277,7 @@ def _tool_defs_cache_key(
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        check_fn_cache_generation(),
     )
 
 

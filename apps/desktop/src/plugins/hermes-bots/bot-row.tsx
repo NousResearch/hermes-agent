@@ -29,7 +29,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
-import { avatarColor, botAppearance, BotFace } from './avatar'
+import { botAppearance } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import {
   $botChatFocused,
@@ -49,7 +49,6 @@ import {
   botRosterKey,
   botSelectionKey,
   botSourceStatus,
-  isActiveRosterBot,
   isDefaultBot,
   newBotChat,
   ROSTER_KEY,
@@ -61,6 +60,7 @@ import { fallbackSelectionAfterHide, isBotHidden, isBotPinned } from './hidden-b
 import { useBots } from './i18n'
 import { displayName, stripPreviewMarkdown } from './labels'
 import { duplicateBot } from './profile-ops'
+import { ProviderAvatar } from './provider-avatar'
 import { openRosterBot } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { A2A_PREFIX_RE, botCanonicalSessionId, botRowOwnsWorkspace, previewKind, workerActiveAt } from './row-helpers'
@@ -93,7 +93,6 @@ interface BotRowProps {
 export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandle }: BotRowProps) {
   const { t } = useI18n()
   const b = useBots()
-  const activeProfile = useValue(host.state.profile)
   const focusedOwner = focusedRosterOwner(useValue($focusedBotOwner))
   const selectedRosterKey = useValue($selectedRosterKey)
   const botChatFocused = useValue($botChatFocused)
@@ -118,19 +117,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
   // can highlight a remote row, which has no focusable local chat.
   const isActive = botRowOwnsWorkspace(bot, activeGroup, botChatFocused, focusedOwner, selectedRosterKey)
 
-  // Turn-busy is a SOCKET fact: only the gateway-home profile can be mid-turn.
-  const isGatewayHome =
-    !bot.remoteSource &&
-    bot.name === activeProfile &&
-    isActiveRosterBot(bot, {
-      name: activeProfile,
-      connectionId: activeConnectionId
-    })
-
-  const { shape, color, image } = botAppearance(bot.name, meta)
-  // Keep user photos/pets. Drop the 160px SVG backfill so the math face can move.
+  const appearance = botAppearance(bot.name, meta)
+  // Keep user photos/pets as the fallback for providers without a known mark.
+  const image = appearance.image
   const photo = Boolean(image && !isBackfilledFacePng(image))
-  const gatewayState = useValue(host.state.gateway)
+
   // Preview identity must match click identity (#88200): when the backend
   // resolved the pinned canonical chat, preview THAT session — not the
   // profile's most recent (but unrelated) activity. Activity signals
@@ -147,7 +138,6 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     ? Math.max(activitySession?.last_active || 0, bot.worker_session?.last_active || 0)
     : activitySession?.last_active || 0
 
-  const botMood = workerActive || (isGatewayHome && gatewayState === 'busy') ? 'work' : 'idle'
   // Status keys off the canonical Bot Chat — the very session this row opens,
   // so the dot and the click can never describe different conversations.
   const canonicalSessionId = botCanonicalSessionId(bot)
@@ -245,12 +235,11 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
       onPointerEnter={warm}
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
-        <BotFace
-          color={avatarColor(color, bot.name)}
-          image={photo ? image : null}
-          mood={botMood}
-          name={bot.name}
-          shape={shape}
+        <ProviderAvatar
+          appearance={{ ...appearance, image: photo ? image : null }}
+          model={bot.model}
+          name={displayName(bot, meta)}
+          provider={bot.provider}
           size={34}
         />
       </div>

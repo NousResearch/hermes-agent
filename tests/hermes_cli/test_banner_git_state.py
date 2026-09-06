@@ -149,7 +149,10 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
     setup_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
     setup_cmds = [
         ["git", "init", "-q"],
-        ["git", "commit", "--allow-empty", "-q", "-m", "init"],
+        # Pinned identity: with global/system config nulled, CI runners whose bare
+        # hostname makes git's auto-detected ident "user@host.(none)" reject the commit.
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "--allow-empty", "-q", "-m", "init"],
         ["git", "remote", "add", "origin", "git@github.com:NousResearch/hermes-agent.git"],
         ["git", "rev-parse", "HEAD"],
     ]

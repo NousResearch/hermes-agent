@@ -1037,7 +1037,7 @@ async function terminateOwnedDashboardForUpdate(ssh, expected) {
 // Detach so the backend survives the SSH channel closing: setsid (Linux)
 // starts a new session; macOS has no setsid, so fall back to nohup (HUP-immune;
 // fd-detachment is already handled by </dev/null + redirect + &).
-function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
+function buildSpawnCommandParts(hermesPath, profile, opts: any = {}) {
   const hermes = expandRemotePath(hermesPath)
   const profileArgs = profile ? `--profile ${shq(profile)} ` : ''
   const logPath = expandRemotePath(opts.logPath)
@@ -1066,17 +1066,22 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
     `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
 
-  const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
+  // Keep Hermes in the foreground of the detached setsid/nohup shell. The outer
+  // shell backgrounds that process and emits the only PID. If this inner shell
+  // also echoes `$!`, command substitution captures two PIDs and the lockfile
+  // substitution becomes invalid under POSIX sh.
+  const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1`
   const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
 
   if (!opts.ownershipId || !opts.lockMetadata) {
-    return withRemoteUpdateMutex(
-      `${markerClear}; marker_clear || exit 75; ` +
+    return {
+      updateMutex,
+      payload:
+        `${markerClear}; marker_clear || exit 75; ` +
         `mkdir -p "$(dirname ${logPath})" && ` +
         `${detachedSpawn}; ` +
-        `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; echo "$child"`,
-      updateMutex
-    )
+        `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; echo "$child"`
+    }
   }
 
   const reservation = expandRemotePath(connectReservationPath(opts.ownershipId))
@@ -1086,8 +1091,10 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const metadata = JSON.stringify({ schemaVersion: LOCKFILE_SCHEMA_VERSION, ...opts.lockMetadata, pid: '__PID__' })
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
-  return withRemoteUpdateMutex(
-    `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
+  return {
+    updateMutex,
+    payload:
+      `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
       // reservation/lockPath/ownerPath are expandRemotePath() output — already
       // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
       // expands $HOME; shq() here would store the quote characters literally
@@ -1106,17 +1113,31 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       `if kill -0 "$existing_pid" 2>/dev/null; then ${tokenPath ? `rm -f ${tokenPath}; ` : ''}printf EXISTING; exit 0; fi; rm -f "$lock";; esac; fi; ` +
       `${markerClear}; marker_clear || exit 75; mkdir -p "$(dirname ${logPath})" && ` +
       `${detachedSpawn}; ` +
+      `case "$child" in ''|*[!0-9]*) exit 76;; esac; ` +
       `marker_clear || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 75; }; ` +
       // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
       // on Ubuntu), which aborts the whole script on it with "Bad
       // substitution" AFTER the child was spawned, orphaning the backend and
-      // skipping the lockfile publication. Substitute with sed instead.
-      `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/__PID__/\${child}/"); ` +
+      // skipping the lockfile publication. Substitute with sed instead, and
+      // replace only the JSON pid field's quoted placeholder so the published
+      // record carries a real JSON number pid: readLockfile requires an integer
+      // (malformed-pid skew fails closed otherwise) and the reuse regex only
+      // matches "pid":<digits>.
+      `lock_json=$(printf '%s' ${shq(metadata)} | sed 's/"pid":"__PID__"/"pid":'"$child"'/') || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
       `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
       `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
-      `echo "$child"`,
-    updateMutex
-  )
+      `echo "$child"`
+  }
+}
+
+function buildSpawnPayload(hermesPath, profile, opts: any = {}) {
+  return buildSpawnCommandParts(hermesPath, profile, opts).payload
+}
+
+function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
+  const { updateMutex, payload } = buildSpawnCommandParts(hermesPath, profile, opts)
+
+  return withRemoteUpdateMutex(payload, updateMutex)
 }
 
 async function remoteSupportsSshOwnership(ssh, hermesPath) {
@@ -1652,6 +1673,7 @@ export {
   adoptOwnedServedToken,
   assertRemoteInstallUpdateClear,
   buildSpawnCommand,
+  buildSpawnPayload,
   classifySshReuseProof,
   cleanupStale,
   connect,

@@ -69,6 +69,29 @@ def test_native_search_never_touches_the_shell_and_matches_shell_results(tree, m
         assert not [c for c in calls if "pipefail" in c or c.startswith("test -e")], case
 
 
+def test_native_runner_honours_deadline_and_interrupt_while_rg_is_silent(tree, monkeypatch):
+    """A search producing no output must still stop at the deadline / on /stop
+    (the shell path gets this from ``_wait_for_process``)."""
+    import threading
+    import time
+
+    from tools import interrupt
+
+    ops = _ops(tree, [])
+    started = time.monotonic()
+    result = ops._run_rg_native(["sh", "-c", "'sleep 30'"], 5, timeout=1)
+    assert result.exit_code == 124 and time.monotonic() - started < 5
+
+    tid = threading.get_ident()
+    threading.Timer(0.3, lambda: interrupt.set_interrupt(True, tid)).start()
+    try:
+        started = time.monotonic()
+        result = ops._run_rg_native(["sh", "-c", "'sleep 30'"], 5, timeout=30)
+    finally:
+        interrupt.set_interrupt(False, tid)
+    assert result.exit_code == 130 and time.monotonic() - started < 5
+
+
 def test_kill_switch_routes_search_back_to_the_shell(tree, monkeypatch):
     monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
     calls = []

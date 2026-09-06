@@ -4,10 +4,12 @@
 (no I/O).
 """
 
+import contextlib
 import os
 import posixpath
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import threading
@@ -335,10 +337,11 @@ class SearchMixin:
         two bash spawns. ``shlex.split`` undoes the escaping the builders apply for
         the shell path, so both transports see identical arguments. Exit code and
         stdout follow the shell contract (rg 0/1/2; 124 on timeout with partial
-        output), so ``_parse_search_output`` is shared. Once the bound is reached rg
-        is killed like ``head`` closing the pipe would. ``merge_stderr`` mirrors the
-        shell path's stderr handling: merged for content search (diagnostics feed
-        the error message), discarded (``2>/dev/null``) for file lists and probes."""
+        output; 130 on interrupt), so ``_parse_search_output`` is shared. Once the
+        bound is reached rg is killed like ``head`` closing the pipe would.
+        ``merge_stderr`` mirrors the shell path's stderr handling: merged for content
+        search (diagnostics feed the error message), discarded (``2>/dev/null``) for
+        file lists and probes."""
         from tools.environments.local import _make_run_env
         cwd = getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
@@ -349,35 +352,47 @@ class SearchMixin:
                 start_new_session=True)
         except OSError as exc:
             return ExecuteResult(stdout=f"rg: {exc}", exit_code=2)
+
+        # Drain on a thread so a silent rg (huge tree, no hits yet) cannot pin the
+        # caller past the deadline or past a /stop; the waiter below owns both.
         lines: List[bytes] = []
-        deadline = time.monotonic() + timeout
-        timed_out = False
-        bounded = False
-        try:
+        bounded = threading.Event()
+
+        def _drain() -> None:
             for raw in proc.stdout:
                 lines.append(raw)
                 if len(lines) >= fetch_limit:
-                    bounded = True
+                    bounded.set()
                     break
-                if time.monotonic() > deadline:
-                    timed_out = True
-                    break
-            if bounded or timed_out:
-                proc.kill()
-            try:
-                proc.wait(timeout=max(0.1, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
-                timed_out = True
-        finally:
-            proc.stdout.close()
+
+        drainer = threading.Thread(target=_drain, daemon=True)
+        drainer.start()
+        deadline = time.monotonic() + timeout
+        exit_code: Optional[int] = None
+        while True:
+            drainer.join(0.05)
+            if not drainer.is_alive() or bounded.is_set():
+                break
+            if tool_interrupt.is_interrupted():
+                exit_code = 130
+                break
+            if time.monotonic() > deadline:
+                exit_code = 124
+                break
+        if proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        drainer.join()
+        proc.stdout.close()
         stdout = b"".join(lines).decode("utf-8", errors="replace")
-        if timed_out:
+        if exit_code == 124:
             return ExecuteResult(stdout=stdout + f"\n[Command timed out after {timeout}s]", exit_code=124)
+        if exit_code == 130:
+            return ExecuteResult(stdout=stdout + "\n[Command interrupted]", exit_code=130)
         # A killed-at-bound rg reports a signal (negative returncode); head would have
         # left the pipeline at 0 unless rg itself already failed.
-        return ExecuteResult(stdout=stdout, exit_code=0 if bounded else proc.returncode)
+        return ExecuteResult(stdout=stdout, exit_code=0 if bounded.is_set() else proc.returncode)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""

@@ -10910,9 +10910,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # the gateway the first attempt just started.  Poll a bounded
             # window for the resumed gateway to publish its identity instead.
             _fleet_snapshot = []
-            _pre_restart_pid_set = {
-                int(p) for p in (_pre_restart_gateway_pids or []) if isinstance(p, int)
-            }
+            # Coerce every pre-restart PID to int via the shared helper
+            # rather than dropping anything that isn't already one
+            # (#102733 review): a PID arriving as a numeric string must
+            # still match a row's int pid below, or the settling-race fix
+            # this block exists for silently stops working for that
+            # gateway.
+            _pre_restart_pid_set = _coerce_pid_set(_pre_restart_gateway_pids)
             if _fleet_rows_expected:
                 _fleet_deadline = _time.monotonic() + 30.0
                 while True:
@@ -10942,7 +10946,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     # otherwise a real stale-code failure would poll the
                     # full 30s and still report correctly, just later.
                     _settling_stale = any(
-                        row.get("state") == "stale" and row.get("pid") in _pre_restart_pid_set
+                        row.get("state") == "stale"
+                        and _coerce_pid_set([row.get("pid")]) & _pre_restart_pid_set
                         for row in _fleet_snapshot
                     )
                     if (
@@ -11084,6 +11089,29 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---
+
+def _coerce_pid_set(pids) -> set[int]:
+    """Best-effort int-ify every PID in ``pids`` into a set.
+
+    Regression guard for #102733 review: PIDs feeding the settling-stale
+    check can arrive as ints or as numeric strings depending on their
+    source (subprocess output, JSON round-trips, etc). The original fix
+    used ``isinstance(p, int)`` to filter the input, which SILENTLY
+    DROPS any PID that isn't already an int instead of converting it —
+    so a string PID on either side of the later ``in`` membership check
+    would never match its int counterpart, quietly defeating the whole
+    settling-race fix for that gateway. Coerce with ``int()`` here
+    instead of filtering, so "1234" and 1234 are treated as the same
+    PID. Genuinely non-numeric/garbage values are dropped, not raised.
+    """
+    result: set[int] = set()
+    for p in pids or []:
+        try:
+            result.add(int(p))
+        except (TypeError, ValueError):
+            continue
+    return result
+
 
 def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
     """Whether an escaped gateway-restart-phase exception must fail the update.

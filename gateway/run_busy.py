@@ -397,6 +397,16 @@ class GatewayBusySessionMixin:
             # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
             # the draining-case send above).
             if event.allow_gateway_control and has_blocking_approval(session_key):
+                # Bare words resolve only outside multi-user chats: in a
+                # group/channel/forum any participant's conversational "ok"
+                # would otherwise approve someone else's dangerous command.
+                # Slash /approve keeps working everywhere; DMs (and
+                # DM-only channels like SMS/Signal) are unaffected.
+                from gateway.authz_mixin import _GROUP_CHAT_TYPES
+
+                _chat_type = getattr(getattr(event, "source", None), "chat_type", None)
+                if _chat_type in _GROUP_CHAT_TYPES or _chat_type == "supergroup":
+                    return False
                 _raw_text = (event.text or "").strip().lower()
                 _match = self._PLAINTEXT_APPROVAL_WORDS.get(_raw_text)
                 if _match is not None:

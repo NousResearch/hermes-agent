@@ -1693,7 +1693,12 @@ async def _standalone_send(
 ) -> Dict[str, Any]:
     """POST one Chat message via REST without the SDK (``send_message_tool`` when the
     gateway runner is not in-process, e.g. ``hermes cron``). Needs SA credentials and a
-    validated space name; ``media_files`` / ``force_document`` are signature parity only."""
+    validated space name. Attachments ride the live adapter only: a standalone send that
+    carries ``media_files`` fails closed instead of silently dropping them."""
+    if media_files:
+        return _standalone_error(
+            "native attachments require the live gateway adapter; the standalone sender is text only. "
+            "Start the gateway with Google Chat connected, or resend without MEDIA")
     if not chat_id:
         return _standalone_error("chat_id (space resource) is required")
     if not _GCHAT_CHAT_ID_RE.match(chat_id):

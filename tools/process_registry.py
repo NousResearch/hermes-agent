@@ -126,12 +126,14 @@ def _worker_memory_max_bytes() -> int:
 
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
-    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl."""
+    ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
+    NOTE: scope units only accept cgroup resource properties. OOMPolicy is an
+    exec-level property and systemd 249 rejects it with Unknown assignment,
+    which failed every probe and blocked all gateway children. Keep it out."""
     return [
         binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
-        "--property", "OOMPolicy=kill",
         "--", *argv,
     ]
 

@@ -1956,7 +1956,13 @@ class TestSystemdCgroupIsolation:
             if value == "--property"
         ]
         assert "MemoryAccounting=yes" in properties
-        assert "OOMPolicy=kill" in properties
+        assert not any(
+            value.split("=", 1)[0] == "OOMPolicy" for value in properties
+        ), (
+            "scope units reject exec-level OOMPolicy (systemd 249: "
+            "Unknown assignment), which failed every probe and blocked all "
+            "gateway children; keep it out of scope argv"
+        )
         memory_max = next(
             value for value in properties if value.startswith("MemoryMax=")
         )
@@ -2292,6 +2298,25 @@ class TestSystemdCgroupIsolation:
 
         warning.assert_not_called()
         assert f"MemoryMax={123 * 1024 * 1024}" in argv
+
+    def test_scope_argv_carries_no_exec_only_properties(self):
+        """Scope argv must stay within scope-valid properties.
+
+        OOMPolicy is exec-level; systemd rejects it on scope units with
+        Unknown assignment, which failed the availability probe and blocked
+        every gateway child (kanban workers + cron workers)."""
+        import tools.process_registry as pr
+
+        argv = pr._build_systemd_scope_argv(["/bin/true"], unit_suffix="test")
+        properties = [
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--property"
+        ]
+        assert properties, argv
+        scope_valid = {"MemoryAccounting", "MemoryMax"}
+        for prop in properties:
+            assert prop.split("=", 1)[0] in scope_valid, (prop, argv)
 
     def test_worker_memory_limit_caps_oversized_local_guard_override(
         self, monkeypatch

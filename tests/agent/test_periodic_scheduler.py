@@ -90,3 +90,68 @@ def test_module_level_schedule_uses_shared_default():
     assert threading.active_count() == before
     for handle in handles:
         handle.cancel()
+
+
+def test_blocked_callback_does_not_stall_due_sibling():
+    """#102574: one blocked body must not stall unrelated due callbacks.
+
+    The shared scheduler runs safety-critical work (turn-liveness checks,
+    fire/turn lease refresh, delegated-child heartbeats); running bodies
+    inline on the single timer thread made one slow callback a
+    process-wide liveness failure domain."""
+    sched = PeriodicScheduler()
+    blocker_entered = threading.Event()
+    release_blocker = threading.Event()
+    sibling_ran = threading.Event()
+
+    def blocker():
+        blocker_entered.set()
+        release_blocker.wait(2.0)
+        return False
+
+    def sibling():
+        sibling_ran.set()
+        return False
+
+    blocker_handle = sched.schedule(blocker, 0.01)
+    try:
+        assert blocker_entered.wait(2.0)
+        sibling_handle = sched.schedule(sibling, 0.01)
+        try:
+            assert sibling_ran.wait(0.30), (
+                "a blocked periodic callback stalled an unrelated due callback"
+            )
+        finally:
+            release_blocker.set()
+            sibling_handle.cancel(wait=1.0)
+    finally:
+        release_blocker.set()
+        blocker_handle.cancel(wait=1.0)
+
+
+def test_many_blocked_callbacks_still_bound_thread_growth():
+    """Worker concurrency is bounded: many blocked bodies occupy at most
+    ``max_workers`` threads; the timer thread keeps running regardless."""
+    sched = PeriodicScheduler(max_workers=2)
+    entered = threading.Event()
+    release = threading.Event()
+    handles = []
+
+    def blocker(idx):
+        if idx == 0:
+            entered.set()
+        release.wait(2.0)
+        return False
+
+    try:
+        baseline = threading.active_count()
+        handles = [sched.schedule(lambda i=i: blocker(i), 0.01) for i in range(6)]
+        assert entered.wait(2.0)
+        # The pool is size 2: all six blocked bodies are in flight/queued but
+        # only the pool's 2 workers + 1 timer thread were added.  A generous
+        # +2 absorbs unrelated CI noise from other daemons.
+        assert threading.active_count() <= baseline + 2 + 2
+    finally:
+        release.set()
+        for h in handles:
+            h.cancel(wait=1.0)

@@ -12,6 +12,14 @@ after the previous body *returned* (drift-free wrt. body duration was never
 a property of the old loops either).  A body that returns ``False`` stops
 itself; a body that raises is logged at debug and rescheduled — one bad
 callback must never kill the shared thread.
+
+Bodies do NOT run inline on the timer thread (#102574): the shared
+scheduler hosts safety-critical work (turn-liveness checks, fire/turn
+lease refresh, delegated-child heartbeats), so one blocking callback must
+not stall every other due callback behind it.  Due bodies are dispatched
+to a small bounded worker pool; the timer thread only manages timing.
+``max_workers`` bounds the concurrency, so thread growth stays fixed
+however many handles are scheduled.
 """
 
 from __future__ import annotations
@@ -21,11 +29,16 @@ import itertools
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
 _THREAD_NAME = "hermes-periodic-scheduler"
+# Enough parallel workers that several slow callbacks cannot starve the
+# safety timers, small enough that thread growth stays bounded regardless
+# of how many handles are live (~130 subagents x 2 timers today).
+_MAX_WORKERS = 8
 
 
 class ScheduledHandle:
@@ -51,12 +64,18 @@ class ScheduledHandle:
 
 
 class PeriodicScheduler:
-    def __init__(self) -> None:
+    def __init__(self, max_workers: int = _MAX_WORKERS) -> None:
         self._cond = threading.Condition()
         self._heap: list = []  # (due, seq, handle)
         self._seq = itertools.count()
         self._thread: Optional[threading.Thread] = None
-        self._running: Optional[ScheduledHandle] = None
+        # Handles whose body is in flight on a worker right now.  More than
+        # one can be in flight at a time; ``cancel(wait=...)`` joins only
+        # THIS handle's run, never an unrelated callback's.
+        self._inflight: set = set()
+        self._pool = ThreadPoolExecutor(
+            max_workers=max(1, int(max_workers)), thread_name_prefix="hermes-periodic-worker"
+        )
 
     def schedule(self, fn: Callable[[], object], interval: float) -> ScheduledHandle:
         handle = ScheduledHandle(self, fn, float(interval))
@@ -72,18 +91,19 @@ class PeriodicScheduler:
         with self._cond:
             handle._cancelled = True
             self._cond.notify()
-            if wait and self._running is handle and threading.current_thread() is not self._thread:
-                self._cond.wait_for(lambda: self._running is not handle, timeout=wait)
+            if wait and handle in self._inflight and threading.current_thread() is not self._thread:
+                self._cond.wait_for(lambda: handle not in self._inflight, timeout=wait)
 
     def _run(self) -> None:
         while True:
+            handle = None
             with self._cond:
                 while True:
                     if not self._heap:
                         self._cond.wait()
                         continue
-                    due, _, handle = self._heap[0]
-                    if handle._cancelled:
+                    due, _, head = self._heap[0]
+                    if head._cancelled:
                         heapq.heappop(self._heap)
                         continue
                     delay = due - time.monotonic()
@@ -91,28 +111,35 @@ class PeriodicScheduler:
                         self._cond.wait(delay)
                         continue
                     heapq.heappop(self._heap)
-                    self._running = handle
+                    handle = head
+                    self._inflight.add(handle)
                     break
-            stop = False
-            try:
-                stop = handle._fn() is False
-            except Exception:
-                logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
-            with self._cond:
-                self._running = None
-                if stop:
-                    handle._cancelled = True
-                elif not handle._cancelled:
-                    heapq.heappush(
-                        self._heap,
-                        (time.monotonic() + handle._interval, next(self._seq), handle),
-                    )
-                self._cond.notify_all()
+            # Dispatch off the timer thread: a slow/blocked body occupies one
+            # bounded worker while the timer thread keeps servicing other
+            # due callbacks (#102574).
+            self._pool.submit(self._run_body, handle)
+
+    def _run_body(self, handle: ScheduledHandle) -> None:
+        stop = False
+        try:
+            stop = handle._fn() is False
+        except Exception:
+            logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
+        with self._cond:
+            self._inflight.discard(handle)
+            if stop:
+                handle._cancelled = True
+            elif not handle._cancelled:
+                heapq.heappush(
+                    self._heap,
+                    (time.monotonic() + handle._interval, next(self._seq), handle),
+                )
+            self._cond.notify_all()
 
 
 _DEFAULT = PeriodicScheduler()
 
 
 def schedule(fn: Callable[[], object], interval: float) -> ScheduledHandle:
-    """Run ``fn()`` every ``interval`` seconds on the shared scheduler thread."""
+    """Run ``fn()`` every ``interval`` seconds on the shared scheduler."""
     return _DEFAULT.schedule(fn, interval)

@@ -102,6 +102,7 @@ import {
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChatDurably, stopGroupThread } from './group-rounds'
 import { clearGroupClarify } from './group-turns'
+import { $hostedRoomCleanup } from './hosted-room-cleanup'
 import { reconnectHostedGroupChatPeer } from './hosted-room-reauthorization'
 import {
   beginHostedRoomMutation,
@@ -789,6 +790,12 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   const [reconnecting, setReconnecting] = useState(false)
   // Subscribe: activity rows re-render as turn events land.
   useValue($groupActivity)
+  const cleanup = useValue($hostedRoomCleanup)
+
+  const messagingReconnecting =
+    Boolean(room.roomId) &&
+    cleanup.operations.some(operation => operation.reciprocalControl && operation.roomId === room.roomId)
+
   // Pending member questions for THIS room (#90694), oldest first.
   const clarifyAll: Record<string, GroupRoomPrompt> = useValue($groupClarify)
 
@@ -972,6 +979,11 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
       </div>
       {room.continuityIssue ? (
         <div className="px-2.5 pb-1 text-[0.625rem] text-(--ui-text-quaternary)">{room.continuityIssue}</div>
+      ) : null}
+      {messagingReconnecting ? (
+        <div className="px-2.5 pb-1 text-xs text-(--ui-text-secondary)" role="status">
+          {b.group.messagingReconnecting}
+        </div>
       ) : null}
       {activityOpen ? (
         <div className="grid gap-0.5 px-2.5 pb-1.5" id={`group-activity:${group}`}>

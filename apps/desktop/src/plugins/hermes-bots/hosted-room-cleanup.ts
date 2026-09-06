@@ -3,6 +3,8 @@
 import { atom, host } from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
 
+import { recoverHostedPeerControl, verifyHostedPeerControlScope } from './hosted-room-peer-setup'
+import type { PeerControlRecoveryInput } from './hosted-room-peer-setup'
 import { botsText } from './i18n'
 import type { ProfileRoute } from './types'
 
@@ -28,6 +30,9 @@ export interface HostedRoomCleanupOperation {
   ownerId: string
   ownerLeaseUntil: number
   profile?: null | string
+  reciprocalControl?: boolean
+  controlAuthorityId?: null | string
+  controlAuthorityEpoch?: null | number
   roomId?: null | string
   setupId: string
   targetUrl?: null | string
@@ -149,6 +154,9 @@ export function normalizeHostedRoomCleanup(value: unknown): HostedRoomCleanup {
       cancelId:
         kind === 'home-disband' ? String(operation?.cancelId || `rollback-${String(operation?.roomId || '')}`) : null,
       profile: kind === 'home-disband' ? null : String(operation?.profile || ''),
+      reciprocalControl: kind === 'peer-reconnect' && operation?.reciprocalControl === true,
+      controlAuthorityId: kind === 'peer-reconnect' ? String(operation?.controlAuthorityId || '') : null,
+      controlAuthorityEpoch: kind === 'peer-reconnect' ? Number(operation?.controlAuthorityEpoch || 0) : null,
       grant: kind === 'home-disband' ? null : String(operation?.grant || ''),
       grantSha256: kind === 'peer-reconnect' ? String(operation?.grantSha256 || '') : null,
       expectedGrantSha256:
@@ -417,9 +425,52 @@ async function settlePeerReconnect(operation: HostedRoomCleanupOperation) {
     return 'pending' as const
   }
 
+  let controlInput: PeerControlRecoveryInput | undefined
+
+  if (operation.reciprocalControl) {
+    const peerRoute = await routeForReference(operation.connectionId, String(operation.profile || ''))
+
+    if (
+      !peerRoute ||
+      !operation.controlAuthorityId ||
+      !Number.isSafeInteger(operation.controlAuthorityEpoch) ||
+      Number(operation.controlAuthorityEpoch) < 1
+    ) {
+      return 'pending' as const
+    }
+
+    controlInput = {
+      homeRoute,
+      peerRoute,
+      roomId: String(operation.roomId),
+      memberId: String(operation.memberId),
+      authorityId: operation.controlAuthorityId,
+      authorityEpoch: Number(operation.controlAuthorityEpoch),
+      targetAuthority: String(operation.catalog?.installation_id || ''),
+      targetProfile: String(operation.profile),
+      requestId: operation.setupId
+    }
+
+    try {
+      if ((await verifyHostedPeerControlScope(controlInput)) === 'gone') {return 'revoke' as const}
+    } catch {
+      return 'pending' as const
+    }
+  }
+
+  const finishControl = async (outcome: 'pending' | 'settled' | 'revoke') => {
+    if (!controlInput) {return outcome}
+
+    try {
+      return (await recoverHostedPeerControl(controlInput)) === 'gone' ? ('revoke' as const) : outcome
+    } catch {
+      return 'pending' as const
+    }
+  }
+
   try {
     if (['conflict', 'nonready'].includes(await peerRouteStatus(operation, homeRoute))) {
-      return 'revoke' as const
+      return finishControl('revoke')
     }
   } catch {
     /* registration remains the only safe settlement proof */
@@ -436,14 +487,14 @@ async function settlePeerReconnect(operation: HostedRoomCleanupOperation) {
       expected_grant_sha256: operation.expectedGrantSha256 || ''
     })
 
-    return 'settled' as const
+    return finishControl('settled')
   } catch {
     try {
       return ['conflict', 'nonready'].includes(await peerRouteStatus(operation, homeRoute))
-        ? ('revoke' as const)
-        : ('pending' as const)
+        ? finishControl('revoke')
+        : finishControl('pending')
     } catch {
-      return 'pending' as const
+      return finishControl('pending')
     }
   }
 }

@@ -229,6 +229,7 @@ type BotsMessages = {
     retryAction: string
     reconnectAction: string
     reconnectingAction: string
+    messagingReconnecting: string
     reconnectFailed: string
     botsNeedOneHost: string
     aBot: string
@@ -514,7 +515,8 @@ const en: BotsMessages = {
     retryAction: 'Retry',
     reconnectAction: 'Reconnect',
     reconnectingAction: 'Connecting…',
-    reconnectFailed: 'Could not reconnect this Bot. Check its gateway and try again.',
+    messagingReconnecting: 'Messaging is reconnecting. Keep Desktop open until it finishes.',
+    reconnectFailed: 'Could not reconnect this Bot. Check that its device is online, then try again.',
     botsNeedOneHost: 'The selected Bots cannot continue when Desktop is closed.',
     aBot: 'A bot',
     memberUnavailable: member => `${member} is unavailable.`,
@@ -794,6 +796,7 @@ const ja: BotsMessages = {
     retryAction: '再試行',
     reconnectAction: '再接続',
     reconnectingAction: '接続中…',
+    messagingReconnecting: 'メッセージアプリに再接続中です。完了するまで Desktop を開いたままにしてください。',
     reconnectFailed: 'このボットを再接続できませんでした。ゲートウェイを確認して、もう一度お試しください。',
     botsNeedOneHost: '選択したボットはDesktopを閉じると継続できません。',
     aBot: 'ボット',
@@ -1068,6 +1071,7 @@ const zh: BotsMessages = {
     retryAction: '重试',
     reconnectAction: '重新连接',
     reconnectingAction: '正在连接…',
+    messagingReconnecting: '正在重新连接消息应用。请保持 Desktop 开启，直到连接完成。',
     reconnectFailed: '无法重新连接此机器人。请检查其网关后重试。',
     botsNeedOneHost: '关闭 Desktop 后，所选机器人无法继续工作。',
     aBot: '一个机器人',
@@ -1342,6 +1346,7 @@ const zhHant: BotsMessages = {
     retryAction: '重試',
     reconnectAction: '重新連接',
     reconnectingAction: '正在連接…',
+    messagingReconnecting: '正在重新連接訊息應用程式。請保持 Desktop 開啟，直到連線完成。',
     reconnectFailed: '無法重新連接此機器人。請檢查其閘道後再試一次。',
     botsNeedOneHost: '關閉 Desktop 後，所選機器人無法繼續工作。',
     aBot: '一個機器人',

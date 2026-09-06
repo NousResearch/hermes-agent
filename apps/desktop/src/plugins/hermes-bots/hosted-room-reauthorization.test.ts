@@ -52,12 +52,15 @@ vi.mock('./routing', () => ({
   requestForBot: mocks.requestForBot
 }))
 
+vi.mock('./hosted-room-transport', () => ({ requestHostedConnection: mocks.requestHosted }))
+
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.lifecycle.value = 1
   mocks.capabilities.value = {
     home: {
       authorityId: 'install:home',
+      peerGrantRenewal: true,
       routeGrantFingerprint: true
     }
   }
@@ -70,7 +73,7 @@ beforeEach(() => {
 })
 
 describe('hosted Group Chat peer reauthorization', () => {
-  it('issues a fresh peer grant through the source-qualified gateway', async () => {
+  it.each(['renewable', 'legacy-peer', 'legacy-home', 'reciprocal'])('checks reconnect renewal: %s', async mode => {
     const { $groupChats } = await import('./group-chat')
     const { reconnectHostedGroupChatPeer } = await import('./hosted-room-reauthorization')
 
@@ -79,6 +82,17 @@ describe('hosted Group Chat peer reauthorization', () => {
       decoy: { authorityId: 'install:decoy' },
       peer: { authorityId: 'install:peer' }
     }
+
+    if (mode === 'reciprocal') {
+      mocks.capabilities.value.home = {
+        authorityId: 'install:home',
+        peerGrantRenewal: true,
+        routeGrantFingerprint: true,
+        reciprocalRoomControl: true,
+        roomLink: { endpoint: 'https://home.example.test' }
+      }
+    }
+
     mocks.host.profileRoutes = async () => [
       { connectionId: 'home', mode: 'remote', profile: 'default', targetProfile: 'default' },
       { connectionId: 'decoy', mode: 'remote', profile: 'builder', targetProfile: 'builder' },
@@ -160,6 +174,7 @@ describe('hosted Group Chat peer reauthorization', () => {
       if (method === 'groups.capabilities') {
         return {
           authority_gateway_id: 'install:peer',
+          features: mode === 'reciprocal' ? ['reciprocal_room_control', 'reciprocal_room_control_setup'] : [],
           methods: ['groups.peer.revoke_exact'],
           driver: true,
           persistent_process: true,
@@ -183,29 +198,94 @@ describe('hosted Group Chat peer reauthorization', () => {
         return { registered: true }
       }
 
+      if (method === 'groups.control.invite') {
+        return {
+          room_id: 'room-1',
+          member_id: 'member-builder',
+          authority_gateway_id: 'install:home',
+          authority_epoch: 1,
+          home_url: 'https://home.example.test',
+          control_token: 'c'.repeat(43),
+          expires_at: 253402300799,
+          room_name: 'Release',
+          member_count: 1
+        }
+      }
+
       throw new Error(`unexpected hosted method: ${method}`)
     })
-    mocks.requestForBot.mockResolvedValue({
-      catalog: {
-        attachments: true,
-        catalog_digest: 'digest:peer',
-        installation_id: 'install:peer',
-        link_modes: ['direct'],
-        persistent_process: true,
-        protocol_versions: [2],
-        text: true
-      },
-      grant: 'private-grant',
-      target_profile: 'builder'
-    })
+    mocks.requestForBot.mockImplementation(async (_member, method) =>
+      method === 'groups.control.register'
+        ? { registered: true, room_id: 'room-1' }
+        : {
+            ...(mode !== 'legacy-peer' ? { expires_at: 3601, status_expires_at: 2592001 } : {}),
+            catalog: {
+              attachments: true,
+              catalog_digest: 'digest:peer',
+              installation_id: 'install:peer',
+              link_modes: ['direct'],
+              persistent_process: true,
+              protocol_versions: [2],
+              text: true
+            },
+            grant: 'private-grant',
+            target_profile: 'builder'
+          }
+    )
 
-    await reconnectHostedGroupChatPeer('Release', 'member-builder')
+    if (mode === 'legacy-home') {
+      mocks.capabilities.value.home = { authorityId: 'install:home', routeGrantFingerprint: true }
+    }
+
+    const reconnect = reconnectHostedGroupChatPeer('Release', 'member-builder')
+
+    if (mode === 'legacy-home') {
+      await expect(reconnect).rejects.toThrow('Update the gateway')
+      expect(mocks.requestForBot).not.toHaveBeenCalled()
+      expect(mocks.addCleanup).not.toHaveBeenCalled()
+
+      return
+    }
+
+    if (mode === 'legacy-peer') {
+      await expect(reconnect).rejects.toThrow('Update builder')
+      expect(mocks.addCleanup).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'peer-revoke-exact',
+          grant: 'private-grant',
+          connectionId: 'peer'
+        })
+      )
+      expect(mocks.armCleanup).toHaveBeenCalledOnce()
+      expect(mocks.dispatchCleanup).toHaveBeenCalledOnce()
+      expect(mocks.requestHosted.mock.calls.some(call => call[1] === 'groups.peer.register')).toBe(false)
+      expect(mocks.refresh).not.toHaveBeenCalled()
+
+      return
+    }
+
+    await reconnect
+
+    if (mode === 'reciprocal') {
+      expect(mocks.requestHosted).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'home' }),
+        'groups.control.invite',
+        expect.objectContaining({ reuse_existing: true, caller_install_id: 'install:peer' })
+      )
+      expect(mocks.requestForBot).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'peer' }),
+        'groups.control.register',
+        expect.objectContaining({ profile: 'builder', member_id: 'member-builder', room_id: 'room-1' })
+      )
+    }
 
     expect(mocks.requestForBot).toHaveBeenCalledWith(
       expect.objectContaining({ connectionId: 'peer', targetProfile: 'builder' }),
       'groups.peer.invite',
       expect.objectContaining({
         authority_epoch: 1,
+        ttl_seconds: 3600,
+        status_ttl_seconds: 2592000,
         authority_gateway_id: 'install:home',
         member_id: 'member-builder',
         room_id: 'room-1'
@@ -474,6 +554,8 @@ describe('hosted Group Chat peer reauthorization', () => {
       throw new Error(`unexpected hosted method: ${method}`)
     })
     mocks.requestForBot.mockResolvedValue({
+      expires_at: 3601,
+      status_expires_at: 2592001,
       catalog: {
         catalog_digest: 'digest:peer',
         installation_id: 'install:peer'
@@ -565,6 +647,8 @@ describe('hosted Group Chat peer reauthorization', () => {
       throw new Error(`unexpected hosted method: ${method}`)
     })
     mocks.requestForBot.mockResolvedValue({
+      expires_at: 3601,
+      status_expires_at: 2592001,
       catalog: {
         installation_id: 'install:peer'
       },
@@ -684,6 +768,8 @@ describe('hosted Group Chat peer reauthorization', () => {
       throw new Error(`unexpected hosted method: ${method}`)
     })
     mocks.requestForBot.mockResolvedValue({
+      expires_at: 3601,
+      status_expires_at: 2592001,
       catalog: {
         catalog_digest: 'digest:peer',
         installation_id: 'install:peer'
@@ -785,6 +871,8 @@ describe('hosted Group Chat peer reauthorization', () => {
         new Promise(resolve => {
           releaseInvites.push(grant =>
             resolve({
+              expires_at: 3601,
+              status_expires_at: 2592001,
               catalog: {
                 catalog_digest: 'digest:peer',
                 installation_id: 'install:peer'

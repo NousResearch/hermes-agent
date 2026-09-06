@@ -401,7 +401,7 @@ def test_clean_update_warns_about_surviving_pre_update_serve_runtime(
         ],
     )
 
-    hermes_main.cmd_update(args)
+    hermes_main.cmd_update(args, approved=True)
 
     out = capsys.readouterr().out
     assert "pid 5555" in out
@@ -458,7 +458,7 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     )
 
     with pytest.raises(SystemExit) as excinfo:
-        hermes_main.cmd_update(args)
+        hermes_main.cmd_update(args, approved=True)
     assert excinfo.value.code == 1
 
     out = capsys.readouterr().out

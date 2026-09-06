@@ -2164,6 +2164,23 @@ _FROZEN_ATTR_SOURCES: dict[str, str] = {
 }
 
 
+def _this_module():
+    """This module, for attribute access at call time.
+
+    Bare-name global lookups inside this module do not go through the PEP 562
+    __getattr__ below, so internal callers of the lazily re-exported names use
+    _this_module().<name> instead. That resolves the lazy re-export on first
+    use and keeps monkeypatches on hermes_cli.main.<name> working, exactly
+    like a globals lookup did. ``sys`` is imported locally because some
+    tests patch this module's ``sys`` attribute. (Named to avoid colliding
+    with the removed ``_self`` re-export upstream's decomposition dropped;
+    see test_removed_reexports_are_gone.)
+    """
+    import sys as _sys
+
+    return _sys.modules[__name__]
+
+
 def __getattr__(name):
     """Resolve the frozen updater surface on first read (see _FROZEN_UPDATER_SURFACE)."""
     module = _FROZEN_ATTR_SOURCES.get(name)
@@ -2523,10 +2540,9 @@ def cmd_update(args, *, approved: bool = False):
     # Exit code for the Windows hand-off child's hard exit (see finally); None
     # = not SystemExit-shaped, so real exceptions keep their traceback.
     _update_handoff_exit_code: int | None = None
-    from hermes_cli.update_cmd import _cmd_update_impl
 
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        _this_module()._cmd_update_impl(args, gateway_mode=gateway_mode)
     except SystemExit as _update_exit:
         # Receipt boundary: the impl has many early sys.exit paths that never
         # reach an inner finalize. Persist any still-open receipt with the real

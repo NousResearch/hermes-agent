@@ -195,3 +195,51 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+    assert "final_result" not in end_context
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_keeps_preview_bounded_and_names_durable_final_result(monkeypatch, tmp_path):
+    """Completion hooks receive an exact persisted result reference, never a widened body."""
+    runner = _runner(monkeypatch, tmp_path)
+    full_response = "durable final response " * 40
+    assert len(full_response) > 500
+    persistence_calls_at_end = []
+
+    async def capture_hook(event_type, _context):
+        if event_type == "agent:end":
+            persistence_calls_at_end.append(runner.session_store.append_to_transcript.call_count)
+
+    runner.hooks.emit.side_effect = capture_hook
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": full_response,
+        "messages": [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": full_response, "_row_id": 717},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+        "completed": True,
+        "agent_persisted": True,
+    })
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    end_context = next(
+        call.args[1]
+        for call in runner.hooks.emit.await_args_list
+        if call.args[0] == "agent:end"
+    )
+    assert end_context["response"] == full_response[:500]
+    assert end_context["final_result"] == {
+        "message_id": 717,
+        "session_id": "sess-silent",
+        "complete": True,
+        "character_count": len(full_response),
+    }
+    assert persistence_calls_at_end and persistence_calls_at_end[0] > 0

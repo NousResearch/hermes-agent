@@ -1472,11 +1472,40 @@ class GatewayTurnMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
-    async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
+    @staticmethod
+    def _hmwa_final_result_reference(agent_result, agent_messages, session_id):
+        """Return this turn's exact durable final assistant row, or no reference."""
+        if (
+            agent_result.get("failed")
+            or agent_result.get("interrupted")
+            or agent_result.get("completed") is False
+            or not isinstance(session_id, str)
+            or not session_id
+        ):
+            return None
+        history_offset = agent_result.get("history_offset", 0)
+        if not isinstance(history_offset, int) or history_offset < 0:
+            return None
+        current_turn = agent_messages[history_offset:] if len(agent_messages) >= history_offset else []
+        for message in reversed(current_turn):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            row_id, content = message.get("_row_id"), message.get("content")
+            if isinstance(row_id, int) and not isinstance(row_id, bool) and isinstance(content, str):
+                return {
+                    "message_id": row_id,
+                    "session_id": session_id,
+                    "complete": True,
+                    "character_count": len(content),
+                }
+        return None
+
+    async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response, final_result):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
             **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
             "provider": agent_result.get("provider", ""),
+            **({"final_result": final_result} if final_result is not None else {}),
         })
 
         # Pending process watchers (check_interval on background processes)
@@ -1983,8 +2012,6 @@ class GatewayTurnMixin:
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
-            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response)
-
             agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure = (
                 self._hmwa_classify_turn_failure(agent_result, history, session_entry)
             )
@@ -1998,6 +2025,8 @@ class GatewayTurnMixin:
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
+            final_result = self._hmwa_final_result_reference(agent_result, agent_messages, session_entry.session_id)
+            await self._hmwa_post_turn_hooks(hook_ctx, agent_result, response, final_result)
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,

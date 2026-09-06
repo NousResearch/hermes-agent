@@ -5,8 +5,10 @@ handler.py (``def handle(event_type, context)``, sync or async); errors never bl
 the pipeline.  Events: gateway:startup, session:start/end/reset, agent:start,
 agent:step (each tool-loop turn), agent:end, command:* (wildcard).  agent:* context:
 platform, user_id, chat_id, thread_id ("" outside a thread), chat_type
-("dm"|"group"|"forum"|""), session_id, message (500 chars); agent:end adds response,
-model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
+("dm"|"group"|"forum"|""), session_id, message (500 chars); agent:end adds response
+(a 500-character compatibility preview), model, provider, and, only after the final assistant
+message is durably persisted, ``final_result`` (message_id, session_id, complete, character_count).
+Forum follow-ups pass ``message_thread_id=int(thread_id)``.
 """
 
 import asyncio

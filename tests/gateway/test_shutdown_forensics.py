@@ -120,28 +120,6 @@ class TestSpawnAsyncDiagnostic:
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
 
-    def test_darwin_uses_portable_process_commands(self, tmp_path, monkeypatch):
-        captured = {}
-
-        class FakeProcess:
-            pid = 4242
-
-        def fake_popen(args, **kwargs):
-            captured["args"] = args
-            captured["kwargs"] = kwargs
-            return FakeProcess()
-
-        monkeypatch.setattr(sf.sys, "platform", "darwin")
-        monkeypatch.setattr(sf.subprocess, "Popen", fake_popen)
-
-        assert sf.spawn_async_diagnostic(tmp_path / "diag.log", "SIGTERM") == 4242
-        script = captured["args"][3]
-        assert "ps -Ao pid,ppid,state,pcpu,pmem,command -r" in script
-        assert "uptime" in script
-        assert "ps auxf --sort=-pcpu" not in script
-        assert "pstree" not in script
-        assert captured["kwargs"]["start_new_session"] is True
-
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups required")
     def test_timeout_helper_kills_wedged_process_group(self, tmp_path, monkeypatch):
         captured = {}

@@ -386,6 +386,35 @@ class CLILoopsMixin:
                 self._heartbeat_watchdog_started = False
         threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
 
+    def _maybe_resume_parked_goal(self) -> None:
+        """Idle hook run from process_loop: when a parked /goal's barrier has lifted (the process
+        exited, the timer elapsed, or the wait aged past its cap), queue the continuation so the
+        loop resumes WITHOUT waiting for an unrelated turn to re-evaluate it. The barrier used to be
+        checked only lazily, on the next turn; a session with nothing else arriving stayed parked
+        indefinitely (one run: 3 h 22 min on a grandchild's poller)."""
+        now = time.time()
+        if now - getattr(self, "_last_goal_barrier_check", 0.0) < 5.0:
+            return
+        self._last_goal_barrier_check = now
+        try:
+            if not self._pending_input.empty():
+                return
+            mgr = self._get_goal_manager()
+            state = getattr(mgr, "state", None) if mgr is not None else None
+            if state is None or state.status != "active":
+                return
+            if not (state.waiting_on_pid is not None or state.waiting_on_session is not None or state.waiting_until):
+                return  # not parked
+            if mgr.is_waiting():
+                return  # barrier still holds (is_waiting() also applies the age cap)
+            prompt = mgr.next_continuation_prompt()
+            if prompt:
+                from cli import _DIM, _RST, _cprint
+                _cprint(f"  {_DIM}▶ Goal barrier lifted — resuming.{_RST}")
+                self._pending_input.put(prompt)
+        except Exception as exc:
+            logging.debug("parked-goal resume check failed: %s", exc)
+
     def _maybe_fire_loop_tick(self) -> None:
         """Idle hook run from process_loop: fire a due /loop wakeup.
 
@@ -533,7 +562,8 @@ class CLILoopsMixin:
             return
         try:
             from hermes_cli.goals import gather_background_processes as _gather_bg
-            _bg_procs = _gather_bg()
+            # Only THIS session's processes: subagents' pollers must not park the parent's goal.
+            _bg_procs = _gather_bg(owner_task_id=getattr(self, "session_id", None) or None)
         except Exception:
             _bg_procs = None
         decision = mgr.evaluate_after_turn(

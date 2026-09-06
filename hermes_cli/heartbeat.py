@@ -10,11 +10,13 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+_HEARTBEAT_STATE_LOCK = threading.RLock()
 
 MIN_INTERVAL_SECONDS = 60  # floor: re-entering more often than once a minute is a busy-loop, not a heartbeat
 POLL_SECONDS = 5.0  # how often drivers poll for due heartbeats; not user-facing
@@ -40,6 +42,18 @@ _STATE_FIELDS = {
     "prompt": (str, ""), "interval_seconds": (int, 0), "status": (str, "active"),
     "created_at": (float, 0.0), "last_fired_at": (float, 0.0), "fire_count": (int, 0),
 }
+
+
+
+@dataclass(frozen=True)
+class HeartbeatDueClaim:
+    """The durable state transition made when a due Heartbeat is claimed."""
+
+    prompt: str
+    previous_last_fired_at: float
+    previous_fire_count: int
+    claimed_last_fired_at: float
+    claimed_fire_count: int
 
 
 def parse_interval(text: str) -> Optional[int]:
@@ -116,18 +130,45 @@ def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
     return None if state is None or state.status == "cleared" else state
 
 
-def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
+def save_heartbeat(session_id: str, state: HeartbeatState) -> bool:
+    """Persist state and report whether the write reached the session store."""
     if not session_id:
-        return
-    db = _get_session_db()
-    if db is None:
-        from hermes_cli.goals import _warn_dropped_write
-        _warn_dropped_write("HeartbeatManager", "heartbeat", session_id)
-        return
-    try:
-        db.set_meta(f"heartbeat:{session_id}", state.to_json())
-    except Exception as exc:
-        logger.debug("HeartbeatManager: set_meta failed: %s", exc)
+        return False
+    with _HEARTBEAT_STATE_LOCK:
+        db = _get_session_db()
+        if db is None:
+            from hermes_cli.goals import _warn_dropped_write
+            _warn_dropped_write("HeartbeatManager", "heartbeat", session_id)
+            return False
+        try:
+            db.set_meta(f"heartbeat:{session_id}", state.to_json())
+            return True
+        except Exception as exc:
+            logger.debug("HeartbeatManager: set_meta failed: %s", exc)
+            return False
+
+
+def rollback_due_claim(
+    session_id: str,
+    *,
+    previous_last_fired_at: float,
+    previous_fire_count: int,
+    claimed_last_fired_at: float,
+    claimed_fire_count: int,
+) -> bool:
+    """Restore a failed due claim unless a later mutation changed this Heartbeat."""
+    with _HEARTBEAT_STATE_LOCK:
+        current = load_heartbeat(session_id)
+        if (
+            current is None
+            or current.status != "active"
+            or current.last_fired_at != claimed_last_fired_at
+            or current.fire_count != claimed_fire_count
+        ):
+            return False
+        current.last_fired_at = previous_last_fired_at
+        current.fire_count = previous_fire_count
+        return save_heartbeat(session_id, current)
 
 
 class HeartbeatManager:
@@ -170,19 +211,22 @@ class HeartbeatManager:
         interval_seconds = int(interval_seconds)
         if interval_seconds < MIN_INTERVAL_SECONDS:
             raise ValueError(f"interval must be at least {MIN_INTERVAL_SECONDS}s")
-        self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
-                                     created_at=time.time())
-        save_heartbeat(self.session_id, self._state)
-        return self._state
+        with _HEARTBEAT_STATE_LOCK:
+            self._state = HeartbeatState(prompt=prompt, interval_seconds=interval_seconds, status="active",
+                                         created_at=time.time())
+            save_heartbeat(self.session_id, self._state)
+            return self._state
 
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
-        if not self._state:
-            return None
-        self._state.status = status
-        if reanchor:
-            self._state.last_fired_at = time.time()
-        save_heartbeat(self.session_id, self._state)
-        return self._state
+        with _HEARTBEAT_STATE_LOCK:
+            self._state = load_heartbeat(self.session_id)
+            if not self._state:
+                return None
+            self._state.status = status
+            if reanchor:
+                self._state.last_fired_at = time.time()
+            save_heartbeat(self.session_id, self._state)
+            return self._state
 
     def pause(self) -> Optional[HeartbeatState]:
         return self._set_status("paused")
@@ -192,24 +236,40 @@ class HeartbeatManager:
         return self._set_status("active", reanchor=True)
 
     def clear(self) -> bool:
-        cleared = self._set_status("cleared") is not None
-        self._state = None
-        return cleared
+        with _HEARTBEAT_STATE_LOCK:
+            self._state = load_heartbeat(self.session_id)
+            if self._state is None:
+                return False
+            self._state.status = "cleared"
+            saved = save_heartbeat(self.session_id, self._state)
+            self._state = None
+            return saved
 
     def due_prompt(self, now: Optional[float] = None) -> Optional[str]:
-        """Return the injection prompt if the heartbeat is due, else None.
+        claim = self.claim_due_prompt(now)
+        return claim.prompt if claim is not None else None
 
-        The fire is recorded immediately (before the turn runs) so overlapping polls or a long turn can never
-        double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
-        schedule.
-        """
-        s = self._state
-        if s is None or not s.is_due(now):
-            return None
-        s.last_fired_at = now if now is not None else time.time()
-        s.fire_count += 1
-        save_heartbeat(self.session_id, s)
-        return s.render_prompt()
+    def claim_due_prompt(self, now: Optional[float] = None) -> Optional[HeartbeatDueClaim]:
+        """Persist and describe one due Heartbeat claim for a driver that can later roll it back."""
+        with _HEARTBEAT_STATE_LOCK:
+            self._state = load_heartbeat(self.session_id)
+            s = self._state
+            if s is None or not s.is_due(now):
+                return None
+            previous_last_fired_at = s.last_fired_at
+            previous_fire_count = s.fire_count
+            s.last_fired_at = now if now is not None else time.time()
+            s.fire_count += 1
+            if not save_heartbeat(self.session_id, s):
+                self._state = load_heartbeat(self.session_id)
+                return None
+            return HeartbeatDueClaim(
+                prompt=s.render_prompt(),
+                previous_last_fired_at=previous_last_fired_at,
+                previous_fire_count=previous_fire_count,
+                claimed_last_fired_at=s.last_fired_at,
+                claimed_fire_count=s.fire_count,
+            )
 
 
 def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bool:
@@ -233,7 +293,8 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 
 __all__ = [
-    "HeartbeatState", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
+    "HeartbeatState", "HeartbeatDueClaim", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
+    "rollback_due_claim",
     "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
 ]
 

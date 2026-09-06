@@ -1,7 +1,9 @@
 """Tests for /heartbeat (hermes_cli/heartbeat.py)."""
 
+import threading
 import time
 
+import hermes_cli.heartbeat as heartbeat
 import pytest
 
 from hermes_cli.heartbeat import (
@@ -140,6 +142,7 @@ def test_due_prompt_fires_once_and_reanchors():
     assert mgr.due_prompt() is None
     # Force due by rewinding the anchor.
     mgr.state.created_at = time.time() - 700
+    assert save_heartbeat(mgr.session_id, mgr.state)
     prompt = mgr.due_prompt()
     assert prompt is not None and "tick" in prompt
     assert mgr.state.fire_count == 1
@@ -152,6 +155,7 @@ def test_missed_ticks_coalesce():
     mgr.set("tick", 600)
     # Simulate 5 missed intervals: exactly ONE fire results.
     mgr.state.created_at = time.time() - 600 * 5 - 10
+    assert save_heartbeat(mgr.session_id, mgr.state)
     assert mgr.due_prompt() is not None
     assert mgr.due_prompt() is None
     assert mgr.state.fire_count == 1
@@ -161,9 +165,67 @@ def test_resume_reanchors_instead_of_instant_fire():
     mgr = HeartbeatManager(session_id="hb-resume-sid")
     mgr.set("tick", 600)
     mgr.state.created_at = time.time() - 3600
+    assert save_heartbeat(mgr.session_id, mgr.state)
     mgr.pause()
     mgr.resume()
     assert mgr.due_prompt() is None
+
+
+def test_rollback_due_claim_does_not_overwrite_a_concurrent_pause(monkeypatch):
+    session_id = "hb-rollback-pause-sid"
+    manager = HeartbeatManager(session_id)
+    manager.set("tick", 600)
+    manager.state.created_at = time.time() - 700
+    assert save_heartbeat(manager.session_id, manager.state)
+    previous_last_fired_at = manager.state.last_fired_at
+    previous_fire_count = manager.state.fire_count
+    assert manager.due_prompt() is not None
+    claimed_last_fired_at = manager.state.last_fired_at
+    claimed_fire_count = manager.state.fire_count
+
+    rollback_loaded = threading.Event()
+    release_rollback = threading.Event()
+    pause_finished = threading.Event()
+    original_load = heartbeat.load_heartbeat
+
+    def blocking_load(sid):
+        if sid == session_id and threading.current_thread().name == "rollback-worker":
+            rollback_loaded.set()
+            assert release_rollback.wait(timeout=2)
+        return original_load(sid)
+
+    monkeypatch.setattr(heartbeat, "load_heartbeat", blocking_load)
+    rollback_result: list[bool] = []
+
+    def rollback():
+        rollback_result.append(heartbeat.rollback_due_claim(
+            session_id,
+            previous_last_fired_at=previous_last_fired_at,
+            previous_fire_count=previous_fire_count,
+            claimed_last_fired_at=claimed_last_fired_at,
+            claimed_fire_count=claimed_fire_count,
+        ))
+
+    rollback_thread = threading.Thread(target=rollback, name="rollback-worker")
+    rollback_thread.start()
+    assert rollback_loaded.wait(timeout=2)
+
+    def pause():
+        HeartbeatManager(session_id).pause()
+        pause_finished.set()
+
+    pause_thread = threading.Thread(target=pause, name="pause-worker")
+    pause_thread.start()
+    assert not pause_finished.wait(timeout=0.1)
+    release_rollback.set()
+    rollback_thread.join(timeout=2)
+    pause_thread.join(timeout=2)
+
+    assert rollback_result == [True]
+    assert pause_finished.is_set()
+    final = HeartbeatManager(session_id).state
+    assert final is not None
+    assert final.status == "paused"
 
 
 # ──────────────────────────────────────────────────────────────────────

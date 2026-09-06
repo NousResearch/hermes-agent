@@ -44,16 +44,14 @@ def _poll_desktop_heartbeats_once() -> int:
                     from hermes_cli.heartbeat import HeartbeatManager
 
                     manager = HeartbeatManager(session_key)
-                    state = manager.state
-                    if state is None:
+                    claim = manager.claim_due_prompt()
+                    if claim is None:
                         continue
-                    previous_last_fired_at = state.last_fired_at
-                    previous_fire_count = state.fire_count
-                    prompt = manager.due_prompt()
-                    if not prompt:
-                        continue
-                    claimed_last_fired_at = state.last_fired_at
-                    claimed_fire_count = state.fire_count
+                    prompt = claim.prompt
+                    previous_last_fired_at = claim.previous_last_fired_at
+                    previous_fire_count = claim.previous_fire_count
+                    claimed_last_fired_at = claim.claimed_last_fired_at
+                    claimed_fire_count = claim.claimed_fire_count
                     control = _snapshot_control(session_key)
                 session["running"] = True
         except Exception as exc:
@@ -69,19 +67,16 @@ def _poll_desktop_heartbeats_once() -> int:
                 session["running"] = False
                 try:
                     with _session_profile_runtime_scope(session):
-                        from hermes_cli.heartbeat import HeartbeatManager, save_heartbeat
+                        from hermes_cli.heartbeat import rollback_due_claim
 
-                        current = HeartbeatManager(session_key).state
-                        # Do not resurrect a Heartbeat a user changed while dispatch was in flight.
-                        if (
-                            current is not None
-                            and current.status == "active"
-                            and current.last_fired_at == claimed_last_fired_at
-                            and current.fire_count == claimed_fire_count
+                        if not rollback_due_claim(
+                            session_key,
+                            previous_last_fired_at=previous_last_fired_at,
+                            previous_fire_count=previous_fire_count,
+                            claimed_last_fired_at=claimed_last_fired_at,
+                            claimed_fire_count=claimed_fire_count,
                         ):
-                            current.last_fired_at = previous_last_fired_at
-                            current.fire_count = previous_fire_count
-                            save_heartbeat(session_key, current)
+                            logger.debug("desktop heartbeat claim was not rolled back for %s", sid)
                 except Exception:
                     logger.debug("desktop heartbeat claim rollback failed for %s", sid, exc_info=True)
             logger.debug("desktop heartbeat dispatch failed for %s: %s", sid, exc)

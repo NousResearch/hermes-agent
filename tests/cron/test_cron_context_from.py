@@ -82,7 +82,6 @@ class TestBuildJobPromptContextFrom:
     def test_uses_most_recent_output(self, cron_env):
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
-        import time
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
         output_dir = OUTPUT_DIR / job_a["id"]
@@ -90,9 +89,10 @@ class TestBuildJobPromptContextFrom:
 
         old_file = output_dir / "2026-04-22_08-00-00.md"
         old_file.write_text("Old output", encoding="utf-8")
-        time.sleep(0.01)
         new_file = output_dir / "2026-04-22_10-00-00.md"
         new_file.write_text("New output", encoding="utf-8")
+        os.utime(old_file, (1_000_000_000, 1_000_000_000))
+        os.utime(new_file, (1_000_000_010, 1_000_000_010))
 
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"]

@@ -2653,7 +2653,14 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             _skill = _json_dict(tool_args).get("name", "")
             if isinstance(_skill, str) and _skill.lower() in protected_skills:
                 return False
-        result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
+        from agent.context_compressor_kanban import newest_assignment_summary
+
+        summary = newest_assignment_summary(result, idx, call_id_to_tool)
+        if summary is None:
+            summary = _summarize_tool_result(tool_name, tool_args, content)
+        if summary == content:
+            return False
+        result[idx] = {**msg, "content": summary}
         return True
 
     def _pressure_demote_tail(

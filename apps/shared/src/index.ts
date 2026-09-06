@@ -59,6 +59,7 @@ export {
   JsonRpcGatewayError,
   type WebSocketLike
 } from './json-rpc-gateway'
+export { serviceMutationRequest, type ServiceMutationRequest } from './service-mutation'
 export { skillInvocationText } from './skill-scaffold'
 export {
   type HermesSkin,
@@ -101,6 +102,7 @@ export {
   WINDOWS_GLASS_MIN_BUILD,
   type WindowsBackgroundMaterial
 } from './translucency'
+
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,

@@ -3,6 +3,7 @@ import { atom } from 'nanostores'
 import { getActionStatus, restartGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { notifyError } from '@/store/notifications'
+import { confirmServiceMutation } from '@/store/service-mutations'
 import type { ActionResponse } from '@/types/hermes'
 
 const POLL_ATTEMPTS = 18
@@ -38,13 +39,27 @@ async function awaitAction(name: string): Promise<void> {
 // indicator. Self-contained and never rejects, so every trigger — Cmd+K, the
 // messaging save/toggle toasts — gets identical feedback from a plain
 // `void runGatewayRestart()`, and a failure is the only thing that toasts.
-// Resolves `true` when the restart child completed cleanly (callers that keep
-// a "restart needed" banner clear it on that signal only).
-export async function runGatewayRestart(): Promise<boolean> {
+let restartInFlight: Promise<boolean> | null = null
+
+export function runGatewayRestart(): Promise<boolean> {
+  restartInFlight ??= confirmAndRestart().finally(() => {
+    restartInFlight = null
+  })
+
+  return restartInFlight
+}
+
+async function confirmAndRestart(): Promise<boolean> {
+  const request = await confirmServiceMutation('restart')
+
+  if (!request) {
+    return false
+  }
+
   $gatewayRestarting.set(true)
 
   try {
-    const started: ActionResponse = await restartGateway()
+    const started: ActionResponse = await restartGateway(request)
     await awaitAction(started.name)
 
     return true

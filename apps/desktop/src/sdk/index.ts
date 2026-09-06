@@ -1286,7 +1286,9 @@ export const host = {
   onEvent: onGatewayEvent,
 
   /** Restart the backend gateway (progress surfaces in the core statusbar). */
-  restartGateway: async () => runGatewayRestart(),
+  restartGateway: async () => {
+    await runGatewayRestart()
+  },
 
   /** One-shot system status snapshot (platforms, versions, …). */
   status: async () => getStatus(),

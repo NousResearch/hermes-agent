@@ -1,3 +1,5 @@
+import { serviceMutationRequest } from "@hermes/shared";
+import { useSystemActions } from "@/contexts/useSystemActions";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import {
@@ -39,7 +41,7 @@ import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { HermesConsoleModal } from "@/components/HermesConsoleModal";
@@ -192,6 +194,7 @@ const MEMORY_STATUS_TONE: Record<
 };
 
 export default function SystemPage() {
+  const { confirmMutation } = useSystemActions();
   const { toast, showToast } = useToast();
 
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -299,7 +302,9 @@ export default function SystemPage() {
         await api.stopGateway();
         setActiveAction("gateway-stop");
       } else {
-        await api.restartGateway();
+        const request = await confirmMutation("restart");
+        if (!request) return;
+        await api.restartGateway(request);
         setActiveAction("gateway-restart");
       }
       showToast(`Gateway ${verb} started`, "success");
@@ -567,7 +572,7 @@ export default function SystemPage() {
       return;
     }
     try {
-      const resp = await api.updateHermes();
+      const resp = await api.updateHermes(serviceMutationRequest("UPDATE"));
       if (!resp.ok) {
         showToast(
           resp.message ??
@@ -674,6 +679,7 @@ export default function SystemPage() {
       />
 
       <ConfirmDialog
+        typedConfirmation="UPDATE"
         open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}

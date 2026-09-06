@@ -1,3 +1,4 @@
+import type { ServiceMutationRequest } from "@hermes/shared";
 import { createContext } from "react";
 import type { ActionStatusResponse } from "@/lib/api";
 
@@ -14,5 +15,6 @@ export interface SystemActionsState {
   isBusy: boolean;
   isRunning: boolean;
   pendingAction: SystemAction | null;
-  runAction: (action: SystemAction) => Promise<void>;
+  confirmMutation: (action: SystemAction) => Promise<ServiceMutationRequest | null>;
+  runAction: (action: SystemAction, request: ServiceMutationRequest) => Promise<void>;
 }

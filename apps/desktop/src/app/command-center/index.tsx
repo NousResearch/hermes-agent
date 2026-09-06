@@ -30,6 +30,7 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { confirmServiceMutation } from '@/store/service-mutations'
 import { $sessions, sessionPinId } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -265,10 +266,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
 
   const runSystemAction = useCallback(
     async (kind: 'restart' | 'update') => {
+      const request = await confirmServiceMutation(kind)
+
+      if (!request) {
+        return
+      }
       setSystemError('')
 
       try {
-        const started = kind === 'restart' ? await restartGateway() : await updateHermes()
+        const started = kind === 'restart' ? await restartGateway(request) : await updateHermes(request)
         let nextStatus: ActionStatusResponse | null = null
 
         for (let attempt = 0; attempt < 18; attempt += 1) {

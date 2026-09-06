@@ -1,3 +1,4 @@
+import { useSystemActions } from "@/contexts/useSystemActions";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -130,6 +131,7 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 }
 
 export default function ChannelsPage() {
+  const { confirmMutation } = useSystemActions();
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
@@ -260,9 +262,11 @@ export default function ChannelsPage() {
   };
 
   const handleRestart = async () => {
+    const request = await confirmMutation("restart");
+    if (!request) return;
     setRestarting(true);
     try {
-      await api.restartGateway();
+      await api.restartGateway(request);
       showToast("Gateway restarting…", "success");
       setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
@@ -1065,6 +1069,7 @@ function TelegramOnboardingPanel({
   setRestartNeeded: (needed: boolean) => void;
   showToast: (message: string, type: "success" | "error") => void;
 }) {
+  const { confirmMutation } = useSystemActions();
   const [setup, setSetup] = useState<TelegramOnboardingStartResponse | null>(
     null,
   );
@@ -1237,7 +1242,13 @@ function TelegramOnboardingPanel({
         void watchRestartOutcome();
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
-          await api.restartGateway();
+          const request = await confirmMutation("restart");
+          if (!request) {
+            onRestartNeeded();
+            await onChanged();
+            return;
+          }
+          await api.restartGateway(request);
           showToast("Telegram saved; gateway restarting…", "success");
           setRestartNeeded(false);
           setTimeout(() => void onChanged(), 4000);

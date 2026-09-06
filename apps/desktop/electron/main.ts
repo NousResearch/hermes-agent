@@ -15903,13 +15903,18 @@ ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => req
 // app's own update pipeline; Desktop-managed SSH uses the transactional
 // drain/update/restore lifecycle; URL remotes POST their backend updater.
 ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
+  const mutation = payload?.mutation
+  if (mutation?.confirmation !== 'UPDATE' || typeof mutation.idempotency_key !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(mutation.idempotency_key)) {
+    throw new Error('A confirmed update intent is required.')
+  }
   const registry = readDesktopConnectionsRegistry()
 
   // Optional renderer-side exclusions: the everything-update flow dispatches
   // the ACTIVE backend through its own detailed-progress path and chains the
   // local client apply LAST (it relaunches the app), so it excludes those ids
-  // here to avoid double-dispatch. No payload keeps the Settings button's
-  // original all-rows behavior byte-identical.
+  // here to avoid double-dispatch. Settings supplies the same confirmed
+  // intent without exclusions to update all eligible rows.
   const excludeIds = new Set<string>(
     Array.isArray((payload as any)?.excludeIds) ? (payload as any).excludeIds.map((id: unknown) => String(id)) : []
   )
@@ -15952,7 +15957,7 @@ ipcMain.handle('hermes:connections:update-all', async (_event, payload) => {
             ensureRegistryBackend(connection.id, null)
           )
 
-          const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', {}, { timeoutMs: 15_000 })
+          const body: any = await postJsonForBackend(descriptor, '/api/hermes/update', mutation, { timeoutMs: 15_000 })
 
           if (body?.ok === false) {
             // The backend refused (docker/nix/externally-managed installs) —

@@ -1,3 +1,4 @@
+import type { ServiceMutationRequest } from "@hermes/shared";
 import { buildHermesWebSocketUrl } from "@hermes/shared";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -954,14 +955,22 @@ export const api = {
     ),
 
   // Gateway / update actions
-  restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+  restartGateway: (request: ServiceMutationRequest) =>
+    fetchJSON<ActionResponse>("/api/gateway/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    }),
   getGatewayMigratePlan: () =>
     fetchJSON<GatewayMigratePlan>("/api/gateway/migrate/plan"),
   migrateGatewayToMultiplex: () =>
     fetchJSON<ActionResponse>("/api/gateway/migrate", { method: "POST" }),
-  updateHermes: () =>
-    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
+  updateHermes: (request: ServiceMutationRequest) =>
+    fetchJSON<ActionResponse>("/api/hermes/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    }),
   checkHermesUpdate: (force = false) =>
     fetchJSON<UpdateCheckResponse>(
       `/api/hermes/update/check${force ? "?force=true" : ""}`,

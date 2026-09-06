@@ -1,3 +1,4 @@
+import { serviceMutationRequest } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -53,8 +54,8 @@ describe('backend action helpers are profile-scoped', () => {
     setApiRequestProfile('coder')
 
     void getStatus()
-    void restartGateway()
-    void updateHermes()
+    void restartGateway(serviceMutationRequest('RESTART'))
+    void updateHermes(serviceMutationRequest('UPDATE'))
     void checkHermesUpdate()
     void getActionStatus('gateway-restart')
 

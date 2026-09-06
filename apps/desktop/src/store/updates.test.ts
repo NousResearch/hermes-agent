@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus } from '@/global'
 
+vi.mock('@/store/service-mutations', () => ({
+  confirmServiceMutation: async () => ({ confirmation: 'UPDATE', idempotency_key: 'confirmed-update-test-123' })
+}))
+
 const storage = new Map<string, string>()
 
 vi.mock('@/lib/storage', () => ({

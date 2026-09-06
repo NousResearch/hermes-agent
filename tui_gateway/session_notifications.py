@@ -112,8 +112,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 # Mirror gateway/kanban_watchers.py TERMINAL_KINDS: claim silent kinds (archived/unblocked) too so the cursor advances
 # past them and they can't wedge a later completed/blocked event behind an unclaimed row.
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
-_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
-_HEARTBEAT_POLL_SECONDS = 5.0
+_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0  # /loop and /heartbeat share one idle-poll cadence
 
 
 def _notif_release_turn(session: dict) -> None:
@@ -175,39 +174,38 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
 
 
 def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
-    """Fire a due /heartbeat prompt for an idle TUI/Desktop session (issue #102056).
+    """Fire a due /heartbeat prompt for an idle TUI/Desktop/dashboard session (#102056, #103044).
 
-    The slash-worker process that parses ``/heartbeat`` starts a heartbeat watchdog thread in its
-    OWN process, where the queued prompt has no turn loop to consume it — armed-but-dead. The
-    durable state lives in SessionDB, so the real driver belongs in the session-owner process:
-    this mirror of ``_maybe_fire_tui_loop_tick`` polls from the per-session notification poller
-    and re-enters the live session through ``_run_prompt_submit`` as a plain user turn (alternation
-    + prompt caching untouched).
+    ``/heartbeat`` runs in the slash worker, whose CLI watchdog queues the due prompt into a
+    ``_pending_input`` no turn loop ever drains — armed-but-dead. State is durable in SessionDB, so
+    the session-owner process drives firing exactly like ``_maybe_fire_tui_loop_tick``: claim the
+    idle session first (a racing user prompt wins), then re-enter through ``_run_prompt_submit`` as a
+    plain user turn. A dispatch that never starts a turn rewinds the persisted fire so the tick stays
+    due instead of being silently consumed.
     """
     try:
         from hermes_cli.heartbeat import HeartbeatManager
     except Exception:
         return
-    sid_key = session.get("session_key") or ""
-    if not sid_key:
+    if not (sid_key := session.get("session_key") or ""):
         return
     mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due():
-        return
-    if not _notif_claim_turn(session):
-        return  # busy — tick coalesces to the next idle poll
-    prompt = mgr.due_prompt()
-    if not prompt:
+    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
+        return  # not due, or busy — the tick coalesces to the next idle poll
+    if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return
-    rid = f"__heartbeat__{int(time.time() * 1000)}"
+    started = False
     try:
-        _emit("status.update", sid, {"kind": "heartbeat", "text": "♥ heartbeat firing…"})
-        _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        _emit("status.update", sid, {"kind": "heartbeat", "text": f"♥ heartbeat #{mgr.state.fire_count} firing…"})
+        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
     except Exception as exc:
         _notif_log_failure("heartbeat dispatch failed", exc)
+    if not started:
+        # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
         _notif_release_turn(session)
+        with contextlib.suppress(Exception):
+            mgr.abandon_fire()
 
 
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
@@ -453,26 +451,18 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     emitted: set = set()  # dedup re-queued events so one completion isn't emitted 50 times while busy
     handle = lambda evt, deferred: _notif_handle_event(  # noqa: E731
         sid, session, evt, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = last_heartbeat_poll = 0.0
+    last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
-        # ── /heartbeat driver ─────────────────────────────────────────────────
-        # The slash worker that parses /heartbeat cannot drive firing (its watchdog queues into a process that
-        # never runs turns), so the session-owner process polls for due heartbeats itself (#102056).
-        if now - last_heartbeat_poll >= _HEARTBEAT_POLL_SECONDS:
-            last_heartbeat_poll = now
-            try:
-                _maybe_fire_tui_heartbeat_tick(sid, session)
-            except Exception as hb_exc:
-                _notif_log_failure("heartbeat poll failed", hb_exc)
-        # /loop wakeup driver: fire a due tick for THIS session while idle (same claim-under-lock as kanban dispatch).
-        # An active non-parked /goal owns the idle boundary and defers it.
+        # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
+        # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            try:
-                _maybe_fire_tui_loop_tick(sid, session)
-            except Exception as loop_exc:
-                _notif_log_failure("loop wakeup poll failed", loop_exc)
+            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+                try:
+                    fire(sid, session)
+                except Exception as tick_exc:
+                    _notif_log_failure(f"{what} poll failed", tick_exc)
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)

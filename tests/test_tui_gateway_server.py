@@ -22279,3 +22279,77 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_ws_orphan_reap_clears_interrupt_flag_when_session_reattaches(monkeypatch):
+    """#104160: the orphan reaper must clear _client_gone_interrupt_requested
+    when the session is no longer detached. A writer that re-attaches past
+    _reattach_refusal removes the detachment that justified the interrupt;
+    leaving the sentinel set 4009s every later resume/activate/prompt.submit
+    for that sid until the idle TTL reap."""
+    import types as _types
+
+    callbacks = []
+    interrupted = []
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+    class _LiveTransport:
+        def write(self, *_args, **_kwargs):
+            return True
+
+    class _LiveThread:
+        def is_alive(self):
+            return True
+
+    session = _session(
+        agent=_types.SimpleNamespace(
+            get_activity_summary=lambda: {"seconds_since_activity": 0.5}
+        ),
+        transport=server._detached_ws_transport,
+        running=True,
+        _client_gone_interrupt_requested=True,
+        _client_gone_interrupt_polls=1,
+        _run_thread=_LiveThread(),
+    )
+    server._sessions["reap-104160"] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 300.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    def _no_interrupt(_sid, _session, *, request_id=None):
+        interrupted.append("interrupted")
+        return False
+
+    monkeypatch.setattr(server, "_interrupt_session_turn", _no_interrupt)
+
+    try:
+        server._schedule_ws_orphan_reap("reap-104160")
+
+        # First poll: mid-turn detached → interrupt already requested, reschedule.
+        callbacks.pop(0)()
+        assert interrupted == []
+        assert session["_client_gone_interrupt_requested"] is True
+
+        # A writer un-detaches the session past _reattach_refusal (#104160).
+        session["transport"] = _LiveTransport()
+
+        # Next poll sees "not detached": the fix clears the stale interrupt
+        # sentinel instead of returning with it set.
+        callbacks.pop(0)()
+        assert not session.get("_client_gone_interrupt_requested"), (
+            "the interrupt sentinel must be cleared once the session is no "
+            "longer detached — otherwise every resume/activate/prompt.submit "
+            "4009s until the TTL reap (#104160)"
+        )
+        assert "reap-104160" in server._sessions
+        assert interrupted == []
+    finally:
+        server._sessions.pop("reap-104160", None)

@@ -503,8 +503,16 @@ def _schedule_ws_orphan_reap(
             if _pending_ws_reaps.get(sid) is not timer:
                 return
             current = _sessions.get(sid)
-            if current is None or not _ws_session_is_detached(current):
+            if current is None:
+                return
+            if not _ws_session_is_detached(current):
+                # A writer re-attached past _reattach_refusal: the detachment
+                # that justified the client-gone interrupt is gone. Drop the
+                # timer registration AND clear the sentinel — leaving it set
+                # makes every later resume/activate/prompt.submit for this sid
+                # 4009 until the idle TTL reap (#104160).
                 _pending_ws_reaps.pop(sid, None)
+                current.pop("_client_gone_interrupt_requested", None)
                 return
             if _session_has_active_delegations(sid, current):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S

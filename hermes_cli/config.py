@@ -1701,6 +1701,28 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
                     item, raw_by_name.get(item.get("name")),
                     loaded_by_name.get(item.get("name")) if loaded_by_name is not None else None)
                 for item in current]
+        if isinstance(loaded_expanded, list):
+            # List mutations may reorder values (for example, set-backed plugin lists). Match
+            # unchanged values against their expanded counterparts before falling back to position,
+            # so an existing environment template is not lost when a new item sorts ahead of it.
+            preserved = []
+            used_loaded = set()
+            for item in current:
+                match = next(
+                    (index for index, loaded_item in enumerate(loaded_expanded)
+                     if index not in used_loaded and item == loaded_item),
+                    None,
+                )
+                if match is None:
+                    preserved.append(item)
+                    continue
+                used_loaded.add(match)
+                preserved.append(
+                    _preserve_env_ref_templates(
+                        item,
+                        raw[match] if match < len(raw) else None,
+                        loaded_expanded[match]))
+            return preserved
         return [
             _preserve_env_ref_templates(
                 item,

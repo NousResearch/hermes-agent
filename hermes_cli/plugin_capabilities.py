@@ -172,6 +172,15 @@ def _write_raw_config_value(path: Tuple[str, ...], value: Any) -> None:
         entry = raw
         for segment in path[:-1]:
             entry = _child_dict(entry, segment)
+        loaded = config_mod.load_config()
+        loaded_entry = loaded
+        for segment in path:
+            if not isinstance(loaded_entry, dict):
+                loaded_entry = None
+                break
+            loaded_entry = loaded_entry.get(segment)
+        value = config_mod._preserve_env_ref_templates(
+            value, entry.get(path[-1]), loaded_entry)
         entry[path[-1]] = value
         config_mod._write_user_config(config_path, raw)
         config_mod._secure_file(config_path)

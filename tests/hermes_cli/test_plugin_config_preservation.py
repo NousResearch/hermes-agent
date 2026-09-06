@@ -117,6 +117,23 @@ def test_plugin_toolset_toggle_preserves_raw_profile_settings(tmp_path, monkeypa
     assert actual["platform_toolsets"] == {"cli": ["file", "example_tools"], "web": None}
 
 
+def test_plugin_list_mutation_preserves_env_ref_template(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("PLUGIN_SET", "from-environment")
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    path = home / "config.yaml"
+    path.write_text("plugins:\n  enabled:\n    - ${PLUGIN_SET}\n")
+
+    plugins_cmd._save_enabled_set({"from-environment", "example"})
+
+    actual = yaml.safe_load(path.read_text())
+    assert set(actual["plugins"]["enabled"]) == {"${PLUGIN_SET}", "example"}
+    monkeypatch.setenv("PLUGIN_SET", "changed-by-environment")
+    assert set(config.load_config()["plugins"]["enabled"]) == {"changed-by-environment", "example"}
+
+
 @pytest.mark.parametrize("invalid", ["[unterminated", "- not-a-mapping", "managed", "managed-key"])
 def test_plugin_mutation_refuses_unreadable_document(tmp_path, monkeypatch, invalid):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

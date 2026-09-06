@@ -318,17 +318,13 @@ class MemoryStore:
                 if msg:
                     return self._failure_with_entries(target, msg + " No operations were applied (batch is all-or-nothing).")
             if entries and not working:
-                # A batch must never silently empty a previously non-empty
-                # store (#103419): a background consolidation that removes the
-                # last entry would otherwise commit an empty USER.md/MEMORY.md
-                # as a normal successful write. Refuse all-or-nothing so the
-                # model keeps at least one entry; deleting the final entry on
-                # purpose is what single remove() calls are for, not a
-                # consolidation side effect.
-                label = "USER.md" if target == "user" else "MEMORY.md"
+                # #103419: a consolidation batch that removes the last entry would
+                # commit an empty file as a normal successful write. Refuse; single
+                # remove() is the deliberate-wipe path.
+                label = self._path_for(target).name
                 return self._failure_with_entries(target, (
                     f"Refusing to empty {label}: this batch would remove every entry from a "
-                    f"previously non-empty profile. Nothing was applied (batch is all-or-nothing). "
+                    f"previously non-empty store. Nothing was applied (batch is all-or-nothing). "
                     f"Keep at least one entry — merge overlapping entries into a shorter one instead "
                     f"of removing the last one (see current_entries below). To delete the final entry "
                     f"deliberately, use single remove() calls."))

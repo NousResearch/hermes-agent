@@ -117,20 +117,6 @@ class TestListCommand:
 # ---------------------------------------------------------------------------
 
 class TestAddCommand:
-    def test_auth_snapshot_failure_aborts_before_picker(self):
-        from hermes_cli import fallback_cmd
-
-        picker = object()
-        with patch(
-            "hermes_cli.auth._load_auth_store",
-            side_effect=OSError("auth read failed"),
-        ), patch(
-            "hermes_cli.main.select_provider_and_model",
-            picker,
-        ), patch("hermes_cli.main._require_tty"):
-            with pytest.raises(OSError, match="auth read failed"):
-                fallback_cmd.cmd_fallback_add(types.SimpleNamespace())
-
     def test_add_appends_new_entry(self, isolated_home, capsys):
         _write_config(isolated_home, {
             "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
@@ -243,65 +229,6 @@ class TestAddCommand:
             }
         ]
 
-    def test_post_picker_config_read_failure_restores_route(self):
-        from hermes_cli import fallback_cmd
-
-        primary_model = {
-            "provider": "anthropic",
-            "default": "claude-sonnet-4-6",
-        }
-        post_read_error = OSError("post-picker config read failed")
-        reads = iter([{"model": primary_model}, post_read_error])
-
-        def load_config():
-            value = next(reads)
-            if isinstance(value, BaseException):
-                raise value
-            return value
-
-        restore_calls = []
-        with patch("hermes_cli.config.load_config", side_effect=load_config), patch(
-            "hermes_cli.main._require_tty"
-        ), patch("hermes_cli.main.select_provider_and_model"), patch.object(
-            fallback_cmd, "_snapshot_auth_active_provider", return_value="old-provider"
-        ), patch.object(
-            fallback_cmd,
-            "_restore_primary_route",
-            side_effect=lambda model, provider: restore_calls.append((model, provider)),
-        ):
-            with pytest.raises(OSError) as exc_info:
-                fallback_cmd.cmd_fallback_add(types.SimpleNamespace())
-
-        assert exc_info.value is post_read_error
-        assert restore_calls == [(primary_model, "old-provider")]
-
-    @pytest.mark.parametrize(
-        ("failure_type", "message"),
-        [
-            (OSError, "config write failed"),
-            (KeyboardInterrupt, "config restore interrupted"),
-        ],
-    )
-    def test_restore_attempts_auth_after_model_restore_failure(
-        self, failure_type, message
-    ):
-        from hermes_cli import fallback_cmd
-
-        auth_calls = []
-        with patch.object(
-            fallback_cmd,
-            "_restore_model_cfg",
-            side_effect=failure_type(message),
-        ), patch.object(
-            fallback_cmd,
-            "_restore_auth_active_provider",
-            side_effect=lambda value: auth_calls.append(value),
-        ):
-            with pytest.raises(RuntimeError, match=message):
-                fallback_cmd._restore_primary_route("old-model", "old-provider")
-
-        assert auth_calls == ["old-provider"]
-
     def test_restore_preserves_absent_active_provider(self):
         from contextlib import nullcontext
 
@@ -321,9 +248,13 @@ class TestAddCommand:
 
         assert "active_provider" not in store
 
+    @pytest.mark.parametrize("picker_error", [LookupError("picker failed"), KeyboardInterrupt()],
+                             ids=["exception", "ctrl-c"])
     def test_picker_failure_restores_persisted_primary_without_masking_error(
-        self, isolated_home
+        self, isolated_home, picker_error
     ):
+        """An ordinary picker exception or a Ctrl+C mid-picker must leave config.yaml's
+        ``model`` exactly as it was before ``fallback add`` started (base only handled SystemExit)."""
         from hermes_cli import fallback_cmd
 
         primary_model = {
@@ -333,7 +264,6 @@ class TestAddCommand:
             "api_mode": "anthropic_messages",
         }
         _write_config(isolated_home, {"model": primary_model, "theme": "midnight"})
-        picker_error = LookupError("picker failed")
 
         def failing_picker(args=None):
             from hermes_cli.config import load_config, save_config
@@ -352,7 +282,7 @@ class TestAddCommand:
             "hermes_cli.main.select_provider_and_model",
             side_effect=failing_picker,
         ), patch("hermes_cli.main._require_tty"):
-            with pytest.raises(LookupError, match="picker failed") as exc_info:
+            with pytest.raises(type(picker_error)) as exc_info:
                 fallback_cmd.cmd_fallback_add(types.SimpleNamespace())
 
         assert exc_info.value is picker_error

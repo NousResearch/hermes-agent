@@ -68,6 +68,7 @@ def _restore_auth_active_provider(value: Any) -> None:
             store["active_provider"] = value
         _save_auth_store(store)
 
+
 def _restore_model_cfg(model_before: Any) -> None:
     """Restore ``config["model"]`` to a previously-captured snapshot."""
     from hermes_cli.config import load_config, save_config
@@ -92,6 +93,7 @@ def _restore_primary_route(model_before: Any, active_provider_before: Any) -> No
     if errors:
         details = "; ".join(str(exc) for exc in errors)
         raise RuntimeError(f"Could not fully restore the primary route: {details}") from errors[0]
+
 
 def _entries(n: int) -> str:
     return f"{n} {'entry' if n == 1 else 'entries'}"
@@ -190,6 +192,7 @@ def cmd_fallback_add(args) -> None:
     print(f"\n  Added fallback: {_format_entry(new_entry)}")
     print(f"  Chain is now {_entries(len(chain))} long.\n")
     print("  Run `hermes fallback list` to view, or `hermes fallback remove` to delete.")
+
 
 def cmd_fallback_remove(args) -> None:  # noqa: ARG001
     """Pick an entry from the chain and remove it."""

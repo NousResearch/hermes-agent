@@ -210,4 +210,10 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
+    # Bearer token granting remote-desktop control via the remote CUA transport.
+    # Registered as an ordinary tool secret (config_defaults.py _tool(...)) so it
+    # lands in the Tier-2 blocklist, which inherit_credentials=True SKIPS — but a
+    # model-driving subprocess (codex/copilot) must never receive it. Tier-1
+    # ensures it is stripped unconditionally on every spawn path.
+    "HERMES_CUA_REMOTE_TOKEN",
 })

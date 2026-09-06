@@ -41,6 +41,7 @@ import {
   setSelectedStoredSessionId
 } from '@/store/session'
 import { $sessionTiles, $workingSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import type { RpcEvent } from '@/types/hermes'
 
 import { deferred } from '../../../test/deferred'
 
@@ -164,6 +165,10 @@ class FakeWebSocket {
     // 'silent': swallow — a healthy socket answers, a half-open one never does.
   }
 
+  receiveEvent(params: RpcEvent) {
+    this.emit('message', { data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params }) })
+  }
+
   private emit(type: string, ev: unknown) {
     for (const fn of this.listeners[type] ?? []) {
       fn(ev)
@@ -244,16 +249,18 @@ function fakeDesktop() {
 
 function Harness({
   beforeConnectionSwitch = () => undefined,
+  handleGatewayEvent = () => undefined,
   refreshHermesConfig = async () => undefined,
   refreshSessions
 }: {
   beforeConnectionSwitch?: () => void
+  handleGatewayEvent?: (event: RpcEvent) => void
   refreshHermesConfig?: (force?: boolean, shouldPublish?: () => boolean) => Promise<void>
   refreshSessions?: (shouldPublish?: () => boolean) => Promise<void>
 } = {}) {
   useGatewayBoot({
     beforeConnectionSwitch,
-    handleGatewayEvent: () => undefined,
+    handleGatewayEvent,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig,
@@ -898,6 +905,45 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     await expect(requestGatewayForAgent('primary-vps', 'default', 'ping')).resolves.toEqual({ pong: true })
     expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('tags primary requests with the primary connection while a secondary is foreground', async () => {
+    const desktop = {
+      ...fakeDesktop(),
+      getConnectionFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
+        ...coderConn,
+        connectionId,
+        profile,
+        wsUrl: `wss://${connectionId}.example.com/api/ws?token=r`
+      }))
+    }
+
+    Object.assign(window, { hermesDesktop: desktop })
+    const handleGatewayEvent = vi.fn()
+    render(<Harness handleGatewayEvent={handleGatewayEvent} />)
+    await flushAsync()
+    const primarySocket = FakeWebSocket.instances[0]
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('cloud', 'default')
+    })
+    await flushAsync()
+    await opening
+    expect(isActivePrimary()).toBe(false)
+    act(() =>
+      primarySocket.receiveEvent({
+        type: 'window.read.request',
+        session_id: 'primary-runtime',
+        payload: { request_id: 'primary-request' }
+      })
+    )
+    expect(handleGatewayEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'window.read.request',
+        connectionId: 'primary-vps',
+        profile: 'default'
+      })
+    )
   })
 
   it('keeps registered source sockets alive during a legacy mode apply', async () => {

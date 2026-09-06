@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -173,6 +174,649 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------
+
+
+def _write_profile_skill(profile_home: Path, name: str) -> None:
+    skill_dir = profile_home / "skills" / "test"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+
+def test_create_task_rejects_skill_unavailable_to_assignee_before_insert(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="missing-skill.*coder"):
+            kb.create_task(
+                conn,
+                title="invalid skill",
+                assignee="coder",
+                skills=["missing-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_accepts_profile_skill_and_preserves_none_empty_semantics(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home, "profile-skill")
+
+    with kb.connect() as conn:
+        profile_task = kb.create_task(
+            conn,
+            title="profile skill",
+            assignee="coder",
+            skills=["profile-skill"],
+        )
+        none_task = kb.create_task(conn, title="default skills", assignee="coder")
+        empty_task = kb.create_task(
+            conn, title="no extra skills", assignee="coder", skills=[]
+        )
+
+        assert kb.get_task(conn, profile_task).skills == ["profile-skill"]
+        assert kb.get_task(conn, none_task).skills is None
+        assert kb.get_task(conn, empty_task).skills == []
+
+
+def test_create_task_accepts_profile_skill_by_directory_alias(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "test-dir" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: declared-name\ndescription: Directory alias test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="directory alias skill",
+            assignee="coder",
+            skills=["test-dir"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["test-dir"]
+
+
+def test_create_task_accepts_environment_scoped_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "environment-skill" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: environment-skill\ndescription: Environment-gated test skill.\n"
+        "environments: [docker]\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="environment skill",
+            assignee="coder",
+            skills=["environment-skill"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["environment-skill"]
+
+
+def test_create_task_platform_validation_is_creator_runtime_only(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    skill_dir = profile_home / "skills" / "platform-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: platform-skill\ndescription: Platform contract test.\n"
+        "platforms: [windows]\n---\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="platform-skill.*coder"):
+            kb.create_task(
+                conn,
+                title="creator platform mismatch",
+                assignee="coder",
+                skills=["platform-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_accepts_categorized_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Categorized test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="categorized profile skill",
+            assignee="coder",
+            skills=["category:sample"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["category:sample"]
+
+
+def test_create_task_accepts_direct_path_profile_skill_and_runtime_resolves(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Direct path test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="direct path profile skill",
+            assignee="coder",
+            skills=["category/sample"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["category/sample"]
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.skills_tool import skill_view
+
+    token = set_hermes_home_override(profile_home)
+    try:
+        result = json.loads(skill_view("category/sample"))
+    finally:
+        reset_hermes_home_override(token)
+    assert result["success"] is True
+
+
+def test_create_task_rejects_disabled_direct_path_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Disabled direct path skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: [category/sample]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="category/sample"):
+            kb.create_task(
+                conn,
+                title="disabled direct path skill",
+                assignee="coder",
+                skills=["category/sample"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_rejects_disabled_categorized_profile_skill(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "skills" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Categorized test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: [category:sample]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="category:sample"):
+            kb.create_task(
+                conn,
+                title="disabled categorized profile skill",
+                assignee="coder",
+                skills=["category:sample"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_accepts_enabled_profile_plugin_skill(kanban_home, monkeypatch):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: [
+                {
+                    "name": "enabled-plugin:plugin-skill",
+                    "frontmatter": {},
+                }
+            ]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="plugin skill",
+            assignee="coder",
+            skills=["enabled-plugin:plugin-skill"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["enabled-plugin:plugin-skill"]
+
+
+def test_create_task_accepts_plugin_skill_when_only_namespace_is_disabled(
+    kanban_home, monkeypatch
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: [enabled-plugin]\n", encoding="utf-8"
+    )
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: [
+                {"name": "enabled-plugin:plugin-skill", "frontmatter": {}}
+            ]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="namespace-only disabled plugin skill",
+            assignee="coder",
+            skills=["enabled-plugin:plugin-skill"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["enabled-plugin:plugin-skill"]
+
+
+def test_create_task_accepts_bare_skill_from_overlapping_external_roots(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    skill_md = profile_home / "external" / "category" / "sample" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: sample\ndescription: Overlapping-root test skill.\n---\n\n# Test\n",
+        encoding="utf-8",
+    )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external, external/category]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="overlapping external roots",
+            assignee="coder",
+            skills=["sample"],
+        )
+
+    assert kb.get_task(conn, task_id).skills == ["sample"]
+
+
+def test_create_task_rejects_ambiguous_bare_profile_skill_without_insert(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home / "external-one", "duplicate-skill")
+    _write_profile_skill(profile_home / "external-two", "duplicate-skill")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external-one, external-two]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="duplicate-skill"):
+            kb.create_task(
+                conn,
+                title="ambiguous bare skill",
+                assignee="coder",
+                skills=["duplicate-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_rejects_ambiguous_qualified_profile_skill_without_insert(
+    kanban_home,
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    for external_dir in ("external-one", "external-two"):
+        skill_dir = profile_home / external_dir / "category" / "sample"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: sample\ndescription: Categorized test skill.\n---\n\n# Test\n",
+            encoding="utf-8",
+        )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external-one, external-two]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="category:sample"):
+            kb.create_task(
+                conn,
+                title="ambiguous qualified skill",
+                assignee="coder",
+                skills=["category:sample"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_rejects_unavailable_plugin_skill_without_insert(
+    kanban_home, monkeypatch
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: []
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="missing-plugin:skill"):
+            kb.create_task(
+                conn,
+                title="missing plugin skill",
+                assignee="coder",
+                skills=["missing-plugin:skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_rejects_disabled_profile_plugin_skill(kanban_home, monkeypatch):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: '[\"disabled-plugin:plugin-skill\"]'\n",
+        encoding="utf-8",
+    )
+    plugin_module = types.SimpleNamespace(
+        discover_plugins=lambda: None,
+        get_plugin_manager=lambda: types.SimpleNamespace(
+            list_plugin_skill_metadata=lambda: [
+                {
+                    "name": "disabled-plugin:plugin-skill",
+                    "frontmatter": {},
+                }
+            ]
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugin_module)
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="disabled-plugin:plugin-skill"):
+            kb.create_task(
+                conn,
+                title="disabled plugin skill",
+                assignee="coder",
+                skills=["disabled-plugin:plugin-skill"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+def test_create_task_resolves_profile_relative_external_skill_dir(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home / "external", "external-skill")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  external_dirs: [external]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="profile external skill", assignee="coder", skills=["external-skill"]
+        )
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).skills == ["external-skill"]
+
+
+def test_create_task_rejects_serialized_disabled_skill_list(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home, "disabled-skill")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  disabled: '[\"disabled-skill\"]'\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="disabled-skill"):
+            kb.create_task(
+                conn, title="disabled skill", assignee="coder", skills=["disabled-skill"]
+            )
+
+
+def test_platform_disabled_validation_matches_worker_platform_resolution(kanban_home):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    _write_profile_skill(profile_home, "linux-only-disabled")
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  platform_disabled:\n    linux: [linux-only-disabled]\n",
+        encoding="utf-8",
+    )
+
+    with unittest.mock.patch.dict(os.environ, {"HERMES_PLATFORM": ""}):
+        with kb.connect() as conn:
+            # Worker preload resolves the platform from HERMES_PLATFORM/session
+            # context, which is unset here; sys.platform must not be substituted.
+            task_id = kb.create_task(
+                conn,
+                title="platform parity",
+                assignee="coder",
+                skills=["linux-only-disabled"],
+            )
+    with kb.connect() as conn:
+        assert kb.get_task(conn, task_id).skills == ["linux-only-disabled"]
+
+    with unittest.mock.patch.dict(os.environ, {"HERMES_PLATFORM": "linux"}):
+        with kb.connect() as conn:
+            with pytest.raises(ValueError, match="linux-only-disabled"):
+                kb.create_task(
+                    conn,
+                    title="explicit platform disabled",
+                    assignee="coder",
+                    skills=["linux-only-disabled"],
+                )
+
+
+def test_profile_skill_resolution_serializes_home_and_workspace_context(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_a = kanban_home / "profiles" / "alpha"
+    profile_b = kanban_home / "profiles" / "beta"
+    profile_a.mkdir(parents=True)
+    profile_b.mkdir(parents=True)
+    workspace_a = tmp_path / "workspace-a"
+    workspace_b = tmp_path / "workspace-b"
+    workspace_a.mkdir()
+    workspace_b.mkdir()
+
+    observed: list[tuple[str, str | None]] = []
+    import agent.skill_utils as skill_utils
+
+    def observe_project_context():
+        from hermes_constants import get_hermes_home
+
+        observed.append((get_hermes_home().name, os.environ.get("TERMINAL_CWD")))
+        time.sleep(0.02)
+        return []
+
+    monkeypatch.setattr(skill_utils, "get_project_skills_dirs", observe_project_context)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda args: kb._profile_skill_names(args[0], project_workspace=args[1]),
+                [("alpha", workspace_a), ("beta", workspace_b)],
+            )
+        )
+
+    assert results == [set(), set()]
+    assert observed == [
+        ("alpha", str(workspace_a)),
+        ("beta", str(workspace_b)),
+    ] or observed == [
+        ("beta", str(workspace_b)),
+        ("alpha", str(workspace_a)),
+    ]
+    assert os.environ.get("TERMINAL_CWD") is None
+
+
+def test_create_task_concurrent_public_skill_validation_is_profile_scoped(
+    kanban_home, tmp_path
+):
+    """The public creator path must not mix profile homes under concurrency."""
+    profiles = {
+        "alpha": ("alpha-skill", tmp_path / "alpha-workspace"),
+        "beta": ("beta-skill", tmp_path / "beta-workspace"),
+    }
+    for profile, (skill, workspace) in profiles.items():
+        profile_home = kanban_home / "profiles" / profile
+        profile_home.mkdir(parents=True)
+        _write_profile_skill(profile_home, skill)
+        workspace.mkdir()
+
+    db_path = tmp_path / "concurrent-create.db"
+
+    def create_for(profile: str) -> str:
+        skill, workspace = profiles[profile]
+        with kb.connect(db_path) as conn:
+            return kb.create_task(
+                conn,
+                title=f"{profile} task",
+                assignee=profile,
+                workspace_kind="dir",
+                workspace_path=str(workspace),
+                skills=[skill],
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        task_ids = list(executor.map(create_for, profiles))
+
+    with kb.connect(db_path) as conn:
+        assert {kb.get_task(conn, task_id).skills[0] for task_id in task_ids} == {
+            "alpha-skill",
+            "beta-skill",
+        }
+
+
+def test_project_worktree_skill_validation_anchor_is_not_runtime_path(tmp_path):
+    repo = tmp_path / "repo"
+    anchor = kb._skill_validation_workspace(
+        "worktree", None, board=None, project_repo=str(repo)
+    )
+
+    assert anchor == repo / ".worktrees" / "__kanban_skill_validation__"
+    assert not anchor.exists()
+
+
+def _write_project_skill(repo: Path, name: str) -> None:
+    skill_dir = repo / ".agents" / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Project skill.\n---\n",
+        encoding="utf-8",
+    )
+
+
+def test_create_task_resolves_project_skill_from_dir_workspace(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    workspace = tmp_path / "worker-project"
+    _init_git_repo(workspace)
+    _write_project_skill(workspace, "worker-only")
+    creator = tmp_path / "creator-cwd"
+    creator.mkdir()
+    monkeypatch.chdir(creator)
+    (profile_home / "config.yaml").write_text(
+        f"skills:\n  trusted_project_dirs: [{workspace}]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="worker project skill",
+            assignee="coder",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+            skills=["worker-only"],
+        )
+
+    assert task_id
+
+
+def test_create_task_resolves_project_skill_from_board_default_dir_workspace(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    workspace = tmp_path / "board-default-project"
+    _init_git_repo(workspace)
+    _write_project_skill(workspace, "board-default-only")
+    creator = tmp_path / "creator-cwd"
+    creator.mkdir()
+    monkeypatch.chdir(creator)
+    (profile_home / "config.yaml").write_text(
+        f"skills:\n  trusted_project_dirs: [{workspace}]\n", encoding="utf-8"
+    )
+    kb.write_board_metadata(None, default_workdir=str(workspace))
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(
+            conn,
+            title="board default project skill",
+            assignee="coder",
+            workspace_kind="dir",
+            skills=["board-default-only"],
+        )
+        task = kb.get_task(conn, task_id)
+
+    assert task is not None
+    assert task.workspace_path == str(workspace)
+
+
+def test_create_task_rejects_skill_only_in_creator_cwd(
+    kanban_home, monkeypatch, tmp_path
+):
+    profile_home = kanban_home / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    creator = tmp_path / "creator-project"
+    _init_git_repo(creator)
+    _write_project_skill(creator, "creator-only")
+    workspace = tmp_path / "worker-project"
+    _init_git_repo(workspace)
+    monkeypatch.chdir(creator)
+    (profile_home / "config.yaml").write_text(
+        f"skills:\n  trusted_project_dirs: [{creator}]\n", encoding="utf-8"
+    )
+
+    with kb.connect() as conn:
+        with pytest.raises(ValueError, match="creator-only.*coder"):
+            kb.create_task(
+                conn,
+                title="creator project skill",
+                assignee="coder",
+                workspace_kind="dir",
+                workspace_path=str(workspace),
+                skills=["creator-only"],
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
 
 

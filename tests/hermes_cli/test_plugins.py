@@ -3,6 +3,7 @@
 import logging
 import json
 import sys
+import concurrent.futures
 import threading
 import types
 from pathlib import Path
@@ -245,6 +246,40 @@ class TestPluginDiscovery:
         assert manager._plugins["portable.test"].enabled is False
         assert manager.list_plugin_skill_metadata() == []
         assert manager.get_portable_mcp_servers() == {}
+
+    def test_plugin_managers_are_isolated_sequentially_and_concurrently(
+        self, tmp_path, monkeypatch
+    ):
+        """Profile switches must never reuse another profile's skill manager."""
+        from hermes_cli import plugins as plugins_mod
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        homes = [tmp_path / "alpha", tmp_path / "beta"]
+        for home in homes:
+            (home / "plugins").mkdir(parents=True)
+        plugins_mod._reset_plugin_managers_for_tests()
+
+        def manager_for(home: Path):
+            token = set_hermes_home_override(home)
+            try:
+                manager = plugins_mod.get_plugin_manager()
+                return manager, manager.scope_key
+            finally:
+                reset_hermes_home_override(token)
+
+        sequential = [manager_for(home) for home in homes]
+        assert sequential[0][0] is not sequential[1][0]
+        assert {scope for _, scope in sequential} == {str(home) for home in homes}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            concurrent_results = list(executor.map(manager_for, homes))
+        assert concurrent_results[0][0] is not concurrent_results[1][0]
+        assert {scope for _, scope in concurrent_results} == {str(home) for home in homes}
+
+        plugins_mod._reset_plugin_managers_for_tests()
 
     def test_portable_author_object_is_normalized_to_stable_string(
         self, tmp_path, monkeypatch

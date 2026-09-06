@@ -1169,3 +1169,23 @@ Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file
 ## Design spec
 
 The complete design — architecture, concurrency correctness, comparison with other systems, implementation plan, risks, open questions — lives in `docs/hermes-kanban-v1-spec.pdf`. Read that before filing any behavior-change PR.
+## Structured reviewer results (schema v1)
+
+Review integrations may submit a validated schema-v1 result through
+`hermes_cli.kanban_reviewer.submit_reviewer_result`. The verdict is one of
+`APPROVED`, `CHANGES_REQUESTED`, or `BLOCKED`. Findings must provide a stable
+`finding_id`, severity, affected files or areas, required changes, and
+verification evidence. `BLOCKED` additionally requires an explicit
+`ambiguity_or_blocker_reason`; vague or contradictory payloads are rejected
+before graph mutation and retained only as sanitized audit events.
+
+An approved result uses the native completion path. A concrete changes-requested
+result creates (or reuses) one deterministic builder correction child. The child
+is independently runnable rather than being gated on the still-open reviewed
+task; the reviewed-task audit event retains the correction ID and canonical
+payload digest as the non-gating provenance link. Three distinct correction
+cycles are allowed; repeated delivery of the same result reuses its child, and
+subsequent distinct requests use the native blocked/escalation path without
+creating another child. Durable reviewer-result records contain only the
+canonical payload digest and sanitized routing metadata, never the free-form
+canonical payload itself.

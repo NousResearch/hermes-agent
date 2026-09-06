@@ -103,6 +103,7 @@ while True:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.live_system_guard_bypass
 def test_sigterm_on_wedged_process_forces_exit_within_leash():
     """E2E: a wedged process armed via the signal path self-exits at ~2×
     HERMES_EXIT_WATCHDOG_S; without the signal it would live forever."""
@@ -138,6 +139,7 @@ def test_sigterm_on_wedged_process_forces_exit_within_leash():
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.live_system_guard_bypass
 def test_signal_watchdog_is_skipped_once_cleanup_starts():
     """If cleanup starts after signal intent, the cleanup-owned watchdog should
     govern shutdown and the signal watchdog should not hard-kill midway."""

@@ -59,7 +59,8 @@ class TestSwitchModelReasoningOverride:
             },
         }
 
-        with patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg), \
+             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()):
             try:
                 switch_model(
                     agent,
@@ -120,7 +121,7 @@ class TestSwitchModelReasoningOverride:
         agent._create_openai_client = MagicMock(return_value=MagicMock())
         agent._ensure_lmstudio_runtime_loaded = MagicMock()
 
-        result = restore_primary_runtime(agent)
+        with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()):
+            result = restore_primary_runtime(agent)
         assert result is True
         assert agent.reasoning_config == {"enabled": True, "effort": "xhigh"}
-

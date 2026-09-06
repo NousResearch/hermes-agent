@@ -27,6 +27,10 @@ from tests.conformance.persistence._harness import (
     wait_for,
 )
 
+
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 WRITER = r"""
 import json, sys
 from pathlib import Path

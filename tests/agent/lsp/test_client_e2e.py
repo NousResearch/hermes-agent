@@ -18,6 +18,9 @@ from agent.lsp.client import LSPClient
 from agent.lsp.protocol import LSPProtocolError
 
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 

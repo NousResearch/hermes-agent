@@ -634,6 +634,7 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
 
 
+@pytest.mark.live_system_guard_bypass
 class TestScriptTimeoutTreeKill:
     """Phase 4a (#85125): a script timeout must leave zero living descendants."""
 

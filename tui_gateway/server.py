@@ -461,6 +461,14 @@ class _SlashWorker:
             "tui_gateway.slash_worker",
             "--session-key",
             session_key,
+            # Hand the worker the gateway's real PID. On Windows the venv
+            # launcher stub (what sys.executable resolves to under Popen) is
+            # the worker's direct parent, and the worker's own os.getppid()
+            # therefore pins it to the stub, which outlives this gateway —
+            # the orphan watchdog would never fire. See the native Win11
+            # check on #100253.
+            "--ppid",
+            str(os.getpid()),
         ]
         if model:
             argv += ["--model", model]

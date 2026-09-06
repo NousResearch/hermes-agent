@@ -54,16 +54,34 @@ logger = logging.getLogger(__name__)
 
 def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
     """Return whether this worker no longer has its original parent."""
-    if sys.platform == "win32":
+    if sys.platform == "win32" and getppid is os.getppid:
         # On Windows os.getppid() does not reliably return the spawning
         # parent's PID — the PEB value can differ from the actual creator
-        # PID. Actively probe whether the parent PID is still alive.
+        # PID. Actively probe whether the parent PID is still alive. The
+        # ``getppid is os.getppid`` guard keeps the injectable seam intact
+        # for unit tests that fake the parent PID.
+        import ctypes
+        from ctypes import wintypes
+
+        _kernel32 = ctypes.windll.kernel32
+        _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        _STILL_ACTIVE = 259
+        # Declare signatures: without restype/argtypes, ctypes defaults to
+        # c_int and truncates the 64-bit HANDLE returned by OpenProcess.
+        _kernel32.OpenProcess.restype = wintypes.HANDLE
+        _kernel32.OpenProcess.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        _kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        _kernel32.GetExitCodeProcess.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        _kernel32.CloseHandle.restype = wintypes.BOOL
+        _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         try:
-            import ctypes
-            from ctypes import wintypes
-            _kernel32 = ctypes.windll.kernel32
-            _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            _STILL_ACTIVE = 259
             handle = _kernel32.OpenProcess(
                 _PROCESS_QUERY_LIMITED_INFORMATION, False, original_ppid
             )
@@ -153,14 +171,21 @@ def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
+    p.add_argument("--ppid", default="")
     args = p.parse_args()
 
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
 
+    # Prefer the spawner-supplied PID: on Windows the venv launcher stub
+    # (what server.py's sys.executable resolves to under Popen) is the
+    # worker's direct parent, and os.getppid() would pin us to that stub,
+    # which outlives the gateway — the orphan watchdog would never fire
+    # (see the native Win11 check on #100253). Fall back to getppid() when
+    # the flag is absent so older spawn sites keep working.
+    orig_ppid = int(args.ppid) if args.ppid else os.getppid()
     # Start before the (hundreds-of-ms) HermesCLI build — that window is itself
     # an orphan risk if the gateway dies mid-spawn.
-    orig_ppid = os.getppid()
     _start_parent_death_watchdog(orig_ppid)
     _prepare_slash_worker_runtime()
 

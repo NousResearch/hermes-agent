@@ -43,7 +43,6 @@ Usage (see ``tools/mcp_tool.py::_run_stdio``)::
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import signal
 import subprocess
@@ -53,35 +52,10 @@ import time
 
 _POLL_INTERVAL_S = 2.0
 _TERM_GRACE_S = 3.0
-logger = logging.getLogger(__name__)
 
 
 def _is_orphaned(original_ppid: int, getppid=os.getppid) -> bool:
-    """Return whether this process no longer has its original parent."""
-    if sys.platform == "win32":
-        # On Windows os.getppid() does not reliably return the spawning
-        # parent's PID — the PEB value can differ from the actual creator
-        # PID. Actively probe whether the parent PID is still alive.
-        try:
-            import ctypes
-            from ctypes import wintypes
-            _kernel32 = ctypes.windll.kernel32
-            _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            _STILL_ACTIVE = 259
-            handle = _kernel32.OpenProcess(
-                _PROCESS_QUERY_LIMITED_INFORMATION, False, original_ppid
-            )
-            if not handle:
-                return True
-            try:
-                code = wintypes.DWORD()
-                _kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-                return code.value != _STILL_ACTIVE
-            finally:
-                _kernel32.CloseHandle(handle)
-        except Exception as exc:  # keep watchdog alive; log for observability
-            logger.debug("Windows orphan check failed for ppid %s: %s: %s", original_ppid, type(exc).__name__, exc)
-            return False
+    """Return whether this process no longer has its original POSIX parent."""
     return getppid() != original_ppid
 
 

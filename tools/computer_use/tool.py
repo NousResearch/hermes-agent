@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +78,19 @@ def _input_target_mismatch(backend, requested_app: str) -> Optional[str]:
 
 # ── Backend selection — env-swappable for tests ─────────────────────────────
 # Per-Hermes-session cached backends (own cua-driver session, native target, refs, grant namespace).
+# Keys are structural (hermes_home_key, session_id) pairs so a multiplexed gateway cannot
+# hand profile B the live desktop authority of profile A's backend (#104080 review finding 1).
 _backend_lock = threading.Lock()
-_backend: Optional[ComputerUseBackend] = None  # backward-compatible empty-session injection hook (older tests)
-_backends: Dict[str, ComputerUseBackend] = {}
-_backend_call_locks: Dict[str, threading.RLock] = {}
-_backend_permission_modes: Dict[str, str] = {}
-_backend_displays: Dict[str, str] = {}  # DISPLAY the cached backend was spawned against (Bot Desktop rebind)
+_backend: Dict[str, ComputerUseBackend] = {}  # home-keyed empty-session injection hook (private test callers)
+_backends: Dict[Tuple[str, str], ComputerUseBackend] = {}
+_backend_call_locks: Dict[Tuple[str, str], threading.RLock] = {}
+_backend_permission_modes: Dict[Tuple[str, str], str] = {}
+# Per-owner single-flight locks: ensure only one thread does the expensive backend.start()
+# (which may be a network handshake to a remote host) — other threads for the same owner
+# wait, and unrelated owners proceed concurrently without holding _backend_lock (#104080 finding 3).
+# The lock object also identifies the ownership generation: release invalidates starters and waiters.
+_backend_start_locks: Dict[Tuple[str, str], threading.Lock] = {}
+_backend_displays: Dict[Tuple[str, str], str] = {}  # Bot Desktop rebind identity
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
@@ -157,6 +165,18 @@ def _cua_permission_mode(session_id: str) -> str:
             return "unrestricted"
     return configured
 
+def _backend_owner_key(session_id: str) -> Tuple[str, str]:
+    """Profile-qualified cache key: ``(hermes_home_key, session_id)``.
+
+    Under ``gateway.multiplex_profiles`` multiple profiles share one process;
+    without qualification, profile B reaching the same ``session_id`` as
+    profile A would reuse A's live backend — physical mutation authority over
+    A's remote desktop. Qualifying with ``hermes_home_key()`` ensures each
+    profile's backend cache is independent (#104080 finding 1).
+    """
+    return hermes_home_key(), str(session_id or "")
+
+
 def _new_backend(permission_mode: str) -> ComputerUseBackend:
     backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
     if backend_name in {"cua", "cua-driver", ""}:
@@ -166,26 +186,26 @@ def _new_backend(permission_mode: str) -> ComputerUseBackend:
         raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
     return _NoopBackend()  # pragma: no cover
 
-def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
+def _install_backend(owner: Tuple[str, str], backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
     """Record a backend in the session caches (the empty session also mirrors it onto the ``_backend`` hook).
     Caller holds ``_backend_lock``."""
-    global _backend
     from tools.computer_use.cua_backend import desktop_identity
-    _backends[sid], _backend_permission_modes[sid] = backend, permission_mode
-    _backend_displays[sid] = desktop_identity()
-    _backend_call_locks[sid] = threading.RLock()
-    _backend = backend if sid == "" else _backend
+    _backends[owner], _backend_permission_modes[owner] = backend, permission_mode
+    _backend_call_locks[owner] = threading.RLock()
+    if owner[1] == "":
+        _backend[owner[0]] = backend
+    _backend_displays[owner] = desktop_identity()
     return backend
 
-def _detach_locked(sid: str) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
+def _detach_locked(owner: Tuple[str, str]) -> Tuple[Optional[ComputerUseBackend], Optional[threading.RLock]]:
     """Remove one session's cache entries, plus the ``_backend`` injection hook when it aliases the empty session
     (older callers/tests may populate only the hook). Caller holds ``_backend_lock``."""
-    global _backend
-    _backend_permission_modes.pop(sid, None), _backend_displays.pop(sid, None)
-    backend, call_lock = _backends.pop(sid, None), _backend_call_locks.pop(sid, None)
-    if sid == "":
-        backend = _backend if backend is None else backend
-        _backend = None if _backend is backend else _backend
+    _backend_displays.pop(owner, None)
+    _backend_permission_modes.pop(owner, None)
+    backend, call_lock = _backends.pop(owner, None), _backend_call_locks.pop(owner, None)
+    if owner[1] == "":
+        injected = _backend.pop(owner[0], None)
+        backend = injected if backend is None else backend
     return backend, call_lock
 
 def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLock], on_error: Callable[[Exception], None]) -> None:
@@ -198,34 +218,62 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
         on_error(e)
 
 def _scoped_sid(session_id: str) -> str:
-    """Cache key for one Hermes session's backend. Outside a served-profile scope it is the bare id
-    (legacy keys byte-identical); under a multiplexed turn the routed profile's home key is appended
-    so two profiles that share a session id (or a DISPLAY) never share one cua-driver (#110032).
-    Every cache path — lookup, install, release — goes through this, so release finds what lookup made."""
+    """Cache key for one Hermes session's screenshot-dedup state. Outside a served-profile scope it is
+    the bare id (legacy keys byte-identical); under a multiplexed turn the routed profile's home key is
+    appended so two profiles that share a session id (or a DISPLAY) never dedup off each other's frames
+    (#110032). The backend cache itself uses the structural ``_backend_owner_key`` tuple instead (closes
+    a theoretical delimiter-collision gap this string-concat scheme has, #104080 finding 1); dedup state
+    keeps the simpler string form since it only affects whether a screenshot is resent, not who can act."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     sid = str(session_id or "")
     return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
 
 def _get_backend(session_id: str = "") -> ComputerUseBackend:
-    bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
-    while True:
-        with _backend_lock:
-            # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
-            if sid == "" and _backend is not None and sid not in _backends:
-                _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
-            if (cached := _backends.get(sid)) is None:
-                backend = _new_backend(permission_mode)
-                backend.start()  # under the cache lock: one backend per session; a concurrent toggle releases it
-                return _install_backend(sid, backend, permission_mode)
-            from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
-            if (_backend_permission_modes.get(sid, "standard") == permission_mode
-                    and not backend_display_stale(_backend_displays.get(sid, ""), desktop_identity())):
-                return cached
-            # Cua's mode and DISPLAY are fixed at daemon startup: a /yolo toggle, or a Bot Desktop that started
-            # (or moved) after this backend was cached, replaces only this session's backend.
-            _, stale_lock = _detach_locked(sid)  # stopped outside the cache lock; the loop re-reads the mode first
-        _stop_backend(cached, stale_lock, lambda e: None)
+    sid = str(session_id or "")
+    owner = _backend_owner_key(sid)
+    with _backend_lock:
+        start_lock = _backend_start_locks.setdefault(owner, threading.Lock())
+    with start_lock:
+        try:
+            with _backend_lock:
+                if _backend_start_locks.get(owner) is not start_lock:
+                    raise RuntimeError("computer_use session released during backend startup")
+                # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
+                permission_mode = _cua_permission_mode(sid)
+                if sid == "" and owner[0] in _backend and owner not in _backends:
+                    _install_backend(owner, _backend[owner[0]], permission_mode)
+                cached = _backends.get(owner)
+                from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
+                if (cached is not None
+                        and _backend_permission_modes.get(owner, "standard") == permission_mode
+                        and not backend_display_stale(_backend_displays.get(owner, ""), desktop_identity())):
+                    return cached
+                # Mode replacement keeps this owner generation; only release revokes its authority.
+                _, stale_lock = _detach_locked(owner)
+            if cached is not None:
+                _stop_backend(cached, stale_lock, lambda e: None)
+                with _backend_lock:
+                    if _backend_start_locks.get(owner) is not start_lock:
+                        raise RuntimeError("computer_use session released during backend startup")
+                    permission_mode = _cua_permission_mode(sid)
+            backend = _new_backend(permission_mode)
+            try:
+                backend.start()  # outside _backend_lock: unrelated owners proceed concurrently
+            except BaseException:
+                _stop_backend(backend, None,
+                              lambda e: logger.debug("computer_use failed startup teardown: %s", e))
+                raise
+            with _backend_lock:
+                if _backend_start_locks.get(owner) is start_lock:
+                    return _install_backend(owner, backend, permission_mode)
+            _stop_backend(backend, None,
+                          lambda e: logger.debug("computer_use stale startup teardown failed: %s", e))
+            raise RuntimeError("computer_use session released during backend startup")
+        except BaseException:
+            with _backend_lock:
+                if _backend_start_locks.get(owner) is start_lock:
+                    _backend_start_locks.pop(owner)
+            raise
 
 @contextlib.contextmanager
 def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
@@ -237,7 +285,7 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
     """
     from tools.computer_use.cua_backend import backend_display_stale, desktop_identity
 
-    sid = _scoped_sid(session_id)
+    sid = _backend_owner_key(session_id)
     while True:
         backend = _get_backend(session_id=session_id)
         with _backend_lock:
@@ -259,15 +307,17 @@ def _backend_for_call(session_id: str = "") -> Iterator[ComputerUseBackend]:
 
 
 def release_computer_use_session(session_id: str) -> bool:
-    """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
+    """Release one owner's backend or acquisition generation; idempotent, True iff either was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
     grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
-    sid = _scoped_sid(session_id)
-    _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
+    sid = str(session_id or "")
+    owner = _backend_owner_key(sid)
+    _reset_screenshot_dedup(_scoped_sid(session_id))  # the next capture of a re-created session must deliver pixels
     with _backend_lock:
-        backend, call_lock = _detach_locked(sid)
+        generation = _backend_start_locks.pop(owner, None)
+        backend, call_lock = _detach_locked(owner)
     if backend is None:
-        return False
+        return generation is not None
     _stop_backend(backend, call_lock,
                   lambda e: logger.debug("computer_use backend release failed for session %s", sid, exc_info=True))
     return True
@@ -282,13 +332,13 @@ def _shutdown_backend_atexit() -> None:
     the Hermes process that spawned it (#28152 item 3). #69903 kept the orphan from burning a core by
     disabling the cursor overlay; the process itself still lingered.
     """
-    global _backend
     with _backend_lock:
-        unique = {id(b): (b, _backend_call_locks.get(sid)) for sid, b in _backends.items()}
-        if _backend is not None:
-            unique.setdefault(id(_backend), (_backend, _backend_call_locks.get("")))
-        _backend = None
-        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_displays.clear()
+        unique = {id(b): (b, _backend_call_locks.get(owner)) for owner, b in _backends.items()}
+        for home, backend in _backend.items():
+            unique.setdefault(id(backend), (backend, _backend_call_locks.get((home, ""))))
+        _backend.clear()
+        _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear(), _backend_start_locks.clear()
+        _backend_displays.clear()
     with _approval_lock:
         _escalation_warned.clear()
     for backend, call_lock in unique.values():
@@ -389,6 +439,9 @@ def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
     gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``tools.approval``'s shared gate,
     so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
     foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
+    The gate's own session key already carries the served profile (``tools.approval.get_current_session_key`` /
+    ``_baseline_key``), so a grant here is naturally profile-isolated without a local ``_backend_owner_key`` —
+    no separate owner-qualified approval store is needed (#104080 finding 2 is closed one layer out).
     """
     from tools.approval import _run_approval_gate
 

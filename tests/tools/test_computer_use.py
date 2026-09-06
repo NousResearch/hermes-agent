@@ -1052,7 +1052,7 @@ class TestCaptureAfterAppContext:
 
         backend = TrackingBackend()
         cu_tool.reset_backend_for_tests()
-        cu_tool._backend = backend
+        cu_tool._backend[cu_tool.hermes_home_key()] = backend
 
         cu_tool.handle_computer_use({"action": "click", "element": 14, "capture_after": True})
 

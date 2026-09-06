@@ -92,6 +92,7 @@ from agent.trajectory import has_incomplete_scratchpad
 # Bind before the turn starts so a source-tree swap cannot load a skewed
 # finalizer at turn end.
 from agent.turn_finalizer import finalize_turn
+from agent.turn_events import record_turn_tool_events
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent import empty_response_guard as _empty_guard
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -7348,7 +7349,24 @@ def run_conversation(
                     except Exception:
                         pass
 
+                _tool_messages_start = len(messages)
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                try:
+                    record_turn_tool_events(
+                        agent,
+                        assistant_message,
+                        messages,
+                        _tool_messages_start,
+                    )
+                except Exception:
+                    # Auto-close is fail-closed: an instrumentation problem
+                    # must never turn a successful-looking prose response into
+                    # a topic-close request.
+                    agent._turn_tool_events = []
+                    logger.warning(
+                        "Unable to record Becky turn tool outcomes; keeping loop open",
+                        exc_info=True,
+                    )
 
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send

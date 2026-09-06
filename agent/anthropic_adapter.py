@@ -1056,7 +1056,11 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
         return None
 
-    raw = result.stdout.strip()
+    raw = result.stdout
+    if not isinstance(raw, (str, bytes, bytearray)):
+        logger.debug("Keychain: security command returned no text payload")
+        return None
+    raw = raw.strip()
     if not raw:
         return None
 

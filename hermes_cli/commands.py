@@ -148,6 +148,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="interrupt_then_dispatch", busy_handler="new"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
+    CommandDef("close", "Close the current Telegram topic", "Session",
+               gateway_only=True),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -1351,6 +1353,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     and silently clamps /update off, breaking Telegram parity.
 #   - heartbeat: session heartbeat management; reached via /hermes heartbeat
 #     on Slack. Added at the 50-cap — a native slot would clamp /insights.
+#   - insights: usage analytics; reached via /hermes insights on Slack. Demoted
+#     at the 50-cap so it remains available when the native registry is full.
 #   - refine: on-demand memory/skill review; reached via /hermes refine on
 #     Slack. Added at the 50-cap — a native slot would clamp an existing
 #     native slash.
@@ -1366,7 +1370,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     (session export is an interactive surface; platform is a rare
 #     informational lookup) — without this entry /save tips the registry
 #     past the 50-cap and silently clamps /platform, breaking parity.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "whoami", "platform"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "insights", "refine", "pause", "whoami", "platform"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

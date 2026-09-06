@@ -29,6 +29,7 @@ import concurrent.futures
 import dataclasses
 import faulthandler
 import inspect
+import ipaddress
 import json
 import logging
 import os
@@ -46,6 +47,7 @@ from contextvars import copy_context
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, Optional, Any, List, Tuple, Union, cast
+from urllib.parse import urlsplit
 
 from agent.async_utils import consume_detached_task_result, safe_schedule_threadsafe
 from agent.conversation_compression import (
@@ -114,6 +116,124 @@ _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
+
+
+def _validated_becky_dashboard_url(raw_url: object) -> str | None:
+    """Accept only an HTTP(S) URL whose literal host is a loopback IP."""
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        return None
+    value = raw_url.strip()
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.casefold() not in {"http", "https"}
+        or host is None
+        or "%" in host
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        return None
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if not address.is_loopback:
+        return None
+    if port is not None and not 1 <= port <= 65_535:
+        return None
+    return value.rstrip("/")
+
+
+def _bounded_becky_auto_close_result(
+    agent_result: object, final_response: object
+) -> dict[str, Any] | None:
+    """Copy only bounded, machine-derived fields needed by Becky auto-close."""
+    if not isinstance(agent_result, dict):
+        return None
+    bounded_events: list[dict[str, Any]] = []
+    raw_events = agent_result.get("turn_tool_events")
+    if isinstance(raw_events, list):
+        # Two entries are enough to preserve the classifier's ``len != 1``
+        # guard while preventing an unexpectedly large event list from being
+        # retained on the platform event.
+        for raw_event in raw_events[:2]:
+            if not isinstance(raw_event, dict):
+                continue
+            raw_name = raw_event.get("name")
+            raw_requested_name = raw_event.get("requested_name")
+            event: dict[str, Any] = {
+                "name": raw_name
+                if isinstance(raw_name, str) and len(raw_name) <= 256
+                else "",
+                "requested_name": raw_requested_name
+                if isinstance(raw_requested_name, str)
+                and len(raw_requested_name) <= 256
+                else "",
+                "success": raw_event.get("success")
+                if isinstance(raw_event.get("success"), bool)
+                else False,
+            }
+            status = raw_event.get("status")
+            if isinstance(status, str) and len(status) <= 64:
+                event["status"] = status
+            exit_code = raw_event.get("exit_code")
+            if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+                event["exit_code"] = exit_code
+            for key in ("background", "via_tool_search", "command_truncated"):
+                if isinstance(raw_event.get(key), bool):
+                    event[key] = raw_event[key]
+            raw_arguments = raw_event.get("arguments")
+            if isinstance(raw_arguments, dict):
+                arguments: dict[str, Any] = {}
+                for key in ("action", "operation"):
+                    value = raw_arguments.get(key)
+                    if isinstance(value, str):
+                        arguments[key] = value[:128]
+                if raw_arguments.get("background") is True:
+                    arguments["background"] = True
+                command = raw_arguments.get("command")
+                if isinstance(command, str):
+                    arguments["command"] = command[:4_000]
+                    if len(command) > 4_000:
+                        arguments["command_truncated"] = True
+                event["arguments"] = arguments
+            else:
+                event["arguments"] = {}
+            bounded_events.append(event)
+        if len(raw_events) != 1 and len(bounded_events) == 1:
+            bounded_events.append({
+                "name": "",
+                "requested_name": "",
+                "success": False,
+                "arguments": {},
+            })
+    return {
+        "completed": (
+            agent_result.get("completed")
+            if isinstance(agent_result.get("completed"), bool)
+            else None
+        ),
+        "failed": bool(agent_result.get("failed")),
+        "partial": bool(agent_result.get("partial")),
+        "interrupted": bool(agent_result.get("interrupted")),
+        "error": bool(agent_result.get("error")),
+        "final_response": (
+            final_response[:2_000] if isinstance(final_response, str) else ""
+        ),
+        "turn_exit_reason": (
+            agent_result.get("turn_exit_reason")[:128]
+            if isinstance(agent_result.get("turn_exit_reason"), str)
+            else None
+        ),
+        "turn_tool_events": bounded_events,
+    }
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -7159,6 +7279,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # no indication until they try /resume and find nothing (#88235).
             self._session_db_init_error = str(e)
 
+        # Optional local Becky loop bridge.  The listener is started only after
+        # the gateway is running and is always stopped before adapter teardown.
+        # Keeping the handle on the runner makes restart/stop idempotent.
+        self._becky_loops_bridge = None
+        self._becky_loops_topic_controller = None
+
         # Opportunistic state.db maintenance: prune ended sessions inactive
         # for sessions.retention_days + optional VACUUM. Tracks last-run
         # in state_meta so it only actually executes once per
@@ -7254,6 +7380,498 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+
+    async def _dispatch_becky_agent_reply(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        session_id: str,
+        text: str,
+        reply_to_message_id: str,
+        auto_close_policy: str | None = None,
+        new_topic: bool = False,
+    ) -> None:
+        """Queue an app-originated comment through the real Telegram agent.
+
+        The loop bridge has already delivered the visible ``Cory via Becky``
+        comment.  This synthetic event is the authenticated handoff into the
+        normal Telegram session pipeline, so the existing topic session,
+        tools, approvals, and transcript persistence all remain authoritative.
+        ``BasePlatformAdapter.handle_message`` intentionally returns after
+        scheduling the agent work; the resulting answer is delivered by the
+        ordinary Telegram adapter in the same topic.
+        """
+        adapter = self.adapters.get(Platform.TELEGRAM)
+        handle_message = getattr(adapter, "handle_message", None)
+        if not callable(handle_message):
+            raise RuntimeError("Telegram agent adapter is unavailable")
+        chat_type = "group" if str(chat_id).startswith("-") else "dm"
+        import uuid as _uuid
+
+        session_store = getattr(self, "session_store", None)
+        lookup = getattr(session_store, "lookup_by_session_id", None)
+        session_entry = lookup(session_id) if callable(lookup) else None
+        origin = getattr(session_entry, "origin", None)
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id=str(chat_id),
+                chat_type=chat_type,
+                user_id=getattr(origin, "user_id", None),
+                user_name=getattr(origin, "user_name", None),
+                user_id_alt=getattr(origin, "user_id_alt", None),
+                thread_id=str(thread_id),
+            ),
+            message_id=f"becky-dashboard-{_uuid.uuid4().hex}",
+            reply_to_message_id=str(reply_to_message_id),
+            metadata={
+                "becky_dashboard_reply": True,
+                **(
+                    {"becky_dashboard_new_topic": True}
+                    if new_topic
+                    else {}
+                ),
+                **(
+                    {"becky_auto_close_policy": auto_close_policy}
+                    if auto_close_policy is not None
+                    else {}
+                ),
+            },
+            internal=True,
+        )
+        source = event.source
+        if session_entry is not None:
+            try:
+                await asyncio.to_thread(
+                    self._record_telegram_topic_binding, source, session_entry
+                )
+            except Exception:
+                logger.debug(
+                    "Unable to bind dashboard reply to its source session",
+                    exc_info=True,
+                )
+        try:
+            await handle_message(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # The loop bridge deliberately converts dispatcher failures into a
+            # safe ``answer_unavailable`` result. Keep the public response
+            # generic, but preserve the exception type/stack in the local
+            # gateway log so a broken agent handoff is diagnosable.
+            logger.error(
+                "Becky dashboard reply handoff failed before agent scheduling (%s)",
+                type(exc).__name__,
+                exc_info=True,
+            )
+            raise
+
+    def _register_becky_auto_close_after_delivery(
+        self,
+        *,
+        event: MessageEvent,
+        source: SessionSource,
+        session_key: str,
+        run_generation: int | None,
+        agent_result: object,
+    ) -> None:
+        """Schedule a narrow Becky topic close after the answer is delivered."""
+        from gateway.becky_loops import (
+            BECKY_AUTO_CLOSE_POLICY_SIMPLE_CALENDAR_TODOIST_SUCCESS,
+            should_auto_close_becky_loop,
+        )
+
+        metadata = getattr(event, "metadata", None)
+        if (
+            not isinstance(metadata, dict)
+            or metadata.get("becky_dashboard_new_topic") is not True
+            or metadata.get("becky_auto_close_policy")
+            != BECKY_AUTO_CLOSE_POLICY_SIMPLE_CALENDAR_TODOIST_SUCCESS
+        ):
+            return
+        if not isinstance(run_generation, int) or run_generation < 1:
+            return
+        if not should_auto_close_becky_loop(agent_result):
+            return
+
+        adapter = self.adapters.get(source.platform)
+        register = getattr(adapter, "register_post_delivery_callback", None)
+        if not callable(register):
+            logger.info(
+                "Skipping Becky auto-close because the Telegram adapter has no "
+                "post-delivery callback support"
+            )
+            return
+        async def _close_after_delivery() -> None:
+            # BasePlatformAdapter annotates the event immediately before it
+            # invokes deferred callbacks. A custom adapter that invokes this
+            # callback early or a cancelled/failed send must leave the topic
+            # open.
+            if getattr(event, "_hermes_delivery_succeeded", None) is not True:
+                return
+            is_current = getattr(self, "_is_session_run_current", None)
+            if not callable(is_current):
+                return
+            if not is_current(session_key, run_generation):
+                return
+            pending_messages = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending_messages, dict) and session_key in pending_messages:
+                logger.info(
+                    "Skipping Becky auto-close because a follow-up is pending for %s",
+                    session_key,
+                )
+                return
+            session_tasks = getattr(adapter, "_session_tasks", None)
+            current_task = asyncio.current_task()
+            owner_task = (
+                session_tasks.get(session_key)
+                if isinstance(session_tasks, dict)
+                else None
+            )
+            owner_done = getattr(owner_task, "done", None)
+            if (
+                owner_task is not None
+                and owner_task is not current_task
+                and (not callable(owner_done) or not owner_done())
+            ):
+                logger.info(
+                    "Skipping Becky auto-close because a newer session task owns %s",
+                    session_key,
+                )
+                return
+            await self._maybe_auto_close_becky_topic(
+                source=source,
+                agent_result=agent_result,
+            )
+
+        try:
+            register(
+                session_key,
+                _close_after_delivery,
+                generation=run_generation,
+            )
+        except Exception:
+            # Callback registration is a safety boundary. If the adapter
+            # cannot guarantee response-before-close ordering, leave the loop
+            # open rather than closing it early.
+            logger.warning(
+                "Unable to register Becky auto-close post-delivery callback",
+                exc_info=True,
+            )
+
+    async def _maybe_auto_close_becky_topic(
+        self,
+        *,
+        source: SessionSource,
+        agent_result: object,
+    ) -> None:
+        """Close a Becky topic only when the narrow success predicate passes."""
+        from gateway.becky_loops import should_auto_close_becky_loop
+
+        if not should_auto_close_becky_loop(agent_result):
+            return
+        try:
+            await self._handle_becky_close_command(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id or ""),
+                user_id=str(source.user_id or ""),
+                message_id="",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The close command itself is fail-safe, but keep this boundary
+            # defensive so a controller/configuration error never affects the
+            # already-delivered assistant response.
+            logger.warning("Becky automatic topic close failed", exc_info=True)
+
+    async def _handle_becky_close_command(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        user_id: str,
+        message_id: str,
+    ) -> str:
+        """Close one Telegram topic without entering the LLM pipeline."""
+        del user_id, message_id
+        config = getattr(self, "_becky_loops_config", None)
+        if config is None or str(chat_id) != str(getattr(config, "chat_id", "")):
+            return "This topic is not managed by Becky."
+        managed = getattr(config, "managed_topic_ids", frozenset())
+        if not thread_id or thread_id == "1" or thread_id in managed:
+            return "This is a Hermes system topic and cannot be closed as a loop."
+        controller = getattr(self, "_becky_loops_topic_controller", None)
+        if controller is None or not bool(getattr(controller, "is_connected", False)):
+            return "Topic close is unavailable."
+        if not bool(getattr(controller, "supports_close", False)):
+            return "Topic close is unavailable."
+
+        from datetime import UTC, datetime
+
+        try:
+            closed_at = await controller.close_topic(
+                chat_id=str(chat_id), thread_id=str(thread_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if getattr(error, "code", None) != "topic_already_closed":
+                logger.warning("Telegram /close topic control failed", exc_info=True)
+                return "Topic close is unavailable."
+            closed_at = datetime.now(UTC)
+        if closed_at.tzinfo is None or closed_at.utcoffset() is None:
+            closed_at = closed_at.replace(tzinfo=UTC)
+
+        session_ids: list[str] = []
+        session_db = getattr(self, "_session_db", None)
+        if session_db is not None:
+            try:
+                binding = await session_db.get_telegram_topic_binding(
+                    chat_id=str(chat_id), thread_id=str(thread_id)
+                )
+                if binding:
+                    bound_id = str(binding.get("session_id") or "").strip()
+                    if bound_id and bound_id not in session_ids:
+                        session_ids.append(bound_id)
+                # Older Telegram conversations (and topics created outside
+                # the Shortcut flow) may not have a binding row.  The topic
+                # tuple is still authoritative.  Collect every active row for
+                # the tuple: compression/restart history can leave duplicate
+                # sessions, and ending only the newest one makes the topic
+                # reappear as active on the next projection refresh.
+                list_sessions = getattr(session_db, "list_sessions_rich", None)
+                if callable(list_sessions):
+                    from gateway.becky_loops import (
+                        _MAX_SESSION_SCAN,
+                        _SESSION_PAGE_SIZE,
+                    )
+
+                    offset = 0
+                    scanned = 0
+                    while scanned < _MAX_SESSION_SCAN:
+                        candidates = await session_db.list_sessions_rich(
+                            source="telegram",
+                            include_children=False,
+                            include_archived=False,
+                            project_compression_tips=True,
+                            order_by_last_active=True,
+                            limit=_SESSION_PAGE_SIZE,
+                            offset=offset,
+                        )
+                        page = candidates or []
+                        scanned += len(page)
+                        for candidate in page:
+                            if (
+                                str(candidate.get("chat_id") or "") == str(chat_id)
+                                and str(candidate.get("thread_id") or "") == str(thread_id)
+                                and candidate.get("ended_at") is None
+                            ):
+                                candidate_id = str(candidate.get("id") or "").strip()
+                                if candidate_id and candidate_id not in session_ids:
+                                    session_ids.append(candidate_id)
+                        if len(page) < _SESSION_PAGE_SIZE:
+                            break
+                        offset += len(page)
+                for session_id in session_ids:
+                    await session_db.end_session(session_id, "telegram_topic_closed")
+            except Exception:
+                logger.warning("Telegram /close session finalization failed", exc_info=True)
+
+        from gateway.becky_loops import source_ref_for
+
+        state = await self._notify_becky_topic_closed(
+            source_ref=source_ref_for(chat_id=str(chat_id), thread_id=str(thread_id)),
+            closed_at=closed_at,
+            control_method=str(getattr(controller, "method", "unavailable")),
+        )
+        if state == "archived":
+            return "Topic closed and archived."
+        return "Topic closed. Becky archive is pending; refresh the dashboard shortly."
+
+    async def _notify_becky_topic_closed(
+        self, *, source_ref: str, closed_at: datetime, control_method: str
+    ) -> str:
+        """Notify the local Becky app; never turn a closed topic into a false error."""
+        config = getattr(self, "_becky_loops_config", None)
+        token = str(getattr(config, "token", "") or "").strip()
+        configured_url = os.getenv(
+            "HERMES_BECKY_DASHBOARD_URL", "http://127.0.0.1:8787"
+        )
+        url = _validated_becky_dashboard_url(configured_url)
+        if not token or url is None:
+            if configured_url and url is None:
+                logger.warning(
+                    "Ignoring Becky dashboard archive callback with a non-loopback URL"
+                )
+            return "pending"
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(
+                timeout=5.0,
+                follow_redirects=False,
+            ) as client:
+                response = await client.post(
+                    url.rstrip("/") + "/api/internal/telegram-topic-close",
+                    headers={"X-Hermes-Loops-Token": token},
+                    json={
+                        "source_ref": source_ref,
+                        "closed_at": closed_at.isoformat(),
+                        "control_method": control_method,
+                    },
+                )
+            if response.status_code not in {200, 202}:
+                return "pending"
+            payload = response.json()
+            return "archived" if isinstance(payload, dict) and payload.get("state") == "archived" else "pending"
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Becky Telegram close archive handoff failed", exc_info=True)
+            return "pending"
+
+    async def _start_becky_loops_bridge(self) -> None:
+        """Start the opt-in loopback bridge over the gateway's read-only DB."""
+        mtproto_controller = None
+        try:
+            from gateway.becky_loops import (
+                TelegramTopicController,
+                TelegramTopicSender,
+                load_becky_loops_config,
+                start_becky_loops_bridge,
+                stop_becky_loops_bridge,
+            )
+            from gateway.telegram_mtproto import MTProtoPrivateTopicController
+
+            config = load_becky_loops_config()
+            self._becky_loops_config = config
+            db = getattr(self._session_db, "_db", None)
+            if config is None or db is None:
+                return
+            telegram_adapter = self.adapters.get(Platform.TELEGRAM)
+            if telegram_adapter is not None:
+                setter = getattr(telegram_adapter, "set_becky_close_command_handler", None)
+                if callable(setter):
+                    setter(self._handle_becky_close_command)
+            topic_sender = None
+            topic_controller = None
+            if config.topic_reply == "bot_api_private_topic":
+                if telegram_adapter is not None:
+                    topic_sender = TelegramTopicSender(telegram_adapter)
+            if config.topic_control == "bot_api_private_topic":
+                if telegram_adapter is not None:
+                    topic_controller = TelegramTopicController(telegram_adapter)
+            elif config.topic_control == "mtproto_private_topic":
+                mtproto_controller = MTProtoPrivateTopicController.from_environment(
+                    chat_id=config.chat_id
+                )
+                if mtproto_controller is not None:
+                    try:
+                        await mtproto_controller.start()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.error(
+                            "Becky MTProto topic controller startup failed",
+                            exc_info=True,
+                        )
+                        mtproto_controller = None
+                    else:
+                        if (
+                            bool(getattr(mtproto_controller, "is_connected", False))
+                            and bool(getattr(mtproto_controller, "supports_close", False))
+                        ):
+                            topic_controller = mtproto_controller
+                            self._becky_loops_topic_controller = mtproto_controller
+                        else:
+                            await mtproto_controller.stop()
+                            mtproto_controller = None
+            if topic_controller is not None:
+                self._becky_loops_topic_controller = topic_controller
+            bridge = await start_becky_loops_bridge(
+                config=config,
+                db=db,
+                session_store=getattr(self, "session_store", None),
+                topic_sender=topic_sender,
+                topic_controller=topic_controller,
+                agent_dispatcher=(
+                    self._dispatch_becky_agent_reply
+                    if topic_sender is not None
+                    else None
+                ),
+            )
+            startup_should_abort = getattr(self, "_startup_should_abort", None)
+            if callable(startup_should_abort) and startup_should_abort():
+                if bridge is not None:
+                    await stop_becky_loops_bridge(bridge)
+                if mtproto_controller is not None:
+                    await mtproto_controller.stop()
+                self._becky_loops_topic_controller = None
+                return
+            self._becky_loops_bridge = bridge
+            if bridge is None and mtproto_controller is not None:
+                await mtproto_controller.stop()
+                self._becky_loops_topic_controller = None
+            elif bridge is None:
+                self._becky_loops_topic_controller = None
+        except asyncio.CancelledError:
+            if mtproto_controller is not None:
+                try:
+                    await asyncio.shield(mtproto_controller.stop())
+                except BaseException:
+                    pass
+                self._becky_loops_topic_controller = None
+            raise
+        except Exception:
+            if mtproto_controller is not None:
+                try:
+                    await mtproto_controller.stop()
+                except Exception:
+                    logger.debug(
+                        "Becky MTProto topic controller cleanup failed",
+                        exc_info=True,
+                    )
+                self._becky_loops_topic_controller = None
+            # The bridge is optional; never prevent Telegram or other adapters
+            # from starting when its local listener is unavailable.
+            logger.error("Becky loop bridge startup failed", exc_info=True)
+
+    async def _stop_becky_loops_bridge(self) -> None:
+        """Stop the optional bridge before closing Hermes session state."""
+        bridge, self._becky_loops_bridge = (
+            getattr(self, "_becky_loops_bridge", None),
+            None,
+        )
+        mtproto_controller, self._becky_loops_topic_controller = (
+            getattr(self, "_becky_loops_topic_controller", None),
+            None,
+        )
+        if bridge is not None:
+            try:
+                from gateway.becky_loops import stop_becky_loops_bridge
+
+                await stop_becky_loops_bridge(bridge)
+            except asyncio.CancelledError:
+                if mtproto_controller is not None:
+                    try:
+                        await asyncio.shield(mtproto_controller.stop())
+                    except BaseException:
+                        pass
+                raise
+            except Exception:
+                logger.debug("Becky loop bridge shutdown failed", exc_info=True)
+        if mtproto_controller is not None:
+            try:
+                await mtproto_controller.stop()
+            except Exception:
+                logger.debug(
+                    "Becky MTProto topic controller shutdown failed",
+                    exc_info=True,
+                )
 
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
@@ -10151,7 +10769,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # creating a session.  The busy path must enforce the same check;
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
-        if not self._is_user_authorized(event.source):
+        # Internal events are generated by trusted gateway subsystems (for
+        # example a dashboard reply bound to an existing Telegram session),
+        # and the normal sender identity is intentionally absent.  They already
+        # bypass authorization in _handle_message, so apply the same rule here
+        # before the busy-session gate can silently drop them.
+        if not getattr(event, "internal", False) and not self._is_user_authorized(
+            event.source
+        ):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s",
@@ -12253,10 +12878,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return scheduled
 
     def _startup_should_abort(self) -> bool:
-        return (
-            self._restart_requested
-            or self._draining
-            or self._shutdown_event.is_set()
+        shutdown_event = getattr(self, "_shutdown_event", None)
+        return bool(
+            getattr(self, "_restart_requested", False)
+            or getattr(self, "_draining", False)
+            or shutdown_event is not None
+            and shutdown_event.is_set()
         )
 
     async def _abort_startup_if_shutdown_requested(
@@ -12283,6 +12910,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 detached_restart=self._restart_detached,
                 service_restart=self._restart_via_service,
             )
+        restart_task = getattr(self, "_restart_task", None)
+        if (
+            restart_task is not None
+            and restart_task is not current_task
+            and not restart_task.done()
+        ):
+            try:
+                # A restart may have been requested just before startup
+                # observed it. Let the already-owned orchestration task finish
+                # its short handoff instead of returning with a live task that
+                # can race the next startup/test loop.
+                await asyncio.shield(restart_task)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("Restart orchestration task failed during startup abort", exc_info=True)
         return True
 
     def _start_loop_liveness_guards(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -13154,9 +13797,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running = True
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
-
         self._start_loop_heartbeat_task()
-
+        await self._start_becky_loops_bridge()
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
@@ -14658,6 +15300,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._running = False
             self._clear_plugin_message_injector()
             self._draining = True
+            stop_becky_bridge = getattr(self, "_stop_becky_loops_bridge", None)
+            if callable(stop_becky_bridge):
+                await stop_becky_bridge()
 
             stop_watchdog = getattr(self, "_stop_systemd_watchdog", None)
             if callable(stop_watchdog):
@@ -18018,7 +18663,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event=event,
                 )
             except Exception as _goal_exc:
-                logger.debug("post-turn hook failed: %s", _goal_exc)
+                logger.debug("goal continuation hook failed: %s", _goal_exc)
+            self._register_becky_auto_close_after_delivery(
+                event=event,
+                source=source,
+                session_key=_quick_key,
+                run_generation=_run_generation,
+                agent_result=_agent_result,
+            )
             return _agent_result
         finally:
             # MoA one-shot restore must run on EVERY exit path, not just
@@ -20396,6 +21048,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+
+            # Preserve only the bounded machine-derived outcome needed by the
+            # outer handler's deferred Becky auto-close registration. The
+            # normal platform handler still returns the text response below.
+            bounded_auto_close_result = _bounded_becky_auto_close_result(
+                agent_result, response
+            )
+            if bounded_auto_close_result is not None:
+                try:
+                    event._becky_auto_close_result = bounded_auto_close_result
+                except Exception:
+                    logger.debug(
+                        "Unable to attach bounded Becky auto-close result",
+                        exc_info=True,
+                    )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -28645,10 +29312,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _stts_err:
                 logger.debug("Could not set up streaming TTS consumer: %s", _stts_err)
 
-        # run_sync extracted to TurnRunner.run_sync (bound method; the
-        # executor call below is unchanged).  Its closed-over locals travel
-        # on turn_ctx; `nonlocal message` rebinds became ctx.message writes.
-        run_sync = turn_runner.run_sync
         
         # Start progress message sender if enabled. Gate on needs_progress_queue
         # (tool_progress OR thinking_progress), not tool_progress alone: the

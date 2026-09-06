@@ -202,8 +202,8 @@ _has_dashscope_key = _has_key("DASHSCOPE_API_KEY", "dashscope")
 # Cloud providers in AUTO-DETECT priority order:
 #   name -> (explicit-selection probe, auto-detect probe, explicit warning, auto-detect log)
 # The probes differ only for openai (explicit has its own resolver in _EXPLICIT_RESOLVERS;
-# auto-detect also requires the SDK) and xai (auto-detect must never raise). DeepInfra is
-# LAST so a DEEPINFRA_API_KEY set for chat never displaces an xAI/ElevenLabs auto-selection.
+# auto-detect also requires the SDK) and xai (auto-detect must never raise). DeepInfra stays
+# after xAI/ElevenLabs so its chat key cannot displace them; DashScope follows it.
 # Mistral only auto-selects when the SDK is present — no lazy-install during passive
 # auto-detection (explicit ``provider: mistral`` installs on first use).
 _CLOUD_PROVIDER_SPECS = {
@@ -251,7 +251,8 @@ def _resolve_explicit_provider(provider: str) -> str:
 
 def _get_provider(stt_config: dict) -> str:
     """Which STT provider to use: an explicit ``stt.provider`` is honoured (no silent cloud
-    fallback); otherwise auto-detect local > groq > openai > mistral > xai > elevenlabs > deepinfra."""
+    fallback); otherwise auto-detect local > groq > openai > mistral > xai > elevenlabs > deepinfra
+    > dashscope."""
     if not is_stt_enabled(stt_config):
         return "none"
     explicit = "provider" in stt_config

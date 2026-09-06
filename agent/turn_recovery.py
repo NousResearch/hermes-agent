@@ -994,7 +994,7 @@ def compute_error_backoff(
         _error_body = getattr(api_error, "body", None)
         if isinstance(_error_body, dict):
             # Some providers nest it as error.retry_after (the same unwrap
-            # _extract_rate_limit_context uses), others put it at the top level.
+            # extract_api_error_context uses), others put it at the top level.
             _nested = _error_body.get("error")
             _payload = _nested if isinstance(_nested, dict) else _error_body
             _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
@@ -1003,10 +1003,15 @@ def compute_error_backoff(
         # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
         # realistic provider reset windows while still rejecting pathological values. (#26293)
         _retry_after = min(_retry_after, 600)
-    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+        if _retry_after <= 0:
+            # A zero/expired cooldown (retry-after: 0, or an HTTP-date in the
+            # past, which the parser clamps to 0.0) carries no usable wait —
+            # treat it as absent so we never hot-loop the provider.
+            _retry_after = None
+    wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
-    if _adaptive and not _retry_after:
+    if _adaptive and _retry_after is None:
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )

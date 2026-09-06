@@ -1966,68 +1966,29 @@ class TestRetryAfterCap:
     This covers rate-limit headers (#26293) and retryable 5xx responses.
     """
 
-    def _drive_once(self, agent, retry_after_value):
-        """Raise one 429 carrying ``Retry-After`` and capture the wait the loop
-        chose. Interrupt during the backoff sleep so the test doesn't actually
-        wait, and return the status string that reports the wait time."""
+    @staticmethod
+    def _retryable_error(status_code, headers, body=None):
+        """A provider error carrying optional Retry-After surfaces."""
+        message = (
+            "Error code: 429 - Rate limit exceeded."
+            if status_code == 429
+            else f"Error code: {status_code} - origin response timeout"
+        )
 
-        class _RateLimitError(Exception):
-            status_code = 429
-            response = SimpleNamespace(headers={"retry-after": str(retry_after_value)})
+        class _ProviderError(Exception):
+            def __init__(self):
+                super().__init__(message)
+                self.status_code = status_code
+                self.response = SimpleNamespace(headers=headers)
+                if body is not None:
+                    self.body = body
 
-            def __str__(self):
-                return "Error code: 429 - Rate limit exceeded."
+        return _ProviderError()
 
-        def _fake_api_call(api_kwargs):
-            raise _RateLimitError()
-
-        agent._interruptible_api_call = _fake_api_call
-        agent._persist_session = lambda *args, **kwargs: None
-        agent._save_trajectory = lambda *args, **kwargs: None
-
-        captured = []
-        original_buffer = agent._buffer_status
-
-        def _capture_status(msg, *args, **kwargs):
-            captured.append(msg)
-            # Break out of the incremental backoff sleep immediately rather
-            # than blocking for the full Retry-After window.
-            if "Waiting" in msg:
-                agent._interrupt_requested = True
-            return original_buffer(msg, *args, **kwargs)
-
-        agent._buffer_status = _capture_status
-        agent.run_conversation("hello")
-        return next((m for m in captured if "Waiting" in m), "")
-
-    def test_retry_after_under_cap_is_honored(self, agent):
-        # 300s > old 120s cap but < new 600s cap → used verbatim.
-        status = self._drive_once(agent, 300)
-        assert "Waiting 300.0s" in status
-
-    @pytest.mark.parametrize(
-        ("headers", "body"),
-        [
-            ({"Retry-After": "120"}, {}),
-            ({}, {"status": 524, "retry_after": 120}),
-            ({}, {"status": 524, "error": {"retry_after": 120}}),
-        ],
-        ids=("header", "problem-detail-body", "nested-problem-detail-body"),
-    )
-    def test_retry_after_on_cloudflare_524_is_honored(
-        self, agent, headers, body
-    ):
-        """A retryable 5xx must not bypass the provider's cooldown."""
-
-        class _CloudflareTimeout(Exception):
-            status_code = 524
-
-            def __str__(self):
-                return "Error code: 524 - origin response timeout"
-
-        error = _CloudflareTimeout()
-        error.response = SimpleNamespace(headers=headers)
-        error.body = body
+    def _drive_once(self, agent, error, status_marker):
+        """Raise ``error`` from the API call and capture the backoff status the
+        loop chose. Interrupt during the backoff sleep so the test doesn't
+        actually wait, and return the status string reporting the wait."""
 
         def _fake_api_call(api_kwargs):
             raise error
@@ -2042,22 +2003,56 @@ class TestRetryAfterCap:
 
         def _capture_status(msg, *args, **kwargs):
             captured.append(msg)
-            if "Retrying in" in msg:
+            # Break out of the backoff sleep immediately rather than blocking
+            # for the full Retry-After window.
+            if status_marker in msg:
                 agent._interrupt_requested = True
             return original_buffer(msg, *args, **kwargs)
 
         def _capture_emit(msg):
             captured.append(msg)
-            if "Retrying in" in msg:
+            if status_marker in msg:
                 agent._interrupt_requested = True
             return original_emit(msg)
 
         agent._buffer_status = _capture_status
         agent._emit_status = _capture_emit
         agent.run_conversation("hello")
+        return next((m for m in captured if status_marker in m), "")
 
-        assert any("Retrying in 120.0s" in msg for msg in captured)
+    def test_retry_after_under_cap_is_honored(self, agent):
+        # 300s > old 120s cap but < new 600s cap → used verbatim.
+        error = self._retryable_error(429, {"retry-after": "300"})
+        status = self._drive_once(agent, error, "Waiting")
+        assert "Waiting 300.0s" in status
 
+    @pytest.mark.parametrize(
+        ("headers", "body", "expected_wait"),
+        [
+            ({"Retry-After": "120"}, {}, "120.0"),
+            ({}, {"status": 524, "retry_after": 120}, "120.0"),
+            ({}, {"status": 524, "error": {"retry_after": 120}}, "120.0"),
+            # Above the 600s ceiling → capped, never used verbatim.
+            ({"Retry-After": "3600"}, {}, "600.0"),
+            # No cooldown on header or body → falls through to jittered
+            # backoff (patched to 0.0 by the conftest fixture), no crash.
+            ({}, {"status": 524}, "0.0"),
+        ],
+        ids=(
+            "header",
+            "problem-detail-body",
+            "nested-problem-detail-body",
+            "over-cap-is-capped",
+            "no-cooldown-falls-back",
+        ),
+    )
+    def test_retry_after_on_cloudflare_524_is_honored(
+        self, agent, headers, body, expected_wait
+    ):
+        """A retryable 5xx must not bypass the provider's cooldown."""
+        error = self._retryable_error(524, headers, body)
+        status = self._drive_once(agent, error, "Retrying in")
+        assert f"Retrying in {expected_wait}s" in status
 
 
 class TestConcurrentToolExecution:

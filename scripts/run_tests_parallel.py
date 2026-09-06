@@ -137,6 +137,41 @@ def _resolve_real_home(environment: dict[str, str]) -> Path:
     return account_home
 
 
+def _attest_macos_mach_broker() -> str:
+    """Return a broker proven registered before entering the test sandbox."""
+    import ctypes
+
+    libc = ctypes.CDLL(None)
+    bootstrap_port = ctypes.c_uint32.in_dll(libc, "bootstrap_port").value
+    task_self = ctypes.c_uint32.in_dll(libc, "mach_task_self_").value
+    libc.bootstrap_look_up.argtypes = [
+        ctypes.c_uint32,
+        ctypes.c_char_p,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    libc.bootstrap_look_up.restype = ctypes.c_int
+    libc.mach_port_deallocate.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    libc.mach_port_deallocate.restype = ctypes.c_int
+    for service in (
+        "com.apple.SecurityServer",
+        "com.apple.securityd.xpc",
+        "com.apple.security.agent",
+    ):
+        service_port = ctypes.c_uint32()
+        status = libc.bootstrap_look_up(
+            bootstrap_port,
+            service.encode("utf-8"),
+            ctypes.byref(service_port),
+        )
+        if status == 0 and service_port.value:
+            libc.mach_port_deallocate(task_self, service_port.value)
+            return service
+    raise RuntimeError(
+        "Hermes macOS tests require a registered credential broker to attest "
+        "Seatbelt mach-lookup denial; no baseline broker was reachable"
+    )
+
+
 def _sensitive_host_paths(
     real_home: Path, repo_root: Path
 ) -> tuple[list[Path], list[Path]]:
@@ -345,6 +380,7 @@ def _sandboxed_test_command(
                 "unsandboxed test process"
             )
         env["HERMES_TEST_OS_SANDBOX"] = "macos-sandbox-exec"
+        env["HERMES_TEST_ATTESTED_MACH_BROKER"] = _attest_macos_mach_broker()
         # Seatbelt intentionally permits a sandboxed process to signal
         # itself, so self-targeted kill(2) cannot attest this boundary. The
         # runner PID is outside the sandbox and remains alive through child

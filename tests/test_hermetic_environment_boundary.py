@@ -498,14 +498,15 @@ def test_macos_kernel_blocks_native_keychain_broker():
     ]
     libc.bootstrap_look_up.restype = ctypes.c_int
     service_port = ctypes.c_uint32()
+    broker = os.environ["HERMES_TEST_ATTESTED_MACH_BROKER"].encode("utf-8")
     status = libc.bootstrap_look_up(
         bootstrap_port,
-        b"com.apple.SecurityServer",
+        broker,
         ctypes.byref(service_port),
     )
-    # This service resolves outside the test Seatbelt on supported macOS
-    # runners. The profile's deny mach-lookup rule must stop the broker at the
-    # kernel boundary, independently of keychain availability or UI state.
+    # The unsandboxed runner resolved this exact broker successfully before it
+    # entered Seatbelt. Its failure here therefore attests the profile's
+    # deny mach-lookup boundary, not an absent service or headless host state.
     assert status != 0
     assert service_port.value == 0
 

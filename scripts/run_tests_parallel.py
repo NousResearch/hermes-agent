@@ -409,6 +409,7 @@ def _sandboxed_test_command(
             Path(sys.prefix).resolve(),
             Path(sys.base_prefix).resolve(),
             Path(sys._base_executable).absolute().parent.parent,
+            *(path.resolve() for path in additional_readonly_paths),
         }
         home_filter_parts = [
             f'(subpath "{_sandbox_profile_escape(str(real_home))}")'
@@ -429,19 +430,16 @@ def _sandboxed_test_command(
             + " ".join(home_filter_parts)
             + "))"
         )
-        writable_home_parts = [
-            f'(subpath "{_sandbox_profile_escape(str(real_home))}")'
-        ]
-        if writable_repo and _under(repo_root.resolve(), real_home):
-            writable_home_parts.append(
-                '(require-not (subpath "'
-                + _sandbox_profile_escape(str(repo_root.resolve()))
-                + '"))'
-            )
+        # Allow-default is needed for the system frameworks and interpreters
+        # that pytest imports, but it must not imply host-write authority.
+        # The per-file sandbox root is the sole writable filesystem
+        # capability; this also protects /private/tmp, /var/tmp,
+        # /Users/Shared, external volumes, and checkouts outside HOME.
+        writable_root = _sandbox_profile_escape(str(sandbox_root.resolve()))
         rules.append(
             "(deny file-write* (require-all "
-            + " ".join(writable_home_parts)
-            + "))"
+            f'(require-not (subpath "{writable_root}")) '
+            '(require-not (literal "/dev/null"))))'
         )
         for path in directories:
             if path.exists():
@@ -933,49 +931,67 @@ def _run_one_file_once(
     host_canary_path: Path | None = None
     host_socket_path: Path | None = None
     host_socket: socket.socket | None = None
-    if file.name == "test_hermetic_environment_boundary.py" and sys.platform.startswith(
-        "linux"
-    ):
-        canary_fd, canary_name = tempfile.mkstemp(prefix="hermes-host-canary-")
-        os.write(canary_fd, b"HERMES_HOST_CANARY")
-        os.close(canary_fd)
-        host_canary_path = Path(canary_name)
-        host_socket_path = host_canary_path.with_suffix(".sock")
-        host_socket = socket.socket(socket.AF_UNIX)
-        host_socket.bind(str(host_socket_path))
-        host_socket.listen(1)
-        env["HERMES_TEST_HOST_CANARY"] = str(host_canary_path)
-        env["HERMES_TEST_HOST_SOCKET"] = str(host_socket_path)
-    guard_site = repo_root / "scripts" / "hermetic_site"
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(guard_site) + (
-        os.pathsep + existing_pythonpath if existing_pythonpath else ""
-    )
-    cmd = _sandboxed_test_command(
-        cmd,
-        env=env,
-        repo_root=repo_root,
-        sandbox_root=sandbox_root,
-        real_home=real_home,
-        parent_sandbox_root=parent_sandbox_root,
-        ephemeral_docker_socket=ephemeral_docker_socket,
-    )
+    def cleanup_attempt() -> None:
+        if host_socket is not None:
+            host_socket.close()
+        for probe_path in (host_socket_path, host_canary_path):
+            if probe_path is not None:
+                try:
+                    probe_path.unlink()
+                except FileNotFoundError:
+                    pass
+        shutil.rmtree(temproot, ignore_errors=True)
 
-    subproc_start = time.monotonic()
-    # launch the pytest process
-    proc = subprocess.Popen(
-        cmd,
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-        env=env,
-        # POSIX: place the child at the head of its own process group so
-        # _kill_tree can SIGKILL the group atomically.
-        # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-        # _kill_tree handles the Windows path via taskkill /F /T.
-        start_new_session=True,
-    )
+    try:
+        if file.name == "test_hermetic_environment_boundary.py" and (
+            sys.platform.startswith("linux") or sys.platform == "darwin"
+        ):
+            canary_fd, canary_name = tempfile.mkstemp(prefix="hermes-host-canary-")
+            host_canary_path = Path(canary_name)
+            try:
+                os.write(canary_fd, b"HERMES_HOST_CANARY")
+            finally:
+                os.close(canary_fd)
+            env["HERMES_TEST_HOST_CANARY"] = str(host_canary_path)
+            if sys.platform.startswith("linux"):
+                host_socket_path = host_canary_path.with_suffix(".sock")
+                host_socket = socket.socket(socket.AF_UNIX)
+                host_socket.bind(str(host_socket_path))
+                host_socket.listen(1)
+                env["HERMES_TEST_HOST_SOCKET"] = str(host_socket_path)
+        guard_site = repo_root / "scripts" / "hermetic_site"
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(guard_site) + (
+            os.pathsep + existing_pythonpath if existing_pythonpath else ""
+        )
+        cmd = _sandboxed_test_command(
+            cmd,
+            env=env,
+            repo_root=repo_root,
+            sandbox_root=sandbox_root,
+            real_home=real_home,
+            parent_sandbox_root=parent_sandbox_root,
+            ephemeral_docker_socket=ephemeral_docker_socket,
+        )
+
+        subproc_start = time.monotonic()
+        # launch the pytest process
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            env=env,
+            # POSIX: place the child at the head of its own process group so
+            # _kill_tree can SIGKILL the group atomically.
+            # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
+            # _kill_tree handles the Windows path via taskkill /F /T.
+            start_new_session=True,
+        )
+    except BaseException:
+        cleanup_attempt()
+        raise
 
     # Capture the pgid NOW, before the leader can exit and be reaped. Once
     # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
@@ -1014,18 +1030,9 @@ def _run_one_file_once(
 
         output +=  "\n"
     finally:
-        if host_socket is not None:
-            host_socket.close()
-        for probe_path in (host_socket_path, host_canary_path):
-            if probe_path is not None:
-                try:
-                    probe_path.unlink()
-                except FileNotFoundError:
-                    pass
-        # Delete the temp root for this attempt. Nothing reads it after the
-        # subprocess exits. More than 3000 of them fill the disk of the
-        # runner over one suite.
-        shutil.rmtree(temproot, ignore_errors=True)
+        # Delete probe resources and this attempt's temp root. More than
+        # 3000 retained roots fill the runner disk over one suite.
+        cleanup_attempt()
 
     if rc == 5:
         # No tests collected in THIS file — legitimate per-file: a

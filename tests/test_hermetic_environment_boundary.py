@@ -376,6 +376,55 @@ def test_generic_js_rust_runner_has_the_same_kernel_boundary():
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux bwrap proof")
+def test_generic_runner_mutates_only_disposable_repo_copy():
+    repo = Path(__file__).resolve().parent.parent
+    source = repo / "scripts" / "hermetic_command_entry.py"
+    original = source.read_bytes()
+    common_raw = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "--git-common-dir"], text=True
+    ).strip()
+    common_dir = Path(common_raw)
+    if not common_dir.is_absolute():
+        common_dir = repo / common_dir
+    host_hook = common_dir.resolve() / "hooks" / "post-checkout"
+    original_hook = host_hook.read_bytes() if host_hook.is_file() else None
+    probe_code = (
+        "import os,pathlib,subprocess; "
+        "root=pathlib.Path(os.environ['HERMES_TEST_REPO_ROOT']); "
+        "assert (root/'.env.example').is_file(); "
+        "assert (root/'.npmrc').is_file(); "
+        "assert (root/'.envrc').is_file(); "
+        "assert (root/'website/.npmrc').is_file(); "
+        "subprocess.run(['git','-C',str(root),'cat-file','-e','HEAD'],check=True); "
+        "status=subprocess.run(['git','-C',str(root),'status','--porcelain'],"
+        "check=True,capture_output=True); assert status.stdout == b''; "
+        "source=root/'scripts/hermetic_command_entry.py'; "
+        "source.write_text('disposable mutation'); "
+        "hook=root/'.git/hooks/post-checkout'; "
+        "hook.parent.mkdir(parents=True,exist_ok=True); "
+        "hook.write_text('#!/bin/sh\\nexit 99\\n')"
+    )
+    probe = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "run_hermetic_command.py"),
+            "--",
+            sys.executable,
+            "-S",
+            "-c",
+            probe_code,
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+    assert source.read_bytes() == original
+    assert (host_hook.read_bytes() if host_hook.is_file() else None) == original_hook
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux bwrap proof")
 def test_generic_runner_rejects_arbitrary_writable_cache_bind():
     repo = Path(__file__).resolve().parent.parent
     env = os.environ.copy()
@@ -483,6 +532,20 @@ def test_macos_kernel_blocks_signal_syscall_and_launchctl_copy(tmp_path):
     )
     assert copy_probe.returncode != 0
     assert not copied.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt proof")
+def test_macos_kernel_cannot_modify_or_unlink_host_canary():
+    canary = Path(os.environ["HERMES_TEST_HOST_CANARY"])
+    original = canary.read_bytes()
+    assert original == b"HERMES_HOST_CANARY"
+    with pytest.raises(OSError):
+        canary.write_bytes(b"changed")
+    with pytest.raises(OSError):
+        canary.unlink()
+    assert canary.read_bytes() == original
+    with open(os.devnull, "wb") as sink:
+        assert sink.write(b"safe sink") == len(b"safe sink")
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS Seatbelt proof")

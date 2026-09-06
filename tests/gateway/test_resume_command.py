@@ -72,6 +72,23 @@ class TestHandleResumeCommand:
     """Tests for GatewayRunner._handle_resume_command."""
 
     @pytest.mark.asyncio
+    async def test_list_named_sessions_handles_null_preview(self):
+        """A missing preview should not break gateway resume listing."""
+        db = MagicMock()
+        db.list_sessions_rich.return_value = [
+            {"id": "sess_001", "title": "Research", "preview": None},
+        ]
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_row_visible = AsyncMock(return_value=True)
+        result = await runner._handle_resume_command(event)
+
+        assert "Research" in result
+        assert "None" not in result
+        assert "/resume 1" in result
+
+    @pytest.mark.asyncio
     async def test_no_session_db(self):
         """Returns error when session database is unavailable."""
         runner = _make_runner(session_db=None)

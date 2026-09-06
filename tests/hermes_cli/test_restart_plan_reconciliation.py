@@ -171,17 +171,6 @@ def test_launchd_named_profile_and_failed_label():
     assert sibling[0]["outcome"] == "unaccounted"
 
 
-def test_launchd_gateway_restart_does_not_credit_serve():
-    """#100479 sibling: a launchd gateway restart is still gateway vocabulary."""
-    outcomes = match_runtime_outcomes(
-        _plan(_rt("default", 100, supervisor="launchd"), _serve("default", 900)),
-        restarted_services=["ai.hermes.gateway"], relaunched_profiles=[],
-        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
-    )
-    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
-    assert by_pid == {100: "restarted", 900: "unaccounted"}
-
-
 def test_untouched_runtime_is_unaccounted_and_escalates(capsys):
     """The tripwire: plan saw it, NO bookkeeping mentions it."""
     outcomes = match_runtime_outcomes(

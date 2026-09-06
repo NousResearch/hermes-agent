@@ -312,6 +312,14 @@ def test_successful_non_boundary_stop_reasons_are_finished(receipt):
     assert update_cmd._receipt_looks_unfinished(receipt) is False
 
 
+def test_refused_receipt_with_only_a_stop_reason_is_unfinished():
+    # update_contract writes {"outcome": "refused", "stop_reason": <code>} with no exit_code;
+    # the stop_reason clause is what keeps that receipt unfinished.
+    assert update_cmd._receipt_looks_unfinished(
+        {"outcome": "refused", "stop_reason": "not_updatable_in_place"}
+    ) is True
+
+
 def test_failed_interrupt_stop_reason_is_unfinished():
     assert update_cmd._receipt_looks_unfinished(
         {

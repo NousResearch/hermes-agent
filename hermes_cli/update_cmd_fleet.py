@@ -81,8 +81,8 @@ def _receipt_looks_unfinished(receipt: dict) -> bool:
     """True when *receipt* is from an update that did not finish cleanly.
 
     ``stop_reason`` records *how* the command boundary closed the receipt
-    (``completed at command boundary``, ``sys.exit(0)``, even KeyboardInterrupt
-    on an otherwise successful run). A truthy stop_reason must not make a
+    (``completed at command boundary``, ``sys.exit(0)``, or a refusal code from
+    ``update_contract``). A truthy stop_reason must not make a
     successful receipt look unfinished, or the next ``hermes update`` retriggers
     ``fleet_restart_pending`` from pre-pull plan SHAs.
     """

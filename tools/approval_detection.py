@@ -213,6 +213,38 @@ DANGEROUS_PATTERNS = [
      # spellings the two patterns above catch — without this rule they run with no approval prompt at all.
      # Port of openai/codex#33464 ("recognize force options when they follow operands").
      "recursive delete (flags after operands)"),
+    # Single, NON-recursive `rm` targeting one file under $HOME. Neither of
+    # the two rules above catches this shape: "delete in root path" only
+    # fires on a literal leading "/" (an absolute home path like
+    # `/home/jiddy/file.txt` has already been folded to `~/file.txt` by
+    # `_rewrite_resolved_user_home` -- called from `_normalize_command_for_detection`
+    # -- before any pattern in this list ever sees the command, so it never
+    # reaches this list still spelled with a leading "/"; matching only the
+    # folded `~` / `$HOME` / `${HOME}` forms here mirrors how the recursive
+    # whole-home-wipe hardline rule above ("recursive delete of home
+    # directory") already handles the same folding), and the three
+    # recursive-delete rules only fire when an `-r`/`-R`/`--recursive` flag
+    # is present. A bare `rm ~/Documents/important_file.txt` matches none of
+    # them and fell through as "not dangerous" -- this rule closes that gap.
+    #
+    # The leading negative lookahead reuses the exact bounded, quote- and
+    # separator-safe operand-run technique from "recursive delete (flags
+    # after operands)" directly above (same `[^\n"\';|&]` class, same `--`
+    # end-of-options guard) to confirm NO recursive flag appears anywhere in
+    # this same `rm` invocation -- leading or permuted after the operand --
+    # before considering it non-recursive; a lazy scan across that same
+    # bounded run then looks for a `~`/`$HOME`/`${HOME}` path with at least
+    # one more character after the slash (so the bare home root itself,
+    # which is the whole-home-wipe hardline rule's territory, is excluded
+    # here). `detect_dangerous_command` checks `_is_verification_artifact_cleanup`
+    # before ever reaching DANGEROUS_PATTERNS, so legitimate ad-hoc
+    # verification/temp-script cleanup under $HOME is already exempted
+    # upstream of this rule with no special-casing needed here.
+    (r'\brm\s+(?!--(?:\s|$))'
+     r'(?!(?:(?!\s--(?:\s|$))[^\n"\';|&])*\s(?:-[a-z]*r[a-z]*\b|--recursive\b))'
+     r'(?:(?!\s--(?:\s|$))[^\n"\';|&])*?'
+     r'(?:["\'])?(?:~|\$\{?HOME\}?)/[^\s"\';|&]',
+     "single-file delete under home directory"),
     # Windows cmd/powershell destructive built-ins: gate only when executed through the shell so
     # prose/filenames containing "del"/"rd" do not trip.
     (r'\bcmd(?:\.exe)?\s+/(?:c|k)\s+.*\b(?:del|erase|rd|rmdir)\b', "Windows cmd destructive delete"),

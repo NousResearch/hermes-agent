@@ -10,7 +10,7 @@ import logging
 import os
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
-from tools.approval_audit import record_decision
+from tools.approval_audit import decision_actor, is_enabled, record_decision
 
 logger = logging.getLogger("tools.approval")
 
@@ -62,9 +62,8 @@ def _fire_approval_hook(hook_name: str, *, _audit_only: bool = False, **kwargs) 
     kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
     if _approval_session_id.get():
         kwargs.setdefault("session_id", _approval_session_id.get())
-    if hook_name == "post_approval_response":
-        kwargs.setdefault("decided_by", "timeout" if kwargs.get("choice") == "timeout" else
-                          ("user" if kwargs.get("surface") == "cli" else "gateway"))
+    if hook_name == "post_approval_response" and is_enabled():
+        kwargs.setdefault("decided_by", decision_actor(kwargs))
         record_decision(kwargs)
     if _audit_only:
         return

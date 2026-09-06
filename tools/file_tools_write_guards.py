@@ -238,6 +238,12 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             return blocked.format(why=_NO_HUMAN)
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
+        from tools.approval_context import _fire_approval_hook
+        _fire_approval_hook(
+            "post_approval_response", _audit_only=True, command=display, description=description,
+            pattern_key="protected_instruction_file", pattern_keys=["protected_instruction_file"],
+            session_key=session_key, surface="cli", choice=choice,
+            scope="once" if choice in {"once", "session", "always"} else None)
         timed = choice == "timeout"
     # Any tapped scope is a one-operation grant; nothing is persisted.
     if not timed and choice in {"once", "session", "always"}:

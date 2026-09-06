@@ -146,6 +146,6 @@ def _smart_verdict(command: str, description: str, pattern_key: str,
         # The core sink hashes content itself; a failed plugin redactor must not lose the receipt.
         _ctx._fire_approval_hook(
             "post_approval_response", _audit_only=True, command=command, description=description,
-            pattern_key=pattern_key, session_key=session_key, surface="smart",
+            pattern_key=pattern_key, pattern_keys=list(pattern_keys), session_key=session_key, surface="smart",
             choice=f"smart_{verdict}", decided_by="aux_llm")
     return verdict

@@ -100,6 +100,43 @@ def test_obsolete_orphan_cannot_replace_new_detachment(monkeypatch, phase):
     assert timers == [old, newest]
 
 
+def test_orphan_interrupt_claim_clears_when_session_leaves_detached_state(monkeypatch):
+    timers = []
+
+    class Timer:
+        def __init__(self, _delay, callback):
+            self.callback = callback
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    sid = "writer-rebound"
+    session = dict(transport=server._detached_ws_transport, running=True)
+    monkeypatch.setattr(server, "_sessions", {sid: session})
+    monkeypatch.setattr(server, "_pending_ws_reaps", {})
+    monkeypatch.setattr(server.threading, "Timer", Timer)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0)
+    monkeypatch.setattr(server, "_session_has_active_delegations", lambda *a: False)
+    monkeypatch.setattr(server, "_interrupt_session_turn", lambda *a, **kw: False)
+
+    server._schedule_ws_orphan_reap(sid)
+    timers[0].callback()
+    assert session["_client_gone_interrupt_requested"]
+
+    session["transport"] = object()
+    timers[1].callback()
+
+    assert "_client_gone_interrupt_requested" not in session
+    assert "_client_gone_interrupt_polls" not in session
+    assert server._reattach_refusal(1, sid, session) is None
+    assert sid not in server._pending_ws_reaps
+
+
 @pytest.mark.parametrize("path", ["unpersisted", "reuse", "eager", "activate", "prompt"])
 @pytest.mark.parametrize("claim", ["already_claimed", "wins_lock", "retired"])
 def test_reconnect_cannot_cross_orphan_interrupt_claim(monkeypatch, path, claim):

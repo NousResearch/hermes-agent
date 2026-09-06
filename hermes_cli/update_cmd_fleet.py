@@ -133,6 +133,15 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
 
     if not _receipt_looks_unfinished(receipt):
         return False
+    # A run that died BEFORE the pull (fetch auth failure, preflight refusal) never advanced
+    # the checkout: pre_update.sha == post_update.sha. Its plan.runtimes[].code_sha are then
+    # pre-pull SHAs of a tree that never moved — a fossil, not a restart obligation. Without
+    # this gate the comparison against the live HEAD stays true forever and every later
+    # update fires a spurious fleet restart (the #95294 check must not outlive its premise).
+    pre_sha = (receipt.get("pre_update") or {}).get("sha")
+    post_sha = (receipt.get("post_update") or {}).get("sha")
+    if pre_sha and post_sha and str(pre_sha) == str(post_sha):
+        return False
     plan = receipt.get("plan")
     if not isinstance(plan, dict):
         return False

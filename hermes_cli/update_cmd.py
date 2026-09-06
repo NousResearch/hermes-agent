@@ -147,6 +147,28 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
         record_step(step, ok, detail)
 
 
+def _record_update_skip(name: str, reason: str) -> None:
+    """Best-effort ``update_receipt.record_skip``; the receipt must never break an update."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip(name, reason)
+
+
+def _record_pre_update_backup(args, snapshot_id) -> None:
+    """Record the backup phase honestly: an explicit opt-out is a SKIP with its reason,
+    only a requested-but-unproduced snapshot is a failed step. A ``ok=False`` step reads
+    as a failure in every post-mortem (and in the receipt viewers) — a user who set
+    ``updates.pre_update_backup: off`` opted out, they did not fail."""
+    if _resolve_pre_update_backup_mode(args) == "off":
+        _record_update_skip(
+            "pre_update_backup",
+            "disabled (--no-backup or updates.pre_update_backup: off/false)")
+        return
+    _record_update_step(
+        "pre_update_backup", snapshot_id is not None,
+        f"snapshot={snapshot_id}" if snapshot_id else "failed")
+
+
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
     terminal prompt so an HTTP 401 fails fast instead of hanging."""
@@ -1236,9 +1258,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Backup before any git/file mutation; the snapshot id (None if disabled/failed) feeds
     # the post-update cron-jobs safety net.
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
-    _record_update_step(
-        "pre_update_backup", pre_update_snapshot_id is not None,
-        f"snapshot={pre_update_snapshot_id}" if pre_update_snapshot_id else "disabled or failed")
+    _record_pre_update_backup(args, pre_update_snapshot_id)
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:

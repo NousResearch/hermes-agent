@@ -1305,6 +1305,43 @@ class TestQuickSnapshot:
 
 
 
+    def test_restore_skips_volatile_runtime_files(self, hermes_home):
+        """Snapshot restore must not clobber live runtime state: gateway PIDs,
+        locks and the process registry are snapshotted for forensics but, like
+        `hermes import`, never restored over the running tree."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        live = hermes_home / "gateway_state.json"
+        live.write_text('{"live": true}\n', encoding="utf-8")
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        live.write_text('{"live": false, "updated": true}\n', encoding="utf-8")
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        assert live.read_text(encoding="utf-8") == '{"live": false, "updated": true}\n'
+
+    def test_snapshot_skips_symlinks(self, hermes_home, tmp_path):
+        """A symlink under a snapshotted tree must not pull outside-HOME bytes
+        into the snapshot (shutil.copy2 follows links on copy)."""
+        import pytest
+
+        from hermes_cli.backup import _IMPORT_SKIP_NAMES, create_quick_snapshot
+
+        assert "gateway_state.json" in _IMPORT_SKIP_NAMES
+        outside = tmp_path / "outside.txt"
+        outside.write_text("outside-bytes", encoding="utf-8")
+        boards = hermes_home / "kanban" / "boards"
+        boards.mkdir(parents=True)
+        link = boards / "evil-link.txt"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlink privilege unavailable")
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        manifest = json.loads(
+            (hermes_home / "state-snapshots" / snap_id / "manifest.json").read_text(
+                encoding="utf-8"))
+        assert not any("evil-link" in rel for rel in manifest.get("files", {}))
+
     def test_state_db_safely_copied(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot
         snap_id = create_quick_snapshot(hermes_home=hermes_home)

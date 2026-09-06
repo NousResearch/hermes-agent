@@ -53,3 +53,66 @@ def _resolve_media_to_data_urls(text: str) -> str:
         return text if resolved == scan else resolved
     except Exception:
         return text
+
+
+_MEDIA_HOLDBACK_WORD = "MEDIA"
+# How much text may follow a "MEDIA:" before it is released as plain text: generous for any real
+# path, small enough that a stray "MEDIA:" in prose doesn't visibly stall a live stream.
+_MEDIA_HOLDBACK_CAP = 400
+
+
+class StreamingMediaTagResolver:
+    """Buffers streamed text so a ``MEDIA:<path>`` tag is never split across two delta chunks, then
+    resolves completed tags to inline data URLs.
+
+    Token-by-token streaming lands a tag's characters in several deltas, and
+    ``_resolve_media_to_data_urls`` only recognizes a complete tag, so resolving each delta on its own
+    let split tags reach clients as literal ``MEDIA:/path`` text.
+
+    Call :meth:`feed` with each delta and emit what it returns (possibly empty while text is held
+    back); call :meth:`flush` once at stream end and emit its return value.
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self) -> None:
+        self._pending: str = ""
+
+    def feed(self, text: str) -> str:
+        """Feed one delta chunk; return the text now safe to emit (resolved)."""
+        if not text:
+            return ""
+        self._pending += text
+        safe, self._pending = self._split_safe_boundary(self._pending)
+        return _resolve_media_to_data_urls(safe) if safe else ""
+
+    def flush(self) -> str:
+        """Release and resolve whatever is still held back (stream end)."""
+        if not self._pending:
+            return ""
+        remainder = self._pending
+        self._pending = ""
+        return _resolve_media_to_data_urls(remainder)
+
+    @staticmethod
+    def _split_safe_boundary(buffer: str) -> tuple[str, str]:
+        """Split *buffer* into ``(safe_to_emit, held_back)``.
+
+        Anchored on ``MEDIA:`` with the colon: the bare word also appears inside paths
+        (``social_media_post.png``), and matching that would release part of a real tag as text.
+        Without a confirmed ``MEDIA:``, only a trailing partial prefix of it is held, since the next
+        chunk may complete it. A held tag longer than ``_MEDIA_HOLDBACK_CAP`` is released, and
+        ``_resolve_media_to_data_urls`` then leaves an invalid path as visible text.
+        """
+        upper = buffer.upper()
+        idx = upper.rfind(_MEDIA_HOLDBACK_WORD + ":")
+        if idx != -1:
+            tail = buffer[idx:]
+            if len(tail) > _MEDIA_HOLDBACK_CAP:
+                return buffer, ""
+            return buffer[:idx], tail
+        word = _MEDIA_HOLDBACK_WORD
+        for n in range(min(len(word), len(buffer)), 0, -1):
+            if upper.endswith(word[:n]):
+                return buffer[:-n], buffer[-n:]
+        return buffer, ""

@@ -1238,6 +1238,7 @@ class RenameBoardBody(BaseModel):
     # For both fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
     default_workdir: Optional[str] = None
     project_id: Optional[str] = None
+    review_requirement: Optional[dict] = None
 
 
 # Board transfer exchanges filesystem PATHS, not bytes (same contract as profile export/import):

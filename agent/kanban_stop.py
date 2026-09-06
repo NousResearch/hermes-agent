@@ -6,6 +6,8 @@ Policy-only: return a bounded synthetic nudge so the loop continues instead of e
 
 from __future__ import annotations
 
+from hermes_cli import kanban_db_connect
+
 import os
 from typing import Any, Iterable, Optional
 
@@ -44,6 +46,31 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     return False
 
 
+def _original_worker_run_is_active(task_id: str) -> Optional[bool]:
+    """Return whether this worker still owns its original active run.
+
+    ``None`` preserves the legacy guard when the dispatcher did not provide a
+    run id or the board cannot be read.  A resolved run is checked through the
+    run-scoped lifecycle predicate so a successor's live task status cannot be
+    mistaken for this worker's unfinished work.
+    """
+    raw_run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if not raw_run_id:
+        return None
+    try:
+        run_id = int(raw_run_id)
+    except ValueError:
+        return None
+
+    try:
+        from hermes_cli import kanban_db
+
+        with kanban_db_connect.connect_closing() as conn:
+            return kanban_db.goal_run_status(conn, task_id, run_id) == "running"
+    except Exception:
+        return None
+
+
 def build_kanban_stop_nudge(
     *,
     messages: Iterable[dict] | None = None,
@@ -61,6 +88,8 @@ def build_kanban_stop_nudge(
         return None
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
+    if _original_worker_run_is_active(tid) is False:
+        return None
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"

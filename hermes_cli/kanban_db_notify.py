@@ -8,6 +8,9 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import json
+import secrets
+import hashlib
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -26,6 +29,7 @@ if TYPE_CHECKING:
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
 
 _SCALAR_TYPES = (str, int, float, bool)
+_NOTIFY_DELIVERY_PROCESS_TOKEN = secrets.token_urlsafe(8)
 
 # Subscription primary key predicate; every per-row statement below binds
 # ``(task_id, platform, chat_id, thread_id or "")`` against it.
@@ -253,7 +257,418 @@ def remove_notify_sub(
             "DELETE FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             _sub_key(task_id, platform, chat_id, thread_id),
         )
+        conn.execute("DELETE FROM kanban_notify_deliveries " + _SUB_KEY_WHERE, _sub_key(task_id, platform, chat_id, thread_id))
     return cur.rowcount > 0
+
+
+def stage_unseen_notify_deliveries_for_sub(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+) -> list[_kb.Event]:
+    """Durably stage unseen events without treating staging as delivery.
+
+    The legacy claim API advances ``last_event_id`` before transport and has to
+    rewind a whole batch on failure.  Gateway push delivery uses this ledger
+    instead: each event/destination gets an idempotent pending row, while the
+    cursor remains at the last fully acknowledged contiguous delivery.  A
+    process that dies after this transaction but before ``adapter.send`` leaves
+    replayable work, not a falsely acknowledged notification.
+    """
+    thread = thread_id or ""
+    kind_list = list(kinds) if kinds else None
+    now = int(time.time())
+    staged: list[_kb.Event] = []
+    with _kb.write_txn(conn):
+        sub = conn.execute(
+            "SELECT last_event_id FROM kanban_notify_subs "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+            (task_id, platform, chat_id, thread),
+        ).fetchone()
+        if sub is None:
+            return []
+        cursor = int(sub["last_event_id"])
+        query = (
+            "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
+            + (
+                "AND kind IN (" + ",".join("?" for _ in kind_list) + ") "
+                if kind_list else ""
+            )
+            + "ORDER BY id ASC"
+        )
+        params: list[Any] = [task_id, cursor]
+        if kind_list:
+            params.extend(kind_list)
+        for row in conn.execute(query, params).fetchall():
+            event_id = int(row["id"])
+            inserted = conn.execute(
+                "INSERT OR IGNORE INTO kanban_notify_deliveries "
+                "(task_id, platform, chat_id, thread_id, event_id, "
+                " delivery_token, delivery_identity, state, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'content_marker_v1', 'pending', ?, ?)",
+                (
+                    task_id, platform, chat_id, thread, event_id,
+                    secrets.token_urlsafe(12), now, now,
+                ),
+            )
+            if inserted.rowcount:
+                try:
+                    payload = json.loads(row["payload"]) if row["payload"] else None
+                except Exception:
+                    payload = None
+                staged.append(_kb.Event(
+                    id=event_id,
+                    task_id=row["task_id"],
+                    kind=row["kind"],
+                    payload=payload,
+                    created_at=int(row["created_at"]),
+                    run_id=(
+                        int(row["run_id"])
+                        if "run_id" in row.keys() and row["run_id"] is not None
+                        else None
+                    ),
+                ))
+    return staged
+
+
+def list_notify_deliveries(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    states: Iterable[str] = ("pending", "ambiguous", "parked"),
+) -> list[dict]:
+    """Return unsettled per-event deliveries with their source events."""
+    state_list = list(states)
+    if not state_list:
+        return []
+    rows = conn.execute(
+        "SELECT d.*, e.kind, e.payload, e.created_at AS event_created_at, "
+        "e.run_id FROM kanban_notify_deliveries d "
+        "JOIN task_events e ON e.id = d.event_id AND e.task_id = d.task_id "
+        "WHERE d.task_id = ? AND d.platform = ? AND d.chat_id = ? "
+        "AND d.thread_id = ? AND d.state IN ("
+        + ",".join("?" for _ in state_list)
+        + ") ORDER BY d.event_id ASC",
+        (task_id, platform, chat_id, thread_id or "", *state_list),
+    ).fetchall()
+    deliveries: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        item["event"] = _kb.Event(
+            id=int(row["event_id"]),
+            task_id=row["task_id"],
+            kind=row["kind"],
+            payload=payload,
+            created_at=int(row["event_created_at"]),
+            run_id=(int(row["run_id"]) if row["run_id"] is not None else None),
+        )
+        deliveries.append(item)
+    return deliveries
+
+
+def begin_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+) -> Optional[str]:
+    """Exclusively claim one pending row for an in-flight transport call.
+
+    ``sending`` is deliberately distinct from ``ambiguous``: another watcher
+    must not query remote history while the owning adapter call is still in
+    flight. The random claim token fences every later transition so a stale
+    sender cannot acknowledge or retry work owned by a successor.
+    """
+    claim_token = secrets.token_urlsafe(18)
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_deliveries SET state = 'sending', "
+            "delivery_identity = 'content_marker_v1', "
+            "claim_token = ?, claim_owner = ?, "
+            "attempt_count = attempt_count + 1, updated_at = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND event_id = ? AND state = 'pending'",
+            (
+                claim_token, _notify_delivery_owner_id(), int(time.time()), task_id, platform,
+                chat_id, thread_id or "", int(event_id),
+            ),
+        )
+    return claim_token if cur.rowcount == 1 else None
+
+
+def mark_notify_delivery_ambiguous(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    claim_token: str,
+    error: str,
+) -> bool:
+    """End an in-flight send without asserting acceptance or rejection."""
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_deliveries SET state = 'ambiguous', "
+            "claim_token = NULL, claim_owner = NULL, last_error = ?, updated_at = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND event_id = ? AND state = 'sending' AND claim_token = ?",
+            (
+                str(error)[:500], int(time.time()), task_id, platform, chat_id,
+                thread_id or "", int(event_id), claim_token,
+            ),
+        )
+    return cur.rowcount == 1
+
+
+def _notify_delivery_owner_id() -> str:
+    """Identify this process without confusing a later PID reuse for it."""
+    return f"{_kb._claimer_id()}:{_NOTIFY_DELIVERY_PROCESS_TOKEN}"
+
+
+def _notify_delivery_owner_alive(owner: Optional[str]) -> Optional[bool]:
+    """Return same-host owner liveness, or ``None`` when it cannot be proved."""
+    if not owner or ":" not in owner:
+        return None
+    parts = owner.rsplit(":", 2)
+    if len(parts) == 3:
+        owner_host, raw_pid, process_token = parts
+    else:
+        owner_host, raw_pid = parts
+        process_token = None
+    local_host = _kb._claimer_id().rsplit(":", 1)[0]
+    if owner_host != local_host:
+        return None
+    try:
+        pid = int(raw_pid)
+    except (TypeError, ValueError):
+        return None
+    if (
+        pid == os.getpid()
+        and process_token is not None
+        and process_token != _NOTIFY_DELIVERY_PROCESS_TOKEN
+    ):
+        return False
+    return _kb._pid_alive(pid)
+
+
+def claim_notify_reconciliation(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+) -> Optional[str]:
+    """Exclusively claim an ambiguous or provably abandoned delivery.
+
+    A live ``sending``/``reconciling`` owner is never raced. If a same-host
+    process died at either boundary, its row is safe to reconcile by its
+    persisted transport identity.
+    Unknown or cross-host ownership stays held instead of turning an absence
+    scan into a concurrent duplicate send.
+    """
+    thread = thread_id or ""
+    with _kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT state, claim_owner FROM kanban_notify_deliveries "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND event_id = ?",
+            (task_id, platform, chat_id, thread, int(event_id)),
+        ).fetchone()
+        if row is None:
+            return None
+        state = row["state"]
+        reclaim_abandoned = (
+            state in ("sending", "reconciling")
+            and _notify_delivery_owner_alive(row["claim_owner"]) is False
+        )
+        if state != "ambiguous" and not reclaim_abandoned:
+            return None
+        claim_token = secrets.token_urlsafe(18)
+        cur = conn.execute(
+            "UPDATE kanban_notify_deliveries SET state = 'reconciling', "
+            "claim_token = ?, claim_owner = ?, updated_at = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND event_id = ? AND state = ?",
+            (
+                claim_token, _notify_delivery_owner_id(), int(time.time()), task_id, platform,
+                chat_id, thread, int(event_id), state,
+            ),
+        )
+    return claim_token if cur.rowcount == 1 else None
+
+
+def retry_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    claim_token: str,
+    error: str,
+) -> bool:
+    """Record a confirmed rejection and make only that event retryable."""
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_deliveries SET state = 'pending', "
+            "claim_token = NULL, claim_owner = NULL, last_error = ?, updated_at = ? "
+            "WHERE task_id = ? AND platform = ? "
+            "AND chat_id = ? AND thread_id = ? AND event_id = ? "
+            "AND state IN ('sending', 'reconciling') AND claim_token = ?",
+            (
+                str(error)[:500], int(time.time()), task_id, platform, chat_id,
+                thread_id or "", int(event_id), claim_token,
+            ),
+        )
+    return cur.rowcount == 1
+
+
+def release_notify_reconciliation(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    claim_token: str,
+    error: str,
+) -> bool:
+    """Return an abandoned reconciliation claim to ambiguous, never pending.
+
+    Remote reconciliation already established acceptance. If persisting that
+    acknowledgement fails, clearing only the matching fenced owner lets the
+    next tick verify the durable identity again in the same process without
+    ever making the accepted notice sendable.
+    """
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_deliveries SET state = 'ambiguous', "
+            "claim_token = NULL, claim_owner = NULL, last_error = ?, updated_at = ? "
+            "WHERE task_id = ? AND platform = ? "
+            "AND chat_id = ? AND thread_id = ? AND event_id = ? "
+            "AND state = 'reconciling' AND claim_token = ?",
+            (
+                str(error)[:500], int(time.time()), task_id, platform, chat_id,
+                thread_id or "", int(event_id), claim_token,
+            ),
+        )
+    return cur.rowcount == 1
+
+
+def park_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    claim_token: str,
+    error: str,
+) -> bool:
+    """Hold an unreconcilable ambiguous send for operator disposition."""
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_notify_deliveries SET state = 'parked', "
+            "claim_token = NULL, claim_owner = NULL, last_error = ?, updated_at = ? "
+            "WHERE task_id = ? AND platform = ? "
+            "AND chat_id = ? AND thread_id = ? AND event_id = ? "
+            "AND state = 'reconciling' AND claim_token = ?",
+            (
+                str(error)[:500], int(time.time()), task_id, platform, chat_id,
+                thread_id or "", int(event_id), claim_token,
+            ),
+        )
+    return cur.rowcount == 1
+
+
+def acknowledge_notify_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    event_id: int,
+    claim_token: str,
+    message_id: Optional[str] = None,
+) -> bool:
+    """Acknowledge one event and advance only through contiguous acknowledgements."""
+    thread = thread_id or ""
+    with _kb.write_txn(conn):
+        delivered = conn.execute(
+            "UPDATE kanban_notify_deliveries SET state = 'delivered', message_id = ?, "
+            "claim_token = NULL, claim_owner = NULL, last_error = NULL, updated_at = ? "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND event_id = ? AND state IN ('sending', 'reconciling') "
+            "AND claim_token = ?",
+            (
+                str(message_id) if message_id else None, int(time.time()), task_id,
+                platform, chat_id, thread, int(event_id), claim_token,
+            ),
+        )
+        if delivered.rowcount != 1:
+            return False
+        first_unsettled = conn.execute(
+            "SELECT MIN(event_id) AS event_id FROM kanban_notify_deliveries "
+            "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+            "AND state != 'delivered'",
+            (task_id, platform, chat_id, thread),
+        ).fetchone()
+        boundary = first_unsettled["event_id"] if first_unsettled else None
+        if boundary is None:
+            row = conn.execute(
+                "SELECT MAX(event_id) AS event_id FROM kanban_notify_deliveries "
+                "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+                "AND state = 'delivered'",
+                (task_id, platform, chat_id, thread),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT MAX(event_id) AS event_id FROM kanban_notify_deliveries "
+                "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ? "
+                "AND state = 'delivered' AND event_id < ?",
+                (task_id, platform, chat_id, thread, int(boundary)),
+            ).fetchone()
+        acknowledged_through = row["event_id"] if row else None
+        if acknowledged_through is not None:
+            conn.execute(
+                "UPDATE kanban_notify_subs SET last_event_id = MAX(last_event_id, ?) "
+                "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?",
+                (int(acknowledged_through), task_id, platform, chat_id, thread),
+            )
+            conn.execute(
+                "DELETE FROM kanban_notify_deliveries WHERE task_id = ? "
+                "AND platform = ? AND chat_id = ? AND thread_id = ? "
+                "AND state = 'delivered' AND event_id <= ?",
+                (
+                    task_id, platform, chat_id, thread,
+                    int(acknowledged_through),
+                ),
+            )
+    return True
+
+
 
 
 def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:
@@ -283,7 +698,11 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
     cutoff = int(time.time()) - days * 86400
     with _kb.write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM kanban_notify_subs WHERE task_id IN ("
+            "DELETE FROM kanban_notify_subs AS s WHERE NOT EXISTS ("
+            " SELECT 1 FROM kanban_notify_deliveries d"
+            " WHERE d.task_id = s.task_id AND d.platform = s.platform"
+            " AND d.chat_id = s.chat_id AND d.thread_id = s.thread_id"
+            ") AND task_id IN ("
             " SELECT t.id FROM tasks t"
             " WHERE t.status IN ('done', 'blocked')"
             " AND COALESCE("

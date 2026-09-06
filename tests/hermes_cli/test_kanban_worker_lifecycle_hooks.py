@@ -173,6 +173,8 @@ def test_raising_callbacks_never_break_worker_lifecycle(
             monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
             assert kbd.detect_crashed_workers(conn) == [tid]
 
+            # Genuine crashes now require an explicit operator retry decision.
+            assert kb.unblock_task(conn, tid)
             kb.claim_task(conn, tid)
             conn.execute(
                 "UPDATE tasks SET claim_expires = ?, worker_pid = NULL "

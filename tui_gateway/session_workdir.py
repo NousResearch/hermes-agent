@@ -268,6 +268,7 @@ def _ensure_session_db_row(session: dict) -> bool:
         try:
             db.create_session(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
+                user_id=session.get("dashboard_principal", {}).get("user_id"),
                 parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
                 # Self-describing rows: aggregators merging several profile DBs can't rely on which file a row came
                 # from; a NULL is only repaired by the one-shot backfill.

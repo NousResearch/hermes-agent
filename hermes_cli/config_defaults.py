@@ -2265,6 +2265,13 @@ DEFAULT_CONFIG = {
         # gnome-libsecret|kwallet|kwallet5|kwallet6|basic force one (basic = unencrypted). Bridged
         # to HERMES_DESKTOP_PASSWORD_STORE; ignored off-Linux.
         "password_store": "auto",
+        # File-tree double-click behavior in the desktop app's Files panel:
+        #   "preview" - open the file in the built-in preview pane (default,
+        #               historical behavior).
+        #   "open"    - open the file with the OS default application via the
+        #               system file association; if the OS cannot open it,
+        #               falls back to revealing the file in the file manager.
+        "files_double_click": "preview",
         # macOS only: code-signing identity (login-keychain cert; self-signed works) to re-sign
         # locally rebuilt apps so the Designated Requirement — and thus TCC grants — survives
         # updates. Empty = default ad-hoc identifier-pinned signing.

@@ -39,6 +39,7 @@ import {
   type PreviewTarget
 } from '@/store/preview'
 import { $selectedStoredSessionId } from '@/store/session'
+import { $previewUblock, $previewUblockBlockedRequestCounts, loadPreviewUblock } from '@/store/preview-ublock'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
 
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
@@ -258,6 +259,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
   const previewServerRestart = useStore($previewServerRestart)
+  const previewUblock = useStore($previewUblock)
+  const previewUblockBlockedRequestCounts = useStore($previewUblockBlockedRequestCounts)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -275,6 +278,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const annotateLoopRef = useRef(0)
   const annotateConversationRef = useRef(selectedStoredSessionId)
   annotateRef.current = annotate
+  const [guestWebContentsId, setGuestWebContentsId] = useState<number | null>(null)
 
   // Artifacts have no URL to load — they render from the registry, never in a
   // webview.
@@ -284,6 +288,12 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
   const isRemoteHtmlTarget =
     target.kind === 'file' && target.previewKind === 'html' && Boolean(target.dataUrl || target.transient)
+
+  useEffect(() => {
+    if (isWebPreview) {
+      void loadPreviewUblock()
+    }
+  }, [isWebPreview])
 
   // Hand the live address to storage when this guest is about to go away
   // (pop-out, dock-back, tab close). The other renderer builds from
@@ -718,6 +728,38 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     [copy.unreachableDescription]
   )
 
+  const openUblockDashboard = useCallback(() => {
+    const dashboardUrl = previewUblock.dashboardUrl
+
+    if (!dashboardUrl || !webviewRef.current?.loadURL) {
+      return
+    }
+
+    setLoadError(null)
+    setLoading(true)
+    void webviewRef.current.loadURL(dashboardUrl).catch((error: unknown) => {
+      setLoading(false)
+      setLoadError({
+        description: error instanceof Error ? error.message : copy.failedToLoad,
+        url: dashboardUrl
+      })
+    })
+  }, [copy.failedToLoad, previewUblock.dashboardUrl])
+
+  const openUblockPopup = useCallback(async () => {
+    const openPopup = window.hermesDesktop?.previewUblock?.openPopup
+
+    if (!openPopup) {
+      throw new Error('Preview uBlock popup is unavailable')
+    }
+
+    const result = await openPopup()
+
+    if (!result?.ok) {
+      throw new Error('Preview uBlock popup could not be opened')
+    }
+  }, [])
+
   const goBack = useCallback(() => {
     const webview = webviewRef.current
 
@@ -1007,6 +1049,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     host.replaceChildren()
     webviewRef.current = null
+    setGuestWebContentsId(null)
     setCurrentUrl(target.url)
     setDevtoolsOpen(false)
     setHistory({ back: false, forward: false })
@@ -1131,6 +1174,25 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const onDevToolsOpened = () => setDevtoolsOpen(true)
     const onDevToolsClosed = () => setDevtoolsOpen(false)
 
+    let registeredGuestId: number | null = null
+    let registrationActive = true
+    const registerGuest = () => {
+      const webContentsId = webview.getWebContentsId?.()
+
+      if (!registrationActive || typeof webContentsId !== 'number' || registeredGuestId === webContentsId) {
+        return
+      }
+
+      registeredGuestId = webContentsId
+      void Promise.resolve(window.hermesDesktop?.previewUblock?.registerGuest?.(webContentsId))
+        .then(result => {
+          if (registrationActive && result?.ok) {
+            setGuestWebContentsId(webContentsId)
+          }
+        })
+        .catch(() => undefined)
+    }
+
     // Right-clicks INSIDE the guest page. The tag surfaces Chromium's full
     // context-menu params (link, image, editable, selection, spellcheck), so
     // the app coordinator renders the same translated menu it shows
@@ -1214,6 +1276,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
     webview.addEventListener('did-stop-loading', onStop)
+    webview.addEventListener('dom-ready', registerGuest)
     // SPAs title themselves long after the load settles, and a route change
     // renames the page without navigating at all.
     webview.addEventListener('page-title-updated', notePage)
@@ -1222,6 +1285,13 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     return () => {
       annotateLoopRef.current += 1
+      registrationActive = false
+      if (registeredGuestId !== null) {
+        void Promise.resolve(window.hermesDesktop?.previewUblock?.unregisterGuest?.(registeredGuestId)).catch(
+          () => undefined
+        )
+      }
+      setGuestWebContentsId(null)
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
@@ -1231,6 +1301,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)
       webview.removeEventListener('did-stop-loading', onStop)
+      webview.removeEventListener('dom-ready', registerGuest)
       webview.removeEventListener('page-title-updated', notePage)
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
@@ -1286,6 +1357,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
         {isWebPreview && !isRemoteHtml && (
           <PreviewBrowserBar
             annotateMode={annotate.mode}
+            blockedRequestCount={
+              guestWebContentsId === null ? 0 : (previewUblockBlockedRequestCounts[guestWebContentsId] ?? 0)
+            }
             canGoBack={history.back}
             canGoForward={history.forward}
             commentCount={annotate.stack.pins.length}
@@ -1299,6 +1373,16 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onOpenExternal={
               !isBrowserWindow() && !canOpenBrowserWindow()
                 ? () => void window.hermesDesktop?.openExternal(currentUrl)
+                : undefined
+            }
+            onOpenUblockDashboard={
+              previewUblock.available && previewUblock.rulesetsReady && previewUblock.dashboardUrl
+                ? openUblockDashboard
+                : undefined
+            }
+            onOpenUblockPopup={
+              previewUblock.available && previewUblock.rulesetsReady && previewUblock.popupUrl
+                ? openUblockPopup
                 : undefined
             }
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}

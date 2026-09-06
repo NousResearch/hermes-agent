@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
 
@@ -33,6 +34,12 @@ from rich.console import Console
 # Env-overridable so the integration test can drive sub-second timing.
 _WATCHDOG_POLL_S = max(0.05, env_float("HERMES_SLASH_WATCHDOG_POLL_S", 2.0))
 _ORPHAN_GRACE_S = max(0.0, env_float("HERMES_SLASH_WATCHDOG_GRACE_S", 5.0))
+
+# Dropped by _prepare_slash_worker_runtime so the CLI's /tools knows it is serving a
+# slash-worker request and may join in-flight MCP discovery with the generous bound
+# (#92330). The TUI late-refreshes and must never block on that join.
+_SLASH_WORKER_MARKER = os.path.join(tempfile.gettempdir(), "hermes-slash-worker-marker")
+
 _in_flight = threading.Event()  # set while a command is executing
 logger = logging.getLogger(__name__)
 
@@ -44,13 +51,25 @@ def _is_orphaned(original_ppid, getppid=os.getppid) -> bool:
 
 def _prepare_slash_worker_runtime() -> None:
     """Start bounded MCP discovery before HermesCLI snapshots tools: each slash_worker child is its
-    own process — the parent ``hermes serve`` discovery thread does not populate this registry.
+    own process - the parent ``hermes serve`` discovery thread does not populate this registry.
+
+    Also drops a marker file so the CLI's /tools can join in-flight discovery with the
+    generous 30s bound (#92330): a slash worker is a separate process with no
+    late-refresh, so a slow stdio handshake would otherwise print the catalog
+    without that server and nothing would ever correct it. The marker - not an
+    unconditional join - gates the CLI path because the TUI late-refreshes and
+    must not block.
 
     See #61891.
     """
     from hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
     start_background_mcp_discovery(logger=logger, thread_name="slash-worker-mcp-discovery")
     wait_for_mcp_discovery()
+    try:
+        with open(_SLASH_WORKER_MARKER, "w", encoding="utf-8"):
+            pass
+    except Exception:
+        pass
 
 
 def _start_parent_death_watchdog(original_ppid) -> None:

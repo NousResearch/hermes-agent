@@ -1,6 +1,5 @@
 """Read worker opt-in state without loading another profile's plugins or secrets."""
 import importlib.metadata
-import json
 from pathlib import Path
 
 import yaml
@@ -28,12 +27,11 @@ def configured_assignees(policy):
 
 
 def _declared_hooks(plugin_dir: Path) -> set[str] | None:
-    """Read a plugin manifest without importing the plugin package."""
-    for filename, loader in (("plugin.yaml", yaml.safe_load), ("plugin.yml", yaml.safe_load),
-                             ("plugin.json", json.loads)):
+    """Read a native plugin manifest without importing the plugin package."""
+    for filename in ("plugin.yaml", "plugin.yml"):
         manifest = plugin_dir / filename
         try:
-            data = loader(manifest.read_text(encoding="utf-8"))
+            data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError, yaml.YAMLError):
             continue
         if not isinstance(data, dict) or data.get("name") != _PLUGIN_NAME:

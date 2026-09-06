@@ -94,6 +94,25 @@ def test_worker_readiness_rejects_user_override_without_completion_hooks(tmp_pat
     assert not (plugin / "executed").exists()
 
 
+def test_worker_readiness_rejects_portable_manifest_hooks(tmp_path, monkeypatch):
+    import github_pr_feedback.worker_contract as worker_contract
+
+    worker = tmp_path / "profiles/worker"
+    worker.mkdir(parents=True)
+    (worker / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["github-pr-feedback"], "disabled": []}}))
+    plugin = worker / "plugins/github-pr-feedback"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.json").write_text(json.dumps({
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        "name": "github-pr-feedback",
+        "provides_hooks": ["pre_tool_call", "pre_kanban_complete"],
+    }))
+    monkeypatch.setattr(worker_contract, "_entrypoint_override_present", lambda: False)
+
+    assert worker_contract.worker_contract_enabled(tmp_path, "worker") is False
+
+
 def test_worker_readiness_rejects_entrypoint_override_without_completion_hooks(tmp_path, monkeypatch):
     from github_pr_feedback.worker_contract import worker_contract_enabled
 

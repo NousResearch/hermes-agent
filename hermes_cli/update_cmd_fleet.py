@@ -194,29 +194,37 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
-def _restart_systemd_gateway_units_best_effort(failed: list) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+def _restart_systemd_gateway_units_best_effort(failed: list) -> int:
+    """Restart discovered gateway/serve units and return the number attempted."""
+    attempted = 0
     for scope, scope_cmd, result in _systemd_gateway_unit_listings():
         if result.returncode != 0:
             continue
 
         def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            restart_cmd = list(_cmd) + ["--no-ask-password", "restart", svc_name]
+            nonlocal attempted
+            attempted += 1
+            manage_cmd = list(_cmd) + ["--no-ask-password"]
             if _needs_sudo(_scope):
-                restart_cmd = ["sudo", "-n"] + restart_cmd
-            _systemctl(restart_cmd, timeout=30)
+                manage_cmd = ["sudo", "-n"] + manage_cmd
+            restart = _systemctl_reset_and_restart(manage_cmd, svc_name)
+            if restart.returncode != 0 or not _wait_for_service_active(
+                manage_cmd, svc_name, timeout=10.0
+            ):
+                failed.append(svc_name)
 
         _for_each_systemd_gateway_unit(
             result.stdout,
             process_unit=process_unit,
             on_unit_timeout=lambda svc_name, exc: failed.append(svc_name),
         )
+    return attempted
 
 
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
-    True when the restart completed or nothing was running; False if incomplete.
+    True when the restart completed or no restart target exists; False if incomplete.
 
     See #95294.
     """
@@ -243,22 +251,22 @@ def _run_pending_fleet_restart() -> bool:
         logger.debug("Pending fleet restart: gateway probe failed: %s", exc)
         pids = None
 
-    if pids == []:
-        print("  ✓ No running gateways — nothing to restart.")
-        return True
-
     failed: list = []
+    recovery_targets = 0
     try:
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
         if supports_systemd_services():
-            _restart_systemd_gateway_units_best_effort(failed)
+            recovery_targets += _restart_systemd_gateway_units_best_effort(failed)
         # --- Launchd services (macOS) --- Restart EVERY ai.hermes.gateway* LaunchAgent, not only the
         # invoking profile's — parity with the systemd branch above (#41403). Per-label TimeoutExpired
         # isolation happens inside.
         if is_macos():
+            restarted: list = []
+            failed_before = len(failed)
             try:
-                _restart_macos_launchd_gateways([], failed, 45.0)
+                _restart_macos_launchd_gateways(restarted, failed, 45.0)
+                recovery_targets += len(restarted) + len(failed) - failed_before
             except Exception as exc:
                 logger.debug("Pending fleet restart: launchd failed: %s", exc)
                 failed.append("launchd")
@@ -266,10 +274,20 @@ def _run_pending_fleet_restart() -> bool:
             try:
                 from hermes_cli import gateway_windows
                 if gateway_windows.is_installed():
+                    recovery_targets += 1
                     gateway_windows.restart()
             except Exception as exc:
                 logger.debug("Pending fleet restart: Windows failed: %s", exc)
                 failed.append("windows-gateway")
+        if pids == []:
+            if failed:
+                _warn_incomplete_gateway_fleet_restart(failed)
+                return False
+            if recovery_targets == 0:
+                print("  ✓ No running gateways — nothing to restart.")
+                return True
+            print("  ✓ Pending fleet restart completed.")
+            return True
         try:
             leftover = list(find_gateway_pids(all_profiles=True))
         except Exception:

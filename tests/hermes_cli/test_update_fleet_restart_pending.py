@@ -347,10 +347,76 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     monkeypatch.setattr(
         "hermes_cli.gateway.find_gateway_pids", lambda **k: []
     )
+    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
     assert update_cmd._run_pending_fleet_restart() is True
     assert "nothing to restart" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("active", "expected"), [(True, True), (False, False)])
+def test_run_pending_restart_recovers_empty_pid_systemd_unit(
+    monkeypatch, active, expected
+):
+    monkeypatch.setattr(
+        "hermes_cli.gateway.find_gateway_pids", lambda **k: []
+    )
+    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemd_gateway_unit_listings",
+        lambda: iter(
+            [
+                (
+                    "user",
+                    ["systemctl", "--user"],
+                    SimpleNamespace(
+                        returncode=0,
+                        stdout="hermes-gateway.service loaded failed failed Gateway\n",
+                    ),
+                )
+            ]
+        ),
+    )
+    calls = []
+
+    def fake_systemctl(cmd, *, timeout):
+        calls.append((cmd, timeout))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(update_cmd_fleet, "_systemctl", fake_systemctl)
+    monkeypatch.setattr(
+        update_cmd_fleet, "_wait_for_service_active", lambda *a, **k: active
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is expected
+    assert calls == [
+        (
+            [
+                "systemctl",
+                "--user",
+                "--no-ask-password",
+                "reset-failed",
+                "hermes-gateway",
+            ],
+            10,
+        ),
+        (
+            [
+                "systemctl",
+                "--user",
+                "--no-ask-password",
+                "restart",
+                "hermes-gateway",
+            ],
+            15,
+        ),
+    ]
 
 
 # ---------------------------------------------------------------------------

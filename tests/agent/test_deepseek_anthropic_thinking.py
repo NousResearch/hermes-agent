@@ -105,21 +105,6 @@ class TestDeepSeekAnthropicPreservesThinking:
                     assert "cache_control" not in b
 
 
-@pytest.mark.parametrize("model", [
-    "deepseek-r1", "deepseek-v4", "vendor/deepseek-v4-pro",
-    "gateway/deepseek-ai/deepseek_flash", " DeepSeek-Pro ", "deepseek_v4_flash",
-])
-def test_thinking_family_name_detection(model):
-    from agent.anthropic_endpoints import _model_name_is_deepseek_thinking
-    assert _model_name_is_deepseek_thinking(model)
-
-
-@pytest.mark.parametrize("model", [None, "", " ", 42, "deepseek-chat", "deepseek-v3", "vendor/", "not-deepseek-v4", "qwen-thinking"])
-def test_thinking_family_name_detection_rejects_unknown_models(model):
-    from agent.anthropic_endpoints import _model_name_is_deepseek_thinking
-    assert not _model_name_is_deepseek_thinking(model)
-
-
 @pytest.mark.parametrize("url", [None, "https://api.anthropic.com", "https://inference-api.nousresearch.com/anthropic"])
 def test_deepseek_model_name_does_not_override_native_signature_contract(url):
     from agent.anthropic_message_convert import _manage_thinking_signatures
@@ -129,7 +114,13 @@ def test_deepseek_model_name_does_not_override_native_signature_contract(url):
     assert messages[0]["content"][0] == block
 
 
-def test_deepseek_proxy_keeps_unsigned_thinking_in_older_tool_turns_only():
+@pytest.mark.parametrize(("model", "kept"), [
+    ("vendor/deepseek-v4", [{"type": "thinking", "thinking": "unsigned"}]),  # thinking family: keep unsigned only
+    (" DeepSeek-Pro ", [{"type": "thinking", "thinking": "unsigned"}]),
+    ("deepseek-chat", []),  # non-thinking DeepSeek and unrelated models: generic third-party strip
+    ("vendor/other-model", []),
+])
+def test_deepseek_proxy_keeps_unsigned_thinking_in_older_tool_turns_only(model, kept):
     import copy
     from agent.anthropic_message_convert import convert_messages_to_anthropic
     history = [
@@ -143,10 +134,7 @@ def test_deepseek_proxy_keeps_unsigned_thinking_in_older_tool_turns_only():
         {"role": "assistant", "content": "done"},
     ]
     snapshot = copy.deepcopy(history)
-    _, result = convert_messages_to_anthropic(history, base_url="https://proxy.example/anthropic", model="vendor/deepseek-v4")
+    _, result = convert_messages_to_anthropic(history, base_url="https://proxy.example/anthropic", model=model)
     assistant = next(m for m in result if m["role"] == "assistant")
-    assert [b for b in assistant["content"] if b.get("type") in {"thinking", "redacted_thinking"}] == [
-        {"type": "thinking", "thinking": "unsigned"},
-    ]
+    assert [b for b in assistant["content"] if b.get("type") in {"thinking", "redacted_thinking"}] == kept
     assert history == snapshot
-

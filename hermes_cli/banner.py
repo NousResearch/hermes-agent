@@ -504,7 +504,7 @@ def _render_markup_to_ansi(markup: str) -> str:
     return buf.getvalue().rstrip("\n")
 
 
-def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
+def _defer_update_notice(max_wait: float = 30.0) -> None:
     """Print the update warning once the prefetched check completes (at most once per process).
 
     Used when the banner rendered before the update prefetch finished so startup never blocks on
@@ -881,7 +881,7 @@ def build_welcome_banner(
     def _update_line():
         behind = get_update_result(timeout=0.05)
         if behind is None and not _update_check_done.is_set():
-            _defer_update_notice(console)
+            _defer_update_notice()
         elif behind is not None and behind != 0:
             right_lines.append(_format_update_notice(behind))
     _quiet(_update_line)  # Never break the banner over an update check

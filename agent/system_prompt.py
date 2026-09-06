@@ -538,12 +538,28 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
 
 def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
-    without tools or when probing fails (it must never block prompt build)."""
+    without tools or when probing fails (it must never block prompt build).
+
+    The workspace block is a live git probe that leads the context tier, ahead of the whole
+    volatile band; re-probing at the compaction rebuild re-emits different bytes for any
+    repo that moved and defeats the keep-prompt fast path.  So the bytes are pinned per
+    session on the agent, keyed by the resolved cwd (a gateway serves many cwds), and
+    replayed on rebuilds; ``reset_session_state`` drops the pin at a session boundary.
+    """
     try:
         from agent.coding_context import coding_system_prompt_parts
-        if agent.valid_tool_names:
-            return coding_system_prompt_parts(platform=agent.platform, cwd=resolve_context_cwd(),
-                                              model=agent.model, valid_tool_names=agent.valid_tool_names)
+        if not agent.valid_tool_names:
+            return [], [], []
+        cwd = resolve_context_cwd()
+        cwd_key = str(cwd) if cwd is not None else ""
+        pinned = getattr(agent, "_frozen_workspace_snapshot", None)
+        # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
+        replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None
+        parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
+                                           valid_tool_names=agent.valid_tool_names, workspace_block=replay)
+        if replay is None:
+            agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "")
+        return parts
     except Exception:
         pass
     return [], [], []

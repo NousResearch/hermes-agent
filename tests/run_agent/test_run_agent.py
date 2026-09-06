@@ -1632,12 +1632,86 @@ class TestBuildApiKwargs:
 
 
 class TestBuildAssistantMessage:
+    @staticmethod
+    def _enable_native_compaction(agent):
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.model = "gpt-5.6-sol"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_hostname = "chatgpt.com"
+        agent._base_url_lower = agent.base_url
+        agent.codex_responses_native_compaction = True
+        agent.compression_enabled = True
+        agent.runtime_capabilities = {"native_compaction": True}
+
     def test_basic_message(self, agent):
         msg = _mock_assistant_msg(content="Hello!")
         result = agent._build_assistant_message(msg, "stop")
         assert result["role"] == "assistant"
         assert result["content"] == "Hello!"
         assert result["finish_reason"] == "stop"
+
+    def test_native_checkpoint_arms_real_usage_preflight_deferral(self, agent):
+        checkpoint = {
+            "type": "compaction",
+            "encrypted_content": "opaque-checkpoint",
+            "_issuer_kind": "codex_backend",
+        }
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [checkpoint]
+        agent.context_compressor.note_native_compaction_checkpoint = MagicMock()
+        self._enable_native_compaction(agent)
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [checkpoint]
+        agent.context_compressor.note_native_compaction_checkpoint.assert_called_once_with()
+
+    def test_native_checkpoint_remains_compatible_with_plugin_context_engine(self, agent):
+        checkpoint = {
+            "type": "compaction",
+            "encrypted_content": "opaque-checkpoint",
+            "_issuer_kind": "codex_backend",
+        }
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [checkpoint]
+        agent.context_compressor = SimpleNamespace(threshold_tokens=204_000)
+        self._enable_native_compaction(agent)
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [checkpoint]
+
+    @pytest.mark.parametrize("encrypted_content", ["", " "])
+    def test_malformed_checkpoint_does_not_arm_deferral(
+        self, agent, encrypted_content
+    ):
+        note_checkpoint = MagicMock()
+        agent.context_compressor.note_native_compaction_checkpoint = note_checkpoint
+        malformed = {
+            "type": "compaction",
+            "encrypted_content": encrypted_content,
+        }
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [malformed]
+        self._enable_native_compaction(agent)
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [malformed]
+        note_checkpoint.assert_not_called()
+
+    def test_ineligible_route_checkpoint_does_not_arm_deferral(self, agent):
+        note_checkpoint = MagicMock()
+        agent.context_compressor.note_native_compaction_checkpoint = note_checkpoint
+        checkpoint = {"type": "compaction", "encrypted_content": "opaque-checkpoint"}
+        msg = _mock_assistant_msg(content="Compacted")
+        msg.codex_reasoning_items = [checkpoint]
+
+        result = agent._build_assistant_message(msg, "stop")
+
+        assert result["codex_reasoning_items"] == [checkpoint]
+        note_checkpoint.assert_not_called()
 
 
 
@@ -1961,24 +2035,37 @@ class TestExecuteToolCalls:
 
 
 class TestRetryAfterCap:
-    """#26293: the conversation loop owns rate-limit backoff and honors the
-    Retry-After header up to a 600s ceiling (was 120s, which retried before
-    Tier-1 reset windows of ~171s and re-tripped the limit)."""
+    """The loop honors provider cooldowns up to a 600-second ceiling.
 
-    def _drive_once(self, agent, retry_after_value):
-        """Raise one 429 carrying ``Retry-After`` and capture the wait the loop
-        chose. Interrupt during the backoff sleep so the test doesn't actually
-        wait, and return the status string that reports the wait time."""
+    This covers rate-limit headers (#26293) and retryable 5xx responses.
+    """
 
-        class _RateLimitError(Exception):
-            status_code = 429
-            response = SimpleNamespace(headers={"retry-after": str(retry_after_value)})
+    @staticmethod
+    def _retryable_error(status_code, headers, body=None):
+        """A provider error carrying optional Retry-After surfaces."""
+        message = (
+            "Error code: 429 - Rate limit exceeded."
+            if status_code == 429
+            else f"Error code: {status_code} - origin response timeout"
+        )
 
-            def __str__(self):
-                return "Error code: 429 - Rate limit exceeded."
+        class _ProviderError(Exception):
+            def __init__(self):
+                super().__init__(message)
+                self.status_code = status_code
+                self.response = SimpleNamespace(headers=headers)
+                if body is not None:
+                    self.body = body
+
+        return _ProviderError()
+
+    def _drive_once(self, agent, error, status_marker):
+        """Raise ``error`` from the API call and capture the backoff status the
+        loop chose. Interrupt during the backoff sleep so the test doesn't
+        actually wait, and return the status string reporting the wait."""
 
         def _fake_api_call(api_kwargs):
-            raise _RateLimitError()
+            raise error
 
         agent._interruptible_api_call = _fake_api_call
         agent._persist_session = lambda *args, **kwargs: None
@@ -1986,24 +2073,65 @@ class TestRetryAfterCap:
 
         captured = []
         original_buffer = agent._buffer_status
+        original_emit = agent._emit_status
 
         def _capture_status(msg, *args, **kwargs):
-            captured.append(msg)
-            # Break out of the incremental backoff sleep immediately rather
-            # than blocking for the full Retry-After window.
-            if "Waiting" in msg:
+            captured.append((msg, "buffer"))
+            # Break out of the backoff sleep immediately rather than blocking
+            # for the full Retry-After window.
+            if status_marker in msg:
                 agent._interrupt_requested = True
             return original_buffer(msg, *args, **kwargs)
 
+        def _capture_emit(msg):
+            captured.append((msg, "emit"))
+            if status_marker in msg:
+                agent._interrupt_requested = True
+            return original_emit(msg)
+
         agent._buffer_status = _capture_status
+        agent._emit_status = _capture_emit
         agent.run_conversation("hello")
-        return next((m for m in captured if "Waiting" in m), "")
+        return next(((m, s) for m, s in captured if status_marker in m), ("", ""))
 
     def test_retry_after_under_cap_is_honored(self, agent):
         # 300s > old 120s cap but < new 600s cap → used verbatim.
-        status = self._drive_once(agent, 300)
+        error = self._retryable_error(429, {"retry-after": "300"})
+        status, _ = self._drive_once(agent, error, "Waiting")
         assert "Waiting 300.0s" in status
 
+    @pytest.mark.parametrize(
+        ("headers", "body", "expected_wait", "expected_surface"),
+        [
+            # Long cooldowns (> 60s) surface immediately...
+            ({"Retry-After": "120"}, {}, "120.0", "emit"),
+            ({}, {"status": 524, "retry_after": 120}, "120.0", "emit"),
+            ({}, {"status": 524, "error": {"retry_after": 120}}, "120.0", "emit"),
+            # Above the 600s ceiling → capped, never used verbatim.
+            ({"Retry-After": "3600"}, {}, "600.0", "emit"),
+            # ...short cooldowns keep the buffered status line.
+            ({"Retry-After": "30"}, {}, "30.0", "buffer"),
+            # No cooldown on header or body → falls through to jittered
+            # backoff (patched to 0.0 by the conftest fixture), no crash.
+            ({}, {"status": 524}, "0.0", "buffer"),
+        ],
+        ids=(
+            "header",
+            "problem-detail-body",
+            "nested-problem-detail-body",
+            "over-cap-is-capped",
+            "short-cooldown-is-buffered",
+            "no-cooldown-falls-back",
+        ),
+    )
+    def test_retry_after_on_cloudflare_524_is_honored(
+        self, agent, headers, body, expected_wait, expected_surface
+    ):
+        """A retryable 5xx must not bypass the provider's cooldown."""
+        error = self._retryable_error(524, headers, body)
+        status, surface = self._drive_once(agent, error, "Retrying in")
+        assert f"Retrying in {expected_wait}s" in status
+        assert surface == expected_surface
 
 
 class TestConcurrentToolExecution:

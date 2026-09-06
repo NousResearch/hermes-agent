@@ -800,6 +800,9 @@ def _run_prompt_submit(
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
                 _after_complete_turn(sid, session, st, raw)
+            # Goal judge + loop tick evaluation mutate persisted state AFTER message.complete: publish the
+            # structured control snapshot now so the Desktop card never paints the pre-judge turn count.
+            _publish_session_control_snapshot(sid, session, only_if_present=True)
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:

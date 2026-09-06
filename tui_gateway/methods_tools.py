@@ -810,7 +810,6 @@ _SLASH_BUILTINS = {
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
     "compress": _cmd_compress, "compact": _cmd_compress}
 
-
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
@@ -821,6 +820,8 @@ def _(rid, params: dict) -> dict:
     for stage in filter(None, stages):
         res = stage(rid, params, session, name, arg)
         if res is not None:
+            if name in _SESSION_CONTROL_SLASHES and "error" not in res:
+                _publish_session_control_snapshot(params.get("session_id", ""), session)
             return res
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
@@ -876,6 +877,8 @@ def _(rid, params: dict) -> dict:
         payload = {"output": worker.run(cmd) or "(no output)"}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
+        if base in _SESSION_CONTROL_SLASHES:
+            _publish_session_control_snapshot(sid, session)
         return _ok(rid, payload)
     except Exception as e:
         with contextlib.suppress(Exception):

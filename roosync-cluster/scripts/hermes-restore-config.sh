@@ -846,10 +846,18 @@ gh auth status &>/dev/null && check "gh auth" "OK" || check "gh auth" "not confi
 # gh config persisted
 [ -d "/opt/data/.config/gh" ] && check "gh config persisted" "OK" || check "gh config persisted" "not found in /opt/data"
 
-# kanban patch
+# kanban patch — OK if our PATCHED marker is present, OR if the premature
+# CREATE INDEX line is simply gone (upstream fixed the ordering bug; observed
+# at the 2026-09-06 sync — the guard must not read a fixed-upstream as FAIL).
 if [ -f "$KANBAN_FILE" ]; then
     KPATCH=$(grep -c 'PATCHED: migration creates it' "$KANBAN_FILE" || true)
-    [ "$KPATCH" -ge 1 ] && check "Kanban session_id patch" "OK" || check "Kanban session_id patch" "not applied"
+    if [ "$KPATCH" -ge 1 ]; then
+        check "Kanban session_id patch" "OK"
+    elif ! grep -q 'CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)' "$KANBAN_FILE"; then
+        check "Kanban session_id patch" "OK (upstream fixed — premature index absent)"
+    else
+        check "Kanban session_id patch" "not applied"
+    fi
 fi
 
 # Symlinks hermes home (config must be visible from ~/.hermes/)

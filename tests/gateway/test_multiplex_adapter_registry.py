@@ -213,6 +213,9 @@ class _SecondaryRecoveryAdapter:
     def set_platform_event_handler(self, handler):
         self.platform_event_handler = handler
 
+    def set_admin_policy_check(self, handler):
+        self.admin_policy_check = handler
+
 
 def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)
@@ -1096,7 +1099,7 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
 
-        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a: None)
+        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a, **k: None)
         connected = await runner._start_one_profile_adapters("clientbot", home, {})
 
         assert connected == (2 if paired else 1)

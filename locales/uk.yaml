@@ -1179,6 +1179,7 @@ platform:
       action_deny: "❌ Відхилити"
       toast_invalid_data: "Недійсні дані схвалення."
       toast_already_resolved: "Це схвалення вже опрацьовано."
+      toast_admin_only: "⛔ Тут схвалювати команди може лише адміністратор."
       resolved_once: "✅ Схвалено один раз"
       resolved_session: "✅ Схвалено для сеансу"
       resolved_always: "✅ Схвалено назавжди"

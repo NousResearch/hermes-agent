@@ -1179,6 +1179,7 @@ platform:
       action_deny: "❌ 거부"
       toast_invalid_data: "잘못된 승인 데이터예요."
       toast_already_resolved: "이 승인은 이미 처리되었어요."
+      toast_admin_only: "⛔ 여기서는 관리자만 명령을 승인할 수 있어요."
       resolved_once: "✅ 한 번 승인됨"
       resolved_session: "✅ 세션 동안 승인됨"
       resolved_always: "✅ 영구 승인됨"

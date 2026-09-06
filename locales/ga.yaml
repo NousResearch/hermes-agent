@@ -1179,6 +1179,7 @@ platform:
       action_deny: "❌ Diúltaigh"
       toast_invalid_data: "Sonraí ceada neamhbhailí."
       toast_already_resolved: "Tá an cead seo réitithe cheana féin."
+      toast_admin_only: "⛔ Ní féidir ach le riarthóir orduithe a cheadú anseo."
       resolved_once: "✅ Ceadaithe uair amháin"
       resolved_session: "✅ Ceadaithe don seisiún"
       resolved_always: "✅ Ceadaithe go buan"

@@ -1386,6 +1386,7 @@ platform:
       action_deny: "❌ Refuser"
       toast_invalid_data: "Données d'approbation invalides."
       toast_already_resolved: "Cette approbation a déjà été traitée."
+      toast_admin_only: "⛔ Seul un administrateur peut approuver des commandes ici."
       resolved_once: "✅ Approuvé une fois"
       resolved_session: "✅ Approuvé pour la session"
       resolved_always: "✅ Approuvé définitivement"

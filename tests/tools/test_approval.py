@@ -1,5 +1,7 @@
 """Tests for the dangerous command approval module."""
 
+import hashlib
+import logging
 import os
 import threading
 import time
@@ -75,6 +77,125 @@ class TestSmartApproval:
         assert result["approved"] is True
         assert result["smart_approved"] is True
         assert is_approved(session_key, pattern_key) is False
+
+    @pytest.fixture
+    def denial_tally_cleanup(self):
+        # A smart DENY runs _record_denial against the process-global _denial_tally; restore
+        # it afterwards so this test's count cannot leak into another suite's breaker
+        # assertions (test_cli_approval_exec_ask_leak clears the tally for the same reason).
+        before = dict(approval_module._denial_tally)
+        yield
+        approval_module._denial_tally.clear()
+        approval_module._denial_tally.update(before)
+
+    def test_smart_approve_verdict_is_logged_at_info(self, monkeypatch, caplog):
+        session_key = "test-smart-approve-logged"
+        command = "python -c \"print('hello')\""
+        dangerous, pattern_key, _ = detect_dangerous_command(command)
+        assert dangerous is True
+
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setattr(
+            approval_context, "_get_approval_config",
+            lambda: {"mode": "smart"},
+        )
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: "approve")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        approval_module.clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        with caplog.at_level(logging.INFO, logger="tools.approval"):
+            result = approval_module.check_all_command_guards(command, "local")
+
+        assert result["smart_approved"] is True
+        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+        approve_records = [
+            r for r in info_records if "Smart approval: auto-approved" in r.getMessage()
+        ]
+        assert approve_records, caplog.text
+        assert approve_records[0].name == "tools.approval"
+        digest = hashlib.sha256(command.encode("utf-8")).hexdigest()[:12]
+        assert digest in approve_records[0].getMessage()
+        # The raw command/script text must never reach the log, only its digest.
+        assert command not in caplog.text
+        assert "print('hello')" not in caplog.text
+
+    def test_smart_deny_verdict_is_logged_at_info(self, monkeypatch, caplog, denial_tally_cleanup):
+        session_key = "test-smart-deny-logged"
+        command = "python -c \"print('hello')\""
+        pattern_key = "python_dash_c"
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: "deny")
+
+        with caplog.at_level(logging.INFO, logger="tools.approval"):
+            result, smart_denied_for_owner = approval_module._smart_gate(
+                approval_module._COMMAND_GATE, command, "script execution via -c flag",
+                pattern_key, [pattern_key], session_key, human_present=False)
+
+        assert result["smart_denied"] is True
+        assert smart_denied_for_owner is True
+        info_records = [r for r in caplog.records if r.levelno == logging.INFO]
+        deny_records = [r for r in info_records if "Smart approval: denied" in r.getMessage()]
+        assert deny_records, caplog.text
+        assert deny_records[0].name == "tools.approval"
+        digest = hashlib.sha256(command.encode("utf-8")).hexdigest()[:12]
+        assert digest in deny_records[0].getMessage()
+        # The raw command/script text must never reach the log, only its digest.
+        assert command not in caplog.text
+        assert "print('hello')" not in caplog.text
+
+    def test_smart_gate_digest_tolerates_lone_surrogates(self, monkeypatch, caplog, denial_tally_cleanup):
+        # Tool arguments arrive via json.loads and can carry lone surrogates; hashing the
+        # command for the log line must never turn a verdict into an encode error.
+        session_key = "test-smart-surrogate"
+        command = "python -c \"print('\ud83d')\""
+        pattern_key = "python_dash_c"
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: "deny")
+
+        with caplog.at_level(logging.INFO, logger="tools.approval"):
+            result, _ = approval_module._smart_gate(
+                approval_module._COMMAND_GATE, command, "script execution via -c flag",
+                pattern_key, [pattern_key], session_key, human_present=False)
+
+        assert result["smart_denied"] is True
+        assert any("Smart approval: denied" in r.getMessage() for r in caplog.records), caplog.text
+
+    def test_execute_code_smart_deny_logs_gate_name_and_digest_not_script(
+            self, monkeypatch, caplog, denial_tally_cleanup):
+        # The motivating case: check_execute_code_guard wraps the whole script in a heredoc
+        # (``execute_code <<'PY'\n{code}\nPY``) and hands that to _smart_gate as ``command``,
+        # so the DENY line must carry the execute_code gate name and a digest of the wrapper,
+        # never any of the script body. Called directly so nothing is queued in _pending.
+        session_key = "test-smart-execute-code-deny"
+        script = "import os\nos.environ['SECRET_TOKEN'] = 'hunter2'\nprint('hello')"
+        command = f"execute_code <<'PY'\n{script}\nPY"
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: "deny")
+
+        with caplog.at_level(logging.INFO, logger="tools.approval"):
+            result, _ = approval_module._smart_gate(
+                approval_module._EXECUTE_CODE_GATE, command, approval_module._EXECUTE_CODE_DESCRIPTION,
+                "execute_code", ["execute_code"], session_key, human_present=False)
+
+        assert result["smart_denied"] is True
+        deny_records = [
+            r for r in caplog.records
+            if r.levelno == logging.INFO and "Smart approval: denied" in r.getMessage()
+        ]
+        assert deny_records, caplog.text
+        message = deny_records[0].getMessage()
+        assert "Smart approval: denied execute_code" in message
+        digest = hashlib.sha256(command.encode("utf-8")).hexdigest()[:12]
+        assert digest in message
+        # Nothing from the script body may reach the log.
+        assert "SECRET_TOKEN" not in caplog.text
+        assert "hunter2" not in caplog.text
+        assert "import os" not in caplog.text
+        assert "print('hello')" not in caplog.text
 
 
 class TestDetectDangerousRm:

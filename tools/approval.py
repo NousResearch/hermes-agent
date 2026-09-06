@@ -542,7 +542,6 @@ class _GateSpec:
     transport_denied: str     # {breaker}
     cli_timeout: str          # {breaker}
     cli_denied: str           # {description}{breaker}
-    smart_log: str            # {command}{description}{session_key}
 
 
 _STOP_COMMAND = (
@@ -569,7 +568,6 @@ _COMMAND_GATE = _GateSpec(
     cli_timeout="BLOCKED: Command timed out without user response." + _STOP_COMMAND
                 + " Silence is not consent.{breaker}",
     cli_denied="BLOCKED: User denied this command." + _STOP_COMMAND + "{breaker}",
-    smart_log="Smart approval: auto-approved '{command}' ({description})",
 )
 _EXECUTE_CODE_GATE = _GateSpec(
     noun="code", transport=True, user_approved=True, redact_cli=True, pending_keys=True,
@@ -588,7 +586,6 @@ _EXECUTE_CODE_GATE = _GateSpec(
         "BLOCKED: User denied execute_code script execution (matched "
         "'{description}'). Do NOT retry — the user has explicitly rejected it.{breaker}"
     ),
-    smart_log="Smart approval: auto-approved execute_code for session {session_key}",
 )
 # Plugin-escalated tool calls / protected writes: no transport, no breaker,
 # no user_approved marker (parity with the historical gate).
@@ -604,7 +601,6 @@ _ACTION_GATE = _GateSpec(
         "BLOCKED: User denied this potentially dangerous action (matched "
         "'{description}'). Do NOT retry — the user has explicitly rejected it."
     ),
-    smart_log="",
 )
 
 
@@ -621,13 +617,27 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
     normal, potentially persistent manual behavior.
     """
     verdict = _smart_verdict(command, description, pattern_key, pattern_keys, session_key)
+    # Log a digest, never the raw text: for execute_code, ``command`` is the heredoc-wrapped
+    # script check_execute_code_guard builds, so any excerpt is agent-authored code that may
+    # carry secrets the pattern-based RedactingFormatter on agent.log cannot be relied on to
+    # catch. Same digest convention as request_tool_approval's rule_key. ``surrogatepass``:
+    # tool arguments come from json.loads and can carry lone surrogates, which a strict utf-8
+    # encode would turn into a crash on the verdict path.
+    command_sha256 = hashlib.sha256(command.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    gate_name = "execute_code" if spec is _EXECUTE_CODE_GATE else "command"
     if verdict == "approve":
         _reset_denials(session_key)
-        logger.debug(spec.smart_log.format(command=command[:60], description=description, session_key=session_key))
+        logger.info(
+            "Smart approval: auto-approved %s (%s) sha256=%s session=%s",
+            gate_name, description, command_sha256, session_key)
         return {"approved": True, "message": None, "smart_approved": True, "description": description}, False
     if verdict != "deny":
         return None, False
     _record_denial(session_key)
+    logger.info(
+        "Smart approval: denied %s (%s) sha256=%s session=%s%s",
+        gate_name, description, command_sha256, session_key,
+        " — interactive owner may override once" if human_present else "")
     if human_present:
         return None, True
     return {

@@ -27,21 +27,23 @@ from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from hermes_cli.dashboard_auth import (
     get_provider, list_providers, list_session_providers, native_flow)
 from hermes_cli.dashboard_auth import prefix as _prefix_mod
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
-    InvalidCodeError, InvalidCredentialsError, ProviderError, RefreshExpiredError, Session)
+    InvalidCodeError, InvalidCredentialsError, ProviderError, Session)
 from hermes_cli.dashboard_auth.cookies import (
     clear_pkce_cookie, clear_session_cookies, clear_sso_attempt_cookie, detect_https,
     parse_pkce_payload, read_pkce_cookie, read_session_cookies, set_pkce_cookie,
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
     render_login_html, render_native_provider_choice_html)
+from hermes_cli.dashboard_auth.native_refresh import refresh_native_session
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path, scan_session_providers)
+    access_token_max_age, client_ip as _client_ip, is_safe_next_path)
 
 _log = logging.getLogger(__name__)
 
@@ -499,9 +501,11 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     if not body.refresh_token:
         raise _http(400, "refresh_token required")
     try:
-        session = scan_session_providers(
-            body.provider, lambda p: p.refresh_session(refresh_token=body.refresh_token),
-            phase="native refresh", log=_log, swallow=(RefreshExpiredError,))
+        # Uvicorn validates trusted proxy peers before updating the ASGI client.
+        # Never split replay keys on caller-controlled X-Forwarded-For prefixes.
+        session = await run_in_threadpool(
+            refresh_native_session, body.refresh_token, body.provider,
+            request.client.host if request.client else "")
     except ProviderError as e:
         raise _http(503, f"Auth provider {str(e)!r} unreachable")
     if session is not None:

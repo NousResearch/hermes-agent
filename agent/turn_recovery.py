@@ -993,7 +993,11 @@ def compute_error_backoff(
     if _retry_after is None:
         _error_body = getattr(api_error, "body", None)
         if isinstance(_error_body, dict):
-            _retry_after = parse_retry_after_seconds(_error_body.get("retry_after"))
+            # Some providers nest it as error.retry_after (the same unwrap
+            # _extract_rate_limit_context uses), others put it at the top level.
+            _nested = _error_body.get("error")
+            _payload = _nested if isinstance(_nested, dict) else _error_body
+            _retry_after = parse_retry_after_seconds(_payload.get("retry_after"))
     if _retry_after is not None:
         # Cap at 10 minutes. Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap
         # caused us to retry before the actual reset window and re-trip the limit. 600s covers all
@@ -1015,7 +1019,16 @@ def compute_error_backoff(
         else:
             agent._buffer_status(_rate_limit_status)
     else:
-        agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+        _retry_status = (
+            f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        )
+        if _retry_after is not None and _retry_after > 60:
+            # A 5xx Retry-After can now reach the 600s cap; buffering that wait
+            # would leave the user silent for minutes, so surface long provider
+            # cooldowns immediately (mirrors the zai_coding_overload_long path).
+            agent._emit_status(_retry_status)
+        else:
+            agent._buffer_status(_retry_status)
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
         wait_time, retry_count, max_retries, agent._client_log_context(),

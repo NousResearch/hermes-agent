@@ -2010,8 +2010,9 @@ class TestRetryAfterCap:
         [
             ({"Retry-After": "120"}, {}),
             ({}, {"status": 524, "retry_after": 120}),
+            ({}, {"status": 524, "error": {"retry_after": 120}}),
         ],
-        ids=("header", "problem-detail-body"),
+        ids=("header", "problem-detail-body", "nested-problem-detail-body"),
     )
     def test_retry_after_on_cloudflare_524_is_honored(
         self, agent, headers, body
@@ -2037,6 +2038,7 @@ class TestRetryAfterCap:
 
         captured = []
         original_buffer = agent._buffer_status
+        original_emit = agent._emit_status
 
         def _capture_status(msg, *args, **kwargs):
             captured.append(msg)
@@ -2044,7 +2046,14 @@ class TestRetryAfterCap:
                 agent._interrupt_requested = True
             return original_buffer(msg, *args, **kwargs)
 
+        def _capture_emit(msg):
+            captured.append(msg)
+            if "Retrying in" in msg:
+                agent._interrupt_requested = True
+            return original_emit(msg)
+
         agent._buffer_status = _capture_status
+        agent._emit_status = _capture_emit
         agent.run_conversation("hello")
 
         assert any("Retrying in 120.0s" in msg for msg in captured)

@@ -162,8 +162,35 @@ def _inchannel_seed_allowed(*, is_dm: bool, user_id: Optional[str]) -> bool:
     return bool(is_dm or user_id)
 
 
+def _redact_cron_payload(text: str, what: str) -> str:
+    """Fail-closed secret redaction for anything a cron job emits outward.
+
+    Every outward lane — chat message, session mirror, bot-chat turn — must apply the same policy,
+    so the policy lives in one place. ``force=True`` because this is a safety boundary, not
+    logging: the ``security.redact_secrets`` preference governs how much is scrubbed from the
+    user's own logs and must not be able to turn scrubbing off on the way out to a chat (same
+    reasoning as ``tools/delegation_live_log.py``). Empty input is returned as-is; any failure
+    inside the redactor replaces the payload entirely rather than letting an unscanned value out.
+    """
+    if not text:
+        return text
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True)
+    except Exception as e:
+        logger.warning("Failed to redact secrets from cron %s: %s", what, e)
+        return "[REDACTED - redaction failed]"
+
+
+def _cron_display_name(job: dict) -> str:
+    """Job name/id as it appears in outward-facing text. The mirror sinks and the thread title
+    splice the job *name* around the redacted payload, and the name is user-controlled config — a
+    name embedding a credential would re-leak it next to the scrubbed body."""
+    return _redact_cron_payload(job.get("name") or job.get("id", "cron"), "job name")
+
+
 def _cron_mirror_message(job: dict, text: str) -> str:
-    return f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}"
+    return f"[Cron delivery: {_cron_display_name(job)}]\n{text}"
 
 
 def _maybe_mirror_cron_delivery(
@@ -214,7 +241,7 @@ def _open_continuable_cron_thread(job: dict, adapter, chat_id: str, loop) -> Opt
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    thread_name = f"Hermes — {job.get('name') or job.get('id', 'cron')}"
+    thread_name = f"Hermes — {_cron_display_name(job)}"
     try:
         from agent.async_utils import safe_schedule_threadsafe
         coro = create_thread(str(chat_id), thread_name)
@@ -660,10 +687,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
 
     job_id = job.get("id", "?")
     profile_label = profile or "(own)"
+    # Outward lane: this text becomes an inbound turn in another profile's Bot Chat — via the
+    # live owner or the CLI fallback — so it gets the same fail-closed scrub as the chat message
+    # and the session mirror. Redact here, above both lanes, so neither can be added back unscanned.
     message = (
-        f'[Cronjob "{job.get("name", job_id)}" output — scheduled job, not the user. '
-        f"Review it, act on anything that needs action, and summarize "
-        f"for the chat.]\n\n{content}"
+        f'[Cronjob "{_redact_cron_payload(job.get("name", job_id), "job name")}" output — '
+        f"scheduled job, not the user. Review it, act on anything that needs action, and "
+        f"summarize for the chat.]\n\n{_redact_cron_payload(content, 'bot-chat payload')}"
     )
     try:
         source_home = get_hermes_home().resolve()
@@ -1712,6 +1742,11 @@ def _deliver_result(
     from gateway.media_policy import apply_media_policy_env
     apply_media_policy_env(user_cfg)
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    # Redact at this single chokepoint, BEFORE the live-adapter / standalone send lanes below.
+    # Shell-job stdout/stderr is already redacted where it is captured, but an LLM cron job's
+    # response text reaches delivery unscanned — so a job that surfaced a credential (echoed a
+    # failing curl with an API key, summarised a config file) sent it verbatim to the chat.
+    cleaned_delivery_content = _redact_cron_payload(cleaned_delivery_content, "delivery content")
     requested_media = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     # Policy-dropped attachments will never be sent on ANY lane — record them in run status.
@@ -1731,7 +1766,10 @@ def _deliver_result(
     # Independent of the mirror knob: continuable surfaces (in_channel) must seed even when
     # attach_to_session=false and cron.mirror_delivery=false, else the seed gets "" and fails.
     _, mirror_text = BasePlatformAdapter.extract_media(content)
-    mirror_text = (mirror_text or "").strip()
+    # Derived from the raw `content`, so it does NOT inherit the redaction above. Without this,
+    # enabling the mirror writes an unredacted credential into the session transcript even though
+    # the chat message itself was clean — and a transcript outlives the message.
+    mirror_text = _redact_cron_payload((mirror_text or "").strip(), "mirror payload")
 
     try:
         config = load_gateway_config()

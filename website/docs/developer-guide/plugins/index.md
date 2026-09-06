@@ -1517,6 +1517,24 @@ Install surfaces report exactly this split: `hermes plugins install/enable` prin
 gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
 `gateway_reloaded` (`restart_required` is true only when no gateway answered).
 
+### Attach inline keyboards on Telegram send
+
+Clicks are handled by `ctx.register_platform_handler("telegram", factory)` with a pattern-scoped `CallbackQueryHandler` (see above). To attach those buttons without bypassing adapter topic/retry/chunk policy, pass markup on `adapter.send()`:
+
+```python
+await adapter.send(
+    chat_id,
+    "Pick one:",
+    metadata={
+        "reply_markup": [[{"text": "Done", "callback_data": "myplugin:done"}]],
+        # optional per-send override of adapter extra disable_link_previews:
+        "disable_link_preview": True,
+    },
+)
+```
+
+`reply_markup` accepts button-dict rows (`text` plus `callback_data` and/or `url`) or an already-built `InlineKeyboardMarkup`. On a split message the keyboard is attached to the first chunk only. If `reply_markup` is present, the rich-message path is skipped so the keyboard is not dropped.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

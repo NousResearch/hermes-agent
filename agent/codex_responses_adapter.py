@@ -487,9 +487,14 @@ def _chat_messages_to_responses_input(
         emit(message_items, msg)
         if not message_items:
             # Every reasoning item needs a following item (else missing_following_item), hence the "" fallback.
-            fallback = content_parts or (content_text if content_text.strip() else "" if reasoning_items else None)
-            if fallback is not None:
-                emit([{"role": "assistant", "content": fallback}], msg)
+            # Assistant items MUST carry type=message — strict Responses servers (llama.cpp) reject
+            # role-only items with HTTP 400 "Cannot determine type of 'item'" (#76657/#104396).
+            if content_parts:
+                emit([{"type": "message", "role": "assistant", "content": content_parts}], msg)
+            elif content_text.strip():
+                emit([{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": content_text}]}], msg)
+            elif reasoning_items:
+                emit([{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}], msg)
         emit(_replay_tool_call_items(msg, start_index=len(items)), msg)
     # The server renders nothing placed before a compaction item, so pre-checkpoint history is
     # dead weight and plaintext asks / merged summaries silently vanish. Keep the newest checkpoint

@@ -599,18 +599,19 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
     finally:
         server._sessions.pop("sid", None)
 
+    # Drained prompts are the user's own (queued while busy), so they dispatch as user turns.
     assert dispatched == [
         (
             "drain-b",
             "sid",
             "B",
-            {"image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0},
+            {"image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0, "user_turn": True},
         ),
         (
             "drain-c",
             "sid",
             "C",
-            {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0},
+            {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0, "user_turn": True},
         ),
     ]
 

@@ -415,7 +415,7 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 
 
 def active_count() -> int:
-    """Number of live async delegation UNITS (a whole batch counts as ONE slot)."""
+    """Number of live async delegation UNITS (one per completion message: a task group or an ungrouped task)."""
     with _records_lock:
         return sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
 
@@ -425,7 +425,8 @@ def active_task_count() -> int:
     no goal list counts 1) — the truthful observability figure, unlike slots."""
     with _records_lock:
         return sum(
-            len(r["goals"]) if r.get("is_batch") and isinstance(r.get("goals"), (list, tuple)) and r["goals"] else 1
+            len(r.get("task_indexes") or r["goals"])
+            if r.get("is_batch") and isinstance(r.get("goals"), (list, tuple)) and r["goals"] else 1
             for r in _records.values() if r.get("status") in {"running", "finalizing"})
 
 
@@ -496,12 +497,15 @@ def _dispatch(
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
-    progress_fn: Optional[Callable[[], tuple]], capacity_error: str,
+    progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
+    task_indexes: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
     and exceed the cap. At capacity the dispatch is REJECTED (never queued) so a runaway model
-    can't pile up unbounded background work."""
+    can't pile up unbounded background work. ``slot_key`` names the pool slot the unit occupies
+    (default: its own id); the units of one delegate_task call share the first unit's id so
+    splitting a call into per-group completions never consumes more capacity than the call did."""
     is_batch = goals is not None
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
@@ -515,11 +519,14 @@ def _dispatch(
         **_capture_routing_origin(),
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
+        "slot_key": slot_key or delegation_id,
+        # Which of the call's ``goals`` this unit runs (None = all of them).
+        **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
-        running = sum(1 for r in _records.values() if r.get("status") in _ACTIVE_STATES)
-        if running >= max_async_children:
+        active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
+        if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
     _persist_dispatch(record)
@@ -584,21 +591,26 @@ def dispatch_async_delegation_batch(
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
-    progress_fn: Optional[Callable[[], tuple]] = None,
+    progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
+    task_indexes: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
-    """Dispatch a WHOLE fan-out batch as ONE background unit: ``runner`` runs the
-    entire batch and returns the combined ``{"results": [...], "total_duration_seconds": N}``
-    dict. The batch occupies ONE async slot (in-batch parallelism is bounded
-    separately) and produces a SINGLE completion event carrying per-task ``results``."""
+    """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
+    background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
+    "total_duration_seconds": N}`` dict. The unit occupies ONE async slot — or joins the slot named
+    by ``slot_key`` (in-unit parallelism is bounded separately) — and produces a SINGLE completion
+    event carrying per-task ``results``."""
     delegation_id = delegation_id or _new_delegation_id()
-    n = len(goals)
-    combined_goal = goals[0] if n == 1 else f"{n} parallel subagents: " + "; ".join(g[:40] for g in goals)
+    # ``goals`` is the whole call (result task_index indexes it); the unit's own goals label the record.
+    unit_goals = [goals[i] for i in task_indexes] if task_indexes is not None else list(goals)
+    n = len(unit_goals)
+    combined_goal = unit_goals[0] if n == 1 else f"{n} parallel subagents: " + "; ".join(g[:40] for g in unit_goals)
     handle = _dispatch(
         delegation_id=delegation_id, goal=combined_goal, goals=goals, context=context,
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
-        interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
+        interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
+        task_indexes=task_indexes,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -651,7 +663,8 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         payload = {
             "is_batch": True, "results": result.get("results") or [],
             "live_transcripts": result.get("live_transcripts"), "error": result.get("error"),
-            "total_duration_seconds": result.get("total_duration_seconds")}
+            "total_duration_seconds": result.get("total_duration_seconds"),
+            **({"group": result["group"]} if result.get("group") is not None else {})}
     else:
         payload = {
             "summary": result.get("summary"), "error": result.get("error"), "api_calls": result.get("api_calls", 0),

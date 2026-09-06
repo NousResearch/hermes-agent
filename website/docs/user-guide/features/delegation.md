@@ -117,12 +117,26 @@ delegate_task(
 
 ## Batch Mode Details
 
-When a top-level agent provides a `tasks` array, Hermes returns one background handle, runs the subagents in parallel, and posts one consolidated result after every child finishes. An orchestrator subagent waits for its batch in the current turn so it can synthesize the results.
+When a top-level agent provides a `tasks` array, Hermes returns one background handle and runs the subagents in parallel. Results come back **per completion unit**, not once at the end:
+
+- A task **without** a `group` is its own unit: its result re-enters the conversation the moment that subagent finishes, so five independent PR reviews land as five messages and the agent acts on each without waiting for the slowest one.
+- Tasks that share a `group` string wait for each other and return as **one** consolidated message (use this when the parent must compare or merge their outputs).
+
+```json
+{"tasks": [
+  {"goal": "Review PR #101 ..."},
+  {"goal": "Review PR #102 ..."},
+  {"goal": "Benchmark approach A ...", "group": "bench"},
+  {"goal": "Benchmark approach B ...", "group": "bench"}
+]}
+```
+
+The dispatch handle lists each unit (`units[].delegation_id`, `group`, `task_indexes`); unit ids are the call's id suffixed `-1`, `-2`, …, and every unit of one call shares a single slot of `delegation.max_concurrent_children`, so grouping never changes capacity accounting. An orchestrator subagent waits for its whole batch in the current turn so it can synthesize the results.
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
 - **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
-- **Result ordering:** Results are sorted by task index to match input order regardless of completion order
+- **Result ordering:** Within a unit, results are sorted by task index to match input order regardless of completion order; `TASK i/N` labels index the whole call
 - **Cancellation:** Follow-up messages do not cancel a top-level background batch. `/stop` or closing/resetting the owning session cancels its active children. Synchronous orchestrator children still follow their parent's interrupt state
 
 Synchronous single-task delegation from an orchestrator runs directly without thread pool overhead.

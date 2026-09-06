@@ -13,6 +13,7 @@ from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
+from tools.mcp_wire_log import tap_streams as _tap_streams
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -143,7 +144,8 @@ class MCPServerTransportMixin:
         not unpacked (mcp 1.x yields a 3-tuple, 2.x a pair); a TaskGroup drop maps to ``"reconnect"``."""
         try:
             async with transport_cm as _streams:
-                async with _core.ClientSession(_streams[0], _streams[1], **self._session_kwargs()) as session:
+                read_stream, write_stream = _tap_streams(self.name, _streams[0], _streams[1], self._config)
+                async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
                     return await self._serve_session(session, connect_timeout, label)
         except BaseExceptionGroup as _eg:
             return self._reconnect_or_reraise_group(_eg)
@@ -243,6 +245,7 @@ class MCPServerTransportMixin:
                 if new_pids:
                     self._track_spawned_children(new_pids)
                 self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies
+                read_stream, write_stream = _tap_streams(self.name, read_stream, write_stream, config)
                 async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
                     # Bound the handshake here (``connect_timeout`` only bounds the caller's ``.result()``):
                     # a server that never answers ``initialize`` would leak child + pipes per retry until EMFILE.

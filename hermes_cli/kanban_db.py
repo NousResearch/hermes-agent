@@ -1269,6 +1269,21 @@ def create_task(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
     parents = tuple(p for p in parents if p)
+    # Inherit tenant from first parent that has one when not provided (#104215).
+    # An orchestrator fanning a workflow via manual kanban_create calls can omit
+    # tenant; without inheritance the child lands with tenant=NULL while the
+    # dispatcher later fans the same triage root with the canonical tenant,
+    # producing two competing graphs for one request.
+    if tenant is None and parents:
+        for _pid in parents:
+            try:
+                _prow = conn.execute("SELECT tenant FROM tasks WHERE id = ?", (_pid,)).fetchone()
+                if _prow and _prow["tenant"]:
+                    tenant = str(_prow["tenant"])
+                    _log.debug("create_task: inheriting tenant %r from parent %s", tenant, _pid)
+                    break
+            except Exception:
+                continue
     skills_list = _normalize_task_skills(skills)
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
@@ -3549,6 +3564,23 @@ def decompose_triage_task(
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if root_row is None or root_row["status"] != "triage":
+            return None
+        # Guard against duplicate graphs when an orchestrator manually created
+        # children for the same triage root without flipping it to todo (#104215).
+        # Without this, the periodic auto-decomposer would fan the same root
+        # again, leaving two competing lineages (one with missing tenant/board
+        # metadata from manual creates, one canonical).  A triage task that
+        # already has children is considered already decomposed — the caller
+        # should manage it manually.
+        existing = conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? OR child_id = ? LIMIT 1",
+            (task_id, task_id),
+        ).fetchone()
+        if existing is not None:
+            _log.info(
+                "decompose_triage_task: %s already has links, skipping duplicate fan-out",
+                task_id,
+            )
             return None
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)

@@ -834,9 +834,37 @@ def _handle_create(args: dict, **kw) -> str:
             self_task = kb.get_task(conn, self_tid) if self_tid else None
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
+        # Resolve tenant: explicit arg > env > inherit from first parent with a
+        # tenant. Without this, an orchestrator that fans a workflow into manual
+        # children via kanban_create without passing tenant creates a
+        # tenant-NULL sibling graph; the dispatcher later auto-decomposes the
+        # same triage root with the canonical tenant, leaving two competing
+        # lineages (#104215).  Inheriting from the parent keeps one authoritative
+        # graph and makes completion ownership unambiguous.
+        tenant_arg = args.get("tenant")
+        tenant_val = (tenant_arg or "").strip() if isinstance(tenant_arg, str) else tenant_arg
+        if tenant_val:
+            tenant = tenant_val
+        else:
+            tenant = os.environ.get("HERMES_TENANT") or None
+            if not tenant and parents:
+                for pid in parents:
+                    try:
+                        pt = kb.get_task(conn, pid)
+                    except Exception:
+                        pt = None
+                    if pt and pt.tenant:
+                        tenant = pt.tenant
+                        logger.debug(
+                            "kanban_create: inheriting tenant %r from parent %s for child %r",
+                            tenant,
+                            pid,
+                            title,
+                        )
+                        break
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
-            parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+            parents=tuple(parents), tenant=tenant,
             priority=_opt_int(args.get("priority"), 0),
             workspace_kind=str(workspace_kind if workspace_kind is not None else "scratch"),
             workspace_path=workspace_path, project_id=project_id,

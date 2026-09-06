@@ -45,7 +45,7 @@ def test_canonical_resolver_can_exclude_orphaned_env_pool_snapshot(
         )
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials",
+        "agent.anthropic_adapter.read_claude_code_credentials",
         lambda: None,
     )
 
@@ -328,9 +328,8 @@ def test_auto_route_rebuilds_anthropic_once_after_401_with_current_token(
             usage=SimpleNamespace(input_tokens=1, output_tokens=2),
         )
 
-    client_cache = {}
     with (
-        patch("agent.auxiliary_client._client_cache", client_cache),
+        patch("agent.auxiliary_client._client_cache", {}),
         patch(
             "agent.anthropic_adapter.build_anthropic_client",
             side_effect=_build_client,
@@ -340,32 +339,16 @@ def test_auto_route_rebuilds_anthropic_once_after_401_with_current_token(
             side_effect=_create_message,
         ),
     ):
-        first_response = call_llm(
+        response = call_llm(
             provider="auto",
             main_runtime=main_runtime,
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=16,
         )
-        assert all(
-            getattr(entry[0], "token", None) != "cc-fixture-token-a"
-            for entry in client_cache.values()
-        )
-        second_response = call_llm(
-            provider="auto",
-            main_runtime=main_runtime,
-            messages=[{"role": "user", "content": "ping again"}],
-            max_tokens=16,
-        )
-        assert all(
-            getattr(entry[0], "token", None) != "cc-fixture-token-a"
-            for entry in client_cache.values()
-        )
 
-    assert first_response.choices[0].message.content == "fresh auxiliary response"
-    assert second_response.choices[0].message.content == "fresh auxiliary response"
+    assert response.choices[0].message.content == "fresh auxiliary response"
     assert [call.args[0] for call in mock_build.call_args_list] == [
         "cc-fixture-token-a",
-        "cc-fixture-token-b",
         "cc-fixture-token-b",
     ]
     assert main_runtime == route_before

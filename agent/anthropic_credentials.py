@@ -452,8 +452,13 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
-def resolve_anthropic_token() -> Optional[str]:
-    """Resolve an Anthropic token from all sources in priority order (see module docstring)."""
+def resolve_anthropic_token(*, allow_pool_fallback: bool = True) -> Optional[str]:
+    """Resolve an Anthropic token from all sources in priority order (see module docstring).
+
+    ``allow_pool_fallback=False`` is for re-resolving a token that already came
+    from a borrowed pool row. It prevents a missing live source from circling
+    back to the same persisted snapshot.
+    """
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:
@@ -461,7 +466,12 @@ def resolve_anthropic_token() -> Optional[str]:
     api_key = _first_env("ANTHROPIC_API_KEY")  # an explicit API key must not be shadowed by discovered OAuth creds
     if api_key:
         return api_key
-    return _resolve_claude_code_token_from_credentials(_read_creds()) or _resolve_anthropic_pool_token()
+    claude = _resolve_claude_code_token_from_credentials(_read_creds())
+    if claude:
+        return claude
+    if allow_pool_fallback:
+        return _resolve_anthropic_pool_token()
+    return None
 
 
 def run_oauth_setup_token() -> Optional[str]:

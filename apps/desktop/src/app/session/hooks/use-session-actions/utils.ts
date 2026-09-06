@@ -298,6 +298,23 @@ export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]):
   return a.length === b.length && a.every((message, index) => chatMessagesEquivalent(message, b[index]))
 }
 
+/**
+ * Keep the CURRENT array when the replacement is content-equivalent.
+ *
+ * The resume reconcilers create fresh `ChatMessage` objects via
+ * `toChatMessages` even when nothing changed. Publishing those unconditionally
+ * replaces the `$messages`/session-slice array with a new reference of fresh
+ * objects — and because `useRuntimeMessageRepository` keys its normalization
+ * cache (and React keys its rows) by object identity, every message in the
+ * window re-normalizes and remounts: full markdown re-parse + shiki
+ * re-highlight per row, on the main thread, per warm session switch (#95595).
+ * Returning `current` when the content is equivalent keeps array AND object
+ * identity, so the warm switch is O(1) paint.
+ */
+export function preserveEquivalentTranscript(current: ChatMessage[], next: ChatMessage[]): ChatMessage[] {
+  return chatMessageArraysEquivalent(current, next) ? current : next
+}
+
 export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages

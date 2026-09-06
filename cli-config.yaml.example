@@ -948,6 +948,32 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# =============================================================================
+# Session Storage Retention (state.db)
+# =============================================================================
+# ~/.hermes/state.db keeps every session, message, and tool call, plus the
+# FTS5 search indexes. Since #54189, auto-pruning is ON by default so the file
+# stays bounded: at CLI/gateway/cron startup (at most once per
+# min_interval_hours) Hermes deletes ENDED sessions whose last activity is
+# older than retention_days. Open, pinned, and in-progress sessions are never
+# deleted. Stale automation sessions (cron/kanban/subagent/one-shot CLI) whose
+# process died without closing them are first *closed*, then aged through a
+# further full retention window before removal.
+#
+# After a prune that removed rows, VACUUM reclaims disk space only when both
+# the time throttle (min_vacuum_interval_days) has elapsed AND more than 25%
+# of the file's pages are reclaimable — a dense database never pays for a full
+# rewrite to reclaim a few MB.
+#
+# Uncomment to change the defaults shown; set auto_prune: false to keep every
+# ended session forever (the pre-#54189 behavior).
+# sessions:
+#   auto_prune: true
+#   retention_days: 90
+#   vacuum_after_prune: true
+#   min_vacuum_interval_days: 30
+#   min_interval_hours: 24
+
 # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
 # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and
 # same-gateway rooms can still continue on their own. Set this only to the

@@ -372,9 +372,7 @@ describe('lineageAliases across a deep compression chain', () => {
   it('aliases every segment, intermediates included', () => {
     // The projected row carries the full chain: a tile or route can hold a
     // MIDDLE segment's id from when IT was the tip.
-    const rows = [
-      session({ _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root', id: 'tip' })
-    ]
+    const rows = [session({ _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root', id: 'tip' })]
 
     expect(lineageAliases('mid', rows).sort()).toEqual(['mid', 'root', 'tip'])
     expect(lineageAliases('tip', rows).sort()).toEqual(['mid', 'root', 'tip'])

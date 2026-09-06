@@ -105,9 +105,9 @@ def test_watch_ok_probe_does_not_create_unawaited_coroutine():
     """
     import inspect as _inspect
 
-    import tools.mcp_tool as mcp_mod
+    import tools.mcp_tool_handlers as handlers_mod
 
-    src = _inspect.getsource(mcp_mod)
+    src = _inspect.getsource(handlers_mod)
     assert "isawaitable(_watch_children())" not in src
     assert "iscoroutinefunction(_watch_children)" in src
 

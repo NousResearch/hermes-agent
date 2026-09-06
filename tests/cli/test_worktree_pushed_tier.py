@@ -15,6 +15,8 @@ import time
 
 import pytest
 
+from hermes_cli import worktree_ops
+
 
 def _run(args, cwd):
     return subprocess.run(
@@ -93,7 +95,7 @@ class TestFetchRemoteBranchHeads:
         import cli
         repo = repo_with_bare_origin
         _mk_worktree(repo, "hermes-a", "hermes/hermes-a", push=True)
-        heads = cli._fetch_remote_branch_heads(str(repo))
+        heads = worktree_ops._fetch_remote_branch_heads(str(repo))
         assert heads is not None
         assert "main" in heads
         assert "hermes/hermes-a" in heads
@@ -104,7 +106,7 @@ class TestFetchRemoteBranchHeads:
         repo.mkdir()
         _run(["git", "init"], repo)
         _run(["git", "remote", "add", "origin", str(tmp_path / "missing.git")], repo)
-        assert cli._fetch_remote_branch_heads(str(repo)) is None
+        assert worktree_ops._fetch_remote_branch_heads(str(repo)) is None
 
 
 class TestBranchPushedExact:
@@ -112,8 +114,8 @@ class TestBranchPushedExact:
         import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-x", "hermes/hermes-x", push=True)
-        heads = cli._fetch_remote_branch_heads(str(repo))
-        assert cli._worktree_branch_pushed_exact(str(wt), heads) is True
+        heads = worktree_ops._fetch_remote_branch_heads(str(repo))
+        assert worktree_ops._worktree_branch_pushed_exact(str(wt), heads) is True
 
     def test_local_ahead_of_push_false(self, repo_with_bare_origin):
         import cli
@@ -122,22 +124,22 @@ class TestBranchPushedExact:
             repo, "hermes-y", "hermes/hermes-y",
             push=True, extra_commit_after_push=True,
         )
-        heads = cli._fetch_remote_branch_heads(str(repo))
-        assert cli._worktree_branch_pushed_exact(str(wt), heads) is False
+        heads = worktree_ops._fetch_remote_branch_heads(str(repo))
+        assert worktree_ops._worktree_branch_pushed_exact(str(wt), heads) is False
 
     def test_never_pushed_false(self, repo_with_bare_origin):
         import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-z", "hermes/hermes-z", push=False)
-        heads = cli._fetch_remote_branch_heads(str(repo))
-        assert cli._worktree_branch_pushed_exact(str(wt), heads) is False
+        heads = worktree_ops._fetch_remote_branch_heads(str(repo))
+        assert worktree_ops._worktree_branch_pushed_exact(str(wt), heads) is False
 
     def test_none_heads_false(self, repo_with_bare_origin):
         import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-n", "hermes/hermes-n", push=True)
-        assert cli._worktree_branch_pushed_exact(str(wt), None) is False
-        assert cli._worktree_branch_pushed_exact(str(wt), {}) is False
+        assert worktree_ops._worktree_branch_pushed_exact(str(wt), None) is False
+        assert worktree_ops._worktree_branch_pushed_exact(str(wt), {}) is False
 
 
 class TestStartupPrunerPushedTier:

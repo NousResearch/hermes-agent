@@ -155,9 +155,9 @@ import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } 
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
+import { resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
-  liveSessionProjectId,
   orderProjectsByIds,
   overlayLiveLanes,
   overlayLivePreviews,
@@ -166,6 +166,7 @@ import {
   ProjectMenu,
   projectTreeCwd,
   reconcileEnteredProjectSessions,
+  sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -371,7 +372,7 @@ export function ChatSidebar({
   const grouping = useStore($sidebarGrouping)
   const ordering = useStore($sidebarOrdering)
   const statusFilter = useStore($sidebarStatusFilter)
-  const projectFilter = useStore($sidebarProjectFilter)
+  const persistedProjectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
   const prFilter = useStore($sidebarPrFilter)
   const prDataWanted = useStore($sidebarPrDataWanted)
@@ -436,6 +437,16 @@ export function ChatSidebar({
   const projectOrderIds = useStore($sidebarProjectOrderIds)
   const projects = useStore($projects)
   const projectTree = useStore($projectTree)
+
+  // The persisted project filter's storage is shared across profiles, so ids
+  // picked in another profile don't resolve in the active one and the raw
+  // membership whitelist empties every tier of the sidebar (#96246). Narrow
+  // to ids the ACTIVE tree resolves; dead ids are inert, not fatal.
+  const projectFilter = useMemo(
+    () => resolveLiveProjectFilter(persistedProjectFilter, projectTree),
+    [persistedProjectFilter, projectTree]
+  )
+
   const projectTreeLoading = useStore($projectTreeLoading)
   const removedSessionIds = useStore($removedSessionIds)
   const reposScanning = useStore($reposScanning)
@@ -512,7 +523,8 @@ export function ChatSidebar({
   // One predicate for the status/project filters, so the flat list and the
   // project lanes narrow by the same rule. A project lane holds rows the loaded
   // page may not, so it has to be answerable per session rather than by
-  // membership in the filtered set.
+  // membership in the filtered set. Detached rows file under the Home bucket id
+  // (same rule as the overview overlay), so filtering to Home keeps Home's rows.
   const sessionMatchesFilters = useCallback(
     (session: SessionInfo) => {
       if (statusFilter.length && !statusFilter.includes(sessionStatusBucket(dotStates[session.id]))) {
@@ -535,7 +547,7 @@ export function ChatSidebar({
 
       // Same membership the sidebar groups and colors by, so a filtered row
       // lands in the lane the user picked it from.
-      return !projectFilter.length || projectFilter.includes(liveSessionProjectId(session, projects) ?? '')
+      return sessionMatchesProjectFilter(session, projectFilter, projects)
     },
     [statusFilter, projectFilter, profileFilter, showAllProfiles, prFilter, pullRequests, projects, dotStates]
   )

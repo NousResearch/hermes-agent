@@ -1454,6 +1454,11 @@ def load_soul_md(context_length: Optional[int] = None, home_override: "Path | No
         return None
     try:
         content = (_read_text_with_timeout(soul_path) or "").strip()
+        if content:
+            # Plugin-era desktop builds appended a frozen Bot Mode roster to SOUL.md; the server
+            # now injects the live section in Bot Chat only, so the copy is dead weight everywhere.
+            from tools.bot_mode_probe import strip_legacy_protocol
+            content = strip_legacy_protocol(content).strip()
         if not content:
             return None
         return _truncate_content(_scan_context_content(content, "SOUL.md"), "SOUL.md", context_length=context_length,

@@ -7,8 +7,9 @@ from agent.llm_egress_runtime import _project_bound_kanban_show
 
 
 @pytest.mark.parametrize("protected", [False, True])
-def test_compression_keeps_only_latest_assignment_and_protected_egress(protected):
+def test_compression_keeps_only_latest_assignment_and_protected_egress(monkeypatch, protected):
     task_id = "t_12345678"
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
     receipt = "--feedback-id 3942545980 --receipt-head-sha " + "a" * 40
     body = "Complete only after verified publication: " + receipt
     task = {"id": task_id, "title": "Repair current feedback", "body": body, "status": "running"}
@@ -34,7 +35,8 @@ def test_compression_keeps_only_latest_assignment_and_protected_egress(protected
 
 
 @pytest.mark.parametrize("case", ["long", "malformed", "foreign", "forged_spec", "surrogate"])
-def test_assignment_summary_is_bounded_and_does_not_promote_unbound_text(case):
+def test_assignment_summary_is_bounded_and_does_not_promote_unbound_text(monkeypatch, case):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_12345678")
     body = "receipt-first " + "界" * 9000
     payload = {"task": {"id": "t_12345678", "title": "Bounded assignment", "body": body}}
     if case == "foreign":
@@ -68,6 +70,25 @@ def test_pressure_demotes_noncurrent_kanban_projection():
     assert ContextCompressor._demote_tool_result_at(messages, 0, calls, 0, pressure=True)
     assert messages[0]["content"].startswith("[kanban_show]")
     assert body not in messages[0]["content"]
+
+
+def test_pressure_preserves_current_kanban_assignment_projection(monkeypatch):
+    task_id = "t_12345678"
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    body = "current assignment " + ("x" * 2000)
+    payload = {"task": {"id": task_id, "title": "Current card", "body": body}}
+    messages = [{"role": "tool", "tool_call_id": "assignment", "content": json.dumps(payload)}]
+    calls = {"assignment": ("kanban_show", json.dumps({"task_id": task_id}))}
+    for index in range(4):
+        call_id = f"other-{index}"
+        content = f"large result {index} " + ("y" * 2000)
+        messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
+        calls[call_id] = ("other_tool", "{}")
+
+    compressor = ContextCompressor("test-model", quiet_mode=True)
+    compressor._pressure_demote_tail(messages, 0, 100, calls, 0)
+    assert json.loads(messages[0]["content"])["task"]["body"] == body
+    assert messages[1]["content"].startswith("[other_tool]")
 
 
 def test_lean_tail_keeps_newest_current_assignment_projection(monkeypatch):

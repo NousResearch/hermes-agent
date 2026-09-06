@@ -2632,7 +2632,8 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         pressure: bool = False,
     ) -> bool:
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
-        ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
+        ``protected_skills`` (lower-cased) spares matching skill_view bodies; pressure demotion still retains the
+        current worker assignment while overriding the skill guard."""
         msg = result[idx]
         if msg.get("role") != "tool":
             return False
@@ -2656,7 +2657,7 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
                 return False
         from agent.context_compressor_kanban import newest_assignment_summary
 
-        summary = None if pressure else newest_assignment_summary(result, idx, call_id_to_tool)
+        summary = newest_assignment_summary(result, idx, call_id_to_tool)
         if summary is None:
             summary = _summarize_tool_result(tool_name, tool_args, content)
         if summary == content:

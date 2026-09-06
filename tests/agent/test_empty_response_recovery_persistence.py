@@ -1,5 +1,8 @@
 """Regression tests for empty-response recovery transcript persistence."""
 
+import json
+from datetime import datetime
+
 from run_agent import AIAgent
 
 
@@ -88,45 +91,48 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)
 
 
-def test_persist_session_strips_undelivered_interim_recovery_scaffolding():
-    agent = _agent_with_stubbed_persistence()
+def test_off_session_recovery_persists_only_real_turns_to_sqlite_and_json(tmp_path):
+    agent = _agent_with_capturing_db()
+    agent._session_json_enabled = True
+    agent.logs_dir = tmp_path
+    agent.model = "test-model"
+    agent.base_url = "https://example.invalid/v1"
+    agent.platform = "gateway"
+    agent.session_start = datetime.now()
+    agent._cached_system_prompt = "Test instructions"
+    agent.tools = []
+    agent.verbose_logging = False
     messages = [
-        {"role": "user", "content": "quote this"},
+        {"role": "user", "content": "confirm the total"},
         {
             "role": "assistant",
-            "content": "Total = RM519",
+            "content": "Total = $519",
             "tool_calls": [{"id": "call_1", "type": "function",
                             "function": {"name": "x", "arguments": "{}"}}],
         },
         {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
         {
             "role": "assistant",
-            "content": "When do you need them by?",
-            "_undelivered_interim_synthetic": True,
-        },
-        {
-            "role": "user",
-            "content": "Hidden assistant text:\nTotal = RM519",
-            "_undelivered_interim_synthetic": True,
-        },
-        {
-            "role": "assistant",
-            "content": "(empty)",
-            "_empty_terminal_sentinel": True,
+            "content": "The total is $519. When do you need the items by?",
         },
     ]
 
-    AIAgent._persist_session(agent, messages, conversation_history=[])
+    agent._flush_messages_to_session_db(messages, conversation_history=[])
+    agent._save_session_log(messages)
 
-    assert messages == [
-        {"role": "user", "content": "quote this"},
+    assert [row["role"] for row in agent._session_db.rows] == [
+        "user", "assistant", "tool", "assistant",
     ]
-    assert agent.flushed_session_db_messages[-1] == messages
-    assert all(
-        not msg.get("_undelivered_interim_synthetic")
-        and not msg.get("_empty_terminal_sentinel")
-        for msg in messages
+    assert agent._session_db.rows[-1]["content"] == messages[-1]["content"]
+    snapshot = json.loads(
+        (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
     )
+    assert [msg["role"] for msg in snapshot["messages"]] == [
+        "user", "assistant", "tool", "assistant",
+    ]
+    serialized = json.dumps(snapshot)
+    assert "Undelivered assistant text:" not in serialized
+    assert "Draft final response:" not in serialized
 
 
 def test_persist_session_keeps_unmarked_terminal_empty_response():

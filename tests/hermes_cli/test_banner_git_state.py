@@ -24,7 +24,7 @@ def test_get_git_banner_state_reads_origin_and_head(tmp_path):
     (repo_dir / ".git").mkdir(parents=True)
 
     results = {
-        ("git", "rev-parse", "--short=8", "origin/main"): MagicMock(returncode=0, stdout="b2f477a3\n"),
+        ("git", "merge-base", "HEAD", "origin/main"): MagicMock(returncode=0, stdout="b2f477a3deadbeef\n"),
         ("git", "rev-parse", "--short=8", "HEAD"): MagicMock(returncode=0, stdout="af8aad31\n"),
         ("git", "rev-list", "--count", "origin/main..HEAD"): MagicMock(returncode=0, stdout="3\n"),
     }
@@ -196,3 +196,56 @@ def test_check_via_local_git_insteadof_rewrite_routes_to_ssh_fastpath(tmp_path, 
     assert probe is not None
     assert probe["env"]["GIT_CONFIG_GLOBAL"] == os.devnull, (
         "the origin-URL probe must observe the URL the isolated fetch will dial")
+def test_get_git_banner_state_anchors_upstream_on_the_fork_point(tmp_path):
+    """``upstream`` is the fork point, not whatever origin/main points at now.
+
+    The label reads "<upstream> ... (+N carried commits)", so upstream must be
+    the commit those N commits sit on top of. Once origin/main advances past
+    the fork point its tip is not even an ancestor of HEAD, and naming it as
+    the base describes a tree that was never built. Discriminating: the tip and
+    the merge base are different commits here.
+    """
+    from hermes_cli import banner
+
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".git").mkdir(parents=True)
+
+    results = {
+        ("git", "merge-base", "HEAD", "origin/main"): MagicMock(returncode=0, stdout="1a2b3c4dfeed\n"),
+        ("git", "rev-parse", "--short=8", "origin/main"): MagicMock(returncode=0, stdout="99887766\n"),
+        ("git", "rev-parse", "--short=8", "HEAD"): MagicMock(returncode=0, stdout="5e6f7a8b\n"),
+        ("git", "rev-list", "--count", "origin/main..HEAD"): MagicMock(returncode=0, stdout="7\n"),
+    }
+
+    def fake_run(cmd, **kwargs):
+        return results[tuple(cmd)]
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        state = banner.get_git_banner_state(repo_dir)
+
+    # 1a2b3c4d + 7 carried commits == 5e6f7a8b is a story that can be true;
+    # 99887766 + 7 == 5e6f7a8b is not.
+    assert state == {"upstream": "1a2b3c4d", "local": "5e6f7a8b", "ahead": 7}
+
+
+def test_get_git_banner_state_falls_back_to_tip_without_a_merge_base(tmp_path):
+    """No merge base (shallow clone): keep naming the tip rather than nothing."""
+    from hermes_cli import banner
+
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".git").mkdir(parents=True)
+
+    results = {
+        ("git", "merge-base", "HEAD", "origin/main"): MagicMock(returncode=1, stdout=""),
+        ("git", "rev-parse", "--short=8", "origin/main"): MagicMock(returncode=0, stdout="b2f477a3\n"),
+        ("git", "rev-parse", "--short=8", "HEAD"): MagicMock(returncode=0, stdout="b2f477a3\n"),
+        ("git", "rev-list", "--count", "origin/main..HEAD"): MagicMock(returncode=0, stdout="0\n"),
+    }
+
+    def fake_run(cmd, **kwargs):
+        return results[tuple(cmd)]
+
+    with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run):
+        state = banner.get_git_banner_state(repo_dir)
+
+    assert state == {"upstream": "b2f477a3", "local": "b2f477a3", "ahead": 0}

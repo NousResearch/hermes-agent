@@ -409,7 +409,17 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         return _baked_banner_state()
-    upstream, local = (_git_stdout(["rev-parse", "--short=8", rev], cwd=repo_dir) for rev in ("origin/main", "HEAD"))
+    local = _git_stdout(["rev-parse", "--short=8", "HEAD"], cwd=repo_dir)
+    # The label reads "<upstream> ... (+N carried commits)", so upstream has to be
+    # the commit those N commits are carried ON TOP OF -- the fork point. Once
+    # origin/main moves past it, its tip is a commit this checkout does not
+    # contain and is not even an ancestor of HEAD, so printing the tip claims a
+    # base the running code was never built on. Fall back to the tip when there
+    # is no merge base (shallow clone), which is also the only shape where a
+    # checkout without divergence makes the two the same commit.
+    upstream = (_git_stdout(["merge-base", "HEAD", "origin/main"], cwd=repo_dir) or "")[:8] or _git_stdout(
+        ["rev-parse", "--short=8", "origin/main"], cwd=repo_dir
+    )
     if not upstream or not local:
         # Live-git lookup failed (e.g. shallow clone without origin/main).
         return _baked_banner_state()

@@ -345,6 +345,49 @@ class TestRealProfileCdpLaunch:
         assert not bt_real_profile._cdp_on_data_dir("http://127.0.0.1:9999", str(tmp_path))
 
 
+class TestRealProfileIdleCleanup:
+    def test_shared_browser_closes_only_after_last_user_is_idle(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        saved_procs = list(bt._real_profile_chrome_procs)
+        saved_cache = dict(bt._real_profile_cdp_cache)
+        try:
+            bt._real_profile_chrome_procs[:] = [Mock()]
+            bt._real_profile_cdp_cache.clear()
+            bt._real_profile_cdp_cache["cdp"] = "http://127.0.0.1:9251"
+            bt._real_profile_active_leases = 0
+            bt._real_profile_last_activity = 0.0
+            monkeypatch.setattr(
+                "tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None
+            )
+            close = Mock()
+            terminate = Mock()
+            monkeypatch.setattr(bt_real_profile, "_agent_browser_close_session", close)
+            monkeypatch.setattr(bt_real_profile, "_terminate_real_profile_chrome", terminate)
+
+            bt_real_profile._begin_real_profile_use()
+            bt_real_profile._begin_real_profile_use()
+            bt._real_profile_last_activity = 1.0
+            assert bt_real_profile._cleanup_idle_real_profile_browser(now=100.0, timeout=10.0) is False
+
+            bt_real_profile._end_real_profile_use()
+            bt._real_profile_last_activity = 1.0
+            assert bt_real_profile._cleanup_idle_real_profile_browser(now=100.0, timeout=10.0) is False
+
+            bt_real_profile._end_real_profile_use()
+            bt._real_profile_last_activity = 1.0
+            assert bt_real_profile._cleanup_idle_real_profile_browser(now=100.0, timeout=10.0) is True
+            close.assert_called_once_with(bt._REAL_PROFILE_SESSION)
+            terminate.assert_called_once_with()
+            assert "cdp" not in bt._real_profile_cdp_cache
+        finally:
+            bt._real_profile_chrome_procs[:] = saved_procs
+            bt._real_profile_cdp_cache.clear()
+            bt._real_profile_cdp_cache.update(saved_cache)
+            bt._real_profile_active_leases = 0
+            bt._real_profile_last_activity = 0.0
+
+
 class TestConsentConfigRead:
     """Unmocked config read: _use_real_profile against a real config.yaml."""
 

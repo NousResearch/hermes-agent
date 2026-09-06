@@ -14,6 +14,7 @@ Covers the three seams the integration relies on:
 import json
 import os
 import stat
+import subprocess
 import time
 
 import pytest
@@ -922,6 +923,36 @@ class TestBrowserExec:
         monkeypatch.setattr(bu_cli, "_MIN_TIMEOUT_S", 1)
         result = json.loads(bu_cli.browser_exec("print(1)", timeout_s=1))
         assert "timed out" in result["error"]
+
+    def test_real_profile_lease_covers_cli_execution(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        bt._real_profile_active_leases = 0
+        bt._real_profile_last_activity = 0.0
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["browser-use"])
+        monkeypatch.setattr(bu_cli, "_real_profile_consented", lambda: True)
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: "")
+        monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
+        monkeypatch.setattr(
+            "tools.browser_tool_real_profile._real_profile_cdp",
+            lambda: ("http://127.0.0.1:9251", None),
+        )
+        monkeypatch.setattr(
+            "tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None
+        )
+
+        def fake_run(*args, **kwargs):
+            assert bt._real_profile_active_leases == 1
+            return subprocess.CompletedProcess(args[0], 0, stdout="ok\n", stderr="")
+
+        monkeypatch.setattr(bu_cli.subprocess, "run", fake_run)
+        try:
+            result = json.loads(bu_cli.browser_exec("print(1)"))
+            assert result["success"] is True
+            assert bt._real_profile_active_leases == 0
+        finally:
+            bt._real_profile_active_leases = 0
+            bt._real_profile_last_activity = 0.0
 
 
 class TestFindCliManagedBin:

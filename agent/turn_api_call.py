@@ -62,7 +62,7 @@ def perform_api_call(
     agent: Any, *, api_kwargs: Any, _original_api_kwargs: Any, _llm_middleware_trace: Any,
     _moa_prepared_request: Any, _retry: Any, thinking_spinner: Any, retry_count: Any,
     api_call_count: Any, api_request_id: Any, effective_task_id: Any, turn_id: Any,
-    interrupted: Any,
+    interrupted: Any, messages: Any,
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
@@ -78,6 +78,20 @@ def perform_api_call(
         thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
 
     _use_streaming = _should_stream(agent)
+    from agent.astra_async_tools import AstraAsyncExecutor, is_direct_astra
+    if _use_streaming and is_direct_astra(agent):
+        existing_executor = getattr(agent, "_astra_async_executor", None)
+        if existing_executor is not None and existing_executor.has_admitted and getattr(existing_executor, "closed", False):
+            raise RuntimeError("Astra async tool stream was retired after durable dispatch")
+        if existing_executor is not None and not existing_executor.has_admitted:
+            existing_executor.retire_empty()
+        if existing_executor is None or not existing_executor.has_admitted or getattr(existing_executor, "finalized", False) \
+                or (getattr(existing_executor, "closed", False) and not existing_executor.has_admitted):
+            agent._astra_async_executor = AstraAsyncExecutor(agent, messages, effective_task_id, api_call_count)
+    elif getattr(agent, "_astra_async_executor", None) is not None and not getattr(
+        agent._astra_async_executor, "has_admitted", False
+    ):
+        agent._astra_async_executor = None
 
     def _perform_api_call(next_api_kwargs):
         if agent.api_mode == "codex_responses":
@@ -171,6 +185,13 @@ def handle_api_interrupt(
     from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
     thinking_spinner = stop_thinking_spinner(agent, thinking_spinner)
+    try:
+        executor = getattr(agent, "_astra_async_executor", None)
+        if executor is not None:
+            executor.abort_stream()
+            agent._astra_async_executor = None
+    except Exception:
+        logger.debug("Astra async executor retirement failed", exc_info=True)
     # redirect() cancelled only this request: keep the correction queued, clear the
     # cancellation bit, let the outer loop rebuild. Never materialize incomplete
     # signed/encrypted reasoning items.

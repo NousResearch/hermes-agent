@@ -63,6 +63,14 @@ def run_tool_round(
             truncated_tool_call_retries=truncated_tool_call_retries, result=result,
         )
 
+    # Direct Astra async calls were persisted and executed while the provider stream was
+    # still open.  Their result rows are already committed in original order; never send
+    # the same normalized response through the ordinary dispatcher a second time.
+    astra_executor = getattr(agent, "_astra_async_executor", None)
+    if astra_executor is not None and astra_executor.consume_response(assistant_message):
+        agent._astra_async_executor = None
+        return _verdict("continue")
+
     if not agent.quiet_mode:
         agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
 

@@ -41,6 +41,14 @@ class ConversationState:
     model_override: Optional[Dict[str, Any]] = None  # /model per-session override
     one_turn_restore: Optional[Dict[str, Any]] = None  # /model --once snapshot
     reasoning_override: Optional[Dict[str, Any]] = None  # /reasoning override
+    # Astra keeps request-level effort fixed for a compatible segment; transitions ride
+    # the following user item as a typed Responses update. These values are sanitized
+    # ladder members or None and are intentionally conversation-scoped.
+    base_effort: Optional[str] = None
+    effective_effort: Optional[str] = None
+    pending_configuration_update: Optional[str] = None
+    reasoning_change_requested: bool = False
+    astra_force_new_segment: bool = False
     service_tier_override: Any = _UNSET_TIER  # /fast: "priority" or None; _UNSET_TIER = absent
     last_resolved_model: str = ""  # last successfully-resolved non-empty model
     queued_events: List[Any] = field(default_factory=list)  # /queue overflow FIFO (head in adapter)

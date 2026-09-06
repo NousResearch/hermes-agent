@@ -21,6 +21,156 @@ from agent.turn_context import reanchor_current_turn_user_idx
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def _reset_astra_segment(agent: Any) -> None:
+    """Reset Astra request state at a compaction/truncation boundary.
+
+    A post-boundary request gets a new top-level base effort.  If the desired effective
+    effort was carried by a prior typed update and differs from the fresh configured base,
+    keep it armed for the next ordinary user item; synthetic continuation nudges are skipped
+    by ``_stage_astra_configuration_update`` below.
+    """
+    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS
+    from agent.transports.codex import _astra_effective_effort, is_astra_reasoning_cache_eligible
+
+    desired = (
+        getattr(agent, "_astra_pending_configuration_update", None)
+        or getattr(agent, "_astra_effective_effort", None)
+    )
+    base = getattr(agent, "_astra_base_effort", None)
+    eligible = is_astra_reasoning_cache_eligible(
+        getattr(agent, "model", None), getattr(agent, "base_url", None),
+        api_mode=getattr(agent, "api_mode", None), api_key=getattr(agent, "api_key", None),
+        auth_mode=getattr(agent, "auth_mode", "api_key"), provider=getattr(agent, "provider", None),
+        is_subagent=getattr(agent, "is_subagent", False),
+        platform=getattr(agent, "platform", None), delegate_depth=getattr(agent, "_delegate_depth", 0),
+        compression_checkpoint_required=getattr(agent, "compression_checkpoint_required", False),
+    )
+    if eligible:
+        config = getattr(agent, "reasoning_config", None)
+        configured = config.get("effort") if isinstance(config, dict) and config.get("enabled", True) is not False else None
+        configured = _astra_effective_effort(configured)
+        base = _astra_effective_effort(base) if base in CODEX_ASTRA_EFFORTS else configured
+        desired = _astra_effective_effort(desired) if desired in CODEX_ASTRA_EFFORTS else None
+    else:
+        base = desired = None
+
+    agent._astra_reasoning_state = {}
+    agent._astra_base_effort = None
+    agent._astra_effective_effort = None
+    agent._astra_segment_base_seed = base
+    agent._astra_force_new_segment = bool(eligible)
+    agent._astra_pending_configuration_update = desired
+
+
+def _stage_astra_configuration_update(agent: Any, messages: Any) -> None:
+    """Attach one pending Astra effort transition to the next user message.
+
+    The agent loop persists the inbound user row before this phase, so the existing
+    SessionDB display-metadata sidecar is backfilled when available.  The private copy
+    survives request-local retries; it is removed only by the Responses converter.
+    """
+    if not isinstance(messages, list):
+        return
+    from agent.codex_responses_adapter import (
+        ASTRA_BASE_EFFORT_MARKER_KEY, ASTRA_BASE_EFFORT_METADATA_KEY,
+        ASTRA_CONFIGURATION_UPDATE_MARKER_KEY, ASTRA_CONFIGURATION_UPDATE_METADATA_KEY,
+        astra_base_effort_for_message, configuration_update_for_message,
+    )
+    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS
+    from agent.transports.codex import _astra_effective_effort, is_astra_reasoning_cache_eligible
+
+    if not is_astra_reasoning_cache_eligible(
+        getattr(agent, "model", None), getattr(agent, "base_url", None),
+        api_mode=getattr(agent, "api_mode", None), api_key=getattr(agent, "api_key", None),
+        auth_mode=getattr(agent, "auth_mode", "api_key"), provider=getattr(agent, "provider", None),
+        is_subagent=getattr(agent, "is_subagent", False),
+        platform=getattr(agent, "platform", None), delegate_depth=getattr(agent, "_delegate_depth", 0),
+        compression_checkpoint_required=getattr(agent, "compression_checkpoint_required", False),
+    ):
+        agent._astra_reasoning_state = {}
+        agent._astra_base_effort = None
+        agent._astra_effective_effort = None
+        agent._astra_pending_configuration_update = None
+        agent._astra_segment_base_seed = None
+        agent._astra_force_new_segment = False
+        return
+
+    # A same-turn tool successor has no new user item.  Leave the pending marker armed
+    # until the next actual user message instead of appending a late update after a tool.
+    user_idx = next(
+        (idx for idx in range(len(messages) - 1, -1, -1)
+         if isinstance(messages[idx], dict) and messages[idx].get("role") == "user"),
+        None,
+    )
+    if user_idx is None or user_idx != len(messages) - 1:
+        return
+    user_msg = messages[user_idx]
+    if user_msg.get("_length_continuation_nudge"):
+        return
+
+    config = getattr(agent, "reasoning_config", None)
+    requested = _astra_effective_effort(
+        config.get("effort") if isinstance(config, dict) and config.get("enabled", True) is not False else None
+    )
+    force_new = bool(getattr(agent, "_astra_force_new_segment", False))
+    base = effective = None
+    if not force_new:
+        for message in messages:
+            marker_base = astra_base_effort_for_message(message)
+            if marker_base:
+                base = effective = marker_base
+            marker_update = configuration_update_for_message(message)
+            if base and marker_update:
+                effective = marker_update["reasoning"]["effort"]
+    if base not in CODEX_ASTRA_EFFORTS:
+        seed = getattr(agent, "_astra_segment_base_seed", None)
+        state = getattr(agent, "_astra_reasoning_state", None)
+        state_base = state.get("base_effort") if isinstance(state, dict) else None
+        candidate = seed or getattr(agent, "_astra_base_effort", None) or state_base
+        base = _astra_effective_effort(candidate) if candidate in CODEX_ASTRA_EFFORTS else requested
+        effective = base
+
+    metadata = user_msg.get("display_metadata")
+    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    changed = False
+    if force_new or astra_base_effort_for_message(user_msg) is None:
+        user_msg[ASTRA_BASE_EFFORT_MARKER_KEY] = base
+        metadata[ASTRA_BASE_EFFORT_METADATA_KEY] = base
+        changed = True
+
+    pending = getattr(agent, "_astra_pending_configuration_update", None)
+    target = _astra_effective_effort(pending) if pending in CODEX_ASTRA_EFFORTS else requested
+    existing = configuration_update_for_message(user_msg)
+    if existing:
+        effective = existing["reasoning"]["effort"]
+    elif target != effective:
+        update = {"type": "configuration_update", "reasoning": {"effort": target}}
+        user_msg[ASTRA_CONFIGURATION_UPDATE_MARKER_KEY] = update
+        metadata[ASTRA_CONFIGURATION_UPDATE_METADATA_KEY] = update
+        effective = target
+        changed = True
+    user_msg["display_metadata"] = metadata
+    # The current user row is normally already flushed by turn-context setup.  Merge the
+    # marker into its existing JSON metadata without adding a schema column or duplicate row.
+    db = getattr(agent, "_session_db", None)
+    backfill = getattr(db, "set_latest_user_display_metadata", None)
+    if changed and callable(backfill):
+        try:
+            backfill(getattr(agent, "session_id", None), user_msg.get("content"), metadata)
+        except Exception:
+            logger.debug("Astra configuration-update sidecar backfill failed", exc_info=True)
+    state = getattr(agent, "_astra_reasoning_state", None)
+    if not isinstance(state, dict):
+        state = {}
+        agent._astra_reasoning_state = state
+    state.update(base_effort=base, effective_effort=effective)
+    agent._astra_base_effort = base
+    agent._astra_effective_effort = effective
+    agent._astra_pending_configuration_update = None
+    agent._astra_segment_base_seed = None
+    agent._astra_force_new_segment = False
+
+
 @dataclass
 class IterationPrep:
     """Always ``action == "fallthrough"``. ``messages`` is the (possibly filtered) transcript
@@ -38,6 +188,8 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     from agent.conversation_loop import (
         _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
     )
+
+    _stage_astra_configuration_update(agent, messages)
 
     # Fire step_callback for gateway hooks (agent:step event).
     if agent.step_callback is not None:
@@ -235,14 +387,35 @@ def begin_iteration(
             _turn_exit_reason=_turn_exit_reason,
         )
 
+    from agent.transports.astra_websocket_session import (
+        confirm_astra_redirect_persisted, restore_astra_fallback_redirects,
+    )
+    restore_astra_fallback_redirects(agent)
     _redirect_text = agent._drain_pending_redirect()
     if _redirect_text:
         _apply_active_turn_redirect(agent, messages, _redirect_text)
+        _astra_receipts = getattr(agent, "_astra_drained_redirect_receipts", None) or []
+        if _astra_receipts:
+            messages[-1]["display_metadata"] = {
+                **(messages[-1].get("display_metadata") or {}),
+                "_astra_steering_fallback": list(_astra_receipts),
+            }
         if isinstance(original_user_message, str):
             original_user_message = (
                 f"{original_user_message}\n\n" f"User correction during the turn: {_redirect_text}"
             )
-        agent._persist_session(messages, conversation_history)
+        try:
+            agent._persist_session(messages, conversation_history)
+            confirm_astra_redirect_persisted(agent, _astra_receipts)
+        except Exception:
+            if _astra_receipts:
+                # The CLI can keep this agent after discarding the failed turn's
+                # messages. Re-read durable truth on retry: the transaction may
+                # have rolled back OR committed before a readback failure. Never
+                # blindly requeue the text and risk delivering it twice.
+                agent._astra_fallback_restore_session = None
+                agent._astra_drained_redirect_receipts = []
+            raise
 
     # Reset per-turn checkpoint dedup so each iteration can take one snapshot.
     agent._checkpoint_mgr.new_turn()
@@ -344,6 +517,7 @@ def apply_retry_restarts(
         # shrinks messages but not enough can't loop forever.
         retry_count += 1
         _retry.restart_with_compressed_messages = False
+        _reset_astra_segment(agent)
         if _should_skip_model_call_for_reference_handoff(
             # Compression rebuilt the list (tail messages are fresh compaction copies), so the
             # pre-compression index of this turn's user message is stale. Re-anchor both index trackers: the
@@ -379,6 +553,7 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:
+        _reset_astra_segment(agent)
         # Boost output budget per retry: 2×, 4×, 8×, 16× base, capped at 32 768, via
         # _ephemeral_max_output_tokens. Keep a larger original provider/model
         # default as the floor so retries never downshift.

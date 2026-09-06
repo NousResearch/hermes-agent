@@ -17,6 +17,15 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 logger = logging.getLogger(__name__)
 
+# Internal, durable marker for the stateless Responses ``configuration_update`` item.  The
+# marker is attached to the *following* user message so replay position is intrinsic.  It is
+# copied through the agent loop under this private key and mirrored into ``display_metadata``
+# by the staging helper; both are stripped before a provider sees the role message.
+ASTRA_CONFIGURATION_UPDATE_METADATA_KEY = "astra_configuration_update"
+ASTRA_CONFIGURATION_UPDATE_MARKER_KEY = "_astra_configuration_update"
+ASTRA_BASE_EFFORT_METADATA_KEY = "astra_reasoning_base_effort"
+ASTRA_BASE_EFFORT_MARKER_KEY = "_astra_reasoning_base_effort"
+
 
 def _classify_responses_issuer(
     *, is_xai_responses: bool = False, is_github_responses: bool = False, is_codex_backend: bool = False,
@@ -47,6 +56,52 @@ _OUTPUT_TEXT_TYPES = {"output_text", "text"}
 _ASSISTANT_IMAGE_PLACEHOLDER = "[Assistant image omitted during replay]"
 _INCOMPLETE_STATUSES = {"queued", "in_progress", "incomplete"}
 _RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
+
+
+def _normalize_configuration_update(item: Any) -> Optional[Dict[str, Any]]:
+    """Return the only supported Astra configuration-update shape, or ``None``.
+
+    Stored markers are treated as untrusted input.  The strict shape check prevents a
+    display/routing metadata object from becoming an arbitrary Responses item on replay.
+    """
+    if not isinstance(item, dict) or set(item) != {"type", "reasoning"} or item.get("type") != "configuration_update":
+        return None
+    reasoning = item.get("reasoning")
+    if not isinstance(reasoning, dict) or set(reasoning) != {"effort"}:
+        return None
+    effort = reasoning.get("effort")
+    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS
+    if effort not in CODEX_ASTRA_EFFORTS:
+        return None
+    return {"type": "configuration_update", "reasoning": {"effort": effort}}
+
+
+def configuration_update_for_message(msg: Any) -> Optional[Dict[str, Any]]:
+    """Read a sanitized internal marker from a user message for Responses conversion.
+
+    ``display_metadata`` is the durable JSON sidecar.  The private top-level copy is used
+    while a live message is in the agent loop because display fields are removed from the
+    provider-bound chat message copy.
+    """
+    if not isinstance(msg, dict):
+        return None
+    marker = msg.get(ASTRA_CONFIGURATION_UPDATE_MARKER_KEY)
+    if marker is None:
+        metadata = msg.get("display_metadata")
+        marker = metadata.get(ASTRA_CONFIGURATION_UPDATE_METADATA_KEY) if isinstance(metadata, dict) else None
+    return _normalize_configuration_update(marker)
+
+
+def astra_base_effort_for_message(msg: Any) -> Optional[str]:
+    """Return a sanitized compatible-segment base effort from a user-message sidecar."""
+    if not isinstance(msg, dict):
+        return None
+    effort = msg.get(ASTRA_BASE_EFFORT_MARKER_KEY)
+    if effort is None:
+        metadata = msg.get("display_metadata")
+        effort = metadata.get(ASTRA_BASE_EFFORT_METADATA_KEY) if isinstance(metadata, dict) else None
+    from agent.reasoning_effort import CODEX_ASTRA_EFFORTS
+    return effort if effort in CODEX_ASTRA_EFFORTS else None
 
 # input[].id / function names longer than this are a non-retryable 400 ("string too
 # long"). Codex message ids can run 400+ chars; Hermes ``msg_...`` ids stay under the cap.
@@ -279,13 +334,20 @@ def _derive_responses_function_call_id(call_id: str, response_item_id: Optional[
 
 # --- Schema conversion --------------------------------------------------------
 
-def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
-    """Convert chat-completions tool schemas to Responses function-tool schemas."""
+def _responses_tools(
+    tools: Optional[List[Dict[str, Any]]] = None, *, async_tools: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
+    """Convert chat-completions schemas to Responses function-tool schemas.
+
+    ``async_tools`` is explicit and only enabled by the direct Astra midstream executor.
+    It is intentionally unrelated to the registry's Python-coroutine metadata.
+    """
     fns = [item.get("function", {}) if isinstance(item, dict) else {} for item in tools or []]
     converted = [
         {
             "type": "function", "name": fn["name"], "description": fn.get("description", ""), "strict": False,
             "parameters": fn.get("parameters", {"type": "object", "properties": {}}),
+            **({"async": True} if async_tools else {}),
         }
         for fn in fns if _nonblank(fn.get("name"))
     ]
@@ -381,10 +443,13 @@ def _replay_tool_call_items(msg: Dict[str, Any], *, start_index: int) -> List[Di
             continue
         index = start_index + len(replayed)
         call_id = _resolve_call_id(tc.get("call_id"), tc.get("id"), fn_name, str(arguments), index, canonicalize_fc=True)
-        replayed.append({
+        replayed_item = {
             "type": "function_call", "call_id": _clamp_responses_call_id(call_id),
             "name": _sanitize_replayed_fn_name(fn_name), "arguments": _coerce_arguments(arguments),
-        })
+        }
+        if tc.get("async") is True or tc.get("async_") is True:
+            replayed_item["async"] = True
+        replayed.append(replayed_item)
     return replayed
 
 
@@ -410,7 +475,7 @@ def _tool_output_items(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
-    native_compaction_eligible: bool = False,
+    native_compaction_eligible: bool = False, astra_configuration_updates: bool = False,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -456,10 +521,19 @@ def _chat_messages_to_responses_input(
     # `function_call_output` wrapper) that no longer carries it (#90976).
     item_sources: List[Optional[Dict[str, Any]]] = []
     seen_item_ids: set = set()
+    # The newest base marker starts the current compatible segment. Older update
+    # markers must not leak across compaction/model boundaries or to non-Astra routes.
+    astra_segment_start = 0
+    if astra_configuration_updates:
+        astra_segment_start = max(
+            (idx for idx, msg in enumerate(messages)
+             if isinstance(msg, dict) and msg.get("role") == "user" and astra_base_effort_for_message(msg)),
+            default=0,
+        )
     def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
-    for msg in messages:
+    for msg_index, msg in enumerate(messages):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
@@ -476,6 +550,11 @@ def _chat_messages_to_responses_input(
             if isinstance(content, list) else _str_or_empty(content)
         )
         if role == "user":
+            update = configuration_update_for_message(msg) if (
+                astra_configuration_updates and msg_index >= astra_segment_start
+            ) else None
+            if update and (not items or items[-1].get("type") != "configuration_update"):
+                emit([update], msg)
             emit([{"role": role, "content": content_parts or content_text}], msg)
             continue
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
@@ -584,10 +663,13 @@ def _preflight_function_call(item: Dict[str, Any], idx: int, ctx: _PreflightCtx)
         raise ValueError(f"Codex Responses input[{idx}] function_call is missing call_id.")
     if not _nonblank(name):
         raise ValueError(f"Codex Responses input[{idx}] function_call is missing name.")
-    return {
+    normalized = {
         "type": "function_call", "call_id": call_id.strip(), "name": _sanitize_replayed_fn_name(name),
         "arguments": ctx.sanitize_text(_coerce_arguments(item.get("arguments", "{}"))),
     }
+    if item.get("async") is True or item.get("async_") is True:
+        normalized["async"] = True
+    return normalized
 
 
 def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
@@ -628,6 +710,17 @@ def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
         "type": "reasoning", "encrypted_content": encrypted,
         "summary": _neutralize_harmony_structure(summary) if ctx.sanitize_harmony_tokens else summary,
     }
+
+
+def _preflight_configuration_update(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
+    """Validate the exact Astra effort-update item; no provider extensions are accepted."""
+    normalized = _normalize_configuration_update(item)
+    if normalized is None:
+        raise ValueError(
+            f"Codex Responses input[{idx}] configuration_update must be "
+            "{type='configuration_update', reasoning={effort=<supported Astra level>}}."
+        )
+    return normalized
 
 
 def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
@@ -687,6 +780,7 @@ def _preflight_role_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) 
 _PREFLIGHT_ITEM_HANDLERS: Dict[str, Callable[..., Optional[Dict[str, Any]]]] = {
     "function_call": _preflight_function_call, "function_call_output": _preflight_function_call_output,
     "reasoning": _preflight_encrypted, "compaction": _preflight_encrypted, "message": _preflight_message,
+    "configuration_update": _preflight_configuration_update,
 }
 
 
@@ -721,10 +815,13 @@ def _preflight_tool(tool: Any, idx: int) -> Dict[str, Any]:
     for ok, what in ((_nonblank(name), "a valid name"), (isinstance(parameters, dict), "valid parameters")):
         if not ok:
             raise ValueError(f"Codex Responses tools[{idx}] is missing {what}.")
-    return {
+    normalized = {
         "type": "function", "name": name.strip(), "description": _str_or_empty(tool.get("description", "")),
         "strict": bool(tool.get("strict", False)), "parameters": parameters,
     }
+    if tool.get("async") is True or tool.get("async_") is True:
+        normalized["async"] = True
+    return normalized
 
 
 # Optional scalar request fields, in wire order: (key, accept(value), coerce). Values
@@ -739,7 +836,7 @@ _PREFLIGHT_OPTIONAL_FIELDS: tuple[tuple[str, Callable[[Any], bool], Optional[Cal
     # Cache routing/retention and tool-dispatch hints pass through as-is.
     *(
         (key, lambda v: v is not None, None)
-        for key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention")
+        for key in ("tool_choice", "parallel_tool_calls", "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options")
     ),
     # Native compaction directive; eligibility is resolved in agent/native_compaction.py.
     ("context_management", lambda v: isinstance(v, list) and bool(v), None),
@@ -866,10 +963,14 @@ def _response_tool_call(item: Any, item_type: str, index: int) -> SimpleNamespac
     raw_item_id = getattr(item, "id", None)
     call_id = _resolve_call_id(getattr(item, "call_id", None), raw_item_id, fn_name, arguments, index, canonicalize_fc=False)
     fc_id = _derive_responses_function_call_id(call_id, raw_item_id if isinstance(raw_item_id, str) else None)
-    return SimpleNamespace(
+    tool_call = SimpleNamespace(
         id=call_id, call_id=call_id, response_item_id=fc_id, type="function",
         function=SimpleNamespace(name=fn_name, arguments=arguments),
     )
+    if getattr(item, "async", False) is True or getattr(item, "async_", False) is True:
+        setattr(tool_call, "async", True)
+        setattr(tool_call, "async_", True)
+    return tool_call
 
 
 def _capture_encrypted_item(item: Any, item_type: str, issuer_kind: Optional[str]) -> Optional[Dict[str, Any]]:

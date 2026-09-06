@@ -196,6 +196,12 @@ class ClientLifecycleMixin:
                 request_interrupt()
         except Exception:
             logger.debug("Abandoned-worker drain: codex interrupt failed", exc_info=True)
+        try:
+            request_interrupt = getattr(getattr(self, "_astra_websocket_session", None), "request_interrupt", None)
+            if callable(request_interrupt):
+                request_interrupt()
+        except Exception:
+            logger.debug("Abandoned-worker drain: Astra WebSocket interrupt failed", exc_info=True)
         # Inline (cron-style) request abort hook, when registered.
         try:
             abort_active = getattr(self, "_active_request_abort", None)

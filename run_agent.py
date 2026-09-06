@@ -899,6 +899,7 @@ class AIAgent(
         # and a cross-thread close can release TLS FDs under a still-unwinding worker.
         _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="cache_evict"))
         self._close_request_clients("cache_evict")
+        _quietly(self._close_astra_websocket_session)
 
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
@@ -911,6 +912,7 @@ class AIAgent(
         self._close_active_children(soft=False)
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
         self._close_request_clients("agent_close")
+        _quietly(self._close_astra_websocket_session)
         _quietly(self._close_codex_session)
         # Free conversation history proactively: callers may still hold the closed agent. The DB-flush
         # settled-prefix snapshot and the streamed-text accumulator are shadow copies of the same transcript;
@@ -978,6 +980,13 @@ class AIAgent(
         if codex_session is not None:
             self._codex_session = None
             codex_session.close()
+
+    def _close_astra_websocket_session(self) -> None:
+        """Close a turn-owned Astra lane before releasing the agent's other clients."""
+        session = getattr(self, "_astra_websocket_session", None)
+        if session is not None:
+            self._astra_websocket_session = None
+            session.close()
 
     @staticmethod
     def _trim_process_memory() -> None:

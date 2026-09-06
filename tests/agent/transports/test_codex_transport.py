@@ -39,6 +39,82 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": False, "effort": "none"},
+            request_overrides={
+                "temperature": 0.4,
+                "top_p": 0.9,
+                "top_logprobs": 5,
+                "logprobs": True,
+                "reasoning": {"effort": "none"},
+                "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
+                "prompt_cache_retention": "24h",
+                "prompt_cache_options": {"ttl": "1h"},
+            },
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+        assert kw["prompt_cache_options"] == {"ttl": "30m"}
+        assert "prompt_cache_retention" not in kw
+        assert kw["include"] == ["reasoning.encrypted_content"]
+        for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs"):
+            assert unsupported not in kw
+        assert transport.preflight_kwargs(kw)["prompt_cache_options"] == {"ttl": "30m"}
+
+    @pytest.mark.parametrize("effort", ["none", "minimal"])
+    def test_astra_normalizes_unsupported_low_efforts_after_overrides(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            request_overrides={"reasoning": {"effort": effort}},
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+    def test_astra_accepts_complete_effort_ladder(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == effort
+
+    def test_astra_proxy_does_not_receive_official_cache_options(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://responses.example.com/v1",
+            reasoning_config={"enabled": True, "effort": "none"},
+            request_overrides={"prompt_cache_options": {"ttl": "30m"}},
+        )
+
+        assert "prompt_cache_options" not in kw
+        assert kw["reasoning"]["effort"] == "none"
+
+    def test_astra_openai_subdomain_is_not_official_route(self, transport):
+        """Only api.openai.com gets Astra's official cache contract."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://evil.api.openai.com/v1",
+            request_overrides={"prompt_cache_options": {"ttl": "30m"}},
+        )
+
+        assert "prompt_cache_options" not in kw
+
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —
         the Codex backend only knows the base slug, so build_kwargs must

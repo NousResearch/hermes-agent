@@ -407,7 +407,7 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import CANONICAL_PROVIDERS
+    from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
@@ -419,6 +419,7 @@ def _append_unconfigured_rows(
         if current_only and entry.slug.lower() != cur:
             continue
         if entry.slug.lower() == cur:
+            saved_model = "" if _model_requires_account_discovery(entry.slug, cur_model) else cur_model
             auth_type, key_env = _provider_auth_hint(entry.slug)
             warning = (
                 f"Configured provider missing usable credentials; paste {key_env} to reactivate. "
@@ -427,8 +428,10 @@ def _append_unconfigured_rows(
                 else "Configured provider is not authenticated; run `hermes model` to reactivate. "
                 "Showing the saved model only."
             )
+            if cur_model and not saved_model:
+                warning = warning.replace("Showing the saved model only.", "Astra requires successful account-scoped model discovery.")
             extras.append(_canonical_row(
-                entry, cur, models=[cur_model] if cur_model else [], total_models=1 if cur_model else 0,
+                entry, cur, models=[saved_model] if saved_model else [], total_models=1 if saved_model else 0,
                 source="configured-current", authenticated=False, auth_type=auth_type, key_env=key_env,
                 warning=warning,
             ))

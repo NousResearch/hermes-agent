@@ -576,16 +576,74 @@ class GatewayAgentCacheMixin:
         leak class as #25315).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
-        # session-context bytes (the pin) and re-see the current voice-channel state once.
         state = self._peek_session_state(session_key)
-        if state is not None:
-            state.conversation.ephemeral_pin = None
-            state.conversation.vc_last = None
         # Tests build runners with ``_agent_cache_lock = None``; evict lock-free then. With the lock
         # present ``_agent_cache`` is read directly (an initialized runner always has it).
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None
+        cached = None
+        if _lock:
+            with _lock:
+                cached = self._agent_cache.get(session_key)
+        else:
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache is not None:
+                cached = _cache.get(session_key)
+        cached_agent = _first_agent(cached)
+        # ``/reasoning`` calls this generic method after updating the session override.  Keep
+        # an eligible direct Astra agent alive for an effort-only transition; its prompt/tool
+        # cache remains valid and the next user item receives the typed update marker. Other
+        # cache-eviction callers (notably /new and /model) do not set this request bit.
+        conversation = state.conversation if state is not None else None
+        if cached_agent is not None and conversation is not None and conversation.reasoning_change_requested:
+            try:
+                from agent.transports.codex import _astra_effective_effort, is_astra_reasoning_cache_eligible
+                eligible = is_astra_reasoning_cache_eligible(
+                    getattr(cached_agent, "model", None), getattr(cached_agent, "base_url", None),
+                    api_mode=getattr(cached_agent, "api_mode", None), api_key=getattr(cached_agent, "api_key", None),
+                    auth_mode=getattr(cached_agent, "auth_mode", "api_key"),
+                    provider=getattr(cached_agent, "provider", None),
+                    is_subagent=getattr(cached_agent, "is_subagent", False),
+                    platform=getattr(cached_agent, "platform", None),
+                    delegate_depth=getattr(cached_agent, "_delegate_depth", 0),
+                    compression_checkpoint_required=getattr(cached_agent, "compression_checkpoint_required", False),
+                )
+                if eligible:
+                    desired = self._resolve_session_reasoning_config(
+                        session_key=session_key, model=getattr(cached_agent, "model", "")
+                    )
+                    target_effort = _astra_effective_effort(
+                        desired.get("effort") if isinstance(desired, dict) and desired.get("enabled", True) is not False else "low"
+                    )
+                    state_effort = conversation.effective_effort
+                    current_effort = state_effort or getattr(cached_agent, "_astra_effective_effort", None)
+                    if current_effort not in {"low", "medium", "high", "xhigh", "max"}:
+                        current_effort = _astra_effective_effort(
+                            (getattr(cached_agent, "reasoning_config", None) or {}).get("effort")
+                        )
+                    conversation.reasoning_change_requested = False
+                    if target_effort != current_effort:
+                        base_effort = conversation.base_effort or getattr(cached_agent, "_astra_base_effort", None)
+                        conversation.base_effort = base_effort or current_effort
+                        conversation.effective_effort = current_effort
+                        conversation.pending_configuration_update = target_effort
+                        cached_agent.reasoning_config = dict(desired) if isinstance(desired, dict) else desired
+                        cached_agent._astra_base_effort = conversation.base_effort
+                        cached_agent._astra_effective_effort = current_effort
+                        cached_agent._astra_pending_configuration_update = target_effort
+                    return
+            except Exception:
+                logger.debug("Astra effort-only cache retention gate failed", exc_info=True)
+            conversation.reasoning_change_requested = False
+        elif conversation is not None:
+            # No cached Astra agent consumed the one-shot reason. Do not let it leak into
+            # a later /model, /new, or reset eviction after a new agent is constructed.
+            conversation.reasoning_change_requested = False
+        # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
+        # session-context bytes (the pin) and re-see the current voice-channel state once.
+        if state is not None:
+            state.conversation.ephemeral_pin = None
+            state.conversation.vc_last = None
         if _lock:
             with _lock:
                 evicted = self._agent_cache.pop(session_key, None)
@@ -600,6 +658,31 @@ class GatewayAgentCacheMixin:
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
         )
+
+    def _arm_astra_segment_reset(self, session_key: str) -> None:
+        """Carry a manual-compaction effort segment across cached-agent eviction."""
+        state = self._session_state(session_key)
+        conversation = state.conversation
+        lock = getattr(self, "_agent_cache_lock", None)
+        if lock:
+            with lock:
+                cached = getattr(self, "_agent_cache", {}).get(session_key)
+        else:
+            cached = getattr(self, "_agent_cache", {}).get(session_key)
+        cached_agent = _first_agent(cached)
+        if cached_agent is not None:
+            from agent.turn_iteration_prep import _reset_astra_segment
+
+            _reset_astra_segment(cached_agent)
+            conversation.base_effort = getattr(cached_agent, "_astra_segment_base_seed", None)
+            conversation.effective_effort = (
+                getattr(cached_agent, "_astra_pending_configuration_update", None)
+                or conversation.base_effort
+            )
+            conversation.pending_configuration_update = getattr(
+                cached_agent, "_astra_pending_configuration_update", None
+            )
+        conversation.astra_force_new_segment = True
 
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool) -> None:
         """Run a release on a daemon thread. ``inline_fallback`` runs it inline (best-effort) when no

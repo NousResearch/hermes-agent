@@ -79,6 +79,16 @@ async def test_leave_targets_only_named_bot_and_mutes_until_rementioned(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_leave_accepts_mention_without_space(tmp_path, monkeypatch):
+    luna = _adapter(tmp_path / "luna", monkeypatch, "U111LUNA")
+    await luna._handle_slack_message(_event("<@U111LUNA>!leave", "1700000000.000050"))
+    luna.handle_message.assert_not_awaited()
+    luna._app.client.chat_postMessage.assert_awaited_once()
+    await luna._handle_slack_message(_event("ordinary follow-up", "1700000000.000051"))
+    luna.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_leave_accepts_labeled_slack_mention(tmp_path, monkeypatch):
     luna = _adapter(tmp_path / "luna", monkeypatch, "U111LUNA")
     await luna._handle_slack_message(

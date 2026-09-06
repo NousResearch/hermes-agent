@@ -6412,7 +6412,7 @@ class SlackAdapter(BasePlatformAdapter):
         text = (routing_text or "").strip()
         if not text:
             return ""
-        mention = re.match(r"\A<@([A-Z0-9]+)(?:\|[^>]+)?>\s+", text)
+        mention = re.match(r"\A<@([A-Z0-9]+)(?:\|[^>]+)?>\s*", text)
         if mention:
             rest = text[mention.end():]
             if re.fullmatch(r"!leave\s*", rest, re.IGNORECASE):

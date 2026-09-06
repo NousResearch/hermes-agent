@@ -284,9 +284,7 @@ class TestContinuousLoopSimulation:
         monkeypatch.setattr(voice, "_continuous_active", False)
         monkeypatch.setattr(voice, "_continuous_recorder", None)
         monkeypatch.setattr(voice, "_continuous_no_speech_count", 0)
-        monkeypatch.setattr(voice, "_continuous_on_transcript", None)
-        monkeypatch.setattr(voice, "_continuous_on_status", None)
-        monkeypatch.setattr(voice, "_continuous_on_silent_limit", None)
+        monkeypatch.setattr(voice, "_continuous_callbacks", voice._NO_CALLBACKS)
         monkeypatch.setattr(voice, "_continuous_auto_restart", True, raising=False)
         monkeypatch.setattr(voice, "_voice_busy_probe", None, raising=False)
         monkeypatch.setattr(voice, "_play_beep", lambda *_, **__: None)
@@ -469,7 +467,7 @@ class TestSpeakTextStreamingDispatch:
     def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
         import hermes_cli.voice as voice
         import tools.tts_streaming as ts
-        from tools import tts_tool
+        from tools import tts_tool, tts_tool_speaker
 
         streamed = []
 
@@ -484,7 +482,7 @@ class TestSpeakTextStreamingDispatch:
         monkeypatch.setattr(
             ts, "resolve_streaming_provider", lambda cfg, preferred=None: object()
         )
-        monkeypatch.setattr(tts_tool, "stream_tts_to_speaker", fake_stream)
+        monkeypatch.setattr(tts_tool_speaker, "stream_tts_to_speaker", fake_stream)
 
         synced = []
         monkeypatch.setattr(

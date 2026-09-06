@@ -21,21 +21,26 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
 import { useI18n } from '@/i18n'
+import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
 
 interface PreviewBrowserBarProps {
+  annotateMode?: boolean
   canGoBack: boolean
   canGoForward: boolean
+  commentCount?: number
   consoleOpen: boolean
   devToolsOpen: boolean
   loading: boolean
   onBack: () => void
+  onFlushComments?: () => void
   onForward: () => void
   onNavigate: (url: string) => void
   onOpenExternal?: () => void
   onPopIn?: () => void
   onPopOut?: () => void
   onReload: () => void
+  onToggleAnnotate?: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
   /** The page's CURRENT address (it moves as the user navigates), not the
@@ -89,18 +94,22 @@ export function normalizePreviewAddress(value: string): null | string {
 }
 
 export function PreviewBrowserBar({
+  annotateMode = false,
   canGoBack,
   canGoForward,
+  commentCount = 0,
   consoleOpen,
   devToolsOpen,
   loading,
   onBack,
+  onFlushComments,
   onForward,
   onNavigate,
   onOpenExternal,
   onPopIn,
   onPopOut,
   onReload,
+  onToggleAnnotate,
   onToggleConsole,
   onToggleDevTools,
   url
@@ -206,6 +215,33 @@ export function PreviewBrowserBar({
           text={url}
         />
       </div>
+      {onToggleAnnotate ? (
+        <PaneStripGlyph
+          active={annotateMode}
+          icon={<Codicon name="comment" size="0.8125rem" />}
+          label={annotateMode ? copy.annotateOn : copy.annotate}
+          onSelect={onToggleAnnotate}
+        />
+      ) : null}
+      {annotateMode ? (
+        <span
+          className="hidden shrink-0 items-center rounded-full px-2 py-0.5 text-[0.625rem] font-semibold tracking-wide text-white uppercase sm:inline-flex"
+          data-annotate-status="commenting"
+          style={{ background: ANNOTATE_BLUE }}
+        >
+          {copy.commenting}
+        </span>
+      ) : null}
+      {commentCount > 0 && onFlushComments ? (
+        <button
+          className="shrink-0 rounded-full px-2 py-0.5 text-[0.6875rem] font-semibold text-white"
+          onClick={onFlushComments}
+          style={{ background: ANNOTATE_BLUE }}
+          type="button"
+        >
+          {copy.addComments(commentCount)}
+        </button>
+      ) : null}
       {onPopIn ? (
         <PaneStripGlyph
           icon={<Codicon name="screen-normal" size="0.8125rem" />}

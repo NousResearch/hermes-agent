@@ -1013,6 +1013,7 @@ def test_progress_explicit_board_ignores_database_environment_override(
 
 def test_progress_counts_each_canonical_failed_run_once_and_labels_attempts(kanban_home):
     from gateway.progress_queries import resolve_progress_query
+    from hermes_cli import kanban_db_dispatch as dispatch
 
     with kb.connect(board=BOARD) as conn:
         root = _task(conn, "Exception Burndown", status="done")
@@ -1021,7 +1022,7 @@ def test_progress_counts_each_canonical_failed_run_once_and_labels_attempts(kanb
         _sub(conn, root)
         for outcome in ("spawn_failed", "failed", "timed_out", "crashed"):
             assert kb.claim_task(conn, retrying, claimer=f"worker:{outcome}") is not None
-            assert kb._record_task_failure(
+            assert dispatch._record_task_failure(
                 conn,
                 retrying,
                 f"{outcome} receipt",
@@ -1031,7 +1032,7 @@ def test_progress_counts_each_canonical_failed_run_once_and_labels_attempts(kanb
                 end_run=True,
             ) is False
         assert kb.claim_task(conn, retrying, claimer="worker:gave-up") is not None
-        assert kb._record_task_failure(
+        assert dispatch._record_task_failure(
             conn,
             retrying,
             "gave up receipt",

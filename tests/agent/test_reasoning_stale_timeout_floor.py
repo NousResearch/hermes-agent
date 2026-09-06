@@ -85,6 +85,12 @@ import pytest
     ("x-ai/grok-4.5", 300.0),
     ("x-ai/grok-4.6", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # Thinking Machines Inkling — family entry covers -small and the
+    # OpenRouter :free / :batch SKU suffixes (":" is a slug separator
+    # in the right anchor, same as "-").
+    ("thinkingmachines/inkling", 300.0),
+    ("thinkingmachines/inkling:free", 300.0),
+    ("thinkingmachines/inkling-small:free", 300.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor

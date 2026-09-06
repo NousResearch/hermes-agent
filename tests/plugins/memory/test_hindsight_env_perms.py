@@ -192,6 +192,20 @@ def test_rewrite_allowed_when_build_carries_key():
     assert "HINDSIGHT_API_LLM_API_KEY=sk-new\n" in profile_env.read_text(encoding="utf-8")
 
 
+def test_api_prefixed_vault_name_resolves(monkeypatch):
+    """The vault item is HINDSIGHT_API_LLM_API_KEY; the wizard name alone misses."""
+    from agent import secret_scope
+    import plugins.memory.hindsight.embedded as hs_embedded
+
+    token = secret_scope.set_secret_scope({"HINDSIGHT_API_LLM_API_KEY": "sk-test-live-key"})
+    monkeypatch.delenv("HINDSIGHT_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("HINDSIGHT_API_LLM_API_KEY", raising=False)
+    try:
+        assert hs_embedded._embedded_llm_api_key(_CONFIG) == "sk-test-live-key"
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+
 def test_rewrite_allowed_when_no_key_anywhere(monkeypatch):
     """Keyless providers (ollama) must not brick: empty build + empty disk rewrites."""
     from agent import secret_scope

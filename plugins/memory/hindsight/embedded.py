@@ -131,8 +131,12 @@ def _embedded_llm_api_key(config: dict[str, Any]) -> str:
     """
     if config.get("llmApiKey") or config.get("llm_api_key"):
         return config.get("llmApiKey") or config.get("llm_api_key")
+    # NOTE: the vault item is named HINDSIGHT_API_LLM_API_KEY (matching the
+    # daemon's env var), not HINDSIGHT_LLM_API_KEY (the setup-wizard name).
+    # Accept both so vault-fed scopes resolve regardless of which name the
+    # secret source carries.
     try:
-        scoped = get_secret("HINDSIGHT_LLM_API_KEY", "")
+        scoped = get_secret("HINDSIGHT_API_LLM_API_KEY", "") or get_secret("HINDSIGHT_LLM_API_KEY", "")
     except UnscopedSecretError:
         # Multiplexed gateway with no profile scope on this thread: never let
         # a missing scope read os.environ (another profile's key may live

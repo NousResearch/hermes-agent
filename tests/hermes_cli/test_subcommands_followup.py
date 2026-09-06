@@ -9,6 +9,7 @@ handler.
 from __future__ import annotations
 
 import argparse
+import re
 
 import pytest
 
@@ -64,3 +65,33 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_claw_migrate_no_backup_help_shows_active_hermes_home(monkeypatch, tmp_path, capsys):
+    # The --no-backup help text must reflect the ACTIVE HERMES_HOME (per
+    # AGENTS.md: display_hermes_home() for user-facing text), not a
+    # hardcoded ~/.hermes/ literal — the archive itself is written under
+    # the active home, so the help text describing it must match.
+    from hermes_constants import display_hermes_home
+
+    custom_home = tmp_path / "custom_profile_home"
+    custom_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(custom_home))
+    active_display = display_hermes_home()
+
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_claw_parser(sub, cmd_claw=_h("claw"))
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["claw", "migrate", "--help"])
+    help_text = capsys.readouterr().out
+    # argparse's HelpFormatter wraps long help lines with textwrap, which can
+    # break a long path mid-token at a hyphen with a bare "\n<indent>" (no
+    # inserted space). Collapse those wrap points back out before checking
+    # for the path so this test doesn't depend on terminal width / wrapping.
+    flat_help_text = re.sub(r"\n\s*", "", help_text)
+
+    assert "~/.hermes/backups/" not in flat_help_text
+    assert "~/.hermes/" not in flat_help_text
+    assert active_display in flat_help_text

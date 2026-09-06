@@ -805,6 +805,9 @@ class TurnRunner:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
                     )
+                    pre_delivery_gate = getattr(self._runner, "_pre_delivery_gate", None)
+                    if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict":
+                        consumer_cfg.buffer_only = True
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
@@ -1461,11 +1464,9 @@ class TurnRunner:
         ctx.result_holder[0] = result
         if stream_consumer is None:
             return
-        # Pass final_response as the authoritative finalize payload: it includes post-stream
-        # augmentation (verifier footer, explainer) the accumulator never saw. Adopt ONLY a genuinely
-        # completed final: interrupt paths return {interrupted: True, completed: False} with a
-        # DIAGNOSTIC final_response — adopting it would seal the partial answer over with the
-        # diagnostic AND suppress the gateway's own error delivery.
+        # Strict pre-delivery validation runs before finish() so no buffered final can be sent
+        # without approval. The gate is injected by the host; absent gate preserves legacy behavior.
+        pre_delivery_gate = getattr(self._runner, "_pre_delivery_gate", None)
         _final_for_stream = None
         if (
             isinstance(result, dict) and not result.get("failed") and not result.get("interrupted")
@@ -1474,6 +1475,22 @@ class TurnRunner:
             fr = result.get("final_response")
             if isinstance(fr, str) and fr.strip() and fr != "(empty)":
                 _final_for_stream = fr
+        if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict" and _final_for_stream is not None:
+            decision = pre_delivery_gate.evaluate_sync(
+                final_text=_final_for_stream,
+                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id)},
+            )
+            if not decision.allowed:
+                suppress = getattr(stream_consumer, "suppress_final_delivery", None)
+                if callable(suppress):
+                    suppress()
+                result["final_response"] = "⚠️ Response withheld because pre-delivery validation did not pass."
+                result["pre_delivery_blocked"] = True
+                stream_consumer.finish()
+                return
+            if isinstance(decision.final_text, str):
+                _final_for_stream = decision.final_text
+                result["final_response"] = decision.final_text
         if _final_for_stream is None:
             stream_consumer.finish()
             return

@@ -156,6 +156,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._in_think_block = False  # think-tag filter state (mirrors CLI _stream_delta)
         self._think_buffer = ""
         self._before_finalize_notified = False
+        self._suppress_final_delivery = False
         self._reset_message_state()
 
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
@@ -520,6 +521,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._queue.put((_FINAL_TEXT, final_text))
         self._queue.put(_DONE)
 
+    def suppress_final_delivery(self) -> None:
+        """Prevent the buffered final answer from reaching the platform."""
+        self._suppress_final_delivery = True
+
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         self._len_fn, self._safe_limit = self._resolve_length_budget()
@@ -543,6 +548,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
                 if tick.got_done:
                     self._flush_think_buffer()
+                    if self._suppress_final_delivery:
+                        return
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.

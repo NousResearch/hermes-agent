@@ -44,4 +44,9 @@ oversized summary can still leave a result over budget, as reported by
 A missing/ambiguous chat template or a tokenization error is not replaced by a
 character-count estimate. Re-sample old cached inputs when changing tokenizers:
 `--skip_download` reuses the previous selection even though compression re-counts
-its input with the current tokenizer.
+its input with the current tokenizer. The command warns on every cached-input run
+because cached samples do not identify the tokenizer or sampling threshold that
+selected them. Their `_original_tokens` values remain historical sampling counts,
+not the current compression counts in the metrics report. Re-run without
+`--skip_download` after changing tokenizers or `min_tokens`; re-counting selected
+rows cannot recover rows excluded by an earlier filter.

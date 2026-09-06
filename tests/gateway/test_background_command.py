@@ -193,7 +193,7 @@ class TestBackgroundInCLICommands:
     def test_bg_autocompletes(self):
         """The /bg and /btw commands appear in autocomplete results."""
         pytest.importorskip("prompt_toolkit")
-        from hermes_cli.commands import SlashCommandCompleter
+        from hermes_cli.commands_completion import SlashCommandCompleter
         from prompt_toolkit.document import Document
 
         completer = SlashCommandCompleter()

@@ -175,6 +175,7 @@ export const Thread = memo(function Thread({
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}
           loadingIndicator={loadingIndicator}
+          sessionId={sessionId}
           sessionKey={sessionKey}
         />
         {loading === 'session' && <CenteredThreadSpinner />}

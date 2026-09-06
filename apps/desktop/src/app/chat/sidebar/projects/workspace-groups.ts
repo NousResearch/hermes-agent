@@ -429,28 +429,6 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
 }
 
 /**
- * Fail-open project filter (#97762, #96246): the persisted filter names tree
- * node ids, which go stale when a project is deleted/recreated or an update
- * rebuilds the tree — and each stale id then blanks the flat list AND the
- * overview (headers, zero rows) until Local Storage is wiped. Ids the live
- * tree no longer names are inert. Memo-only, never written back: the tree
- * loads async, so persisting the boot-time (empty-tree) result would destroy
- * a valid filter.
- */
-export function sanitizeProjectFilter(
-  filter: readonly string[],
-  tree: readonly Pick<SidebarProjectTree, 'id'>[]
-): string[] {
-  if (!filter.length) {
-    return []
-  }
-
-  const known = new Set(tree.map(project => project.id))
-
-  return filter.filter(id => known.has(id))
-}
-
-/**
  * The ONE row-level project-filter rule the flat list and the project lanes
  * narrow by. Detached (cwd-less) rows belong to the Home bucket
  * (`NO_PROJECT_ID`, like the overview preview overlay) — filing them under

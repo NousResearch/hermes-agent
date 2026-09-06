@@ -214,15 +214,18 @@ def _goal_blocks_loop_tick(session_key: str) -> bool:
 _SESSION_CONTROL_SLASHES = frozenset({"goal", "heartbeat", "loop", "subgoal"})
 
 
-def _publish_session_control_snapshot(sid: str, session: dict | None) -> None:
+def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if_present: bool = False) -> None:
     """Best-effort ``session.control.update`` for one live session. Also called after the post-turn hooks,
     because the goal judge and loop tick evaluation mutate persisted state AFTER ``message.complete`` — a
-    client refresh keyed on that event reads the pre-judge turn count."""
+    client refresh keyed on that event reads the pre-judge turn count. ``only_if_present`` keeps the
+    post-turn event stream of a session with no automation state byte-identical to today's."""
     if not session or not (session_key := str(session.get("session_key") or "")):
         return
     try:
         with _session_profile_runtime_scope(session):
             control = _snapshot_control(session_key)
+        if only_if_present and not control["revision"]:
+            return
         _emit("session.control.update", sid, {"control": control})
     except Exception:
         logger.debug("session.control.update publish failed for %s", sid, exc_info=True)

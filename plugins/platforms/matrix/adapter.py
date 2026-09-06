@@ -127,6 +127,9 @@ from plugins.platforms.matrix.permalinks import event_permalink, room_via_server
 from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
+from .rtc.join import MatrixRTCVoiceMixin
+from .rtc.outbound import MatrixRTCOutboundMixin
+
 logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
@@ -785,7 +788,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdapter):
+class MatrixAdapter(MatrixRTCVoiceMixin, MatrixRTCOutboundMixin,MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)

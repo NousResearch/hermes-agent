@@ -134,6 +134,9 @@ class MCPServerHealthMixin:
         notifications; after the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
         if getattr(self, '_editor_frozen_manifest', None) is not None:
             return  # Editor tool policy changes apply only to a new canonical session.
+        # Previous guard verdicts describe the previous catalog; forget them even when the server no
+        # longer advertises ``tools`` and no new catalog is fetched, so status can't report stale drops.
+        self._dropped_tools = {}
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:

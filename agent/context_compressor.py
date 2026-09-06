@@ -1818,10 +1818,9 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         self._reset_session_compaction_state()
 
     def _reset_real_usage_pairing(self) -> None:
-        """Forget the real-vs-rough token pairing used by should_defer_preflight_to_real_usage()."""
+        """Forget the real-usage state read by real_usage_pending()."""
         self.last_real_prompt_tokens = self.last_compression_rough_tokens = 0
-        self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens = 0
-        self.awaiting_real_usage_after_compression = False
+        self.awaiting_real_usage_after_compression = self._provider_omits_usage = False
 
     def _reset_session_compaction_state(self) -> None:
         """Shared per-session reset for /new, /reset and session end."""
@@ -2355,19 +2354,10 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         """Pair the real prompt count with its rough estimate and judge the armed compaction verdict."""
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
+            self._provider_omits_usage = False
             if self.last_prompt_tokens < self.threshold_tokens:
-                if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
-                    self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
-                elif self._pending_request_rough_tokens > 0:
-                    # Pair the real prompt count with the same request's rough estimate so the defer baseline syncs on
-                    # EVERY fitting response, not only after compaction; otherwise a never-compressed session has no
-                    # baseline and preflight fires on the raw rough estimate (overcounts CJK / replay blobs severalfold).
-                    self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens
                 # Any real reading below the trigger proves the prompt fits: clear the latch. The fallback streak survives.
                 self._record_ineffective_compression_verdict(0)
-            else:
-                self.last_rough_tokens_when_real_prompt_fit = 0
-            self._pending_request_rough_tokens = 0
             # Anti-thrash verdict lives HERE: effectiveness is "prompt under threshold" per the provider's real count,
             # not "messages shrank"; should_compress() runs twice per turn with mixed measures and would reset it.
             # Anti-thrashing verdict, judged HERE because this is the only place that sees the provider's
@@ -2409,12 +2399,10 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
             return
         self.last_prompt_tokens = snapshot
 
-    def note_request_rough_estimate(self, rough_tokens: int) -> None:
-        """Record the rough estimate of the request about to be sent, for pairing with real usage."""
-        try:
-            self._pending_request_rough_tokens = max(0, int(rough_tokens))
-        except (TypeError, ValueError):
-            self._pending_request_rough_tokens = 0
+    def note_usage_less_response(self) -> None:
+        """A completed response carried no usage: until a real reading arrives, this provider cannot
+        adjudicate context pressure, so rough estimates decide instead of waiting forever (#2153)."""
+        self._provider_omits_usage = True
 
     def note_native_compaction_checkpoint(self) -> None:
         """Wait for real usage before trusting a newly checkpointed request.
@@ -2431,26 +2419,23 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         self.last_compression_rough_tokens = 0
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
-        """Return True when a high rough preflight estimate is known-noisy.
-        Projects real usage as ``last_real + (rough_now - rough_at_last_real)`` and fires only when the
-        projection, not the raw estimate, crosses the threshold. Not a strict upper bound for
-        chars/4-underestimated scripts (Cyrillic, Thai, Arabic); bounded by two backstops: a real
-        reading at/over threshold clears the baseline, and the overflow handler compacts reactively.
-        Callers with a smaller (raw-messages) basis can only over-defer; the pre-API pressure check
-        re-runs with the aligned basis."""
+        """True when a whole-context ROUGH estimate over threshold must wait ONE request for the
+        provider's real usage. Callers skip this for usage-anchored figures (real prompt count +
+        delta of what was appended since), which never defer. A rough figure defers right after a
+        local or native compaction (the last real reading is stale — the latch) and on any
+        transcript the anchor does not cover (first request, rewind/edit-resend, reloaded history):
+        the next response re-anchors it. It never defers once the provider has proven it omits
+        usage, or the estimate would be the only signal and compression could never fire (#2153);
+        the overflow handler compacts reactively in every case."""
         if rough_tokens < self.threshold_tokens:
             return False
-        # After local or native compaction, last_real_prompt_tokens is STALE
-        # (above threshold); defer one turn until real usage arrives.
         if self.awaiting_real_usage_after_compression:
             return True
-        if self.last_real_prompt_tokens <= 0 or self.last_real_prompt_tokens >= self.threshold_tokens:
+        # A real reading already at/over threshold needs no second opinion, and a rough figure past
+        # the whole window describes a request certain to fail — sending it only buys an overflow error.
+        if self.last_real_prompt_tokens >= self.threshold_tokens or rough_tokens >= self.context_length:
             return False
-        baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
-        if baseline <= 0:
-            return False
-        # No baseline ratchet here: advancing rough without a matching real reading would defer on stale data.
-        return self.last_real_prompt_tokens + max(0, rough_tokens - baseline) < self.threshold_tokens
+        return not self._provider_omits_usage
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""

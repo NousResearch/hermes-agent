@@ -81,6 +81,9 @@ def record_response_usage(
             # pending verdict so later readings aren't charged to it and
             # preflight deferral isn't latched indefinitely.
             compressor.update_from_response({})
+        _note_usage_less = getattr(compressor, "note_usage_less_response", None)
+        if callable(_note_usage_less):
+            _note_usage_less()
         logger.info(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,

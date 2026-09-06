@@ -2136,6 +2136,7 @@ _USAGE_STATE: Dict[str, Any] = {
     # snapshot; invalidated on compaction/session switch so stale anchors never suppress compression.
     "_usage_anchor": None,
     "_turn_base_usage_anchor": None,
+    "_request_pressure_anchored": False,  # whether the last pressure figure came from the anchor
     # Cumulative token usage for the session
     "session_prompt_tokens": 0,
     "session_completion_tokens": 0,

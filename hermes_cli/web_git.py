@@ -638,7 +638,15 @@ def worktree_add(cwd: str, options: dict) -> dict:
 
 
 def worktree_remove(cwd: str, worktree_path: str, force: bool) -> dict:
-    _git_ok(_main_root(cwd), ["worktree", "remove", *(["--force"] if force else []), worktree_path])
+    # Goes through the single removal owner rather than `git worktree remove`:
+    # that command's recursive delete follows a Windows junction into whatever
+    # it points at (hermes_cli/reparse_guard.py). This route is reachable from
+    # the dashboard, so it is the same gun pointed by an HTTP request.
+    from hermes_cli.worktree_removal import remove_worktree
+
+    outcome = remove_worktree(_main_root(cwd), worktree_path)
+    if not outcome:
+        raise RuntimeError(f"worktree not removed: {outcome.reason}")
     return {"removed": worktree_path}
 
 

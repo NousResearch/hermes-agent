@@ -199,19 +199,23 @@ def _cleanup_worktree_workspace(
                 task_id, wp,
             )
             return
-        # No --force: git's own dirty guard re-verifies at removal time, so if
-        # the tree became dirty since our check (TOCTOU) removal fails safe.
-        result = _git(repo_root, "worktree", "remove", str(wp), timeout=60)
-        if result.returncode != 0:
+        # The single removal owner (hermes_cli/worktree_removal.py) deletes the
+        # tree without traversing a reparse point. This is the site that caused
+        # the 2026-09-06 data loss: `git worktree remove` followed a
+        # `node_modules` junction out of the worktree and emptied two sibling
+        # source repositories, reporting only "worktree remove failed".
+        from hermes_cli.worktree_removal import remove_worktree
+        branch = (branch_name or "").strip() or f"wt/{task_id}"
+        outcome = remove_worktree(
+            repo_root, wp, branch if branch.startswith("wt/") else None
+        )
+        if not outcome:
             _kb._log.warning(
-                "git worktree remove failed for task %s at %s: %s",
-                task_id, wp, (result.stderr or result.stdout or "").strip(),
+                "Preserving worktree for task %s at %s: %s",
+                task_id, wp, outcome.reason,
             )
             return
         _kb._log.debug("Removed worktree workspace: %s", wp)
-        branch = (branch_name or "").strip() or f"wt/{task_id}"
-        if branch.startswith("wt/"):
-            _git(repo_root, "branch", "-D", branch, timeout=30)
     except Exception:
         pass  # best-effort — never block completion
 

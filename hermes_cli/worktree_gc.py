@@ -203,15 +203,20 @@ def reclaim_worktrees(
         with contextlib.suppress(Exception):
             _git(["worktree", "unlock", record.path], cwd=repo_root, timeout=10)
         try:
-            remove_result = _git(["worktree", "remove", record.path, "--force"], cwd=repo_root, timeout=30)
-            if remove_result.returncode != 0:
-                actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
+            # The single removal owner: it never lets `git worktree remove` do
+            # the deleting, because that walk follows a Windows junction into
+            # whatever it points at. It prunes the admin entry too.
+            from hermes_cli.worktree_removal import remove_worktree
+            keep_branch = record.verdict == "reap-keep-branch"
+            drop = record.branch if (record.branch and not keep_branch
+                                     and record.branch not in _PROTECTED_BRANCHES) else None
+            outcome = remove_worktree(repo_root, record.path, drop, unlock=False)
+            if not outcome:
+                actions.append(f"kept {record.name}: {outcome.reason}")
                 continue
-            if record.verdict == "reap-keep-branch":
+            if keep_branch:
                 actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
                 continue
-            if record.branch and record.branch not in _PROTECTED_BRANCHES:
-                _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
             actions.append(f"removed {record.name}")
         except Exception as exc:
             actions.append(f"failed to remove {record.name}: {exc}")

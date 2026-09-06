@@ -84,14 +84,14 @@ def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str
     sometimes the branch, so any retry of the same name fails.
     """
     try:
-        # Unlock first: `worktree remove --force` refuses a locked tree.
-        _git_quiet(["worktree", "unlock", str(wt_path)], repo_root, timeout=15)
-        _git_quiet(["worktree", "remove", "--force", str(wt_path)], repo_root, timeout=15)
-        if wt_path.exists():
-            shutil.rmtree(wt_path, ignore_errors=True)
-        # `remove` needs the dir; `prune` drops the admin entry when it is already gone.
-        _git_quiet(["worktree", "prune"], repo_root, timeout=15)
-        _git_quiet(["branch", "-D", branch_name], repo_root, timeout=15)
+        # One owner does the removal (hermes_cli/worktree_removal.py): it never
+        # asks `git worktree remove` to delete, because that traversal follows a
+        # Windows junction into whatever it points at. It also prunes the admin
+        # entry and drops the branch.
+        from hermes_cli.worktree_removal import remove_worktree
+        outcome = remove_worktree(repo_root, wt_path, branch_name)
+        if not outcome:
+            logger.warning("Keeping partial worktree %s: %s", wt_path, outcome.reason)
     except Exception as e:
         logger.debug("cleanup after failed worktree add: %s", e)
 
@@ -761,14 +761,19 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
 
         try:
             branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
-            remove_result = _git(["worktree", "remove", str(entry), "--force"], repo_root, timeout=15)
-            if remove_result.returncode != 0:
-                logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
+            # The single removal owner: it deletes without traversing a reparse
+            # point and prunes the admin entry, so `git worktree remove` — whose
+            # walk follows a junction into its target — is never used here.
+            from hermes_cli.worktree_removal import remove_worktree
+            keep_branch = bool(branch) and verdict == "reap-keep-branch"
+            outcome = remove_worktree(
+                repo_root, entry, None if keep_branch else (branch or None), unlock=False
+            )
+            if not outcome:
+                logger.warning("Preserving worktree %s: %s", entry.name, outcome.reason)
                 continue
-            if branch and verdict == "reap-keep-branch":
+            if keep_branch:
                 kept_branches.add(branch)
-            elif branch:
-                _git(["branch", "-D", branch], repo_root)
             logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
         except Exception as e:
             logger.debug("Failed to prune worktree %s: %s", entry.name, e)

@@ -1057,12 +1057,17 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         _active_worktree = None
         return
 
-    # Unlock first so `remove` isn't blocked by the lock placed at creation. Fail-soft.
-    _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
-    _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
-    _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
-
+    # Unlock, delete and drop the branch through the single removal owner
+    # (hermes_cli/worktree_removal.py) — never `git worktree remove`, whose
+    # recursive delete follows a Windows junction into whatever it points at.
+    from hermes_cli.worktree_removal import remove_worktree
+    outcome = remove_worktree(repo_root, wt_path, branch)
     _active_worktree = None
+    if not outcome:
+        _cprint(f"\n\033[33m⚠ Keeping worktree: {wt_path}\033[0m")
+        print(f"  {outcome.reason}")
+        return
+
     _cprint(f"\033[32m✓ Worktree cleaned up: {wt_path}\033[0m")
 
 

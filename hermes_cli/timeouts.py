@@ -40,6 +40,36 @@ def get_provider_stale_timeout(provider_id: str, model: str | None = None) -> fl
     return _configured_timeout(provider_id, model, "stale_timeout_seconds", "stale_timeout_seconds")
 
 
+def get_provider_drain_timeout(provider_id: str, model: str | None = None) -> float | None:
+    """Post-terminal SSE drain budget in seconds, if configured (#103864).
+
+    ``0`` is meaningful — skip the drain entirely against a relay that holds
+    the connection open after its terminal frame — so this cannot use
+    ``_configured_timeout``, which folds non-positive values into ``None``.
+    """
+    if not provider_id:
+        return None
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    except Exception:
+        return None
+    providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    provider_config = providers.get(provider_id, {}) if isinstance(providers, dict) else {}
+    if not isinstance(provider_config, dict):
+        return None
+    for source in (_get_model_config(provider_config, model), provider_config):
+        if not isinstance(source, dict) or source.get("stream_drain_timeout_seconds") is None:
+            continue
+        try:
+            drain = float(source["stream_drain_timeout_seconds"])
+        except (TypeError, ValueError):
+            continue
+        if drain >= 0:
+            return drain
+    return None
+
+
 def _get_model_config(provider_config: dict[str, object], model: str | None) -> dict[str, object] | None:
     if not model:
         return None

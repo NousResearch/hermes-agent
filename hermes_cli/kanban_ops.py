@@ -41,6 +41,9 @@ def _poll_loop(interval: float, tick) -> int:
 
 
 def _cmd_tail(args: argparse.Namespace) -> int:
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     last_id = 0
     print(f"Tailing events for {args.task_id}. Ctrl-C to stop.")
 
@@ -248,6 +251,9 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
 def _cmd_watch(args: argparse.Namespace) -> int:
     """Live-stream task_events to the terminal."""
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     kinds = {k.strip() for k in args.kinds.split(",") if k.strip()} if args.kinds else None
     print("Watching kanban events. Ctrl-C to stop.", flush=True)
     # Seed cursor at the latest id so we don't replay history.

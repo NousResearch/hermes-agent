@@ -3,12 +3,14 @@ import { type CSSProperties } from 'react'
 import { createParticleEmitter, ParticleField, type ParticleFieldConfig } from '@/components/particles/particle-field'
 import { $petActive, flashPetActivity } from '@/store/pet'
 import { $petOverlayActive, forwardPetReaction } from '@/store/pet-overlay'
+import { $vibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 
 /**
  * TikTok-style floating hearts — a thin skin over {@link ParticleField} (pixel
  * heart glyph + pink). Placed two ways: rising from the composer when no pet is
  * out, or from the pet when one is. Fired by the core `reaction` event (affection
- * in a user message) via {@link burstVibeHearts}.
+ * in a user message) via {@link burstVibeHearts}. Gated by Settings → Appearance
+ * → Vibe Hearts (`$vibeHeartsEnabled`), on by default.
  */
 
 // Light pink reads on both light and dark chat surfaces.
@@ -58,6 +60,10 @@ export const playVibeHearts = (count?: number) => emitter.burst(count)
  *  - no pet          → play here (composer)
  */
 export const burstVibeHearts = (count?: number) => {
+  if (!$vibeHeartsEnabled.get()) {
+    return
+  }
+
   const overlay = $petOverlayActive.get()
 
   if (overlay || $petActive.get()) {

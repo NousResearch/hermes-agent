@@ -262,12 +262,12 @@ def test_looks_like_human_speaker():
 
 
 def test_detect_admission_returns_false_on_error():
-    from plugins.google_meet.meet_bot import _detect_admission
+    from plugins.google_meet.meet_bot import _ADMISSION_PROBE_JS, _probe
 
     class _FakePage:
         def evaluate(self, _js): raise RuntimeError("boom")
 
-    assert _detect_admission(_FakePage()) is False
+    assert _probe(_FakePage(), _ADMISSION_PROBE_JS) is False
 
 
 # ---------------------------------------------------------------------------

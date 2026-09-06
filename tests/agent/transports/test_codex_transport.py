@@ -39,8 +39,24 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
+        """``-900k`` large-context picker variants are Hermes-side aliases —
+        the Codex backend only knows the base slug, so build_kwargs must
+        strip the suffix from the wire model id."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol-900k", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
 
-
+    def test_base_slug_model_id_unchanged_on_wire(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
 
 
 
@@ -803,6 +819,312 @@ class TestCodexBuildKwargs:
                 reasoning_config={"effort": "high"},
             )
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
+
+
+class TestOpencodeReservedToolAliases:
+    """OpenCode /v1/responses reserves web_search / search_files as function
+    names (HTTP 400 "custom function name 'X' is reserved", #85589). The
+    transport aliases them on the wire and maps them back on dispatch."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "search_files", "description": "Search files.",
+            "parameters": {"type": "object",
+                           "properties": {"pattern": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "web_search", "description": "Search the web.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_builtin_opencode_go_aliases_reserved_names(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "read_file" in names  # non-reserved untouched
+
+    def test_custom_opencode_family_provider_aliases_reserved_names(self, transport):
+        """Custom opencode-go-* providers get the same aliasing (#85589)."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go-bridge",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "search_files" not in names
+
+    def test_opencode_host_match_without_family_provider(self, transport):
+        """An arbitrary custom provider pointing at opencode.ai still aliases."""
+        kw = transport.build_kwargs(
+            model="gpt-5.6-luna",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="my-oc-proxy",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+
+    def test_non_opencode_backend_keeps_original_names(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "search_files" in names
+        assert "web_search" in names
+        assert "hermes_search_files" not in names
+
+    def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_search_files",
+                        arguments='{"pattern":"README"}',
+                    ),
+                ),
+                SimpleNamespace(
+                    id="call_2", call_id="call_2", response_item_id="fc_2",
+                    function=SimpleNamespace(
+                        name="hermes_web_search",
+                        arguments='{"query":"hermes"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(response)
+        names = [tc.name for tc in normalized.tool_calls]
+        assert names == ["search_files", "web_search"]
+
+
+class TestXaiReservedToolSearchAlias:
+    """xAI reserves ``tool_search`` for Grok's native Tool Search and rejects
+    the client declaration with HTTP 400 (#95003). The transport aliases the
+    progressive-disclosure bridge on the wire and maps it back on dispatch."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "tool_search", "description": "Search deferred tools.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "tool_describe", "description": "Describe a deferred tool.",
+            "parameters": {"type": "object",
+                           "properties": {"name": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_xai_aliases_reserved_tool_search(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_xai_responses=True,
+        )
+        names = self._names(kw)
+        assert "hermes_tool_search" in names
+        assert "tool_search" not in names
+        # Only ``tool_search`` is reserved — the sibling bridge tools and
+        # ordinary tools go out untouched.
+        assert "tool_describe" in names
+        assert "read_file" in names
+
+    def test_non_xai_backend_keeps_tool_search_name(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_codex_backend=True,
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "tool_search" in names
+        assert "hermes_tool_search" not in names
+
+    def test_alias_composes_with_native_web_search_swap(self, transport, monkeypatch):
+        """The bridge alias must survive the xAI web_search branch (#48108)."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
+        tools = list(self._TOOLS) + [
+            {"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            is_xai_responses=True,
+        )
+        assert any(t.get("type") == "web_search" for t in kw.get("tools", []))
+        names = self._names(kw)
+        assert "hermes_tool_search" in names
+        assert "tool_search" not in names
+
+    def test_normalize_maps_tool_search_alias_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_tool_search",
+                        arguments='{"query":"create github issue"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        # Pair the response with a real request so provenance is recorded.
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {"hermes_tool_search": "tool_search"}
+        normalized = transport.normalize_response(response)
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+
+    def _normalize_named_call(self, transport, monkeypatch, wire_name):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(name=wire_name, arguments="{}"),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+        )
+        return transport.normalize_response(response)
+
+    def test_no_alias_emitted_means_no_reverse_rewrite(self, transport, monkeypatch):
+        """Provenance contract (#95003 review): a request that emitted no
+        aliases must not have a real ``hermes_tool_search`` tool rewritten."""
+        real_tool = {"type": "function", "function": {
+            "name": "hermes_tool_search", "description": "A real MCP tool.",
+            "parameters": {"type": "object", "properties": {}}}}
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[real_tool],
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {}
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["hermes_tool_search"]
+
+    def test_alias_collision_takes_suffix_no_duplicates(self, transport, monkeypatch):
+        """A real tool already named ``hermes_tool_search`` keeps its wire
+        name; the bridge is suffixed and both round-trip independently."""
+        tools = [
+            {"type": "function", "function": {
+                "name": "hermes_tool_search", "description": "Real tool.",
+                "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {
+                "name": "tool_search", "description": "Bridge.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            is_xai_responses=True,
+        )
+        names = self._names(kw)
+        assert names == ["hermes_tool_search", "hermes_tool_search_2"]
+        assert len(names) == len(set(names))
+        assert transport._last_wire_aliases == {"hermes_tool_search_2": "tool_search"}
+        # Bridge alias maps back; the real tool's name is untouched.
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search_2"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+        normalized2 = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized2.tool_calls] == ["hermes_tool_search"]
+
+    def test_legacy_fallback_without_provenance(self, transport, monkeypatch):
+        """Normalize-only call sites (no build_kwargs on this instance) keep
+        the historical unconditional reverse mapping."""
+        assert transport._last_wire_aliases is None
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
 
 
 class TestXaiWebSearchBackendPreference:

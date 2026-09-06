@@ -291,3 +291,37 @@ class TestCronjobRunExecutesImmediately:
             assert len(calls) >= 2, calls
         finally:
             set_activity_callback(None)
+
+
+class TestManualRunReportsDeliveryFailure:
+    """#83993: a manual run whose agent succeeded but whose delivery failed
+    must not come back as success=True with no error — the calling agent
+    relays that result to the user."""
+
+    def test_delivery_failed_status_is_not_success_and_surfaces_reason(self):
+        refreshed = {
+            "id": "job-run-1",
+            "last_status": "delivery_failed",
+            "last_error": None,
+            "last_delivery_error": "live adapter send failed: 502 (target telegram:123)",
+        }
+        with patch("tools.cronjob_tools.claim_job_for_fire",
+                   return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+             patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("tools.cronjob_tools.get_job", return_value=refreshed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["claimed"] is True
+        assert res["success"] is False
+        assert "502" in res["error"]
+
+    def test_plain_ok_is_still_success_with_no_error(self):
+        with patch("tools.cronjob_tools.claim_job_for_fire",
+                   return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+             patch("cron.scheduler.run_one_job", return_value=True), \
+             patch("tools.cronjob_tools.get_job",
+                   return_value={"id": "job-run-1", "last_status": "ok", "last_error": None,
+                                 "last_delivery_error": None}):
+            res = _execute_job_now(dict(_JOB))
+        assert res["success"] is True
+        assert res["error"] is None

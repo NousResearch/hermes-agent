@@ -686,9 +686,7 @@ class TestBomToleranceInMemoryFiles:
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is True
         assert not raw.startswith("\ufeff")
-        entries, ok = MemoryStore._read_entries_checked(path)
-        assert ok is True
-        assert entries == ["First fact."]
+        assert MemoryStore._read_file(path) == ["First fact."]
 
     def test_bom_file_add_keeps_existing_entry_intact(self, store):
         path = store._path_for("memory")

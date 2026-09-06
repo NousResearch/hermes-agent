@@ -52,6 +52,8 @@ JSON object. Source of truth: `gateway/relay/descriptor.py`.
 | `platform_hint` | string | no | System-prompt platform hint. |
 | `pii_safe` | bool | no | Redact PII in session descriptions. |
 | `supports_context` | bool | no | Whether the connector can supply surrounding channel/group **context** for an addressed turn on this platform (Model A on-demand history fetch — Discord/Slack/Matrix; Model B passive buffer — Telegram/Signal/WhatsApp). Default false ⇒ no `context` is attached to inbound events. See §3. |
+| `supports_inchannel_continuable` | bool | no | Whether the platform can host a **flat continuable cron surface** (native Slack's `cron_continuable_surface: in_channel`): the brief posts top-level in the channel/DM and a plain reply continues the job via the flat `(platform, chat_id, None)` session. Default false ⇒ the gateway's scheduler fails safe to thread mode (D6 gate), so an older connector keeps today's thread behavior. |
+| `supports_block_formatting` | bool | no | Whether this platform's sender renders **block-level formatting** from raw markdown when the gateway stamps `metadata.format_hints` on `send`/`edit` frames (Slack: native `markdown` block for tables/lists/code, mrkdwn text kept as fallback). Default false ⇒ the gateway never stamps hints, so an older connector never receives the metadata. |
 | `supported_ops` | string[] | no | Op-level capability discovery: the outbound op names the connector's sender for this platform actually implements (e.g. `["send", "edit", "typing", "follow_up", "get_chat_info"]`). Absent/empty ⇒ the connector predates the field and the gateway assumes the legacy op set (`send`/`edit`/`typing`/`follow_up`); a NEW op is used only when explicitly advertised. |
 
 Most fields are a projection of the gateway's existing `PlatformEntry`; the
@@ -117,8 +119,13 @@ Both absent ⇒ byte-identical to today. A connector that never sends them, or a
 
 `PassthroughForward` is the wire form of a forwarded passthrough-plane request
 (Class-2/3 webhooks — Discord interactions, Twilio): `{platform, botId, method,
-path, headers: [[k,v],…], bodyB64}`. The body is base64-encoded so arbitrary
-bytes survive the newline-delimited-JSON transport; the gateway base64-decodes
+path, headers: [[k,v],…], bodyB64, profile?}`. `profile` is optional — the
+connector stamps it when NAS resolves the target profile for a Team-Gateway
+interaction; omitting it (single-profile gateways) preserves legacy routing to
+the default `agent:main` session namespace, mirroring the `profile` field the
+`inbound` frame's `SessionSource` already carries (#60586). The body is
+base64-encoded so arbitrary bytes survive the newline-delimited-JSON transport;
+the gateway base64-decodes
 back to the exact bytes the connector forwarded (the connector already verified
 the provider signature and stripped any shared-identity credential at the edge —
 §6 — so the gateway re-processes a sanitized, token-free body and acts on it via

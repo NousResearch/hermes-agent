@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, cast
 from unittest.mock import MagicMock, patch
 
@@ -49,19 +50,13 @@ class TestSchema:
             "focus_app",
         }
 
-    def test_schema_max_elements_documents_default_and_upper_bound(self):
-        """Schema description must agree with the runtime. The original PR
-        text said "Default 100" without a corresponding `default` field, and
-        had no upper bound — both Copilot findings.
+    def test_schema_no_longer_advertises_max_elements(self):
+        """max_elements was removed: captures always cap the surfaced element
+        window at the fixed default and spill the full tree to elements_file,
+        so there is no caller-tunable cap to document.
         """
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
-        from tools.computer_use.tool import (
-            _DEFAULT_MAX_ELEMENTS,
-            _MAX_ALLOWED_MAX_ELEMENTS,
-        )
-        prop = COMPUTER_USE_SCHEMA["parameters"]["properties"]["max_elements"]
-        assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
-        assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
+        assert "max_elements" not in COMPUTER_USE_SCHEMA["parameters"]["properties"]
 
 
 class TestRegistration:
@@ -77,15 +72,16 @@ class TestRegistration:
 
     def test_cua_driver_cmd_env_override_is_resolved_dynamically(self, tmp_path, monkeypatch):
         from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
 
         driver = tmp_path / "custom-cua-driver"
-        driver.write_text("#!/bin/sh\nexit 0\n")
+        driver.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         driver.chmod(0o755)
 
         monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(driver))
         monkeypatch.setenv("PATH", "/usr/bin:/bin")
 
-        assert cua_backend.resolve_cua_driver_cmd() == str(driver)
+        assert cua_backend_driver.resolve_cua_driver_cmd() == str(driver)
         assert cua_backend.cua_driver_binary_available() is True
 
 
@@ -128,6 +124,18 @@ class TestDispatch:
         drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
         assert drag_kw["from_element"] == 1
         assert drag_kw["to_element"] == 5
+
+    def test_scroll_coordinate_axes_are_independent(self, noop_backend):
+        """scroll forwards each coordinate axis on its own (main parity):
+        ``coordinate=[null, 100]`` scrolls at y=100 with x=None, whereas
+        click treats a coordinate without x as no point at all."""
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "scroll", "coordinate": [None, 100]})
+        scroll_kw = next(c[1] for c in noop_backend.calls if c[0] == "scroll")
+        assert (scroll_kw["x"], scroll_kw["y"]) == (None, 100)
+        handle_computer_use({"action": "click", "coordinate": [None, 100]})
+        click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
+        assert (click_kw["x"], click_kw["y"]) == (None, None)
 
 
     def test_capture_forwards_exact_pid_window_target(self, noop_backend):
@@ -361,10 +369,10 @@ class TestCaptureResponse:
         # the JSON view is partial and can re-issue with a tighter scope.
         assert "truncated to" in parsed["summary"]
 
-    def test_capture_ax_clamps_oversized_max_elements_to_hard_cap(self):
-        """A caller passing a very large `max_elements` must not be able to
-        disable the safeguard. The cap is clamped to a hard upper bound so
-        the context-blow-up protection cannot be bypassed by argument.
+    def test_capture_ax_ignores_stale_max_elements_argument(self):
+        """`max_elements` was removed from the schema; the surfaced window is a
+        fixed cap with the full tree spilled to elements_file. A stale caller
+        still passing max_elements must not be able to raise the cap.
         """
         from tools.computer_use import tool as cu_tool
 
@@ -375,13 +383,16 @@ class TestCaptureResponse:
                 {"action": "capture", "mode": "ax", "max_elements": 10_000}
             )
         parsed = json.loads(out)
-        assert len(parsed["elements"]) == cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        # Ignored: cap stays at the fixed default regardless of the argument.
+        assert len(parsed["elements"]) == cu_tool._DEFAULT_MAX_ELEMENTS
         assert parsed["total_elements"] == 5000
-        assert parsed["truncated_elements"] == 5000 - cu_tool._MAX_ALLOWED_MAX_ELEMENTS
+        assert parsed["truncated_elements"] == 5000 - cu_tool._DEFAULT_MAX_ELEMENTS
+        # The full tree is spilled so nothing is lost.
+        assert parsed.get("elements_file")
 
 class TestCuaCaptureImageDimensions:
     def test_png_dimensions_are_sniffed_from_image_bytes(self):
-        from tools.computer_use.cua_backend import _image_dimensions_from_bytes
+        from tools.computer_use.cua_backend_parse import _image_dimensions_from_bytes
 
         raw_png = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
@@ -396,7 +407,7 @@ class TestCuaCaptureImageDimensions:
 
 class TestAnthropicAdapterMultimodal:
     def test_multimodal_envelope_becomes_tool_result_with_image_block(self):
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         fake_png = "iVBORw0KGgo="
         messages = [
@@ -436,7 +447,7 @@ class TestAnthropicAdapterMultimodal:
 
     def test_old_screenshots_are_evicted_beyond_max_keep(self):
         """Image blocks in old tool_results get replaced with placeholders."""
-        from agent.anthropic_adapter import convert_messages_to_anthropic
+        from agent.anthropic_message_convert import convert_messages_to_anthropic
 
         fake_png = "iVBORw0KGgo="
 
@@ -592,7 +603,7 @@ class TestImageAwareTokenEstimator:
 class TestRunAgentMultimodalHelpers:
 
     def test_append_subdir_hint_to_multimodal_appends_to_text_part(self):
-        from run_agent import _append_subdir_hint_to_multimodal
+        from agent.tool_dispatch_helpers import _append_subdir_hint_to_multimodal
         env = {
             "_multimodal": True,
             "content": [
@@ -657,7 +668,7 @@ class TestElementLabelParsing:
     """
 
     def test_classic_quoted_label_format(self):
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_tree
         tree = (
             '  - [14] AXButton "One"\n'
             '  - [15] AXButton "Two"\n'
@@ -673,7 +684,7 @@ class TestElementLabelParsing:
 
     def test_new_id_eq_format(self):
         """cua-driver v0.1.6 format: [N] AXRole (order) id=Label"""
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_tree
         tree = (
             "[14] AXButton (1) id=One\n"
             "[15] AXButton (2) id=Two\n"
@@ -695,7 +706,7 @@ class TestElementLabelParsing:
         the regex only matched the quoted and id= forms. A pure-digit (N) is an
         order number, not a label, and must be skipped in favour of id=.
         """
-        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_tree
         tree = (
             '- [77] AXButton (Auto) [help="..." actions=[press]]\n'
             '- [78] AXButton (Light) [help="..." actions=[press]]\n'
@@ -731,7 +742,7 @@ class TestUpdateCheck:
         # The update check now short-circuits to None when no driver
         # resolves; CI has none installed, so pin a resolved path.
         with patch(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             return_value="/usr/local/bin/cua-driver",
         ):
             yield
@@ -744,9 +755,10 @@ class TestUpdateCheck:
 
     def test_update_available(self):
         from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
         payload = '{"current_version":"0.3.1","latest_version":"0.3.2","update_available":true}'
         with self._run_returning(payload):
-            st = cua_backend.cua_driver_update_check()
+            st = cua_backend_driver.cua_driver_update_check()
             assert st is not None and st["update_available"] is True
             msg = cua_backend.cua_driver_update_nudge()
         assert msg is not None
@@ -754,9 +766,10 @@ class TestUpdateCheck:
 
     def test_error_payload_is_indeterminate(self):
         from tools.computer_use import cua_backend
+        from tools.computer_use import cua_backend_driver
         payload = '{"current_version":"0.3.2","update_available":false,"error":"github 503"}'
         with self._run_returning(payload):
-            assert cua_backend.cua_driver_update_check() is None
+            assert cua_backend_driver.cua_driver_update_check() is None
             assert cua_backend.cua_driver_update_nudge() is None
 
 class TestLazyMcpInstall:
@@ -1144,7 +1157,7 @@ def _make_cua_backend_with_tool_result(result: Dict[str, Any]):
 
 class TestCuaDriverWindowResultShapes:
     def test_extracts_windows_from_structured_content(self):
-        from tools.computer_use.cua_backend import _windows_from_tool_result
+        from tools.computer_use.cua_backend_parse import _windows_from_tool_result
 
         windows = [{"app_name": "Terminal", "pid": 1, "window_id": 2}]
 
@@ -1185,7 +1198,7 @@ class TestCuaDriverSessionReconnect:
     def _make_session(self, bridge):
         import threading
         from typing import Any, cast
-        from tools.computer_use.cua_backend import _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
         session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
         session._bridge = bridge
         session._session = object()
@@ -1255,6 +1268,89 @@ class TestCuaDriverSessionReconnect:
         assert session._reconnect_log == ["stop", "start"]
         assert len(bridge.calls) == 1
 
+    def test_timeout_marks_session_suspect_without_replaying(self):
+        """An MCP timeout fails closed: outcome unknown, no silent replay (#74799)."""
+        import concurrent.futures
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise concurrent.futures.TimeoutError()
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        result = session.call_tool("click", {"x": 20, "y": 30})
+
+        # Uncertainty surfaced in the error shape: the action MAY have taken
+        # effect on the remote screen before the deadline hit.
+        assert result["isError"] is True
+        assert result["structuredContent"]["code"] == "timeout_outcome_unknown"
+        assert result["structuredContent"]["next_step"] == "fresh_state"
+        assert "unknown" in result["data"]
+        # The timed-out call was NOT replayed and the session was not
+        # eagerly torn down — recreation is deferred to the next call.
+        assert len(bridge.calls) == 1
+        assert session._reconnect_log == []
+        assert session._timeout_suspect is True
+
+    def test_suspect_session_is_recreated_before_next_call(self):
+        """The next call_tool tears down + recreates the suspect session first."""
+        import concurrent.futures
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+                self.timeout = True
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                if self.timeout:
+                    raise concurrent.futures.TimeoutError()
+                return {"ok": True}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        session.call_tool("get_window_state", {"window_id": 42})
+        assert session._timeout_suspect is True
+
+        bridge.timeout = False
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+
+        # Recreate-before-call: stop/start happened ahead of the second call,
+        # and only one call per call_tool — no replay of either operation.
+        assert session._reconnect_log == ["stop", "start"]
+        assert [c for c in bridge.calls] == [
+            ("call", "get_window_state", {"window_id": 42}),
+            ("call", "list_apps", {}),
+        ]
+        # Flag cleared: subsequent calls do not trigger another restart.
+        assert session._timeout_suspect is False
+        session.call_tool("list_windows", {})
+        assert session._reconnect_log == ["stop", "start"]
+
+    def test_healthy_session_is_never_restarted(self):
+        """Negative probe: a clean call must not touch the session lifecycle."""
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                return {"ok": True}
+
+        bridge = FakeBridge()
+        session = self._make_session(bridge)
+
+        assert session.call_tool("list_apps", {}) == {"ok": True}
+        assert session._reconnect_log == []
+        assert session._timeout_suspect is False
+
     def test_mutation_does_not_cross_to_cli_on_transient_proxy_error(self):
         class FakeBridge:
             def run(self, value, timeout=None):
@@ -1309,10 +1405,10 @@ class TestCuaDriverSessionReconnect:
         (screenshot_out_file path) when no inline base64 is present."""
         import base64 as _b64
         from typing import Any, cast
-        from tools.computer_use.cua_backend import _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
 
         monkeypatch.setattr(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             lambda: "/resolved/cua-driver",
         )
 
@@ -1451,7 +1547,8 @@ class TestCaptureAppFilterNoMatch:
              "structuredContent": None},
         ]
 
-        backend.capture(mode="ax")
+        with patch("tools.computer_use.cua_backend.sys.platform", "linux"):
+            backend.capture(mode="ax")
 
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
@@ -1563,7 +1660,7 @@ class TestCuaEnvironmentScrubbing:
         to StdioServerParameters, and asserts the scrub contract.
         """
         from unittest.mock import MagicMock, patch, AsyncMock
-        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        from tools.computer_use.cua_backend_session import _CuaDriverSession, _AsyncBridge
         import asyncio
 
         bridge = _AsyncBridge()
@@ -1587,9 +1684,9 @@ class TestCuaEnvironmentScrubbing:
                 return MagicMock()
 
             with patch.dict(os.environ, test_env, clear=True), \
-                 patch("tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+                 patch("tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
                        return_value="cua-driver"), \
-                 patch("tools.computer_use.cua_backend._resolve_mcp_invocation",
+                 patch("tools.computer_use.cua_backend_driver._resolve_mcp_invocation",
                        return_value=("cua-driver", ["mcp"])), \
                  patch("mcp.StdioServerParameters", side_effect=capture_env), \
                  patch("mcp.client.stdio.stdio_client") as mock_stdio, \
@@ -1655,12 +1752,12 @@ class TestCuaCliFallbackResolution:
         ``~/.local/bin``. Falling back to the bare ``cua-driver`` command
         would reintroduce the original bug at runtime.
         """
-        from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
         proc = MagicMock(stdout="{}", stderr="", returncode=0)
         session = _CuaDriverSession(_AsyncBridge())
         with patch(
-            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             return_value="/Users/example/.local/bin/cua-driver",
         ), patch("subprocess.run", return_value=proc) as run:
             session._call_tool_via_cli("click", {"x": 1, "y": 2}, timeout=0.1)
@@ -1831,7 +1928,7 @@ class TestZIndexSorting:
         """Wayland may return z_index: null. _ingest_windows must coerce
         it to 0 (backmost) so it doesn't crash the sort or get selected
         over real foreground windows."""
-        from tools.computer_use.cua_backend import _ingest_windows
+        from tools.computer_use.cua_backend_parse import _ingest_windows
 
         raw = [
             {"app_name": "Desktop", "pid": 300, "window_id": 3,
@@ -1856,7 +1953,7 @@ class TestImageMimeTypePropagation:
 
     def test_extract_tool_result_captures_mime_alongside_image(self):
         from unittest.mock import MagicMock
-        from tools.computer_use.cua_backend import _extract_tool_result
+        from tools.computer_use.cua_backend_parse import _extract_tool_result
 
         image_part = MagicMock()
         image_part.type = "image"
@@ -1925,7 +2022,7 @@ class TestMcpInvocationResolution:
 
     def test_manifest_with_invocation_block_drives_subcommand(self):
         from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
         manifest = (
             '{"schema_version":"1",'
@@ -1940,7 +2037,7 @@ class TestMcpInvocationResolution:
         """If the manifest knows the args but not the command, keep our
         resolved driver path (so HERMES_CUA_DRIVER_CMD still wins)."""
         from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
         manifest = '{"mcp_invocation":{"args":["mcp"]}}'
         with patch("subprocess.run", new=self._fake_run(stdout=manifest)):
@@ -1953,7 +2050,7 @@ class TestMcpInvocationResolution:
         a string instead of a list, etc.), we still fall back rather than
         passing junk to subprocess.Popen."""
         from unittest.mock import patch
-        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
         manifest = (
             '{"mcp_invocation":'
@@ -1969,12 +2066,12 @@ class TestStructuredElementsConsumption:
     `structuredContent.elements` part of every `get_window_state` MCP
     response. The wrapper used to parse the markdown AX tree with a
     regex — lossy because bounds always came back (0,0,0,0). The
-    structured path preserves real frames, so UIElement.center() works
-    against pixel coordinates instead of just an index lookup.
+    structured path preserves real frames, so UIElement.bounds carries
+    pixel coordinates instead of just an index lookup.
     """
 
     def test_structured_parser_reads_frames(self):
-        from tools.computer_use.cua_backend import _parse_elements_from_structured
+        from tools.computer_use.cua_backend_parse import _parse_elements_from_structured
 
         raw = [
             {"element_index": 1, "role": "AXButton", "label": "OK",
@@ -2050,7 +2147,7 @@ class TestCapabilityDiscovery:
     """
 
     def test_supports_capability_global_match_any_tool(self):
-        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        from tools.computer_use.cua_backend_session import _CuaDriverSession, _AsyncBridge
 
         session = _CuaDriverSession(_AsyncBridge())
         session._capabilities = {
@@ -2064,7 +2161,7 @@ class TestCapabilityDiscovery:
         assert session.supports_capability("never.heard.of.it") is False
 
     def test_supports_capability_scoped_to_specific_tool(self):
-        from tools.computer_use.cua_backend import _CuaDriverSession, _AsyncBridge
+        from tools.computer_use.cua_backend_session import _CuaDriverSession, _AsyncBridge
 
         session = _CuaDriverSession(_AsyncBridge())
         session._capabilities = {
@@ -2309,7 +2406,7 @@ class TestStartupTimeoutPhaseDetail:
         import threading
         from typing import Any, cast
         from unittest.mock import MagicMock, patch as _patch
-        from tools.computer_use.cua_backend import _CuaDriverSession
+        from tools.computer_use.cua_backend_session import _CuaDriverSession
 
         session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
         session._lock = threading.Lock()
@@ -2435,59 +2532,6 @@ class TestBoundsSpaceNote:
         assert _bounds_space_note(zero, 0, 0) is None
 
 
-class TestEscalationEnrichment:
-    """Browser-class background_unavailable refusals gain a typed-page hint."""
-
-    def _refusal(self, **overrides):
-        from tools.computer_use.backend import ActionResult
-
-        kw = dict(
-            ok=False, action="type_text", message="refused",
-            code="background_unavailable",
-            escalation={"recommended": "foreground", "reason": "dropped"},
-            meta={"event_kind": "text_input",
-                  "target_class": "Chrome_WidgetWin_1"},
-        )
-        kw.update(overrides)
-        return ActionResult(**kw)
-
-    def test_browser_text_refusal_gains_page_alternative(self):
-        from tools.computer_use.tool import _enrich_escalation
-
-        enriched = _enrich_escalation(self._refusal())
-        # Driver's recommendation is never overridden — only augmented.
-        assert enriched["recommended"] == "foreground"
-        assert enriched["alternative"] == "page"
-        assert "cua_browser_type" in enriched["alternative_hint"]
-
-    def test_non_browser_target_untouched(self):
-        from tools.computer_use.tool import _enrich_escalation
-
-        res = self._refusal(meta={"event_kind": "text_input",
-                                  "target_class": "Notepad"})
-        assert "alternative" not in _enrich_escalation(res)
-
-    def test_non_foreground_recommendation_untouched(self):
-        from tools.computer_use.tool import _enrich_escalation
-
-        res = self._refusal(escalation={"recommended": "px"})
-        assert "alternative" not in _enrich_escalation(res)
-
-    def test_missing_escalation_passthrough(self):
-        from tools.computer_use.backend import ActionResult
-        from tools.computer_use.tool import _enrich_escalation
-
-        assert _enrich_escalation(
-            ActionResult(ok=True, action="click", message="ok")) is None
-
-    def test_enrichment_survives_action_payload(self):
-        from tools.computer_use.tool import _action_payload
-
-        payload = _action_payload(self._refusal())
-        assert payload["escalation"]["alternative"] == "page"
-        assert payload["verdict"]["decision"] == "escalate"
-
-
 class TestElementSpillFile:
     """Detail dropped from the in-context capture must be recoverable on disk."""
 
@@ -2551,6 +2595,55 @@ class TestElementSpillFile:
         # Capture still succeeds and stays budget-capped without the file.
         assert out["truncated_elements"] == 20
         assert "elements_file" not in out
+
+
+class TestCaptureScreenshotPersistence:
+    """Image captures expose a bounded file for explicit user delivery."""
+
+    _PNG_B64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76L"
+        "AAAADUlEQVR4nGNgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
+    )
+
+    def _capture(self):
+        from tools.computer_use.backend import CaptureResult
+
+        return CaptureResult(
+            mode="vision",
+            width=8,
+            height=8,
+            png_b64=self._PNG_B64,
+            image_mime_type="image/png",
+            png_bytes_len=len(base64.b64decode(self._PNG_B64)),
+        )
+
+    def test_multimodal_capture_exposes_shareable_screenshot(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(
+            cu_tool, "_should_route_through_aux_vision", lambda: False,
+        )
+        out = cu_tool._capture_response(self._capture())
+
+        screenshot_path = out["meta"]["screenshot_path"]
+        assert screenshot_path in out["text_summary"]
+        assert "MEDIA:" not in out["text_summary"]
+        assert screenshot_path.startswith(str(tmp_path / "cache" / "images"))
+        assert Path(screenshot_path).read_bytes() == base64.b64decode(self._PNG_B64)
+
+    def test_capture_cache_is_bounded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(cu_tool, "_MAX_CAPTURE_FILES", 2)
+        for _ in range(3):
+            assert cu_tool._persist_capture_image(self._capture()) is not None
+
+        captures = list((tmp_path / "cache" / "images").glob("computer_use_*.*"))
+        assert len(captures) == 2
 
 
 class TestBoundsScaleField:

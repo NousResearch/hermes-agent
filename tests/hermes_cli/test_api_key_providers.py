@@ -341,6 +341,9 @@ class TestResolveApiKeyProviderCredentials:
 
 
     def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
+        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+
+        _invalidate_gh_cli_token_cache()
         monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
         monkeypatch.setattr(
             "hermes_cli.copilot_auth.os.path.isfile",
@@ -532,11 +535,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda _pid: {})
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
         )
         monkeypatch.setattr(
-            "agent.anthropic_adapter.is_claude_code_token_valid",
+            "agent.anthropic_credentials.is_claude_code_token_valid",
             lambda creds: True,
         )
         from hermes_cli.main import _has_any_provider_configured
@@ -839,14 +842,14 @@ class TestKimiMoonshotModelListIsolation:
     """Moonshot (legacy) users must not see Coding Plan-only models."""
 
     def test_moonshot_list_excludes_coding_plan_only_models(self):
-        from hermes_cli.main import _PROVIDER_MODELS
+        from hermes_cli.models import _PROVIDER_MODELS
         moonshot_models = _PROVIDER_MODELS["moonshot"]
         coding_plan_only = {"kimi-for-coding", "kimi-k2-thinking-turbo"}
         leaked = set(moonshot_models) & coding_plan_only
         assert not leaked, f"Moonshot list contains Coding Plan-only models: {leaked}"
 
     def test_moonshot_list_non_empty(self):
-        from hermes_cli.main import _PROVIDER_MODELS
+        from hermes_cli.models import _PROVIDER_MODELS
         assert len(_PROVIDER_MODELS["moonshot"]) >= 1
 
 
@@ -860,7 +863,7 @@ class TestHuggingFaceModels:
 
     def test_model_lists_match(self):
         """Model lists in main.py and models.py should be identical."""
-        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as main_models
         from hermes_cli.models import _PROVIDER_MODELS as models_models
         assert main_models["huggingface"] == models_models["huggingface"]
 
@@ -899,9 +902,10 @@ class TestNovitaProvider:
     def test_novita_pricing_cache(self, monkeypatch):
         """_fetch_novita_pricing should cache results in _pricing_cache."""
         from hermes_cli import models as models_mod
+        from hermes_cli import models_pricing
         monkeypatch.setenv("NOVITA_API_KEY", "sk-test-key")
         monkeypatch.setenv("NOVITA_BASE_URL", "https://api.novita.ai/openai/v1")
-        models_mod._pricing_cache.pop("https://api.novita.ai/openai/v1", None)
+        models_pricing._pricing_cache.pop("https://api.novita.ai/openai/v1", None)
 
         call_count = {"n": 0}
         fake_payload = {
@@ -934,17 +938,17 @@ class TestNovitaProvider:
         )
 
         # First call hits the network.
-        first = models_mod._fetch_novita_pricing()
+        first = models_pricing._fetch_novita_pricing()
         assert "x/y" in first
         assert call_count["n"] == 1
 
         # Second call returns cached result without re-hitting the network.
-        second = models_mod._fetch_novita_pricing()
+        second = models_pricing._fetch_novita_pricing()
         assert second == first
         assert call_count["n"] == 1
 
         # force_refresh bypasses the cache.
-        models_mod._fetch_novita_pricing(force_refresh=True)
+        models_pricing._fetch_novita_pricing(force_refresh=True)
         assert call_count["n"] == 2
 
 
@@ -1001,6 +1005,7 @@ def _deepinfra_cache_isolation(monkeypatch):
     a later test's fetch within the failure TTL.
     """
     import hermes_cli.models as _models_mod
+    from hermes_cli import models_pricing
     monkeypatch.setattr(_models_mod, "_deepinfra_catalog_cache", {})
     monkeypatch.setattr(_models_mod, "_deepinfra_catalog_neg_cache", {})
     yield
@@ -1027,6 +1032,7 @@ class TestFetchDeepInfraModels:
                 ]}).encode()
 
         import hermes_cli.models as models
+        from hermes_cli import models_pricing
         monkeypatch.setattr(
             models, "_urlopen_model_catalog_request", lambda *a, **kw: _Resp()
         )
@@ -1044,6 +1050,7 @@ class TestFetchDeepInfraModels:
 
     def test_catalog_uses_credential_safe_opener(self, monkeypatch):
         import hermes_cli.models as models
+        from hermes_cli import models_pricing
 
         seen = {}
 
@@ -1116,6 +1123,7 @@ class TestDeepInfraTagFiltering:
         ]}
         from hermes_cli.models import _fetch_deepinfra_models_by_tag
         import hermes_cli.models as _m
+        from hermes_cli import models_pricing
 
         for surface in ("chat", "image-gen", "tts", "stt", "embed"):
             monkeypatch.setattr(
@@ -1168,12 +1176,13 @@ class TestDeepInfraPricingFetcher:
             {"id": "vendor/model-image", "metadata": {"tags": ["image-gen"], "pricing": {"per_image_unit": 0.05}}},
         ]}
         import hermes_cli.models as models
+        from hermes_cli import models_pricing
         monkeypatch.setattr(
             models,
             "_urlopen_model_catalog_request",
             _make_urlopen_returning(payload),
         )
-        from hermes_cli.models import get_pricing_for_provider
+        from hermes_cli.models_pricing import get_pricing_for_provider
 
         # get_pricing_for_provider → _fetch_deepinfra_pricing dispatch path
         result = get_pricing_for_provider("deepinfra")
@@ -1214,3 +1223,46 @@ class TestDeepInfraProviderProfile:
         # of truth. Pin the shape only, not contents.
         assert isinstance(profile.fallback_models, tuple)
 
+
+
+class TestRuntimeAlibabaRegionalAndTokenPlan:
+    """#73265: the catalog-advertised Alibaba China/Token Plan variants must
+    resolve on the shared execution path (resolve_runtime_provider), not just
+    in the profile registry — provider, key, api mode, and base URL."""
+
+    def test_runtime_alibaba_cn(self, monkeypatch):
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "ds-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-cn")
+        assert result["provider"] == "alibaba-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "ds-key"
+        assert result["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    def test_runtime_alibaba_coding_plan_cn(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "acp-key")
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-coding-plan-cn")
+        assert result["provider"] == "alibaba-coding-plan-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "acp-key"
+        assert result["base_url"] == "https://coding.dashscope.aliyuncs.com/v1"
+
+    def test_runtime_alibaba_token_plan(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-token-plan")
+        assert result["provider"] == "alibaba-token-plan"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "atp-key"
+        assert result["base_url"] == "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+
+    def test_runtime_alibaba_token_plan_cn(self, monkeypatch):
+        monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "atp-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="alibaba-token-plan-cn")
+        assert result["provider"] == "alibaba-token-plan-cn"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "atp-key"
+        assert result["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"

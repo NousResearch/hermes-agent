@@ -135,3 +135,34 @@ async def test_verbose_dispatches_mid_run(monkeypatch):
     assert "can't run mid-turn" not in (result or "")
 
 
+@pytest.mark.asyncio
+async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
+    """Total turn age must not evict an agent with fresh activity.
+
+    A long autonomous turn can legitimately run beyond the emergency wall TTL.
+    Evicting it solely by age forgets the control handle while its session-ID
+    lease remains held, so /steer and /stop fall into the lease waiter instead
+    of reaching the live agent.
+    """
+    import time
+
+    runner = _make_runner()
+    sk = build_session_key(_make_source())
+    agent = runner._running_agents[sk]
+    agent.get_activity_summary.return_value = {
+        "seconds_since_activity": 3.0,
+        "last_activity_desc": "receiving stream response",
+        "api_call_count": 1186,
+        "max_iterations": 2000,
+    }
+    runner._running_agents_ts[sk] = time.time() - 31_471
+    runner._handle_verbose_command = AsyncMock(return_value="tool progress: new")
+    monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "1800")
+
+    result = await runner._handle_message(_make_event("/verbose"))
+
+    runner._handle_verbose_command.assert_awaited_once()
+    assert runner._running_agents[sk] is agent
+    assert result == "tool progress: new"
+
+

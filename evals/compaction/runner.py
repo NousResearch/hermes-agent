@@ -243,7 +243,7 @@ def run_policy(name: str, spec: dict, messages, questions, out_dir: Path,
     results = []
     for qa in questions:
         if with_recovery:
-            # The summary (digests, verbatim user msgs, recovery footer) sits
+            # The summary (session log, verbatim user msgs, recovery footer) sits
             # near the FRONT of the serialized context; give the query writer
             # that portion plus the recent tail so it can mine anchor
             # identifiers (PR numbers, paths, error strings) for the query.

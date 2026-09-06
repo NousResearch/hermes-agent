@@ -42,8 +42,20 @@ def test_advertises_descriptor_max_length():
 
 
 def test_supports_draft_streaming_follows_descriptor():
+    # NS-658: the flag alone no longer advertises drafts — before the
+    # "draft" op existed, flag=True was a latent lie (send_draft inherited
+    # NotImplementedError). Advertisement now requires flag AND op.
     assert _adapter(supports_draft_streaming=False).supports_draft_streaming() is False
-    assert _adapter(supports_draft_streaming=True).supports_draft_streaming() is True
+    assert (
+        _adapter(supports_draft_streaming=False, supported_ops=("send", "draft"))
+        .supports_draft_streaming()
+        is False
+    ), "op without flag must not advertise"
+    assert (
+        _adapter(supports_draft_streaming=True, supported_ops=("send", "draft"))
+        .supports_draft_streaming()
+        is True
+    )
 
 
 def test_len_fn_utf16_counts_code_units():
@@ -84,7 +96,7 @@ class _CaptureTransport:
     def __init__(self):
         self.sent = None
         self.sent_platform = None
-        # No concrete fronted identities ⇒ _platform_is_fronted is a no-op here.
+        # No concrete fronted identities ⇒ fronts_platform is a no-op here.
         self._identities = []
 
     def set_inbound_handler(self, h):  # noqa: D401

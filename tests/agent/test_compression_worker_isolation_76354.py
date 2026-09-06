@@ -130,6 +130,82 @@ def test_f3_mutating_engine_cannot_touch_live_transcript_after_timeout(
     assert live == baseline
 
 
+def test_host_timeout_releases_pool_slot_while_protected_provider_is_still_blocked(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fence timeout must unwind the compression owner, not occupy the pool.
+
+    Protected auxiliary calls isolate their provider stream on a daemon thread.
+    The compression owner must observe its commit-fence cancellation and unwind
+    immediately; otherwise four slow streams consume all four shared compression
+    workers until the auxiliary stream's much longer absolute ceiling expires.
+    """
+    from agent import auxiliary_client as aux
+    from agent import conversation_compression as cc
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        with cc._compress_admission_lock:
+            if cc._compress_admitted_count == 0:
+                break
+        time.sleep(0.02)
+    with cc._compress_admission_lock:
+        assert cc._compress_admitted_count == 0
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "F3_PROVIDER_OWNER_RELEASE"
+    db.create_session(session_id, source="cli")
+    agent = _build_agent_with_db(db, session_id)
+    agent._cached_system_prompt = "sys"
+    monkeypatch.setattr(
+        "agent.conversation_compression.resolve_context_compression_timeouts",
+        lambda cfg=None: (0.05, 0.1),
+    )
+
+    provider_started = threading.Event()
+    release_provider = threading.Event()
+
+    def _blocked_provider(_kwargs):
+        provider_started.set()
+        assert release_provider.wait(timeout=10)
+        return "late-provider-result"
+
+    def _compress_with_protected_provider(msgs, **_kwargs):
+        aux._run_protected_sync_provider_call(_blocked_provider, {})
+        return msgs
+
+    agent.context_compressor.compress.side_effect = _compress_with_protected_provider
+    live = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    try:
+        returned, _sp = agent._compress_context(
+            live, "sys", approx_tokens=120_000
+        )
+        assert returned is live
+        assert provider_started.wait(timeout=1)
+        assert not release_provider.is_set()
+
+        deadline = time.time() + 1
+        while time.time() < deadline:
+            with cc._compress_admission_lock:
+                if cc._compress_admitted_count == 0:
+                    break
+            time.sleep(0.01)
+        with cc._compress_admission_lock:
+            assert cc._compress_admitted_count == 0, (
+                "timed-out compression owner retained its shared pool slot "
+                "while the isolated provider stream was still blocked"
+            )
+    finally:
+        release_provider.set()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            with cc._compress_admission_lock:
+                if cc._compress_admitted_count == 0:
+                    break
+            time.sleep(0.02)
+
+
 def test_f4_five_step_stale_holder_regression(tmp_path: Path) -> None:
     """Reviewer's exact 5-step durable-lease regression (#76354 F4).
 

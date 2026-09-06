@@ -1,29 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const getCronJobs = vi.fn()
+const getApiRequestConnection = vi.fn<() => null | string>(() => null)
 const triggerCronJob = vi.fn()
 
 vi.mock('@/hermes', () => ({
+  getApiRequestConnection: () => getApiRequestConnection(),
   getCronJobs: (...args: unknown[]) => getCronJobs(...args),
   triggerCronJob: (...args: unknown[]) => triggerCronJob(...args)
 }))
 
 import { beginCronJobsRequest } from '@/store/cron'
 
+import { deferred } from '../../test/deferred'
+
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(res => {
-    resolve = res
-  })
-
-  return { promise, resolve }
-}
 
 describe('triggerAndRefreshCronJobs', () => {
   beforeEach(() => {
+    getApiRequestConnection.mockReset()
+    getApiRequestConnection.mockReturnValue(null)
     getCronJobs.mockReset()
     triggerCronJob.mockReset()
   })
@@ -106,6 +102,8 @@ describe('triggerAndRefreshCronJobs', () => {
 
 describe('mutateAndRefreshCronJobs', () => {
   beforeEach(() => {
+    getApiRequestConnection.mockReset()
+    getApiRequestConnection.mockReturnValue(null)
     getCronJobs.mockReset()
   })
 

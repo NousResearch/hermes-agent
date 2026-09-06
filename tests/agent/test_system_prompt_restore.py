@@ -379,5 +379,73 @@ class TestReconstructStaticPrefixMemoization:
         assert getattr(agent, "_static_rebuild_failed_for", None) is None
 
 
+class TestPerResponseSessionWritePath:
+    """The write path under an embedding host's per-response session (#96570).
+
+    Hermes Studio group chat pre-creates the SQLite row and pre-persists the
+    user message BEFORE ``run_conversation()``, then runs one turn under a
+    session id it destroys afterwards. The row therefore starts with a null
+    system prompt and a non-empty history on its own genuine FIRST turn, which
+    is what trips the "stored system prompt is null" warning — the warning is
+    a first-turn artifact of that lifecycle, not evidence of a lost write.
+
+    This pins the write path against that exact lifecycle: the freshly built
+    prompt must land in the pre-created row within the same run.
+    """
+
+    def _agent(self, db, session_id):
+        agent = _make_agent(session_db=db, prebuilt_prompt="GROUP_PROMPT")
+        agent.session_id = session_id
+        return agent
+
+    def test_prepersisted_row_stores_the_freshly_built_prompt(self, tmp_path):
+        from hermes_state import SessionDB
+
+        session_id = "gc_run_room42_default_Worker_5f2c1ab9d4e34f7a8b0c6d1e2f3a4b5c"
+        with SessionDB(db_path=tmp_path / "state.db") as db:
+            # What the bridge does before the turn starts.
+            db.create_session(session_id, source="studio")
+            db.append_message(session_id=session_id, role="user", content="hi")
+
+            _restore_or_build_system_prompt(
+                self._agent(db, session_id),
+                None,
+                [{"role": "user", "content": "hi"}],
+            )
+
+            assert db.get_session(session_id)["system_prompt"] == "GROUP_PROMPT"
+
+    def test_warning_is_a_first_turn_artifact_not_a_lost_write(
+        self, tmp_path, caplog
+    ):
+        """Second turn of the SAME id restores — so nothing was dropped."""
+        from hermes_state import SessionDB
+
+        session_id = "gc_run_room42_default_Worker_9a7e3b1c05d24e6fb83a1c7d9e0f2a4b"
+        history = [{"role": "user", "content": "hi"}]
+        with SessionDB(db_path=tmp_path / "state.db") as db:
+            db.create_session(session_id, source="studio")
+            db.append_message(session_id=session_id, role="user", content="hi")
+
+            with caplog.at_level(
+                logging.WARNING, logger="agent.conversation_loop"
+            ):
+                _restore_or_build_system_prompt(
+                    self._agent(db, session_id), None, history
+                )
+            assert "is null" in caplog.text
+
+            caplog.clear()
+            second = self._agent(db, session_id)
+            with caplog.at_level(
+                logging.WARNING, logger="agent.conversation_loop"
+            ):
+                _restore_or_build_system_prompt(second, None, history)
+
+            assert second._cached_system_prompt == "GROUP_PROMPT"
+            second._build_system_prompt.assert_not_called()
+            assert "is null" not in caplog.text
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

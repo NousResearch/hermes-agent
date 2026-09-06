@@ -75,27 +75,6 @@ def _slack_thread_source() -> SessionSource:
 CONTINUATION_TEXT = "[Continuing toward your standing goal]\nGoal: ship it"
 
 
-def _warm_goal_db(goals) -> None:
-    """Cache the goals SessionDB for this HERMES_HOME from an off-loop thread.
-
-    ``_get_session_db()`` never constructs SessionDB on an event-loop thread;
-    it waits 0.25s on a background bootstrap and then degrades to None. The
-    ``GoalManager(...).set()`` call below runs inside an async test, so on a
-    loaded CI runner that write could be dropped and the goal never became
-    active. Warming from a worker thread takes the synchronous branch.
-    """
-    import threading
-
-    holder: dict = {}
-    t = threading.Thread(
-        target=lambda: holder.__setitem__("db", goals._get_session_db()),
-        name="warm-goal-db",
-    )
-    t.start()
-    t.join(30)
-    assert holder.get("db") is not None, "could not open goals SessionDB for test home"
-
-
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
     from pathlib import Path
@@ -108,7 +87,11 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
-    _warm_goal_db(goals)
+    # Pre-warm the SessionDB cache from this sync (non-loop) context so the
+    # async tests' GoalManager.set() never races the bounded loop-thread
+    # bootstrap window on loaded CI runners (goal silently not persisted →
+    # continuation never enqueued; flaked on main run 33455779041).
+    goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
 

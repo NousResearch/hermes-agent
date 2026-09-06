@@ -24,6 +24,12 @@ outputs:
   docker_meta:
     description: Docker setup and meta files have changed.
     value: ${{ steps.classify.outputs.docker_meta }}
+  docker:
+    description: Files included in the docker image have changed.
+    value: ${{ steps.classify.outputs.docker }}
+  nix:
+    description: Run `nix flake check` (flake inputs, or any product Python change).
+    value: ${{ steps.classify.outputs.nix }}
   site:
     description: Build the Docusaurus docs site.
     value: ${{ steps.classify.outputs.site }}
@@ -42,6 +48,12 @@ outputs:
   installer:
     description: Run the PowerShell installer tests on a Windows runner.
     value: ${{ steps.classify.outputs.installer }}
+  desktop_updater:
+    description: Run the Windows desktop-update hand-off (windows.ps1) integration tests.
+    value: ${{ steps.classify.outputs.desktop_updater }}
+  rust:
+    description: Run `cargo test` for the Tauri bootstrap installer.
+    value: ${{ steps.classify.outputs.rust }}
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}

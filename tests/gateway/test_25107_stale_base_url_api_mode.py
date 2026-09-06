@@ -90,7 +90,7 @@ def _setup_isolated_home(tmp_path, monkeypatch, model_yaml_value, *, base_url=""
     monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
+        "hermes_cli.model_switch_providers.list_picker_providers",
         lambda **kw: [{"slug": "custom", "name": "Custom", "models": ["local-llama"]}],
     )
     monkeypatch.setattr(

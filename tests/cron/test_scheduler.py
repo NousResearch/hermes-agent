@@ -16,11 +16,10 @@ from cron.scheduler import (
     _merge_mcp_into_per_job_toolsets,
     _resolve_cron_enabled_toolsets,
     _resolve_delivery_target,
-    _resolve_origin,
-    _send_media_via_adapter,
     _summarize_cron_failure_for_delivery,
     run_job,
 )
+from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -118,6 +117,23 @@ class TestPerJobToolsetMcpMerge:
         assert m_platform.call_args[0][1] == "cron"
         assert set(result) == set(sentinel)
 
+    def test_resolver_keeps_memory_in_per_job_list(self):
+        result = _resolve_cron_enabled_toolsets(
+            {"enabled_toolsets": ["memory", "file"]},
+            {"mcp_servers": {}},
+        )
+        assert "memory" in result
+        assert "file" in result
+
+    def test_resolver_keeps_memory_from_platform_fallback(self):
+        job = {"enabled_toolsets": None}
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            return_value={"web", "memory", "file"},
+        ):
+            result = _resolve_cron_enabled_toolsets(job, {})
+        assert result == ["file", "memory", "web"]
+
 
 class TestResolveOrigin:
     def test_full_origin(self):
@@ -177,6 +193,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001",
             "thread_id": "17585",
+            "_resolved_from": "origin",
         }
 
 
@@ -221,6 +238,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1003724596514",
             "thread_id": "17",
+            "_resolved_from": "explicit",
         }
 
 
@@ -237,6 +255,7 @@ class TestResolveDeliveryTarget:
             "platform": "whatsapp",
             "chat_id": "12345678901234@lid",
             "thread_id": None,
+            "_resolved_from": "explicit",
         }
 
 
@@ -252,6 +271,7 @@ class TestResolveDeliveryTarget:
             "platform": "whatsapp",
             "chat_id": "12345@lid",
             "thread_id": None,
+            "_resolved_from": "explicit",
         }
 
     def test_unresolved_target_still_delivered_as_written(self):
@@ -270,6 +290,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "ops-room",
             "thread_id": None,
+            "_resolved_from": "explicit",
         }
 
 
@@ -371,6 +392,9 @@ class TestDeliverResultWrapping:
         relay.send_for_platform = AsyncMock(return_value=MagicMock(success=True))
         relay.send_voice = AsyncMock(return_value=MagicMock(success=True))
         relay.supports_inchannel_continuable = False
+        # Not a real RelayAdapter: keep the auto-created accessor from
+        # shadowing the scalar False (MagicMock fabricates truthy callables).
+        relay.supports_inchannel_continuable_for_platform = None
 
         config = GatewayConfig(
             platforms={
@@ -526,10 +550,10 @@ class TestRunJobSessionPersistence:
         fake_db.get_compression_tip.side_effect = lambda session_id: session_id
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -584,10 +608,10 @@ class TestRunJobSessionPersistence:
         mock_agent.run_conversation.return_value = {"final_response": "ok"}
         base = [
             patch("cron.scheduler._hermes_home", tmp_path),
-            patch("cron.scheduler._resolve_origin", return_value=None),
+            patch("cron.scheduler_delivery._resolve_origin", return_value=None),
             patch("hermes_cli.env_loader.load_hermes_dotenv"),
             patch("hermes_cli.env_loader.reset_secret_source_cache"),
-            patch("hermes_state.SessionDB", return_value=fake_db),
+            patch("hermes_state_registry.acquire", return_value=fake_db),
             patch(
                 "hermes_cli.runtime_provider.resolve_runtime_provider",
                 return_value={
@@ -607,16 +631,15 @@ class TestRunJobSessionPersistence:
             yield fake_db, mock_agent_cls
 
 
-    def test_run_job_memory_toolset_disabled_in_cron(self, tmp_path):
-        """memory toolset must be disabled in cron sessions — issue #38129.
+    def test_run_job_memory_enabled_in_cron(self, tmp_path):
+        """Cron agents get memory like any other agent run.
 
-        Cron agents are constructed with skip_memory=True, so the memory
-        backend is not initialised.  Exposing the memory tool only gives the
-        model an unbacked tool that fails at runtime with
-        "Memory is not available."  Hiding it from the schema prevents that.
+        skip_memory=False and the memory toolset is not policy-denied, so
+        MEMORY.md/USER.md load and the memory tool follows normal toolset
+        resolution.
         """
         job = {
-            "id": "memory-hide-job",
+            "id": "memory-enabled-job",
             "name": "test",
             "prompt": "hello",
         }
@@ -624,18 +647,13 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert "memory" in (kwargs["disabled_toolsets"] or []), (
-            "memory toolset should be disabled in cron to match skip_memory=True"
+        assert kwargs["skip_memory"] is False
+        assert "memory" not in (kwargs["disabled_toolsets"] or []), (
+            "memory toolset must not be policy-denied in cron"
         )
 
-    def test_run_job_disables_memory_even_when_per_job_enables_it(self, tmp_path):
-        """Cron runs pass skip_memory=True, so memory must not be exposed.
-
-        A cron job can request the memory tool through enabled_toolsets, but
-        there is no MemoryStore injected for cron agents.  Keep memory in the
-        disabled set so AIAgent filters the unbacked tool out before the model
-        can call it and receive "Memory is not available" failures.
-        """
+    def test_run_job_keeps_per_job_memory_toolset(self, tmp_path):
+        """A per-job enabled_toolsets naming memory keeps it."""
         job = {
             "id": "memory-toolset-job",
             "name": "test",
@@ -646,9 +664,10 @@ class TestRunJobSessionPersistence:
             run_job(job)
 
         kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["skip_memory"] is True
-        assert kwargs["enabled_toolsets"] == ["memory", "file"]
-        assert "memory" in kwargs["disabled_toolsets"]
+        assert kwargs["skip_memory"] is False
+        assert "memory" in (kwargs["enabled_toolsets"] or [])
+        assert "file" in (kwargs["enabled_toolsets"] or [])
+        assert "memory" not in kwargs["disabled_toolsets"]
 
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""
@@ -694,7 +713,7 @@ class TestRunJobSessionPersistence:
              patch("cron.scheduler.claim_job_for_fire", return_value=True), \
              patch("cron.scheduler.mark_job_run") as mock_mark, \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("cron.scheduler.run_job", return_value=(True, "output", "", None)):
             tick(verbose=False)
 
@@ -734,7 +753,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -794,7 +813,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -855,7 +874,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -902,10 +921,10 @@ class TestRunJobSessionPersistence:
             return []
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.reset_secret_source_cache", _record_reset), \
              patch("hermes_cli.env_loader.load_hermes_dotenv", _record_load), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -966,7 +985,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._preflight_job_config", return_value=None), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -1022,14 +1041,14 @@ class TestRunJobConfigLogging:
         # / hit the network and have caused this test to time out on CI
         # (>30s wall clock) under load. See PR #33661 follow-up.
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value={"provider": "openrouter", "api_key": "x",
                                  "base_url": "https://example.invalid",
                                  "api_mode": "chat_completions"}), \
-             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1061,10 +1080,10 @@ class TestRunJobConfigEnvVarExpansion:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1125,13 +1144,13 @@ class TestRunJobConfigEnvVarExpansion:
             return {**self._RUNTIME, "provider": "xai", "api_mode": "chat_completions"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
-             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1181,13 +1200,13 @@ class TestRunJobConfigEnvVarExpansion:
             return {**self._RUNTIME, "provider": "openrouter"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    side_effect=resolve_runtime), \
-             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1211,10 +1230,10 @@ class TestRunJobConfigEnvVarExpansion:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1256,10 +1275,10 @@ class TestRunJobModelResolution:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1282,10 +1301,10 @@ class TestRunJobModelResolution:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1314,10 +1333,10 @@ class TestRunJobModelResolution:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1339,10 +1358,10 @@ class TestRunJobModelResolution:
         fake_db = MagicMock()
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -1375,17 +1394,19 @@ class TestRunJobSkillBacked:
             register_env_passthrough(["NOTION_API_KEY"])
             return json.dumps({"success": True, "content": "# notion\nUse Notion."})
 
-        def _run_conversation(prompt):
+        def _run_conversation(prompt, *, task_id=None):
             from tools.env_passthrough import get_all_passthrough
 
+            assert isinstance(task_id, str)
+            assert task_id.startswith("cron:skill-env-job:")
             assert "NOTION_API_KEY" in get_all_passthrough()
             return {"final_response": "ok"}
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
                  return_value={
@@ -1653,8 +1674,9 @@ class TestRunJobWakeGate:
         suppressed."""
         from cron.scheduler import SILENT_MARKER
         import cron.scheduler as scheduler
+        from cron import scheduler_script as sched_script
 
-        with patch.object(scheduler, "_run_job_script",
+        with patch.object(sched_script, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
              patch("run_agent.AIAgent") as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
@@ -1669,13 +1691,14 @@ class TestRunJobWakeGate:
         """When the script returns {wakeAgent: true, data: ...}, the agent is
         invoked and the data line still shows up in the prompt."""
         import cron.scheduler as scheduler
+        from cron import scheduler_script as sched_script
 
         script_output = '{"wakeAgent": true, "data": {"new": 3}}'
         agent = MagicMock()
         agent.run_conversation = MagicMock(return_value={
             "final_response": "ok", "messages": []
         })
-        with patch.object(scheduler, "_run_job_script",
+        with patch.object(sched_script, "_run_job_script",
                           return_value=(True, script_output)), \
              patch("run_agent.AIAgent", return_value=agent) as agent_cls:
             success, doc, final, err = scheduler.run_job(self._make_job())
@@ -2072,8 +2095,9 @@ class TestDeliverOriginUnresolvableIsLocal:
 
     def _deliver(self, job, monkeypatch):
         import cron.scheduler as sched
+        from cron import scheduler_delivery as sched_delivery
         # No home channel for any platform → origin is unresolvable.
-        monkeypatch.setattr(sched, "_get_home_target_chat_id", lambda *_: "")
+        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
         return _deliver_result(job, "CLI bulletin")
 
     def test_origin_with_no_home_channels_returns_none(self, monkeypatch):
@@ -2171,7 +2195,7 @@ class TestCronDeliveryTargets:
         )
 
     def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
-        from cron.scheduler import cron_delivery_targets
+        from cron.scheduler_delivery import cron_delivery_targets
 
         self._patch_connected(monkeypatch, ["matrix", "telegram"])
         monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
@@ -2179,11 +2203,20 @@ class TestCronDeliveryTargets:
 
         targets = {t["id"]: t for t in cron_delivery_targets()}
 
-        assert set(targets) == {"matrix", "telegram"}
+        # bot-chat:<profile> entries (machine-local Bot Chat injection) ride
+        # the same listing but are not gateway platforms — scope the
+        # platform assertions to the gateway entries.
+        platform_targets = {k: v for k, v in targets.items() if not k.startswith("bot-chat")}
+
+        assert set(platform_targets) == {"matrix", "telegram"}
         # Configured but no home channel → surfaced, flagged for the UI.
-        assert targets["matrix"]["home_target_set"] is False
-        assert targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
-        assert targets["telegram"]["home_target_set"] is False
+        assert platform_targets["matrix"]["home_target_set"] is False
+        assert platform_targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
+        assert platform_targets["telegram"]["home_target_set"] is False
+        # Bot Chat targets need no home channel: whatever profiles exist on
+        # this machine must all be listed as ready.
+        bot_chat = [v for k, v in targets.items() if k.startswith("bot-chat")]
+        assert all(t["home_target_set"] for t in bot_chat)
 
 
 class TestHomeTargetEnvVarRegistry:
@@ -2208,7 +2241,7 @@ class TestCronDeliveryMirror:
         turn (with a [Cron delivery: ...] label), NOT assistant — an
         assistant-role mirror lands as assistant->assistant after the agent's
         last turn and breaks strict alternation on non-Anthropic providers."""
-        from cron.scheduler import _maybe_mirror_cron_delivery
+        from cron.scheduler_delivery import _maybe_mirror_cron_delivery
 
         with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
             _maybe_mirror_cron_delivery(
@@ -2266,7 +2299,7 @@ class TestCronDeliveryMirror:
     def test_open_thread_returns_id_on_thread_platform(self):
         """On a thread-capable adapter, _open_continuable_cron_thread returns
         the new thread id from create_handoff_thread."""
-        from cron.scheduler import _open_continuable_cron_thread
+        from cron.scheduler_delivery import _open_continuable_cron_thread
 
         adapter = MagicMock()
         adapter.create_handoff_thread = AsyncMock(return_value="9001")
@@ -2290,7 +2323,7 @@ class TestCronDeliveryMirror:
     def test_seed_thread_session_creates_session_and_mirrors(self):
         """Seeding a freshly-opened thread creates the thread-keyed session via
         the adapter's live store and appends the brief via mirror_to_session."""
-        from cron.scheduler import _seed_cron_thread_session
+        from cron.scheduler_delivery import _seed_cron_thread_session
 
         store = MagicMock()
         adapter = MagicMock()
@@ -2337,7 +2370,8 @@ class TestCronContinuableSurfaceInChannel:
         mock_cfg.platforms = {Platform.SLACK: pconfig}
         return mock_cfg
 
-    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None):
+    def _run_inchannel_delivery(self, extra, adapter, *, mirror_ok=True, origin=None,
+                                attach_to_session=True):
         """Drive _deliver_result down the live-adapter path for a Slack
         channel-origin job with the given ``extra`` config. Returns the
         _open_continuable_cron_thread mock and the mirror_to_session mock."""
@@ -2366,13 +2400,14 @@ class TestCronContinuableSurfaceInChannel:
             # Carries the scheduling user's id — the in_channel seed must key
             # the flat channel session to THIS user (see build_session_key).
             "origin": origin or {"platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN"},
-            # Opt into the continuable mirror.
-            "attach_to_session": True,
+            # Opt into the continuable mirror (parameterized: the seed must
+            # NOT depend on this — see the no-attach regression test).
+            "attach_to_session": attach_to_session,
         }
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("cron.scheduler._open_continuable_cron_thread") as open_thread_mock, \
+             patch("cron.scheduler_delivery._open_continuable_cron_thread") as open_thread_mock, \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("gateway.mirror.mirror_to_session", return_value=mirror_ok) as mirror_mock:
             _deliver_result(
@@ -2383,9 +2418,18 @@ class TestCronContinuableSurfaceInChannel:
 
     def _slack_adapter(self, supports_inchannel=True, with_store=True):
         adapter = AsyncMock()
-        adapter.send.return_value = MagicMock(success=True)
+        adapter.send.return_value = MagicMock(
+            success=True, message_id="msg_1", raw_response=None,
+        )
         # Capability flag read via getattr in the scheduler.
         adapter.supports_inchannel_continuable = supports_inchannel
+        # Pin the per-platform accessor OFF: an unspecced AsyncMock would
+        # auto-create it as a truthy callable, silently routing every test
+        # through the relay accessor branch instead of the native scalar
+        # fallback these tests describe (and making supports_inchannel=False
+        # unenforceable). None -> not callable -> scalar path, like a real
+        # native adapter that never defines the method.
+        adapter.supports_inchannel_continuable_for_platform = None
         # A live session store so the in_channel seed can CREATE the flat row
         # (the real bug: without a create step the mirror no-ops on a missing
         # session and the brief is lost). Use a plain MagicMock store.
@@ -2409,7 +2453,7 @@ class TestCronContinuableSurfaceInChannel:
         """The whole point: the flat session the seed CREATES must be keyed
         identically to what a plain inbound channel reply resolves to. Assert
         the invariant directly via build_session_key, not just call args."""
-        from cron.scheduler import _seed_cron_channel_session
+        from cron.scheduler_delivery import _seed_cron_channel_session
         from gateway.session import build_session_key, SessionSource
         from gateway.config import Platform
 
@@ -2439,6 +2483,210 @@ class TestCronContinuableSurfaceInChannel:
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") is None
         assert mirror_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+
+    def test_in_channel_seed_fires_without_attach_to_session(self):
+        """REGRESSION (live, Alice 2026-08-19): the in_channel seed was gated on
+        mirror_this_target (mirror_enabled AND origin match), so a continuable
+        in_channel cron created WITHOUT attach_to_session (and with the
+        cron.mirror_delivery global at its default False) delivered the brief
+        flat but never seeded the flat session — the next plain reply hit a
+        blank session and the agent had no idea about its own delivery message.
+
+        in_channel IS the continuation surface: the seed must fire on origin
+        match alone. attach_to_session stays the opt-in for the SEPARATE
+        default-surface mirror behavior; it must not be required here."""
+        from cron.scheduler import _deliver_result  # noqa: F401 (driven via helper)
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        with patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True) as seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        seed_mock.assert_called_once()
+        # user_id must ride along even without the mirror opt-in — the flat
+        # session key includes it on per-user-isolated chats.
+        assert seed_mock.call_args.kwargs.get("user_id") == "U_HUMAN"
+
+    def test_in_channel_flattens_thread_without_attach_to_session(self):
+        """REGRESSION: the thread-id-clearing gate was `mirror_this_target`
+        while the seed below had been decoupled to origin-match alone. With
+        the default knobs off (attach_to_session=False, cron.mirror_delivery
+        unset) and an origin carrying a REAL thread_id, the brief still
+        delivered INTO the origin thread while the flat (thread_id=None)
+        session got seeded — brief and continuation surface in different
+        places. The flatten must use the same gate as the seed: origin_target.
+        Asserts on the routed DeliveryTarget, not just that the seed ran."""
+        captured = {}
+
+        class _SpyRouter:
+            def __init__(self, *a, **k):
+                pass
+
+            async def _deliver_to_platform(self, target, text, metadata):
+                captured["target"] = target
+                return {"success": True, "message_id": "msg_1"}
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        origin_with_thread = {
+            "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
+            # Genuine origin thread (job created from inside a thread).
+            "thread_id": "1787188000.000100",
+        }
+        with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
+             patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True) as seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False, origin=origin_with_thread,
+            )
+        seed_mock.assert_called_once()
+        assert captured["target"].thread_id is None, (
+            "in_channel delivery routed into the origin thread "
+            f"({captured['target'].thread_id}) — the flat seeded session "
+            "does not match where the brief actually landed"
+        )
+
+    def test_origin_scope_id_rides_delivery_metadata(self):
+        """REGRESSION (restart-shaped): the connector's fail-closed tenant
+        guard resolves the workspace from metadata.scope_id. After a gateway
+        restart the RelayAdapter's per-chat scope cache is cold, and
+        DeliveryRouter stamps scope only for the configured HOME channel —
+        so a scoped Slack origin that is NOT the home chat egressed with no
+        scope_id and could be rejected before delivery. The scheduler must
+        stamp the persisted origin scope onto origin-matching routing
+        metadata (and never onto fan-out targets, which the origin-match
+        gate already excludes)."""
+        captured = {}
+
+        class _SpyRouter:
+            def __init__(self, *a, **k):
+                pass
+
+            async def _deliver_to_platform(self, target, text, metadata):
+                captured["metadata"] = metadata
+                return {"success": True, "message_id": "msg_1"}
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        scoped_origin = {
+            "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
+            # Persisted workspace scope (captured at job creation). C123 is
+            # not any configured home channel in this harness.
+            "scope_id": "T0AAAA111",
+        }
+        with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
+             patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True):
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False, origin=scoped_origin,
+            )
+        assert captured["metadata"].get("scope_id") == "T0AAAA111", (
+            "persisted origin scope_id did not reach the delivery metadata — "
+            "a cold-cache relay egress has no tenant discriminator"
+        )
+
+    def test_legacy_origin_without_scope_stamps_nothing(self):
+        """Legacy jobs (origin persisted before scope capture) must not gain
+        a scope_id key — the relay's per-chat cache / home-channel stamping
+        remain the only sources, exactly today's behavior."""
+        captured = {}
+
+        class _SpyRouter:
+            def __init__(self, *a, **k):
+                pass
+
+            async def _deliver_to_platform(self, target, text, metadata):
+                captured["metadata"] = metadata
+                return {"success": True, "message_id": "msg_1"}
+
+        adapter = self._slack_adapter(supports_inchannel=True)
+        with patch("gateway.delivery.DeliveryRouter", _SpyRouter), \
+             patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True):
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        assert "scope_id" not in captured["metadata"]
+
+    def test_native_adapter_scalar_false_fails_safe_to_thread(self):
+        """D6 fallback boundary with a REAL (non-mock) adapter shape: a native
+        adapter defines only the scalar supports_inchannel_continuable and no
+        per-platform accessor — MagicMock-based fixtures can't prove this
+        branch because they fabricate a truthy accessor. Scalar False must
+        fail safe to thread mode: the in_channel seed never fires."""
+
+        class _NativeShapedAdapter:
+            supports_inchannel_continuable = False
+            _session_store = None
+
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, chat_id, content, metadata=None, **kwargs):
+                self.sent.append((chat_id, content))
+                return MagicMock(success=True, message_id="msg_1",
+                                 raw_response=None)
+
+        adapter = _NativeShapedAdapter()
+        assert not callable(
+            getattr(adapter, "supports_inchannel_continuable_for_platform", None)
+        )
+        with patch("cron.scheduler_delivery._seed_cron_channel_session") as seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        # Delivery must have gone through the LIVE adapter — otherwise a
+        # broken harness that never delivers would also leave the seed
+        # uncalled and this test would pass for the wrong reason.
+        assert len(adapter.sent) == 1
+        assert adapter.sent[0][0] == "C123"
+        # Capability absent -> surface fails safe to thread -> flat seed
+        # must NOT run (D6).
+        seed_mock.assert_not_called()
+
+    def test_seed_mirrors_into_exact_created_session_on_populated_chat(self):
+        """REGRESSION (live, Alice 2026-08-19 19:17): 'in_channel seed did NOT
+        land'. The seed created the flat session row, then mirror_to_session
+        re-discovered the target via origin heuristics — and on a populated
+        chat (flat session + N per-message thread sessions sharing chat_id,
+        mixed user_ids) find_session_by_origin's multi-candidate bail-out
+        returned None, silently dropping the brief. The seed must mirror into
+        the EXACT session row it just created, no rediscovery."""
+        from cron.scheduler_delivery import _seed_cron_channel_session
+
+        store = MagicMock()
+        created = MagicMock()
+        created.session_id = "sess-flat-exact"
+        store.get_or_create_session.return_value = created
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            ok = _seed_cron_channel_session(
+                {"id": "j1", "name": "Brief"}, adapter, "slack", "D0BJTDCSR7C",
+                "Daily brief", is_dm=True, user_id="U_HUMAN", chat_name=None,
+            )
+        assert ok is True
+        # The mirror received the exact created session id — origin-scan
+        # heuristics (and their populated-chat bail-out) are out of the path.
+        assert mirror_mock.call_args.kwargs.get("session_id") == "sess-flat-exact"
+
+    def test_in_channel_also_seeds_thread_surface_of_delivered_brief(self):
+        """REGRESSION (live, Alice 2026-08-19 19:19): the user replied IN THE
+        BRIEF'S THREAD (Slack's natural affordance on a flat message). That
+        reply keys to (chat, thread=<brief ts>) — a session in_channel mode
+        never seeded, so the agent had no idea about its own brief. The flat
+        delivery's message_id must anchor a companion thread-surface seed."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        with patch("cron.scheduler_delivery._seed_cron_channel_session", return_value=True), \
+             patch("cron.scheduler_delivery._seed_cron_thread_session") as thread_seed_mock:
+            self._run_inchannel_delivery(
+                {"slack": {"cron_continuable_surface": "in_channel"}}, adapter,
+                attach_to_session=False,
+            )
+        thread_seed_mock.assert_called_once()
+        # Anchored on the delivered message id (the router's SendResult).
+        assert thread_seed_mock.call_args.args[4] == "msg_1"
 
 
 class TestMultiTargetDeliveryContinuesOnFailure:

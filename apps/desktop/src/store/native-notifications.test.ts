@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $gateway } from './gateway'
 import {
+  clearPluginNotifyHandlers,
   dispatchNativeNotification,
   dispatchPluginNativeNotification,
+  invokePluginNotifyAction,
+  invokePluginNotifyActivate,
   NATIVE_NOTIFICATION_KINDS,
   respondToApprovalAction,
   sendTestNativeNotification,
@@ -12,6 +15,7 @@ import {
 } from './native-notifications'
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, setApprovalRequest } from './prompts'
+import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
 import { $activeSessionId, setActiveSessionId } from './session'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -44,16 +48,21 @@ beforeEach(() => {
   }
 
   setActiveSessionId(null)
+  resetBackgroundPollingGuard()
   setWindowState({ focused: false, hidden: true })
   __resetNativeNotifyBaselineForTests()
 })
 
 afterEach(() => {
+  clearPluginNotifyHandlers()
+
   if (initialHermesDesktop) {
     desktopWindow.hermesDesktop = initialHermesDesktop
   } else {
     delete desktopWindow.hermesDesktop
   }
+
+  resetBackgroundPollingGuard()
 })
 
 describe('dispatchNativeNotification focus gating', () => {
@@ -197,6 +206,78 @@ describe('dispatchPluginNativeNotification', () => {
     dispatchPluginNativeNotification('plugin-b', { title: 'b' })
     expect(notify).toHaveBeenCalledTimes(2)
   })
+
+  it('does not register handlers for throttled or suppressed notifications', () => {
+    const onActivate = vi.fn()
+
+    // First fires and registers; the immediate repeat is throttled per plugin id.
+    dispatchPluginNativeNotification('leak-plugin', { onActivate: () => undefined, title: 'first' })
+    dispatchPluginNativeNotification('leak-plugin', { onActivate, title: 'throttled' })
+    expect(notify).toHaveBeenCalledTimes(1)
+
+    // The throttled call must not have registered anything: no notifyId ever
+    // reached the OS, so its handlers would leak. Invoking with the only
+    // minted id (from the first call) must not hit the throttled callback.
+    const payload = notify.mock.calls[0]?.[0] as { notifyId?: string }
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(onActivate).not.toHaveBeenCalled()
+
+    // Fully suppressed (kind disabled): nothing registered either.
+    setNativeNotifyKind('plugin', false)
+    const suppressed = vi.fn()
+    dispatchPluginNativeNotification('other-plugin', { onActivate: suppressed, title: 'muted' })
+    expect(notify).toHaveBeenCalledTimes(1)
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(suppressed).not.toHaveBeenCalled()
+  })
+
+  it('forwards icon, resolved activate path, and action buttons (deeplink-compatible)', () => {
+    // Unique tag (throttle is per plugin id); activate still uses the plugin deep link.
+    dispatchPluginNativeNotification('index-network-alerts', {
+      actions: [
+        { id: 'open', label: 'Open', activate: 'hermes://index-network/intent/1' },
+        { id: 'dismiss', label: 'Dismiss', onAction: () => undefined }
+      ],
+      activate: 'hermes://index-network/intent/1',
+      body: 'New match',
+      icon: '/tmp/index-network.png',
+      title: 'Opportunity'
+    })
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activate: '/index-network/intent/1',
+        actions: [
+          { activate: '/index-network/intent/1', id: 'open', text: 'Open' },
+          { activate: undefined, id: 'dismiss', text: 'Dismiss' }
+        ],
+        icon: '/tmp/index-network.png',
+        kind: 'plugin',
+        notifyId: expect.stringMatching(/^index-network-alerts:/),
+        tag: 'index-network-alerts',
+        title: 'Opportunity'
+      })
+    )
+  })
+
+  it('registers onActivate / onAction handlers keyed by notifyId', () => {
+    const onActivate = vi.fn()
+    const onAction = vi.fn()
+
+    dispatchPluginNativeNotification('handlers-plugin', {
+      activate: 'hermes://index-network/intent/1',
+      onActivate,
+      actions: [{ id: 'dismiss', label: 'Dismiss', onAction }],
+      title: 'Opportunity'
+    })
+
+    const payload = notify.mock.calls[0]?.[0] as { notifyId?: string }
+    expect(payload.notifyId).toBeTruthy()
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(onActivate).toHaveBeenCalledTimes(1)
+    expect(invokePluginNotifyAction(payload.notifyId, 'dismiss')).toBe(true)
+    expect(onAction).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('dispatchNativeNotification throttle', () => {
@@ -260,6 +341,14 @@ describe('respondToApprovalAction', () => {
   it('no-ops without a gateway', async () => {
     $gateway.set(null)
     await respondToApprovalAction('bg', 'approve')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('does not retry an approval action for a runtime already marked gone', async () => {
+    markSessionGone('bg')
+
+    await respondToApprovalAction('bg', 'approve')
+
     expect(request).not.toHaveBeenCalled()
   })
 })

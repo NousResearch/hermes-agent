@@ -178,3 +178,9 @@ jobs:
 
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
+
+      # The Sep 2026 decomposition kept old import paths alive for external plugins
+      # (PLUGIN-COMPAT blocks, see COMPAT_MANIFEST.md). They are removed on schedule by
+      # reverting one commit, so in-tree code must never depend on them.
+      - name: Forbid in-tree use of plugin-compat pointers
+        run: python scripts/check_compat_pointers.py

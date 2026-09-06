@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from agent.monitoring.events import CronExecutionEvent
-from agent.monitoring.gateway_health import GatewayHealthSnapshot, GatewayMetric
+from agent.monitoring.gateway_health import GatewayMetric, _contains_any, _safe_instance_id
 from cron.jobs import (
     _compute_grace_seconds,
     get_catch_up_occurrence_count,
@@ -19,12 +18,13 @@ from cron.jobs import (
     load_jobs,
 )
 from cron.scheduler import get_running_job_ids
-from hermes_time import now as _hermes_now
+from hermes_time import now as _now
 
 logger = logging.getLogger(__name__)
 _KNOWN_STATUSES = {"claimed", "running", "completed", "failed", "unknown"}
 _KNOWN_SOURCES = {"builtin", "direct", "external"}
-_KNOWN_DELIVERY_OUTCOMES = {"delivered", "failed", "suppressed", "not_configured"}
+_KNOWN_DELIVERY_OUTCOMES = {"delivered", "failed", "suppressed", "suppressed_acked", "not_configured"}
+_TERMINAL_STATUSES = {"completed", "failed", "unknown"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,39 +33,31 @@ class CronHealthSnapshot:
     events: list[CronExecutionEvent]
 
 
-def _now() -> datetime:
-    return _hermes_now()
+# Opaque job key: same sha256:<24 hex> shape as service.instance.id — never the raw id.
+_job_key = _safe_instance_id
 
+_AUTH_RE = re.compile(
+    r"\b(?:authentication|authenticated|authenticate|authorization|authorized|authorize|unauthorized|forbidden|bearer|401|403)\b"
+    r"|\b(?:access|api|refresh) token\b"
+)
 
-def _job_key(raw: Any) -> str:
-    value = str(raw or "unknown").encode("utf-8", errors="replace")
-    return f"sha256:{hashlib.sha256(value).hexdigest()[:24]}"
+# Ordered (predicate, class) rules; first match wins. Auth uses word boundaries so
+# "oauth"/"tokenizer"/"HTTP 4015" do not false-positive.
+_CRON_ERROR_RULES: tuple[tuple[Callable[[str], bool], str], ...] = (
+    (lambda s: _AUTH_RE.search(s) is not None, "auth_failed"),
+    (_contains_any("rate limit", "429", "quota"), "rate_limited"),
+    (_contains_any("timeout", "timed out"), "timeout"),
+    (_contains_any("network", "connection", "dns", "socket", "unreachable"), "network_error"),
+    (_contains_any("dispatch", "executor"), "dispatch_failed"),
+    (_contains_any("interrupt", "owner exited", "restarted"), "interrupted"),
+    (_contains_any("empty response"), "empty_response"),
+    (_contains_any("config", "missing", "invalid"), "invalid_config"),
+)
 
 
 def classify_cron_error(raw: Any) -> str:
     text = str(raw or "").lower()
-    if (
-        re.search(r"\b(?:authentication|authenticated|authenticate|authorization|authorized|authorize|unauthorized|forbidden)\b", text)
-        or re.search(r"\bbearer\b", text)
-        or re.search(r"\b(?:access|api|refresh) token\b", text)
-        or re.search(r"\b(?:401|403)\b", text)
-    ):
-        return "auth_failed"
-    if "rate limit" in text or "429" in text or "quota" in text:
-        return "rate_limited"
-    if "timeout" in text or "timed out" in text:
-        return "timeout"
-    if any(value in text for value in ("network", "connection", "dns", "socket", "unreachable")):
-        return "network_error"
-    if "dispatch" in text or "executor" in text:
-        return "dispatch_failed"
-    if "interrupt" in text or "owner exited" in text or "restarted" in text:
-        return "interrupted"
-    if "empty response" in text:
-        return "empty_response"
-    if any(value in text for value in ("config", "missing", "invalid")):
-        return "invalid_config"
-    return "unknown"
+    return next((label for match, label in _CRON_ERROR_RULES if match(text)), "unknown")
 
 
 def _parse_time(raw: Any) -> Optional[datetime]:
@@ -87,43 +79,31 @@ def _duration_ms(record: dict[str, Any]) -> Optional[int]:
     return max(0, duration)
 
 
-def project_execution_event(
-    record: dict[str, Any], *, delivery_outcome: Optional[str] = None
-) -> CronExecutionEvent:
+def project_execution_event(record: dict[str, Any], *, delivery_outcome: Optional[str] = None) -> CronExecutionEvent:
     status = str(record.get("status") or "unknown").lower()
     source = str(record.get("source") or "unknown").lower()
-    if source not in _KNOWN_SOURCES and source != "unknown":
-        source = "external"
     outcome = str(delivery_outcome).lower() if delivery_outcome is not None else None
     return CronExecutionEvent(
         status=status if status in _KNOWN_STATUSES else "unknown",
         job_key=_job_key(record.get("job_id")),
-        source=source if source in _KNOWN_SOURCES else "unknown",
+        # Unknown non-empty sources are bucketed as "external" (not dropped to unknown).
+        source=source if source in _KNOWN_SOURCES or source == "unknown" else "external",
         duration_ms=_duration_ms(record),
-        delivery_outcome=(
-            outcome if outcome in _KNOWN_DELIVERY_OUTCOMES else None
-        ),
-        error_class=(
-            classify_cron_error(record.get("error"))
-            if status in {"failed", "unknown"}
-            else None
-        ),
+        delivery_outcome=outcome if outcome in _KNOWN_DELIVERY_OUTCOMES else None,
+        error_class=classify_cron_error(record.get("error")) if status in {"failed", "unknown"} else None,
     )
 
 
-def emit_execution_state(
-    record: Optional[dict[str, Any]], *, delivery_outcome: Optional[str] = None
-) -> None:
+def emit_execution_state(record: Optional[dict[str, Any]], *, delivery_outcome: Optional[str] = None) -> None:
     """Best-effort lifecycle emit; terminal states synchronously cross the queue barrier."""
     if not record:
         return
     try:
         from agent.monitoring import emitter
-
         event = project_execution_event(record, delivery_outcome=delivery_outcome)
         target = emitter.get_emitter()
         target.emit(event)
-        if event.status in {"completed", "failed", "unknown"}:
+        if event.status in _TERMINAL_STATUSES:
             target.flush(timeout=1.0)
     except Exception:
         logger.debug("cron execution telemetry emit failed", exc_info=True)
@@ -139,63 +119,75 @@ def _is_overdue(job: dict[str, Any], now: datetime) -> bool:
     try:
         if next_run.tzinfo is None and now.tzinfo is not None:
             next_run = next_run.replace(tzinfo=now.tzinfo)
-        lateness = (now - next_run).total_seconds()
-        return lateness > _compute_grace_seconds(schedule)
+        return (now - next_run).total_seconds() > _compute_grace_seconds(schedule)
     except (TypeError, ValueError):
         return False
 
 
+def _job_metrics(metrics: list[GatewayMetric]) -> None:
+    enabled = [job for job in load_jobs() if job.get("enabled", True)]
+    metrics.append(GatewayMetric("hermes.cron.jobs.enabled", len(enabled), {}))
+    metrics.append(GatewayMetric("hermes.cron.jobs.overdue", sum(1 for job in enabled if _is_overdue(job, _now())), {}))
+
+
+def _freshness_metric(name: str, reader: Callable[[], Optional[float]]) -> Callable[[list[GatewayMetric]], None]:
+    def build(metrics: list[GatewayMetric]) -> None:
+        value = reader()
+        if value is not None:
+            metrics.append(GatewayMetric(name, max(0.0, float(value)), {}))
+
+    return build
+
+
+def _single_metric(name: str, reader: Callable[[], Any]) -> Callable[[list[GatewayMetric]], None]:
+    return lambda metrics: metrics.append(GatewayMetric(name, reader(), {}))
+
+
+# Each group is independently fail-open so one unavailable source never hides the rest.
+# Readers are wrapped in lambdas so monkeypatching this module's names still takes effect.
+_METRIC_GROUPS: tuple[tuple[Callable[[list[GatewayMetric]], None], str], ...] = (
+    (_freshness_metric("hermes.cron.scheduler.heartbeat_age_seconds", lambda: get_ticker_heartbeat_age()), "cron freshness metric unavailable"),
+    (_freshness_metric("hermes.cron.scheduler.last_success_age_seconds", lambda: get_ticker_success_age()), "cron freshness metric unavailable"),
+    (_single_metric("hermes.cron.scheduler.catch_up_occurrences", lambda: get_catch_up_occurrence_count()), "cron catch-up metric unavailable"),
+    (_job_metrics, "cron job metrics unavailable"),
+    (_single_metric("hermes.cron.jobs.running", lambda: len(get_running_job_ids())), "cron running-job metric unavailable"),
+)
+
+
 def build_cron_health_snapshot() -> CronHealthSnapshot:
     metrics: list[GatewayMetric] = []
-    for name, reader in (
-        ("hermes.cron.scheduler.heartbeat_age_seconds", get_ticker_heartbeat_age),
-        ("hermes.cron.scheduler.last_success_age_seconds", get_ticker_success_age),
-    ):
+    for build, failure_msg in _METRIC_GROUPS:
         try:
-            value = reader()
-            if value is not None:
-                metrics.append(GatewayMetric(name, max(0.0, float(value)), {}))
+            build(metrics)
         except Exception:
-            logger.debug("cron freshness metric unavailable", exc_info=True)
-
-    try:
-        metrics.append(
-            GatewayMetric(
-                "hermes.cron.scheduler.catch_up_occurrences",
-                get_catch_up_occurrence_count(),
-                {},
-            )
-        )
-    except Exception:
-        logger.debug("cron catch-up metric unavailable", exc_info=True)
-
-    try:
-        jobs = load_jobs()
-        enabled = [job for job in jobs if job.get("enabled", True)]
-        metrics.append(GatewayMetric("hermes.cron.jobs.enabled", len(enabled), {}))
-        metrics.append(
-            GatewayMetric(
-                "hermes.cron.jobs.overdue",
-                sum(1 for job in enabled if _is_overdue(job, _now())),
-                {},
-            )
-        )
-    except Exception:
-        logger.debug("cron job metrics unavailable", exc_info=True)
-
-    try:
-        metrics.append(
-            GatewayMetric("hermes.cron.jobs.running", len(get_running_job_ids()), {})
-        )
-    except Exception:
-        logger.debug("cron running-job metric unavailable", exc_info=True)
+            logger.debug(failure_msg, exc_info=True)
     return CronHealthSnapshot(metrics=metrics, events=[])
 
 
 __all__ = [
-    "CronHealthSnapshot",
-    "build_cron_health_snapshot",
-    "classify_cron_error",
-    "emit_execution_state",
+    "CronHealthSnapshot", "build_cron_health_snapshot", "classify_cron_error", "emit_execution_state",
     "project_execution_event",
 ]
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import hashlib  # noqa: F401,E402
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'GatewayHealthSnapshot': ('agent.monitoring.gateway_health', 'GatewayHealthSnapshot'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    from hermes_cli.plugin_compat import warn_once
+    warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

@@ -122,9 +122,18 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // gap in their View family) and Hermes has no chord dispatcher, so this
   // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
   { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
+  // ⌥⌘T — "t" for tabs, reaching past ⇧ because ⌘⇧T is reopen-closed-tab
+  // everywhere. Ships BOUND, unlike VS Code's settings-only tab-bar switch:
+  // here the hide can take away every other affordance the zone had, so the
+  // way back has to already exist. (⌥+letter emits a symbol on macOS; the
+  // binding resolves through KeyT via comboFromEvent's `event.code` fallback.)
+  { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
+  // ⌘⇧L — "L" for location, the address-bar chord every browser shares. Plain
+  // ⌘L is the terminal's selection shortcut, hence the shift.
+  { id: 'view.showBrowser', category: 'view', defaults: ['mod+shift+l'] },
   // ⌘⇧H — "h" for HUD. Enters/leaves the chrome-free floating chat: the app
   // window steps aside and a composer + live reply float over whatever the
   // user is working in. Ships bound because the whole point is leaving the app
@@ -247,8 +256,18 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.help', category: 'composer', keys: ['?'] },
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
   { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
-  // Fixed, context-local shortcuts surfaced for discoverability.
-  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
+  // ⌘/Ctrl+L moves focus to the composer from anywhere, like the address-bar
+  // chord in a browser. The row reuses the id of the rebindable soft-focus
+  // action above. As a result, the panel shows one "Focus composer" label
+  // for both. The row is fixed because the selection shortcut below uses the
+  // same chord. Who claims a contested press: see the priority ladder in
+  // app/chat/composer/focus-chord.ts.
+  { id: 'composer.focus', category: 'composer', keys: ['mod+l'] },
+  // Fixed, context-local shortcuts, listed so users can find them. This row
+  // uses the same ⌘/Ctrl+L chord as `composer.focus` above. It is the
+  // selection half of the chord: the selected text (terminal text, preview
+  // lines) goes into the composer as context.
+  { id: 'view.selectionToComposer', category: 'view', keys: ['mod+l'] },
   // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
   // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
   // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.

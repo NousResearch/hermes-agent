@@ -513,11 +513,21 @@ class GroupChatSlashCommandsMixin:
                 and words[1].casefold() in {"bot", "bots"}
             ):
                 room = resolve_room(rooms, words[0])
-                if words[1].casefold() == "bot":
-                    if len(words) != 3:
-                        return (
-                            f"Use `{rooms_command} {words[0]} bot <number or handle>`."
-                        )
+                view = words[1].casefold()
+                if view == "bot" and len(words) != 3:
+                    return f"Use `{rooms_command} {words[0]} bot <number or handle>`."
+                if view == "bots" and len(words) != 2:
+                    return f"Use `{rooms_command} {words[0]} bots`."
+                try:
+                    from gateway.hosted_room_messaging_files import try_bot_menu
+                    if await try_bot_menu(
+                        self, event, service, room, rooms_command,
+                        bot_query=words[2] if view == "bot" else None,
+                    ):
+                        return None
+                except ImportError:
+                    pass
+                if view == "bot":
                     return await read(
                         format_room_bot_detail,
                         service,
@@ -525,8 +535,6 @@ class GroupChatSlashCommandsMixin:
                         words[2],
                         room_command=rooms_command,
                     )
-                if len(words) != 2:
-                    return f"Use `{rooms_command} {words[0]} bots`."
                 choices = await read(
                     room_bot_picker_choices,
                     service,

@@ -112,7 +112,7 @@ def _note_connect_failure(name: str, exc: BaseException) -> str:
     message = _errors._format_connect_error(exc)
     with _core._lock:
         _core._server_connecting.discard(name)
-        _core._server_connect_errors[name] = _errors._connect_error_text(message, exc)
+        _core._server_connect_errors[name] = message
         _record_connect_failure(name)
     return message
 
@@ -329,9 +329,7 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
                                "connecting set: %s", how, len(stale), ", ".join(stale))
                 _core._server_connecting.difference_update(stale)
                 for _sn in stale:
-                    message = f"Connection attempt {how} during discovery"
-                    _core._server_connect_errors.setdefault(
-                        _sn, _errors._MCPConnectErrorText(message, "check_failed"))
+                    _core._server_connect_errors.setdefault(_sn, f"Connection attempt {how} during discovery")
         raise
     finally:
         if _was_interrupted:
@@ -457,36 +455,24 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return bool(server_name and server_name in _core._parallel_safe_servers)
 
 
-def get_mcp_status(
-    configured: Optional[Dict[str, dict]] = None,
-    *,
-    include_runtime: bool = True,
-) -> List[dict]:
-    """Per-server cached status without initiating connections."""
+def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:
+    """Per-server status dicts for banner/TUI: name, transport, tools, connected, disabled,
+    status (connected / disabled / connecting / failed / configured) and error for failed.
+    Reads cached runtime state only; never connects."""
     configured = _config._load_mcp_config() if configured is None else dict(configured)
     if not configured:
         return []
     current_scope = _core._mcp_registry_scope()
     with _core._lock:
-        scope_keys = dict(_core._server_scope_keys) if include_runtime else {}
+        def visible(name: str) -> bool:
+            # Runtime state belongs to the profile that adopted it; under a multiplexer only that
+            # profile's view may show it, and ``include_runtime=False`` hides the launch profile's
+            # servers from a status read scoped to a different profile.
+            return include_runtime and _core._server_scope_keys.get(name, None) == current_scope
 
-        def visible_in_current_scope(name: str) -> bool:
-            if name in scope_keys:
-                return scope_keys[name] == current_scope
-            return current_scope is None
-
-        active_servers = {
-            name: server for name, server in _core._servers.items()
-            if include_runtime and visible_in_current_scope(name)
-        }
-        connecting = {
-            name for name in _core._server_connecting
-            if include_runtime and visible_in_current_scope(name)
-        }
-        connect_errors = {
-            name: error for name, error in _core._server_connect_errors.items()
-            if include_runtime and visible_in_current_scope(name)
-        }
+        active_servers = {n: s for n, s in _core._servers.items() if visible(n)}
+        connecting = {n for n in _core._server_connecting if visible(n)}
+        connect_errors = {n: e for n, e in _core._server_connect_errors.items() if visible(n)}
 
     result: List[dict] = []
     for name, cfg in configured.items():
@@ -495,13 +481,8 @@ def get_mcp_status(
         live = server is not None and server.session is not None
         status = ("connected" if live else "disabled" if not enabled else "connecting" if name in connecting
                   else "failed" if name in connect_errors else "configured")
-        reason = {
-            "connected": "healthy", "disabled": "not_configured",
-            "connecting": "stale", "configured": "stale",
-        }.get(status, "check_failed")
         entry = {"name": name, "transport": cfg.get("transport", "http") if "url" in cfg else "stdio",
-                 "tools": 0, "connected": False, "disabled": status == "disabled",
-                 "status": status, "reason": reason}
+                 "tools": 0, "connected": False, "disabled": status == "disabled", "status": status}
         if live:
             entry["connected"] = True
             entry["tools"] = (len(server._registered_tool_names) if hasattr(server, "_registered_tool_names")
@@ -509,13 +490,7 @@ def get_mcp_status(
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
         elif status == "failed":
-            stored_error = connect_errors[name]
-            failure = getattr(server, "_error", None) if server is not None else None
-            failure_reason = getattr(stored_error, "reason", None)
-            if failure_reason is None and isinstance(failure, BaseException):
-                failure_reason = _errors._connect_failure_reason(failure)
-            entry["reason"] = failure_reason or "check_failed"
-            entry["error"] = str(stored_error)
+            entry["error"] = connect_errors[name]
         result.append(entry)
     return result
 

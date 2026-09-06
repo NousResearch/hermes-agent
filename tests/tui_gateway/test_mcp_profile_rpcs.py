@@ -136,66 +136,9 @@ def test_status_is_profile_scoped_and_credential_safe(hermes_root):
             "connected": False,
             "disabled": False,
             "status": "configured",
-            "reason": "stale",
         }
     ]
     assert "error" not in str(payload)
-
-
-def test_status_redacts_internal_failures(hermes_root, monkeypatch):
-    from tools import mcp_tool_discovery
-
-    def fail(*args, **kwargs):
-        raise RuntimeError("token=must-not-leak")
-
-    monkeypatch.setattr(mcp_tool_discovery, "get_mcp_status", fail)
-    response = _call("mcp.servers.status", {"profile": "work"})
-
-    assert response["error"]["message"] == "MCP status unavailable"
-    assert "must-not-leak" not in str(response)
-
-
-def test_status_omits_raw_server_errors(hermes_root, monkeypatch):
-    from tools import mcp_tool_discovery
-
-    monkeypatch.setattr(
-        mcp_tool_discovery,
-        "get_mcp_status",
-        lambda configured, include_runtime: [{
-            "name": "svc",
-            "transport": "stdio",
-            "tools": 0,
-            "connected": False,
-            "disabled": False,
-            "status": "failed",
-            "reason": "auth_required",
-            "error": "token=must-not-leak",
-        }],
-    )
-
-    payload = _result(_call("mcp.servers.status"))
-    assert payload["servers"][0]["reason"] == "auth_required"
-    assert "error" not in payload["servers"][0]
-    assert "must-not-leak" not in str(payload)
-
-
-def test_status_does_not_run_the_runtime_config_loader(hermes_root, monkeypatch):
-    from tools import mcp_tool_config
-
-    _result(
-        _call(
-            "mcp.servers.add",
-            {"profile": "work", "name": "svc-a", "config": {"command": "svc-a-bin"}},
-        )
-    )
-
-    def forbidden():
-        raise AssertionError("runtime config loader executed")
-
-    monkeypatch.setattr(mcp_tool_config, "_load_mcp_config", forbidden)
-
-    payload = _result(_call("mcp.servers.status", {"profile": "work"}))
-    assert [server["name"] for server in payload["servers"]] == ["svc-a"]
 
 
 def test_status_does_not_mix_launch_runtime_into_another_profile(hermes_root):

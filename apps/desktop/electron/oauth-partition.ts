@@ -142,11 +142,7 @@ export function resolveOauthPartition(requestUrl: unknown, opts: ResolveOauthPar
     // Longest base-url prefix wins (sub-path gateways behind one proxy);
     // identical URLs tie-break on the lexicographically smallest id so the
     // choice is deterministic across processes and launches.
-    if (
-      !best ||
-      baseNorm.length > best.baseNorm.length ||
-      (baseNorm.length === best.baseNorm.length && id < best.id)
-    ) {
+    if (!best || baseNorm.length > best.baseNorm.length || (baseNorm.length === best.baseNorm.length && id < best.id)) {
       best = { baseNorm, id }
     }
   }

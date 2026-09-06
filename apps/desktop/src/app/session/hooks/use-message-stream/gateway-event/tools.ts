@@ -4,6 +4,7 @@ import { flashPetActivity, setPetActivity } from '@/store/pet'
 import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
+import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
@@ -16,6 +17,14 @@ import type { GatewayEventContext } from './types'
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
   const { flushQueuedDeltas, nativeSubagentSessionsRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
+
+  if (event.type === 'todo.updated') {
+    if (sessionId && !sessionInterrupted(sessionId)) {
+      restoreSessionTodosFromSnapshot(sessionId, payload, true)
+    }
+
+    return true
+  }
 
   if (event.type === 'tool.generating') {
     // Announced while the model is still emitting the call's JSON, so it

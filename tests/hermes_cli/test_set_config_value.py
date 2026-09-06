@@ -53,6 +53,7 @@ class TestExplicitAllowlist:
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
+        "API_SERVER_KEY",
     ])
     def test_explicit_key_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "test-value-123")
@@ -489,6 +490,8 @@ class TestSecretRedactionInDisplay:
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
 
+
+# ---------------------------------------------------------------------------
 # #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
 
@@ -749,28 +752,153 @@ class TestMalformedYAMLConfigPreservation:
         (home / "config.yaml").write_text(self.BROKEN_CONFIG)
 
     def test_set_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
-        """set_config_value must exit with error, not overwrite the broken config."""
+        """set_config_value must raise, not overwrite the broken config."""
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(RuntimeError, match="not valid YAML"):
             set_config_value("agent.max_turns", "50")
 
         captured = capsys.readouterr()
-        assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
+        combined = captured.out + captured.err
+        assert "Failed to parse" in combined or "not valid YAML" in combined
         # Original config must remain intact
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG, f"Config was overwritten:\n{raw}"
 
     def test_unset_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
-        """unset_config_value must exit with error, not overwrite the broken config."""
+        """unset_config_value must raise, not overwrite the broken config."""
         from hermes_cli.config import unset_config_value
 
         self._write_broken_config(_isolated_hermes_home)
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(RuntimeError, match="not valid YAML"):
             unset_config_value("model")
 
         captured = capsys.readouterr()
-        assert "Cannot parse" in captured.out or "Cannot parse" in captured.err
+        combined = captured.out + captured.err
+        assert "Failed to parse" in combined or "not valid YAML" in combined
         raw = _read_config(_isolated_hermes_home)
         assert raw == self.BROKEN_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# Literal dots in key paths — regression tests for #84064
+# ---------------------------------------------------------------------------
+
+class TestLiteralDotKeyEscaping:
+    """``hermes config set/unset/get`` must not split a key segment on a
+    literal dot.  Provider names routinely embed version numbers
+    (``qwen3.5-397b-wafer``), and before the backslash-escape (#84064)
+    ``providers.qwen3.5-397b-wafer.api_key`` silently created a bogus nested
+    ``qwen3`` -> ``5-397b-wafer`` structure while reporting success.
+    """
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False))
+
+    def test_split_key_path_escaped_dot(self):
+        from hermes_cli.config import _split_key_path
+
+        assert _split_key_path("providers.qwen3\\.5-397b.api_key") == [
+            "providers", "qwen3.5-397b", "api_key",
+        ]
+        assert _split_key_path("qwen3\\.5") == ["qwen3.5"]
+        assert _split_key_path("a\\.b\\.c") == ["a.b.c"]
+        # Unescaped keys keep plain dot-splitting semantics.
+        assert _split_key_path("terminal.backend") == ["terminal", "backend"]
+        assert _split_key_path("model") == ["model"]
+        # Backslash before a non-dot char is preserved verbatim.
+        assert _split_key_path("win\\path.key") == ["win\\path", "key"]
+
+    def test_set_preserves_literal_dot_in_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
+                "openrouter": {"api_key": "or-keep"},
+            }
+        })
+
+        set_config_value(
+            "providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
+            '{"Wafer-ZDR": "required"}',
+        )
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        providers = saved["providers"]
+        # No bogus ``qwen3`` nesting was created; the existing entry was updated.
+        assert "qwen3" not in providers
+        target = providers["qwen3.5-397b-wafer-non-zdr"]
+        assert target["api"] == "https://pass.wafer.ai/v1"
+        # Current main coerces structured-looking values to real mappings
+        # (_looks_structured_value), so the JSON string lands as a dict.
+        assert target["extra_headers"] == {"Wafer-ZDR": "required"}
+        # Sibling provider untouched.
+        assert providers["openrouter"] == {"api_key": "or-keep"}
+        # Escaped key is schema-known (providers.* is an open dict) — no warning.
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_unset_removes_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
+                "openrouter": {"api_key": "or-keep"},
+            }
+        })
+
+        args = argparse.Namespace(
+            config_command="unset",
+            key="providers.qwen3\\.5-397b-wafer-non-zdr",
+        )
+        config_command(args)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert "qwen3.5-397b-wafer-non-zdr" not in saved["providers"]
+        assert saved["providers"]["openrouter"] == {"api_key": "or-keep"}
+        assert "Unset providers.qwen3\\.5-397b-wafer-non-zdr" in capsys.readouterr().out
+
+    def test_unset_nested_field_under_literal_dot_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {
+                    "api": "https://pass.wafer.ai/v1",
+                    "extra_headers": '{"K": "V"}',
+                },
+            }
+        })
+
+        args = argparse.Namespace(
+            config_command="unset",
+            key="providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
+        )
+        config_command(args)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        target = saved["providers"]["qwen3.5-397b-wafer-non-zdr"]
+        assert "extra_headers" not in target
+        assert target["api"] == "https://pass.wafer.ai/v1"
+
+    def test_get_reads_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {"qwen3.5-397b": {"api": "https://pass.wafer.ai/v1"}},
+        })
+
+        args = argparse.Namespace(
+            config_command="get",
+            key="providers.qwen3\\.5-397b.api",
+            json=False,
+        )
+        config_command(args)
+
+        assert capsys.readouterr().out.strip() == "https://pass.wafer.ai/v1"
+
+    def test_unescaped_dotted_path_unchanged(self, _isolated_hermes_home):
+        """Nesting semantics for plain dotted keys are untouched."""
+        set_config_value("terminal.backend", "docker")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["backend"] == "docker"

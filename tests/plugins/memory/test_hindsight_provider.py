@@ -1550,6 +1550,37 @@ class TestLoadSimpleEnv:
         assert values.get("HINDSIGHT_LLM_API_KEY") == "sk-test"
 
 
+class TestEmbeddedEnvManagedKeyCompare:
+    def test_daemon_owned_port_key_does_not_read_as_config_change(self, tmp_path):
+        """The standalone daemon's profile manager writes daemon-owned keys
+        (HINDSIGHT_API_PORT) back into the same profile .env. A full-dict compare
+        against _build_embedded_profile_env() is therefore never equal, so every
+        session activation materializes the env and restarts the daemon, cancelling
+        in-flight retain/recall (ASGI 500 storm). Only plugin-managed keys should
+        participate in the compare."""
+        env_path = tmp_path / "hermes.env"
+        cfg = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "sk-test",
+            "llm_model": "glm-4-flash",
+            "llm_base_url": "https://example.test/v1",
+            "idle_timeout": 300,
+        }
+        built = _build_embedded_profile_env(cfg)
+        # Simulate the daemon having written its own key back into the file.
+        env_path.write_text(
+            "".join(f"{key}={value}\n" for key, value in built.items())
+            + "HINDSIGHT_API_PORT=9177\n"
+        )
+        on_disk = _load_simple_env(env_path)
+
+        # Full-dict compare misreads the daemon-owned PORT key as a config change...
+        assert on_disk != built
+        # ...the fix compares only plugin-managed keys, so no spurious restart.
+        assert not any(on_disk.get(key) != value for key, value in built.items())
+
+
 class TestPostSetupEnvEncoding:
     def _run_cloud_post_setup(self, tmp_path, monkeypatch):
         """Drive post_setup through the cloud path with piped stdin."""

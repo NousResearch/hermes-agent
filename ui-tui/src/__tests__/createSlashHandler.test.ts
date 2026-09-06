@@ -1072,6 +1072,43 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to rollback')
   })
 
+  // A pasted PR thread / diff / log reaches a skill command as its argument.
+  // parseSlashCommand used to split the whole line on `\s+` and rejoin with a
+  // single space, so every line break was gone before the skill ran — and the
+  // fallback command.dispatch carried that flattened text.
+  it('carries a multi-line argument to the backend without flattening it', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const arg = 'line one\nline two\n\n  indented tail'
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          kill: vi.fn(),
+          request: vi.fn((method: string) =>
+            method === 'slash.exec' ? Promise.reject(new Error('skill command')) : Promise.resolve({})
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    createSlashHandler(ctx)(`/pr-triage ${arg}`)
+
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: `pr-triage ${arg}`,
+      session_id: 'sid-abc'
+    })
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('command.dispatch', {
+        arg,
+        name: 'pr-triage',
+        session_id: 'sid-abc'
+      })
+    })
+  })
+
   it('/title <name> uses session.title RPC and bypasses slash.exec', async () => {
     patchUiState({ sid: 'sid-abc' })
     const rpc = vi.fn(() => Promise.resolve({ pending: false, title: 'my title' }))

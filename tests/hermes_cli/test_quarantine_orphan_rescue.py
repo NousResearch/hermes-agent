@@ -30,6 +30,7 @@ import pytest
 from hermes_cli import _early_recovery as er
 from hermes_cli import _install_repair as ir
 from hermes_cli import main as cli_main
+from hermes_cli import main_install_repair
 
 
 def _make_scripts_dir(tmp_path: Path) -> Path:
@@ -49,7 +50,7 @@ def _run_cleanup(scripts: Path):
     it has its own tests and must not run here.
     """
     return patch.multiple(
-        cli_main,
+        main_install_repair,
         _is_windows=lambda: True,
         _cleanup_pending_shim_renames=lambda _scripts_dir: 0,
     )
@@ -213,7 +214,7 @@ def test_cleanup_still_sweeps_genuinely_stale_quarantine(tmp_path):
     """Past the grace window, with the shim present, it's garbage — sweep it."""
     scripts = _make_scripts_dir(tmp_path)
     (scripts / "hermes.exe").write_bytes(b"MZ-live")
-    ancient_ms = (cli_main._QUARANTINE_GRACE_SECONDS + 60) * 1000
+    ancient_ms = (main_install_repair._QUARANTINE_GRACE_SECONDS + 60) * 1000
     stale = scripts / f"hermes.exe.old.{_stamp(ancient_ms)}"
     stale.write_bytes(b"MZ-stale")
 
@@ -240,9 +241,9 @@ def test_cleanup_age_comes_from_filename_not_mtime(tmp_path):
 
 
 def test_quarantine_stamp_ms_parses_and_rejects():
-    assert cli_main._quarantine_stamp_ms(Path("hermes.exe.old.1787020473885")) == 1787020473885
-    assert cli_main._quarantine_stamp_ms(Path("hermes.exe.old.backup")) is None
-    assert cli_main._quarantine_stamp_ms(Path("hermes.exe")) is None
+    assert main_install_repair._quarantine_stamp_ms(Path("hermes.exe.old.1787020473885")) == 1787020473885
+    assert main_install_repair._quarantine_stamp_ms(Path("hermes.exe.old.backup")) is None
+    assert main_install_repair._quarantine_stamp_ms(Path("hermes.exe")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +323,7 @@ def test_main_restore_reports_on_stderr(tmp_path, capsys):
         raise PermissionError(32, "being used by another process")
 
     with patch.object(er.os, "rename", always_locked):
-        cli_main._restore_quarantined_exes([(original, quarantined)])
+        main_install_repair._restore_quarantined_exes([(original, quarantined)])
 
     captured = capsys.readouterr()
     assert "FAILED to restore hermes.exe" in captured.err

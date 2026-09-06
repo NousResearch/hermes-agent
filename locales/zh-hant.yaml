@@ -137,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\n目前模式：`{mode}`\\n\\n請選擇："
     choice_fast:           "fast — 開啟 Priority Processing"
     choice_normal:         "normal — 標準處理"
+    choice_auto:           "auto — 每輪的前幾秒快速"
+    choice_cold:           "cold — 僅會話的第一輪快速"
 
   footer:
     status:                "📎 執行階段頁尾：**{state}**\n欄位：`{fields}`\n平台：`{platform}`"

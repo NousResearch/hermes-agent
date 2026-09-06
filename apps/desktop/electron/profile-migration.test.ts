@@ -25,8 +25,12 @@ import {
   listProfileDirs,
   migrateActiveProfileIfMissing,
   PROFILE_SCORE_MIN_SIZE_BYTES,
+  profileGatewayPidPath,
+  profileStateDbPath,
+  readExistingPreference,
   readLegacyActiveProfile,
-  scoreStateDb
+  scoreStateDb,
+  withDefaultCandidate
 } from './profile-migration'
 
 // ---------------------------------------------------------------------------
@@ -136,6 +140,7 @@ function baseDeps(overrides: Record<string, unknown> = {}) {
 
   return {
     legacyActivePath: '/home/u/.hermes/active_profile',
+    hermesHome: '/home/u/.hermes',
     profilesRoot: '/home/u/.hermes/profiles',
     existsSync: fs.existsSync,
     readFileSync: fs.readFileSync,
@@ -377,10 +382,11 @@ test('decideMigration returns null when no candidate scores and legacy is invali
 test('decideMigration suppresses write when best is default (single-profile fallback)', () => {
   // The whole point of the migration is to migrate AWAY from default when a
   // better candidate exists. If 'default' wins the score, the install is
-  // single-profile and we leave it alone.
+  // default-primary and we leave it alone. Default's DB is $HERMES_HOME/state.db,
+  // not profiles/default/state.db.
   const deps = baseDeps()
 
-  const d = decideMigration(null, [], ['default', 'coder'], deps, p => (p.endsWith('/default/state.db') ? 99 : 50))
+  const d = decideMigration(null, [], ['default', 'coder'], deps, p => (p.endsWith('/.hermes/state.db') ? 99 : 50))
 
   assert.equal(d, null)
 })
@@ -397,11 +403,20 @@ test('decideMigration still flags _migrated when legacy is invalid (undefined) b
 // migrateActiveProfileIfMissing (orchestrator)
 // ---------------------------------------------------------------------------
 
-test('migrateActiveProfileIfMissing is a no-op when the preference file exists', () => {
+test('migrateActiveProfileIfMissing is a no-op when a user-selected preference file exists', () => {
+  // No `_migrated` flag = explicit user/CLI choice. Even a huge other profile
+  // must not steal the pin.
   let written: unknown = null
 
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"coder"}' },
+    '/home/u/.hermes/profiles/coder': { dir: true },
+    '/home/u/.hermes/profiles/writer': { dir: true },
+    '/home/u/.hermes/profiles/writer/state.db': { size: 400 * 1024 * 1024, mtime: NOW - 86_400_000 }
+  })
+
   const deps = baseDeps({
-    existsSync: (p: string) => p === '/cfg/active-profile.json',
+    ...fs,
     writeJson: (_p: string, payload: unknown) => {
       written = payload
     }
@@ -453,10 +468,11 @@ test('migrateActiveProfileIfMissing writes heuristic choice with _migrated=true'
 test('migrateActiveProfileIfMissing is a no-op for single-profile (default-only) installs', () => {
   // No heuristic candidate can beat 'default', so the orchestrator must NOT
   // write a file — preserves legacy launch behavior for the 99% case.
+  // Production default DB is ~/.hermes/state.db, not profiles/default/state.db.
   let written: unknown = null
 
   const fs = makeFs({
-    '/home/u/.hermes/profiles/default/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
+    '/home/u/.hermes/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
   })
 
   const deps = baseDeps({
@@ -505,4 +521,167 @@ test('migrateActiveProfileIfMissing prefers a single running gateway over heuris
 
   assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), true)
   assert.deepEqual(written, { profile: 'coder' })
+})
+
+// ---------------------------------------------------------------------------
+// Production layout: default is ~/.hermes, not ~/.hermes/profiles/default
+// ---------------------------------------------------------------------------
+
+test('profileStateDbPath puts default at hermesHome, named under profilesRoot', () => {
+  assert.equal(profileStateDbPath('default', '/home/u/.hermes', '/home/u/.hermes/profiles'), '/home/u/.hermes/state.db')
+  assert.equal(
+    profileStateDbPath('conduit', '/home/u/.hermes', '/home/u/.hermes/profiles'),
+    '/home/u/.hermes/profiles/conduit/state.db'
+  )
+})
+
+test('profileGatewayPidPath puts default at hermesHome', () => {
+  assert.equal(
+    profileGatewayPidPath('default', '/home/u/.hermes', '/home/u/.hermes/profiles'),
+    '/home/u/.hermes/gateway.pid'
+  )
+  assert.equal(
+    profileGatewayPidPath('coder', '/home/u/.hermes', '/home/u/.hermes/profiles'),
+    '/home/u/.hermes/profiles/coder/gateway.pid'
+  )
+})
+
+test('withDefaultCandidate always leads with default and dedupes', () => {
+  assert.deepEqual(withDefaultCandidate([]), ['default'])
+  assert.deepEqual(withDefaultCandidate(['conduit']), ['default', 'conduit'])
+  assert.deepEqual(withDefaultCandidate(['default', 'conduit']), ['default', 'conduit'])
+})
+
+test('findRunningGatewayProfiles sees default gateway.pid at hermesHome', () => {
+  const fs = makeFs({
+    '/home/u/.hermes/gateway.pid': { content: '{"pid":99}' },
+    '/home/u/.hermes/profiles/coder/gateway.pid': { content: '{"pid":11}' }
+  })
+
+  assert.deepEqual(
+    findRunningGatewayProfiles('/home/u/.hermes/profiles', ['default', 'coder'], {
+      ...fs,
+      hermesHome: '/home/u/.hermes',
+      isHermesProcess: pid => pid === 99
+    }),
+    ['default']
+  )
+})
+
+test('migrateActiveProfileIfMissing does not pin a tiny named profile over a large default DB', () => {
+  // Regression for #100576: first-boot after update listed only
+  // ~/.hermes/profiles/<name>, never scored ~/.hermes/state.db, and wrote
+  // { profile: named, _migrated: true }.
+  let written: unknown = null
+
+  const fs = makeFs({
+    '/home/u/.hermes/profiles/conduit': { dir: true },
+    '/home/u/.hermes/state.db': { size: 409 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.hermes/profiles/conduit/state.db': { size: 2 * 1024 * 1024, mtime: NOW - 60_000 }
+  })
+
+  const deps = baseDeps({
+    ...fs,
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
+  })
+
+  assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), false)
+  assert.equal(written, null)
+})
+
+test('migrateActiveProfileIfMissing still pins a named profile that actually beats default', () => {
+  let written: unknown = null
+
+  const fs = makeFs({
+    '/home/u/.hermes/profiles/work': { dir: true },
+    '/home/u/.hermes/state.db': { size: 5 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.hermes/profiles/work/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
+  })
+
+  const deps = baseDeps({
+    ...fs,
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
+  })
+
+  assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), true)
+  assert.deepEqual(written, { profile: 'work', _migrated: true })
+})
+
+test('migrateActiveProfileIfMissing does not pin default when only default gateway is running', () => {
+  let written: unknown = null
+
+  const fs = makeFs({
+    '/home/u/.hermes/gateway.pid': { content: '{"pid":7}' },
+    '/home/u/.hermes/state.db': { size: 10 * 1024 * 1024, mtime: NOW - 86_400_000 }
+  })
+
+  const deps = baseDeps({
+    ...fs,
+    isHermesProcess: (pid: number) => pid === 7,
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
+  })
+
+  assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), false)
+  assert.equal(written, null)
+})
+
+test('readExistingPreference treats _migrated as heuristic-owned', () => {
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"conduit","_migrated":true}' }
+  })
+
+  assert.deepEqual(readExistingPreference('/cfg/active-profile.json', fs.readFileSync), {
+    profile: 'conduit',
+    migrated: true
+  })
+})
+
+test('migrateActiveProfileIfMissing repairs a pre-existing heuristic pin when default now wins', () => {
+  // Sol P1 / #100576: file already exists with _migrated:true so first-boot
+  // skip left affected installs stuck. Re-score and clear.
+  let written: unknown = null
+
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"conduit","_migrated":true}' },
+    '/home/u/.hermes/profiles/conduit': { dir: true },
+    '/home/u/.hermes/state.db': { size: 409 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.hermes/profiles/conduit/state.db': { size: 2 * 1024 * 1024, mtime: NOW - 60_000 }
+  })
+
+  const deps = baseDeps({
+    ...fs,
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
+  })
+
+  assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), true)
+  assert.deepEqual(written, { profile: null })
+})
+
+test('migrateActiveProfileIfMissing leaves a still-correct heuristic pin alone', () => {
+  let written: unknown = null
+
+  const fs = makeFs({
+    '/cfg/active-profile.json': { content: '{"profile":"work","_migrated":true}' },
+    '/home/u/.hermes/profiles/work': { dir: true },
+    '/home/u/.hermes/state.db': { size: 5 * 1024 * 1024, mtime: NOW - 86_400_000 },
+    '/home/u/.hermes/profiles/work/state.db': { size: 200 * 1024 * 1024, mtime: NOW - 86_400_000 }
+  })
+
+  const deps = baseDeps({
+    ...fs,
+    writeJson: (_p: string, payload: unknown) => {
+      written = payload
+    }
+  })
+
+  assert.equal(migrateActiveProfileIfMissing('/cfg/active-profile.json', deps), false)
+  assert.equal(written, null)
 })

@@ -15,6 +15,9 @@ export const PROFILE_SCORE_MIN_SIZE_BYTES = 1024
 
 export interface MigrationDeps {
   legacyActivePath: string
+  /** Default profile home (`~/.hermes`). Default's state.db and gateway.pid live here. */
+  hermesHome: string
+  /** Named-profile root (`~/.hermes/profiles`). Does not contain `default`. */
   profilesRoot: string
   existsSync: (path: string) => boolean
   readFileSync: (path: string, encoding: 'utf8') => string
@@ -27,9 +30,36 @@ export interface MigrationDeps {
 }
 
 export interface MigrationDecision {
-  profile: string
+  profile: string | null
   /** True when chosen from the state.db heuristic (auto-detected), undefined when explicit. */
   _migrated?: boolean
+}
+
+/**
+ * Production layout: default IS `hermesHome`; named profiles are children of
+ * `profilesRoot`. There is no `profiles/default` directory on a normal install.
+ */
+export function profileStateDbPath(name: string, hermesHome: string, profilesRoot: string): string {
+  return name === 'default' ? `${hermesHome}/state.db` : `${profilesRoot}/${name}/state.db`
+}
+
+export function profileGatewayPidPath(name: string, hermesHome: string, profilesRoot: string): string {
+  return name === 'default' ? `${hermesHome}/gateway.pid` : `${profilesRoot}/${name}/gateway.pid`
+}
+
+function resolveHermesHome(profilesRoot: string, hermesHome?: string): string {
+  if (hermesHome) {
+    return hermesHome
+  }
+
+  // Tests that predate hermesHome pass only profilesRoot.
+  for (const suffix of ['/profiles', '\\profiles']) {
+    if (profilesRoot.endsWith(suffix)) {
+      return profilesRoot.slice(0, -suffix.length)
+    }
+  }
+
+  return profilesRoot
 }
 
 /**
@@ -70,16 +100,20 @@ export function readLegacyActiveProfile(
  * Return the profile names whose gateway.pid file points to a live hermes process.
  * Tolerates missing/malformed pid files and stale-but-recycled PIDs (the latter is
  * the whole reason we check both liveness AND cmdline identity).
+ *
+ * `hermesHome` is optional so existing call sites that only pass `profilesRoot`
+ * still work: it is derived as the parent of `…/profiles`.
  */
 export function findRunningGatewayProfiles(
   profilesRoot: string,
   allProfiles: string[],
-  deps: Pick<MigrationDeps, 'existsSync' | 'readFileSync' | 'isHermesProcess'>
+  deps: Pick<MigrationDeps, 'existsSync' | 'readFileSync' | 'isHermesProcess'> & { hermesHome?: string }
 ): string[] {
+  const hermesHome = resolveHermesHome(profilesRoot, deps.hermesHome)
   const running: string[] = []
 
   for (const name of allProfiles) {
-    const pidFile = `${profilesRoot}/${name}/gateway.pid`
+    const pidFile = profileGatewayPidPath(name, hermesHome, profilesRoot)
 
     if (!deps.existsSync(pidFile)) {
       continue
@@ -156,7 +190,7 @@ export function decideMigration(
   let maxScore = -Infinity
 
   for (const name of candidates) {
-    const s = score(`${deps.profilesRoot}/${name}/state.db`)
+    const s = score(profileStateDbPath(name, deps.hermesHome, deps.profilesRoot))
 
     if (s == null) {
       continue
@@ -176,8 +210,9 @@ export function decideMigration(
 }
 
 /**
- * List known profile directory names under `profilesRoot`. Accepts `default` and
- * any name passing the injected validator. Returns [] on missing dir or empty.
+ * List named profile directory names under `profilesRoot`. A directory named
+ * `default` is accepted if present (unusual) but production default is not a
+ * child of this folder — see `withDefaultCandidate`.
  */
 export function listProfileDirs(deps: MigrationDeps): string[] {
   let entries: Dirent[]
@@ -193,25 +228,59 @@ export function listProfileDirs(deps: MigrationDeps): string[] {
     .map(e => e.name)
 }
 
+/** Default is always a candidate; it is `$HERMES_HOME`, not `$HERMES_HOME/profiles/default`. */
+export function withDefaultCandidate(named: string[]): string[] {
+  return ['default', ...named.filter(name => name !== 'default')]
+}
+
 /**
- * Orchestrator. Idempotent: writes at most once when the preference file is
- * missing. Thin on top of the decision helpers above; the testable surface is
- * `decideMigration` + the individual rung helpers, this function just glues them
- * to the deps bag.
+ * Read an existing active-profile.json. Returns null when missing/malformed.
+ * `_migrated: true` means the first-boot heuristic wrote it (safe to re-score).
+ * Absence of that flag is a user/CLI choice and must not be overwritten.
+ */
+export function readExistingPreference(
+  desktopProfileConfigPath: string,
+  readFile: MigrationDeps['readFileSync']
+): { profile: string | null; migrated: boolean } | null {
+  let parsed: unknown
+
+  try {
+    parsed = JSON.parse(readFile(desktopProfileConfigPath, 'utf8'))
+  } catch {
+    return null
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return null
+  }
+
+  const rec = parsed as { profile?: unknown; _migrated?: unknown }
+  const raw = typeof rec.profile === 'string' ? rec.profile.trim() : ''
+
+  return {
+    profile: raw || null,
+    migrated: rec._migrated === true
+  }
+}
+
+/**
+ * First-boot seed, plus repair of heuristic-owned files (`_migrated: true`).
+ * User-selected files (no `_migrated`) are never overwritten. When a repaired
+ * heuristic would now pick default, write `{ profile: null }` so Desktop drops
+ * `--profile` instead of pinning `default`.
  */
 export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, deps: MigrationDeps): boolean {
-  if (deps.existsSync(desktopProfileConfigPath)) {
+  const existing = deps.existsSync(desktopProfileConfigPath)
+    ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync)
+    : null
+
+  if (existing && !existing.migrated) {
     return false
   }
 
   const legacyActive = readLegacyActiveProfile(deps.legacyActivePath, deps.readFileSync, deps.isValidProfileName)
 
-  const allProfiles = listProfileDirs(deps)
-
-  if (allProfiles.length === 0) {
-    return false
-  }
-
+  const allProfiles = withDefaultCandidate(listProfileDirs(deps))
   const running = findRunningGatewayProfiles(deps.profilesRoot, allProfiles, deps)
   const candidates = running.length > 1 ? running : allProfiles
 
@@ -219,7 +288,20 @@ export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, 
     scoreStateDb(dbPath, deps.now(), deps.statSync)
   )
 
-  if (!decision) {
+  // Same as the heuristic rung: pinning `default` into active-profile.json
+  // launches `hermes --profile default` and is worse than writing nothing
+  // (legacy sticky / implicit default). Covers a lone default gateway.pid.
+  if (!decision || decision.profile === 'default') {
+    if (existing?.migrated) {
+      deps.writeJson(desktopProfileConfigPath, { profile: null })
+
+      return true
+    }
+
+    return false
+  }
+
+  if (existing?.migrated && existing.profile === decision.profile) {
     return false
   }
 

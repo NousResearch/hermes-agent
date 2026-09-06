@@ -73,6 +73,19 @@ class PreDeliveryTurnIntegrationTests(unittest.TestCase):
         turn._finish_stream_consumer(result, [], None)
         self.assertEqual(result["final_response"], "approved")
 
+    def test_shadow_gate_records_decision_without_rewriting_response(self):
+        def policy(*, final_text, metadata):
+            return {"allowed": False, "final_text": None, "status": "blocked", "evidence_ref": "run:shadow"}
+
+        turn, _ = self.make_turn(PreDeliveryGate(mode="shadow", policy=policy))
+        stream = FakeStreamConsumer()
+        result = {"final_response": "original", "messages": [], "completed": True}
+        turn._finish_stream_consumer(result, [], stream)
+        self.assertEqual(result["final_response"], "original")
+        self.assertEqual(result["pre_delivery_shadow_status"], "blocked")
+        self.assertEqual(result["pre_delivery_shadow_evidence_ref"], "run:shadow")
+        self.assertEqual(stream.calls, [("original",)])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1480,6 +1480,17 @@ class TurnRunner:
             fr = result.get("final_response")
             if isinstance(fr, str) and fr.strip() and fr != "(empty)":
                 _final_for_stream = fr
+        if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "shadow" and _final_for_stream is not None:
+            decision = pre_delivery_gate.evaluate_sync(
+                final_text=_final_for_stream,
+                metadata={"platform": getattr(ctx.source, "platform", ""), "chat_id": str(ctx.source.chat_id)},
+            )
+            logger.info(
+                "Pre-delivery shadow result: status=%s evidence_ref=%s reason=%s",
+                decision.status, decision.evidence_ref, decision.reason,
+            )
+            result["pre_delivery_shadow_status"] = decision.status
+            result["pre_delivery_shadow_evidence_ref"] = decision.evidence_ref
         if pre_delivery_gate is not None and getattr(pre_delivery_gate, "mode", "legacy") == "strict" and _final_for_stream is not None:
             decision = pre_delivery_gate.evaluate_sync(
                 final_text=_final_for_stream,

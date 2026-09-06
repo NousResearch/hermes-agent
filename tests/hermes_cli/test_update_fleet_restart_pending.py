@@ -353,6 +353,143 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     assert "nothing to restart" in capsys.readouterr().out
 
 
+def test_pending_restart_does_not_discharge_failed_systemd_unit_with_zero_pids(
+    monkeypatch, capsys
+):
+    """A unit in systemd failed state has 0 PIDs; pending restart must NOT declare success (#104249).
+
+    Beltsazar Krisetya (#104249): _run_pending_fleet_restart() treated pids == [] as
+    'nothing to restart' and cleared the marker, leaving dead/failed units down.
+    """
+    import hermes_cli.gateway as hermes_gateway
+
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **k: [])
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(hermes_gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+    listing_stdout = "hermes-gateway.service loaded failed failed Hermes Gateway Service\n"
+    res = SimpleNamespace(returncode=0, stdout=listing_stdout)
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemd_gateway_unit_listings",
+        lambda *a, **k: [("user", ["systemctl", "--user"], res)],
+    )
+
+    resets_and_restarts = []
+
+    def _mock_reset_and_restart(cmd, svc_name):
+        resets_and_restarts.append((cmd, svc_name))
+        return SimpleNamespace(returncode=1, stderr="Job failed")
+
+    monkeypatch.setattr(
+        update_cmd_fleet, "_systemctl_reset_and_restart", _mock_reset_and_restart
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is False
+    out = capsys.readouterr().out
+    assert "nothing to restart" not in out
+    assert len(resets_and_restarts) == 1
+    assert resets_and_restarts[0][1] == "hermes-gateway"
+
+
+def test_pending_restart_recovers_failed_systemd_unit_with_zero_pids(
+    monkeypatch, capsys
+):
+    """When a failed systemd unit is successfully reset and restarted, pending restart succeeds."""
+    import hermes_cli.gateway as hermes_gateway
+
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **k: [])
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(hermes_gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+    listing_stdout = "hermes-gateway.service loaded failed failed Hermes Gateway Service\n"
+    res = SimpleNamespace(returncode=0, stdout=listing_stdout)
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_systemd_gateway_unit_listings",
+        lambda *a, **k: [("user", ["systemctl", "--user"], res)],
+    )
+
+    resets_and_restarts = []
+
+    def _mock_reset_and_restart(cmd, svc_name):
+        resets_and_restarts.append((cmd, svc_name))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        update_cmd_fleet, "_systemctl_reset_and_restart", _mock_reset_and_restart
+    )
+    monkeypatch.setattr(
+        update_cmd_fleet, "_wait_for_service_active", lambda *a, **k: True
+    )
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    out = capsys.readouterr().out
+    assert "Pending fleet restart completed" in out
+    assert len(resets_and_restarts) == 1
+    assert resets_and_restarts[0][1] == "hermes-gateway"
+
+
+def test_pending_restart_fails_when_systemd_listing_times_out(monkeypatch, capsys):
+    """A systemctl list-units timeout must fail closed and preserve the marker (#104249)."""
+    import subprocess
+    import hermes_cli.gateway as hermes_gateway
+
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **k: [])
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(hermes_gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_windows", lambda: False)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+    def _mock_listings(on_list_timeout=None):
+        if on_list_timeout:
+            on_list_timeout("user", subprocess.TimeoutExpired(cmd="systemctl", timeout=10))
+        return []
+
+    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", _mock_listings)
+
+    assert update_cmd._run_pending_fleet_restart() is False
+    out = capsys.readouterr().out
+    assert "nothing to restart" not in out
+    assert "systemd-user" in out
+
+
+def test_pending_restart_windows_does_not_kill_freshly_started_service(monkeypatch, capsys):
+    """On Windows with pids == [], restarting Windows gateway must not be killed by leftover sweep (#104249)."""
+    import hermes_cli.gateway as hermes_gateway
+
+    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(hermes_gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **k: [])
+    monkeypatch.setattr(hermes_gateway, "_get_service_pids", lambda **k: set())
+
+    restarted = []
+    fake_gw_win = SimpleNamespace(
+        is_installed=lambda: True,
+        restart=lambda: restarted.append(True),
+    )
+    import hermes_cli
+    import sys
+    monkeypatch.setattr(hermes_cli, "gateway_windows", fake_gw_win, raising=False)
+    monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", fake_gw_win)
+
+    kills = []
+    monkeypatch.setattr(hermes_gateway, "kill_gateway_processes", lambda **k: kills.append(k))
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    assert restarted == [True]
+    assert kills == []
+    out = capsys.readouterr().out
+    assert "Pending fleet restart completed" in out
+
+
 # ---------------------------------------------------------------------------
 # cmd_update integration (mocked git / restart)
 # ---------------------------------------------------------------------------

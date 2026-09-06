@@ -177,6 +177,22 @@ class TestSkillReadinessTool:
             assert fields["missing_required_commands"] == ["custom-cli"]
             assert "command `custom-cli`" in extras.get("setup_note", "")
 
+    def test_legacy_prerequisites_commands_do_not_block_setup_needed_in_skill_view(self, monkeypatch, tmp_path):
+        from tools.skills_tool import _skill_readiness
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with patch("shutil.which", return_value=None):
+            fm = {
+                "name": "legacy-cli-tool",
+                "description": "Legacy CLI tool",
+                "prerequisites": {"commands": ["legacy-cmd"]},
+            }
+            fields, extras = _skill_readiness(fm, "legacy-cli-tool")
+            assert fields["setup_needed"] is False
+            assert fields["readiness_status"] == "available"
+            assert fields["required_commands"] == ["legacy-cmd"]
+            assert fields["missing_required_commands"] == ["legacy-cmd"]
+
 
 class TestSkillsPromptReadinessAnnotation:
     def setup_method(self):

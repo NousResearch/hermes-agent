@@ -428,7 +428,18 @@ def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict
         e["name"] for e in required_env_vars if not e.get("optional")
         and (e["name"] in still_missing or not _is_env_var_persisted(e["name"], env_snapshot))]
     missing_commands = [c for c in required_commands if not shutil.which(c)]
-    setup_needed = bool(remaining) or bool(missing_commands)
+    declared_cmds_raw = frontmatter.get("required_commands")
+    if declared_cmds_raw:
+        if isinstance(declared_cmds_raw, str):
+            declared_set = {s.strip().strip("'\"") for s in declared_cmds_raw.strip().strip("[]").split(",") if s.strip()}
+        elif isinstance(declared_cmds_raw, list):
+            declared_set = {str(item.get("name") if isinstance(item, dict) else item or "").strip().strip("[]'\"") for item in declared_cmds_raw}
+        else:
+            declared_set = set()
+    else:
+        declared_set = set()
+    missing_blocking_commands = [c for c in missing_commands if c in declared_set]
+    setup_needed = bool(remaining) or bool(missing_blocking_commands)
     # Only vars actually set pass through to sandboxed execution (execute_code, terminal).
     if available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]:
         try:

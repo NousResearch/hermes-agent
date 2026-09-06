@@ -1861,7 +1861,7 @@ def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_
     return "chat_completions"
 
 
-def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> None:
+def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str, fb_base_url: str = "") -> None:
     """Rebind the credential pool when the provider changes (else rate_limit/billing/auth recovery
     mutates the wrong credentials and overwrites the fallback's base_url). Same-provider pool: kept."""
     existing_pool = getattr(agent, "_credential_pool", None)
@@ -1874,9 +1874,17 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             agent._credential_pool = agent._credential_pool_entry_id = None
     if getattr(agent, "_credential_pool", None) is None:
         try:
-            from agent.credential_pool import load_pool
-            fallback_pool = load_pool(fb_provider)
-            if fallback_pool and fallback_pool.has_credentials():
+            from agent.credential_pool import (
+                credential_pool_matches_provider, load_pool, resolve_runtime_pool_key,
+            )
+            # Scope the key by endpoint like the restore path does: a bare
+            # provider name attaches the wrong pool for custom identities
+            # ("custom" has no rows; named customs live under providers.<key>).
+            pool_key = resolve_runtime_pool_key(fb_provider, fb_base_url)
+            fallback_pool = load_pool(pool_key) if pool_key else None
+            if (fallback_pool and fallback_pool.has_credentials()
+                    and credential_pool_matches_provider(
+                        fallback_pool, fb_provider, base_url=fb_base_url)):
                 agent._credential_pool = fallback_pool
                 logger.info("Fallback to %s/%s: attached fallback credential pool", fb_provider, fb_model)
         except Exception as exc:
@@ -2101,7 +2109,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             agent._transport_cache.clear()
         agent._fallback_activated = True
 
-        _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
+        _rebind_fallback_credential_pool(agent, fb_provider, fb_model, fb_base_url)
         _swap_fallback_clients(agent, fb_client, fb_provider, fb_model, fb_base_url, fb_api_mode)
 
         from agent.agent_runtime_helpers import sync_credential_pool_entry_id

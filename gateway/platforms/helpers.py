@@ -2,8 +2,6 @@
 stripping, thread participation tracking, GFM table → bullets, mention-pattern
 compilation, and fence-aware markdown chunking."""
 
-from __future__ import annotations
-
 import json
 import logging
 import re

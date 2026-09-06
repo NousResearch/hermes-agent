@@ -254,7 +254,7 @@ class TestElicitationHandlerContextBridge:
         call) the handler must still invoke the consent router -- just
         without the contextvar replay. Otherwise CLI/TUI sessions, which
         don't set HERMES_SESSION_PLATFORM, would break."""
-        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=None)
+        handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params()
 
         with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as m:

@@ -2,10 +2,10 @@ import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, dropdownMenuRow, DropdownMenuSearch, dropdownMenuSectionLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { SearchField } from '@/components/ui/search-field'
 import { useI18n } from '@/i18n'
 import { FolderOpen } from '@/lib/icons'
 import { type CodingWorkspaceOwner, listCodingWorkspaceProjects } from '@/store/coding-workspaces'
@@ -36,29 +36,35 @@ export function CodingProjectPicker({ owner, path, disabled, onSelect, onBrowse 
   const needle = search.trim().toLocaleLowerCase()
   const matches = projects.filter(p => `${p.name} ${p.primary_path}`.toLocaleLowerCase().includes(needle))
   const selected = projects.find(p => p.primary_path === path)
+  const label = selected?.name ?? path?.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? c.noProject
 
-  const choose = (project: ProjectInfo | null) => { setOpen(false); onSelect(project) }
+  const choose = (value: string) => {
+    if (disabled || value === (path ?? '')) {return}
+    onSelect(projects.find(project => project.primary_path === value) ?? null)
+  }
 
-  return <Popover onOpenChange={setOpen} open={open}>
-    <PopoverTrigger asChild>
-      <Button disabled={disabled} size="micro" type="button" variant="ghost">
-        <FolderOpen />{c.project}{': '}<span className="max-w-48 truncate">{selected?.name ?? path ?? c.noProject}</span>
+  return <DropdownMenu onOpenChange={setOpen} open={open}>
+    <DropdownMenuTrigger asChild>
+      <Button aria-label={`${c.project}: ${label}`} className="min-w-0 shrink" disabled={disabled} size="inline" type="button" variant="text">
+        <span className="max-w-48 truncate font-normal">{label}</span><Codicon name="chevron-down" />
       </Button>
-    </PopoverTrigger>
-    <PopoverContent align="start" className="max-w-[calc(100vw-2rem)]" side="top">
-      {projects.length > 0 && <SearchField aria-label={c.searchProjects} onChange={setSearch} placeholder={c.searchProjects} value={search} />}
-      <div className="grid max-h-64 gap-1 overflow-y-auto">
-        <Button className="justify-start" onClick={() => choose(null)} size="sm" type="button" variant="ghost">{c.noProject}</Button>
-        {isPending && <Loader label={c.project} />}
-        {error && <ErrorState description={<span>{String(error.message)}</span>} title={<span>{c.projectsFailed}</span>}>
-          <Button onClick={() => void refetch()} size="micro" type="button" variant="ghost">{t.common.retry}</Button>
-        </ErrorState>}
-        {matches.map(project => <Button className="justify-start" key={project.id} onClick={() => choose(project)} size="sm" type="button" variant="ghost">
-          <span className="min-w-0 text-left"><span className="block truncate">{project.name}</span><span className="block truncate text-(--ui-text-tertiary)">{project.primary_path}</span></span>
-        </Button>)}
-        {!isPending && !error && matches.length === 0 && <span className="text-xs text-(--ui-text-tertiary)">{c.noProjects}</span>}
-        <Button className="justify-start" onClick={() => { setOpen(false); onBrowse() }} size="sm" type="button" variant="ghost"><FolderOpen />{c.browse}</Button>
-      </div>
-    </PopoverContent>
-  </Popover>
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="start" aria-label={c.project} className="w-72 max-w-[calc(100vw-2rem)] p-0" side="top">
+      <DropdownMenuLabel className={dropdownMenuSectionLabel}>{c.project}</DropdownMenuLabel>
+      {projects.length > 0 && <DropdownMenuSearch aria-label={c.searchProjects} onValueChange={setSearch} placeholder={c.searchProjects} value={search} />}
+      <DropdownMenuRadioGroup onValueChange={choose} value={path ?? ''}>
+        <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled} value="">{c.noProject}</DropdownMenuRadioItem>
+        {matches.map(project => <DropdownMenuRadioItem className={dropdownMenuRow} disabled={disabled} key={project.id} value={project.primary_path!}>
+          <span className="min-w-0"><span className="block truncate">{project.name}</span><span className="block truncate text-(--ui-text-tertiary)" title={project.primary_path!}>{project.primary_path}</span></span>
+        </DropdownMenuRadioItem>)}
+      </DropdownMenuRadioGroup>
+      {isPending && <Loader label={c.project} />}
+      {error && <ErrorState description={<span>{String(error.message)}</span>} title={<span>{c.projectsFailed}</span>}>
+        <DropdownMenuItem className={dropdownMenuRow} disabled={disabled} onSelect={event => { event.preventDefault(); void refetch() }}>{t.common.retry}</DropdownMenuItem>
+      </ErrorState>}
+      {!isPending && !error && matches.length === 0 && <DropdownMenuLabel className={dropdownMenuSectionLabel}>{c.noProjects}</DropdownMenuLabel>}
+      <DropdownMenuSeparator />
+      <DropdownMenuItem className={dropdownMenuRow} disabled={disabled} onSelect={onBrowse}><FolderOpen />{c.browse}</DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>
 }

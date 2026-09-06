@@ -17,7 +17,7 @@ import { CopyButton } from '@/components/ui/copy-button'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
-import { displayPath } from '@/lib/display-path'
+import { displayPath, displayPathSuffix } from '@/lib/display-path'
 import { openWorktreeDialog, registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { $activeGatewayRoute, $gateway, activeGatewayConnectionId, isActivePrimary } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -229,8 +229,8 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const renderBranchItems = (kit: MenuKit) => {
     if (workspace) {
       return <>
-        <kit.Label className="whitespace-normal break-all font-mono text-xs">
-          <span data-slot="coding-workspace-path">{workspace.cwd}</span>
+        <kit.Label>
+          <span className="block truncate font-mono text-xs font-normal" data-slot="coding-workspace-path" title={workspace.cwd}>{displayPathSuffix(workspace.cwd)}</span>
         </kit.Label>
         <CopyButton appearance={kit.copyAppearance} label={fileMenu.copyPath} text={workspace.cwd} />
         {canRevealWorkspace && window.hermesDesktop?.revealPath && renderActionItem(kit, {
@@ -240,7 +240,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             if (!ok) { notifyError(null, c.openFailed) }
           }).catch(error => notifyError(error, c.openFailed))
         })}
-        <kit.Label className="whitespace-normal text-xs text-(--ui-text-tertiary)">{c.binding}</kit.Label>
         {renderActionItem(kit, {
           label: c.newChat,
           icon: 'comment',
@@ -299,11 +298,10 @@ export const CodingStatusRow = memo(function CodingStatusRow({
 
   return (
     <>
-      <ActionsContextMenu contentClassName={workspace ? 'w-72' : 'w-60'} disabled={!workspace && !onBranchOff} items={renderBranchItems}>
+      <ActionsContextMenu contentClassName={workspace ? 'w-72 max-w-[calc(100vw-2rem)]' : 'w-60'} disabled={!workspace && !onBranchOff} items={renderBranchItems}>
         <StatusRow
-          // The base "where am I working" strip is part of the composer surface
-          // itself, so it inherits the composer's width and clipped top radius.
-          className="coding-status-bar min-h-7 rounded-t-[inherit] rounded-b-none border-b border-(--ui-stroke-tertiary) px-3.5 py-1.5 hover:bg-transparent"
+          // Workspace context is an external dock row, not an input toolbar.
+          className="coding-status-bar"
           // Static branch glyph — never the loading spinner. This row only renders
           // once `status` exists, so a spinner here only ever fired on *refreshes*
           // of an already-loaded repo (window focus, turn settle), reading as an
@@ -325,7 +323,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             {/* Branch name — the other half of the review-pane target. `contents`
                 so the button lays out nothing of its own: the label stays the
                 same flex child it always was, and the hit area is the text. */}
-            {workspace ? <ActionsMenu align="start" contentClassName="w-72" items={renderBranchItems} side="top">
+            {workspace ? <ActionsMenu align="start" contentClassName="w-72 max-w-[calc(100vw-2rem)]" items={renderBranchItems} side="top">
               <Button className="min-w-0 max-w-full shrink" data-slot="coding-workspace-summary" size="inline" type="button" variant="text">
                 <span className="truncate text-xs font-normal">{summary}</span>
               </Button>

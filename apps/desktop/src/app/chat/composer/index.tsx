@@ -1232,6 +1232,26 @@ export function ChatBar({
             }
             sessionId={statusSessionId}
           />
+          {/* Workspace context stays outside both input chrome and the drag region. */}
+          <div className={cn(composerFloatingStrip, 'min-w-0 px-[5px] pb-1 empty:hidden')} data-slot="composer-workspace-row">
+            {codingWorkspace.visible && codingWorkspace.owner && <CodingWorkspaceControls draft={codingWorkspace.draft} onSelectFolder={path => void codingWorkspace.selectFolder(path)} owner={codingWorkspace.owner} />}
+                <CodingStatusRow
+                  onBranchOff={handleBranchOff}
+                  onConvertBranch={handleConvertBranch}
+                  onListBranches={handleListBranches}
+                  // A tile's rail reviews ITS worktree: pin the pane's scope to
+                  // this surface's cwd. Main keeps the classic follow-the-
+                  // active-session scope (null).
+                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
+                  onOpenWorktree={openInWorktree}
+                  onSwitchBranch={handleSwitchBranch}
+                  // Blank in a bot chat: the row hides itself without a repo,
+                  // and stops probing git / GitHub for a surface that has no
+                  // branch to show. Cheaper than a second composer.
+                  repoPath={botChat ? undefined : cwd}
+                  sessionId={botChat ? undefined : sessionId}
+                />
+          </div>
           <ComposerPrimitive.Root
             className={cn(
               'group/composer relative w-full overflow-visible rounded-2xl',
@@ -1325,22 +1345,6 @@ export function ChatBar({
                     composerSurfaceGlass
                   )}
                 />
-                <CodingStatusRow
-                  onBranchOff={handleBranchOff}
-                  onConvertBranch={handleConvertBranch}
-                  onListBranches={handleListBranches}
-                  // A tile's rail reviews ITS worktree: pin the pane's scope to
-                  // this surface's cwd. Main keeps the classic follow-the-
-                  // active-session scope (null).
-                  onOpen={() => toggleReview(scope.target === 'main' ? null : (cwd ?? null), scope.target)}
-                  onOpenWorktree={openInWorktree}
-                  onSwitchBranch={handleSwitchBranch}
-                  // Blank in a bot chat: the row hides itself without a repo,
-                  // and stops probing git / GitHub for a surface that has no
-                  // branch to show. Cheaper than a second composer.
-                  repoPath={botChat ? undefined : cwd}
-                  sessionId={botChat ? undefined : sessionId}
-                />
                 <div
                   className={cn(
                     'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
@@ -1354,7 +1358,6 @@ export function ChatBar({
                     additions beside the "+" menu and before the controls.
                     All four render nothing until something contributes. */}
                   <ContribSlot area={COMPOSER_AREAS.top} />
-                  {codingWorkspace.visible && codingWorkspace.owner && <CodingWorkspaceControls draft={codingWorkspace.draft} onSelectFolder={path => void codingWorkspace.selectFolder(path)} owner={codingWorkspace.owner} />}
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && (

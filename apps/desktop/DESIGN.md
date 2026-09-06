@@ -61,15 +61,33 @@ one-off at the call site.
   affordances, but they invoke the same action and state. Do not fork behavior
   per entry point.
 - **Projects own workspace cwd.** Sidebar → Projects remains the browsing and
-  organization surface. Opted-in profiles may select a registered Project and
-  Work in above a **new chat** input; the one-chat “Work in project…” action is
-  also available without changing profile settings. Browsing registers a Project
+  organization surface. Opted-in profiles may select a registered project and
+  checkout above a **new chat** input; the one-chat “Work in project…” action is
+  also available without changing profile settings. Keep the workspace row outside
+  the input border and draggable margin: two quiet native text buttons, project
+  name and checkout choice, with chevrons and no visible field prefixes. Draft and
+  bound states share `StatusRow` chrome, insets, line height and its `size-3.5`
+  leading slot. The draft's tertiary folder/branch glyph is replaced in-place by
+  a same-sized Loader during inspection/preparation; the bound glyph is green.
+  Both triggers use flush `Button` inline sizing so the text origin does not move.
+  Project selection uses a searchable `DropdownMenu`, checked radio choices, then
+  a separator and Browse. Reselecting the project preserves the checkout intent.
+  The workspace trigger shows the chosen checkout branch (name if detached), or
+  the new worktree's base when it differs from the source default. Its accessible
+  name retains the mode. Base and existing-checkout lists remain submenus;
+  branch selection and checkout path/dirty/shared details live inside the workspace
+  picker; preparation errors remain visible outside it. Browsing registers a Project
   without entering it or changing sidebar grouping, ordering, filtering, or scope.
   These controls record owner-bound draft intent only: a worktree is prepared on
-  first nonblank Send, never on selection or cancellation. After Send, the existing
-  composer status strip shows the bound project, checkout kind, and branch (when
-  applicable). Its disclosure holds the full path and workspace actions; do not
-  add another toolbar or keep target selectors editable on a bound chat. Existing
+  first nonblank Send, never on selection or cancellation. After Send, the same
+  external position shows one quiet bound project/checkout/branch summary, not a
+  framed toolbar. Its disclosure has one useful path suffix, no repeated summary
+  heading, and shared native workspace actions. `displayPathSuffix` tildifies short
+  paths and retains the last two segments of long paths, with a bounded leading
+  ellipsis. The exact path remains on hover, Copy and Open; the native menu keeps
+  its viewport cap rather than growing to fit paths. There is no
+  permanent provisioning or immutable-binding explanatory prose. Do not keep
+  target selectors editable on a bound chat. Existing
   chats keep their original workspace; “New chat in another workspace” starts a
   draft, not a checkout. Folder attachments remain references unless explicitly
   promoted with “Use as project”.
@@ -182,6 +200,10 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 - **`SearchField`** — borderless, underline-on-focus, auto-width. The only
   search input. Don't build boxed search bars; don't wrap it in a bordered tile.
   Empty lists hide their search field.
+- **`DropdownMenuSearch`** — the native menu's compact filter. Down/Up hand focus
+  to its first/last enabled item; Radix owns item navigation, Enter and Escape.
+  A consumer that handles arrows itself (model search) calls `preventDefault`
+  and keeps input focus; the shared handoff must respect that ownership.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
   pill rows.

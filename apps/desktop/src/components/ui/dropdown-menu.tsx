@@ -55,11 +55,35 @@ function DropdownMenuSearch({
           onValueChange?.(event.target.value)
         }}
         onKeyDown={event => {
-          if (!DROPDOWN_NAV_KEYS.has(event.key)) {
+          if (event.nativeEvent.isComposing) {
             event.stopPropagation()
+
+            return
           }
 
           onKeyDown?.(event)
+
+          if (event.defaultPrevented) {return}
+
+          // Radix only enters its roving items when the menu itself owns focus;
+          // an embedded search input must hand off explicitly.
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault()
+            event.stopPropagation()
+            const menu = event.currentTarget.closest('[role="menu"]')
+
+            const items = Array.from(menu?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not([data-disabled])') ?? [])
+              .filter(item => item.closest('[role="menu"]') === menu)
+
+            const target = event.key === 'ArrowDown' ? items[0] : items.at(-1)
+            target?.focus()
+
+            return
+          }
+
+          if (!DROPDOWN_NAV_KEYS.has(event.key)) {
+            event.stopPropagation()
+          }
         }}
         type="text"
         {...props}

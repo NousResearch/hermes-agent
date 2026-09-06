@@ -61,6 +61,7 @@ it('surfaces failed native reveal instead of losing the rejection', async () => 
 
 it.each([
   [binding, 'repo · Worktree · task/a'],
+  [{ ...binding, cwd: '/home/person/.hermes/profiles/coder/cache/very-long-project-name/.worktrees/task-ui' }, 'repo · Worktree · task/a'],
   [{ ...binding, cwd: '/repo' }, 'repo · Current checkout · task/a'],
   [{ ...binding, cwd: '/notes', sourcePath: '/notes', repoRoot: null, branch: null }, 'notes · Folder'],
   [{ ...binding, projectName: 'Named Project', mode: 'existing' as const }, 'Named Project · Worktree · task/a']
@@ -76,14 +77,22 @@ it.each([
   const summary = screen.getByRole('button', { name: label })
   expect(view.container.querySelectorAll('.coding-status-bar')).toHaveLength(1)
   fireEvent.pointerDown(summary, { button: 0, ctrlKey: false, pointerType: 'mouse' })
-  await waitFor(() => expect(screen.getByText(workspace.cwd)).toBeTruthy())
-  expect(document.querySelector('[data-slot="coding-workspace-path"]')?.textContent).toBe(workspace.cwd)
+  await waitFor(() => expect(window.document.querySelector('[data-slot="coding-workspace-path"]')).toBeTruthy())
+  const path = window.document.querySelector('[data-slot="coding-workspace-path"]')
+  expect(path?.textContent).toBe(workspace.cwd.includes('/cache/') ? '…/.worktrees/task-ui' : workspace.cwd)
+  expect(path?.closest('[role="menu"]')?.classList.contains('max-w-[calc(100vw-2rem)]')).toBe(true)
+  expect(path?.getAttribute('title')).toBe(workspace.cwd)
+  expect(path?.classList.contains('truncate')).toBe(true)
+  expect(screen.queryByText('This chat stays in its original workspace.')).toBeNull()
+  expect(window.document.querySelector('[data-slot="coding-workspace-heading"]')).toBeNull()
+  expect(screen.queryByText(label, { selector: '[data-slot="dropdown-menu-label"]' })).toBeNull()
+  expect(summary.closest('.coding-status-bar')?.classList.contains('border-b')).toBe(false)
   expect(screen.queryByRole('menuitem', { name: /Switch to/ })).toBeNull()
   expect(screen.queryByRole('combobox')).toBeNull()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Copy path' }))
   await waitFor(() => expect(writeText).toHaveBeenCalledWith(workspace.cwd))
   // Reopen after copy (the menu primitive may retain it for inline feedback).
-  fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+  fireEvent.keyDown(window.document.activeElement!, { key: 'Escape' })
   fireEvent.pointerDown(summary, { button: 0, ctrlKey: false, pointerType: 'mouse' })
   await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Open folder' })).toBeTruthy())
   fireEvent.click(screen.getByRole('menuitem', { name: 'Open folder' }))

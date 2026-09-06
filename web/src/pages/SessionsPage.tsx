@@ -33,6 +33,7 @@ import {
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { buildChatResumePath } from "@/lib/session-navigation";
 import { formatSessionPruneResult } from "@/lib/session-prune";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
 import {
@@ -873,8 +874,29 @@ export default function SessionsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
+  const navigate = useNavigate();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
   const selectedSources = sourceSelectionsByCategory[sessionCategory];
+
+  const openRecentSession = useCallback(
+    (sessionId: string) => {
+      if (resumeInChatEnabled) {
+        navigate(buildChatResumePath(sessionId));
+      }
+    },
+    [navigate, resumeInChatEnabled],
+  );
+
+  const handleRecentSessionKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>, sessionId: string) => {
+      if (!resumeInChatEnabled) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openRecentSession(sessionId);
+      }
+    },
+    [openRecentSession, resumeInChatEnabled],
+  );
 
   const pinnedSourceSelections = useMemo(
     () =>
@@ -2123,7 +2145,23 @@ export default function SessionsPage() {
                 {recentSessions.map((s) => (
                   <div
                     key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+                    data-session-open={s.id}
+                    className={`flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between ${resumeInChatEnabled ? "cursor-pointer transition-colors hover:bg-secondary/30" : ""}`}
+                    onClick={
+                      resumeInChatEnabled
+                        ? () => openRecentSession(s.id)
+                        : undefined
+                    }
+                    onKeyDown={
+                      resumeInChatEnabled
+                        ? (event) => handleRecentSessionKeyDown(event, s.id)
+                        : undefined
+                    }
+                    role={resumeInChatEnabled ? "link" : undefined}
+                    tabIndex={resumeInChatEnabled ? 0 : undefined}
+                    aria-label={
+                      resumeInChatEnabled ? "Open recent session in Chat" : undefined
+                    }
                   >
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
                       <span

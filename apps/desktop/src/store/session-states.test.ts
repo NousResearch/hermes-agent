@@ -16,6 +16,7 @@ import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
+  $focusedSessionIsTile,
   $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
@@ -1010,6 +1011,7 @@ describe('$focusedStoredSessionId in Bot Mode (#96062)', () => {
     )
     noteActiveTreeGroup('grp-sessions')
 
+    expect($focusedSessionIsTile.get()).toBe(true)
     expect($focusedStoredSessionId.get()).toBe('chat-b')
   })
 

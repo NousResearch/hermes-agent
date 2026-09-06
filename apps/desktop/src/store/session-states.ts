@@ -1885,63 +1885,59 @@ export function reopenLastClosedTile(): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// The FOCUSED session — one derivation, not another hand-maintained
-// "$activeSession" sibling. The layout's interaction tracker ($activeTreeGroup:
-// last click/focus, the same source ⌘W uses) resolves to a zone; its active
-// pane names the session: a `session-tile:<storedId>` pane IS that session,
-// anything else falls back to the route-driven primary. Chrome that should
-// follow the user between tiles (titlebar session title, statusbar context /
-// timer / model) reads these instead of the primary-only atoms.
-// ---------------------------------------------------------------------------
+// Derive the focused session from layout focus instead of maintaining another
+// active session atom. $activeTreeGroup identifies the last interacted zone.
+// A `session-tile:<storedId>` pane identifies its session; other panes use the
+// primary route selection. Chrome shared by all chat panes reads these values.
 
-/** Stored id of the focused session (the interacted zone's tile, else the
- *  primary's selection). Null on a fresh draft. */
-export const $focusedStoredSessionId = computed(
-  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId, $workspaceMode],
-  (groupId, tree, selected, workspaceMode) => {
-    const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
+/** Stored id of the focused session. Uses the interacted zone's tile or the
+ *  primary selection. Null on a fresh draft. */
+const $focusedTreePaneId = computed([$activeTreeGroup, $layoutTree, $workspaceMode], (groupId, tree, workspaceMode) => {
+  const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
-    if (active?.startsWith(TILE_PANE_PREFIX)) {
-      return active.slice(TILE_PANE_PREFIX.length)
-    }
-
-    // The interaction tracker can point at sidebar CHROME while a chat still
-    // holds the main zone's active tab — clicking a Bots-pane roster row moves
-    // it to the sidebar group, whose active pane ('hermes-bots:pane') is not a
-    // session tile. In sessions mode the primary selection answers, exactly as
-    // always. In Bot Mode that fallback alone publishes a NULL "focused"
-    // edge: bot chats open as TILES and never set $selectedStoredSessionId,
-    // so the selection is null while the chat is plainly on screen. The Bots
-    // plugin reads that null edge as "the chat lost the center", releases its
-    // open claim, and re-asserts the Bots home over the still-visible chat —
-    // the reported "clicking a bot chat jumps to the list" (#96062). Bot
-    // Mode's on-screen truth is the main zone's active TILE; only when the
-    // main zone holds no tile (chat closed) does the selection answer, so a
-    // genuine close still lets the home return.
-    if (workspaceMode === 'bots' && tree) {
-      const mainActive = findGroupOfPane(tree, 'workspace')?.active
-
-      if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
-        return mainActive.slice(TILE_PANE_PREFIX.length)
-      }
-    }
-
-    return selected
+  if (active?.startsWith(TILE_PANE_PREFIX)) {
+    return active
   }
+
+  // The interaction tracker can point to sidebar chrome while a chat remains
+  // active in the main zone. Clicking a Bot roster row moves focus to the
+  // sidebar group, whose active pane (`hermes-bots:pane`) is not a session
+  // tile. In Sessions mode, the primary selection is the fallback. In Bot
+  // Mode, chats open as tiles without setting $selectedStoredSessionId, so
+  // that fallback would publish null while the chat remains visible. The Bots
+  // plugin treats null as losing the center and returns to Bots home, causing
+  // the reported jump to the list (#96062). In Bot Mode, the main zone's
+  // active tile is the focused session. The primary selection applies only
+  // when the main zone has no tile, so closing the chat still returns home.
+  if (workspaceMode === 'bots' && tree) {
+    const mainActive = findGroupOfPane(tree, 'workspace')?.active
+
+    if (mainActive?.startsWith(TILE_PANE_PREFIX)) {
+      return mainActive
+    }
+  }
+
+  return active
+})
+
+export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
+  Boolean(active?.startsWith(TILE_PANE_PREFIX))
 )
 
-/** Every session currently OPEN as a surface: the primary's selection plus
- *  every tile's stored id. The sidebar highlights all of them (the focused one
- *  at full strength, the rest dimmed) so a multi-pane workspace shows which
- *  chats are on screen, not just the one being typed into. */
+export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
+  active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
+)
+
+/** Every session open in a surface: the primary selection and each tile's
+ *  stored id. The sidebar highlights all of them, with the focused one at full
+ *  strength, so layouts with several panes show every visible chat. */
 export const $openStoredSessionIds = computed(
   [$selectedStoredSessionId, $sessionTiles],
   (selected, tiles) => new Set([...(selected ? [selected] : []), ...tiles.map(t => t.storedSessionId)])
 )
 
-/** Live runtime id of the focused session (a tile's bound runtime, else the
- *  primary's active session). */
+/** Live runtime id of the focused session. Uses a tile's bound runtime or the
+ *  primary active session. */
 export const $focusedRuntimeId = computed(
   [$focusedStoredSessionId, $selectedStoredSessionId, $activeSessionId, $sessionTiles],
   (focused, selected, primaryRuntime, tiles) => {
@@ -1953,15 +1949,16 @@ export const $focusedRuntimeId = computed(
   }
 )
 
-/** The focused session's state slice (undefined while unresolved/unbound). */
+/** The focused session's state slice. Undefined until its runtime resolves and binds. */
 export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates], (runtimeId, states) =>
   runtimeId ? states[runtimeId] : undefined
 )
 
-/** A PRIMARY navigation (sidebar resume, route change, new chat) homes focus to
- *  the workspace — UNLESS the selected id is already an open TILE, where
- *  `focusOpenSession` owns the move and homing would yank every stacked tile
- *  behind the workspace (A+B "disappear" when switching to C). */
+/** Primary navigation, such as a sidebar resume, route change, or new chat,
+ *  moves focus to the workspace unless the selected id belongs to an open
+ *  tile. Then `focusOpenSession` owns the move; moving focus home would place
+ *  each stacked tile behind the workspace, making A and B disappear when
+ *  switching to C. */
 export const selectionHomesToWorkspace = (selected: null | string, tiles: readonly SessionTile[]): boolean =>
   !(selected && tiles.some(t => t.storedSessionId === selected))
 

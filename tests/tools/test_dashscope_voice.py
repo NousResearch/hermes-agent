@@ -153,7 +153,9 @@ def test_dashscope_tts_downloads_native_audio_result(tmp_path):
     output_path = tmp_path / "speech.wav"
     response = _JsonResponse({
         "output": {
-            "audio": {"url": "https://dashscope-result.example/signed.wav?token=secret"},
+            "audio": {
+                "url": "http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/signed.wav?token=secret",
+            },
         },
     })
     config = {
@@ -183,8 +185,21 @@ def test_dashscope_tts_downloads_native_audio_result(tmp_path):
         "input": {"text": "你好", "voice": "Cherry", "language_type": "Chinese"},
     }
     get.assert_called_once_with(
-        "https://dashscope-result.example/signed.wav?token=secret", timeout=60, stream=True
+        "https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/signed.wav?token=secret",
+        timeout=60,
+        stream=True,
     )
+
+
+def test_dashscope_tts_rejects_non_alibaba_http_audio_url():
+    from tools.tts_tool_providers import _dashscope_audio_download_url
+
+    try:
+        _dashscope_audio_download_url("http://example.com/signed.wav")
+    except RuntimeError as exc:
+        assert str(exc) == "DashScope TTS returned an invalid audio URL"
+    else:
+        raise AssertionError("non-Alibaba HTTP audio URL was accepted")
 
 
 def test_dashscope_tts_default_path_matches_wav_response(tmp_path):

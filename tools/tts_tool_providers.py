@@ -153,6 +153,24 @@ def _write_bytes(output_path: str, audio_bytes: bytes) -> str:
     return output_path
 
 
+def _dashscope_audio_download_url(value: Any) -> str:
+    """Return an encrypted download URL, upgrading DashScope's documented OSS HTTP URLs."""
+    if not isinstance(value, str):
+        raise RuntimeError("DashScope TTS returned an invalid audio URL")
+    try:
+        parsed = urlparse(value)
+        hostname = (parsed.hostname or "").lower()
+        if parsed.username or parsed.password or not hostname:
+            raise ValueError
+        if parsed.scheme == "https":
+            return value
+        if parsed.scheme == "http" and parsed.port is None and hostname.endswith(".aliyuncs.com"):
+            return parsed._replace(scheme="https").geturl()
+    except ValueError:
+        pass
+    raise RuntimeError("DashScope TTS returned an invalid audio URL")
+
+
 def _generate_dashscope_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """Generate Qwen speech through DashScope's native multimodal endpoint."""
     import requests
@@ -181,8 +199,7 @@ def _generate_dashscope_tts(text: str, output_path: str, tts_config: Dict[str, A
         audio_url = body["output"]["audio"]["url"]
     except (KeyError, TypeError) as exc:
         raise RuntimeError("DashScope TTS response did not include output.audio.url") from exc
-    if not isinstance(audio_url, str) or not audio_url.startswith("https://"):
-        raise RuntimeError("DashScope TTS returned an invalid audio URL")
+    audio_url = _dashscope_audio_download_url(audio_url)
     audio_response = requests.get(audio_url, timeout=60, stream=True)
     if audio_response.status_code != 200:
         _close_response(audio_response)

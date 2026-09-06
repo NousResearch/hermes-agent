@@ -2,7 +2,6 @@
 AIAgent's tools/tool names, preserving the cached tools[] prefix across rebuilds,
 and re-injecting post-build tools."""
 
-import copy
 import logging
 import json
 import threading
@@ -197,18 +196,16 @@ def _merge_preserving_prefix(current_defs: list, new_defs: list, registered_name
 
 
 def _reinject_authorized_dynamic_tools(agent, tools_list: list, name_set: set) -> None:
-    """Re-authorize session capabilities against a staged snapshot before publication."""
-    try:
-        from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, ensure_message_agent_tool
+    """``message_agent`` is injected by an auth gate, never registered, so a registry-derived
+    rebuild drops it. Scrub any stale copy from the STAGED pair and re-add it only when the live
+    gate re-authorizes, so the publisher exposes a coherent ``(tools, valid_tool_names)``."""
+    from tools.bot_mode_dm import MESSAGE_AGENT_TOOL_NAME, message_agent_authorized, message_agent_tool_schema
 
-        tools_list[:] = [entry for entry in tools_list if _def_name(entry) != MESSAGE_AGENT_TOOL_NAME]
-        name_set.discard(MESSAGE_AGENT_TOOL_NAME)
-        staged_agent = copy.copy(agent)
-        staged_agent.tools = tools_list
-        staged_agent.valid_tool_names = name_set
-        ensure_message_agent_tool(staged_agent)
-    except Exception:
-        logger.debug("Dynamic tool re-injection skipped", exc_info=True)
+    tools_list[:] = [entry for entry in tools_list if _def_name(entry) != MESSAGE_AGENT_TOOL_NAME]
+    name_set.discard(MESSAGE_AGENT_TOOL_NAME)
+    if message_agent_authorized(agent):
+        tools_list.append(message_agent_tool_schema())
+        name_set.add(MESSAGE_AGENT_TOOL_NAME)
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:

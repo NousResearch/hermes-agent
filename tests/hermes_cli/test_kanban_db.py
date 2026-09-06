@@ -224,7 +224,8 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         t = kb.create_task(conn, title="x", assignee="a")
         host = _kb._claimer_id().split(":", 1)[0]
         kb.claim_task(conn, t, claimer=f"{host}:worker")
-        kbd._set_worker_pid(conn, t, 12345)
+        task = kb.get_task(conn, t)
+        kbd._set_worker_pid(conn, t, 12345, expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)
         old_expires = int(time.time()) - 3600
         hb_at = int(time.time()) - 1800
         conn.execute(

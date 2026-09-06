@@ -104,7 +104,8 @@ def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypa
     try:
         tid = kb.create_task(conn, title="t", assignee="worker")
         kb.claim_task(conn, tid)
-        kbd._set_worker_pid(conn, tid, 98765)
+        task = kb.get_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 98765, expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)
         monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
         assert kbd.detect_crashed_workers(conn) == [tid]
     finally:

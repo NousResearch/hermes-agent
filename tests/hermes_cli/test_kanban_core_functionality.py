@@ -283,7 +283,8 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
             )
             # Spawn by hand: claim + set pid + set active run start to the past.
             kb.claim_task(conn, tid)
-            kbd._set_worker_pid(conn, tid, os.getpid())   # any live pid works
+            task = kb.get_task(conn, tid)
+            kbd._set_worker_pid(conn, tid, os.getpid(), expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)   # any live pid works
             # Backdate both the task-level first-start timestamp and the active
             # run timestamp so elapsed > limit under the per-run runtime model.
             old_started = int(time.time()) - 30
@@ -416,7 +417,8 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
 
         kb.claim_task(conn, tid)
         run1 = kb.latest_run(conn, tid)
-        kbd._set_worker_pid(conn, tid, 98765)
+        task = kb.get_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, 98765, expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)
         monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
         assert kbd.detect_crashed_workers(conn) == [tid]
 
@@ -1301,7 +1303,8 @@ def _drive_worker_exit(conn, tid, fake_pid, raw_status):
     host_prefix = _kb._claimer_id().split(":", 1)[0]
     claimed = _kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
     assert claimed is not None, "task was not claimable for the next attempt"
-    _kbd._set_worker_pid(conn, tid, fake_pid)
+    task = _kb.get_task(conn, tid)
+    _kbd._set_worker_pid(conn, tid, fake_pid, expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)
     _kbd._record_worker_exit(fake_pid, raw_status)
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda p: False

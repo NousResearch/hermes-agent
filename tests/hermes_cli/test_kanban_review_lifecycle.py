@@ -455,6 +455,30 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
         assert kbd.check_respawn_guard(conn, review_id, lane="review") is None
 
+        # Validation lanes consume an implementation PR; the URL must not be
+        # mistaken for duplicate implementation work.
+        for assignee in ("integration", "validation", "qa", "release"):
+            downstream_id = kb.create_task(
+                conn, title=f"{assignee} existing PR", assignee=assignee,
+                execution_context={
+                    "lane": assignee, "task_type": assignee,
+                    "requested_action": assignee, "expected_sha": "a" * 40,
+                    "actor": assignee, "role": assignee,
+                    "pr": {
+                        "repository": "example/repo", "id": 123,
+                        "state": "open", "head_sha": "a" * 40,
+                    },
+                },
+            )
+            kb.add_comment(conn, downstream_id, author="worker", body=pr_comment)
+            assert kbd.check_respawn_guard(conn, downstream_id) is None
+
+        unknown_id = kb.create_task(
+            conn, title="unknown lane existing PR", assignee="custom-worker",
+        )
+        kb.add_comment(conn, unknown_id, author="worker", body=pr_comment)
+        assert kbd.check_respawn_guard(conn, unknown_id) == "active_pr"
+
         res = kbd.dispatch_once(conn, dry_run=True)
         spawned_ids = [s[0] for s in res.spawned]
         guarded = dict(res.respawn_guarded)

@@ -25,10 +25,11 @@ _BWS_VERSION = "2.0.0"
 
 from hermes_cli._secrets_common import (
     arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
-    prompt_index, register_subcommands, require_enabled, rotate_token, secret_cli_env, section_cfg,
+    prompt_index, register_subcommands, require_enabled, rotate_token, section_cfg,
     yn,
 )
 from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
+from agent.secret_sources.base import build_minimal_provider_env, redact_provider_output
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 # Old names kept bound: tests monkeypatch ``secrets_cli._bws_version``.
@@ -157,7 +158,9 @@ def _setup_project(binary: Path, token: str, console: Console, server_url: str) 
                       "and grant it access to at least one project.")
         return None
     print_table(console, (("#", {"style": "cyan", "width": 4}), "Name", ("ID", {"style": "dim"})),
-                ((str(i), p.get("name", "?"), p.get("id", "?")) for i, p in enumerate(projects, 1)))
+                ((str(i), redact_provider_output(str(p.get("name", "?")), (token,)),
+                  redact_provider_output(str(p.get("id", "?")), (token,)))
+                 for i, p in enumerate(projects, 1)))
     idx = prompt_index(console, f"  Select project [1-{len(projects)}]: ", len(projects))
     return projects[idx - 1]["id"]
 
@@ -218,7 +221,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         print_table(console, (("Name", {"style": "cyan"}), "Status"),
                     ((key, _fetch_status(key, token_env)) for key in sorted(secrets)))
     for w in warnings:
-        console.print(f"  [yellow]warning:[/yellow] {w}")
+        console.print(f"  [yellow]warning:[/yellow] {redact_provider_output(w, (token,))}")
     secrets_cfg.update(enabled=True, project_id=project_id, server_url=server_url)
     for key, default in (("access_token_env", token_env), ("cache_ttl_seconds", 300),
                          ("override_existing", True), ("auto_install", True)):
@@ -376,7 +379,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         else:
             action = "[green]would export[/green]" + (" (overrides)" if already else "")
         rows.append((key, action))
-    print_table(console, (("Name", {"style": "cyan"}), "Action"), rows, warnings)
+    print_table(console, (("Name", {"style": "cyan"}), "Action"), rows, (redact_provider_output(w, (token,)) for w in warnings))
     if not args.apply:
         console.print("\n  This was a dry-run — secrets are picked up automatically on the "
                       "next [cyan]hermes[/cyan] invocation.  Re-run with [cyan]--apply[/cyan] "
@@ -447,7 +450,7 @@ def _list_projects(
     binary: Path, token: str, console: Console, *, server_url: str = ""
 ) -> Optional[List[dict]]:
     """Call ``bws project list`` and return the parsed list, or None on failure."""
-    env = secret_cli_env()
+    env = build_minimal_provider_env(allow_env=("BWS_SERVER_URL",))
     env["BWS_ACCESS_TOKEN"] = token
     if server_url:
         env["BWS_SERVER_URL"] = server_url
@@ -459,7 +462,7 @@ def _list_projects(
         console.print(f"  [red]Couldn't list projects: {exc}[/red]")
         return None
     if res.returncode != 0:
-        err = (res.stderr or res.stdout).strip()[:300]
+        err = redact_provider_output(res.stderr or res.stdout or "", (token,)).strip()[:300]
         console.print(f"  [red]bws project list failed: {err}[/red]")
         lowered = err.lower()
         for needles, hint in _PROJECT_LIST_HINTS:

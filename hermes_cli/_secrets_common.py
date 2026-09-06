@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from agent.secret_sources.base import build_minimal_provider_env, sanitize_provider_version
 from hermes_cli.config import load_config, save_config
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -92,12 +93,13 @@ def print_table(console: Console, columns: Sequence, rows: Iterable,
 
 
 def cli_version(binary: Path) -> str:
-    """Return the first line of ``<binary> --version`` or ``"version unknown"``."""
+    """Run a credential-free version probe and return only the version number."""
     try:
-        res = subprocess.run([str(binary), "--version"], capture_output=True, text=True, encoding='utf-8',
+        res = subprocess.run([str(binary), "--version"], env=build_minimal_provider_env(),
+                             capture_output=True, text=True, encoding='utf-8',
                              errors='replace', timeout=5)
         if res.returncode == 0:
-            return (res.stdout or res.stderr).strip().splitlines()[0]
+            return sanitize_provider_version(res.stdout or res.stderr)
     except (OSError, subprocess.TimeoutExpired):
         pass
     return "version unknown"

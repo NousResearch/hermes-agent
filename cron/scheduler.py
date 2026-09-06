@@ -15,11 +15,13 @@ import contextvars
 import json
 import logging
 import os
+import random
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -38,12 +40,140 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+
+# Bounded 429 retries plus one root-scoped breaker prevent every due job from
+# hammering and notifying on the same provider outage.
+_RATE_LIMIT_RE = re.compile(
+    r"(?:\b429\b|rate[ -]?limit|usage limit|too many requests)",
+    re.IGNORECASE,
+)
+
+
+def _is_rate_limit_error(error: str | None) -> bool:
+    """Match provider 429s, including the RuntimeError wrapper from run_job."""
+    return bool(_RATE_LIMIT_RE.search(str(error or "")))
+
+
+# Hard account/plan caps look like 429s but cannot recover by retrying the
+# same provider. Transient RPM 429s ("Too Many Requests") still retry.
+_HARD_USAGE_LIMIT_RE = re.compile(
+    r"(?:usage_limit_reached|usage limit has been reached|usage limit reached"
+    r"|you.?ve reached your usage limit|plan.?s usage limit"
+    r"|quota will be refreshed)",
+    re.IGNORECASE,
+)
+
+
+def _is_hard_usage_limit(error: str | None) -> bool:
+    """True when the 429 is a fixed plan/billing cap, not a transient RPM."""
+    return bool(_HARD_USAGE_LIMIT_RE.search(str(error or "")))
+
+
+def _rate_limit_settings() -> dict:
+    """Return bounded cron rate-limit settings from config.yaml."""
+    defaults = {
+        "base_delay": 60.0,
+        "factor": 2.0,
+        "cap_delay": 3600.0,
+        "max_retries": 3,
+        "threshold": 5,
+        "window_seconds": 3600.0,
+        "cooldown_seconds": 3600.0,
+    }
+    try:
+        cron_cfg = (load_config() or {}).get("cron", {})
+        configured = cron_cfg.get("rate_limit", {}) if isinstance(cron_cfg, dict) else {}
+        if not isinstance(configured, dict):
+            return defaults
+        values = {
+            "base_delay": max(0.0, float(configured.get("backoff_base_seconds", defaults["base_delay"]))),
+            "factor": max(1.0, float(configured.get("backoff_factor", defaults["factor"]))),
+            "cap_delay": max(0.0, float(configured.get("backoff_cap_seconds", defaults["cap_delay"]))),
+            "max_retries": max(0, int(configured.get("max_retries", defaults["max_retries"]))),
+            "threshold": max(1, int(configured.get("breaker_threshold", defaults["threshold"]))),
+            "window_seconds": max(1.0, float(configured.get("breaker_window_seconds", defaults["window_seconds"]))),
+            "cooldown_seconds": max(1.0, float(configured.get("breaker_cooldown_seconds", defaults["cooldown_seconds"]))),
+        }
+        values["base_delay"] = min(values["base_delay"], values["cap_delay"])
+        return values
+    except (TypeError, ValueError, AttributeError):
+        logger.warning("Invalid cron.rate_limit config; using defaults")
+        return defaults
+
+
+def _get_rate_limit_breaker():
+    """Build a fleet-scoped breaker anchored in the active cron directory."""
+    from cron.rate_limit_guard import FleetRateLimitCircuitBreaker
+
+    settings = _rate_limit_settings()
+    return FleetRateLimitCircuitBreaker(
+        get_default_hermes_root() / "cron" / "rate_limit_breaker.json",
+        threshold=settings["threshold"],
+        window_seconds=settings["window_seconds"],
+        cooldown_seconds=settings["cooldown_seconds"],
+    )
+
+
+def _run_job_with_rate_limit_backoff(
+    job: dict,
+    *,
+    sleep=None,
+    jitter=None,
+    on_rate_limit=None,
+    base_delay: float | None = None,
+    factor: float | None = None,
+    cap_delay: float | None = None,
+    max_retries: int | None = None,
+) -> tuple[bool, str, str, Optional[str]]:
+    """Retry rate-limit results and report only the terminal 429."""
+    settings = _rate_limit_settings()
+    sleep = sleep or time.sleep
+    jitter = jitter or (lambda: random.uniform(0.0, 0.25))
+    base_delay = settings["base_delay"] if base_delay is None else base_delay
+    factor = settings["factor"] if factor is None else factor
+    cap_delay = settings["cap_delay"] if cap_delay is None else cap_delay
+    max_retries = settings["max_retries"] if max_retries is None else max_retries
+
+    retry_index = 0
+    while True:
+        result = run_job(job)
+        if result[0] or not _is_rate_limit_error(result[3]):
+            return result
+        if _is_hard_usage_limit(result[3]):
+            logger.warning(
+                "Job '%s' hit a hard usage/plan limit; skipping retries",
+                job.get("name", job.get("id", "?")),
+            )
+            if on_rate_limit is not None:
+                on_rate_limit(result[3])
+            return result
+        if retry_index >= max_retries:
+            if on_rate_limit is not None:
+                on_rate_limit(result[3])
+            return result
+        delay = min(cap_delay, base_delay * (factor ** retry_index) * (1.0 + jitter()))
+        logger.warning(
+            "Job '%s' rate-limited; retrying in %.1fs (%d/%d)",
+            job.get("name", job.get("id", "?")),
+            delay,
+            retry_index + 1,
+            max_retries,
+        )
+        # Give the circuit-breaker callback first refusal on another retry:
+        # when it returns truthy the fleet breaker just opened, so sleeping
+        # and retrying would only add noise to an outage the breaker already
+        # owns.
+        if on_rate_limit is not None and on_rate_limit(result[3]):
+            return result
+        sleep(delay)
+        retry_index += 1
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -2768,7 +2898,68 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
     try:
-        success, output, final_response, error = run_job(job)
+        no_agent = bool(job.get("no_agent"))
+        breaker = None
+        permit = None
+        if not no_agent:
+            try:
+                breaker = _get_rate_limit_breaker()
+                permit = breaker.before_run(job["id"])
+            except Exception as exc:
+                logger.warning("Rate-limit circuit breaker unavailable; running job: %s", exc)
+
+        if permit is not None and not permit.allowed:
+            skip_error = "Skipped: fleet rate-limit circuit breaker is open"
+            output = f"""# Cron Job: {job.get('name', job['id'])} (SKIPPED)
+
+**Job ID:** {job['id']}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Skipped
+
+This run was skipped because the {permit.reason}.
+"""
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Breaker-skip output saved to: %s", output_file)
+            mark_job_run(job["id"], False, skip_error)
+            return True
+
+        breaker_updates = []
+
+        def _record_rate_limit(_error):
+            if breaker is None or permit is None:
+                return False
+            try:
+                update = breaker.record_rate_limit(permit)
+                breaker_updates.append(update)
+                return update.circuit_open
+            except Exception as exc:
+                logger.warning("Failed to update rate-limit circuit breaker: %s", exc)
+                return False
+
+        if no_agent:
+            # Script-only jobs do not call a model provider, so provider quota
+            # state must neither delay their run nor be mutated by its result.
+            success, output, final_response, error = run_job(job)
+        else:
+            success, output, final_response, error = _run_job_with_rate_limit_backoff(
+                job,
+                on_rate_limit=_record_rate_limit,
+            )
+        rate_limited = not no_agent and not success and _is_rate_limit_error(error)
+        breaker_update = breaker_updates[-1] if breaker_updates else None
+        if breaker is not None and permit is not None:
+            try:
+                # Test doubles and alternate runners may return a terminal 429
+                # without invoking the terminal callback. Record it once.
+                if rate_limited and breaker_update is None:
+                    breaker_update = breaker.record_rate_limit(permit)
+                elif not rate_limited:
+                    breaker.record_non_rate_limit(permit)
+            except Exception as exc:
+                logger.warning("Failed to update rate-limit circuit breaker: %s", exc)
 
         output_file = save_job_output(job["id"], output)
         if verbose:
@@ -2777,7 +2968,20 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # Deliver the final response to the origin/target chat.
         # If the agent responded with [SILENT], skip delivery (but
         # output is already saved above).  Failed jobs always deliver.
-        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+        if rate_limited:
+            # Individual 429s remain visible in artifacts and job state, but
+            # suppress chat noise. Exactly the transition that opens/re-opens
+            # the fleet breaker emits one actionable notification.
+            deliver_content = ""
+            if breaker_update is not None and breaker_update.tripped:
+                deliver_content = (
+                    "⚠️ Cron fleet rate-limit circuit breaker tripped. "
+                    "All scheduled runs are paused for the cooldown period; "
+                    "one half-open probe will run afterward. Full details are "
+                    "saved in cron output."
+                )
+        else:
+            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
         # Treat whitespace-only final responses the same as empty
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.

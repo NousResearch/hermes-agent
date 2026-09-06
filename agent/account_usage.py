@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import httpx
 
+from agent.account_usage_quota import CodexQuotaFailure, CodexQuotaResult, parse_codex_quota
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -50,11 +51,6 @@ class AccountUsageSnapshot:
 
 def _snapshot(provider: str, source: str, windows: list, details: list, **kw: Any) -> AccountUsageSnapshot:
     return AccountUsageSnapshot(provider=provider, source=source, fetched_at=_utc_now(), windows=tuple(windows), details=tuple(details), **kw)
-
-
-def _title_case_slug(value: Optional[str]) -> Optional[str]:
-    cleaned = str(value or "").strip()
-    return cleaned.replace("_", " ").replace("-", " ").title() if cleaned else None
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
@@ -313,13 +309,19 @@ def _resolve_codex_usage_credentials(
         account_id: Optional[str] = None
         try:
             tokens = _read_codex_tokens().get("tokens") or {}
-            account_id = str(tokens.get("account_id", "") or "").strip() or None
+            # A pool selection/refresh may differ from the singleton. Never attach
+            # another account's header merely because its store happens to exist.
+            if tokens.get("access_token") == creds.get("api_key") and creds.get("api_key"):
+                account_id = str(tokens.get("account_id", "") or "").strip() or None
         except AuthError:
             # Pool-only creds carry no singleton account_id; header is optional.
             logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
         return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
-    except AuthError:
-        logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
+    except AuthError as exc:
+        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+        if exc.code == CODEX_RATE_LIMITED_CODE:
+            raise
+        logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool")
     # Tier 3: pool credentials have no account_id concept → header omitted.
     from agent.credential_pool import load_pool
     entry = load_pool("openai-codex").select()
@@ -369,20 +371,57 @@ def _plural(count: int) -> str:
 def _fetch_codex_account_usage(
     base_url: Optional[str] = None, api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
-    payload = _get_json(_codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0)
-    windows = _usage_windows(payload.get("rate_limit") or {}, (("primary_window", "Session"), ("secondary_window", "Weekly")),
-                             "used_percent", "reset_at")
+    return codex_quota_snapshot(fetch_codex_quota(base_url=base_url, api_key=api_key))
+
+
+def fetch_codex_quota(
+    *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+) -> CodexQuotaResult:
+    """One uncached observation of the selected credential context, never an identity claim.
+
+    Do not retry selection after transport errors: that can select another account.
+    No response/exception text, URL or headers cross the typed result boundary.
+    """
+    def failure(error):
+        return CodexQuotaFailure(int(_utc_now().timestamp()), error)
+
+    try:
+        token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
+        payload = _get_json(_codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0)
+    except AuthError as exc:
+        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+        return failure("rate_limit" if exc.code == CODEX_RATE_LIMITED_CODE else "auth")
+    except httpx.HTTPStatusError as exc:
+        return parse_codex_quota(None, fetched_at=int(_utc_now().timestamp()), http_status=exc.response.status_code)
+    except (ValueError, TypeError):
+        return failure("unsupported")
+    except Exception:
+        # Includes refresh/transport failures; deliberately never log exception material.
+        return failure("network")
+    return parse_codex_quota(payload, fetched_at=int(_utc_now().timestamp()))
+
+
+def codex_quota_snapshot(quota: CodexQuotaResult) -> Optional[AccountUsageSnapshot]:
+    """Keep the historical /usage text and fail-open behavior atop sanitized data."""
+    if isinstance(quota, CodexQuotaFailure):
+        return None
+    windows = tuple(
+        AccountUsageWindow(label=w.label, used_percent=w.used_percent, reset_at=_parse_dt(w.reset_at))
+        for w in quota.windows if w.used_percent is not None
+    )
     details: list[str] = []
-    count = _codex_banked_resets(payload)
-    if count > 0:
+    count = quota.banked_resets
+    if count is not None and count > 0:
         details.append(f"You have {count} reset{_plural(count)} banked - use /usage reset to activate")
-    credits, balance = payload.get("credits") or {}, (payload.get("credits") or {}).get("balance")
-    if credits.get("has_credits") and _is_num(balance):
-        details.append(f"Credits balance: ${float(balance):.2f}")
-    elif credits.get("has_credits") and credits.get("unlimited"):
+    if quota.credits_balance is not None:
+        details.append(f"Credits balance: ${quota.credits_balance:.2f}")
+    elif quota.credits_unlimited:
         details.append("Credits balance: unlimited")
-    return _snapshot("openai-codex", "usage_api", windows, details, plan=_title_case_slug(payload.get("plan_type")))
+    return AccountUsageSnapshot(
+        provider="openai-codex", source="usage_api", plan=quota.plan,
+        fetched_at=datetime.fromtimestamp(quota.fetched_at, tz=timezone.utc),
+        windows=windows, details=tuple(details),
+    )
 
 
 @dataclass(frozen=True)

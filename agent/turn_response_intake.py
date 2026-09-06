@@ -57,7 +57,9 @@ def _fire_post_api_request_hook(
     effective_task_id: Any, turn_id: Any,
 ) -> None:
     from agent.conversation_loop import _moa_reference_metrics_for_hook
+    from agent.usage_event_capture import record_post_request
 
+    record_post_request(agent, response)
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):

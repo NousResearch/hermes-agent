@@ -405,7 +405,7 @@ def _cli_config_defaults():
             # /resume recap tuning and show_reasoning: keep in sync with hermes_cli/config.py DEFAULT_CONFIG
             "resume_display": "full", "resume_exchanges": 10, "resume_max_user_chars": 300,
             "resume_max_assistant_chars": 200, "resume_max_assistant_lines": 3, "resume_skip_tool_only": True,
-            "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "interrupt",
+            "show_reasoning": True, "reasoning_full": False, "streaming": True, "busy_input_mode": "queue",
             "persistent_output": True, "persistent_output_max_lines": 200,
             # Also clear scrollback on redraw/resize recovery; off because users prefer history.
             "cli_rebuild_scrollback_on_redraw": False,
@@ -2586,9 +2586,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMix
             enabled=display.get("persistent_output", True),
             max_lines=display.get("persistent_output_max_lines", 200),
         )
-        # busy_input_mode: "interrupt" (redirect the run) | "queue" (next turn) | "steer" (inject mid-run).
-        _bim = str(display.get("busy_input_mode", "interrupt")).strip().lower()
-        self.busy_input_mode = _bim if _bim in ("queue", "steer") else "interrupt"
+        # busy_input_mode: "queue" (next turn) | "interrupt" (redirect the run) | "steer" (inject mid-run).
+        _bim = str(display.get("busy_input_mode", "queue")).strip().lower()
+        self.busy_input_mode = _bim if _bim in ("interrupt", "steer") else "queue"
 
         # verbose ONLY controls global DEBUG logging; tool_progress="verbose" is independent
         # (coupling them spewed every module's DEBUG logs to the console).

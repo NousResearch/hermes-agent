@@ -5,8 +5,8 @@ forcing clients into a deadline-bounded busy-retry. When turn teardown outlived
 the deadline — e.g. a slow, non-interruptible tool (``web_search``) still
 running when the user hit stop — the resubmitted message was silently dropped
 ("it just doesn't listen"). The gateway now applies the ``busy_input_mode``
-policy: redirect the live turn by default, with the legacy interrupt + queue
-path retained as a compatibility fallback.
+policy: queue a follow-up by default, while retaining interrupt/redirect and
+steer as explicit alternatives.
 """
 
 import threading
@@ -15,6 +15,12 @@ import types
 
 import tools.async_delegation as ad
 from tui_gateway import server
+
+
+def test_busy_input_mode_defaults_to_queue(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    assert server._load_busy_input_mode() == "queue"
 
 
 def _session(agent=None, **extra):

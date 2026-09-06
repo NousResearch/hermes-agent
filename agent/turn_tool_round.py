@@ -40,6 +40,7 @@ class ToolRoundVerdict:
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
     result: Optional[Dict[str, Any]] = None
+    stale_tool_snapshot_retries: int = 0
 
 
 def run_tool_round(
@@ -54,6 +55,9 @@ def run_tool_round(
     Hermes; a failed canonical append ends the turn rather than running tools from
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
+    from agent.tool_snapshot import require_current_tool_snapshot
+
+    require_current_tool_snapshot(agent, assistant_message)
 
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(

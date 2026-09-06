@@ -812,3 +812,77 @@ def _context_engine_family_enabled_for_refresh(
         )
         is not None
     )
+
+
+def capture_agent_tool_request_snapshot(agent) -> tuple[object, int]:
+    """Atomically capture the schemas and epoch advertised by one request."""
+    with _agent_tools_lock:
+        epoch = getattr(agent, "_tool_snapshot_epoch", 0)
+        if not isinstance(epoch, int):
+            epoch = 0
+        return getattr(agent, "tools", None), epoch
+
+
+
+def agent_tool_snapshot_epoch_is_current(agent, expected_epoch: int) -> bool:
+    """Return whether a provider response still matches its request snapshot."""
+    with _agent_tools_lock:
+        current_epoch = getattr(agent, "_tool_snapshot_epoch", 0)
+        if not isinstance(current_epoch, int):
+            current_epoch = 0
+        return current_epoch == expected_epoch
+
+
+
+def capture_agent_tool_execution_route(
+    agent,
+    expected_epoch: int,
+    function_name: str,
+) -> Optional[tuple[str, object]]:
+    """Validate an advertised epoch and capture its immutable dispatch target.
+
+    The tuple is captured under the same lock that publishes the agent's tool
+    schemas, routing-owner sets, and epoch. Callers must release this function
+    before invoking the target so long-running tools never hold the publication
+    lock. ``None`` means the response epoch is stale.
+    """
+    from tools.registry import registry
+
+    with _agent_tools_lock:
+        current_epoch = getattr(agent, "_tool_snapshot_epoch", 0)
+        if not isinstance(current_epoch, int):
+            current_epoch = 0
+        if current_epoch != expected_epoch:
+            return None
+
+        provider_names = getattr(agent, "_memory_provider_tool_names", None)
+        manager = getattr(agent, "_memory_manager", None)
+        provider_owns_route = (
+            function_name in provider_names
+            if isinstance(provider_names, set)
+            else bool(
+                callable(getattr(manager, "has_tool", None))
+                and manager.has_tool(function_name)
+            )
+        )
+        if provider_owns_route:
+            handler = getattr(manager, "handle_tool_call", None)
+            return ("memory_provider", handler) if callable(handler) else None
+
+        engine_names = getattr(agent, "_context_engine_tool_names", set())
+        if isinstance(engine_names, set) and function_name in engine_names:
+            compressor = getattr(agent, "context_compressor", None)
+            handler = getattr(compressor, "handle_tool_call", None)
+            return ("context_engine", handler) if callable(handler) else None
+
+        registry_routes = getattr(agent, "_tool_registry_routes", None)
+        if not isinstance(registry_routes, dict):
+            return None
+        entry = registry_routes.get(function_name)
+        if entry is None or not registry.entry_is_current(function_name, entry):
+            return None
+
+        # ToolEntry objects are replaced rather than mutated by registry
+        # refreshes. Identity validation prevents a replacement handler from
+        # inheriting arguments produced for an older advertised schema.
+        return ("registry", entry)

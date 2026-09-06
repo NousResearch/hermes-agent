@@ -40,10 +40,16 @@ def test_build_keepalive_http_client_forwards_verify_context(clean_tls_env):
 
 def test_resolve_aux_verify_ssl_verify_false(clean_tls_env, monkeypatch):
     import hermes_cli.config as cfg
+    import hermes_cli.config_providers as config_providers
     from agent import auxiliary_client
 
     monkeypatch.setattr(
         cfg,
+        "get_custom_provider_tls_settings",
+        lambda *a, **k: {"ssl_verify": False},
+    )
+    monkeypatch.setattr(
+        config_providers,
         "get_custom_provider_tls_settings",
         lambda *a, **k: {"ssl_verify": False},
     )

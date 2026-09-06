@@ -141,6 +141,36 @@ async function providerErrorText(response: Response): Promise<string> {
 }
 
 /**
+ * Normalize an OpenAI-compatible transcription HTTP body to spoken text.
+ *
+ * Groq and OpenAI honor `response_format=text` and return a bare string.
+ * Mistral Voxtral ignores that flag and returns JSON
+ * `{ text, model, usage, ... }` — dumping that object into the Desktop
+ * composer is the dictation regression (plain speech becomes raw JSON).
+ */
+export function transcriptFromOpenAiMultipartBody(body: string): string {
+  const trimmed = String(body || '').trim()
+
+  if (!trimmed) {
+    return ''
+  }
+
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { text?: unknown }
+
+      if (typeof parsed?.text === 'string') {
+        return parsed.text.trim()
+      }
+    } catch {
+      // Not JSON — treat the body as the transcript.
+    }
+  }
+
+  return trimmed
+}
+
+/**
  * Transcribe provider-direct. Returns the transcript ('' = silence), or null
  * when the profile's provider isn't client-callable — the caller relays.
  * Provider REJECTIONS throw: the configured provider said no, and silently
@@ -179,7 +209,7 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
       throw new Error(`${stt.provider} STT error (HTTP ${response.status}): ${await providerErrorText(response)}`)
     }
 
-    return (await response.text()).trim()
+    return transcriptFromOpenAiMultipartBody(await response.text())
   }
 
   if (stt.wire === 'xai-stt') {

@@ -72,8 +72,16 @@ gateway:
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
 
   background:
-    usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
+    usage:                 "Úsáid: /bg <leid>\nSampla: /bg Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
     started:               "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."
+
+  btw:
+    usage:                 "Úsáid: /btw <ceist>\nSampla: /btw cén comhad ina raibh an earráid sin?\n\nFreagraíonn ceist thaobhach ghasta faoin gcomhrá seo gan cur isteach air. Le haghaidh tasc cúlra neamhspleách, úsáid /bg <leid>."
+    no_history:            "Níl aon chomhrá ann fós — seol do cheist mar ghnáth-theachtaireacht ina ionad."
+    no_provider:           "❌ Ní féidir an cheist a fhreagairt: níl dintiúir sholáthraí cumraithe."
+    started:               "💬 Ceist thaobhach: \"{preview}\"\nÁ freagairt ó léargas ar an gcomhrá seo — leanann an obair reatha ar aghaidh."
+    answer:                "💬 /btw: \"{preview}\"\n\n{answer}"
+    failed:                "❌ Theip ar /btw: \"{preview}\"\n{error}"
 
   branch:
     db_unavailable:        "Níl bunachar sonraí na seisiún ar fáil."
@@ -102,6 +110,7 @@ gateway:
     summary_failed:        "⚠️ Theip ar ghiniúint achoimre ({error}). Baineadh {count} teachtaireacht stairiúil agus cuireadh ionadaí ina n-áit; níl an comhthéacs roimhe seo in-aisghabhála a thuilleadh. Smaoinigh ar an gcumraíocht auxiliary.compression a sheiceáil."
     aborted:               "⚠️ Cuireadh deireadh leis an dlúthú ({error}). Níor baineadh aon teachtaireacht — tá an comhrá gan athrú. Rith /compress chun é a thriail arís, /reset le haghaidh seisiún glan, nó seiceáil do chumraíocht samhla auxiliary.compression."
     aux_failed:            "ℹ️ Theip ar an tsamhail dlúthúcháin chumraithe `{model}` ({error}). Aisghafa ag baint úsáide as do phríomhshamhail — tá an comhthéacs slán — ach b'fhéidir gur mhaith leat `auxiliary.compression.model` i config.yaml a sheiceáil."
+    turnhold_deferred:     "ℹ️ Cuireadh comhbhrú comhthéacs siar — tá an achoimre fós á sruthú. Ag leanúint ar aghaidh gan chomhbhrú don seal seo."
     failed:                "Theip ar dhlúthú: {error}"
 
   debug:
@@ -132,6 +141,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nMód reatha: `{mode}`\\n\\nRoghnaigh rogha:"
     choice_fast:           "fast — Priority Processing ar siúl"
     choice_normal:         "normal — gnáthphróiseáil"
+    choice_auto:           "auto — tapa do na chéad soicindí de gach seal"
+    choice_cold:           "cold — tapa don chéad seal de sheisiún amháin"
 
   footer:
     status:                "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"
@@ -170,10 +181,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
@@ -260,6 +275,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
+    all_requires_admin: "_Nóta: teastaíonn riarthóir cumraithe le `--all` (liostú traschomhrá); ní thaispeántar ach seisiúin an chomhrá seo._"
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -284,6 +300,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Uimhir seicphointe neamhbhailí. Úsáid 1-{max}."
     restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
     kept_user_edits:       "↷ Coinníodh do chuid athruithe láimhe: {files}\nÚsáid /rollback <N> --all chun iad sin a aischur freisin."
+    kept_oversize:         "↷ Coinnithe (ró-mhór do sheicphointí, níl aon chóip stóráilte le filleadh uirthi): {files}"
+    failed_deletes:        "⚠️ Níorbh fhéidir a bhaint (fágtha ina áit): {files}"
     restore_failed:        "❌ {error}"
 
   diff:

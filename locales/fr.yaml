@@ -68,8 +68,16 @@ gateway:
     always_plural:         "✅ Commandes approuvées (modèle approuvé de manière permanente) ({count} commandes). L'agent reprend..."
 
   background:
-    usage:                 "Usage : /background <prompt>\nExemple : /background Résume les meilleures histoires HN d'aujourd'hui\n\nExécute le prompt dans une session séparée. Vous pouvez continuer à discuter — le résultat apparaîtra ici une fois terminé."
+    usage:                 "Usage : /bg <prompt>\nExemple : /bg Résume les meilleures histoires HN d'aujourd'hui\n\nExécute le prompt dans une session séparée. Vous pouvez continuer à discuter — le résultat apparaîtra ici une fois terminé."
     started:               "🔄 Tâche d'arrière-plan démarrée : « {preview} »\nID de tâche : {task_id}\nVous pouvez continuer à discuter — les résultats apparaîtront ici une fois terminés."
+
+  btw:
+    usage:                 "Usage : /btw <question>\nExemple : /btw dans quel fichier était cette erreur ?\n\nRépond à une question rapide sur cette conversation sans l'interrompre. Pour une tâche d'arrière-plan indépendante, utilisez /bg <prompt>."
+    no_history:            "Pas encore de conversation — envoyez plutôt votre question comme un message normal."
+    no_provider:           "❌ Impossible de répondre : aucun identifiant de fournisseur configuré."
+    started:               "💬 Question annexe : « {preview} »\nRéponse à partir d'un instantané de cette conversation — le travail en cours continue."
+    answer:                "💬 /btw : « {preview} »\n\n{answer}"
+    failed:                "❌ /btw a échoué : « {preview} »\n{error}"
 
   branch:
     db_unavailable:        "Base de données des sessions indisponible."
@@ -98,6 +106,7 @@ gateway:
     summary_failed:        "⚠️ Échec de la génération du résumé ({error}). {count} message(s) historique(s) ont été supprimés et remplacés par un espace réservé ; le contexte antérieur n'est plus récupérable. Vérifiez la configuration du modèle auxiliary.compression."
     aborted:               "⚠️ Compression interrompue ({error}). Aucun message n'a été supprimé — la conversation est inchangée. Lancez /compress pour réessayer, /reset pour une nouvelle session, ou vérifiez la configuration de votre modèle auxiliary.compression."
     aux_failed:            "ℹ️ Le modèle de compression configuré `{model}` a échoué ({error}). Récupéré avec votre modèle principal — le contexte est intact — mais vous pouvez vérifier `auxiliary.compression.model` dans config.yaml."
+    turnhold_deferred:     "ℹ️ Compression du contexte différée — le résumé est encore en cours de diffusion. Poursuite sans compression pour ce tour."
     failed:                "Échec de la compression : {error}"
 
   debug:
@@ -128,6 +137,8 @@ gateway:
     picker_title:          "⚡ **Priority Processing**\\n\\nMode actuel : `{mode}`\\n\\nChoisissez une option :"
     choice_fast:           "fast — Priority Processing activé"
     choice_normal:         "normal — traitement standard"
+    choice_auto:           "auto — rapide pendant les premières secondes de chaque tour"
+    choice_cold:           "cold — rapide uniquement au premier tour d'une session"
 
   footer:
     status:                "📎 Pied de page d'exécution : **{state}**\nChamps : `{fields}`\nPlateforme : `{platform}`"
@@ -166,10 +177,14 @@ gateway:
       crashed:             "crashed (worker exited); dispatcher will retry"
       timed_out:           "timed out; dispatcher will retry"
       blocked:             "blocked; needs attention"
+      review_requested:    "handed off for review; the implementation is done"
+      changes_requested:   "review requested changes (BLOCK); implementation is not approved"
+      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
       handoff:             "Result: {summary}"
+      review_detail:       "Review feedback: {reason}\nInspect the existing card and its current review run; return work to the same implementation task. Do not treat this BLOCK as approval and do not create a duplicate task."
       guidance:            "This is an automatic task-status notification, not a request to decompose the task again. Inspect the current board before creating follow-up tasks; do not recreate tasks or graphs that already exist."
 
   personality:
@@ -256,6 +271,7 @@ Use `/title My Session` to name the current room session, `/resume --all` to lis
 Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Aucune session nommée trouvée.\nUtilisez `/title Ma session` pour nommer la session actuelle, puis `/resume Ma session` pour y revenir plus tard."
+    all_requires_admin: "_Remarque : `--all` (liste inter-discussions) nécessite un administrateur configuré ; seules les sessions de cette discussion sont affichées._"
     list_header:           "📋 **Sessions nommées**\n"
     list_item:             "• **{title}**{preview_part}"
     list_item_numbered:    "{index}. **{title}**{preview_part}"
@@ -280,6 +296,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Numéro de point de contrôle invalide. Utilisez 1-{max}."
     restored:              "✅ Restauré au point de contrôle {hash} : {reason}\nUn instantané pré-rollback a été enregistré automatiquement."
     kept_user_edits:       "↷ Vos modifications manuelles ont été conservées : {files}\nUtilisez /rollback <N> --all pour les restaurer aussi."
+    kept_oversize:         "↷ Conservé (trop volumineux pour les checkpoints, aucune copie enregistrée vers laquelle revenir) : {files}"
+    failed_deletes:        "⚠️ Suppression impossible (laissé en place) : {files}"
     restore_failed:        "❌ {error}"
 
   diff:

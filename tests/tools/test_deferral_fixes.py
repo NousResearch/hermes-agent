@@ -28,7 +28,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-from tools.tool_search import _short_desc, build_catalog, search_catalog
+from tools.tool_search import build_catalog, search_catalog
+from tools.tool_search_catalog import _short_desc
 
 
 def _tc(name, arguments="{}", call_id=None):
@@ -297,9 +298,14 @@ class TestSourceNameIndexing:
                 _td("mcp__catalogsource__native_action", "Perform a native action."),
                 _td("plugin_action", "Perform a plugin action."),
             ])
+            # Compare in token space: the tokenizer may stem (e.g.
+            # "catalogsource" -> "catalogsourc"), and the contract is that
+            # the label lands in the document exactly once either way.
+            from tools.tool_search_catalog import _tokenize
+            label_token = _tokenize(source_label)[0]
             tokens_by_name = {entry.name: entry._tokens for entry in catalog}
-            assert tokens_by_name[names[0]].count(source_label) == 1
-            assert tokens_by_name[names[1]].count(source_label) == 1
+            assert tokens_by_name[names[0]].count(label_token) == 1
+            assert tokens_by_name[names[1]].count(label_token) == 1
         finally:
             for name in names:
                 registry.deregister(name)

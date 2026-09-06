@@ -63,6 +63,12 @@ def _fold_moa_usage(agent, canonical_usage):
     return _moa_client, canonical_usage, _moa_ref_cost
 
 
+
+#: session_id -> routed model id (see record_response_usage). Module-level because the
+#: gateway's finalizing agent instance can differ from the instance that made the API calls.
+_ROUTED_MODEL_REGISTRY: dict = {}
+
+
 def record_response_usage(
     agent: Any, response: Any, *, messages: List[Dict[str, Any]], api_call_count: int,
     api_duration: float, compression_attempts: int, max_compression_attempts: int,
@@ -95,8 +101,16 @@ def record_response_usage(
     # e.g. requested "~z-ai/glm-flash-latest" routes to "z-ai/glm-5.3-flash"). The runtime
     # footer reads this so the owner sees the exact model that answered, not the alias.
     try:
-        agent._last_routed_model = getattr(response, "model", None) or getattr(agent, "_last_routed_model", None)
-        logger.info("routed_model stamped: %s (requested %s)", agent._last_routed_model, agent.model)
+        routed = getattr(response, "model", None) or getattr(agent, "_last_routed_model", None)
+        agent._last_routed_model = routed
+        # Also record on a module-level registry: the gateway's finalizing agent can be a
+        # DIFFERENT instance than the one record_response_usage received (agent re-creation
+        # between mid-turn calls and finalize), so instance attributes alone lose the value.
+        try:
+            _ROUTED_MODEL_REGISTRY[str(getattr(agent, "session_id", "") or "")] = routed
+        except Exception:
+            pass
+        logger.info("routed_model stamped: %s (requested %s)", routed, agent.model)
     except Exception as _rm_err:
         logger.warning("routed_model stamp failed: %s", _rm_err)
     canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)

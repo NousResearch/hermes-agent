@@ -465,8 +465,9 @@ export function useStatusbarItems({
             {freeTierCopy.signIn}
           </Badge>
         ),
-        // Only when the free tier is the route actually serving inference —
-        // a user whose own provider carries it is not "on the free tier".
+        // Shown while a free-tier identity exists and the tier is on: it names the
+        // identity that carries the connectors (and inference when nothing else
+        // does), and it is the persistent way in to the sign-in.
         hidden: !freeTier?.available,
         icon: <Codicon name="account" size="0.75rem" />,
         id: 'free-tier',

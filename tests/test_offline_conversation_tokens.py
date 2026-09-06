@@ -16,6 +16,7 @@ class ChatTokenizer:
     bos_token_id = None
     eos_token_id = None
     unk_token_id = None
+    message_overhead = 4
 
     def get_chat_template(self):
         return "test conversation format"
@@ -29,7 +30,7 @@ class ChatTokenizer:
         assert return_dict is False
         assert all(message["role"] in {"system", "user", "assistant", "tool"} for message in messages)
         # Conversation framing and per-message delimiters count even for empty content.
-        return [0] * (2 + sum(4 + len(self.encode(message["content"])) for message in messages))
+        return [0] * (2 + sum(self.message_overhead + len(self.encode(message["content"])) for message in messages))
 
 
 def test_sampling_and_compression_use_the_formatted_budget(monkeypatch):
@@ -67,7 +68,7 @@ def test_sampling_and_compression_use_the_formatted_budget(monkeypatch):
         compressor.count_trajectory_tokens(sharegpt)
 
 
-def test_pipeline_uses_one_target_tokenizer_config_for_both_stages(tmp_path, monkeypatch):
+def test_pipeline_uses_one_target_tokenizer_config_for_both_stages(tmp_path, monkeypatch, caplog):
     """Run YAML -> sampling -> JSONL -> compressor, replacing Hub I/O and the process pool."""
     tokenizer = ChatTokenizer()
     loads = []
@@ -123,3 +124,32 @@ def test_pipeline_uses_one_target_tokenizer_config_for_both_stages(tmp_path, mon
     assert report["tokenizer"]["revision"] == revision
     assert report["tokenizer"]["name"] == loads[0][0]
     assert report["summary"]["trajectories_skipped_under_target"] == 1
+    assert not any("--skip_download" in record.message for record in caplog.records)
+
+    # A different template changes the budget, but cannot recover discarded rows.
+    raw_path = tmp_path / "data" / "test_raw" / "batch_0.jsonl"
+    cached_input = raw_path.read_bytes()
+    tokenizer.message_overhead = 8
+    revised_count = len(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=False))
+    revision = "b" * 40
+    config.write_text(
+        f"tokenizer:\n  name: selected-target\n  revision: {revision}\n  trust_remote_code: false\n"
+        f"compression:\n  target_max_tokens: {revised_count}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sample_and_compress, "load_dataset_from_hf", MagicMock(
+        side_effect=AssertionError("Cached-input reuse must not download datasets"),
+    ))
+    loads.clear()
+    caplog.clear()
+    sample_and_compress.main(
+        output_name="test", config=str(config), min_tokens=revised_count, skip_download=True,
+    )
+    assert raw_path.read_bytes() == cached_input
+    assert loads == [("selected-target", {"revision": revision, "trust_remote_code": False})]
+    report = json.loads((tmp_path / "data" / "test_batches" / "compression_metrics.json").read_text(encoding="utf-8"))
+    assert report["tokenizer"]["revision"] == revision
+    assert report["tokens"]["total_before"] == revised_count
+    assert report["tokens"]["total_after"] == revised_count
+    warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
+    assert any("--skip_download" in warning and "_original_tokens" in warning for warning in warnings)

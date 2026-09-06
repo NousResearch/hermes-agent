@@ -773,6 +773,48 @@ class TestWebServerEndpoints:
         assert seen["status_path"] == worker_home / "gateway_state.json"
         assert seen["expected_home"] == worker_home
 
+    def test_messaging_platforms_profile_scoped_env_credentials_enable(self, monkeypatch):
+        """Env credentials alone must enable a platform on the profile-scoped path.
+
+        ``hermes gateway setup`` writes the token to .env and never a ``platforms:``
+        entry, but the desktop always sends ``?profile=default``; the scoped branch
+        consulted only config.yaml's ``platforms:`` section, so the Messaging page
+        showed "Disabled" for a connected bot (#104614). An explicit
+        ``enabled: false`` must still win, mirroring ``_enable_from_env`` in
+        gateway/config_env.py.
+        """
+        import hermes_cli.web_server as web_server
+        from hermes_cli import profiles as profiles_mod
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        (worker_home / ".env").write_text("DISCORD_BOT_TOKEN=tok\n", encoding="utf-8")
+
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda pid_path=None, **kw: None)
+        monkeypatch.setattr(_gw_status, "get_running_pid", lambda pid_path=None, **kw: None)
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda path=None: None)
+        monkeypatch.setattr(_gw_status, "get_runtime_status_running_pid", lambda runtime=None, **kw: None)
+        monkeypatch.setattr(web_server, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/messaging/platforms?profile=worker")
+
+        assert resp.status_code == 200
+        platforms = {p["id"]: p for p in resp.json()["platforms"]}
+        assert platforms["discord"]["enabled"] is True
+        assert platforms["discord"]["configured"] is True
+        assert platforms["discord"]["state"] != "disabled"
+
+        # Explicit platforms.discord.enabled: false wins over the .env credentials.
+        (worker_home / "config.yaml").write_text(
+            "platforms:\n  discord:\n    enabled: false\n", encoding="utf-8"
+        )
+        resp = self.client.get("/api/messaging/platforms?profile=worker")
+
+        assert resp.status_code == 200
+        platforms = {p["id"]: p for p in resp.json()["platforms"]}
+        assert platforms["discord"]["enabled"] is False
+        assert platforms["discord"]["state"] == "disabled"
+
 
 
 

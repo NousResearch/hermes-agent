@@ -1385,6 +1385,27 @@ def test_real_binding_drains_orphaned_scope_before_session_pop(
     assert failure is None, failure
 
 
+def test_failed_scope_close_retires_relay_session_without_raising(direct_runtime):
+    """A corrupt handle must not strand future Hermes turn finalization."""
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "scope-recovery"})
+    assert session is not None
+
+    failure = runtime._close_scope_handle(
+        session,
+        ("scope", "missing", -1),
+        output={},
+        failure_label="turn scope close failed",
+    )
+
+    assert failure is not None
+    assert session.recovery_needed is True
+    assert session.closing is True
+    assert session.context is None
+    assert runtime.get_session("scope-recovery") is None
+
+
 def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(
     direct_runtime,
 ):

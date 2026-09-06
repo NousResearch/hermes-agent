@@ -1725,6 +1725,259 @@ def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(mo
     assert len(requests) == 2
 
 
+# Native Responses compaction is deliberately armed below the local threshold.
+# These tests pin the missing ownership contract: automatic local compression
+# must let the eligible provider request go first, while ineligible routes keep
+# the existing local fallback.
+def _enable_native_compaction_for_test(agent):
+    agent.model = "gpt-5.6-sol"
+    agent.codex_responses_native_compaction = True
+    agent.compression_checkpoint_required = False
+    agent.runtime_capabilities = {"native_compaction": True}
+    agent.capabilities = {}
+
+
+def _large_preflight_history():
+    return [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": "x" * 15_000,
+        }
+        for i in range(8)
+    ]
+
+
+def _record_compaction(calls):
+    def _fake(messages, system_message, **kwargs):
+        calls.append(kwargs.get("approx_tokens"))
+        return list(messages[-2:]), "You are Hermes."
+
+    return _fake
+
+
+@pytest.mark.parametrize(
+    "user_message",
+    [
+        "continue",
+        "[ASYNC DELEGATION BATCH COMPLETE — deleg_test]\nContinue after the delegated audit.",
+    ],
+)
+def test_native_compaction_owns_turn_prologue_threshold_before_local_preflight(
+    monkeypatch, user_message
+):
+    agent = _build_agent(monkeypatch)
+    _enable_native_compaction_for_test(agent)
+    agent.context_compressor.context_length = 40_000
+    agent.context_compressor.threshold_tokens = 20_000
+    monkeypatch.setattr(
+        agent.context_compressor,
+        "get_active_compression_failure_cooldown",
+        lambda: {"remaining_seconds": 60.0},
+    )
+    warnings = []
+    monkeypatch.setattr(
+        agent,
+        "_warn_context_overflow_blocked",
+        lambda *args: warnings.append(args),
+    )
+
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda kwargs: requests.append(kwargs) or _codex_message_response("done"),
+    )
+    compress_calls = []
+    monkeypatch.setattr(agent, "_compress_context", _record_compaction(compress_calls))
+
+    result = agent.run_conversation(
+        user_message, conversation_history=_large_preflight_history()
+    )
+
+    assert result["completed"] is True
+    assert compress_calls == []
+    assert warnings == []
+    assert requests[0]["context_management"] == [
+        {"type": "compaction", "compact_threshold": 11_808}
+    ]
+
+
+def test_native_compaction_owns_idle_threshold_before_local_compaction(monkeypatch):
+    import time
+
+    agent = _build_agent(monkeypatch)
+    _enable_native_compaction_for_test(agent)
+    agent.context_compressor.context_length = 200_000
+    agent.context_compressor.threshold_tokens = 100_000
+    agent.context_compressor.summary_target_ratio = 0.2
+    agent.compression_idle_compact_after_seconds = 1
+    agent._last_activity_ts = time.time() - 10
+
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda kwargs: requests.append(kwargs) or _codex_message_response("done"),
+    )
+    compress_calls = []
+    monkeypatch.setattr(agent, "_compress_context", _record_compaction(compress_calls))
+
+    result = agent.run_conversation(
+        "continue", conversation_history=_large_preflight_history()
+    )
+
+    assert result["completed"] is True
+    assert compress_calls == []
+    assert "context_management" in requests[0]
+
+
+def test_native_compaction_owns_midturn_pre_api_threshold(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    _enable_native_compaction_for_test(agent)
+    agent.context_compressor.context_length = 40_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("done"),
+    ]
+    responses[0].usage = SimpleNamespace(
+        input_tokens=18_000, output_tokens=4, total_tokens=18_004
+    )
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda kwargs: requests.append(kwargs) or responses.pop(0),
+    )
+
+    def _large_tool_result(assistant_message, messages, *_args, **_kwargs):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": "x" * 80_000,
+                }
+            )
+
+    compress_calls = []
+    monkeypatch.setattr(agent, "_execute_tool_calls", _large_tool_result)
+    monkeypatch.setattr(agent, "_compress_context", _record_compaction(compress_calls))
+
+    result = agent.run_conversation("do tool work")
+
+    assert result["completed"] is True
+    assert compress_calls == []
+    assert len(requests) == 2
+    assert all("context_management" in request for request in requests)
+
+
+def test_native_compaction_owns_post_response_threshold(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    _enable_native_compaction_for_test(agent)
+    agent.context_compressor.context_length = 40_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("done"),
+    ]
+    responses[0].usage = SimpleNamespace(
+        input_tokens=25_000, output_tokens=4, total_tokens=25_004
+    )
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda kwargs: requests.append(kwargs) or responses.pop(0),
+    )
+
+    def _small_tool_result(assistant_message, messages, *_args, **_kwargs):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": "ok",
+                }
+            )
+
+    compress_calls = []
+    monkeypatch.setattr(agent, "_execute_tool_calls", _small_tool_result)
+    monkeypatch.setattr(agent, "_compress_context", _record_compaction(compress_calls))
+
+    result = agent.run_conversation("do tool work")
+
+    assert result["completed"] is True
+    assert compress_calls == []
+    assert len(requests) == 2
+    assert all("context_management" in request for request in requests)
+
+
+@pytest.mark.parametrize("case", ["disabled", "wrong-model", "checkpoint-required"])
+def test_ineligible_native_route_keeps_local_turn_prologue_preflight(monkeypatch, case):
+    agent = _build_agent(monkeypatch)
+    _enable_native_compaction_for_test(agent)
+    agent.context_compressor.context_length = 40_000
+    agent.context_compressor.threshold_tokens = 20_000
+    if case == "disabled":
+        agent.codex_responses_native_compaction = False
+    elif case == "wrong-model":
+        agent.model = "gpt-5.2"
+    else:
+        agent.compression_checkpoint_required = True
+
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda kwargs: requests.append(kwargs) or _codex_message_response("done"),
+    )
+    compress_calls = []
+    monkeypatch.setattr(agent, "_compress_context", _record_compaction(compress_calls))
+
+    result = agent.run_conversation(
+        "continue", conversation_history=_large_preflight_history()
+    )
+
+    assert result["completed"] is True
+    assert len(compress_calls) == 1
+    assert "context_management" not in requests[0]
+
+
+def test_native_compaction_keeps_local_provider_overflow_recovery(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    _enable_native_compaction_for_test(agent)
+    agent.context_compressor.context_length = 40_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    overflow = Exception("Request entity too large")
+    overflow.status_code = 413
+    responses = [overflow, _codex_message_response("recovered")]
+    requests = []
+
+    def _api_call(kwargs):
+        requests.append(kwargs)
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _api_call)
+    compress_calls = []
+    monkeypatch.setattr(agent, "_compress_context", _record_compaction(compress_calls))
+
+    result = agent.run_conversation(
+        "continue", conversation_history=_large_preflight_history()
+    )
+
+    assert result["completed"] is True
+    assert result["final_response"] == "recovered"
+    assert len(compress_calls) == 1
+    assert len(requests) == 2
+
+
 def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, tmp_path):
     """Mid-turn pre-API compaction must re-baseline the flush cursor.
 

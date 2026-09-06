@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.codex_responses_adapter import native_responses_owns_automatic_compaction
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
@@ -150,7 +151,12 @@ def _idle_compaction(
 
     messages = out.messages
     _idle_after = getattr(agent, "compression_idle_compact_after_seconds", 0)
-    if not (agent.compression_enabled and _idle_after > 0 and messages):
+    if not (
+        agent.compression_enabled
+        and not native_responses_owns_automatic_compaction(agent)
+        and _idle_after > 0
+        and messages
+    ):
         return
     _idle_gap = time.time() - getattr(agent, "_last_activity_ts", time.time())
     if _idle_gap < _idle_after:
@@ -257,6 +263,7 @@ def _preflight_compression(
         _compressor, "should_defer_preflight_to_real_usage", lambda _tokens: False
     )(_preflight_tokens)
     _codex_native_auto = _codex_native_auto_compaction(agent)
+    _responses_native_auto = native_responses_owns_automatic_compaction(agent)
 
     if not _preflight_deferred:
         # Display-only seed: a real provider reading wins and the -1 sentinel stays
@@ -271,7 +278,9 @@ def _preflight_compression(
 
     _should_compress_now = False
     _compress_block_reason = None
-    if _preflight_deferred:
+    if _codex_native_auto or _responses_native_auto:
+        logger.info("Skipping Hermes preflight compression: provider-native compaction owns this route")
+    elif _preflight_deferred:
         logger.info(
             "Skipping preflight compression: rough estimate ~%s >= %s, "
             "but last real provider prompt was %s after compression",
@@ -289,12 +298,6 @@ def _preflight_compression(
             # Over threshold but blocked by the summary-LLM cooldown — surface a warning.
             _cooldown_secs = _compression_cooldown.get("remaining_seconds", 0.0)
             _compress_block_reason = f"cooldown:{_cooldown_secs:.0f}"
-    elif _codex_native_auto:
-        logger.info(
-            "Skipping Hermes preflight compression for codex app-server "
-            "(mode=%s); Hermes will not start thread compaction here.",
-            getattr(agent, "codex_app_server_auto_compaction", "native"),
-        )
     else:
         _should_compress_now = _compressor.should_compress(_preflight_tokens)
         if not _should_compress_now:
@@ -326,7 +329,12 @@ def _preflight_compression(
         _clear_overflow_warn(agent)
         # Engine maintenance only when NO skip-branch fired: cooldown, deferred
         # estimate, or codex-native route keep the engine hook unconsulted.
-        if not (_compression_cooldown or _preflight_deferred or _codex_native_auto):
+        if not (
+            _compression_cooldown
+            or _preflight_deferred
+            or _codex_native_auto
+            or _responses_native_auto
+        ):
             _engine_preflight_maintenance(
                 agent, out, _compressor, _preflight_tokens, system_message, effective_task_id
             )

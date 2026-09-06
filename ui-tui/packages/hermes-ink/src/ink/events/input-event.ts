@@ -2,8 +2,20 @@ import { nonAlphanumericKeys, type ParsedKey } from '../parse-keypress.js'
 
 import { Event } from './event.js'
 
-const inputForSpecialSequence = (name: string): string =>
-  name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
+// Only names that are themselves a printable character ('space' → ' ', or a
+// single letter/digit like Alt+a via modifyOtherKeys) have a text form. Every
+// multi-character named key arriving via CSI u / modifyOtherKeys (backspace,
+// delete, tab, return, escape, F-keys…) must produce NO text. The previous
+// version enumerated the empty-string keys and fell through to `name` for
+// everything else, so Alt+Backspace on Ghostty (ESC[27;3;127~) leaked the
+// literal word "backspace" into the prompt once the input line was empty and
+// no backspace branch consumed the event first. Length-checking the name
+// fails safe for any future named key.
+const inputForSpecialSequence = (name: string): string => {
+  if (name === 'space') return ' '
+  if (name.length === 1) return name
+  return ''
+}
 
 export type Key = {
   upArrow: boolean

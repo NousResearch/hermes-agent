@@ -251,7 +251,17 @@ def _goal_judge_available() -> bool:
     return client is not None and bool(model)
 
 
-def _goal_mode_handoff_rejection(task, evidence: str):
+_REVIEW_READINESS_NOTE = (
+    "\n\nJudging note: this checks whether the implementation work described "
+    "above is finished and ready to hand off to a reviewer — it does not "
+    "check whether the card as a whole is done. If the card's own criteria "
+    "call for a reviewer to approve or close out the work, treat that as a "
+    "later step outside this check: do not withhold DONE merely because "
+    "reviewer/approval evidence is absent."
+)
+
+
+def _goal_mode_handoff_rejection(task, evidence: str, *, handoff: str = "complete"):
     """Return ``(verdict, reason_or_None)`` for a goal-mode terminal handoff.
 
     ``{"done", None}`` means the judge allows the handoff; anything else is
@@ -261,11 +271,19 @@ def _goal_mode_handoff_rejection(task, evidence: str):
     """
     if not task or not task.goal_mode or not _goal_judge_available():
         return ("done", None)
+    goal = f"{task.title}\n\n{task.body or ''}".strip()
+    if handoff == "review":
+        # judge_goal truncates goals to 2000 chars; reserve room so the
+        # review-scoping note survives long task bodies.
+        budget = 2000 - len(_REVIEW_READINESS_NOTE)
+        if len(goal) > budget:
+            goal = goal[:budget]
+        goal = f"{goal}{_REVIEW_READINESS_NOTE}"
     verdict = "done"
     reason = ""
     try:
         verdict, reason, _, _, _ = judge_goal(
-            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+            goal=goal,
             last_response=evidence.strip(),
         )
     except Exception as judge_exc:
@@ -950,19 +968,27 @@ def _handle_request_review(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # Review is a non-terminal handoff, but a reachable goal judge
+            # still checks implementation readiness. Scope that check to the
+            # pre-review phase so same-card review criteria do not deadlock
+            # the transition into the reviewer lane.
             task = kb.get_task(conn, tid)
-            gate_verdict, rejection = _goal_mode_handoff_rejection(task, summary)
+            gate_verdict, rejection = _goal_mode_handoff_rejection(
+                task,
+                summary,
+                handoff="review",
+            )
             if gate_verdict == "blocked":
                 return tool_error(
                     f"Goal review handoff rejected: judge ruled the goal "
                     f"unachievable — {rejection}. Record the block with "
-                    f"kanban_block instead of requesting review."
+                    "kanban_block instead of requesting review."
                 )
             if rejection is not None:
                 return tool_error(
                     f"Goal review handoff rejected by judge: {rejection}. "
-                    "Provide acceptance evidence matching the card before "
-                    "requesting review."
+                    "Provide implementation evidence matching the card "
+                    "before requesting review."
                 )
             ok, fail_reason = kb.request_review(
                 conn, tid,

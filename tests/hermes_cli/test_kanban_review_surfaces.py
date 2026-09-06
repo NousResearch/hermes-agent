@@ -282,7 +282,7 @@ def test_cli_reopen_review_is_transition_first_and_redacts_reason(
         assert secret not in comments[0].body
 
 
-def test_goal_mode_review_handoff_cannot_bypass_judge(
+def test_goal_mode_review_handoff_reaches_review_before_judge(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -308,26 +308,21 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     from tools import kanban_tools as tools
 
     monkeypatch.setattr(tools, "_goal_judge_available", lambda: True)
-    monkeypatch.setattr(
-        tools,
-        "judge_goal",
-        lambda *args, **kwargs: (
-            "continue",
-            "acceptance evidence is missing",
-            False,
-            None,
-            False,
-        ),
-    )
-    rejected = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
-    assert "error" in rejected
-    assert "rejected by judge" in rejected["error"]
+    def scoped_judge(*, goal, last_response, **_kwargs):
+        if "do not withhold DONE merely because" in goal:
+            return "done", "implementation is ready for review", False, None, False
+        return "continue", "acceptance evidence is missing", False, None, False
+
+    monkeypatch.setattr(tools, "judge_goal", scoped_judge)
+    handed_off = json.loads(tools._handle_request_review({"summary": "Looks ready."}))
+    assert handed_off["ok"] is True
+    assert handed_off["status"] == "review"
     with kb.connect() as conn:
         tool_after = kb.get_task(conn, tool_task)
         assert tool_after is not None
-        assert tool_after.status == "running"
+        assert tool_after.status == "review"
 
-    # The shell/CLI path applies the same gate and must not bypass the tool.
+    # The shell/CLI path follows the same non-terminal handoff rule.
     with kb.connect() as conn:
         cli_task = kb.create_task(
             conn,
@@ -348,17 +343,13 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
         "get_text_auxiliary_client",
         lambda purpose: (object(), "judge-model"),
     )
-    monkeypatch.setattr(
-        goals,
-        "judge_goal",
-        lambda *args, **kwargs: ("continue", "tests are missing", False, None, False),
-    )
+    monkeypatch.setattr(goals, "judge_goal", scoped_judge)
     output = kc.run_slash(f"request-review {cli_task} --summary 'Looks ready.'")
-    assert "rejected by judge" in output
+    assert "Requested review" in output
     with kb.connect() as conn:
         cli_after = kb.get_task(conn, cli_task)
         assert cli_after is not None
-        assert cli_after.status == "running"
+        assert cli_after.status == "review"
 
 
 def test_goal_loop_stops_after_reviewer_requests_changes(

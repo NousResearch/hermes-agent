@@ -1504,3 +1504,58 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
+
+
+@pytest.mark.parametrize("decision", ["cancel", "legacy-empty", "submit-empty", "password", "interrupt", "timeout"])
+def test_sudo_wire_decision_reaches_password_bridge(server, monkeypatch, decision):
+    import tools.terminal_tool as terminal
+    import tools.terminal_tool_sudo as sudo
+
+    seen = []
+
+    def emit(event, sid, payload):
+        seen.append((event, sid, payload))
+        if event != "sudo.request":
+            return
+        params = {"request_id": payload["request_id"]}
+        if decision == "timeout":
+            return
+        if decision == "interrupt":
+            server._clear_pending(sid)
+            return
+        method = "sudo.cancel" if decision == "cancel" else "sudo.respond"
+        if decision == "submit-empty":
+            params.update(intent="submit", password="")
+        elif decision == "password":
+            params["password"] = "test-password"
+        elif decision == "legacy-empty":
+            params["password"] = ""
+        response = server._methods.get(method, lambda *_: {"error": "unknown method"})("rpc", params)
+        assert "error" not in response, response
+
+    monkeypatch.setattr(server, "_emit", emit)
+    real_block = server._block
+    monkeypatch.setattr(server, "_block", lambda event, sid, payload, **kw: real_block(event, sid, payload, timeout=0))
+    server._wire_callbacks("sudo-session")
+    try:
+        if decision in ("cancel", "legacy-empty", "interrupt"):
+            with pytest.raises(sudo.SudoPasswordPromptCancelled):
+                sudo._prompt_for_sudo_password()
+        else:
+            assert sudo._prompt_for_sudo_password() == ("test-password" if decision == "password" else "")
+        assert not server._pending
+        assert not server._answers
+        assert any(event == "sudo.request" for event, _, _ in seen)
+    finally:
+        terminal.set_sudo_password_callback(None)
+
+
+def test_sudo_cancel_is_late_safe_and_does_not_resolve_other_prompt(server, monkeypatch):
+    ev = threading.Event()
+    server._pending["other-request"] = ("owner", ev)
+    monkeypatch.setitem(server._pending_prompt_payloads, "other-request", ("secret.request", {}))
+    method = server._methods.get("sudo.cancel", lambda *_: {"error": "unknown method"})
+    assert "error" in method("rpc", {"request_id": "other-request"})
+    assert not ev.is_set()
+    assert "other-request" not in server._answers
+    assert method("rpc", {"request_id": "already-expired"})["result"]["status"] == "expired"

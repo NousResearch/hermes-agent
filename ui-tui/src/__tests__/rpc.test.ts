@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { asRpcResult, rpcErrorMessage, shouldRethrowRpcError } from '../lib/rpc.js'
 
 describe('asRpcResult', () => {
   it('keeps plain object payloads', () => {
@@ -23,5 +23,17 @@ describe('rpcErrorMessage', () => {
   it('falls back for unknown errors', () => {
     expect(rpcErrorMessage('broken')).toBe('broken')
     expect(rpcErrorMessage({ code: 500 })).toBe('request failed')
+  })
+})
+
+describe('method-unavailable opt-in', () => {
+  it.each([
+    [Object.assign(new Error('localized'), { code: -32601 }), true],
+    [new Error('unknown method: sudo.cancel'), true],
+    [new Error('connection reset'), false],
+    [Object.assign(new Error('denied'), { code: 4003 }), false]
+  ])('preserves ordinary error handling for %s', (error, unavailable) => {
+    expect(shouldRethrowRpcError(error)).toBe(false)
+    expect(shouldRethrowRpcError(error, { rethrowMethodUnavailable: true })).toBe(unavailable)
   })
 })

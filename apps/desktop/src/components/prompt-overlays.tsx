@@ -16,7 +16,7 @@ import {
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
-import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
+import { isMissingPendingPromptRequest, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock, ShieldLock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
@@ -64,10 +64,8 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
   }, [request?.requestId])
 
   const send = useCallback(
-    async (value: string) => {
-      if (!request) {
-        return
-      }
+    async (value: string | null) => {
+      if (!request) {return}
 
       if (!gateway) {
         notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed)
@@ -78,10 +76,18 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('sudo.respond', {
-          password: value,
-          request_id: request.requestId
-        })
+        if (value === null) {
+          try {
+            await gateway.request('sudo.cancel', { request_id: request.requestId })
+          } catch (error) {
+            if (!isMissingRpcMethod(error)) {throw error}
+            // Older backends conflate empty replies with submission; interrupt its owner.
+            await gateway.request('session.interrupt', { session_id: request.sessionId })
+          }
+        } else {
+          await gateway.request('sudo.respond', { intent: 'submit', password: value, request_id: request.requestId })
+        }
+
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -98,13 +104,9 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
     [copy.gatewayDisconnected, copy.sudoSendFailed, gateway, request]
   )
 
-  // Cancel → empty password. The backend treats an empty sudo response as a
-  // failed sudo (no command runs), so closing the dialog is a safe refusal.
   const onOpenChange = useCallback(
     (open: boolean) => {
-      if (!open && !submitting && request) {
-        void send('')
-      }
+      if (!open && !submitting && request) {void send(null)}
     },
     [request, send, submitting]
   )
@@ -139,7 +141,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
             value={password}
           />
           <DialogFooter>
-            <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+            <Button disabled={submitting} onClick={() => void send(null)} type="button" variant="ghost">
               {t.common.cancel}
             </Button>
             <Button disabled={submitting} type="submit">

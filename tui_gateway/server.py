@@ -84,7 +84,7 @@ _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
-_answers: dict[str, str] = {}
+_answers: dict[str, str | None] = {}
 # Batch clarify accumulators: rid → {"qids": [...], "answers": {qid: answer}}. Written by
 # clarify.respond (per-question lock, update-in-place), read out by _block on resolution/timeout
 # so locked answers survive the deadline.
@@ -1259,7 +1259,7 @@ _EXPIRING_REQUESTS = frozenset({
 })
 
 
-def _block(event: str, sid: str, payload: dict, timeout: float | None = 300, batch_qids: list[str] | None = None) -> str:
+def _block(event: str, sid: str, payload: dict, timeout: float | None = 300, batch_qids: list[str] | None = None) -> str | None:
     rid = uuid.uuid4().hex[:8]
     ev = threading.Event()
     with _prompt_lock:
@@ -1369,7 +1369,8 @@ def _clear_pending(sid: str | None = None) -> None:
     with _prompt_lock:
         for rid, (owner_sid, ev) in list(_pending.items()):
             if sid is None or owner_sid == sid:
-                _answers[rid] = ""
+                prompt = _pending_prompt_payloads.get(rid)
+                _answers[rid] = None if prompt and prompt[0] == "sudo.request" else ""
                 ev.set()
 
 

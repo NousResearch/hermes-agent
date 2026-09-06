@@ -1113,11 +1113,30 @@ def _(rid, params: dict) -> dict:
 _LATE_RESPOND_KEYS = {
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
-    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
+    "secret.respond": "value", "vault.unlock.respond": "password",
     "vault.save_login.respond": "login", "vault.code.respond": "code"}
 for _name, _key in _LATE_RESPOND_KEYS.items():
     method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
 del _name, _key
+
+
+@method("sudo.respond")
+def _(rid, params: dict) -> dict:
+    # Legacy empty replies conflate dismissal and Enter; only marked submissions
+    # may preserve the empty-password skip on a newer backend.
+    if params.get("password", "") == "" and params.get("intent") != "submit":
+        params = {**params, "password": None}
+    return _respond(rid, params, "password", allow_expired=True)
+
+
+@method("sudo.cancel")
+def _(rid, params: dict) -> dict:
+    """Probeable cancellation; a sudo RPC cannot answer an unrelated prompt."""
+    with _prompt_lock:
+        prompt = _pending_prompt_payloads.get(params.get("request_id", ""))
+        if prompt and prompt[0] != "sudo.request":
+            return _err(rid, 4009, "no pending password request")
+    return _respond(rid, {**params, "password": None}, "password", allow_expired=True)
 
 
 # ── approvals ───────────────────────────────────────────────────────────────

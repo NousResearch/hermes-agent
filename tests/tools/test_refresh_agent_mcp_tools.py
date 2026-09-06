@@ -89,12 +89,13 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     assert added == {"mcp_new_server_tool"}
 
 
-def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
+@pytest.mark.parametrize("disabled_toolset", ["memory", "all", "*"])
+def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch, disabled_toolset):
     """A refresh removes stale provider tools when memory becomes disabled."""
     agent = _agent(
         ["read_file", "memory_search"],
         enabled=["all"],
-        disabled=["memory"],
+        disabled=[disabled_toolset],
     )
     agent._memory_manager = types.SimpleNamespace(
         get_all_tool_schemas=lambda: [

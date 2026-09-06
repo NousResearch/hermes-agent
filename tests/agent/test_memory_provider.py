@@ -1148,13 +1148,14 @@ class TestMemoryToolToolsetGate:
         assert any(t["function"]["name"] == "hindsight_recall" for t in tools)
 
     @pytest.mark.parametrize("enabled_toolsets", [None, ["memory"], ["all"], ["hermes-acp"]])
-    def test_disabled_memory_toolset_blocks_injection(self, enabled_toolsets):
+    @pytest.mark.parametrize("disabled_toolset", ["memory", "all", "*"])
+    def test_disabled_memory_toolset_blocks_injection(self, enabled_toolsets, disabled_toolset):
         """An explicit memory disable wins over default or composite enablement."""
         mgr = self._mgr_with_tools("hindsight_recall")
         tools, names = self._run_memory_injection(
             enabled_toolsets,
             mgr,
-            disabled_toolsets=["memory"],
+            disabled_toolsets=[disabled_toolset],
         )
         assert tools == []
         assert names == set()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .github_client import MergeStateStillComputingError
+
 from .ci_contract import manifest_path as ci_manifest_path, is_hermes_contract, hermes_commands, hermes_coverage_gap, HERMES_ENV_CHECK
 
 import hashlib
@@ -518,6 +520,12 @@ class LocalCIRunner:
             raise CIValidationError("exact-head CI audit is already running")
         try:
             receipt = self._run_claimed(identity, resolved)
+        except MergeStateStillComputingError:
+            self._ledger.finish_ci_run(
+                lease, status="failed", completed_at=_aware_now(self._now()),
+                error="mergeability_still_computing",
+            )
+            raise
         except Exception as error:
             completed_at = _aware_now(self._now())
             receipt = _failed_receipt(

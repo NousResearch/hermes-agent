@@ -847,3 +847,35 @@ def test_required_local_audit_reads_real_checks_without_admin_settings(tmp_path,
         assert receipt.status == "failed"
         assert not commands.calls
     ledger.close()
+
+
+@pytest.mark.parametrize("lag_at", [1, 2])
+def test_mergeability_lag_releases_lease_without_a_failed_ci_receipt(tmp_path, lag_at):
+    from github_pr_feedback.github_client import MergeStateStillComputingError
+
+    worktree = tmp_path / "worktree"
+    prepare_repository(worktree)
+
+    class LaggingGitHub(FakeGitHub):
+        reads = 0
+
+        def get_merge_state(self, repository, number):
+            self.reads += 1
+            if self.reads == lag_at:
+                raise MergeStateStillComputingError()
+            return merge_state()
+
+    github = LaggingGitHub(merge_state())
+    inspector = FakeInspector()
+    runner, ledger, commands = build_runner(tmp_path, github=github, inspector=inspector)
+    identity = CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA)
+    with pytest.raises(MergeStateStillComputingError):
+        runner.run(identity, worktree)
+    assert ledger.latest_ci_receipt_for_head("acme/widgets", 17, HEAD_SHA) is None
+    run = ledger.latest_ci_run("acme/widgets", 17, HEAD_SHA)
+    assert run["status"] != "running"
+    assert run["receipt_id"] is None
+    github.checks = [CheckState(actions_enabled=False, all_green=True, check_count=0)] * 2
+    inspector.heads = [HEAD_SHA, HEAD_SHA]
+    inspector.clean = [True, True]
+    assert runner.run(identity, worktree).status == "passed"

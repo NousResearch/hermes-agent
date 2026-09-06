@@ -401,7 +401,7 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
         _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
+        _resolve_container_task_id, _resolve_task_workspace_binding, _is_container_backend, _select_image,
     )
     effective_task_id = _resolve_container_task_id(task_id)
     def _cached():
@@ -435,7 +435,8 @@ def _get_or_create_env(task_id: str):
             ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
             container_config=container_config,
             local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
-            task_id=effective_task_id, host_cwd=_resolve_task_host_cwd(config, task_id),
+            task_id=effective_task_id,
+            workspace_binding=_resolve_task_workspace_binding(config, task_id),
         )
         with _env_lock:
             _active_environments[effective_task_id] = env

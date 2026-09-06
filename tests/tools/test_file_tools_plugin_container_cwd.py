@@ -16,7 +16,7 @@ def _capture_create(monkeypatch):
 
     monkeypatch.setattr(terminal_tool, "_create_configured_env", _fake_create)
     monkeypatch.setattr(terminal_tool, "_select_image", lambda *a, **k: None)
-    monkeypatch.setattr(terminal_tool, "_resolve_task_host_cwd", lambda *a, **k: None)
+    monkeypatch.setattr(terminal_tool, "_resolve_task_workspace_binding", lambda *a, **k: None)
     monkeypatch.setattr(terminal_tool, "get_session_cwd", lambda _tid: None)
     return seen
 

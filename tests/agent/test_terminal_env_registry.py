@@ -11,7 +11,7 @@ Mirrors tests/agent/test_image_gen_registry.py in structure. Covers:
 
 import pytest
 
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from agent.terminal_env_provider import TerminalEnvironmentProvider, WorkspaceBinding
 from agent import terminal_env_registry as reg
 
 
@@ -202,3 +202,33 @@ def test_registry_generation_bumps():
     reg.register_provider(_Provider())
     g1 = reg.registry_generation()
     assert g1 != g0
+
+
+def test_factory_passes_workspace_binding_and_provenance_to_provider():
+    class RecordingProvider(_Provider):
+        def __init__(self):
+            self.calls = []
+
+        def create_environment(self, *, workspace_binding=None, **kwargs):
+            self.calls.append((kwargs["task_id"], workspace_binding))
+            return _Env()
+
+    provider = RecordingProvider()
+    reg.register_provider(provider)
+
+    from tools.terminal_tool_backends import _create_environment
+
+    for host_path in ("/assigned/a", "/assigned/b"):
+        _create_environment(
+            env_type=provider.name,
+            image="",
+            cwd="/workspace",
+            timeout=10,
+            task_id="session-1",
+            host_cwd=host_path,
+        )
+
+    assert provider.calls == [
+        ("session-1", WorkspaceBinding(host_path="/assigned/a", source="factory")),
+        ("session-1", WorkspaceBinding(host_path="/assigned/b", source="factory")),
+    ]

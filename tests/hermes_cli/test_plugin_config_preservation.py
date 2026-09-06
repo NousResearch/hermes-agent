@@ -69,6 +69,26 @@ def test_capability_consent_preserves_raw_profile_settings(tmp_path, monkeypatch
     assert actual["plugins"]["entries"]["example"]["allow_tool_override"] is True
 
 
+def test_raw_config_write_refreshes_last_known_good_fallback(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    path = home / "config.yaml"
+    path.write_text(yaml.safe_dump({"approvals": {"deny": ["synthetic-sensitive-setting"]}}))
+
+    config.load_config()
+    from hermes_cli.plugin_capabilities import _write_raw_config_value
+    _write_raw_config_value(
+        ("plugins", "entries", "example", "granted_capabilities"), ["tools.override"])
+
+    path.write_text("approvals: [broken\n")
+    fallback = config.load_config()
+
+    assert fallback["approvals"]["deny"] == ["synthetic-sensitive-setting"]
+    assert fallback["plugins"]["entries"]["example"]["granted_capabilities"] == ["tools.override"]
+
+
 def test_plugin_toolset_toggle_preserves_raw_profile_settings(tmp_path, monkeypatch):
     home = tmp_path / "profile"
     home.mkdir()

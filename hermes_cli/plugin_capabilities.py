@@ -176,7 +176,8 @@ def _write_raw_config_value(path: Tuple[str, ...], value: Any) -> None:
         config_mod._write_user_config(config_path, raw)
         config_mod._secure_file(config_path)
         config_mod._RAW_CONFIG_CACHE.pop(str(config_path), None)
-        config_mod._LAST_EXPANDED_CONFIG_BY_PATH.pop(str(config_path), None)
+        config_mod._LOAD_CONFIG_CACHE.pop(str(config_path), None)
+        config_mod._LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = config_mod.load_config()
 
 
 def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[str]) -> None:

@@ -35,7 +35,6 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_pre_verify_synthetic",
     "_kanban_stop_synthetic",  # kanban worker stop-guard
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
-    "_undelivered_interim_synthetic",
 )
 
 _IMAGE_PART_TYPES = {"image", "image_url", "input_image"}
@@ -325,7 +324,6 @@ class SessionPersistenceMixin:
         while tail(
             "_empty_recovery_synthetic",
             "_empty_terminal_sentinel",
-            "_undelivered_interim_synthetic",
         ):
             messages.pop()
             dropped_scaffolding = True

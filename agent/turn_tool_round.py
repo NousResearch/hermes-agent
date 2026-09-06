@@ -151,7 +151,6 @@ def run_tool_round(
             and _looks_like_material_interim_content(clean_turn_content)
         ):
             agent._undelivered_tool_call_content = clean_turn_content
-            agent._undelivered_tool_call_content_nudged = False
 
     # Flush open streaming boxes before tools so early content doesn't wrap tool feed
     # lines. Display callback only — TTS (_stream_callback) must NOT receive None (EOS).

@@ -24,12 +24,17 @@ from hermes_cli.web_routers._common import log as _log
 
 router = APIRouter()
 
+# Late-bound web_server helpers (resolved at call time; cycle-safe,
+# monkeypatch-transparent — includes config readers so existing
+# ``monkeypatch.setattr(web_server, "load_config", ...)`` idioms behave
+# identically for these routes).
 _find_cron_job_profile = late("_find_cron_job_profile", "hermes_cli.web_server_cron")
 _fire_cron_job_for_profile = late("_fire_cron_job_for_profile", "hermes_cli.web_server_cron")
 _forward_cron_fire_to_gateway = late("_forward_cron_fire_to_gateway", "hermes_cli.web_server_cron")
 _gateway_intentionally_stopped = late("_gateway_intentionally_stopped", "hermes_cli.web_server_cron")
 _notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile", "hermes_cli.web_server_cron")
 _call_cron_for_profile = late("_call_cron_for_profile", "hermes_cli.web_server_cron")
+_require_dashboard_admin = late("_require_dashboard_admin")
 load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
@@ -249,22 +254,36 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
 
 
 @router.post("/api/cron/jobs/{job_id}/pause")
-async def pause_cron_job(job_id: str, profile: Optional[str] = None):
+async def pause_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    # Mini App token route (required=False): a non-admin paired caller must
+    # never reach this. Cookie/desktop and admin-tier Mini App both pass
+    # unconditionally, matching this endpoint's existing behavior for the
+    # desktop dashboard operator.
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_pause_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/resume")
-async def resume_cron_job(job_id: str, profile: Optional[str] = None):
+async def resume_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_resume_cron_job_sync, job_id, profile)
 
 
 @router.post("/api/cron/jobs/{job_id}/trigger")
-async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
+async def trigger_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
 
 
 @router.delete("/api/cron/jobs/{job_id}")
-async def delete_cron_job(job_id: str, profile: Optional[str] = None):
+async def delete_cron_job(request: Request, job_id: str, profile: Optional[str] = None):
+    # Mini App token route (required=False), admin-tier only -- same gate as
+    # pause/resume/trigger above. This endpoint predates the Mini App and had
+    # no per-handler check at all (implicitly desktop-only, gated purely by
+    # the cookie/session auth wrapper around every /api/* route); adding the
+    # explicit check here is a no-op for the desktop operator (scope is None)
+    # and is what makes it safe to register as a Mini App token route below.
+    _require_dashboard_admin(request)
     return await _run_cron_dashboard_io(_delete_cron_job_sync, job_id, profile)
 
 

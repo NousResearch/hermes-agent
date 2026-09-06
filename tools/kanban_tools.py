@@ -663,12 +663,24 @@ _BASE_REF_CANDIDATES = ("origin/main", "main", "master", "HEAD~1")
 def _resolve_base_ref(worktree_root: str) -> Optional[str]:
     """Return the base ref for a worktree, or None when none resolves.
 
-    Walks the candidate refs preferring a real ref with a non-empty
-    merge-base against HEAD.  A remote-tracking ref (origin/main) can point
-    at fully-diverged history (merge-base empty), which would make the diff
-    and any baseline comparison report every file ever created as changed —
-    so a candidate is only accepted when it shares a real ancestor.
+    Walks the candidate refs and picks the one whose merge-base against
+    HEAD is the DEEPEST — ie. the common ancestor closest to HEAD, i.e. the
+    candidate with the fewest commits reachable from HEAD but not from the
+    merge-base.  This is the diff base that reports only the card's own
+    changes rather than sweeping in unrelated backlog.
+
+    The default-candidate hardcoded order still applies as a tiebreaker for
+    equally-deep candidates (prefer origin/main, then main, then master,
+    then the parent).  But a STALE remote-tracking ref must never win just
+    because it sorts first: origin/main can lag behind local main by many
+    commits, and ``diff <stale-origin>...HEAD`` would report every file
+    pushed since as changed, mapping to red baseline tests that are not this
+    card's responsibility (t_13af5268: a frontend-only card bounced on
+    backend search/ws AC15 failures it has nothing to do with.  A
+        stale ancestor (merge-base != the ref itself) is a weaker base than an
+        up-to-date one.
     """
+    resolved: list[tuple[str, int]] = []
     for candidate in _BASE_REF_CANDIDATES:
         rc, _ = _run_capture(
             ["git", "-C", worktree_root, "rev-parse", "--verify", "-q", candidate],
@@ -676,13 +688,25 @@ def _resolve_base_ref(worktree_root: str) -> Optional[str]:
         )
         if rc != 0:
             continue
-        mrc, _ = _run_capture(
+        mrc, mb = _run_capture(
             ["git", "-C", worktree_root, "merge-base", candidate, "HEAD"],
             cwd=worktree_root,
         )
-        if mrc == 0:
-            return candidate
-    return None
+        if mrc != 0 or not mb.strip():
+            continue
+        # Depth: commits reachable from HEAD but not the merge-base.  The
+        # deeper the merge-base (closer to HEAD), the smaller this count and
+        # the more the diff is scoped to the card's own work.
+        cc, count_out = _run_capture(
+            ["git", "-C", worktree_root, "rev-list", "--count", f"{mb.strip()}..HEAD"],
+            cwd=worktree_root,
+        )
+        count = int(count_out.strip()) if cc == 0 and count_out.strip().isdigit() else 10**9
+        resolved.append((candidate, count))
+    if not resolved:
+        return None
+    resolved.sort(key=lambda x: (x[1], _BASE_REF_CANDIDATES.index(x[0])))
+    return resolved[0][0]
 
 
 def _changed_python_files(worktree_root: str) -> list[str]:

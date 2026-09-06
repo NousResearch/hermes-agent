@@ -273,6 +273,78 @@ def test_changed_python_files_handles_porcelain_rename(
     assert "->" not in " ".join(changed)
 
 
+def test_resolve_base_ref_prefers_deepest_ancestor(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale remote-tracking ref must not win the base-ref selection.
+
+    When ``origin/main`` lags behind local ``main``, ``_resolve_base_ref``
+    must pick the DEEPEST common ancestor (closest to HEAD) so the gate diff
+    scopes to the card's own changes.  Picking stale ``origin/main`` sweeps
+    in unrelated backlog commits and maps them to red baseline tests that
+    are not the card's responsibility (t_13af5268: frontend-only card
+    bounced on backend search/ws AC15 failures).
+    """
+    from tools import kanban_tools as tools
+
+    # Move local main ahead of origin/main by 3 commits of backend work.
+    def commit(path: str, content: str, msg: str) -> None:
+        f = repo / path
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content)
+        subprocess.run(["git", "-C", str(repo), "add", path], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", msg],
+            check=True, capture_output=True,
+        )
+
+    # origin/main must exist and LAG behind local main.  Point it at the
+    # original base commit, then advance local main past it.
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    # Create the stale remote-tracking ref (no remote configured, so just
+    # write the ref directly — exactly what git fetch leaves behind).
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", base_sha],
+        check=True, capture_output=True,
+    )
+    stale_origin = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "origin/main"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert stale_origin == base_sha
+
+    commit("backend/app/search.py", "def search():\n    pass\n", "backend search")
+    commit("backend/app/ws.py", "def ws():\n    pass\n", "backend ws")
+    commit("backend/app/db.py", "def db():\n    pass\n", "backend db")
+    new_main = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "main"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    # Sanity: local main is now ahead of the stale origin/main.
+    assert new_main != base_sha
+
+    # Now a worktree cut off the NEW main — its true base is main/HEAD~1,
+    # which is deeper (closer to HEAD) than the stale origin/main.
+    ws = _add_worktree(repo, "deepbase")
+    _change_python_file(ws, "frontend/Widget.jsx", "export const x = 1\n")
+
+    base = tools._resolve_base_ref(str(ws))
+    # Must NOT be the stale origin/main.
+    assert base != "origin/main", base
+
+    changed = tools._changed_python_files(str(ws))
+    # Only the frontend file must be seen as changed — NOT the backend
+    # backlog that a stale-origin diff would sweep in.
+    assert changed == [], changed
+    # And a frontend-only change must not map to any focused test, so the
+    # focused-tests rung is skipped and the gate passes.
+    tests = tools._focused_test_paths(str(ws), changed)
+    assert tests == [], tests
+
+
 def test_gate_skipped_for_non_worktree_card(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

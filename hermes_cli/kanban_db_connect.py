@@ -920,6 +920,8 @@ def _backfill_owner_events(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         """
         SELECT t.id, t.title, t.created_by, t.created_at, t.status,
+            (SELECT COUNT(*) FROM task_events e
+             WHERE e.task_id = t.id AND e.kind = 'created') AS source_count,
             (SELECT e.payload FROM task_events e
              WHERE e.task_id = t.id AND e.kind = 'created'
              ORDER BY e.id ASC LIMIT 1) AS source_payload
@@ -929,7 +931,10 @@ def _backfill_owner_events(conn: sqlite3.Connection) -> None:
         """
     ).fetchall()
     for row in rows:
-        safe = _owner_contract_payload_from_json("created", row["source_payload"])
+        safe = (
+            _owner_contract_payload_from_json("created", row["source_payload"])
+            if row["source_count"] == 1 else None
+        )
         conn.execute(
             """
             INSERT OR IGNORE INTO owner_events (

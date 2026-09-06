@@ -1869,10 +1869,13 @@ def _owner_contract_payload(kind: str, payload: object) -> Optional[dict[str, st
         return None
     safe: dict[str, str] = {}
     for key in ("by", "from_decompose_of"):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            safe[key] = value.strip()
-    return safe or None
+        if key not in payload:
+            continue
+        value = payload[key]
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", value):
+            return None
+        safe[key] = value
+    return safe
 
 
 def _owner_contract_payload_from_json(

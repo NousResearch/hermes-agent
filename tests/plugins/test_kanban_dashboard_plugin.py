@@ -258,7 +258,7 @@ def test_owner_snapshot_returns_bounded_creation_receipts_with_exact_provenance(
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["contract_version"] == 1
+    assert payload["contract_version"] == 2
     assert payload["profile_id"] == "default"
     assert payload["board_id"] == "default"
     assert payload["complete"] is True
@@ -304,8 +304,8 @@ def test_owner_contract_excludes_non_contract_creation_payload(client):
     receipt = next(
         row for row in snapshot["receipts"] if row["task"]["id"] == task_id
     )
-    assert receipt["created_event"]["payload"] is None
-    assert receipt["provenance_complete"] is True
+    assert receipt["created_event"]["payload"] == {}
+    assert set(receipt) == {"task", "created_event", "archived"}
 
     events = client.get(
         "/api/plugins/kanban/owner-events?board=default&after=0&limit=20"
@@ -314,7 +314,7 @@ def test_owner_contract_excludes_non_contract_creation_payload(client):
         event for event in events
         if event["kind"] == "created" and event["task"]["id"] == task_id
     )
-    assert created["payload"] is None
+    assert created["payload"] == {}
     exposed = json.dumps({"snapshot": snapshot, "events": events})
     assert "/private/owner-contract-secret" not in exposed
     assert "private-model" not in exposed
@@ -442,7 +442,7 @@ def test_owner_events_advance_stable_cursor_and_emit_only_materialization_receip
     assert [(event["kind"], event["task"]["id"]) for event in payload["events"]] == [
         ("created", child_id), ("archived", created["id"]),
     ], payload["events"]
-    assert payload["events"][0]["payload"] is None
+    assert payload["events"][0]["payload"] == {}
 
 
 def test_owner_events_reject_a_cursor_ahead_of_the_authoritative_stream(client):
@@ -475,7 +475,9 @@ def test_owner_events_emit_a_durable_tombstone_after_hard_delete(client):
     after_delete = client.get(
         "/api/plugins/kanban/owner-snapshot?board=default&limit=10"
     ).json()
-    assert after_delete["task_count"] == 0
+    assert after_delete["task_count"] == 1
+    assert after_delete["receipts"][0]["archived"] is True
+    assert after_delete["retired_task_ids"] == [created["id"]]
     assert after_delete["event_cursor"] > before
     deleted_gap = client.get(
         f"/api/plugins/kanban/owner-events?board=default&after={before}&limit=20"
@@ -521,7 +523,7 @@ def test_owner_events_emit_a_durable_tombstone_after_archived_delete(client):
     ]
 
 
-def test_owner_snapshot_represents_unknown_legacy_provenance(kanban_home, client):
+def test_owner_snapshot_rejects_unknown_legacy_provenance(kanban_home, client):
     conn = kbc.connect()
     try:
         legacy_id = kb.create_task(conn, title="legacy", created_by=None)
@@ -534,16 +536,10 @@ def test_owner_snapshot_represents_unknown_legacy_provenance(kanban_home, client
 
     response = client.get("/api/plugins/kanban/owner-snapshot?board=default&limit=10")
 
-    assert response.status_code == 200, response.text
-    receipt = next(
-        row for row in response.json()["receipts"] if row["task"]["id"] == legacy_id
-    )
-    assert receipt["task"]["created_by"] is None
-    assert receipt["created_event"]["payload"] is None
-    assert receipt["provenance_complete"] is False
+    assert response.status_code == 409, response.text
 
 
-def test_owner_snapshot_collapses_duplicate_legacy_creation_events(kanban_home, client):
+def test_owner_snapshot_rejects_duplicate_legacy_creation_events(kanban_home, client):
     conn = kbc.connect()
     try:
         legacy_id = kb.create_task(conn, title="legacy duplicate", created_by="importer")
@@ -560,12 +556,7 @@ def test_owner_snapshot_collapses_duplicate_legacy_creation_events(kanban_home, 
 
     response = client.get("/api/plugins/kanban/owner-snapshot?board=default&limit=10")
 
-    assert response.status_code == 200, response.text
-    receipt = next(
-        row for row in response.json()["receipts"] if row["task"]["id"] == legacy_id
-    )
-    assert receipt["task"]["created_by"] == "importer"
-    assert receipt["created_event"]["payload"] != {"by": "duplicate"}
+    assert response.status_code == 409, response.text
 
 
 def test_owner_snapshot_scrubs_preexisting_raw_owner_payload(kanban_home, client):
@@ -713,11 +704,7 @@ def test_owner_response_handles_non_utf8_payload_fail_closed(client, monkeypatch
     response = client.get(
         "/api/plugins/kanban/owner-snapshot?board=default&limit=10"
     )
-    assert response.status_code == 200, response.text
-    receipt = next(
-        row for row in response.json()["receipts"] if row["task"]["id"] == task_id
-    )
-    assert receipt["created_event"]["payload"] is None
+    assert response.status_code == 409, response.text
 
 
 def test_owner_events_publish_current_title_updates_without_rewriting_creation(client):

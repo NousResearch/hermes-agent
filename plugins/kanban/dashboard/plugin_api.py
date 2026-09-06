@@ -189,7 +189,7 @@ def _errors_to_500(prefix: str) -> Iterator[None]:
 BOARD_COLUMNS: list[str] = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"]
 
 _CARD_SUMMARY_PREVIEW_CHARS = 200
-_OWNER_CONTRACT_VERSION = 1
+_OWNER_CONTRACT_VERSION = 2
 _OWNER_SNAPSHOT_DEFAULT_LIMIT = 1_000
 _OWNER_SNAPSHOT_MAX_LIMIT = 10_000
 _OWNER_EVENTS_DEFAULT_LIMIT = 200
@@ -215,20 +215,25 @@ def _owner_task(row: sqlite3.Row) -> dict[str, Any]:
     if (
         not isinstance(task_id, str) or not task_id
         or not isinstance(title, str) or not title.strip()
+        or not isinstance(created_by, str) or not created_by.strip()
+        or created_by != created_by.strip()
         or type(created_at) is not int or created_at < 0
     ):
         raise HTTPException(status_code=409, detail="Kanban task has malformed immutable creation identity")
     return {
         "id": task_id, "title": title,
-        "created_by": created_by.strip() if isinstance(created_by, str) and created_by.strip() else None,
+        "created_by": created_by,
         "created_at": created_at,
     }
 
 
 def _owner_event(row: sqlite3.Row) -> dict[str, Any]:
+    payload = kanban_db._owner_contract_payload_from_json(row["kind"], row["payload"])
+    if row["kind"] == "created" and payload is None:
+        raise HTTPException(status_code=409, detail="Kanban creation evidence is invalid")
     return {
         "id": int(row["event_id"]), "kind": row["kind"],
-        "payload": kanban_db._owner_contract_payload_from_json(row["kind"], row["payload"]),
+        "payload": payload,
         "created_at": int(row["event_created_at"]),
     }
 
@@ -341,7 +346,13 @@ def owner_snapshot(
     try:
         conn.execute("BEGIN")
         task_rows = conn.execute(
-            "SELECT id, title, status, created_by, created_at FROM tasks ORDER BY id ASC LIMIT ?",
+            "SELECT id, title, status, created_by, created_at FROM tasks "
+            "UNION ALL "
+            "SELECT o.task_id AS id, o.title, 'archived' AS status, o.created_by, "
+            "o.task_created_at AS created_at FROM owner_events o "
+            "WHERE o.kind='deleted' AND o.id=(SELECT MAX(last.id) FROM owner_events last "
+            "WHERE last.task_id=o.task_id) AND NOT EXISTS "
+            "(SELECT 1 FROM tasks t WHERE t.id=o.task_id) ORDER BY id ASC LIMIT ?",
             (limit + 1,),
         ).fetchall()
         if len(task_rows) > limit:
@@ -357,6 +368,15 @@ def owner_snapshot(
             for row in event_rows:
                 created_by_task[row["task_id"]].append(row)
         cursor = _owner_event_cursor(conn)
+        retired = set()
+        if task_ids:
+            placeholders = _placeholders(task_ids)
+            retired = {row[0] for row in conn.execute(
+                "SELECT DISTINCT task_id FROM owner_events WHERE kind IN ('archived','deleted') "
+                f"AND task_id IN ({placeholders}) UNION SELECT DISTINCT task_id FROM task_events "
+                f"WHERE kind='archived' AND task_id IN ({placeholders})",
+                (*task_ids, *task_ids),
+            )}
         receipts = []
         for task_row in task_rows:
             task_id = task_row["id"]
@@ -364,14 +384,19 @@ def owner_snapshot(
             if len(creation_rows) != 1:
                 raise HTTPException(status_code=409, detail=f"Kanban task {task_id} does not have exactly one creation receipt")
             task = _owner_task(task_row)
+            event = _owner_event(creation_rows[0])
+            if task_row["status"] == "archived":
+                retired.add(task_id)
+            if task["created_by"] == "auto-decomposer" and "from_decompose_of" not in event["payload"]:
+                raise HTTPException(status_code=409, detail="Kanban decomposition evidence is missing")
             receipts.append({
-                "task": task, "created_event": _owner_event(creation_rows[0]),
-                "provenance_complete": task["created_by"] is not None,
+                "task": task, "created_event": event,
                 "archived": task_row["status"] == "archived",
             })
         return {
             "contract_version": _OWNER_CONTRACT_VERSION, "profile_id": profile_id, "board_id": board_id,
             "complete": True, "task_count": len(receipts), "event_cursor": cursor, "receipts": receipts,
+            "retired_task_ids": sorted(retired.intersection(task_ids)),
         }
     finally:
         if conn.in_transaction:

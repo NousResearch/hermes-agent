@@ -1958,3 +1958,91 @@ def test_provider_copy_preserves_opaque_codex_replay_fields(applied_secret_home)
     assert item["id"] == f"msg_{secret}"
     assert secret not in item["content"][0]["text"]
     assert messages == original
+
+
+def test_final_dispatch_gate_masks_secret_composed_by_thinking_merge(
+    tmp_path, monkeypatch
+):
+    """Post-sanitize role repair cannot create a provider-visible secret."""
+    from agent.chat_completion_helpers import build_api_kwargs
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from run_agent import AIAgent
+
+    secret = "known-prefix\n\nknown-suffix"
+    source = [
+        {"role": "user", "content": "known-prefix"},
+        {"role": "assistant", "content": "", "reasoning": "hidden"},
+        {"role": "user", "content": "known-suffix"},
+    ]
+    original = copy.deepcopy(source)
+
+    class CapturingTransport:
+        def build_kwargs(self, **kwargs):
+            return kwargs
+
+    class DispatchAgent:
+        reasoning_config = None
+        tools = []
+        api_mode = "bedrock_converse"
+        model = "fixture-bedrock"
+        max_tokens = 100
+        _bedrock_region = "us-east-1"
+        _bedrock_guardrail_config = None
+
+        def _get_transport(self):
+            return CapturingTransport()
+
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    token = set_secret_scope({"MERGED_API_KEY": secret})
+    try:
+        # The first production gate sees two harmless fragments. The real
+        # thinking-only repair then removes the assistant and joins them with
+        # the exact newlines that complete the configured secret.
+        first_gate = sanitize_api_messages(source)
+        merged = AIAgent._drop_thinking_only_and_merge_users(first_gate)
+        assert merged[0]["content"] == secret
+
+        dispatched = build_api_kwargs(DispatchAgent(), merged)
+    finally:
+        reset_secret_scope(token)
+
+    assert secret not in dispatched["messages"][0]["content"]
+    assert dispatched["messages"][0]["content"] == "***"
+    assert source == original
+
+
+def test_force_ascii_normalization_precedes_final_dispatch_gate(
+    tmp_path, monkeypatch
+):
+    """ASCII fallback cannot compose a secret after provider redaction."""
+    from agent.chat_completion_helpers import build_api_kwargs
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    class CapturingTransport:
+        def build_kwargs(self, **kwargs):
+            return kwargs
+
+    class DispatchAgent:
+        reasoning_config = None
+        tools = []
+        api_mode = "bedrock_converse"
+        model = "fixture-bedrock"
+        max_tokens = 100
+        _bedrock_region = "us-east-1"
+        _bedrock_guardrail_config = None
+        _force_ascii_payload = True
+
+        def _get_transport(self):
+            return CapturingTransport()
+
+    source = [{"role": "user", "content": "abécd"}]
+    original = copy.deepcopy(source)
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    token = set_secret_scope({"ACTIVE_TOKEN": "abcd"})
+    try:
+        dispatched = build_api_kwargs(DispatchAgent(), source)
+    finally:
+        reset_secret_scope(token)
+
+    assert dispatched["messages"][0]["content"] == "***"
+    assert source == original

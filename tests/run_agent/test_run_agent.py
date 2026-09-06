@@ -5038,6 +5038,79 @@ class TestRunConversation:
         assert agent.client.chat.completions.create.call_count <= 6
 
 
+    def test_force_ascii_dispatch_masks_secret_composed_by_normalization(
+        self, agent, monkeypatch
+    ):
+        """The bytes sent after ASCII fallback pass the exact-secret gate."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        self._setup_agent(agent)
+        agent._force_ascii_payload = True
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+        source = "abécd"
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+        token = set_secret_scope({"ACTIVE_TOKEN": "abcd"})
+        try:
+            with (
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                result = agent.run_conversation(source)
+        finally:
+            reset_secret_scope(token)
+
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert result["completed"] is True
+        assert sent[-1]["content"] == "***"
+        assert source == "abécd"
+
+
+    def test_dispatch_masks_raw_sidecar_and_execution_middleware_copy(self, agent, monkeypatch):
+        import copy
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        self._setup_agent(agent)
+        secret = "active-provider-secret-77487"
+        history = [
+            {"role": "user", "content": "visible question", "api_content": f"raw question {secret}"},
+            {"role": "assistant", "content": "ready"},
+        ]
+        original = copy.deepcopy(history)
+        replaced = {}
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer", finish_reason="stop",
+        )
+
+        def execution_middleware(request, perform, **kwargs):
+            replaced.update(copy.deepcopy(request))
+            replaced["messages"][-1]["content"] = f"middleware {secret}"
+            return perform(replaced)
+
+        monkeypatch.setattr("hermes_cli.middleware.run_llm_execution_middleware", execution_middleware)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+        token = set_secret_scope({"ACTIVE_TOKEN": secret})
+        try:
+            with patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"), patch.object(agent, "_cleanup_task_resources"):
+                result = agent.run_conversation("continue", conversation_history=history)
+        finally:
+            reset_secret_scope(token)
+
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert result["completed"] is True
+        assert any("raw question" in str(message.get("content")) for message in sent)
+        assert secret not in str(sent)
+        assert secret in replaced["messages"][-1]["content"]
+        assert history == original
+
+
+
+
 
 
 

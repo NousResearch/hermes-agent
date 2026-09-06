@@ -516,6 +516,42 @@ class SessionSessionsMixin:
             return None if row is None else int(row[0])
         return self._execute_write(_do)
 
+    def ensure_session_cwd(self, session_id: str, fallback_cwd: str) -> str:
+        """Atomically return the stored cwd or fill a missing one from gateway routing.
+
+        Filling a previously homeless row is a workspace move, so stale Git
+        metadata is cleared and its generation is advanced in the same write.
+        """
+        if not session_id:
+            return ""
+        fallback = (fallback_cwd or "").strip()
+
+        def _do(conn):
+            row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                return ""
+            current = str(row[0] or "").strip()
+            if current or not fallback:
+                return current
+            conn.execute(
+                "UPDATE sessions SET cwd = ?, git_branch = NULL, git_repo_root = NULL, "
+                "git_metadata_generation = COALESCE(git_metadata_generation, 0) + 1 WHERE id = ?",
+                (fallback, session_id),
+            )
+            return fallback
+
+        return str(self._execute_write(_do) or "")
+
+    def clear_session_workspace(self, session_id: str) -> bool:
+        """Atomically remove cwd and Git metadata used by workspace grouping."""
+        if not session_id:
+            return False
+        return self._write_rowcount(
+            "UPDATE sessions SET cwd = NULL, git_branch = NULL, git_repo_root = NULL, "
+            "git_metadata_generation = COALESCE(git_metadata_generation, 0) + 1 WHERE id = ?",
+            (session_id,),
+        ) == 1
+
     def publish_session_git_metadata(
         self, session_id: str, cwd: str, generation: int, git_branch: Optional[str] = None,
         git_repo_root: Optional[str] = None,

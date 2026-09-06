@@ -168,6 +168,7 @@ class SessionContext:
     shared_multi_user_session: bool = False
     session_key: str = ""
     session_id: str = ""
+    cwd: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -178,6 +179,7 @@ class SessionContext:
             "home_channels": {p.value: hc.to_dict() for p, hc in self.home_channels.items()},
             "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key, "session_id": self.session_id,
+            "cwd": self.cwd,
             "created_at": _iso(self.created_at), "updated_at": _iso(self.updated_at),
         }
 
@@ -472,6 +474,8 @@ class SessionEntry:
     display_name: Optional[str] = None
     platform: Optional[Platform] = None
     chat_type: str = "dm"
+    # Durable truth lives in state.db; this is hydrated for the active turn.
+    cwd: str = field(default="", repr=False, compare=False)
     # Small, JSON-serializable per-entry state (e.g. Slack thread watermarks).
     metadata: Dict[str, Any] = field(default_factory=dict)
     # Token tracking
@@ -844,6 +848,7 @@ class SessionStore(
 
     def get_or_create_session(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
+        cwd: Optional[str] = None,
     ) -> SessionEntry:
         """Single-flight session lookup/create per routing key: overlapping calls for one key (even
         concurrent ``force_new``) share the owner's result so only one transition and SQLite row is
@@ -869,7 +874,7 @@ class SessionStore(
 
         try:
             slot.result = self._get_or_create_session_impl(
-                source, force_new=force_new, touch_activity=touch_activity,
+                source, force_new=force_new, touch_activity=touch_activity, cwd=cwd,
             )
             return slot.result
         except BaseException as exc:
@@ -882,10 +887,15 @@ class SessionStore(
 
     def _get_or_create_session_impl(
         self, source: SessionSource, force_new: bool = False, touch_activity: bool = True,
+        cwd: Optional[str] = None,
     ) -> SessionEntry:
         """One routing transition for the single-flight owner. All blocking I/O (SQLite SELECTs,
         index rewrite + fsync, recovery queries) runs *outside* ``self._lock``, which protects
         only ``_entries`` / ``_loaded`` mutations."""
+        # Fallback resolution belongs to the async turn boundary, after a
+        # persisted row has had the chance to win. Command-only lookups (for
+        # example /resume) must not fail because an unused default is missing.
+        cwd = cwd or ""
         session_key = self._generate_session_key(source)
         now = _now()
         if not force_new:
@@ -912,7 +922,7 @@ class SessionStore(
         create_kwargs = None
         if decision.entry is None:
             create_kwargs = self._route_create(
-                decision, session_key, source, now, force_new, observed
+                decision, session_key, source, now, force_new, observed, cwd=cwd,
             )
         if decision.needs_save:
             if decision.metadata_only_save:
@@ -992,7 +1002,7 @@ class SessionStore(
 
     def _route_create(
         self, decision: _RouteDecision, session_key: str, source: SessionSource, now: datetime,
-        force_new: bool, observed: Optional[SessionEntry],
+        force_new: bool, observed: Optional[SessionEntry], *, cwd: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Create a candidate outside the lock and publish it only if the key is still vacant;
         returns ``create_session`` kwargs when the candidate won."""
@@ -1001,6 +1011,7 @@ class SessionStore(
             session_key=session_key, session_id=session_id, created_at=now, updated_at=now,
             origin=source, display_name=source.chat_name, platform=source.platform,
             chat_type=source.chat_type, was_auto_reset=decision.reset_reason is not None,
+            cwd=cwd or "",
             auto_reset_reason=decision.reset_reason, reset_had_activity=decision.reset_had_activity,
             prev_session_id=decision.prev_session_id,
         )
@@ -1016,6 +1027,10 @@ class SessionStore(
             session_id=session_id, session_key=session_key, origin=source,
             source_value=source.platform.value, display_name=source.chat_name,
             parent_session_id=decision.prev_session_id,
+            # A rotated session inherits the parent's persisted workspace atomically in
+            # SessionDB.  Supplying the configured fallback here would overwrite an
+            # explicit per-session workspace during automatic rollover.
+            cwd=None if decision.prev_session_id else cwd,
         )
 
     def update_session(
@@ -1136,6 +1151,12 @@ class SessionStore(
                 target_session_id, session_key, new_entry.origin,
                 display_name=new_entry.display_name, include_compression_ancestors=True,
             )
+        try:
+            from tools.terminal_tool import clear_session_cwd, clear_task_env_overrides
+            clear_task_env_overrides(old_entry.session_id)
+            clear_session_cwd(session_key)
+        except Exception:
+            logger.debug("Failed to clear terminal cwd during session switch", exc_info=True)
         return new_entry
 
     def list_sessions(self, active_minutes: Optional[int] = None) -> List[SessionEntry]:
@@ -1190,6 +1211,7 @@ def build_session_context(
         context.session_key = session_entry.session_key
         context.session_id = session_entry.session_id
         context.created_at, context.updated_at = session_entry.created_at, session_entry.updated_at
+        context.cwd = session_entry.cwd
     return context
 
 

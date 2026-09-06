@@ -1350,6 +1350,11 @@ platform_toolsets:
 #           - my_plugin_command
 #           - my-important-skill
 #   slack:
+#     # Exact chat/thread IDs can start in different project workspaces. A
+#     # persisted /workspace choice wins until it is cleared.
+#     channel_overrides:
+#       "C0123456789":
+#         cwd: "/workspace/project"
 #     extra:
 #       # Render live tool calls as Slack-native plan/task cards. This explicit
 #       # opt-in works even though Slack text tool_progress defaults to off.

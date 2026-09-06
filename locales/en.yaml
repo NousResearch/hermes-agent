@@ -340,6 +340,14 @@ gateway:
     detail_after_first:    "_(Full compression and throughput stats available after the first agent response)_"
     no_data:               "No context data available yet. Send a message to start a session."
 
+  workspace:
+    status: "📁 **Workspace:** `{cwd}`\nUse `/workspace /absolute/path` to bind this chat, or `/workspace clear` to return to its configured default."
+    set: "✅ Workspace set for this chat: `{cwd}`"
+    cleared: "Workspace override cleared. Future turns will use the configured default: `{cwd}`"
+    invalid: "Invalid workspace: {error}"
+    save_failed: "Failed to save the workspace."
+    unavailable_default: "unavailable (set a new workspace before the next turn)"
+
   status:
     header:                "📊 **Hermes Gateway Status**"
     matrix_scope_header:   "**Matrix scope:**"

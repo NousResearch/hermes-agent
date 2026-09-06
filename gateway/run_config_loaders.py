@@ -103,6 +103,11 @@ class GatewayConfigLoadersMixin:
             return None
         return _get_channel_override(config, platform, chat_id, thread_id=thread_id, parent_id=parent_id)
 
+    def _configured_workspace_for_source(self, source: SessionSource) -> str:
+        """Per-chat cwd, else this profile's effective terminal cwd."""
+        from gateway.workspace import configured_gateway_workspace
+        return configured_gateway_workspace(self.config, source)
+
     def _resolve_model_for_channel(
         self, platform: Platform, chat_id: str, *, user_config: Optional[dict] = None,
         thread_id: Optional[str] = None, parent_id: Optional[str] = None,

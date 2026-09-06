@@ -196,6 +196,7 @@ platform network disconnect as an event-loop failure.
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
 | `/status` | Show session info |
+| `/workspace [path\|clear]` | Show, set, or clear the working directory for this session (`/cwd` is an alias) |
 | `/whoami` | Show your slash command access on this scope (admin / user / unrestricted) |
 | `/stop` | Stop the running agent |
 | `/approve` | Approve a pending dangerous command |
@@ -304,6 +305,7 @@ platforms:
       "123456789012345678":        # channel/thread id
         model: anthropic/claude-sonnet-4.6
         provider: anthropic
+        cwd: /workspace/dev
         system_prompt: "You are the #dev channel code-review specialist."
       "987654321098765432":
         model: openai/gpt-5-mini
@@ -311,9 +313,11 @@ platforms:
 
 Details:
 
-- All three keys are optional — set only `model`, only `system_prompt`, or any combination. Unset fields fall back to the global defaults.
+- All four keys are optional — set only `model`, `cwd`, `system_prompt`, or any combination. Unset fields fall back to the global defaults.
 - Lookup order is exact channel/thread id first, then the **parent** channel/forum id — so Discord threads inherit their parent channel's override automatically.
 - Resolution priority for the model is: session `/model` override → `channel_overrides` → global config. A user running `/model` in a chat still wins over the channel default.
+- Resolution priority for the workspace is: persisted session `/workspace` value → `channel_overrides` → the gateway's configured runtime directory. `/workspace clear` removes the persisted value, so the configured fallback is applied on the next turn.
+- Local workspaces must exist and be directories. Container backends accept backend-native absolute POSIX paths (for example `/workspace/project`) without resolving them on the host, and reject host-shaped `/Users/...` or `/home/...` paths that the terminal would remap. SSH also accepts `~`.
 - The `system_prompt` override replaces the global gateway prompt for that channel (it is ephemeral — injected per turn, not stored in history).
 
 ## Security

@@ -293,7 +293,7 @@ class GatewayTurnMixin:
             # Internal wakes observe reset policy without counting as user activity, or periodic
             # notifications keep the routing key alive across every daily/idle boundary.
             session_entry = await self.async_session_store.get_or_create_session(
-                source, touch_activity=not bool(getattr(event, "internal", False)),
+                source, touch_activity=not bool(getattr(event, "internal", False)), cwd="",
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
@@ -304,6 +304,16 @@ class GatewayTurnMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
+        persisted_cwd = await self.async_session_store.get_session_workspace(
+            session_entry.session_key, session_entry.session_id,
+        )
+        if persisted_cwd:
+            session_entry.cwd = persisted_cwd
+        else:
+            configured_cwd = self._configured_workspace_for_source(source)
+            session_entry.cwd = await self.async_session_store.ensure_session_workspace(
+                session_entry.session_key, session_entry.session_id, configured_cwd,
+            )
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):

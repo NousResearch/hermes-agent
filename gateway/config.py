@@ -355,10 +355,16 @@ class SessionResetPolicy:
 
 @dataclass
 class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel model/provider/system_prompt/workspace override.
+
+    ``cwd`` is the gateway session's initial workspace.  Once a session has a
+    persisted cwd, an explicit ``/workspace`` choice wins until that binding is
+    cleared or explicitly changed; rotated child sessions inherit it.
+    """
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    cwd: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}

@@ -154,7 +154,42 @@ class SessionRecoveryMixin:
             session_key=session_key, session_id=str(row["id"]), created_at=created_at,
             updated_at=updated_at, origin=source, display_name=source.chat_name,
             platform=source.platform, chat_type=source.chat_type,
+            cwd=str(row.get("cwd") or ""),
             reset_had_activity=bool(had_activity))
+
+    def ensure_session_workspace(
+        self, session_key: str, session_id: str, fallback_cwd: Optional[str],
+    ) -> str:
+        """Return the persisted session cwd, atomically filling a missing value.
+
+        The DB operation owns the check-and-set so concurrent gateway sessions
+        never borrow another route's fallback and an explicit stored override
+        always wins.
+        """
+        db = self._db_for_key(session_key)
+        if not db:
+            return fallback_cwd or ""
+        return str(db.ensure_session_cwd(session_id, fallback_cwd or "") or "")
+
+    def get_session_workspace(self, session_key: str, session_id: str) -> str:
+        """Read the durable cwd without resolving or validating any fallback."""
+        db = self._db_for_key(session_key)
+        if not db:
+            return ""
+        row = db.get_session(session_id)
+        return str((row or {}).get("cwd") or "")
+
+    def set_session_workspace(self, session_key: str, session_id: str, cwd: str) -> bool:
+        """Persist a workspace move while clearing stale Git identity atomically."""
+        db = self._db_for_key(session_key)
+        if not db:
+            return False
+        return db.update_session_cwd(session_id, cwd, replace_git_meta=True) is not None
+
+    def clear_session_workspace(self, session_key: str, session_id: str) -> bool:
+        """Clear cwd and all higher-priority Git workspace metadata together."""
+        db = self._db_for_key(session_key)
+        return bool(db and db.clear_session_workspace(session_id))
 
     def _find_gateway_session_row(
         self, *, session_key: str, source: SessionSource, allow_peer_fallback: bool,
@@ -357,6 +392,7 @@ class SessionRecoveryMixin:
     @staticmethod
     def _session_create_kwargs(
         *, session_id, session_key, origin, source_value, display_name, parent_session_id,
+        cwd=None,
     ) -> Dict[str, Any]:
         """kwargs for ``SessionDB.create_session``. Identity (origin_json) and lineage
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
@@ -373,6 +409,7 @@ class SessionRecoveryMixin:
             "origin_json": _origin_json(origin),
             "display_name": display_name,
             "parent_session_id": parent_session_id,
+            "cwd": cwd,
             "model_config": {"_reset_from": parent_session_id} if parent_session_id else None,
         }
 

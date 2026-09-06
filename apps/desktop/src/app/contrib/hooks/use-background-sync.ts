@@ -342,6 +342,18 @@ const liveRuntimeIdsByProfile = new Map<string, Set<string>>()
 // composition still emits keydown (keyCode 229), so one listener covers both.
 let lastRendererInputAt = 0
 
+/** True while the Bot Mode / main composer input holds DOM focus.
+ *  Used to keep background refreshes from stealing focus mid-pause (#104318). */
+function composerInputHasFocus(): boolean {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  const el = document.activeElement as HTMLElement | null
+
+  return Boolean(el?.dataset?.slot === 'composer-rich-input')
+}
+
 /** Record renderer-wide keyboard activity (wired to a capture-phase window
  *  keydown listener by useBackgroundSync). */
 export function noteRendererKeyboardActivity(nowMs = Date.now()): void {
@@ -688,6 +700,14 @@ export function useBackgroundSync({
         return
       }
 
+      // #104318: Bot Mode composer loses focus ~1s after pause (first bot).
+      // The live-status poll fires every 1.5s; if the composer is focused
+      // (user paused mid-compose) skip this cycle — the stream owns liveness
+      // while the user is interacting, and the next poll will catch up on blur.
+      if (isTypingBurstActive() || composerInputHasFocus()) {
+        return
+      }
+
       inFlight = true
 
       try {
@@ -760,10 +780,14 @@ export function useBackgroundSync({
     // Fire time is the remaining quiet window, not a poll — a later key
     // extends lastRendererInputAt, and the firing callback re-arms if still
     // warm. There is no starvation cap: a continuous burst keeps holding.
+    // #104318: also hold while the composer itself is focused — the burst
+    // window is keyboard-only, but a pause with focus still intends to type;
+    // firing the heavy list refresh then remounted the first bot's composer
+    // and dropped caret ~1s after last keystroke.
     const runWhenKeyboardQuiet = () => {
       const now = Date.now()
 
-      if (!isTypingBurstActive(now)) {
+      if (!isTypingBurstActive(now) && !composerInputHasFocus()) {
         if (typingDeferTimer !== null) {
           window.clearTimeout(typingDeferTimer)
           typingDeferTimer = null
@@ -775,10 +799,14 @@ export function useBackgroundSync({
       }
 
       if (typingDeferTimer === null) {
+        // Re-check when whichever condition is holding clears — burst window
+        // or focus loss. Poll the sooner of the two.
+        const delay = isTypingBurstActive(now) ? remainingTypingQuietMs(now) : 500
+
         typingDeferTimer = window.setTimeout(() => {
           typingDeferTimer = null
           runWhenKeyboardQuiet()
-        }, remainingTypingQuietMs(now))
+        }, delay)
       }
     }
 

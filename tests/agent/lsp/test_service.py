@@ -23,6 +23,9 @@ from agent.lsp.servers import (
 )
 
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
@@ -272,7 +275,6 @@ def test_reaper_survives_sweep_error(mock_pyright):
         assert not svc._idle_reaper_task.done()
     finally:
         svc.shutdown()
-
 
 
 

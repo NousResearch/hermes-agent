@@ -219,8 +219,48 @@ def _model_capabilities(provider: str, model_name: str) -> dict:
 
 
 _AUX_SUMMED_KEYS = (
-    "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "estimated_cost", "sessions", "api_calls",
+    "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "estimated_cost", "api_calls",
 )
+
+
+def _merge_aux_into_rows(raw_rows: List[Dict[str, Any]], aux_rows: List[Dict[str, Any]]) -> None:
+    """Add auxiliary usage onto the matching (model, billing_provider) row in place.
+
+    Aux calls happen inside sessions the sessions-derived row already counted, so
+    ``sessions`` is never added onto an existing row; only an aux-only pair (no
+    sessions-derived row) gets a new row that carries its own session count.
+    """
+    index: Dict[tuple, Dict[str, Any]] = {
+        (row.get("model") or "", row.get("billing_provider") or ""): row
+        for row in raw_rows
+    }
+    for aux in aux_rows:
+        key = (aux.get("model") or "unknown", aux.get("billing_provider") or "")
+        target = index.get(key)
+        if target is None:
+            target = {
+                "model": key[0],
+                "billing_provider": key[1],
+                **{k: 0 for k in _AUX_SUMMED_KEYS},
+                "actual_cost": 0,
+                "sessions": aux.get("sessions") or 0,
+                "tool_calls": 0,
+                "last_used_at": None,
+                "avg_tokens_per_session": 0,
+            }
+            index[key] = target
+            raw_rows.append(target)
+        for k in _AUX_SUMMED_KEYS:
+            target[k] = (target.get(k) or 0) + (aux.get(k) or 0)
+        if aux.get("last_used_at") is not None:
+            target["last_used_at"] = max(target.get("last_used_at") or 0, aux["last_used_at"])
+        sessions = target.get("sessions") or 0
+        if sessions:
+            target["avg_tokens_per_session"] = (
+                (target.get("input_tokens") or 0) + (target.get("output_tokens") or 0)
+            ) / sessions
+
+
 _MODEL_CARD_KEYS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens",
     "estimated_cost", "actual_cost", "sessions", "api_calls", "tool_calls",
@@ -253,20 +293,14 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, cutoff)
 
-        # Aux-only models (dedicated vision/compression) as (model, provider) rows,
-        # keyed like the GROUP BY above, so they appear on the Models page.
-        # See #23270.
-        for aux in _aux_usage_rows(db, cutoff):
-            raw_rows.append({
-                "model": aux.get("model") or "unknown",
-                "billing_provider": aux.get("billing_provider") or "",
-                **{key: aux.get(key) or 0 for key in _AUX_SUMMED_KEYS},
-                "actual_cost": 0,
-                "tool_calls": 0,
-                "last_used_at": aux.get("last_used_at"),
-                "avg_tokens_per_session": 0,
-                "aux_task": aux.get("task") or "",
-            })
+        # Aux usage (vision/compression/title/approval/...) is folded into the
+        # (model, provider) row the sessions query already produced. #23270 made
+        # aux-only models visible; _aux_usage_rows groups by (model, task,
+        # provider), so appending each row emitted one card per aux task beside
+        # the main card, and their session counts summed past
+        # totals.total_sessions (#89631). Only a pair with no sessions-derived
+        # row becomes a new row, carrying its own session count.
+        _merge_aux_into_rows(raw_rows, _aux_usage_rows(db, cutoff))
 
         rows = _fold_session_only_rows(raw_rows)
         rows.sort(

@@ -567,6 +567,10 @@ _TURN_STATE: Dict[str, Any] = {
     # Registry generation of the tool snapshot (set in _load_tools): a late refresh rejects
     # a stale rebuild instead of clobbering a newer one.
     "_tool_snapshot_generation": 0,
+    "_tool_snapshot_epoch": 0,
+    "_tool_registry_routes": dict,
+    "_tool_policy_epoch": 0,
+    "_tool_published_policy_epoch": 0,
     "_rate_limit_state": None,  # from x-ratelimit-* headers; read by /usage
     # Credits tracking (dev-only, HERMES_DEV_CREDITS) from x-nous-credits-* headers; session
     # start is latched on the first header so cumulative spend can be reported.
@@ -1050,17 +1054,62 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
 
-    # Capture the registry generation FIRST so a concurrent refresh can detect staleness.
-    try:
-        from tools.registry import registry as _snapshot_registry
-        agent._tool_snapshot_generation = _snapshot_registry._generation
-    except Exception:
-        agent._tool_snapshot_generation = 0
     import model_tools
-    agent.tools = model_tools.get_tool_definitions(
-        enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
-    )
+
+    # Bind immutable registry entries and schemas to one stable generation.
+    # Registry mutations replace entries, so the retained objects are safe
+    # dispatch routes once their live identity is checked at execution time.
+    from tools.registry import registry as _snapshot_registry
+
+    _snapshot_registry_entries = {}
+    _snapshot_registry_defs = []
+    for _snapshot_attempt in range(3):
+        (
+            _snapshot_generation,
+            _snapshot_registry_entries,
+        ) = _snapshot_registry.snapshot_entries_with_generation()
+        agent.tools = model_tools.get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=agent.quiet_mode,
+        )
+        _visible_registry_names = {
+            tool.get("function", {}).get("name")
+            for tool in (agent.tools or [])
+            if isinstance(tool, dict)
+        }
+        if {
+            "tool_search",
+            "tool_describe",
+            "tool_call",
+        } <= _visible_registry_names:
+            _snapshot_registry_defs = model_tools.get_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=disabled_toolsets,
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            )
+        else:
+            _snapshot_registry_defs = list(agent.tools or [])
+        if _snapshot_registry.generation_is_current(_snapshot_generation):
+            agent._tool_snapshot_generation = _snapshot_generation
+            break
+    else:
+        raise RuntimeError(
+            "tool registry generation did not stabilize after 3 attempts"
+        )
+
+    _snapshot_registry_names = {
+        tool.get("function", {}).get("name")
+        for tool in (_snapshot_registry_defs or [])
+        if isinstance(tool, dict)
+    }
+    agent._tool_registry_routes = {
+        name: _snapshot_registry_entries[name]
+        for name in _snapshot_registry_names
+        if name in _snapshot_registry_entries
+    }
+
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
     # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
@@ -1294,7 +1343,9 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
             agent._memory_manager = None
 
     from agent.memory_manager import inject_memory_provider_tools
+    _registry_names = set(agent.valid_tool_names)
     inject_memory_provider_tools(agent)
+    agent._memory_provider_tool_names = agent.valid_tool_names - _registry_names
 
 
 def _apply_agent_section(agent, _agent_cfg):

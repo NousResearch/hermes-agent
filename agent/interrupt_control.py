@@ -9,6 +9,7 @@ import threading
 from typing import Optional
 
 from agent.interrupt_compat import request_hard_interrupt
+from tools.interrupt import request_yield as _request_yield
 from tools.interrupt import set_interrupt as _set_interrupt
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -245,8 +246,20 @@ class InterruptControlMixin:
                 return False
 
         # Never kill a tool to deliver guidance; the steer drain puts it on the final tool result.
+        # A foreground terminal command would park that delivery until it exits (a 5-minute
+        # `sleep` poller, a build), so ask the tool workers to YIELD: terminal hands the live
+        # process to the background registry and returns; tools that don't yield are unaffected.
         if getattr(self, "_executing_tools", False):
-            return self.steer(cleaned)
+            accepted = self.steer(cleaned)
+            if accepted:
+                tracker = getattr(self, "_tool_worker_threads", None)
+                tracker_lock = getattr(self, "_tool_worker_threads_lock", None)
+                if tracker is not None and tracker_lock is not None:
+                    with tracker_lock:
+                        worker_tids = list(tracker)
+                    for tid in worker_tids:
+                        _request_yield(tid)
+            return accepted
 
         _model_active = getattr(self, "_model_request_active", None)
         with _ic_lock(self, "_pending_redirect_lock"):

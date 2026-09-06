@@ -16,6 +16,8 @@ module graph from the updated checkout.
 
 from __future__ import annotations
 
+import importlib
+import json
 import sys
 import types
 
@@ -82,6 +84,31 @@ def test_purge_protects_executing_modules():
     assert "hermes_cli" in sys.modules
 
 
+def test_purge_preserves_active_update_receipt(tmp_path, monkeypatch):
+    """A receipt begun before the post-pull purge must still be finalizable."""
+    import hermes_cli.update_receipt as receipt
+
+    receipt_dir = tmp_path / "update_receipts"
+    monkeypatch.setattr(receipt, "_receipt_dir", lambda: receipt_dir)
+    receipt._current = None
+    post_purge_receipt = receipt
+    try:
+        receipt.begin_update_receipt()
+        receipt.record_step("git_pull", True, "updated checkout")
+
+        cli_main._purge_stale_hermes_modules()
+        post_purge_receipt = importlib.import_module("hermes_cli.update_receipt")
+        path = post_purge_receipt.finalize_update_receipt("success")
+
+        assert path is not None and path.is_file()
+        latest = json.loads((receipt_dir / "latest.json").read_text(encoding="utf-8"))
+        assert latest["outcome"] == "success"
+        assert latest["steps"][0]["name"] == "git_pull"
+    finally:
+        receipt._current = None
+        post_purge_receipt._current = None
+
+
 def test_purge_leaves_prefix_lookalikes_alone():
     # `gateway_foo` starts with the string prefix "gateway" but is NOT the
     # gateway package — the root-segment check must spare it.
@@ -134,3 +161,14 @@ def test_stale_symbol_scenario_end_to_end():
         sys.modules.pop(name, None)
         if real is not None:
             sys.modules[name] = real
+
+
+def test_purge_keeps_plan_record_class_identity():
+    # The pre-update plan is built BEFORE the purge; reconciliation after it filters with
+    # ``isinstance(r, RuntimeRecord)``. An evicted ``update_inventory`` yields a fresh class,
+    # every record fails the check, and the plan-vs-execution report goes silently empty.
+    from hermes_cli.update_inventory import RuntimeRecord as before
+
+    cli_main._purge_stale_hermes_modules()
+    from hermes_cli.update_inventory import RuntimeRecord as after
+    assert after is before

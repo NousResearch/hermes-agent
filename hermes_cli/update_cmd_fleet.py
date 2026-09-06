@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 import time as _time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_cli.update_cmd_common import _best_effort
@@ -850,6 +850,18 @@ class _GatewayRestartOutcome:
     relaunched_profiles: list
     externally_supervised_profiles: list
     killed_pids: set
+    #: Gateways stopped with NO successor (no profile mapping / relaunch could not be armed);
+    #: the summary tells the user to restart them by hand, so the fleet probe must not expect
+    #: a row for them.
+    stopped_unmapped_pids: set = field(default_factory=set)
+
+    def fleet_probe_signals(self) -> tuple:
+        """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
+        legitimately predict a fleet-matrix row."""
+        pre = self.pre_restart_gateway_pids
+        if pre is not None:
+            pre = [pid for pid in pre if pid not in self.stopped_unmapped_pids]
+        return pre, self.killed_pids - self.stopped_unmapped_pids
 
     def record_receipt(self, **extra) -> None:
         """Best-effort ``record_gateway_restart`` from the current bookkeeping."""
@@ -921,6 +933,7 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
         with suppress(ProcessLookupError, PermissionError):
             os.kill(pid, _signal.SIGTERM)
             out.killed_pids.add(pid)
+            out.stopped_unmapped_pids.add(pid)
 
     if out.restarted_services or out.killed_pids:
         print()
@@ -1213,9 +1226,12 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # never fires on Windows (pause/resume populates neither), so a healthy
         # resumed gateway yielded zero rows and exit 0.
         # See #93406.
+        # A gateway stopped WITHOUT a successor ("Restart manually") publishes no row by design,
+        # so it must not count as an expected one — otherwise an update whose only live gateways
+        # were unmapped exits 1 with "no rows" after correctly stopping them.
+        _pre_restart, _killed = restart.fleet_probe_signals()
         _fleet_rows_expected = _m()._fleet_probe_expected_runtimes(
-            _pre_update_plan, restart.pre_restart_gateway_pids, _windows_gateway_resume, restart.restarted_services,
-            restart.killed_pids,
+            _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
         if print_fleet_version_matrix(_fleet_snapshot):
@@ -1308,7 +1324,7 @@ def _fleet_probe_expected_runtimes(
     healthy, so zero rows is only proof-of-safety when NOTHING says a gateway existed
     pre-update. Signals: ``restarted_services``/``killed_pids``; ``pre_restart_pids``
     non-empty or None (same contract as ``_restart_phase_failure_is_incomplete``); plan
-    inventoried ≥1 runtime. ``windows_resume_token`` is deliberately EXCLUDED: it is
+    inventoried ≥1 ``kind == "gateway"`` runtime. ``windows_resume_token`` is deliberately EXCLUDED: it is
     pause/resume bookkeeping, not an inventory, and its entries don't map to probe rows
     (``unmapped`` Scheduled-Task gateways never publish gateway_state.json; a paused
     profile resumes DETACHED). Counting it made every Windows update that paused a
@@ -1326,7 +1342,11 @@ def _fleet_probe_expected_runtimes(
     if pre_restart_pids is None or pre_restart_pids:
         return True
     with suppress(Exception):
-        if pre_update_plan is not None and pre_update_plan.runtimes:
+        # Gateway-kind only: serve/dashboard plan records never publish a gateway_state.json
+        # row, so a dashboard-only plan cannot ground a rows-expected verdict (#97332).
+        if pre_update_plan is not None and any(
+            getattr(runtime, "kind", None) == "gateway" for runtime in pre_update_plan.runtimes
+        ):
             return True
     return False
 

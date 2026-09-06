@@ -184,3 +184,31 @@ def test_author_caps_warned():
 def test_findings_carry_rule_and_severity():
     findings = lint_content(CLEAN.replace("name: my-skill", "name: BAD"))
     assert any(f.rule == "name-format" and f.severity == ERROR for f in findings)
+
+
+def test_incident_log_shape_flagged_and_rule_shape_not():
+    # A body narrating incidents by PR number is a log, not a lesson; the same lesson stated as a
+    # rule + why with no numbers passes. Density-gated so one citation in a long body is fine.
+    log = CLEAN.replace(
+        "1. Use `read_file` to load it.",
+        "In #12345 the watcher died; #23456 was the same; see PR #34567 and issue #45678 for the fix.",
+    )
+    rule = CLEAN.replace(
+        "1. Use `read_file` to load it.",
+        "Launch the watcher from a directory that outlives the watch; a deleted cwd reads as a stall.",
+    )
+    assert "incident-log-shape" in _rules(lint_content(log))
+    assert "incident-log-shape" not in _rules(lint_content(rule))
+
+
+def test_references_sprawl_flagged_above_cap(tmp_path):
+    from tools.skill_linter import _MAX_REFERENCE_FILES
+    skill_dir = tmp_path / "my-skill"
+    refs = skill_dir / "references"
+    refs.mkdir(parents=True)
+    for i in range(_MAX_REFERENCE_FILES + 1):
+        (refs / f"note-{i}.md").write_text("x")
+    (skill_dir / "SKILL.md").write_text(CLEAN)
+    assert "references-sprawl" in _rules(lint_skill(skill_dir / "SKILL.md"))
+    (refs / f"note-{_MAX_REFERENCE_FILES}.md").unlink()
+    assert "references-sprawl" not in _rules(lint_skill(skill_dir / "SKILL.md"))

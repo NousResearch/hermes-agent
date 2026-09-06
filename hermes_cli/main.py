@@ -2308,13 +2308,9 @@ def _coalesce_session_name_args(argv: list) -> list:
     ``hermes -c Pokemon Agent Dev`` → ``['-c', 'Pokemon Agent Dev']``; tokens
     are collected until the next flag (``-*``) or known top-level subcommand.
     """
-    _SUBCOMMANDS = {
-        "chat", "model", "gateway", "setup", "whatsapp", "whatsapp-cloud", "login", "logout",
-        "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
-        "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve",
-        "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs",
-    }
+    # Derived, never hand-written: a hardcoded set drifts from the parser and
+    # swallows newer subcommands (e.g. "send") into session names.
+    _SUBCOMMANDS = _BUILTIN_SUBCOMMANDS
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
     result = []

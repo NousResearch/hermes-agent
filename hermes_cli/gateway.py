@@ -5764,11 +5764,12 @@ def _stop_installed_service(system: bool) -> bool:
 
 
 def _refuse_from_inside_gateway(verb: str, reason: str) -> None:
-    """Refuse self-targeting stop/restart/uninstall from inside the gateway process (#92560)."""
-    from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
+    """Refuse self-targeting stop/restart/uninstall from gateway-originated workers."""
+    from gateway.control_plane import should_refuse_inline_gateway_lifecycle
+
+    if should_refuse_inline_gateway_lifecycle():
         print_error(
-            f"Refusing to {verb} the gateway from inside the gateway process.\n"
+            f"Refusing to {verb} the gateway from a gateway-originated process.\n"
             f"This command was blocked to prevent {reason}.\n"
             f"Use `hermes gateway {verb}` from a shell outside the running gateway."
         )

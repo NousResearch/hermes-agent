@@ -197,10 +197,11 @@ def gateway_lifecycle_block(
     a self-restart into a respawn loop, so it passes too.
     Returns the JSON error string when blocked, else None.
     """
+    from gateway.control_plane import should_refuse_inline_gateway_lifecycle
     from tools.process_registry import _is_supervised_gateway_process
     from tools.terminal_tool import _resolve_command_cwd, get_session_cwd
 
-    if not _is_supervised_gateway_process():
+    if not (should_refuse_inline_gateway_lifecycle() or _is_supervised_gateway_process()):
         return None
     from cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,

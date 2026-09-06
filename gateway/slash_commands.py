@@ -513,6 +513,35 @@ class GatewaySlashCommandsMixin(
             count = self._running_agent_count()
             return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
 
+        from gateway.control_plane import (
+            RESTART_HANDOFF_FILENAME,
+            build_restart_handoff,
+            persist_restart_handoff,
+        )
+        from gateway.session import build_session_key
+
+        try:
+            session_key = build_session_key(event.source) if event.source is not None else None
+        except Exception:
+            session_key = None
+        try:
+            persist_restart_handoff(
+                _hermes_home / RESTART_HANDOFF_FILENAME,
+                build_restart_handoff(
+                    session_key=session_key,
+                    platform=event.source.platform.value if event.source and event.source.platform else None,
+                    chat_id=str(event.source.chat_id) if event.source and event.source.chat_id else None,
+                    thread_id=str(event.source.thread_id) if event.source and event.source.thread_id else None,
+                    message_id=str(event.message_id) if event.message_id is not None else None,
+                ),
+            )
+        except Exception as e:
+            logger.error("Failed to persist restart handoff; refusing /restart: %s", e)
+            return (
+                "Restart aborted: could not persist the restart handoff. "
+                "The gateway was not shut down. Retry /restart."
+            )
+
         async def _write_marker(name: str, build, label: str) -> None:
             try:
                 await asyncio.to_thread(atomic_json_write, _hermes_home / name, build(), indent=None)

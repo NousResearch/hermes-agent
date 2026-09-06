@@ -17,7 +17,23 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
-from gateway.platforms.base import MessageEvent, MessageType
+
+def _format_watcher_log_value(
+    value: object,
+    *,
+    max_length: int = 300,
+    fallback: str = "unknown",
+) -> str:
+    """Keep untrusted watcher values single-line, safe, and bounded."""
+    from tools.ansi_strip import strip_ansi
+
+    text = strip_ansi(str(value or ""))
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", text).strip()
+    return text[:max_length] or fallback
+
+import re
+
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import SessionEntry, SessionSource
 from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
 
@@ -435,22 +451,65 @@ class GatewayNotificationsMixin:
         sent_buttons = False
         adapter = target.adapter
         if getattr(type(adapter), "send_update_prompt", None) is not None:
-            with _log_suppressed(logging.DEBUG, "Button-based update prompt failed: %s"):
-                await adapter.send_update_prompt(
+            try:
+                result = await adapter.send_update_prompt(
                     chat_id=target.chat_id, prompt=prompt_text, default=default,
                     session_key=target.session_key, metadata=target.send_metadata(),
                 )
-                sent_buttons = True
+                # Native hooks may return None for a successful send, but an
+                # explicit SendResult failure must use the text fallback.
+                sent_buttons = not isinstance(result, SendResult) or result.success is not False
+                if not sent_buttons:
+                    logger.warning(
+                        "Native update prompt send reported failure for %s; falling back to text: %s",
+                        _format_watcher_log_value(target.session_key),
+                        _format_watcher_log_value(getattr(result, "error", None), fallback="unknown error"),
+                    )
+            except Exception as btn_err:
+                logger.debug(
+                    "Button-based update prompt failed: %s",
+                    _format_watcher_log_value(btn_err, fallback="unknown error"),
+                )
+        prompt_delivered = sent_buttons
         if not sent_buttons:
             default_hint = f" (default: {default})" if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")
-            await target.send(
-                f"⚕ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
-                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
-            )
-        # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
+            try:
+                fallback_result = await target.send(
+                    f"⚕ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
+                    f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
+                )
+            except Exception as fallback_err:
+                prompt_delivered = False
+                logger.warning(
+                    "Text update prompt send failed for %s: %s",
+                    _format_watcher_log_value(target.session_key),
+                    _format_watcher_log_value(fallback_err, fallback="unknown error"),
+                )
+            else:
+                prompt_delivered = (
+                    fallback_result is None
+                    or getattr(fallback_result, "success", True) is not False
+                )
+                if not prompt_delivered:
+                    logger.warning(
+                        "Text update prompt send reported failure for %s: %s",
+                        _format_watcher_log_value(target.session_key),
+                        _format_watcher_log_value(
+                            getattr(fallback_result, "error", None), fallback="unknown error"
+                        ),
+                    )
+        # Keep the prompt marker on disk until the user answers. If the
+        # gateway restarts mid-prompt, the next watcher can recover by
+        # re-forwarding it from disk; duplicate sends in the same process
+        # are still suppressed by the pending flag above.
         self._session_state(target.session_key).persistent.update_prompt_pending = True
-        logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
+        if prompt_delivered:
+            logger.info(
+                "Forwarded update prompt to %s: %s",
+                _format_watcher_log_value(target.session_key, max_length=120),
+                _format_watcher_log_value(prompt_text, max_length=80),
+            )
 
     def _clear_update_markers(self, paths: "_UpdatePaths", session_key: Optional[str]) -> None:
         paths.unlink_all()

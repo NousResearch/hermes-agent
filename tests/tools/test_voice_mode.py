@@ -1171,7 +1171,7 @@ class TestListenForSpeechCapture:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/barge.wav"),
+            staticmethod(lambda audio, **kw: written.update(audio=audio, **kw) or "/tmp/barge.wav"),
         )
         from tools.voice_mode import listen_for_speech
         stops = iter([False] * 200 + [True] * 10_000)
@@ -1221,7 +1221,7 @@ class TestFullDuplexListen:
         written = {}
         monkeypatch.setattr(
             "tools.voice_mode.AudioRecorder._write_wav",
-            staticmethod(lambda audio: written.update(audio=audio) or "/tmp/fd.wav"),
+            staticmethod(lambda audio, **kw: written.update(audio=audio, **kw) or "/tmp/fd.wav"),
         )
         from tools.voice_mode import full_duplex_listen
 
@@ -1600,3 +1600,92 @@ class TestWSLAudioEnvironmentGate:
         assert any(
             "PulseAudio" in n and "WSL" in n for n in result["notices"]
         )
+
+
+class TestBargeDetectorOnset:
+    """Onset (first-word) detection + ratchet + barge-in, driven as a pure RMS state machine.
+
+    The converse loop feeds `_BargeDetector.feed(rms, playing)` one 30 ms block at a time and
+    trips when speech is sustained above a floor-derived trigger. These tests characterize the
+    boundary directly (no audio, no mic): they lock the fix for "the VAD thinks I'm not talking"
+    when a browser mic's AGC/noise-suppression pumps the quiet floor up toward speech level.
+    """
+
+    # The parameters ConverseSession builds the detector with (30 ms blocks):
+    #   calib=450ms/30, trip=300ms/30 (needs 8 of last 10), grace=500ms/30, mult=3.
+    PARAMS = dict(mult=3.0, calib_blocks=15, trip_blocks=10, grace_blocks=16)
+
+    def _detector(self):
+        import numpy as np
+        from tools.voice_mode import _BargeDetector
+        return _BargeDetector(np, **self.PARAMS)
+
+    def _run(self, floor_rms, speech_rms, *, playing=False, calib=15, speech_blocks=20,
+             pre_playback_blocks=0, pre_playback_rms=0.0):
+        """Calibrate at floor_rms (not playing), optionally run some pre-playback bleed, then feed
+        speech; return (tripped_at_index_or_None, quiet_floor_after)."""
+        d = self._detector()
+        for _ in range(calib):
+            d.feed(floor_rms, False)
+        for _ in range(pre_playback_blocks):
+            d.feed(pre_playback_rms, True)
+        tripped = None
+        for i in range(speech_blocks):
+            if d.feed(speech_rms, playing):
+                tripped = i
+                break
+        return tripped, d.quiet_floor
+
+    # ── onset detection ──
+    def test_quiet_room_normal_speech_trips(self):
+        tripped, _ = self._run(150, 2500)
+        assert tripped is not None
+
+    @pytest.mark.parametrize("floor,speech", [(800, 2000), (1500, 2500), (2000, 3000)])
+    def test_elevated_floor_normal_speech_still_trips(self, floor, speech):
+        # The bug: an AGC-pumped floor pinned the trigger at the ceiling and swallowed normal
+        # speech. With the onset ceiling, speech meaningfully above the floor trips.
+        tripped, _ = self._run(floor, speech)
+        assert tripped is not None, f"floor={floor} speech={speech} should trip"
+
+    def test_speech_at_or_below_floor_does_not_trip(self):
+        # Speech buried at the noise floor is genuinely indistinguishable; must NOT false-trip.
+        tripped, _ = self._run(2000, 1500)
+        assert tripped is None
+
+    def test_pure_silence_does_not_trip(self):
+        tripped, _ = self._run(150, 0)
+        assert tripped is None
+
+    def test_quiet_mic_soft_speech_trips(self):
+        # A low-gain mic: quiet room (floor ~50) and soft speech (~350 RMS). Soft speech is
+        # below the old absolute 400 wall but well above its own floor, so it must trip now
+        # (the "not loud enough -> idle" complaint). Guards ONSET_TRIGGER_MIN staying low.
+        tripped, _ = self._run(50, 350)
+        assert tripped is not None
+
+    def test_quiet_room_low_noise_does_not_false_trip(self):
+        # Same low-gain room, but only quiet noise (below ONSET_TRIGGER_MIN) — must NOT trip.
+        tripped, _ = self._run(50, 250)
+        assert tripped is None
+
+    # ── ratchet: speech must not inflate the floor ──
+    def test_speech_does_not_ratchet_the_floor(self):
+        # Old behavior: sub-trigger speech was absorbed into ambient, climbing the floor to
+        # speech level until the detector went deaf. The drift gate keeps the floor put.
+        _, quiet_floor = self._run(1500, 3000, speech_blocks=20)
+        assert quiet_floor <= 1500 + 1, f"floor ratcheted up to {quiet_floor}"
+
+    # ── barge-in must be unchanged ──
+    def test_playback_bleed_alone_never_trips(self):
+        d = self._detector()
+        for _ in range(15):
+            d.feed(150, False)
+        trips = [d.feed(1200, True) for _ in range(30)]  # speaker bleed during TTS
+        assert not any(trips)
+
+    def test_playback_real_speech_trips_after_grace(self):
+        # Bleed for longer than the grace window, then the user talks over the reply.
+        tripped, _ = self._run(150, 4000, playing=True, pre_playback_blocks=25,
+                               pre_playback_rms=1200, speech_blocks=20)
+        assert tripped is not None

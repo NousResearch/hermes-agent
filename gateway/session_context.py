@@ -101,6 +101,21 @@ def scoped_current_session_id(session_id: str | None = None) -> Iterator[None]:
         _SESSION_ID.set(previous)
 
 
+@contextmanager
+def session_source_scope(source: str) -> Iterator[None]:
+    """Bind ``HERMES_SESSION_SOURCE`` for this scope and restore the prior value on exit.
+
+    A narrow, nestable override of only the session *source* (the durable session-row
+    ``source`` read by ``run_agent._session_source_for_agent``); leaves the platform and
+    every other session var untouched, so toolset/HA resolution (which keys off the
+    platform) is unaffected.  Mirrors :func:`scoped_current_session_id`."""
+    token = _SESSION_SOURCE.set(source)
+    try:
+        yield
+    finally:
+        _SESSION_SOURCE.reset(token)
+
+
 def set_session_vars(
     platform: str = "", source: str = "", chat_id: str = "", chat_type: str = "",
     chat_name: str = "", thread_id: str = "", user_id: str = "", user_id_alt: str = "",

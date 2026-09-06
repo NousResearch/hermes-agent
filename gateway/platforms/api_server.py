@@ -70,7 +70,7 @@ _STATIC_FEATURE_FLAGS = {
     "session_resources": True, "model_options": True, "session_chat": True,
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
-    "skills_api": True, "audio_api": False, "realtime_voice": False,
+    "skills_api": True, "audio_api": False, "realtime_voice": True,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
@@ -97,7 +97,8 @@ _CAPABILITY_ENDPOINTS = (
     ("browser_control_register", ("POST", "/v1/browser-control/register")),
     ("browser_control_ws", ("GET", "/v1/browser-control/ws")),
     ("artifact_upload", ("POST", "/v1/artifacts/upload")),
-    ("artifact_download", ("GET", "/v1/artifacts/download/{artifact_id}")))
+    ("artifact_download", ("GET", "/v1/artifacts/download/{artifact_id}")),
+    ("realtime_voice", ("GET", "/v1/audio/converse")))
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
 
@@ -118,6 +119,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
+from gateway.platforms import api_server_converse as _api_server_converse
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
@@ -782,6 +784,39 @@ _SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer"}
 
 if AIOHTTP_AVAILABLE:
+    def _is_voice_key_ws_upgrade(request) -> bool:
+        """True for a ``/v1/audio/converse`` WebSocket upgrade carrying a
+        ``hermes-key.<KEY>`` subprotocol.
+
+        Such handshakes authenticate with an explicit bearer key in
+        ``Sec-WebSocket-Protocol`` (validated constant-time by the handler), not an
+        ambient cookie. The Origin/CSRF guard exists to protect credentials the
+        browser attaches automatically — a hostile page can set any subprotocol but
+        cannot produce a key it lacks — so it adds nothing on top of the key here,
+        while it *does* block legitimate browser-context clients (Electron renderers
+        send an unsuppressible ``Origin: null``). The converse route accepts no
+        cookie auth, so relaxing Origin for key-bearing upgrades is safe.
+
+        PRESENCE, NOT VALIDITY (on purpose): the exemption keys off the mere presence
+        of a ``hermes-key.`` subprotocol, not whether the key is correct. Validating
+        the key here would duplicate auth into the wrong layer — two constant-time
+        paths to keep in lockstep, and a wrong key would 403-as-origin instead of
+        401-as-auth. The only cost of presence-based matching is that a hostile page
+        can reach the handler's constant-time key check and burn a 401 — but any
+        non-browser client can already do that by omitting Origin entirely, so it
+        concedes nothing.
+
+        INVARIANT: this holds ONLY while ``/v1/audio/converse`` authenticates with
+        the explicit key alone (no cookie/session fallback). If ambient auth is ever
+        added to that handler, this exemption silently becomes a Cross-Site
+        WebSocket Hijacking hole — ``test_cookie_is_not_a_credential`` guards it."""
+        if request.headers.get("Upgrade", "").lower() != "websocket":
+            return False
+        if "upgrade" not in request.headers.get("Connection", "").lower():
+            return False
+        protocols = request.headers.get("Sec-WebSocket-Protocol", "")
+        return any(p.strip().startswith("hermes-key.") for p in protocols.split(","))
+
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
@@ -789,7 +824,7 @@ if AIOHTTP_AVAILABLE:
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
-            if not adapter._origin_allowed(origin):
+            if not adapter._origin_allowed(origin) and not _is_voice_key_ws_upgrade(request):
                 return web.Response(status=403)
             cors_headers = adapter._cors_headers_for_origin(origin)
         if request.method == "OPTIONS":
@@ -1549,6 +1584,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
+        routes.extend(_api_server_converse._http_routes(self))
         if _CRON_AVAILABLE:
             # Chronos fire webhook (NAS -> agent): authenticated by a NAS-minted JWT.
             routes.append(("POST", "/api/cron/fire", self._handle_cron_fire))
@@ -3761,6 +3797,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         return await _api_runs._handle_runs(self, request, _api_server=sys.modules[__name__])
+
+    async def _handle_converse_ws(self, request: "web.Request") -> "web.WebSocketResponse":
+        return await _api_server_converse._handle_converse_ws(self, request)
 
     def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
         return _api_runs._request_owns_run(self, request, run_id)

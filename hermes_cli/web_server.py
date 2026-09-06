@@ -1604,6 +1604,7 @@ _PLUGIN_COMPAT_LAZY = {
     'delete_profile_endpoint': ('hermes_cli.web_routers.profiles', 'delete_profile_endpoint'),
     'delete_session_endpoint': ('hermes_cli.web_routers.sessions', 'delete_session_endpoint'),
     'delete_webhook': ('hermes_cli.web_routers.ops', 'delete_webhook'),
+    'converse_ws': ('hermes_cli.web_routers.audio', 'converse_ws'),
     'derive_gateway_busy': ('gateway.status', 'derive_gateway_busy'),
     'derive_gateway_drainable': ('gateway.status', 'derive_gateway_drainable'),
     'describe_profile_auto_endpoint': ('hermes_cli.web_routers.profiles', 'describe_profile_auto_endpoint'),

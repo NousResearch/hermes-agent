@@ -3,7 +3,7 @@
 Contract:
   - `is_voice_stop_phrase` matches ONLY when the whole utterance equals a
     configured phrase (case-insensitive, surrounding punctuation stripped).
-  - Default phrase list is ("stop",); `voice.stop_phrases` in config.yaml
+  - Default phrase list is ("stop", "cancel"); `voice.stop_phrases` in config.yaml
     customizes it; `[]` disables the feature.
   - In the shared continuous loop, a stop phrase halts the loop (like the
     silent-cycle limit) and is NEVER delivered to the agent.
@@ -14,9 +14,12 @@ from unittest.mock import patch
 import pytest
 
 from tools.voice_mode_transcript import (
+    DEFAULT_VOICE_END_PHRASES,
     DEFAULT_VOICE_STOP_PHRASES,
     _load_voice_stop_phrases,
+    is_voice_end_phrase,
     is_voice_stop_phrase,
+    strip_voice_end_phrase,
     voice_stop_hint,
 )
 
@@ -46,6 +49,71 @@ class TestIsVoiceStopPhrase:
         with patch("tools.voice_mode_transcript._load_voice_stop_phrases", return_value=("halt",)):
             assert is_voice_stop_phrase("halt") is True
             assert is_voice_stop_phrase("stop") is False
+
+
+class TestCancelIsADefaultStopPhrase:
+    """"cancel" ends the exchange by default, alongside "stop"."""
+
+    def test_default_list_is_stop_and_cancel(self):
+        assert DEFAULT_VOICE_STOP_PHRASES == ("stop", "cancel")
+
+    @pytest.mark.parametrize("utterance", [
+        "cancel", "Cancel", "CANCEL", "cancel.", "Cancel!", " cancel ", '"Cancel."', "cancel?",
+    ])
+    def test_cancel_matches(self, utterance):
+        assert is_voice_stop_phrase(utterance, DEFAULT_VOICE_STOP_PHRASES) is True
+
+    def test_stop_still_matches_under_the_default(self):
+        assert is_voice_stop_phrase("stop", DEFAULT_VOICE_STOP_PHRASES) is True
+
+    def test_cancel_inside_a_sentence_is_not_a_stop(self):
+        # Whole-utterance match only: a real request that merely contains "cancel" reaches the agent.
+        assert is_voice_stop_phrase("cancel my 3pm meeting", DEFAULT_VOICE_STOP_PHRASES) is False
+
+
+class TestIsVoiceEndPhrase:
+    """The assistant's sign-off: the model's reply ENDS with an end phrase to close the session."""
+
+    def test_default_is_over_and_out(self):
+        assert DEFAULT_VOICE_END_PHRASES == ("over and out",)
+
+    @pytest.mark.parametrize("reply", [
+        "Over and out.", "over and out", "OVER AND OUT!",
+        "Your lights are on. Over and out.", "Done — over and out.",
+    ])
+    def test_reply_ending_with_signoff_matches(self, reply):
+        assert is_voice_end_phrase(reply, DEFAULT_VOICE_END_PHRASES) is True
+
+    @pytest.mark.parametrize("reply", [
+        "It's 72 degrees out.", "Over and out is a phrase pilots use.",  # only a TRAILING match ends
+        "", "   ",
+    ])
+    def test_non_signoff_reply_does_not_match(self, reply):
+        assert is_voice_end_phrase(reply, DEFAULT_VOICE_END_PHRASES) is False
+
+    def test_disabled_when_no_end_phrases(self):
+        assert is_voice_end_phrase("Over and out.", ()) is False
+
+
+class TestStripVoiceEndPhrase:
+    """The sign-off is a control marker, not speech: it's stripped from the TTS text."""
+
+    @pytest.mark.parametrize("reply,spoken", [
+        ("Give me a shout. Over and out.", "Give me a shout."),
+        ("All done — over and out!", "All done"),
+        ("Over and out.", ""),
+        ("Talk soon, over and out", "Talk soon"),
+    ])
+    def test_trailing_signoff_is_removed(self, reply, spoken):
+        assert strip_voice_end_phrase(reply, DEFAULT_VOICE_END_PHRASES) == spoken
+
+    def test_non_trailing_mention_is_untouched(self):
+        # "over and out" only in the middle → left alone (only a TRAILING sign-off is a marker).
+        text = "Over and out is radio slang for goodbye."
+        assert strip_voice_end_phrase(text, DEFAULT_VOICE_END_PHRASES) == text
+
+    def test_plain_reply_untouched(self):
+        assert strip_voice_end_phrase("It's sunny and 72.", DEFAULT_VOICE_END_PHRASES) == "It's sunny and 72."
 
 
 class TestLoadVoiceStopPhrases:

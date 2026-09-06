@@ -172,6 +172,7 @@ _ANTHROPIC_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
 _GOOGLE_URL = "https://ai.google.dev/pricing"
 _OPUS = ("5.00", "25.00", "0.50", "6.25")
 _SONNET = ("3.00", "15.00", "0.30", "3.75")
+_SONNET_5 = ("2.00", "10.00", "0.20", "2.50")
 _OPUS_5_5 = ("4.00", "20.00", "0.20", "5.00")
 _FABLE_5_2 = ("8.00", "40.00", "0.20", "10.00")
 _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
@@ -197,10 +198,10 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("anthropic", "https://openrouter.ai/anthropic/claude-opus-4.8-fast", "anthropic-pricing-2026-05", {
         "claude-opus-4-8-fast": ("10.00", "50.00", "1.00", "12.50"),
     }),
-    # Claude Sonnet 5: introductory $2/$10 through 2026-08-31, then $3/$15
-    # (matching Sonnet 4.6). Update this entry when the intro window closes.
+    # Claude Sonnet 5: the launch rate is now the standard rate (the scheduled
+    # 2026-09-01 increase to Sonnet 4.6's rate was cancelled); no update due.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-06-intro", {
-        "claude-sonnet-5": ("2.00", "10.00", "0.20", "2.50"),
+        "claude-sonnet-5": _SONNET_5,
     }),
     # Opus 5.5 cache hits are 0.05x input (every other Opus: 0.1x).
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-09", {
@@ -250,13 +251,21 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-07", {
         ("anthropic.claude-opus-4-8", "anthropic.claude-opus-4-7", "anthropic.claude-opus-4-6"): _OPUS,
     }),
+    # Claude 5 rows read from the AWS pricing page on 2026-09-06 (global
+    # cross-region endpoint). Sonnet 5 shares _SONNET_5 with the first-party
+    # row, not _SONNET: the scheduled 2026-09-01 increase to Sonnet 4.6's rate
+    # was cancelled and the launch rate is standard. In-region/geo profiles
+    # bill 10% above the global rate.
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-09", {
         "anthropic.claude-opus-5": _OPUS, "anthropic.claude-opus-5-5": _OPUS_5_5,
     }),
     ("bedrock", _BEDROCK_URL, "anthropic-list-2026-11", {
         "anthropic.claude-fable-5-2": _FABLE_5_2,
     }),
-    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {"anthropic.claude-sonnet-5": _SONNET}),
+    ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-06", {
+        "anthropic.claude-sonnet-5": _SONNET_5,
+        "anthropic.claude-fable-5": ("10.00", "50.00", "1.00", "12.50"),
+    }),
     ("bedrock", _BEDROCK_URL, "bedrock-pricing-2026-04", {
         ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-5"): _SONNET,
         "anthropic.claude-haiku-4-5": ("0.80", "4.00", "0.08", "1.00"),

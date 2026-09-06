@@ -251,7 +251,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // Speech-to-text backends — kept in sync with the stt block in
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs', 'dashscope'],
-  'stt.dashscope.model': ['qwen3-asr-flash', 'qwen-audio-3.0-asr-flash'],
+  'stt.dashscope.model': ['qwen3-asr-flash'],
   // OpenAI TTS voices — the union across models (per the OpenAI TTS API
   // docs). Model-specific narrowing happens in enumOptionsFor():
   // tts-1 / tts-1-hd support 9 voices; gpt-4o-mini-tts supports all 13.

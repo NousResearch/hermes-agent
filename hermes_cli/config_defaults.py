@@ -1114,7 +1114,8 @@ DEFAULT_CONFIG = {
         },
         "dashscope": {
             "model": "qwen3-asr-flash",
-            "language": "",  # auto-detect; set "zh", "yue", "en", ... to force
+            # Blank inherits stt.language; leave both blank for auto-detection.
+            "language": "",
             "enable_itn": False,
             # Optional "base_url" points to a regional/workspace DashScope native API root.
         },

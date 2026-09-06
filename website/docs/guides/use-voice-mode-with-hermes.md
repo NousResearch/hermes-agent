@@ -196,7 +196,7 @@ stt:
   provider: "dashscope"
   dashscope:
     model: "qwen3-asr-flash"
-    language: "zh"       # optional; blank enables auto-detection
+    language: "zh"       # optional; blank inherits stt.language
     enable_itn: true
 
 tts:
@@ -208,6 +208,8 @@ tts:
 ```
 
 For a regional or workspace-specific endpoint, set `stt.dashscope.base_url` and `tts.dashscope.base_url` to its native `/api/v1` root. Do not point these fields at DashScope's `/compatible-mode/v1` chat endpoint; Hermes uses the native multimodal-generation API for voice.
+
+To let DashScope auto-detect the spoken language, leave both `stt.dashscope.language` and the global `stt.language` blank.
 
 In the TUI, `voice.submit_mode` controls what happens after transcription:
 

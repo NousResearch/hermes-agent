@@ -203,6 +203,16 @@ def _dashscope_transcript(body: Dict[str, Any]) -> str:
         return ""
 
 
+_DASHSCOPE_ASR_INPUT_LIMIT_BYTES = 10 * 1024 * 1024
+
+
+def _dashscope_audio_data_url(file_path: str) -> str:
+    """Read and encode one local file for DashScope's transmitted input."""
+    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+    encoded = base64.b64encode(Path(file_path).read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
 def _transcribe_dashscope(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -212,12 +222,11 @@ def _transcribe_dashscope(
     api_key = _resolve_provider_key("DASHSCOPE_API_KEY", "dashscope")
     if not api_key:
         return _error_result("DASHSCOPE_API_KEY not set")
-    if Path(file_path).stat().st_size > 10 * 1024 * 1024:
-        return _error_result("DashScope Qwen ASR accepts audio files up to 10 MB")
     config = _get_stt_section(_load_stt_config(), "dashscope")
     base_url = str(config.get("base_url") or DASHSCOPE_STT_BASE_URL).strip().rstrip("/")
-    mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-    audio = f"data:{mime_type};base64,{base64.b64encode(Path(file_path).read_bytes()).decode('ascii')}"
+    audio = _dashscope_audio_data_url(file_path)
+    if len(audio) > _DASHSCOPE_ASR_INPUT_LIMIT_BYTES:
+        return _error_result("DashScope Qwen ASR accepts encoded audio input up to 10 MB")
     messages = []
     if prompt:
         messages.append({"role": "system", "content": [{"text": prompt}]})

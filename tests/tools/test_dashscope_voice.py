@@ -91,6 +91,51 @@ def test_dashscope_stt_missing_key_returns_provider_specific_diagnostic(tmp_path
     assert result["error"] == "STT provider 'dashscope' configured but DASHSCOPE_API_KEY not set"
 
 
+def test_dashscope_stt_enforces_encoded_input_limit(tmp_path):
+    from tools.transcription_cloud import _DASHSCOPE_ASR_INPUT_LIMIT_BYTES, _transcribe_dashscope
+
+    prefix_size = len("data:audio/wav;base64,")
+    largest_raw_input = ((_DASHSCOPE_ASR_INPUT_LIMIT_BYTES - prefix_size) // 4) * 3
+    accepted = tmp_path / "accepted.wav"
+    accepted.write_bytes(b"x" * largest_raw_input)
+    response = _JsonResponse({
+        "output": {"choices": [{"message": {"content": [{"text": "accepted"}]}}]},
+    })
+    config = {"dashscope": {"model": "qwen3-asr-flash", "language": "zh"}}
+
+    with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+         patch("tools.transcription_tools._resolve_provider_key", return_value="dashscope-key"), \
+         patch("requests.post", return_value=response) as post:
+        result = _transcribe_dashscope(str(accepted), "qwen3-asr-flash")
+
+    assert result["success"] is True
+    post.assert_called_once()
+
+    rejected = tmp_path / "rejected.wav"
+    rejected.write_bytes(b"x" * (largest_raw_input + 1))
+    with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+         patch("tools.transcription_tools._resolve_provider_key", return_value="dashscope-key"), \
+         patch("requests.post") as post:
+        result = _transcribe_dashscope(str(rejected), "qwen3-asr-flash")
+
+    assert result["success"] is False
+    assert result["error"] == "DashScope Qwen ASR accepts encoded audio input up to 10 MB"
+    post.assert_not_called()
+
+
+def test_explicit_openai_without_sdk_returns_actionable_error(tmp_path):
+    from tools import transcription_tools
+
+    audio_path = _silent_wav(tmp_path / "speech.wav")
+    with patch.object(transcription_tools, "_load_stt_config", return_value={"provider": "openai"}), \
+         patch.object(transcription_tools, "_HAS_OPENAI", False):
+        result = transcription_tools.transcribe_audio(audio_path)
+
+    assert result["success"] is False
+    assert isinstance(result["error"], str)
+    assert "openai package" in result["error"]
+
+
 def test_dashscope_tts_downloads_native_audio_result(tmp_path):
     from tools.tts_tool import text_to_speech_tool
 

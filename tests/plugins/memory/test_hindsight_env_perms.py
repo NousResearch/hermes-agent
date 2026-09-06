@@ -122,7 +122,6 @@ def test_scopeless_worker_reuses_on_disk_key(monkeypatch):
         secret_scope.reset_secret_scope(token)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not enforced on Windows")
 def test_gate_refuses_keyless_build_against_keyed_disk(monkeypatch):
     """_may_rewrite_profile_env False branch: keyless build + keyed disk."""
     import plugins.memory.hindsight.embedded as hs_embedded
@@ -181,7 +180,7 @@ def test_on_disk_key_survives_empty_build(monkeypatch):
         secret_scope.reset_secret_scope(token)
 
 
-def test_rewrite_allowed_when_build_carries_key(monkeypatch):
+def test_rewrite_allowed_when_build_carries_key():
     """A build WITH key material (rotation, model drift) must still rewrite."""
     profile_env = _embedded_profile_env_path(_CONFIG)
     profile_env.parent.mkdir(parents=True)

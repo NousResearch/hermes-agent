@@ -397,6 +397,25 @@ class TestLoadGatewayConfig:
 
         assert config.multiplex_profiles is True
 
+    def test_multiplex_allowlist_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  multiplex_profiles: true\n"
+            "  multiplex_profile_allowlist:\n"
+            "    - Worker\n"
+            "    - worker\n"
+            "    - guest\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+        assert config.multiplex_profile_allowlist == ["worker", "guest"]
+
     def test_discord_websocket_health_settings_seed_platform_extra(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -536,6 +555,24 @@ class TestLoadGatewayConfig:
         assert extra["key"] == "sekrit"
         assert extra["model_name"] == "my-hermes"
 
+    def test_room_link_url_from_nested_gateway_section(self, tmp_path, monkeypatch):
+        """The supported config path advertises no endpoint until restart."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  room_link_url: https://peer.example.test/hermes\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.room_link_url == "https://peer.example.test/hermes"
+        assert GatewayConfig.from_dict(config.to_dict()).room_link_url == (
+            "https://peer.example.test/hermes"
+        )
+
 
     def test_non_platform_gateway_keys_not_misparsed_as_platforms(self, tmp_path, monkeypatch):
         """Nested-platform discovery must only pick up keys matching the
@@ -665,6 +702,194 @@ class TestLoadGatewayConfig:
         # Trailing slash stripped; mirrored into extra for the connected-checker.
         assert relay.extra.get("relay_url") == "https://connector.example/relay"
         assert Platform.RELAY in config.get_connected_platforms()
+
+
+    def test_relay_env_url_disables_other_messaging_platforms(self, tmp_path, monkeypatch):
+        """A GATEWAY_RELAY_URL env stamp means the connector owns all platform
+        connections: directly-connected messaging platforms must be disabled,
+        even when explicitly enabled in config.yaml, while non-messaging
+        surfaces (api_server et al.) survive."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n"
+            "    api_server:\n"
+            "      enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay")
+        # Credential-based auto-enable path must be suppressed too.
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "fake-token-for-test")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is False
+        discord_cfg = config.platforms.get(Platform.DISCORD)
+        assert discord_cfg is None or discord_cfg.enabled is False
+        # Non-messaging surfaces are untouched.
+        assert config.platforms[Platform.API_SERVER].enabled is True
+
+
+    def test_relay_yaml_url_keeps_other_platforms_enabled(self, tmp_path, monkeypatch):
+        """gateway.relay_url in config.yaml (no env stamp) keeps the old
+        additive behavior: relay runs beside directly-connected platforms."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    relay:\n"
+            "      enabled: true\n"
+            "      extra:\n"
+            "        relay_url: https://connector.example/relay\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+
+
+    def test_relay_env_url_opt_out_keeps_direct_platforms(self, tmp_path, monkeypatch):
+        """GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true opts a deployment out of
+        the relay-exclusive sweep: direct adapters stay enabled beside the
+        relay even with the GATEWAY_RELAY_URL env stamp present."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay")
+        monkeypatch.setenv("GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS", "true")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+
+
+    def test_relay_exclusive_reads_profile_scoped_env(self, tmp_path, monkeypatch):
+        """GATEWAY_RELAY_URL is a process-global deployment stamp (like the
+        API_SERVER listener vars, #69379): the scoped runner reload in a
+        multiplexed gateway must keep seeing it, so config's relay enablement
+        and sweep agree with gateway.relay.relay_url()/register_relay_adapter()
+        (which read os.environ). A secondary profile's .env stamp does NOT
+        override the shared process stamp — an isolated multiplex scope is
+        never consulted for globals. (A single-profile gateway, or the profile
+        the process is launched under, still activates via its .env because
+        load_hermes_dotenv exports that file into os.environ at startup.)"""
+        from agent import secret_scope as ss
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Managed-deploy stamp in the process env; the profile .env has none.
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://deploy.example/relay")
+
+        profile_dir = tmp_path / "profile-a"
+        profile_dir.mkdir()
+        (profile_dir / ".env").write_text("", encoding="utf-8")
+
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope(ss.build_profile_secret_scope(profile_dir))
+        try:
+            config = load_gateway_config()
+        finally:
+            ss.reset_secret_scope(tok)
+            ss.set_multiplex_active(False)
+
+        # The deploy stamp survives the profile scope: relay enabled, sweep
+        # ran — matching what register_relay_adapter() sees in os.environ.
+        assert config.platforms[Platform.RELAY].enabled is True
+        assert config.platforms[Platform.TELEGRAM].enabled is False
+
+        # A profile-only stamp does NOT activate relay: globals read only the
+        # process env, so config and the relay transport can never disagree.
+        monkeypatch.delenv("GATEWAY_RELAY_URL", raising=False)
+        (profile_dir / ".env").write_text(
+            "GATEWAY_RELAY_URL=https://profile.example/relay\n", encoding="utf-8"
+        )
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope(ss.build_profile_secret_scope(profile_dir))
+        try:
+            config = load_gateway_config()
+        finally:
+            ss.reset_secret_scope(tok)
+            ss.set_multiplex_active(False)
+
+        relay_cfg = config.platforms.get(Platform.RELAY)
+        assert relay_cfg is None or relay_cfg.enabled is False
+        assert config.platforms[Platform.TELEGRAM].enabled is True
+
+
+    def test_relay_exclusive_sweep_log_levels_and_marker_cleanup(self, tmp_path, monkeypatch, caplog):
+        """Explicitly-enabled platforms are disabled at WARNING, auto-enabled
+        ones at INFO, and the _enabled_explicit marker never survives config
+        load."""
+        import logging as _logging
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      enabled: true\n"
+            "      bot_token: '123:abc'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example/relay")
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "fake-token-for-test")
+
+        with caplog.at_level(_logging.INFO, logger="gateway.config"):
+            config = load_gateway_config()
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == _logging.WARNING and "telegram" in r.getMessage()
+        ]
+        assert warnings, "explicit platform must be disabled at WARNING"
+        discord_infos = [
+            r for r in caplog.records
+            if r.levelno == _logging.INFO and "discord" in r.getMessage()
+        ]
+        if config.platforms.get(Platform.DISCORD) is not None:
+            assert discord_infos, "auto-enabled platform must be disabled at INFO"
+
+        for pc in config.platforms.values():
+            assert "_enabled_explicit" not in (pc.extra or {})
 
 
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
@@ -1184,3 +1409,58 @@ class TestApiServerEnvOverride:
         assert config.platforms[Platform.API_SERVER].enabled is False
         # The key is still wired through for the shared listener.
         assert config.platforms[Platform.API_SERVER].extra.get("key") == api_server_key
+
+
+class TestWebhookEnvOverride:
+    def test_env_key_does_not_reenable_explicitly_disabled_webhook(self):
+        """An explicit ``platforms.webhook.enabled: false`` must survive
+        _apply_env_overrides() even when WEBHOOK_ENABLED is truthy in the env.
+
+        Regression (#85637): _apply_env_overrides() force-set
+        webhook.enabled = True whenever WEBHOOK_ENABLED was truthy. In
+        multiplex mode a secondary profile pins ``webhook.enabled: false`` so
+        it shares the default profile's listener instead of binding its own
+        port, but it still inherits the process-level WEBHOOK_ENABLED
+        (or carries one in its own .env). The unconditional re-enable
+        flipped it back on and tripped the MultiplexConfigError check.
+
+        The fix honors the explicit disable, flagged by ``_enabled_explicit``
+        in the platform's extra (set when the config.yaml pins enabled).
+        The MSGRAPH_WEBHOOK branch shares the shape and the fix.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.WEBHOOK: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+                Platform.MSGRAPH_WEBHOOK: PlatformConfig(
+                    enabled=False,
+                    extra={"_enabled_explicit": True},
+                ),
+            },
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "WEBHOOK_ENABLED": "true",
+                "WEBHOOK_PORT": "9999",
+                "WEBHOOK_SECRET": "shared-secret",
+                "MSGRAPH_WEBHOOK_ENABLED": "true",
+                "MSGRAPH_WEBHOOK_PORT": "9998",
+            },
+            clear=True,
+        ):
+            _apply_env_overrides(config)
+
+        # Explicit disable wins over the env-var presence.
+        assert config.platforms[Platform.WEBHOOK].enabled is False
+        assert config.platforms[Platform.MSGRAPH_WEBHOOK].enabled is False
+        assert config.platforms[Platform.MSGRAPH_WEBHOOK].extra.get("port") == 9998
+        # Port/secret are still wired through for the shared listener.
+        assert config.platforms[Platform.WEBHOOK].extra.get("port") == 9999
+        assert (
+            config.platforms[Platform.WEBHOOK].extra.get("secret")
+            == "shared-secret"
+        )

@@ -6,6 +6,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
+import hermes_cli.web_routers.files as _rt_files
 
 
 def _client_with_app_state():
@@ -92,7 +93,8 @@ def _seed_file(client, root, name="out/hello.txt"):
 
 def test_download_authenticates_via_query_token(forced_files_client):
     client, root = forced_files_client
-    file_path = _seed_file(client, root)
+    file_path = _seed_file(client, root, name="out/demo.mp4")
+    active_content = _seed_file(client, root, name="out/page.html")
 
     # Drop the session header so only the ?token= query param authenticates —
     # mirrors a browser/shell-opened download that can't set the session header.
@@ -104,6 +106,24 @@ def test_download_authenticates_via_query_token(forced_files_client):
     )
     assert ok.status_code == 200
     assert ok.content == b"hello"
+    assert ok.headers["content-disposition"].startswith("attachment;")
+
+    playback = client.get(
+        "/api/files/download",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+        headers={"Sec-Fetch-Dest": "video", "Range": "bytes=1-3"},
+    )
+    assert playback.status_code == 206
+    assert playback.content == b"ell"
+    assert playback.headers["content-disposition"].startswith("inline;")
+    assert playback.headers["x-content-type-options"] == "nosniff"
+
+    rejected = client.get(
+        "/api/files/download",
+        params={"path": str(active_content), "token": web_server._SESSION_TOKEN},
+        headers={"Sec-Fetch-Dest": "video"},
+    )
+    assert rejected.status_code == 415
 
     assert client.get(
         "/api/files/download", params={"path": str(file_path), "token": "nope"}
@@ -113,14 +133,66 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
+def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
+    client, root = forced_files_client
+    file_path = _seed_file(client, root, name="out/demo.mp4")
+
+    # Electron's main-process proxy supplies the connection credential as a
+    # header. Unlike browser-visible download links, the stream endpoint must
+    # not accept credentials in its URL.
+    params = {"path": str(file_path)}
+
+    full = client.get("/api/files/stream", params=params)
+    assert full.status_code == 200
+    assert full.content == b"hello"
+    assert full.headers["content-type"] == "video/mp4"
+    assert full.headers["content-disposition"].startswith("inline;")
+    assert full.headers["accept-ranges"] == "bytes"
+    assert full.headers["x-content-type-options"] == "nosniff"
+
+    partial = client.get(
+        "/api/files/stream",
+        params=params,
+        headers={"Range": "bytes=1-3"},
+    )
+    assert partial.status_code == 206
+    assert partial.content == b"ell"
+    assert partial.headers["content-range"] == "bytes 1-3/5"
+    assert partial.headers["content-disposition"].startswith("inline;")
+    assert partial.headers["x-content-type-options"] == "nosniff"
+
+    head = client.head("/api/files/stream", params=params)
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == "5"
+    assert head.headers["x-content-type-options"] == "nosniff"
+
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    assert client.get(
+        "/api/files/stream",
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
+    ).status_code == 401
+    assert client.get("/api/files/stream", params=params).status_code == 401
+
+
+def test_stream_rejects_non_media_active_content(forced_files_client):
+    client, root = forced_files_client
+
+    for name in ("out/page.html", "out/image.svg"):
+        file_path = _seed_file(client, root, name=name)
+        response = client.get("/api/files/stream", params={"path": str(file_path)})
+        assert response.status_code == 415
+        assert response.json()["detail"] == "Unsupported media type"
+
+
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root)
 
     del client.headers[web_server._SESSION_HEADER_NAME]
 
-    # The query-token escape hatch is scoped to /api/files/download only; it must
-    # not unlock the rest of the API surface.
+    # The query-token escape hatch is scoped to downloads only; it must not
+    # unlock the rest of the API surface.
     leaked = client.get(
         "/api/files/read",
         params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
@@ -178,7 +250,7 @@ def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
-            web_server.upload_managed_file_stream(
+            _rt_files.upload_managed_file_stream(
                 request=request,
                 file=_AbortingUpload(),
                 path=str(target),
@@ -253,6 +325,7 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         p.write_text("SECRET=abc123")
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, name
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, name
+        assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, name
 
     listing = client.get("/api/files", params={"path": str(root)})
     names = [e["name"] for e in listing.json()["entries"]]
@@ -295,6 +368,7 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     for p in (mcp_file, pairing_file):
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, str(p)
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, str(p)
+        assert client.get("/api/files/stream", params={"path": str(p)}).status_code == 403, str(p)
 
     # Listing the credential dir itself yields nothing exploitable: every child
     # is filtered because the parent component is a credential dir.

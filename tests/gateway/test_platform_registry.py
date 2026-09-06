@@ -99,6 +99,18 @@ class TestPlatformRegistry:
         reg.register(entry)
         assert reg.create_adapter("novalidate", MagicMock()) is mock_adapter
 
+    def test_registered_names_includes_deferred_without_materializing(self):
+        reg = PlatformRegistry()
+        entry, _ = self._make_entry("concrete")
+        loader = MagicMock()
+        reg.register(entry)
+        reg.register_deferred("deferred", loader)
+
+        assert reg.registered_names() == {"concrete", "deferred"}
+        loader.assert_not_called()
+        assert reg.get("concrete") is entry
+        assert reg.is_registered("deferred")
+
 
 class TestEnsureDepsFn:
     """check_fn (PASSIVE probe) vs ensure_deps_fn (ACTIVE installer) split.

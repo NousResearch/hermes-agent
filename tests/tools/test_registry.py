@@ -6,7 +6,14 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
+from tools.registry import (
+    ToolRegistry,
+    _MAX_LOGGED_ERROR_CHARS,
+    _MAX_TOOL_ERROR_CHARS,
+    _module_registers_tools,
+    discover_builtin_tools,
+    tool_error,
+)
 
 
 def _dummy_handler(args, **kwargs):
@@ -136,6 +143,119 @@ class TestUnknownToolDispatch:
         result = json.loads(reg.dispatch("nonexistent", {}))
         assert "error" in result
         assert "Unknown tool" in result["error"]
+
+
+class TestToolErrorBounding:
+    def test_short_message_unchanged(self):
+        result = json.loads(tool_error("Missing required parameter: query"))
+        assert result["error"] == "Missing required parameter: query"
+
+    def test_extra_kwargs_preserved(self):
+        result = json.loads(tool_error("bad input", success=False))
+        assert result["error"] == "bad input"
+        assert result["success"] is False
+
+    def test_oversized_body_truncated(self):
+        result = json.loads(tool_error("boom: " + "X" * 5000))
+        assert result["error"].endswith("… [truncated]")
+        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + len("… [truncated]")
+
+    def test_at_limit_not_truncated(self):
+        msg = "Y" * _MAX_TOOL_ERROR_CHARS
+        result = json.loads(tool_error(msg))
+        assert result["error"] == msg
+
+    def test_longer_prefix_reaches_logs_than_context(self, caplog):
+        import logging
+        body = "boom: " + "Z" * 5000
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            result = json.loads(tool_error(body))
+        logged = "\n".join(rec.getMessage() for rec in caplog.records)
+        assert body[:5000] in logged
+        assert len(result["error"]) < 5000
+
+    def test_log_line_is_bounded_for_huge_bodies(self, caplog):
+        import logging
+        body = "boom: " + "Z" * 500_000
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            json.loads(tool_error(body))
+        for record in caplog.records:
+            assert len(record.getMessage()) < _MAX_LOGGED_ERROR_CHARS + 200
+        assert body not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+class TestDispatchBoundsDirectErrorResults:
+    """Handlers that bypass tool_error() and serialize errors directly are
+    still bounded at the dispatch boundary."""
+
+    @staticmethod
+    def _register(reg, name, handler):
+        reg.register(
+            name=name,
+            toolset="core",
+            schema=_make_schema(name),
+            handler=handler,
+        )
+
+    def test_direct_json_error_result_truncated(self):
+        reg = ToolRegistry()
+        self._register(reg, "direct", lambda args, **kw: json.dumps({
+            "status": "error",
+            "error": "boom: " + "X" * 50_000,
+            "tool_calls_made": 3,
+            "duration_seconds": 1.2,
+        }, ensure_ascii=False))
+        result = json.loads(reg.dispatch("direct", {}))
+        assert result["error"].endswith("… [truncated]")
+        assert len(result["error"]) <= _MAX_TOOL_ERROR_CHARS + len("… [truncated]")
+        assert result["status"] == "error"
+        assert result["tool_calls_made"] == 3
+        assert result["duration_seconds"] == 1.2
+
+    def test_small_error_result_unchanged(self):
+        reg = ToolRegistry()
+        payload = json.dumps({"error": "not found", "success": False})
+        self._register(reg, "small", lambda args, **kw: payload)
+        assert reg.dispatch("small", {}) == payload
+
+    def test_oversized_non_error_result_unchanged(self):
+        reg = ToolRegistry()
+        payload = json.dumps({"data": "D" * 50_000})
+        self._register(reg, "big_data", lambda args, **kw: payload)
+        assert reg.dispatch("big_data", {}) == payload
+
+    def test_oversized_non_json_result_unchanged(self):
+        reg = ToolRegistry()
+        payload = "plain text " * 10_000
+        self._register(reg, "plain", lambda args, **kw: payload)
+        assert reg.dispatch("plain", {}) == payload
+
+    def test_non_string_error_value_unchanged(self):
+        reg = ToolRegistry()
+        payload = json.dumps({"error": {"detail": "E" * 5_000}})
+        self._register(reg, "nested", lambda args, **kw: payload)
+        assert reg.dispatch("nested", {}) == payload
+
+
+class TestDispatchExceptionLogging:
+    def test_raising_handler_logs_bounded_message(self, caplog):
+        import logging
+        body = "upstream said: " + "Q" * 200_000
+        reg = ToolRegistry()
+        reg.register(
+            name="boom",
+            toolset="core",
+            schema=_make_schema("boom"),
+            handler=lambda args, **kw: (_ for _ in ()).throw(RuntimeError(body)),
+        )
+        with caplog.at_level(logging.ERROR, logger="tools.registry"):
+            result = json.loads(reg.dispatch("boom", {}))
+        messages = [r.getMessage() for r in caplog.records]
+        assert messages, "dispatch should log the failure"
+        for message in messages:
+            assert len(message) < _MAX_LOGGED_ERROR_CHARS + 200
+            assert body not in message
+        assert len(result["error"]) < _MAX_TOOL_ERROR_CHARS + 200
 
 
 class TestToolsetAvailability:

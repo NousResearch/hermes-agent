@@ -15,7 +15,8 @@ from typing import Any
 import pytest
 
 from hermes_cli import lifecycle, plugins
-from hermes_cli.observability import relay_runtime, relay_shared_metrics
+from agent import relay_runtime
+from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.plugins import PluginManager
 
 
@@ -23,6 +24,12 @@ class _Request:
     def __init__(self, headers: dict[str, Any], content: dict[str, Any]) -> None:
         self.headers = headers
         self.content = content
+
+
+class _ToolExecutionResult:
+    def __init__(self, result: Any, annotation: Any = None) -> None:
+        self.result = result
+        self.annotation = annotation
 
 
 class _Relay:
@@ -39,6 +46,7 @@ class _Relay:
             Agent="agent", Function="function", Tool="tool"
         )
         self.LLMRequest = _Request
+        self.ToolExecutionResult = _ToolExecutionResult
         self.scope = SimpleNamespace(
             push=self._scope_push,
             pop=self._scope_pop,
@@ -174,11 +182,13 @@ class _Relay:
     def _tool_call_end(
         self,
         handle: Any,
-        result: dict[str, Any],
+        result: _ToolExecutionResult,
         **kwargs: Any,
     ) -> None:
+        assert isinstance(result, _ToolExecutionResult)
+        payload = result.result
         start = self._tool_starts.pop(handle)
-        self.events.append(("tool.call_end", handle, result, kwargs))
+        self.events.append(("tool.call_end", handle, payload, kwargs))
         event = SimpleNamespace(
             kind="scope",
             category="tool",
@@ -190,7 +200,7 @@ class _Relay:
                 **kwargs["metadata"],
                 "otel.status_code": "OK",
             },
-            data=result,
+            data=payload,
         )
         for callback in list(self._callbacks.values()):
             callback(event)
@@ -218,7 +228,11 @@ def direct_runtime(tmp_path, monkeypatch):
     )
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
-    monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
+    _mgr = PluginManager()
+    # Pin as discovered: hook queries lazy-discover plugins (#64178), and
+    # this test's contract is a runtime with ZERO plugins loaded.
+    _mgr._discovered = True
+    monkeypatch.setattr(plugins, "_plugin_manager", _mgr)
     yield fake
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
@@ -236,7 +250,9 @@ def real_binding_runtime(tmp_path, monkeypatch):
     )
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
-    monkeypatch.setattr(plugins, "_plugin_manager", PluginManager())
+    _mgr = PluginManager()
+    _mgr._discovered = True  # see direct_runtime fixture (#64178)
+    monkeypatch.setattr(plugins, "_plugin_manager", _mgr)
     yield relay
     relay_shared_metrics._reset_for_tests()
     relay_runtime._reset_for_tests()
@@ -729,6 +745,8 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
 ):
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
     from tools import approval
+    import tools.approval_prompt as approval_prompt
+    import tools.approval_context as approval_context
 
     assert real_binding_runtime._native is not None
     base = {
@@ -749,9 +767,12 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     monkeypatch.setattr(approval, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(approval, "is_approved", lambda *args: False)
     monkeypatch.setattr(approval, "get_current_session_key", lambda: "session-key")
+    monkeypatch.setattr(approval_context, "get_current_session_key", lambda: "session-key")
     monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
     monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+    monkeypatch.setattr(approval_context, "_is_gateway_approval_context", lambda: False)
     monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
+    monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *args, **kwargs: "deny")
 
     lifecycle.invoke_hook("on_session_start", **base)
     lifecycle.invoke_hook("pre_llm_call", **base, messages=["sensitive-prompt"])
@@ -933,7 +954,7 @@ def test_execution_adapters_do_not_create_relay_host_without_a_consumer(
 
     assert result is tool_result
     assert observed_args is tool_args
-    assert relay_runtime.get_host(create=False) is None
+    assert relay_runtime.HOST_REGISTRY.for_profile(create=False) is None
     assert imports == []
 
 
@@ -952,7 +973,7 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
     monkeypatch.setattr(relay_runtime.importlib, "import_module", missing_relay)
 
     assert relay_runtime.get_runtime() is None
-    host = relay_runtime.get_host()
+    host = relay_runtime.HOST_REGISTRY.for_profile()
     assert isinstance(host, relay_runtime.NoopRelayRuntime)
     assert host.profile_key == relay_runtime.current_profile_key()
     assert "nemo_relay" in host.reason
@@ -961,7 +982,6 @@ def test_core_runtime_is_fail_open_without_a_published_binding(monkeypatch, capl
         tool_name="terminal",
         args={"command": "true"},
     ) == {"command": "true"}
-    assert not relay_runtime.emit_mark("hermes.probe", session_id="s1")
     assert "Hermes Relay runtime initialization failed" in caplog.text
     relay_runtime._reset_for_tests()
 
@@ -1295,6 +1315,88 @@ def test_direct_runtime_fake_enforces_lifo_scope_contract(direct_runtime):
 
     runtime.run_in_session(session, direct_runtime.scope.pop, second)
     runtime.run_in_session(session, direct_runtime.scope.pop, first)
+
+
+def test_close_session_drains_orphaned_scopes_before_session_pop(direct_runtime):
+    """Orphaned physical scopes must not permanently wedge session close (#81521)."""
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "orphan-drain"})
+    assert session is not None
+    session_handle = session.handle
+
+    orphan = runtime.run_in_session(
+        session,
+        direct_runtime.scope.push,
+        "orphaned-physical-llm",
+        direct_runtime.ScopeType.Function,
+        handle=session_handle,
+    )
+    assert orphan is not None
+
+    # Without drain, popping the session while the orphan is on top fails
+    # with "scope handle is not at the top of the stack".
+    runtime.close_session({"session_id": "orphan-drain"})
+
+    assert runtime.get_session("orphan-drain") is None
+    rejected = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop.rejected" and event[1] == session_handle
+    ]
+    # First attempt may reject; drain + retry must succeed so the session
+    # handle is eventually popped (not left rejected-only).
+    session_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == session_handle
+    ]
+    orphan_pops = [
+        event
+        for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == orphan
+    ]
+    assert orphan_pops, "orphaned physical scope was not drained"
+    assert session_pops, f"session scope never closed (rejected={rejected!r})"
+
+
+def test_real_binding_drains_orphaned_scope_before_session_pop(
+    real_binding_runtime,
+):
+    """Orphan drain must work against the pinned native binding (#81521).
+
+    Regression guard for the #81601 review finding: the native binding's
+    ``get_scope_stack()`` returns a ``ScopeStack`` object (not a list and
+    not a ``ScopeHandle``), and ``scope.pop`` rejects it with TypeError.
+    The drain path must use the version-correct top accessor
+    (``scope.get_handle()``) and compare handles by uuid, because native
+    ``ScopeHandle`` instances do not compare equal by value.
+    """
+    runtime = relay_runtime.get_runtime()
+    assert runtime is not None
+    session = runtime.ensure_session({"session_id": "native-orphan-drain"})
+    assert session is not None
+
+    orphan = runtime.run_in_session(
+        session,
+        real_binding_runtime.scope.push,
+        "orphaned-physical-llm",
+        real_binding_runtime.ScopeType.Function,
+        handle=session.handle,
+    )
+    assert orphan is not None
+
+    # Without the drain fix this fails: the direct session pop raises
+    # "scope handle is not at the top of the stack", and the pre-fix
+    # drain retried with a ScopeStack object that pop() rejects.
+    failure = runtime._close_scope_handle(
+        session,
+        session.handle,
+        output={},
+        allow_closing=True,
+        failure_label="session scope close failed",
+    )
+    assert failure is None, failure
 
 
 def test_concurrent_turn_skips_relay_before_scope_stack_can_interleave(

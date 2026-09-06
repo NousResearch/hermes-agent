@@ -1,8 +1,21 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import babel from '@rolldown/plugin-babel'
+import react, { reactCompilerPreset } from '@vitejs/plugin-react'
+
+/** React Compiler preset scoped to modules that can actually contain
+ *  components/hooks (JSX syntax or a react-ish import). The preset's default
+ *  code filter matches any PascalCase/use* declaration — effectively every TS
+ *  module — which made the babel pass parse all ~1.5k source files when only
+ *  ~750 are React-bearing. */
+function compilerPreset() {
+  const preset = reactCompilerPreset()
+  preset.rolldown.filter.code = /\/>|<\/|from\s*['"][^'"]*react/
+  return preset
+}
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 import fs from 'fs'
+import { createRequire } from 'module'
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -24,6 +37,20 @@ const fsAllow = [
     ].filter((p): p is string => p !== null)
   )
 ]
+
+// React refuses to run when `react` and `react-dom` come from two different
+// installed copies ("Minified React error #527" — a blank window, since it
+// throws before the first paint). Both packages are pinned to one version in
+// this workspace's package.json, but npm hoists whatever *it* considers
+// compatible to the monorepo root: a root dependency whose react peer is a
+// loose range (e.g. `^18 || ^19`) pulls the newest react up there, while
+// react-dom stays at the pinned one. `^19.2.7` accepts `19.2.8`, so npm never
+// warns. Resolving from this workspace instead of a hardcoded root path yields
+// the versions declared here — npm nests a copy under the workspace exactly
+// when the hoisted one differs, so the pair can only ever match.
+const requireFromApp = createRequire(path.join(__dirname, 'vite.config.ts'))
+const reactDir = path.dirname(requireFromApp.resolve('react/package.json'))
+const reactDomDir = path.dirname(requireFromApp.resolve('react-dom/package.json'))
 
 // The dev-only render/state churn counters (src/debug) must be imported
 // STATICALLY above react-dom — react-dom captures the devtools hook at module
@@ -76,7 +103,7 @@ const emojibaseAssets = () => ({
 
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), babel({ presets: [compilerPreset()] }), tailwindcss(), emojibaseAssets()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
@@ -112,7 +139,20 @@ export default defineConfig(({ command }) => ({
             // the heavy chunk, and the entry then statically imports 19 MB of
             // shiki just to reach react/hast utils — putting the heavy chunk
             // right back on the boot path.
-            { name: 'vendor-react', test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/ },
+            //
+            // @tanstack/react-query is here for the same reason react-router
+            // is: it carries MODULE-LEVEL context (QueryClientContext) that
+            // the entry's QueryClientProvider and every lazy chunk's useQuery
+            // must share. Left to rolldown's merge heuristics, an unmatched
+            // shared module can be inlined into a lazy chunk — the packaged
+            // app then runs TWO react-query runtimes, the provider's context
+            // is invisible to the other copy, and useQuery throws "No
+            // QueryClient set, use QueryClientProvider to set one" on the
+            // launch path (#95560). Grouping it forces one shared instance.
+            {
+              name: 'vendor-react',
+              test: /node_modules[\\/](react|react-dom|scheduler|react-router|@tanstack[\\/]react-query)[\\/]/
+            },
             {
               name: 'vendor-md',
               test: /node_modules[\\/](property-information|hast-util-[^\\/]+|mdast-util-[^\\/]+|micromark[^\\/]*|unist-util-[^\\/]+|vfile[^\\/]*|unified|stringify-entities|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|devlop|style-to-js|style-to-object|clsx)[\\/]/
@@ -140,6 +180,22 @@ export default defineConfig(({ command }) => ({
       }
     }
   },
+  // driver.js only enters the graph through the tour's DYNAMIC import chain
+  // (lib/tour/run-tour.ts), so the dep scanner never sees it at startup. Left
+  // alone, first use registers it as a missing dep at runtime — which (a)
+  // esbuild-prebundles the `?raw` IIFE import as a JS module, breaking the
+  // raw-text transform ("does not provide an export named 'default'"), and
+  // (b) triggers Vite's "new dependencies optimized" full page reload mid-
+  // session. It's pure ESM with no CJS deps, so serving it unoptimized is
+  // free. Query and bare forms all listed — exclusion matches exact ids.
+  optimizeDeps: {
+    exclude: [
+      'driver.js',
+      'driver.js/dist/driver.js.iife.js',
+      'driver.js/dist/driver.js.iife.js?raw',
+      'driver.js/dist/driver.css?raw'
+    ]
+  },
   resolve: {
     alias: {
       '@/debug/dev-only': debugEntry(command, process.env as Record<string, string>),
@@ -147,12 +203,26 @@ export default defineConfig(({ command }) => ({
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
-      react: path.resolve(__dirname, '../../node_modules/react'),
-      'react-dom': path.resolve(__dirname, '../../node_modules/react-dom'),
-      'react/jsx-dev-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-dev-runtime.js'),
-      'react/jsx-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-runtime.js')
+      // The tour tool's preview surface injects driver.js's prebuilt IIFE into
+      // the pane's guest page as raw source; the package's exports map doesn't
+      // expose that dist file (nor ./package.json), so resolve the main entry
+      // (dist/driver.js.cjs) and point at its sibling. Both keys on purpose:
+      // alias matching is exact, and the id reaches it with the `?raw` query
+      // still attached in dev but stripped in some build paths.
+      'driver.js/dist/driver.js.iife.js?raw': `${path.join(
+        path.dirname(requireFromApp.resolve('driver.js')),
+        'driver.js.iife.js'
+      )}?raw`,
+      'driver.js/dist/driver.js.iife.js': path.join(
+        path.dirname(requireFromApp.resolve('driver.js')),
+        'driver.js.iife.js'
+      ),
+      react: reactDir,
+      'react-dom': reactDomDir,
+      'react/jsx-dev-runtime': path.join(reactDir, 'jsx-dev-runtime.js'),
+      'react/jsx-runtime': path.join(reactDir, 'jsx-runtime.js')
     },
-    dedupe: ['react', 'react-dom']
+    dedupe: ['react', 'react-dom', 'react-router', '@tanstack/react-query']
   },
   server: {
     host: '127.0.0.1',

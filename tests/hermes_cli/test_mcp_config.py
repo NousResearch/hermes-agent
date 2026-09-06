@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tools import mcp_tool_config as _mcp_config
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
@@ -307,6 +308,9 @@ class TestMcpTest:
         import asyncio
         from hermes_cli import mcp_config
         import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_discovery as _mcp_discovery
+        from tools import mcp_tool_lifecycle as _mcp_lifecycle
+        from tools import mcp_tool_loop as _mcp_loop
 
         captured = {}
 
@@ -327,10 +331,10 @@ class TestMcpTest:
             captured["inner_timeout"] = timeout
             return await awaitable
 
-        monkeypatch.setattr(mcp_tool, "_ensure_mcp_loop", lambda: None)
-        monkeypatch.setattr(mcp_tool, "_stop_mcp_loop_if_idle", lambda: None)
-        monkeypatch.setattr(mcp_tool, "_connect_server", fake_connect)
-        monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", fake_run_on_mcp_loop)
+        monkeypatch.setattr(_mcp_loop, "_ensure_mcp_loop", lambda: None)
+        monkeypatch.setattr(_mcp_lifecycle, "_stop_mcp_loop_if_idle", lambda: None)
+        monkeypatch.setattr(_mcp_discovery, "_connect_server", fake_connect)
+        monkeypatch.setattr(_mcp_loop, "_run_on_mcp_loop", fake_run_on_mcp_loop)
         monkeypatch.setattr(mcp_config.asyncio, "wait_for", fake_wait_for)
 
         assert mcp_config._probe_single_server(
@@ -351,17 +355,111 @@ class TestEnvVarInterpolation:
     def test_interpolate_cursor_env_prefix(self, monkeypatch):
         """Cursor-style ${env:VAR} resolves the same secret as ${VAR}."""
         monkeypatch.setenv("MY_KEY", "secret123")
-        from tools.mcp_tool import _interpolate_env_vars
+        from tools.mcp_tool_config import _interpolate_env_vars
 
         assert _interpolate_env_vars("Bearer ${env:MY_KEY}") == "Bearer secret123"
 
 
     def test_env_ref_name_strips_prefix(self):
-        from tools.mcp_tool import _env_ref_name
+        from tools.mcp_tool_common import _env_ref_name
 
         assert _env_ref_name("env:API_KEY") == "API_KEY"
         assert _env_ref_name("API_KEY") == "API_KEY"
         assert _env_ref_name(" env:API_KEY ") == "API_KEY"
+
+
+class TestContextVarInterpolation:
+    """Cursor-style context variables: ${userHome}, ${workspaceFolder},
+    ${workspaceFolderBasename}, ${pathSeparator}, ${/}."""
+
+    def test_user_home(self):
+        import os
+
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${userHome}") == os.path.expanduser("~")
+
+    def test_path_separator_and_slash_shorthand(self):
+        import os
+
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${pathSeparator}") == os.sep
+        assert _interpolate_env_vars("${/}") == os.sep
+
+    def test_workspace_folder_and_basename(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr(
+            _mcp_config, "_workspace_folder", lambda: "/srv/projects/myapp"
+        )
+        assert _mcp_config._interpolate_env_vars("${workspaceFolder}") == (
+            "/srv/projects/myapp"
+        )
+        assert _mcp_config._interpolate_env_vars(
+            "${workspaceFolderBasename}"
+        ) == "myapp"
+
+    def test_workspace_folder_falls_back_to_cwd(self, monkeypatch):
+        import os
+
+        import tools.file_tools_paths as file_tools_paths
+        from tools.mcp_tool_config import _workspace_folder
+
+        monkeypatch.setattr(
+            file_tools_paths, "_authoritative_workspace_root", lambda task_id="default": None
+        )
+        assert _workspace_folder() == os.getcwd()
+
+    def test_mixed_string_with_env_and_context_vars(self, monkeypatch):
+        import os
+
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setenv("MY_TOKEN", "tok-1")
+        monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
+        result = _mcp_config._interpolate_env_vars(
+            "${userHome}${/}.cache${/}${workspaceFolderBasename}-${MY_TOKEN}"
+        )
+        home = os.path.expanduser("~")
+        assert result == f"{home}{os.sep}.cache{os.sep}app-tok-1"
+
+    def test_context_names_are_case_sensitive(self, monkeypatch):
+        """${USERHOME} is NOT a context var — it keeps env-var semantics
+        (literal placeholder when unset)."""
+        monkeypatch.delenv("USERHOME", raising=False)
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${USERHOME}") == "${USERHOME}"
+
+    def test_unknown_ref_keeps_literal_placeholder(self, monkeypatch):
+        monkeypatch.delenv("NOT_A_REAL_VAR_XYZ", raising=False)
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${NOT_A_REAL_VAR_XYZ}") == (
+            "${NOT_A_REAL_VAR_XYZ}"
+        )
+
+    def test_context_vars_in_nested_config(self, monkeypatch):
+        import os
+
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_config as _mcp_config
+
+        monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
+        cfg = {
+            "command": "npx",
+            "args": ["-y", "server-fs", "${workspaceFolder}"],
+            "cwd": "${workspaceFolder}",
+            "env": {"CACHE": "${userHome}${/}.cache"},
+            "headers": {"X-Ws": "${workspaceFolderBasename}"},
+        }
+        out = _mcp_config._interpolate_env_vars(cfg)
+        home = os.path.expanduser("~")
+        assert out["args"][2] == "/ws/app"
+        assert out["cwd"] == "/ws/app"
+        assert out["env"]["CACHE"] == f"{home}{os.sep}.cache"
+        assert out["headers"]["X-Ws"] == "app"
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +523,7 @@ class TestProbeEnvResolution:
             seen["config"] = config
             return _FakeServer()
 
-        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
 
         tools = mc._probe_single_server("n8n", {
             "url": "http://localhost:5678/mcp-server/http",
@@ -498,7 +596,7 @@ class TestProbeCapabilityGating:
         async def _fake_connect(name, cfg):
             return self._make_server(called, caps)
 
-        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
         details: dict = {}
         mc._probe_single_server("srv", config, details=details)
         return called, details

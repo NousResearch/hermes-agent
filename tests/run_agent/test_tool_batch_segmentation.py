@@ -12,7 +12,6 @@ concurrently, barrier calls sequentially — while preserving:
 """
 
 import json
-import sys
 import threading
 import time
 import uuid
@@ -29,6 +28,20 @@ from agent.tool_dispatch_helpers import (
 )
 from agent.prompt_builder import STEER_MARKER_OPEN
 from tools.budget_config import BudgetConfig
+from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
+
+
+def _assert_budget_replaced(content: str) -> None:
+    """The oversized result must have been replaced by budget enforcement.
+
+    With an active sandbox env (or host-side spillover) the replacement is a
+    ``<persisted-output>`` preview+path block; when persistence is impossible
+    it falls back to inline truncation. Either way the raw oversized payload
+    must be gone — that is the behavior these tests pin, not which
+    replacement shape was used.
+    """
+    assert PERSISTED_OUTPUT_TAG in content or "Truncated:" in content, content[:200]
+    assert "L" * 1_000 not in content
 
 
 def _tc(name="web_search", arguments="{}", call_id=None):
@@ -370,11 +383,11 @@ def _make_tool_defs(*names: str) -> list:
 def agent():
     with (
         patch(
-            "run_agent.get_tool_definitions",
+            "model_tools.get_tool_definitions",
             return_value=_make_tool_defs("web_search", "terminal"),
         ),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -414,7 +427,7 @@ class TestSegmentedDispatchIntegration:
                 events.append(("end", name, kwargs["tool_call_id"]))
             return json.dumps({"ok": name})
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         # One result per call, in emission order.
@@ -447,7 +460,7 @@ class TestSegmentedDispatchIntegration:
                 executed.append(kwargs["tool_call_id"])
             return json.dumps({"ok": True})
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         assert [m["tool_call_id"] for m in messages] == ["s1", "s2", "t1", "s3", "s4"]
@@ -494,7 +507,7 @@ class TestSegmentedDispatchIntegration:
                 agent._interrupt_requested = True
             return json.dumps({"ok": True})
 
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         # Every call still gets exactly one result, in order.
@@ -519,7 +532,7 @@ class TestSegmentedDispatchIntegration:
             return json.dumps({"ok": True})
 
         agent.steer("focus on the tests")
-        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         contents = [m["content"] for m in messages]
@@ -589,13 +602,13 @@ class TestSegmentedDispatchIntegration:
             return "small"
 
         with (
-            patch("run_agent.handle_function_call", side_effect=fake_handle),
+            patch("model_tools.handle_function_call", side_effect=fake_handle),
             patch("agent.tool_executor._budget_for_agent", return_value=budget),
         ):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         large_result_index = next(i for i, call in enumerate(calls) if call.id.endswith("large"))
-        assert "Truncated:" in messages[large_result_index]["content"]
+        _assert_budget_replaced(messages[large_result_index]["content"])
         steer_messages = [m for m in messages if STEER_MARKER_OPEN in m["content"]]
         assert steer_messages == [messages[-1]]
         assert "preserve this steer after budget enforcement" in steer_messages[0]["content"]
@@ -623,7 +636,7 @@ class TestSegmentedDispatchIntegration:
             agent._execute_tool_calls(msg, messages, "task-1")
 
         assert len(messages) == 1
-        assert "Truncated:" in messages[0]["content"]
+        _assert_budget_replaced(messages[0]["content"])
         assert messages[0]["content"].count(STEER_MARKER_OPEN) == 1
         assert "preserve malformed-call steer after budget enforcement" in messages[0]["content"]
 
@@ -711,10 +724,10 @@ class TestPathCanonicalization:
         )
 
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="normcase() case-folding only matters on Windows",
-    )
+    # ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
+    # Windows CI job greps for the marker to decide which files to import, so
+    # a bare skipif leaves this running on no host at all.
+    @pytest.mark.windows_only
     def test_case_insensitive_paths_overlap_windows(self, tmp_path):
         """On Windows, FILE.txt and file.txt are the same file — they must
         be detected as overlapping after normcase() canonicalisation."""

@@ -1,6 +1,7 @@
 """Tests for /goal quality gates (GoalGate, run_gate, GoalManager gate flow)."""
 
 import json
+import sys
 import time
 from unittest.mock import patch
 
@@ -75,6 +76,35 @@ def test_run_gate_timeout():
     assert passed is False
     assert code == -1
     assert "timed out" in out
+
+
+def test_run_gate_keeps_diagnostics_when_a_byte_will_not_decode(tmp_path):
+    """A gate's output tail must survive bytes the decoder rejects.
+
+    A gate runs whatever the operator configured, so its output is arbitrary
+    bytes — a test runner's checkmarks or CJK on a non-UTF-8 Windows console,
+    or stray binary. Decoding strictly means one bad byte kills subprocess's
+    reader thread, stdout comes back None, and the tail lands empty: the agent
+    is told the gate failed with nothing to act on, so it burns every retry and
+    the goal auto-pauses.
+    """
+    script = tmp_path / "gate.py"
+    script.write_text(
+        "import os, sys\n"
+        "os.write(1, b'FAILED: 3 tests broken \\x90\\x8d rerun me\\n')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+
+    passed, code, out = run_gate(
+        GoalGate(command=f'"{sys.executable}" "{script}"'),
+    )
+
+    assert passed is False
+    assert code == 1
+    assert "FAILED: 3 tests broken" in out, (
+        f"gate diagnostics were lost to a decode failure (tail={out!r})"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

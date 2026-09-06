@@ -14,18 +14,16 @@ import sys
 
 import pytest
 
-from hermes_cli.main import (
-    _UpdateOutputStream,
-    _finalize_update_output,
-    _install_hangup_protection,
-    _log_only_write,
-    _print_update_completion,
-    _run_logged_subprocess,
-)
+from hermes_cli.main_dashboard import _UpdateOutputStream, _finalize_update_output, _install_hangup_protection
+from hermes_cli.update_cmd import _log_only_write, _print_update_completion, _run_logged_subprocess
 
 
 def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_ACTION_ID", "a" * 32)
+    # These tests pin the action-identity receipt contract, not the branch
+    # display — neutralize the branch+HEAD suffix added for the 2026-08-17
+    # parked-branch incident (covered by test_update_parked_branch_guard.py).
+    monkeypatch.setattr("hermes_cli.update_cmd._branch_head_suffix", lambda: "")
 
     _print_update_completion("✓ Update complete!")
 
@@ -37,6 +35,7 @@ def test_update_completion_includes_bounded_action_identity(monkeypatch, capsys)
 
 def test_update_completion_rejects_untrusted_action_identity(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_ACTION_ID", "not-safe\nforged")
+    monkeypatch.setattr("hermes_cli.update_cmd._branch_head_suffix", lambda: "")
 
     _print_update_completion("✓ Update complete!")
 

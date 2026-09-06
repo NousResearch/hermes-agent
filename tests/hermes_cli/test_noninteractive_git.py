@@ -56,6 +56,47 @@ class TestNoninteractiveGitEnv:
         env = noninteractive_git_env({"GIT_TERMINAL_PROMPT": "1"})
         assert env["GIT_TERMINAL_PROMPT"] == "0"
 
+    def test_strips_ambient_git_config_injection(self):
+        env = noninteractive_git_env(
+            {
+                "GIT_CONFIG_COUNT": "2",
+                "GIT_CONFIG_KEY_0": "core.pager",
+                "GIT_CONFIG_VALUE_0": "less",
+                "GIT_CONFIG_KEY_1": "core.hooksPath",
+                "GIT_CONFIG_VALUE_1": ".git/hooks",
+                "GIT_CONFIG_PARAMETERS": "'core.pager=less'",
+            }
+        )
+
+        assert env["GIT_CONFIG_COUNT"] != "2"
+        assert "GIT_CONFIG_PARAMETERS" not in env
+        values = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+        assert values["core.pager"] == "cat"
+        assert values["core.hooksPath"] == os.devnull
+        assert values["credential.helper"] == ""
+
+    def test_disables_pagers_hooks_editors_and_user_config(self):
+        env = noninteractive_git_env({})
+        values = {
+            env[f"GIT_CONFIG_KEY_{idx}"]: env[f"GIT_CONFIG_VALUE_{idx}"]
+            for idx in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_PAGER"] == "cat"
+        assert env["PAGER"] == "cat"
+        assert env["GIT_EDITOR"] == "true"
+        assert values["core.fsmonitor"] == "false"
+        assert values["core.hooksPath"] == os.devnull
+        assert values["core.editor"] == "true"
+        assert values["sequence.editor"] == "true"
+        assert values["diff.external"] == ""
+
 
 # ---------------------------------------------------------------------------
 # 2. Real-git E2E: 401 remote fails fast instead of prompting
@@ -84,6 +125,16 @@ def test_git_clone_against_auth_remote_fails_fast(tmp_path: Path):
     thread.start()
     try:
         t0 = time.monotonic()
+        env = noninteractive_git_env()
+        # noninteractive_git_env deliberately leaves GIT_ASKPASS/SSH_ASKPASS
+        # alone so a user's WORKING helper can still authenticate. This test
+        # asserts the no-helper fail-fast path, so strip them — otherwise a
+        # dev shell's VS Code askpass helper (GIT_ASKPASS=...askpass.sh)
+        # blocks waiting on the editor and the clone times out locally.
+        for var in ("GIT_ASKPASS", "SSH_ASKPASS", "VSCODE_GIT_ASKPASS_NODE",
+                    "VSCODE_GIT_ASKPASS_MAIN", "VSCODE_GIT_ASKPASS_EXTRA_ARGS",
+                    "VSCODE_GIT_IPC_HANDLE"):
+            env.pop(var, None)
         proc = subprocess.run(
             ["git", "clone", f"http://127.0.0.1:{port}/private.git",
              str(tmp_path / "dest")],
@@ -91,7 +142,7 @@ def test_git_clone_against_auth_remote_fails_fast(tmp_path: Path):
             text=True,
             timeout=30,
             stdin=subprocess.DEVNULL,
-            env=noninteractive_git_env(),
+            env=env,
         )
         elapsed = time.monotonic() - t0
         assert proc.returncode != 0

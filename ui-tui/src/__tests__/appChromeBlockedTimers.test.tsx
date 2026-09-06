@@ -165,6 +165,7 @@ const layoutProps: AppLayoutProps = {
     goodVibesTick: 0,
     lastTurnEndedAt: T0 - 5_000,
     sessionStartedAt: T0 - 60_000,
+    sessionTitle: '',
     showStickyPrompt: false,
     statusColor: DEFAULT_THEME.color.ok,
     stickyPrompt: '',
@@ -244,6 +245,15 @@ describe('status-chrome timers under an occluding overlay', () => {
 
     // kaomoji cadence for the glyph + verb rotation, plus the elapsed clock.
     expect(armedDelays(intervalSpy)).toContain(2500)
+    expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
+  })
+
+  it('freezes the FaceTicker verb on compacting and skips verb rotation (#97239)', () => {
+    const { output } = mount({ ...busyProps, compacting: true })
+
+    expect(output()).toContain('compacting')
+    // Glyph still ticks at the kaomoji cadence; the rotating-verb timer does not.
+    expect(armedDelays(intervalSpy).filter(delay => delay === 2500)).toHaveLength(1)
     expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
   })
 

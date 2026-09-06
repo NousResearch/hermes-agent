@@ -9,22 +9,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
 export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
-export const BUILTIN_PERSONALITIES = [
-  'helpful',
-  'concise',
-  'technical',
-  'creative',
-  'teacher',
-  'kawaii',
-  'catgirl',
-  'pirate',
-  'shakespeare',
-  'surfer',
-  'noir',
-  'uwu',
-  'philosopher',
-  'hype'
-]
+export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 const THINKING_STATUS_PREFIX_RE =
   /^\s*(?:(?:[^\s.]{1,16})\s+)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
@@ -52,11 +37,13 @@ export function createClientSessionState(
     awaitingResponse: false,
     streamId: null,
     sawAssistantPayload: false,
+    adoptedRunningTurn: false,
     pendingBranchGroup: null,
     interrupted: false,
     interimBoundaryPending: false,
     needsInput: false,
     turnStartedAt: null,
+    turnLive: false,
     usage: null
   }
 }
@@ -64,6 +51,10 @@ export function createClientSessionState(
 export function sessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
+
+/** What a session is called before it has been sent — and before its composer
+ *  has been typed into, which is the only thing that can name it earlier. */
+export const NEW_SESSION_TITLE = 'New session'
 
 export function coerceGatewayText(value: unknown): string {
   if (typeof value === 'string') {
@@ -182,6 +173,31 @@ export function attachmentId(kind: ComposerAttachment['kind'], value: string): s
   return `${kind}:${normalizeAttachmentValue(kind, value)}`
 }
 
+/** A GitHub PR review-thread (`#discussion_r<id>`) or conversation
+ *  (`#issuecomment-<id>`) deep link — the one paste shape that can resolve to
+ *  a structured review attachment instead of a plain `@url:` chip. */
+export const PR_COMMENT_URL_RE =
+  /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(?:\/[^#\s]*)?#(?:discussion_r|issuecomment-)\d+$/
+
+/** The send-time expansion of a `review` attachment. `detail` holds the
+ *  resolved comment as JSON (HermesPrComment shape); a malformed payload falls
+ *  back to the attachment's URL ref so the send never throws. */
+export function reviewCommentBlock(detail: string): null | string {
+  try {
+    const c = JSON.parse(detail)
+
+    const anchor = c.path
+      ? `${c.path}${c.line ? `:${c.startLine && c.startLine !== c.line ? `${c.startLine}-` : ''}${c.line}` : ''}`
+      : `PR #${c.prNumber}`
+
+    const hunk = c.diffHunk ? `\n--- diff hunk ---\n${String(c.diffHunk).trim()}` : ''
+
+    return `\`\`\`review-comment ${anchor}\n@${c.author} on ${c.url}\n\n${String(c.body).trim()}${hunk}\n\`\`\``
+  } catch {
+    return null
+  }
+}
+
 export function pathLabel(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
@@ -196,6 +212,18 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
+  }
+
+  // A resolved PR review comment: expand to a fenced block carrying the
+  // anchor (file:line), author, body, and — when present — the diff hunk the
+  // comment sits on, so "address this" needs no re-explaining what "this" is.
+  // A malformed payload falls through to the refText (the pasted URL).
+  if (attachment.kind === 'review' && attachment.detail) {
+    const block = reviewCommentBlock(attachment.detail)
+
+    if (block) {
+      return block
+    }
   }
 
   if (attachment.refText) {
@@ -214,14 +242,11 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 /**
  * Display ref for the optimistic (in-flight) user bubble.
  *
- * Images prefer their in-hand base64 preview (a `data:` URL) over a file path.
- * `DirectiveContent` runs `extractEmbeddedImages` first, so a raw `data:` URL
- * renders as an inline thumbnail with zero network. An `@image:<localpath>` ref
- * would instead route through `/api/media`, which in remote mode 403s ("Path
- * outside media roots") on a local path the gateway can't read yet — flashing a
- * fallback chip until submit uploads the bytes. The preview also survives the
- * post-sync rewrite (bytes go to the agent via the attached-image pipeline, not
- * this display ref), so the thumbnail stays stable instead of remounting.
+ * Images prefer their bounded base64 thumbnail over a file path. A raw `data:`
+ * URL renders inline with zero network, while an `@image:<localpath>` ref would
+ * route through `/api/media` and can 403 in remote mode. Full-resolution bytes
+ * are loaded separately for the model and on-demand lightbox, not retained in
+ * the optimistic message.
  *
  * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
  * through to `attachmentDisplayText`.
@@ -231,8 +256,24 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
     return null
   }
 
-  if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('data:')) {
-    return attachment.previewUrl
+  if (attachment.kind === 'image') {
+    if (attachment.thumbnailUrl?.startsWith('data:')) {
+      // The pill and the in-flight bubble render the bounded thumbnail. Full
+      // bytes are read separately for lightbox/download and model upload.
+      return attachment.thumbnailUrl
+    }
+
+    if (attachment.previewUrl?.startsWith('data:')) {
+      // Backward compatibility for drafts created by older shells without a
+      // separate thumbnail.
+      return attachment.previewUrl
+    }
+
+    // A newly attached image has no thumbnail while its queued resize is still
+    // pending. Do not fall through to @image:<path>: the optimistic bubble would
+    // fetch and paint the full source, recreating the freeze if Send wins the
+    // race. The model upload remains path/byte based and is unaffected.
+    return null
   }
 
   return attachmentDisplayText(attachment)
@@ -394,6 +435,11 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
     ...(message.reactions?.length ? { reactions: message.reactions } : {})
   }
 
+  const timelineMeta =
+    typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
+      ? { timelineTimestamp: message.timestamp }
+      : {}
+
   if (role === 'user') {
     return {
       id: message.id,
@@ -401,7 +447,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...timelineMeta } }
     } as ThreadMessage
   }
 
@@ -413,7 +459,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       role,
       content: [textPart(text)],
       createdAt,
-      metadata: { custom: {} }
+      metadata: { custom: timelineMeta }
     } as ThreadMessage
   }
 
@@ -433,7 +479,15 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_data: [],
       steps: [],
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
-      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta }
+      custom: {
+        ...(message.interim ? { interim: true } : {}),
+        ...timelineMeta,
+        ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
+        ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
+        // Structured failure layer for the error card (see lib/error-surface).
+        ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
+        ...reactionMeta
+      }
     }
   } as ThreadMessage
 }
@@ -463,6 +517,45 @@ function isToolOnlyAssistant(message: ChatMessage): boolean {
 }
 
 /**
+ * Concatenate a tool-only follow-up message's parts onto its predecessor's,
+ * dropping any incoming `tool-call` part whose `toolCallId` the predecessor
+ * already carries. A repeated id here is the SAME call re-attached (structural
+ * carry-over re-adding a cached row's tool calls, or a live-turn projection
+ * that also exists as a committed row — #87857): folding both copies into one
+ * message manufactures the duplicate key that crashes assistant-ui's
+ * `useResources`, and renaming it would render the same call twice. Genuinely
+ * new calls in the same follow-up row are preserved.
+ */
+export function concatToolPartsUnique(
+  prevParts: readonly ChatMessagePart[],
+  nextParts: readonly ChatMessagePart[]
+): ChatMessagePart[] {
+  const seen = new Set<string>()
+
+  for (const part of prevParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      seen.add(part.toolCallId)
+    }
+  }
+
+  const out = [...prevParts]
+
+  for (const part of nextParts) {
+    if (part.type === 'tool-call' && part.toolCallId) {
+      if (seen.has(part.toolCallId)) {
+        continue
+      }
+
+      seen.add(part.toolCallId)
+    }
+
+    out.push(part)
+  }
+
+  return out
+}
+
+/**
  * Fold each settled tool-only assistant message into the preceding assistant
  * message so its calls join that message's tool group (and can collapse into
  * the auto-scrolling window). Render-only — never mutates the `$messages` store
@@ -482,7 +575,16 @@ export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolM
       const merged =
         cached && cached.prev === prev && cached.prevParts === prev.parts && cached.parts === message.parts
           ? cached.merged
-          : { ...prev, parts: [...prev.parts, ...message.parts] }
+          : {
+              ...prev,
+              completedAt: [prev.completedAt, message.completedAt, ...message.parts.map(part => part.completedAt)]
+                .filter((value): value is number => value !== undefined)
+                .reduce<number | undefined>(
+                  (latest, value) => (latest === undefined ? value : Math.max(latest, value)),
+                  undefined
+                ),
+              parts: concatToolPartsUnique(prev.parts, message.parts)
+            }
 
       cache.set(message, { merged, parts: message.parts, prev, prevParts: prev.parts })
       out[out.length - 1] = merged

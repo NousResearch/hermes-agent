@@ -1,7 +1,7 @@
 ---
 name: grounded-citations
 description: "Ground answers and documents in cited, verifiable sources."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     tags: [Research, Citations, Grounding, Sources, Web, Reports]
     category: research
-    related_skills: [research-paper-writing, arxiv, ocr-and-documents]
+    related_skills: [arxiv, pdf, reddit-reading, rss-feeds, youtube-content]
 ---
 
 # Grounded Citations
@@ -26,7 +26,7 @@ and `verify --evidence` fails any draft whose cited sources carry no evidence.
 
 This skill covers answers in chat, written documents (markdown, PDF, docx,
 slides), and research reports. It does not cover academic BibTeX pipelines —
-for conference papers use the `research-paper-writing` skill, which this skill
+for conference papers use the `arxiv` skill, which this skill
 feeds (see `references/citation-formats.md`).
 
 ## When to Use
@@ -58,12 +58,12 @@ Override per task with `--ledger <path>` or `HERMES_CITATION_LEDGER`.
 ```bash
 S=~/.hermes/skills/research/grounded-citations/scripts/sources.py
 
-python3 "$S" reset                                  # start a clean ledger
-python3 "$S" add https://example.com/a --title "A"  # prints: [1]
-python3 "$S" add https://example.com/b --title "B"  # prints: [2]
-python3 "$S" list                                   # ledger table
-python3 "$S" render                                 # Sources: block
-python3 "$S" verify draft.md                        # catch bad citations
+python "$S" reset                                  # start a clean ledger
+python "$S" add https://example.com/a --title "A"  # prints: [1]
+python "$S" add https://example.com/b --title "B"  # prints: [2]
+python "$S" list                                   # ledger table
+python "$S" render                                 # Sources: block
+python "$S" verify draft.md                        # catch bad citations
 ```
 
 `add` is idempotent and URL-normalized: the same page always returns the same
@@ -126,6 +126,27 @@ sources, cite inline, end with the rendered `Sources:` list. For a short answer
 you may render the block from `sources.py render --only <ids>` instead of
 writing to a file.
 
+## Multi-Platform Sweeps
+
+"What are people saying about X" / "research X across the web" is not one
+`web_search`. Fan out across source types, collect in parallel, then synthesise
+with every claim attributed to the platform it came from:
+
+| Source type | Route | What it adds |
+|---|---|---|
+| Open web | `web_search` → `web_extract` | official docs, articles, announcements |
+| Community discussion | `reddit-reading` (`search`, `thread`) | real user experience, complaints, workarounds |
+| Blogs / releases / changelogs | `rss-feeds` (`read`, `discover`) | dated primary posts, version history |
+| Video | `youtube-content` | walkthroughs, demos, talks |
+| Code | `terminal` with `gh search repos` / `gh search issues` | implementations, open bugs |
+| X/Twitter | `xurl` (needs API access) | announcements, developer chatter |
+
+Register every URL from every route in the ledger as it arrives (step ②). Keep
+opinion and measurement apart: a Reddit thread is evidence that users *report*
+something, not that it is true; pair it with a primary source or label it as
+sentiment. Report per-platform coverage gaps ("Reddit search returned nothing
+newer than March") rather than silently narrowing to what worked.
+
 ## Fact-Checking Mode
 
 For work where the reader must be able to check the chain — medical, legal,
@@ -136,7 +157,7 @@ upgrade from citations to evidence:
 text to a file and attach the sentence(s) that carry each claim:
 
 ```bash
-python3 "$S" quote 1 --text "Ice is about 9% less dense than liquid water." --from page1.txt
+python "$S" quote 1 --text "Ice is about 9% less dense than liquid water." --from page1.txt
 ```
 
 The quote is rejected unless it appears verbatim in the evidence text
@@ -168,8 +189,8 @@ corroboration.
 ④ **Verify with the evidence gate and render the evidence block:**
 
 ```bash
-python3 "$S" verify report.md --evidence --min-coverage 0.5
-python3 "$S" render --style evidence --replace-in report.md
+python "$S" verify report.md --evidence --min-coverage 0.5
+python "$S" render --style evidence --replace-in report.md
 ```
 
 `--evidence` fails the draft if any cited source has no attached quote. The
@@ -222,7 +243,7 @@ and read the `info: stats:` line to see the counts before picking a number.
 ## Verification
 
 ```bash
-python3 "$S" verify report.md --strict --min-coverage 0.5
+python "$S" verify report.md --strict --min-coverage 0.5
 ```
 
 Green means: every `[n]` in the draft exists in the ledger, the Sources block

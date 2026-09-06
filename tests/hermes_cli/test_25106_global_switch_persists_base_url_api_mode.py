@@ -40,6 +40,11 @@ def _make_result(*, base_url="https://api.minimax.io/v1", api_mode="chat_complet
 
 class _StubCLI:
     """Minimum attrs/methods `_handle_model_switch` reads or calls on self."""
+    def _stage_and_swap_model(self, result, old_model):
+        # Staging + in-place swap lives in a helper; run the real one on this stub.
+        import cli as _cli_mod
+        return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
+
 
     agent = None
     model = "old-model"
@@ -55,6 +60,15 @@ class _StubCLI:
 
     def _confirm_expensive_model_switch(self, result) -> bool:
         return True
+
+    def _confirm_and_apply_cli_model_switch(
+        self, result, persist_global, one_turn, custom_provs=None
+    ):
+        import cli as cli_mod
+
+        return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
+            self, result, persist_global, one_turn, custom_provs
+        )
 
     def _open_model_picker(self, *a, **k):
         raise AssertionError("picker should not open when a model name is given")

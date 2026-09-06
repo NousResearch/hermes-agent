@@ -469,6 +469,8 @@ export const hu: Translations = {
     copyCliCommand: "CLI-parancs másolása (külső / tartalék)",
     connect: "Csatlakozás",
     sessionExpires: "A munkamenet {time} múlva lejár",
+    sessionExpiredNoError:
+      "A bejelentkezés lejárt anélkül, hogy elérte volna a szolgáltatót. Ez általában azt jelenti, hogy a bejelentkezési oldal elakadt a megnyitott lapon (szerveroldali probléma) — fejezze be ott a bejelentkezést, majd kattintson az Újra gombra. Ha továbbra sem sikerül, használjon inkább API-kulcsot vagy a CLI-t.",
     initiatingLogin: "Bejelentkezési folyamat indítása…",
     exchangingCode: "Kód cseréje tokenekre…",
     connectedClosing: "Csatlakoztatva! Bezárás…",
@@ -618,6 +620,12 @@ export const hu: Translations = {
       "A táblákkal külön tudod választani az egymással nem összefüggő munkafolyamokat — egyet projektenként, repónként vagy területenként. Az egyik tábla workerei sosem látják a másik tábla feladatait.",
     slug: "Slug",
     slugHint: "— kisbetűk, kötőjelek, pl. atm10-server",
+    confirmDoneMany:
+      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
+    confirmArchiveMany:
+      "Archive {n} tasks? They disappear from the default board view.",
+    confirmBlockedMany:
+      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Megjelenítendő név",
     displayNameHint: "(opcionális)",
     description: "Leírás",

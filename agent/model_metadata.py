@@ -318,6 +318,16 @@ MINIMUM_CONTEXT_LENGTH = 64_000
 # startup resolves the same model several times (banner, /model, compressor). Never persisted.
 _LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
 _LOCAL_CTX_PROBE_CACHE: Dict[tuple, tuple] = {}
+# In-process (model, region) -> monotonic_ts memo of a FAILED Bedrock context probe. That probe pads
+# prompts of 1.3M/2.2M tokens and attempts up to two converse calls (agent/bedrock_adapter.py
+# _BEDROCK_PROBE_TIERS; the second tier is sent only when the first yields no parseable limit, i.e. on
+# the failure path), and its failures are deliberately never persisted, so without a negative memo a
+# model whose probe keeps failing (un-enabled model, opaque InternalServerException, unparseable length
+# error) would re-send them on every resolution. Negative only, in memory only, and bounded — same
+# reasoning as _ENDPOINT_PROBE_FAILURE_TTL_SECONDS: a failure is usually transient (expired SSO
+# session, offline box), so it must expire rather than stick.
+_BEDROCK_PROBE_FAILURE_TTL_SECONDS = 300.0
+_BEDROCK_PROBE_FAILURE_CACHE: Dict[tuple, float] = {}
 # Family-pattern fallbacks, used only when provider-aware sources all miss.
 # Lookups are longest-key-first substring matches, so dict order is cosmetic
 # and a specific key must be STRICTLY longer than its catch-all.
@@ -1038,6 +1048,11 @@ def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     bare, stripped = _strip_provider_prefix(model), (base_url or "").rstrip("/")
     _LOCAL_CTX_PROBE_CACHE.pop((bare, stripped), None)
     _LOCAL_CTX_PROBE_CACHE.pop(("ollama_show", bare, stripped), None)
+    # Same for a memoised Bedrock probe failure (keyed by region, which the caller does not know):
+    # the entry being dropped is the reason to ask the probe again, not to wait out its TTL.
+    for memo_key in list(_BEDROCK_PROBE_FAILURE_CACHE):  # snapshot: another thread may be memoising
+        if memo_key[0] in (model, bare):
+            _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)
     # Every key shape get_cached_context_length consults.
     stale_keys = {key, f"{model}@{base_url}", f"{key}/"}
     if not any(k in cache for k in stale_keys):
@@ -1679,12 +1694,20 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     return cached
 
 
+def _bedrock_probe_failed_recently(model: str, region: str) -> bool:
+    """True while a failed Bedrock context probe for *model* in *region* is still memoised
+    (see _BEDROCK_PROBE_FAILURE_CACHE): answer from the static table without re-probing."""
+    failed_at = _BEDROCK_PROBE_FAILURE_CACHE.get((model, region))
+    return failed_at is not None and (time.monotonic() - failed_at) < _BEDROCK_PROBE_FAILURE_TTL_SECONDS
+
+
 def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     """Step 1b: Bedrock static table + one cached live probe (Bedrock exposes no context window via
-    metadata APIs); None when boto3 is absent. Cached per model under base_url, else a synthetic
-    bedrock:// key so display/offline paths share it."""
+    metadata APIs); None when boto3 is absent. Only a PROBED window is cached (the table answers a
+    call, never the cache), per model under base_url, else a synthetic bedrock:// key so
+    display/offline paths share it."""
     try:
-        from agent.bedrock_adapter import get_bedrock_context_length, resolve_bedrock_region
+        from agent.bedrock_adapter import get_bedrock_context_length, probe_bedrock_context_length, resolve_bedrock_region
     except ImportError:
         return None  # boto3 not installed — fall through to generic resolution
     cache_key_url = base_url or "bedrock://"
@@ -1697,11 +1720,17 @@ def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     if not region:
         with contextlib.suppress(Exception):
             region = resolve_bedrock_region()
-    ctx = get_bedrock_context_length(model, region=region, probe=bool(region))
-    # Only persist probe-derived values (region present); a pure table fallback must not poison the cache.
-    if ctx and region:
-        save_context_length(model, cache_key_url, ctx)
-    return ctx
+    if region and not _bedrock_probe_failed_recently(model, region):
+        probed = probe_bedrock_context_length(model, region)
+        if probed:
+            # The probe is the only authoritative source, so it is the only thing worth persisting:
+            # a table fallback written here would be served forever (this branch runs before it),
+            # and the probe would never be consulted for the model again.
+            save_context_length(model, cache_key_url, probed)
+            _BEDROCK_PROBE_FAILURE_CACHE.pop((model, region), None)  # success ends the failure window
+            return probed
+        _BEDROCK_PROBE_FAILURE_CACHE[(model, region)] = time.monotonic()
+    return get_bedrock_context_length(model, probe=False)  # static table / default: answers this call only
 
 
 def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:

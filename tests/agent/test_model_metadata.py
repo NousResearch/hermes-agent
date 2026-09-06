@@ -1245,6 +1245,73 @@ class TestBedrockContextResolution:
 
 
 # =========================================================================
+# Bedrock context cache persistence — only a probe result may be persisted
+# =========================================================================
+
+class TestBedrockContextCachePersistence:
+    """``_resolve_bedrock_context_length`` persisted whatever
+    ``get_bedrock_context_length`` returned whenever a region was resolvable —
+    and ``resolve_bedrock_region()`` always resolves one (it ends in
+    ``or "us-east-1"``). A probe that returned None (expired SSO session,
+    offline, opaque server error) therefore froze the static table value — the
+    128K default for a model with no table row — under ``model@<base_url>`` or
+    ``model@bedrock://`` (written as ``model@bedrock:``), and the probe, which
+    the resolver treats as the only authoritative source, never ran for that
+    model again.
+
+    Invariants: only a probe-derived window may be persisted, and a failed
+    probe is memoised in memory for ``_BEDROCK_PROBE_FAILURE_TTL_SECONDS`` so
+    it is not re-sent on every resolution, yet runs again once the memo lapses.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_bedrock_probe_memo(self):
+        """The failure memo is module-level state; it must not leak between tests."""
+        from agent import model_metadata as mm
+        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
+        yield
+        mm._BEDROCK_PROBE_FAILURE_CACHE.clear()
+
+    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
+    @patch("agent.bedrock_adapter.probe_bedrock_context_length", return_value=None)
+    def test_failed_probe_does_not_persist_static_fallback(self, mock_probe, mock_region, tmp_path):
+        """A failed probe answers from the table (the 128K default here) but writes nothing
+        to disk. On main this persists ``amazon.future-model-v1:0@bedrock:: 128000``."""
+        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
+        model = "amazon.future-model-v1:0"  # no BEDROCK_CONTEXT_LENGTHS row
+        cache_file = tmp_path / "context_length_cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert get_cached_context_length(model, "bedrock://") is None
+        assert not cache_file.exists()
+        mock_probe.assert_called_once_with(model, "us-east-1")
+
+    @patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1")
+    @patch("agent.bedrock_adapter.probe_bedrock_context_length", side_effect=[None, 1_000_000])
+    def test_failed_probe_is_memoised_until_the_ttl_lapses(self, mock_probe, mock_region, tmp_path):
+        """Not persisting must not turn the probe into a per-resolution cost: inside the TTL a
+        second resolution answers from the table without re-probing and still writes nothing;
+        once the memo lapses the probe runs again and its window is what gets persisted. On
+        main the first call persists 128K and every later call serves it."""
+        from agent import model_metadata as mm
+        from agent.bedrock_adapter import BEDROCK_DEFAULT_CONTEXT_LENGTH
+        model = "amazon.future-model-v1:0"
+        cache_file = tmp_path / "context_length_cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert get_model_context_length(model, provider="bedrock") == BEDROCK_DEFAULT_CONTEXT_LENGTH
+            assert mock_probe.call_count == 1
+            assert not cache_file.exists()  # memoised in memory only
+            # Age the entry past the failure TTL (as tests/agent/test_probe_cache_followups.py does).
+            mm._BEDROCK_PROBE_FAILURE_CACHE[(model, "us-east-1")] = (
+                time.monotonic() - mm._BEDROCK_PROBE_FAILURE_TTL_SECONDS - 1
+            )
+            assert get_model_context_length(model, provider="bedrock") == 1_000_000
+            assert get_cached_context_length(model, "bedrock://") == 1_000_000
+        assert mock_probe.call_count == 2
+
+
+# =========================================================================
 # _strip_provider_prefix — Ollama model:tag vs provider:model
 # =========================================================================
 

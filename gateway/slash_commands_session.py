@@ -423,7 +423,8 @@ class GatewaySessionCommandsMixin:
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         return await self._handle_message(MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt,
+            ephemeral_user_context=event.ephemeral_user_context))
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting the truncated rows and

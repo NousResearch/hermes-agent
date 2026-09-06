@@ -503,9 +503,17 @@ class GatewayBusySessionMixin:
             _steer_all_voice = bool(_steer_media_urls) and (
                 len(self._pending_event_audio_paths(event)) == len(_steer_media_urls)
             )
-            if steer_text and (plain_text or _steer_all_voice) and agent_live and hasattr(running_agent, "steer"):
+            if (
+                steer_text and not event.ephemeral_user_context
+                and (plain_text or _steer_all_voice) and agent_live
+                and hasattr(running_agent, "steer")
+            ):
                 steered = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
+                )
+            elif event.ephemeral_user_context:
+                logger.debug(
+                    "Queueing steer-mode follow-up with API-only context for %s", session_key,
                 )
             if not steered:
                 effective_mode = "queue"
@@ -894,6 +902,7 @@ class GatewayBusySessionMixin:
                 reply_to_author_name=event.reply_to_author_name,
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
+                ephemeral_user_context=event.ephemeral_user_context,
                 internal=event.internal, timestamp=event.timestamp,
             ), adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
@@ -917,11 +926,18 @@ class GatewayBusySessionMixin:
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
                     channel_context=event.channel_context,
+                    ephemeral_user_context=event.ephemeral_user_context,
                 ), adapter)
             return reply
 
         if running_agent is _AGENT_PENDING_SENTINEL:
             return _queue_fallback("Agent still starting — /steer queued for the next turn.")
+        if event.ephemeral_user_context:
+            # steer() stores its text inside the live turn. Volatile platform
+            # context must travel through the next turn's API-only path.
+            return _queue_fallback(
+                "Volatile platform context requires a new turn — /steer queued for the next turn."
+            )
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback("No active agent — /steer queued for the next turn.")
         try:

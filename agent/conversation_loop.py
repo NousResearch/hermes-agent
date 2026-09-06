@@ -113,6 +113,34 @@ def _review_input_budget_exhausted(agent: Any) -> bool:
     return isinstance(used, int) and not isinstance(used, bool) and used >= budget
 
 
+def _append_ephemeral_user_context(content: Any, user_context: Optional[str]) -> Any:
+    """Return an API-only copy of a user message with volatile context appended.
+
+    ``messages`` is Hermes' canonical transcript and must never contain this
+    context. This helper therefore operates only on the API message copy
+    assembled in :func:`build_api_messages`. Native image turns use OpenAI-style
+    content lists, so preserve their image blocks while extending the first
+    text block (or append one when no text block exists).
+    """
+    context = user_context.strip() if isinstance(user_context, str) else ""
+    if not context:
+        return content
+
+    suffix = f"\n\n{context}"
+    if isinstance(content, str):
+        return f"{content}{suffix}"
+
+    if isinstance(content, list):
+        copied = [dict(part) if isinstance(part, dict) else part for part in content]
+        for part in copied:
+            if isinstance(part, dict) and part.get("type") in {"text", "input_text"}:
+                part["text"] = f"{part.get('text', '')}{suffix}"
+                return copied
+        return copied + [{"type": "text", "text": context}]
+
+    return content
+
+
 def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Inject the one-time wall-clock wrap-up notice when past 80% of budget.
 
@@ -1262,6 +1290,7 @@ class _LoopState:
     user_message: Any
     system_message: Any
     moa_config: Any
+    ephemeral_user_context: Any
     original_user_message: Any
     conversation_history: Any
     effective_task_id: Any
@@ -1405,13 +1434,17 @@ def run_conversation(
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    ephemeral_user_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a complete conversation with tool calling until completion; returns the result dict.
 
     ``stream_callback``: per-text-delta callback (TTS). ``persist_user_message``: clean text to
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
     stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
-    display-only event rendering; the model still receives the message unchanged."""
+    display-only event rendering; the model still receives the message unchanged.
+    ``ephemeral_user_context``: volatile platform context appended only to the API
+    representation of the current user turn. It is never added to canonical
+    conversation messages or transcript persistence."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1469,6 +1502,7 @@ def run_conversation(
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
+        ephemeral_user_context=ephemeral_user_context,
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )

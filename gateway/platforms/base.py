@@ -1656,13 +1656,79 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
-def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], session_key: str,
-                                event: MessageEvent, *, merge_text: bool = False) -> None:
-    """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
-    turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
-    replace."""
+def _invalidate_pending_stt_cache(event: MessageEvent) -> None:
+    """Clear gateway-side STT cache attrs when media is merged into an event.
+
+    ``merge_pending_message_event`` extends ``media_urls`` in place when two
+    media-bearing messages arrive in quick succession.  The gateway runner
+    caches STT transcripts on the event via ``setattr`` (see
+    ``_transcribe_pending_audio_event_once``); if the cached event gains new
+    media after the cache was populated, the stale transcript must be
+    discarded so the next transcription call picks up the merged attachments.
+
+    Only the *derived* transcription cache is dropped.  The echo ledger
+    (``_gateway_pending_stt_echoed``) records which transcripts were already
+    delivered to the user and must survive the merge: the re-run transcription
+    returns the earlier notes again, so clearing the ledger would echo them a
+    second time.
+    """
+    for attr in (
+        "_gateway_pending_stt_text",
+        "_gateway_pending_stt_transcripts",
+    ):
+        if hasattr(event, attr):
+            delattr(event, attr)
+
+
+def _pending_event_sender_key(event: MessageEvent) -> Optional[tuple[str, ...]]:
+    """Return an identity key only when the event names a stable individual."""
+    source = getattr(event, "source", None)
+    user_id = str(getattr(source, "user_id", "") or "").strip()
+    if not user_id:
+        return None
+    return (
+        str(getattr(source, "platform", "") or ""),
+        str(getattr(source, "profile", "") or ""),
+        str(getattr(source, "chat_id", "") or ""),
+        user_id,
+    )
+
+
+def merge_pending_message_event(
+    pending_messages: Dict[str, MessageEvent],
+    session_key: str,
+    event: MessageEvent,
+    *,
+    merge_text: bool = False,
+) -> None:
+    """Store or merge a pending event for a session.
+
+    Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
+    events. Merge those into the existing queued event so the next turn sees
+    the whole burst.
+
+    When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
+    instead of replacing the pending turn. This is used for Telegram bursty
+    follow-ups so a multi-part user thought is not silently truncated to only
+    the last queued fragment.
+    """
     existing = pending_messages.get(session_key)
     if existing:
+        # Volatile context belongs to an individual, even when several people
+        # intentionally share one downstream group/thread session. Never let a
+        # merge attach one sender's location to another sender's queued text.
+        same_sender = (
+            _pending_event_sender_key(existing) is not None
+            and _pending_event_sender_key(existing)
+            == _pending_event_sender_key(event)
+        )
+        incoming_context = getattr(event, "ephemeral_user_context", None)
+        existing_context = getattr(existing, "ephemeral_user_context", None)
+        if not same_sender and (existing_context or incoming_context):
+            existing.ephemeral_user_context = None
+        elif isinstance(incoming_context, str) and incoming_context.strip():
+            existing.ephemeral_user_context = incoming_context
+
         existing_type = getattr(existing, "message_type", None)
         existing_is_photo = existing_type == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -2292,6 +2358,12 @@ class BasePlatformAdapter(ABC):
         else:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            # A location snapshot (or similar volatile context) is per-turn
+            # state, not part of the text aggregation. Prefer the newest
+            # non-empty snapshot so split messages don't retain stale context.
+            incoming_context = getattr(event, "ephemeral_user_context", None)
+            if isinstance(incoming_context, str) and incoming_context.strip():
+                existing.ephemeral_user_context = incoming_context
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)

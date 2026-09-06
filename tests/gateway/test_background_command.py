@@ -39,6 +39,14 @@ def _make_runner():
     runner._running_agents = {}
     runner._background_tasks = set()
 
+    async def _run_inline(func, *args):
+        return func(*args)
+
+    # Bare runners do not own a gateway lifecycle that shuts down the real
+    # thread pool. Keep these unit tests synchronous at that boundary so the
+    # per-file test process cannot be held open by an orphan executor.
+    runner._run_in_executor_with_context = AsyncMock(side_effect=_run_inline)
+
     mock_store = MagicMock()
     # A real SessionStore returns None when no persisted /model override exists.
     # MagicMock's default truthy return would otherwise rehydrate a fake model
@@ -76,6 +84,39 @@ class TestHandleBackgroundCommand:
         event = _make_event(text="/bg   ")
         result = await runner._handle_background_command(event)
         assert "Usage:" in result
+
+    @pytest.mark.asyncio
+    async def test_telegram_dm_topic_passes_trigger_anchor_and_context_to_task(self):
+        runner = _make_runner()
+        runner._run_background_task = AsyncMock()
+
+        def capture_task(coro, *args, **kwargs):
+            coro.close()
+            return MagicMock()
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            chat_type="dm",
+            thread_id="20197",
+        )
+        event = MessageEvent(
+            text="/background summarize",
+            source=source,
+            message_id="463",
+            reply_to_message_id="462",
+            ephemeral_user_context="Location: 40.4168, -3.7038",
+        )
+
+        with patch("gateway.run.asyncio.create_task", side_effect=capture_task):
+            result = await runner._handle_background_command(event)
+
+        assert "Background task started" in result
+        runner._run_background_task.assert_called_once()
+        kwargs = runner._run_background_task.call_args.kwargs
+        assert kwargs["event_message_id"] == "463"
+        assert kwargs["ephemeral_user_context"] == "Location: 40.4168, -3.7038"
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +159,7 @@ class TestRunBackgroundTask:
         mock_adapter.send = AsyncMock()
         mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
         mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.toolsets_for_source = MagicMock(return_value=None)
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         source = SessionSource(
@@ -146,7 +188,12 @@ class TestRunBackgroundTask:
             mock_agent_instance.run_conversation.return_value = mock_result
             MockAgent.return_value = mock_agent_instance
 
-            await runner._run_background_task("say hello", source, "bg_test")
+            await runner._run_background_task(
+                "say hello",
+                source,
+                "bg_test",
+                ephemeral_user_context="Location: 40.4168, -3.7038",
+            )
 
         # Should have sent the result
         mock_adapter.send.assert_called_once()
@@ -159,6 +206,11 @@ class TestRunBackgroundTask:
         assert agent_kwargs["checkpoint_max_snapshots"] == 8
         assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
         assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
+        mock_agent_instance.run_conversation.assert_called_once_with(
+            user_message="say hello",
+            task_id="bg_test",
+            ephemeral_user_context="Location: 40.4168, -3.7038",
+        )
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

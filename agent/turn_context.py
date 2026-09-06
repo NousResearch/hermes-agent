@@ -949,6 +949,7 @@ def _sanitize_model_for(agent: Any, moa_config: Any) -> Any:
 def build_api_messages(
     agent: Any, messages: List[Dict[str, Any]], *, current_turn_user_idx: Any,
     ext_prefetch_cache: Any, plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
+    ephemeral_user_context: Any = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
     """Build the wire copy of ``messages`` for one API call plus the effective system
     message. Returns ``(api_messages, effective_system)``.
@@ -990,6 +991,15 @@ def build_api_messages(
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed
+            if ephemeral_user_context:
+                from agent.conversation_loop import _append_ephemeral_user_context
+
+                # Platform context is intentionally current-turn-only. Applied
+                # after the persisted api_content sidecar has been substituted
+                # so exact coordinates never become durable transcript data.
+                api_msg["content"] = _append_ephemeral_user_context(
+                    api_msg.get("content", ""), ephemeral_user_context
+                )
         elif (
             isinstance(_api_content, str) and _api_content
             and msg.get("role") in ("user", "assistant")

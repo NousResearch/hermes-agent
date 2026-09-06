@@ -556,7 +556,10 @@ class GatewayInboundMixin:
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
-        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
+        if (
+            self._hm_text_only(event) and steer_text and not event.ephemeral_user_context
+            and hasattr(running_agent, "steer")
+        ):
             try:
                 steered = bool(running_agent.steer(self._steer_text_with_origin(steer_text, event)))
             except Exception as exc:

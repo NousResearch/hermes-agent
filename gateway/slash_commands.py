@@ -775,7 +775,8 @@ class GatewaySlashCommandsMixin(
         self._track_background_task(self._run_background_task(
             prompt, event.source, task_id, event_message_id=self._reply_anchor_for_event(event),
             # Forward image/audio attachments so the background agent can see them.
-            media_urls=list(event.media_urls or []), media_types=list(event.media_types or [])))
+            media_urls=list(event.media_urls or []), media_types=list(event.media_types or []),
+            ephemeral_user_context=event.ephemeral_user_context))
         return t("gateway.background.started", preview=_preview(prompt), task_id=task_id)
 
     async def _handle_btw_command(self, event: MessageEvent) -> str:

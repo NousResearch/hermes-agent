@@ -24,7 +24,7 @@ def run_preflight_gate(
     compression_attempts: Any, max_compression_attempts: Any, effective_task_id: Any,
     final_response: Any, failed: Any, _turn_exit_reason: Any, _compression_timeout_exhausted: Any,
     _preflight_compression_blocked: Any, _provider_overflow_recovery_pending: Any,
-    _last_preflight_pressure: Any,
+    _last_preflight_pressure: Any, current_turn_user_idx: Any,
 ) -> PreflightGateVerdict:
     """Run the pre-API guard chain in the original order. ``_last_preflight_pressure`` is
     consumed here (set to None) and re-armed only by a compression pass, so a blocked
@@ -41,6 +41,7 @@ def run_preflight_gate(
         _preflight_compression_blocked=_preflight_compression_blocked,
         _provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
         _last_preflight_pressure=None,
+        current_turn_user_idx=current_turn_user_idx,
     )
 
     _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)

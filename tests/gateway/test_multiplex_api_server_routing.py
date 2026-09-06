@@ -78,6 +78,15 @@ class TestApiServerRouteTable:
         assert "/p/{profile}/v1/chat/completions" in mirrored
         assert "/p/{profile}/api/sessions/{session_id}/model" in mirrored
 
+    def test_route_table_includes_audio_speak(self):
+        """The desktop Read Aloud TTS endpoint must be reachable on the default
+        listener AND mirrored under /p/<profile>/ for multiplexed deployments."""
+        adapter = _make_adapter(multiplex=True)
+        paths = {path for _method, path, _handler in adapter._http_route_table()}
+        assert "/api/audio/speak" in paths
+        mirrored = {f"/p/{{profile}}{path}" for path in paths}
+        assert "/p/{profile}/api/audio/speak" in mirrored
+
 
 class TestApiServerModelsUnderProfile:
     def test_resolve_model_name_follows_active_profile(self, monkeypatch):

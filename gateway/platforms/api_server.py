@@ -7,6 +7,7 @@ OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_
 """
 
 import asyncio
+import base64
 import concurrent.futures
 import errno
 import hashlib
@@ -1546,7 +1547,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("DELETE", "/api/jobs/{job_id}", self._handle_delete_job),
             ("POST", "/api/jobs/{job_id}/pause", self._handle_pause_job),
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
-            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job)]
+            ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
+            # Desktop read-aloud / voice-conversation TTS. The dashboard web server
+            # (hermes_cli/web_routers/audio.py) serves /api/audio/speak in local mode;
+            # remote-desktop sessions routed through the gateway hit this mirror so the
+            # desktop's Read Aloud button works without a local dashboard listener.
+            ("POST", "/api/audio/speak", self._handle_speak)]
         routes.extend(_room_grants._http_routes(self))
         routes.extend(_api_runs._http_routes(self))
         if _CRON_AVAILABLE:
@@ -3505,6 +3511,91 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if claimed_job is None:
                 return web.json_response({"status": "duplicate", "job_id": job_id}, status=200)
             return _detach_fire(provider.fire_claimed, claimed_job)
+
+    async def _handle_speak(self, request: "web.Request") -> "web.Response":
+        """POST /api/audio/speak — synthesize speech, return a base64 data URL.
+
+        Mirrors the dashboard web server's /api/audio/speak
+        (hermes_cli/web_routers/audio.py) so remote-desktop sessions routed through
+        the gateway API server can use the desktop's Read Aloud / voice-conversation
+        playback. Request: {"text": "..."}; response:
+        {"ok": true, "data_url": "data:...", "mime_type": ..., "provider": ...}.
+
+        Profile scoping: registered via _http_route_table(), so the /p/<profile>/
+        mirror is auto-registered and the profile-prefix middleware enters
+        _profile_scope() — which sets the HERMES_HOME override — before this handler
+        runs. text_to_speech_tool re-resolves TTS config from the live HERMES_HOME on
+        every call, so synthesis uses the requesting profile's tts.* config with no
+        explicit scoping here (same property the dashboard's speak relies on under
+        _config_profile_scope).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+        text = (body.get("text") or "").strip()
+        if not text:
+            return web.json_response({"error": "Text is required"}, status=400)
+
+        # TTS synthesis is a blocking provider round-trip; run it off the event loop
+        # (mirrors the dashboard's _run_config_scoped).
+        def _synthesize() -> str:
+            from tools.tts_tool import text_to_speech_tool
+            return text_to_speech_tool(text)
+
+        loop = asyncio.get_running_loop()
+        try:
+            result_json = await loop.run_in_executor(None, _synthesize)
+        except Exception as exc:
+            logger.exception("Gateway TTS (speak) failed")
+            return web.json_response({"error": f"Speech synthesis failed: {exc}"}, status=500)
+
+        try:
+            result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        except Exception:
+            return web.json_response({"error": "Invalid TTS response"}, status=500)
+        if not result.get("success"):
+            return web.json_response(
+                {"error": result.get("error") or "Speech synthesis failed"}, status=400)
+
+        file_path = result.get("file_path")
+        if not file_path or not os.path.isfile(file_path):
+            return web.json_response({"error": "Audio file missing"}, status=500)
+
+        ext = os.path.splitext(file_path)[1].lower()
+        mime_type = {
+            ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".opus": "audio/ogg",
+            ".wav": "audio/wav", ".flac": "audio/flac",
+        }.get(ext, "audio/mpeg")
+
+        # The synthesized file can be several MB; read + unlink off the event loop so
+        # a large payload never blocks request handling. Unlink rides the same thread
+        # hop so the temp file cannot outlive an early return.
+        def _read_and_unlink() -> bytes:
+            try:
+                with open(file_path, "rb") as fh:
+                    return fh.read()
+            finally:
+                try:
+                    os.unlink(file_path)
+                except OSError:
+                    pass
+
+        try:
+            audio_bytes = await loop.run_in_executor(None, _read_and_unlink)
+        except OSError as exc:
+            return web.json_response({"error": f"Could not read audio: {exc}"}, status=500)
+
+        encoded = base64.b64encode(audio_bytes).decode("ascii")
+        return web.json_response({
+            "ok": True,
+            "data_url": f"data:{mime_type};base64,{encoded}",
+            "mime_type": mime_type,
+            "provider": result.get("provider"),
+        })
 
     # -- Agent execution --------------------------------------------------------------
 

@@ -116,6 +116,8 @@ def portal(monkeypatch, tmp_path):
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
     anon_auth._background_started = False
+    anon_auth._mint_failed = False
+    anon_auth._forced_new_done = False
     return fake
 
 

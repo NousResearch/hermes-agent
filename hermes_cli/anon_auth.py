@@ -233,6 +233,12 @@ def _mint_and_persist(*, timeout_seconds: float) -> Dict[str, Any]:
 
 _background_lock = threading.Lock()
 _background_started = False
+# Per-process memos for the blocking path. ``_mint_failed``: one failed mint is enough for a process
+# (several bootstrap sites call in sequence; a 429 or a closed gate must not be hit twice);
+# ``clear_dead_guest`` resets it because a retired credential is a reason to mint again.
+# ``_forced_new_done``: ``HERMES_FORCE_GUEST=new`` re-mints once per process, not on every resolution.
+_mint_failed = False
+_forced_new_done = False
 
 
 def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GUEST_MINT_TIMEOUT_SECONDS) -> Optional[Dict[str, Any]]:
@@ -244,17 +250,21 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
     Non-blocking mode runs the mint on a daemon thread and returns None immediately; a failure there
     is logged at DEBUG (the guest is a fallback; a fallback failing is not an error).
     """
+    global _mint_failed, _forced_new_done
     if not guest_enabled():
         return None
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state
     from hermes_cli.auth_nous import (
         _nous_shared_store_lock, _read_shared_nous_state, persist_nous_credentials)
     force = force_guest_mode()
-    if force != "new":
-        with _auth_store_lock():
-            state = _load_provider_state(_load_auth_store(), "nous")
-        if state:
-            return state
+    if force == "new" and _forced_new_done:
+        force = "1"
+    with _auth_store_lock():
+        state = _load_provider_state(_load_auth_store(), "nous")
+    if state and force != "new":
+        return state
+    if not state and _mint_failed:
+        return None  # this process already tried and failed; do not hammer the portal
 
     def _adopt_or_mint() -> Dict[str, Any]:
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, 30.0)):
@@ -267,7 +277,14 @@ def ensure_portal_identity(*, blocking: bool = True, timeout_seconds: float = GU
             return _mint_and_persist(timeout_seconds=timeout_seconds)
 
     if blocking:
-        return _adopt_or_mint()
+        try:
+            result = _adopt_or_mint()
+        except Exception:
+            _mint_failed = True
+            raise
+        if force == "new":
+            _forced_new_done = True
+        return result
 
     global _background_started
     with _background_lock:
@@ -312,6 +329,8 @@ def clear_dead_guest(reason: str) -> None:
                 auth_store["active_provider"] = None
             _save_auth_store(auth_store)
     _clear_shared_nous_state(reason)
+    global _mint_failed
+    _mint_failed = False
     logger.info("Nous free-tier identity retired (%s); a new one is set up on next use", reason)
 
 
@@ -498,9 +517,15 @@ def upgrade_guest(args) -> int:
             intent = register_promotion_intent(
                 client, portal, anon_token, user_code=str(device["user_code"]),
                 device_code=str(device["device_code"]))
+            # The browser leg is the consent page for THIS sign-in (claim_url), not the generic
+            # device page: it shows both identities and the Move button. Relative paths are
+            # portal-relative.
+            claim_url = str(intent.get("claim_url") or "")
+            if claim_url.startswith("/"):
+                claim_url = f"{portal}{claim_url}"
             _print_device_code_instructions(
-                str(device["verification_uri_complete"]), str(device["user_code"]), open_browser=open_browser,
-                swallow_open_errors=True)
+                claim_url or str(device["verification_uri_complete"]), str(intent["claim_code"]),
+                open_browser=open_browser, swallow_open_errors=True)
             print(f"  {UPGRADE_DO_NOT_SHARE}")
             expires_in = min(int(device["expires_in"]), int(intent.get("expires_in") or device["expires_in"]))
             interval = int(intent.get("interval") or device.get("interval") or 5)

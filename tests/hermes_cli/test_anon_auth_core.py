@@ -85,6 +85,8 @@ def portal(monkeypatch, tmp_path):
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
     anon_auth._background_started = False
+    anon_auth._mint_failed = False
+    anon_auth._forced_new_done = False
     return fake
 
 
@@ -134,6 +136,9 @@ class TestIdentityLifecycle:
             anon_auth.ensure_portal_identity(blocking=True)
         assert exc.value.code == "anon_gate_closed"
         assert "nous" not in _load_auth_store().get("providers", {})
+        # A process tries once: later bootstrap sites must not hit the portal again.
+        assert anon_auth.ensure_portal_identity(blocking=True) is None
+        assert [p for _, p in portal.calls].count("/api/anonymous/create") == 1
 
     def test_opt_out_bool_disables_everything(self, portal, monkeypatch):
         _write_config(monkeypatch, guest=False)

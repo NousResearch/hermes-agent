@@ -968,6 +968,16 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     from hermes_cli.config import DEFAULT_CONFIG, get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import PROVIDER_REGISTRY, get_auth_status
 
+    # Dev lever: HERMES_FORCE_GUEST makes the free tier the answer regardless of what else is
+    # configured ("new" also re-mints once per process). Kept ahead of every other check on purpose.
+    try:
+        from hermes_cli.anon_auth import ensure_portal_identity, force_guest_mode
+        if force_guest_mode():
+            return ensure_portal_identity(blocking=True) is not None
+    except Exception as exc:
+        logger.debug("forced free tier setup failed: %s", exc)
+        return False
+
     cfg = load_config()
     model_cfg = cfg.get("model")
     _model_name = model_cfg if isinstance(model_cfg, str) else ""

@@ -136,3 +136,29 @@ def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
     command = str(key_cmd or "").strip()
     return CommandTokenSource(command, provider_label) if command else None
+
+
+def resolve_probe_token(entry: dict) -> str:
+    """Mint a one-shot credential from a provider entry's ``key_cmd``, or "".
+
+    For callers needing a CONCRETE token rather than the per-request callable
+    ``build_command_token_provider`` returns — the ``/models`` catalog probes,
+    which build their request by hand instead of going through a wire client.
+    Shares the ``CommandTokenSource`` cache with the request path, so this is
+    a cache read rather than a fresh sign-in.
+
+    Fail-closed: any error yields "". A helper that needs an interactive
+    sign-in (or is simply broken) must not take down a whole picker — the
+    caller degrades to the pre-existing empty-key behaviour and every other
+    provider still renders.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    command = str(entry.get("key_cmd", "") or "").strip()
+    if not command:
+        return ""
+    try:
+        provider = build_command_token_provider(command, str(entry.get("name", "") or "custom"))
+        return (provider() or "").strip() if provider is not None else ""
+    except Exception:
+        return ""

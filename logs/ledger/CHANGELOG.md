@@ -8,6 +8,61 @@ Heading format: `## [NF-vX.Y.Z] — YYYY-MM-DD — hermes@<sha> (N behind upstre
 
 ---
 
+## [NF-v0.1.2] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
+
+`ledger-schema v1 → v2`. Ledger-tooling only — no application code, no `.env`, no
+attic-clone change. All entries in this block are `RUN-2026-09-06-001`. `NF-v0.2.0`
+stays reserved for the first fork-identity commit. **Committed locally; not pushed —
+handoff is the `logs/` zip.**
+
+### Added
+
+- **CHG-2026-09-06-015** — New **decision register**: `decisions/DECISION-LOG.md`
+  (Open / Resolved / Register, same shape as `errors/ERROR-LOG.md`) and
+  `templates/DECISION-ENTRY-TEMPLATE.md`. `DECISION-YYYY-MM-DD-NNN` ids, same
+  immutability / supersession / cross-link rules as `ERR-`. Seeded with
+  `DECISION-2026-09-06-001` (fork identity — migrated from the identity half of
+  `ERR-2026-09-06-002`, links both ways) and `DECISION-2026-09-06-002` (attic-clone
+  keep-or-delete — newly opened; never had an `ERR-` id). Paths:
+  `logs/ledger/decisions/DECISION-LOG.md`, `logs/ledger/templates/DECISION-ENTRY-TEMPLATE.md`.
+  Ref: — . Run: RUN-2026-09-06-001.
+- **CHG-2026-09-06-016** — `AUDIT-TEMPLATE.md`: mandatory **section 1 "Since last
+  handoff"** (Closed / New / Unchanged vs the previous audit's open items), written
+  before the rest of the body; remaining sections renumbered 2–7. Paths:
+  `logs/ledger/templates/AUDIT-TEMPLATE.md`. Ref: — . Run: RUN-2026-09-06-001.
+
+### Changed
+
+- **CHG-2026-09-06-017** — **Confidence tags** on findings and register entries:
+  fixed vocabulary `Confirmed Fact` / `Field-Reasoned` / `Unverified`, defined in
+  `README.md`, required on every `AUDIT-` finding, `ERR-` entry, and `DECISION-`
+  entry. Added the field to `AUDIT-TEMPLATE.md`, `ERROR-ENTRY-TEMPLATE.md`, and
+  `DECISION-ENTRY-TEMPLATE.md`. Paths: `logs/ledger/README.md`,
+  `logs/ledger/templates/*`. Ref: — . Run: RUN-2026-09-06-001.
+- **CHG-2026-09-06-018** — **Run IDs**: `RUN-YYYY-MM-DD-NNN`, one per agent
+  invocation, assigned at session start; `Run:` field on every `CHG-` / `ERR-` /
+  `DECISION-` entry and in the audit header. Traceability only — groups entries by
+  session, does not replace their ids. Defined in `README.md`; field added to
+  `CHANGE-ENTRY-TEMPLATE.md`, `ERROR-ENTRY-TEMPLATE.md`, `DECISION-ENTRY-TEMPLATE.md`,
+  `AUDIT-TEMPLATE.md`. This session = `RUN-2026-09-06-001`. Paths:
+  `logs/ledger/README.md`, `logs/ledger/templates/*`. Ref: — . Run: RUN-2026-09-06-001.
+- **CHG-2026-09-06-019** — `README.md` + `INDEX.md` rolled to `ledger-schema v2`:
+  directory diagram (+`decisions/`), naming table (+`DECISION-`, +`RUN-`), an
+  `ERR-` vs `DECISION-` boundary table, new `Confidence tags` and `Run IDs`
+  sections, workflow steps updated. `INDEX.md` split into **Open incidents
+  (faults)** and **Open decisions (judgment calls)**; `ERR-2026-09-06-002` moved to
+  Resolved (fault half fixed by `CHG-2026-09-06-014`, choice half → `DECISION-2026-09-06-001`).
+  Paths: `logs/ledger/README.md`, `logs/ledger/INDEX.md`,
+  `logs/ledger/errors/ERROR-LOG.md`. Ref: `ERR-2026-09-06-002`. Run: RUN-2026-09-06-001.
+
+### Unchanged (called out)
+
+- No `CHG-` bullet content was rewritten; `ERR-2026-09-06-001/003/004/005` blocks are
+  untouched except a one-line legacy note in the `ERROR-LOG.md` preamble and a retro
+  `Run:`/`Confidence` note on `ERR-2026-09-06-005`. No IDs reused or deleted.
+
+---
+
 ## [NF-v0.1.1] — 2026-09-06 — hermes@693641aa8b (0 behind upstream/main)
 
 Landed the `NF-v0.1.0` hardening set (it had been working-tree-only), cleared
@@ -80,10 +135,11 @@ the fork is no longer behind upstream. First commits on the fork; pushed to
 - `ERR-2026-09-06-001` (**OPEN**, HIGH) — live `ANTHROPIC_API_KEY`; now also noted
   at `D:\.env` (drive root, outside any repo). In-repo exposure structurally
   mitigated **and now committed**. Still pending the user's confirm-or-rotate.
-- `ERR-2026-09-06-002` (**OPEN**, MEDIUM) — version-drift half **closed** by
-  `CHG-2026-09-06-014` (synced to `upstream/main` `693641aa8b`, `NF-v0.1.0`/`v0.1.1`
-  pushed to `origin`). Identity half (rebrand vs thin-downstream, first identity
-  commit, `NF-v0.2.0`) stays OPEN — deferred by choice.
+- `ERR-2026-09-06-002` — version-drift half **closed** by `CHG-2026-09-06-014`
+  (synced to `upstream/main` `693641aa8b`, `NF-v0.1.0`/`v0.1.1` pushed to `origin`).
+  Identity half (rebrand vs thin-downstream, first identity commit, `NF-v0.2.0`) was
+  deferred here. *→ Superseded 2026-09-06 (`NF-v0.1.2`, `CHG-2026-09-06-019`): the*
+  *identity choice migrated to `DECISION-2026-09-06-001`; this `ERR-` is now RESOLVED.*
 - `ERR-2026-09-06-005` (**RESOLVED**) — pytest/mock working-tree artifacts. Fixed
   by `CHG-2026-09-06-011` / `CHG-2026-09-06-012`.
 

@@ -1,12 +1,23 @@
 # North-Forge Error & Anomaly Register
 
-Append-only. One row per incident: build break, failed test batch, bad merge, upstream
-regression, secret exposure, unexpected repo state, anything that needed attention.
-Never delete a row — close it by moving status to `RESOLVED` (or `WONTFIX` /
-`ACCEPTED-RISK`) with a resolution note and the resolving `CHG-` id.
+Append-only. One row per **fault**: build break, failed test batch, bad merge, upstream
+regression, secret exposure, unexpected repo state — anything that is *wrong* and needs
+fixing. An open *judgment call* (a choice between defensible options) is not a fault —
+it goes in [`../decisions/DECISION-LOG.md`](../decisions/DECISION-LOG.md) as a
+`DECISION-` instead. See [`README.md`](../README.md) § `ERR-` vs `DECISION-`.
 
-`ERR-` id scheme and severities are defined in [`README.md`](../README.md).
-Severity: **CRITICAL** · **HIGH** · **MEDIUM** · **LOW** · **INFO**.
+Never delete a row — close it by moving status to `RESOLVED` (or `WONTFIX` /
+`ACCEPTED-RISK` / `SUPERSEDED`, naming the record that replaces it) with a resolution
+note and the resolving `CHG-` id.
+
+`ERR-` id scheme, severities, the `Confidence` vocabulary, and `Run:` ids are defined
+in [`README.md`](../README.md). Severity: **CRITICAL** · **HIGH** · **MEDIUM** ·
+**LOW** · **INFO**.
+
+> Entries opened before `ledger-schema v2` (everything below dated 2026-09-06 up to
+> and including `ERR-2026-09-06-005`) predate the `Confidence` and `Run:` fields.
+> Read their claims as **Confirmed Fact** unless the entry says otherwise, and their
+> run as the `AUDIT-2026-09-06-001` / `-002` sessions. Not backfilled.
 
 ---
 
@@ -44,34 +55,29 @@ Severity: **CRITICAL** · **HIGH** · **MEDIUM** · **LOW** · **INFO**.
   4. On a fresh clone, run `sh .githooks/install` to re-arm the guard.
 - **Do NOT** run `git clean -x`/`-X` in this repo — it would delete `.env`.
 
+---
+
+## Resolved
+
 ### ERR-2026-09-06-002 — MEDIUM — Fork identity / version drift
 
 - **Opened:** 2026-09-06 · **Base:** hermes@820106d4a5 (2 behind upstream/main)
 - **Source:** `AUDIT-2026-09-06-001` F-06, F-08
-- **What:** `origin/main` is 0 ahead / 2 behind `upstream/main` — a pristine mirror with
-  zero north-forge commits. `README*.md`, `SOUL.md`, `LICENSE`, and package metadata are
-  still fully upstream-branded ("Hermes Agent" / "Nous Research"). The only north-forge
-  customization anywhere is the GitHub repo name and its description.
-- **Status:** **OPEN** — *version-drift half RESOLVED; identity decision still pending.*
-- **Update 2026-09-06 (`AUDIT-2026-09-06-002`):** `upstream/main` advanced to
-  `693641aa8b`; the first-ever fork commits (`NF-v0.1.0` + `NF-v0.1.1` — ledger and
-  secret-guard, `CHG-2026-09-06-010`) landed on local `main`. Hygiene, not identity.
-- **Update 2026-09-06 (later, "sync only" chosen):** `git rebase upstream/main`
-  replayed the ledger commit onto `693641aa8b` (no conflicts) and
-  `git push origin main` fast-forwarded `origin/main` `820106d4a5` → `d…` (the 2
-  upstream commits + the ledger commit). Fork is now **0 behind `upstream/main`**.
-  Resolving change for the drift: `CHG-2026-09-06-014`. The **identity** decision
-  (rebrand vs thin-downstream, first identity commit, `NF-v0.2.0`) was explicitly
-  deferred, so this incident stays OPEN, narrowed to identity only.
-- **Required action (remaining):**
-  1. Decide: **rebrand** (north-forge as its own product) vs **thin downstream**
-     (kept rebased on upstream). See `AUDIT-2026-09-06-001` §6 (README review).
-  2. Land the first identity commit; cut `NF-v0.2.0` in the changelog.
-  3. Keep rebasing on `upstream/main` periodically (now that the baseline is 0 behind).
-
----
-
-## Resolved
+- **What:** two things were bundled under one id — (a) a **fault**: `origin/main` was
+  0 ahead / 2 behind `upstream/main`, a stale pristine mirror; (b) a **choice**:
+  `README*.md`, `SOUL.md`, `LICENSE`, and package metadata are all still
+  upstream-branded, and whether to rebrand or stay a thin downstream was undecided.
+- **Resolved (fault half) 2026-09-06:** `git rebase upstream/main` replayed the
+  ledger commit onto `693641aa8b` (no conflicts); `git push origin main`
+  fast-forwarded `origin/main` `820106d4a5` → `e6c97b43ef` (the 2 upstream commits +
+  the ledger commit). Fork is now 0 behind `upstream/main`. Resolving change:
+  `CHG-2026-09-06-014`.
+- **Superseded-by:** `DECISION-2026-09-06-001` — the identity/rebrand **choice** was
+  migrated to the decision register (`ledger-schema v2`, `CHG-2026-09-06-015`). It was
+  never a fault; it does not belong here. The maintainer has since chosen **full
+  rebrand** (2026-09-06); tracking of that now lives on `DECISION-2026-09-06-001`
+  until `NF-v0.2.0` lands.
+- **Status:** RESOLVED (fault half) / SUPERSEDED by `DECISION-2026-09-06-001` (choice half).
 
 ### ERR-2026-09-06-003 — MEDIUM — Secret hygiene (`.gitignore` gap)
 
@@ -110,7 +116,9 @@ Severity: **CRITICAL** · **HIGH** · **MEDIUM** · **LOW** · **INFO**.
 ### ERR-2026-09-06-005 — LOW — pytest / mock artifacts in the working tree
 
 - **Opened:** 2026-09-06 · **Base:** hermes@820106d4a5 (2 behind upstream/main)
+- **Run:** — (pre-`RUN-` tracking; `AUDIT-2026-09-06-002` session — retro-note added under `ledger-schema v2`)
 - **Source:** `AUDIT-2026-09-06-002` F-02 (`git status` after a test run)
+- **Confidence:** Confirmed Fact — the paths were listed by `git status` and inspected on disk before deletion.
 - **What:** untracked, non-ignored paths written into the `north-forge-agent` repo
   root by test runs on this Windows checkout:
   - `MagicMock/mock._session_db.db_path/{3165824711312,3165827767312}` (+ `.fts_rebuild.lock`
@@ -134,7 +142,7 @@ Severity: **CRITICAL** · **HIGH** · **MEDIUM** · **LOW** · **INFO**.
 | ID | Date | Sev | Area | Summary | Status | Resolved by |
 | --- | --- | --- | --- | --- | --- | --- |
 | ERR-2026-09-06-001 | 2026-09-06 | HIGH | Secret hygiene | Live `ANTHROPIC_API_KEY` in `.env` (also `D:\.env`); mitigation committed, key decision pending | OPEN | mitig. CHG-007/008/009/010 |
-| ERR-2026-09-06-002 | 2026-09-06 | MEDIUM | Fork identity | Drift closed (synced to upstream `693641aa8b`, NF-v0.1.x pushed, CHG-014); identity decision (rebrand vs thin-downstream, NF-v0.2.0) still deferred | OPEN | drift: CHG-2026-09-06-014 |
+| ERR-2026-09-06-002 | 2026-09-06 | MEDIUM | Fork identity | Fault half (2 behind upstream) fixed by CHG-014; choice half migrated to DECISION-2026-09-06-001 | RESOLVED / SUPERSEDED | CHG-2026-09-06-014 → DECISION-2026-09-06-001 |
 | ERR-2026-09-06-003 | 2026-09-06 | MEDIUM | Secret hygiene | `.gitignore` missed `.env.production` / `.env.<name>` | RESOLVED | CHG-2026-09-06-007 |
 | ERR-2026-09-06-004 | 2026-09-06 | LOW | Repo hygiene | Stray `%SystemDrive%` Windows cache tree in root (recurred; guard held) | RESOLVED | CHG-2026-09-06-009 / -012 |
 | ERR-2026-09-06-005 | 2026-09-06 | LOW | Repo hygiene | pytest/mock artifacts (`MagicMock/`, `C:Users…`, `logs.zip`) in working tree | RESOLVED | CHG-2026-09-06-011 / -012 |

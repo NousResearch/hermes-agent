@@ -31,7 +31,7 @@ _BROWSER_MISSING_HINTS = {
     "Local browser": "npm install -g agent-browser && agent-browser install --with-deps"}
 _BROWSER_MISSING_DEFAULT = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
 _WEB_MISSING = ("EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, TAVILY_API_KEY, "
-                "KEENABLE_API_KEY, or SEARXNG_URL")
+                "PERPLEXITY_API_KEY, KEENABLE_API_KEY, or SEARXNG_URL")
 
 _DONE_BANNER = (
     "┌─────────────────────────────────────────────────────────┐",

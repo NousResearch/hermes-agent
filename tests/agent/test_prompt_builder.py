@@ -586,6 +586,21 @@ class TestFindHermesMd:
 
 
 
+    def test_unreadable_parent_is_treated_as_no_git_root(self, tmp_path, monkeypatch):
+        """A parent the process cannot stat (#8751) must not raise out of prompt construction."""
+        import os as _os
+        project = tmp_path / "locked" / "proj"
+        project.mkdir(parents=True)
+        real_exists = Path.exists
+
+        def _exists(self):
+            if self.parent == tmp_path / "locked" and self.name == ".git":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", _exists)
+        assert _find_git_root(project) is None
+
     def test_walks_to_git_root(self, tmp_path):
         (tmp_path / ".git").mkdir()
         (tmp_path / ".hermes.md").write_text("root rules")

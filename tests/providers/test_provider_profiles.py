@@ -190,6 +190,25 @@ class TestOpenRouterProfile:
         )
         assert tl == {"verbosity": "high"}
 
+    def test_speed_tier_slugs_pin_endpoints_and_rewrite_wire_model(self):
+        """Nous-style ``-fast``/``-flex`` slugs are OpenRouter ENDPOINTS of the base model: the wire
+        model must be the base slug and ``provider.only`` must select exactly that tier, while the
+        user's other routing prefs survive. The base slug itself is pinned off the flex/fast tiers."""
+        import inspect
+        p = get_provider_profile("openrouter")
+        pins = inspect.getmodule(type(p)).OPENROUTER_ENDPOINT_PINS
+        for slug, (base, tags) in pins.items():
+            _, tl = p.build_api_kwargs_extras(model=slug)
+            body = p.build_extra_body(model=slug, provider_preferences={"ignore": ["deepinfra"]})
+            assert tl.get("model", slug) == base
+            assert body["provider"] == {"ignore": ["deepinfra"], "only": list(tags)}
+            tiered = [t for t in tags if t.endswith(("/fast", "/flex"))]
+            assert tiered == ([] if slug == base else list(tags))
+        # Unpinned model: no rewrite, prefs pass through untouched.
+        _, tl = p.build_api_kwargs_extras(model="openai/gpt-5.6-sol")
+        assert "model" not in tl
+        assert p.build_extra_body(model="openai/gpt-5.6-sol", provider_preferences={"ignore": ["x"]})["provider"] == {"ignore": ["x"]}
+
 
 class TestNousProfile:
     def test_tags(self):

@@ -21,6 +21,7 @@ import/patch target): ``terminal_tool_config`` (TERMINAL_* reads, ``_quiet``),
 import json
 import logging
 import os
+import sys
 import time
 import threading
 import atexit
@@ -654,6 +655,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
         "docker_run_as_host_user": _tenv_bool("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false"),
+        "docker_snap_compat": _tenv_bool("TERMINAL_DOCKER_SNAP_COMPAT", "false"),
         "docker_network": _tenv_bool("TERMINAL_DOCKER_NETWORK", "true"),
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
@@ -714,6 +716,10 @@ def _atexit_cleanup():
             if wait_fn is not None:
                 with _quiet("wait_for_cleanup raised on exit"):  # never block shutdown on a bad backend
                     wait_fn(timeout=15.0)
+    # Workers of envs the idle reaper already detached are not in the registry (#86317).
+    if "tools.environments.docker" in sys.modules:
+        with _quiet("teardown drain raised on exit"):
+            sys.modules["tools.environments.docker"].DockerEnvironment.wait_for_all_teardowns(timeout=15.0)
 
 atexit.register(_atexit_cleanup)
 
@@ -730,7 +736,7 @@ from tools.terminal_tool_guards import (
     _foreground_background_guidance, _safe_command_preview, _validate_workdir,
     gateway_lifecycle_block, self_repo_block,
 )
-from tools.terminal_tool_background import spawn_background_process
+from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
 
 
@@ -1003,6 +1009,12 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
         return new_env
 
 
+def _yield_kwargs(command: str, **ctx) -> dict:
+    """``env.execute`` kwargs enabling yield-to-background (local backend only)."""
+    handler = yield_to_background_handler(command=command, **ctx)
+    return {"yield_handler": handler} if handler is not None else {}
+
+
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
@@ -1029,7 +1041,11 @@ def _run_foreground(
             # bounded_capture: model-facing output keeps a head/tail window
             # while streaming so a verbose command can't OOM the gateway;
             # internal env.execute() consumers stay unbounded.
-            result = env.execute(command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True)
+            result = env.execute(
+                command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                                task_id=task_id, session_key=session_key),
+            )
             break
         except Exception as e:
             if "timeout" in str(e).lower():
@@ -1045,6 +1061,12 @@ def _run_foreground(
                          max_retries, _safe_command_preview(command), type(e).__name__, e, eff, env_type)
             return _error_json(_redact_terminal_error_text(f"Command execution failed: {type(e).__name__}: {e}"))
 
+    if result.get("yielded_session_id"):
+        return json.dumps({
+            "output": result.get("output", ""), "exit_code": None, "error": None,
+            "status": "yielded_to_background", "session_id": result["yielded_session_id"],
+            "pid": result.get("pid"), "notify_on_complete": True, "note": _YIELDED_NOTE,
+        }, ensure_ascii=False)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
         task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,

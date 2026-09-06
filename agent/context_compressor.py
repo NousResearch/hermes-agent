@@ -2416,6 +2416,20 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         except (TypeError, ValueError):
             self._pending_request_rough_tokens = 0
 
+    def note_native_compaction_checkpoint(self) -> None:
+        """Wait for real usage before trusting a newly checkpointed request.
+
+        Native Responses compaction replaces durable history with an opaque
+        encrypted checkpoint. Its serialized size is unrelated to the token
+        count billed by the provider, so the first rough estimate after capture
+        can jump by more than the whole context window. Reuse the one-response
+        compaction latch and discard any stale local-compression baseline; the
+        next provider response then pairs its real usage with the rough estimate
+        for the checkpointed request.
+        """
+        self.awaiting_real_usage_after_compression = True
+        self.last_compression_rough_tokens = 0
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
         Projects real usage as ``last_real + (rough_now - rough_at_last_real)`` and fires only when the
@@ -2426,7 +2440,8 @@ class ContextCompressor(MicroCompactionMixin, ContextEngine):
         re-runs with the aligned basis."""
         if rough_tokens < self.threshold_tokens:
             return False
-        # After compaction last_real_prompt_tokens is STALE (above threshold); defer one turn until real usage arrives.
+        # After local or native compaction, last_real_prompt_tokens is STALE
+        # (above threshold); defer one turn until real usage arrives.
         if self.awaiting_real_usage_after_compression:
             return True
         if self.last_real_prompt_tokens <= 0 or self.last_real_prompt_tokens >= self.threshold_tokens:

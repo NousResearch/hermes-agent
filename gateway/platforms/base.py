@@ -3567,6 +3567,11 @@ class BasePlatformAdapter(ABC):
         task so new messages (and interrupts) can arrive while an agent runs."""
         if not self._message_handler:
             return
+        # Dispatch tasks can inherit another turn's bound identity. Clear it before
+        # topic recovery, lifecycle hooks, or background tasks can spawn subprocesses.
+        from gateway.session_context import reset_session_vars
+
+        reset_session_vars()
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
         # Topic recovery is Telegram-DM-only; skip the executor hop for group traffic.

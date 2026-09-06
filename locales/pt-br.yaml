@@ -22,7 +22,7 @@ approval:
   prompt_short:    "      Escolha [o/s/D]: "
   choose_smart_deny: "      [o]uma vez  |  [d]negar"
   prompt_smart_deny: "      Escolha [o/D]: "
-  smart_deny_once_inputs: "o,uma vez,um vez"
+  smart_deny_once_inputs: "o,uma vez"
   smart_deny_deny_inputs: "d,neg,negar"
   timeout:         "      ⏱ Tempo esgotado - negando comando"
   allowed_once:    "      ✓ Permitido uma vez"
@@ -130,7 +130,7 @@ gateway:
   debug:
     upload_failed:         "✗ Falha ao enviar relatório de debug: {error}"
     header:                "**Relatório de debug enviado:**"
-    auto_delete:           "⏱ Colas serão excluídas automaticamente em 6 horas."
+    auto_delete:           "⏱ Os relatórios serão excluídos automaticamente em 6 horas."
     full_logs_hint:        "Para envio completo de logs, use `hermes debug share` do CLI."
     share_hint:            "Compartilhe esses links com a equipe do Hermes para suporte."
 
@@ -316,7 +316,7 @@ gateway:
     restore_failed:        "❌ {error}"
 
   diff:
-    not_enabled:           "Checkpoints não estão ativados, então não há linha de base da sessão.\nAtive em config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\n/deciff simples ainda funciona — ele usa git diretamente."
+    not_enabled:           "Checkpoints não estão ativados, então não há linha de base da sessão.\nAtive em config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\n/diff simples ainda funciona — ele usa git diretamente."
     no_changes:            "Nenhuma alteração."
     failed:                "{error}"
 
@@ -400,7 +400,7 @@ gateway:
   update:
     platform_not_messaging:  "✗ /update está disponível apenas em plataformas de mensagens. Execute `hermes update` do terminal."
     not_git_repo:            "✗ Não é um repositório git — não é possível atualizar."
-    hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está executando, mas o comando de atualização não encontraram o executável no PATH ou via o interpretador Python atual. Tente executar `hermes update` manualmente no seu terminal."
+    hermes_cmd_not_found:    "✗ Não foi possível localizar o comando `hermes`. O Hermes está executando, mas o comando de atualização não encontrou o executável no PATH ou via o interpretador Python atual. Tente executar `hermes update` manualmente no seu terminal."
     start_failed:            "✗ Falha ao iniciar atualização: {error}"
     starting:                "⚕ Iniciando atualização do Hermes... Vou transmitir o progresso aqui."
 

@@ -158,7 +158,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
-import { resolveDesktopRemoteRoute } from './desktop-remote-route'
+import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -411,7 +411,11 @@ import { isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
-import { registrySshScopeForWindowRoute, WindowConnectionRouteRegistry } from './window-connection-route'
+import {
+  registrySshPoolScopeByConnectionId,
+  registrySshScopeForWindowRoute,
+  WindowConnectionRouteRegistry
+} from './window-connection-route'
 import { createWindowOpenHandler } from './window-open-policy'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
@@ -10315,7 +10319,18 @@ function activeSshTerminalTarget(webContentsId?: number) {
 
     const state = sshConnections.get(scope)
 
-    return state && state.ssh ? { ssh: state.ssh, scope } : 'pending'
+    if (state && state.ssh) {
+      return { ssh: state.ssh, scope }
+    }
+
+    // The pool's single writer publishes under the per-profile bootstrap key
+    // while stamping the entry with its registry connection id (#97345), so a
+    // composite-key miss must still resolve the live tunnel by that identity
+    // instead of reporting 'pending' forever.
+    const pooledScope = registrySshPoolScopeByConnectionId(sshConnections, windowRoute.connectionId)
+    const pooledState = pooledScope === null ? null : sshConnections.get(pooledScope)
+
+    return pooledState && pooledState.ssh ? { ssh: pooledState.ssh, scope: pooledScope } : 'pending'
   }
 
   const profile = windowRoute?.profile ?? primaryProfileKey()
@@ -10335,9 +10350,7 @@ function activeSshTerminalTarget(webContentsId?: number) {
     return null
   }
 
-  const scope = route.connectionId
-    ? backendScopeKey(route.connectionId, profile)
-    : sshScopeKey(route.source === 'profile' ? profile : null)
+  const scope = v1SshTerminalPoolKey(route, profile)
 
   const state = sshConnections.get(scope)
 

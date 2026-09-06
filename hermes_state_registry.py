@@ -101,6 +101,10 @@ def _open_session_db(path: Path, expected_profile_incarnation: Optional[str] = N
     """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
     from hermes_state import SessionDB
 
+    if expected_profile_incarnation is None:
+        # Keep the historical ``SessionDB(db_path=...)`` call shape: tests and embedders stub
+        # ``hermes_state.SessionDB`` with one-argument fakes.
+        return SessionDB(db_path=path)
     return SessionDB(
         db_path=path,
         expected_profile_incarnation=expected_profile_incarnation,

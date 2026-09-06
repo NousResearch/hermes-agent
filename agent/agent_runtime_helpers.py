@@ -3221,8 +3221,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         return
     messages.append(steer_user_row(steer_text))
     _ra().logger.info(
-        "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
-        steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
+        "Delivered /steer to agent after tool batch: msg_len=%d", len(steer_text),
     )
 
 

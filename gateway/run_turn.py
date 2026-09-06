@@ -1927,11 +1927,12 @@ class GatewayTurnMixin:
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", (event.text or "")[:80].replace("\n", " "),
-            getattr(event, "reply_to_message_id", None),
-            (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
+            "inbound message: platform=%s user_present=%s chat_present=%s "
+            "msg_len=%d reply_to_id_present=%s reply_to_text_len=%d",
+            _platform_name, bool(source.user_name or source.user_id),
+            bool(source.chat_id), len(event.text or ""),
+            getattr(event, "reply_to_message_id", None) is not None,
+            len(getattr(event, "reply_to_text", None) or ""),
         )
 
         resolved = await self._hmwa_resolve_session(event, source)
@@ -3340,12 +3341,12 @@ class GatewayTurnMixin:
                 else:
                     pending = _pending_text or _build_media_placeholder(pending_event)
                 if pending:
-                    logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                    logger.debug("Processing queued message after agent completion: msg_len=%d", len(pending))
 
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
         if result and not pending and not pending_event and result.get("pending_steer"):
             pending = result.get("pending_steer")
-            logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+            logger.debug("Delivering leftover /steer as next turn: msg_len=%d", len(pending))
 
         # Safety net: a pending slash command is never passed to the agent as user input.
         if pending and pending.strip().startswith("/"):

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from hermes_constants import get_hermes_home
-from tools.interrupt import is_interrupted, is_thread_interrupted
+from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
@@ -50,6 +50,14 @@ if _DEBUG_INTERRUPT:
 # Thread-local activity callback: the agent sets it before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
+
+
+class FileFetchError(RuntimeError):
+    """A file could not be extracted from the backend filesystem."""
+
+
+# Pulling a large artifact over a slow exec channel can outlast the per-command terminal timeout.
+_FETCH_TIMEOUT_SECONDS = 300
 
 
 class EnvironmentConnectionError(RuntimeError):
@@ -183,6 +191,44 @@ class BaseEnvironment(ABC):
         """Release backend resources (container, instance, connection)."""
         ...
 
+    # --- File extraction (backend -> host) ---
+    def fetch_file(self, remote_path: str, local_dest: Path, *, max_bytes: int) -> None:
+        """Copy a regular file out of the backend filesystem to ``local_dest`` on the host.
+
+        One transport for every backend: base64 over the exec channel, bounded INSIDE the sandbox
+        (``head -c max+1`` so /dev/zero can't stream unbounded data into host memory — the same
+        shape ``tools.image_source`` uses to read sandbox images). The payload is fenced between
+        unique markers so login-shell noise in the merged stdout/stderr can't corrupt the decode.
+        Raises :class:`FileFetchError` on a missing/unreadable/oversized file.
+        """
+        import base64
+        import binascii
+        marker = f"__HERMES_FETCH_{uuid.uuid4().hex[:12]}__"
+        quoted = shlex.quote(remote_path)
+        # ``[ -f ]`` follows symlinks, so a link to a denied host file is judged by the CALLER on
+        # ``readlink -f`` output before any bytes move.
+        result = self.execute(
+            f"[ -f {quoted} ] && echo {marker} && head -c {max_bytes + 1} < {quoted} | base64 && echo {marker}",
+            timeout=_FETCH_TIMEOUT_SECONDS, rewrite_compound_background=False)
+        output = result.get("output") or ""
+        first, last = output.find(marker), output.rfind(marker)
+        if int(result.get("returncode") or 0) != 0 or first == -1 or last <= first:
+            raise FileFetchError(f"could not read {remote_path!r} in the sandbox (missing, not a regular file, or unreadable)")
+        try:
+            data = base64.b64decode("".join(output[first + len(marker):last].split()), validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise FileFetchError(f"transfer of {remote_path!r} was corrupted in transit: {exc}") from exc
+        if len(data) > max_bytes:
+            raise FileFetchError(f"{remote_path!r} exceeds the {max_bytes // (1024 * 1024)} MB delivery limit")
+        Path(local_dest).write_bytes(data)
+
+    def fetch_realpath(self, remote_path: str) -> str | None:
+        """``readlink -f`` inside the backend, or None when it cannot be resolved."""
+        result = self.execute(f"readlink -f {shlex.quote(remote_path)} 2>/dev/null", rewrite_compound_background=False)
+        if int(result.get("returncode") or 0) != 0:
+            return None
+        return next((ln.strip() for ln in reversed((result.get("output") or "").splitlines()) if ln.strip().startswith("/")), None)
+
     # --- Session snapshot (init_session) ---
     def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:
         """Return backend-specific names that must not persist in snapshots."""
@@ -291,8 +337,13 @@ class BaseEnvironment(ABC):
     # --- Process lifecycle ---
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
-        bounded_capture: bool = False, watch_interrupt_tid: int | None = None) -> dict:
+        bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
+        ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
+        (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
+        thread is stopped, the still-running process is handed to the handler and its dict
+        is returned as the result; the process is NOT killed.
         ``bounded_capture=True`` (foreground terminal-tool path only) retains at most
         ``tool_output.max_bytes`` in a head/tail window so a verbose subprocess cannot OOM the
         process; the default keeps full fidelity for internal consumers. Fires the activity
@@ -308,7 +359,8 @@ class BaseEnvironment(ABC):
         data. See #64435.
         """
         output = _new_output_collector(proc, bounded_capture)
-        drain_thread = _start_drain_thread(proc, output)
+        drain_stop = threading.Event() if yield_handler is not None else None
+        drain_thread = _start_drain_thread(proc, output, drain_stop)
         _now = time.monotonic()
         deadline = _now + timeout
         _activity_state = {"last_touch": _now, "start": _now}
@@ -329,6 +381,19 @@ class BaseEnvironment(ABC):
                     trace.interrupted()
                     _kill_and_join()
                     return self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130)
+                if yield_handler is not None and consume_yield(watch_interrupt_tid):
+                    drain_stop.set()
+                    drain_thread.join(timeout=1)
+                    try:
+                        handed = yield_handler(proc, output.render())
+                    except Exception:
+                        logger.warning("yield-to-background handoff failed; continuing to wait", exc_info=True)
+                        handed = None
+                    if handed is not None:
+                        output.close_spill()
+                        return handed
+                    drain_stop.clear()
+                    drain_thread = _start_drain_thread(proc, output, drain_stop)
                 if time.monotonic() > deadline:
                     trace.timed_out()
                     _kill_and_join()
@@ -416,7 +481,8 @@ class BaseEnvironment(ABC):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
-        bounded_capture: bool = False) -> dict:
+        bounded_capture: bool = False,
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
@@ -463,7 +529,9 @@ class BaseEnvironment(ABC):
             spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
             proc_holder.append(spawned)
             return self._wait_for_process(
-                spawned, timeout=effective_timeout, bounded_capture=bounded_capture, watch_interrupt_tid=parent_tid)
+                spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
+                watch_interrupt_tid=parent_tid,
+                **({"yield_handler": yield_handler} if yield_handler is not None else {}))
 
         def _on_timeout() -> None:
             if proc_holder:

@@ -288,13 +288,25 @@ def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
     return name in {f"hermes-serve{suffix}", f"hermes-dashboard{suffix}"}
 
 
+def _gateway_service_matches_profile(profile: str, service: object) -> bool:
+    """Match an exact gateway service/label (systemd/launchd/s6 shapes) to a profile.
+
+    Never substring-match: ``foo`` must not claim ``hermes-gateway-foobar.service``.
+    Launchd labels are ``ai.hermes.gateway`` / ``ai.hermes.gateway-<profile>`` — they do
+    not contain the substring ``hermes-gateway``, so a successful macOS kickstart must
+    still credit the planned default gateway. A scope prefix (``user/hermes-gateway``,
+    ``gui/501/ai.hermes.gateway``) is stripped the same way serve units are.
+    """
+    name = str(service).removesuffix(".service").rsplit("/", 1)[-1]
+    if profile == "default":
+        return name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}
+    return name in {f"hermes-gateway-{profile}", f"ai.hermes.gateway-{profile}", f"gateway-{profile}"}
+
+
 def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
-    # The bare "hermes-gateway" unit name is gateway-specific: a serve/dashboard runtime that merely
-    # shares the default profile is a different process the gateway restart never touched.
-    return any(
-        r.profile in name or (r.kind == "gateway" and r.profile == "default" and "hermes-gateway" in name)
-        for name in names
-    )
+    # Gateway-only vocabulary: a serve/dashboard that merely shares the profile is a
+    # different process. Exact label match (systemd + launchd + s6), not substring.
+    return any(_gateway_service_matches_profile(r.profile, name) for name in names)
 
 
 def match_runtime_outcomes(

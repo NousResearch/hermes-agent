@@ -557,6 +557,11 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
+    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
+        # Refused HERE — before the busy queue, db row and agent build — so a refusal
+        # leaves the session untouched.  The reason travels as machine-readable data.
+        reason = getattr(limit_message, "reason", None)
+        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
     # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
     session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
@@ -567,25 +572,14 @@ def _(rid, params: dict) -> dict:
     turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
-    # A prompt may be the first RPC after reconnect. Claim the live record under
-    # the same locks as resume, excluding committed interrupts and idle teardown.
-    t = current_transport()
+    # Re-bind to the current transport: streaming must stay on the active websocket even
+    # if a disconnect/fallback moved the session to stdio.
     with _session_resume_lock:
-        with _sessions_lock:
-            if _sessions.get(sid) is not session:
-                return _err(rid, 4001, "session not found")
-            if session.get("_client_gone_interrupt_requested"):
-                return _err(rid, 4009, "session disconnect interrupt settling")
-            if t is not None:
-                session["transport"] = t
-                session.setdefault("viewers", {})[t] = time.time()
-        if t is not None:
+        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+            return refusal
+        if (t := current_transport()) is not None:
+            session["transport"] = t
             _cancel_ws_orphan_reap(sid)
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # Refused HERE — before the busy queue, db row and agent build — so a refusal
-        # leaves the session untouched.  The reason travels as machine-readable data.
-        reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn

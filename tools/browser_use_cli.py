@@ -31,7 +31,7 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # (per-name provider / named BU cloud / Lightpanda). Popped before the subprocess launches — never exported.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 
-# Prepended to the model's code for named sessions on SHARED browsers (local Chrome / CDP override): the
+# Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
 # SAME tab. Steering each onto a tab it created prevents clobbering. Runs once per daemon (marker keyed by
 # BU_NAME + daemon pid).
@@ -371,15 +371,49 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
     return err
 
 
+def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
+    """Point the harness at Hermes' packaged Chromium, launched through agent-browser for this cache key —
+    the same browser the built-in tools drive. Left alone, the harness discovers the user's INSTALLED
+    Chrome on its default profile, which needs the chrome://inspect toggle + an Allow popup per run and
+    is blocked outright on Chrome >=136; on a headless box it just reports ``chrome-not-running``.
+    ``get cdp-url`` runs through ``_run_browser_command`` (legacy cache, inactivity reaper, atexit, Chromium
+    preflight/auto-install) on EVERY call: it launches the browser cold, follows a relaunch, and refreshes
+    the agent-browser daemon's idle timer, which never sees the harness's direct CDP traffic."""
+    try:
+        from tools.browser_tool_session import _run_browser_command
+        from tools.browser_tool import _get_open_command_timeout
+    except Exception as e:  # pragma: no cover — stubbed browser_tool in tests
+        logger.debug("managed chromium resolution unavailable: %s", e)
+        return None
+    res = _run_browser_command(_backend_cache_key(task_id, session_name), "get", ["cdp-url"],
+                               timeout=_get_open_command_timeout(first_open=True))
+    cdp = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
+    if not cdp:
+        return (f"The local browser could not be started: {(res or {}).get('error') or 'agent-browser returned no CDP endpoint'} "
+                "Run `hermes tools` → Browser Automation to (re)install Chromium, or switch backends.")
+    _set_cdp_env(env, cdp)
+    env[_PRIVATE_BROWSER_SENTINEL] = "1"  # one Chromium per cache key: nothing to share a tab with
+    return None
+
+
+def _resolve_local_engine_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
+    """Local engine (no provider / override): ``browser.engine: lightpanda`` or the packaged Chromium."""
+    err = _resolve_lightpanda_cdp(env, task_id, session_name)
+    if err or _has_cdp_env(env):
+        return err
+    return _resolve_managed_chromium_cdp(env, task_id, session_name)
+
+
 def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = "") -> Optional[str]:
     """Point the harness at the configured backend's CDP endpoint; error string on failure.
 
     Precedence: (1) ``BU_CDP_WS``/``BU_CDP_URL`` already in env (operator override); (2) ``BROWSER_CDP_URL``
     env / ``browser.cdp_url`` (``/browser connect``); (3) a cloud provider via the legacy ``_get_session_info()``
     so browser_exec shares the SAME session machinery (per-task cache, expiry, reaper, atexit);
-    (4) ``browser.engine: lightpanda``; (5) nothing → None: the harness attaches to local Chrome (or BU
-    cloud via BU_AUTOSPAWN for legacy configs). ``session_name`` (BU_NAME) keys the provider cache so
-    each name gets its OWN cloud browser — what makes named sessions concurrent-safe.
+    (4) the local engine — ``browser.engine: lightpanda`` or Hermes' packaged Chromium via agent-browser
+    (never the harness's own discovery of the user's installed Chrome); (5) BU direct-API configs → None:
+    the CLI reaches BU cloud natively (BU_AUTOSPAWN). ``session_name`` (BU_NAME) keys the session cache so
+    each name gets its OWN browser — what makes named sessions concurrent-safe.
     """
     if _has_cdp_env(env):
         return None
@@ -396,7 +430,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         return None
     provider = _quiet(_get_cloud_provider, None, "Cloud provider lookup failed")
     if provider is None:
-        return _resolve_lightpanda_cdp(env, task_id, session_name)
+        return _resolve_local_engine_cdp(env, task_id, session_name)
 
     # Browser Use direct-API configs: the CLI talks to BU cloud natively (BU_AUTOSPAWN / auth login) — the
     # legacy provider would create a second, redundant session. The Nous-gateway variant (use_gateway: true)
@@ -509,7 +543,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if route_err:
         return tool_error(route_err)
 
-    # SHARED browser (local Chrome / CDP override): pin each named session to its own tab (see
+    # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI
     if session and not private_browser:

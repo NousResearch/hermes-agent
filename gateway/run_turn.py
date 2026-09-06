@@ -16,6 +16,7 @@ import queue
 import threading
 import time
 from agent.i18n import t
+from agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
@@ -3165,6 +3166,7 @@ class GatewayTurnMixin:
         _cur_tool = _activity.get("current_tool")
         _iter_n = _activity.get("api_call_count", 0)
         _iter_max = _activity.get("max_iterations", 0)
+        # Operator-facing log keeps the raw resolved value; only the user-facing lines hide the sentinel.
         logger.error(
             "Agent idle for %.0fs (timeout %.0fs) in session %s "
             "| last_activity=%s | iteration=%s/%s | tool=%s",
@@ -3174,18 +3176,19 @@ class GatewayTurnMixin:
         if _timed_out_agent:
             request_hard_interrupt(_timed_out_agent, _INTERRUPT_REASON_TIMEOUT)
         _timeout_mins = int(worker.agent_timeout // 60) or 1
+        _iter_progress = format_iteration_progress(_iter_n, _iter_max)
         _diag_lines = [
             f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls or API responses."
         ]
         if _cur_tool:
             _diag_lines.append(
                 f"The agent appears stuck on tool `{_cur_tool}` ({_secs_ago:.0f}s since last "
-                f"activity, iteration {_iter_n}/{_iter_max})."
+                f"activity, {_iter_progress})."
             )
         else:
             _diag_lines.append(
                 f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                f"iteration {_iter_n}/{_iter_max}). "
+                f"{_iter_progress}). "
                 "The agent may have been waiting on an API response."
             )
         _diag_lines.append(
@@ -3740,7 +3743,7 @@ class GatewayTurnMixin:
                 if _a:
                     _parts = []
                     if _want_iteration_detail:
-                        _parts.append(f"iteration {_a['api_call_count']}/{_a['max_iterations']}")
+                        _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
                     _action = _a.get("current_tool") or _a.get("last_activity_desc")
                     if _action:
                         _parts.append(str(_action))

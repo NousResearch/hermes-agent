@@ -168,7 +168,7 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", *_ROUTING_KEYS)
         if key in record}
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""INSERT OR REPLACE INTO async_delegations
@@ -218,8 +218,39 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
              json.dumps(event), json.dumps(result), event["delegation_id"]))
 
 
+def record_unit_child(delegation_id: str, entry: Dict[str, Any]) -> None:
+    """Durably record ONE finished child of a still-running multi-child unit on the unit's own row, so a crash before
+    the unit joins loses only the children that had not finished. Stored in ``result_json`` (overwritten by the real
+    result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
+    fidelity, never the live result."""
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            row = conn.execute("SELECT result_json FROM async_delegations WHERE delegation_id=? AND state='running'",
+                               (delegation_id,)).fetchone()
+            if row is None:
+                return
+            partial = json.loads(row[0] or "{}") or {}
+            results = [r for r in partial.get("results") or [] if r.get("task_index") != entry.get("task_index")]
+            results.append(entry)
+            conn.execute("UPDATE async_delegations SET result_json=?, updated_at=? WHERE delegation_id=? AND state='running'",
+                         (json.dumps({"results": results, "partial": True}), time.time(), delegation_id))
+    except Exception:  # noqa: BLE001 — recovery bookkeeping must never fail a live child
+        logger.warning("Async delegation %s: could not record finished child %s", delegation_id, entry.get("task_index"), exc_info=True)
+
+
+def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: str) -> Optional[List[Dict[str, Any]]]:
+    """Per-task results for an abandoned unit: recorded children as they finished, the rest ``unknown``."""
+    partial = json.loads(result_json or "{}") or {}
+    if not (task.get("is_batch") and partial.get("partial") and partial.get("results")):
+        return None
+    recorded = {r["task_index"]: r for r in partial["results"] if isinstance(r.get("task_index"), int)}
+    indexes = task.get("task_indexes") or list(range(len(task.get("goals") or [])))
+    return [recorded.get(i) or {"task_index": i, "status": "unknown", "summary": None, "error": error} for i in indexes]
+
+
 def recover_abandoned_delegations() -> int:
-    """Classify records whose owning process disappeared as outcome unknown."""
+    """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
+    recorded (``record_unit_child``) are replayed with their real results."""
     try:
         from gateway.status import _pid_exists, get_process_start_time
     except Exception:
@@ -228,24 +259,31 @@ def recover_abandoned_delegations() -> int:
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id, result_json
                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
         for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid = row
+            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json = row
             if pid and _pid_exists(int(pid)) and (started is None or get_process_start_time(int(pid)) == int(started)):
                 continue
             task = json.loads(task_json or "{}")
+            error = "Delegation owner exited before recording a terminal result; outcome unknown."
+            recovered_results = _recovered_results(task, result_json, error)
+            if recovered_results:
+                done = sum(1 for r in recovered_results if r.get("status") != "unknown")
+                error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
+                         "results were recorded and are included below, the rest are unknown.")
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None,
-                "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
+                "status": "unknown", "summary": None, "error": error,
+                **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
-            result = {"status": "unknown", "summary": None, "error": event["error"]}
+            result = {"status": "unknown", "summary": None, "error": event["error"],
+                      **({"results": recovered_results} if recovered_results else {})}
             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
                    WHERE delegation_id=?""", (now, now, json.dumps(event), json.dumps(result), delegation_id))
@@ -415,7 +453,7 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 
 
 def active_count() -> int:
-    """Number of live async delegation UNITS (a whole batch counts as ONE slot)."""
+    """Number of live async delegation UNITS (one per completion message: a task group or an ungrouped task)."""
     with _records_lock:
         return sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
 
@@ -425,7 +463,8 @@ def active_task_count() -> int:
     no goal list counts 1) — the truthful observability figure, unlike slots."""
     with _records_lock:
         return sum(
-            len(r["goals"]) if r.get("is_batch") and isinstance(r.get("goals"), (list, tuple)) and r["goals"] else 1
+            len(r.get("task_indexes") or r["goals"])
+            if r.get("is_batch") and isinstance(r.get("goals"), (list, tuple)) and r["goals"] else 1
             for r in _records.values() if r.get("status") in {"running", "finalizing"})
 
 
@@ -496,12 +535,15 @@ def _dispatch(
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
-    progress_fn: Optional[Callable[[], tuple]], capacity_error: str,
+    progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
+    task_indexes: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
     and exceed the cap. At capacity the dispatch is REJECTED (never queued) so a runaway model
-    can't pile up unbounded background work."""
+    can't pile up unbounded background work. ``slot_key`` names the pool slot the unit occupies
+    (default: its own id); the units of one delegate_task call share the first unit's id so
+    splitting a call into per-group completions never consumes more capacity than the call did."""
     is_batch = goals is not None
     label = " batch" if is_batch else ""
     classify = _batch_status if is_batch else (lambda r: r.get("status") or "completed")
@@ -515,11 +557,14 @@ def _dispatch(
         **_capture_routing_origin(),
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
+        "slot_key": slot_key or delegation_id,
+        # Which of the call's ``goals`` this unit runs (None = all of them).
+        **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
-        running = sum(1 for r in _records.values() if r.get("status") in _ACTIVE_STATES)
-        if running >= max_async_children:
+        active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
+        if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
             return {"status": "rejected", "error": capacity_error}
         _records[delegation_id] = record
     _persist_dispatch(record)
@@ -584,21 +629,26 @@ def dispatch_async_delegation_batch(
     session_key: str, parent_session_id: Optional[str] = None, runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "", origin_session_id: str = "", interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
-    progress_fn: Optional[Callable[[], tuple]] = None,
+    progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
+    task_indexes: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
-    """Dispatch a WHOLE fan-out batch as ONE background unit: ``runner`` runs the
-    entire batch and returns the combined ``{"results": [...], "total_duration_seconds": N}``
-    dict. The batch occupies ONE async slot (in-batch parallelism is bounded
-    separately) and produces a SINGLE completion event carrying per-task ``results``."""
+    """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
+    background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
+    "total_duration_seconds": N}`` dict. The unit occupies ONE async slot — or joins the slot named
+    by ``slot_key`` (in-unit parallelism is bounded separately) — and produces a SINGLE completion
+    event carrying per-task ``results``."""
     delegation_id = delegation_id or _new_delegation_id()
-    n = len(goals)
-    combined_goal = goals[0] if n == 1 else f"{n} parallel subagents: " + "; ".join(g[:40] for g in goals)
+    # ``goals`` is the whole call (result task_index indexes it); the unit's own goals label the record.
+    unit_goals = [goals[i] for i in task_indexes] if task_indexes is not None else list(goals)
+    n = len(unit_goals)
+    combined_goal = unit_goals[0] if n == 1 else f"{n} parallel subagents: " + "; ".join(g[:40] for g in unit_goals)
     handle = _dispatch(
         delegation_id=delegation_id, goal=combined_goal, goals=goals, context=context,
         toolsets=toolsets, role=role, model=model, session_key=session_key,
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
-        interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn,
+        interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
+        task_indexes=task_indexes,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -651,7 +701,8 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         payload = {
             "is_batch": True, "results": result.get("results") or [],
             "live_transcripts": result.get("live_transcripts"), "error": result.get("error"),
-            "total_duration_seconds": result.get("total_duration_seconds")}
+            "total_duration_seconds": result.get("total_duration_seconds"),
+            **({"group": result["group"]} if result.get("group") is not None else {})}
     else:
         payload = {
             "summary": result.get("summary"), "error": result.get("error"), "api_calls": result.get("api_calls", 0),

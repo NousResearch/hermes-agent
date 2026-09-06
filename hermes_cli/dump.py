@@ -167,7 +167,7 @@ _API_KEYS = [
     ("DASHSCOPE_API_KEY", "dashscope"), ("HF_TOKEN", "huggingface"), ("NVIDIA_API_KEY", "nvidia"),
     ("AI_GATEWAY_API_KEY", "ai_gateway"), ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
     ("OPENCODE_GO_API_KEY", "opencode_go"), ("COMMANDCODE_API_KEY", "commandcode"),
-    ("KILOCODE_API_KEY", "kilocode"), ("FIRECRAWL_API_KEY", "firecrawl"), ("TAVILY_API_KEY", "tavily"),
+    ("KILOCODE_API_KEY", "kilocode"), ("FIRECRAWL_API_KEY", "firecrawl"), ("TAVILY_API_KEY", "tavily"), ("PERPLEXITY_API_KEY", "perplexity"),
     ("KEENABLE_API_KEY", "keenable"), ("BROWSERBASE_API_KEY", "browserbase"), ("FAL_KEY", "fal"),
     ("ELEVENLABS_API_KEY", "elevenlabs"), ("GITHUB_TOKEN", "github"),
 ]

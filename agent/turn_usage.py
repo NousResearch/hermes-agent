@@ -143,6 +143,9 @@ def record_response_usage(
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)
+    # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
+    # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
+    agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)
 
     # Persist only provider-confirmed context lengths, not probe tiers.
     if getattr(compressor, "_context_probed", False):
@@ -181,6 +184,11 @@ def record_response_usage(
         prompt_tokens, completion_tokens, total_tokens,
         api_duration, _cache_pct,
     )
+    # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
+    if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
+        with suppress(Exception):
+            from agent.nous_wire import maybe_switch_wire_after_first_response
+            maybe_switch_wire_after_first_response(agent, response, agent.session_api_calls)
 
     # MoA: agent.model/provider are the virtual preset/"moa" with no pricing entry, silently
     # dropping aggregator spend. Price at the REAL model/provider from the aggregator slot.

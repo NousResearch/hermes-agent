@@ -3010,6 +3010,7 @@ class _StreamingCall:
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
         finish_reason = model_name = usage_obj = None
+        response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
@@ -3055,6 +3056,10 @@ class _StreamingCall:
                 continue
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
+            if response_id is None and isinstance(getattr(chunk, "id", None), str) and chunk.id:
+                response_id = chunk.id
+            if upstream_provider is None and isinstance(getattr(chunk, "provider", None), str) and chunk.provider:
+                upstream_provider = chunk.provider  # OpenRouter stamps who served
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
@@ -3109,7 +3114,8 @@ class _StreamingCall:
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
-            finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text)
+            finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
+            response_id=response_id, upstream_provider=upstream_provider)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -3158,7 +3164,7 @@ class _StreamingCall:
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending):
+        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -3193,7 +3199,10 @@ class _StreamingCall:
             raise provider_stream_error
         flush_pending()
         message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning)
-        return SimpleNamespace(id="stream-" + str(uuid.uuid4()), model=model_name, usage=usage_obj,
+        # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
+        # look a request up. Fabricated only when the stream never sent one.
+        return SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
+            provider=upstream_provider,
             choices=[SimpleNamespace(index=0, message=message, finish_reason=effective_finish_reason)])
 
     # ── anthropic_messages wire ─────────────────────────────────────────

@@ -141,15 +141,18 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         # thinking so thought tokens don't starve a small max_tokens budget
         # (e.g. title generation's 64 tokens), set thinkingBudget to 0 on
         # models that support it. (#91927)
+        # Intended rule: Gemini 2.5 and everything 3+. ``gemini-3`` also
+        # matches ``gemini-3.1``; future major versions are added here only
+        # when the API documents thinkingBudget support for them.
         config: Dict[str, Any] = {"includeThoughts": False}
-        if normalized_model.startswith(("gemini-2.5-", "gemini-3", "gemini-3.1")):
+        if normalized_model.startswith(("gemini-2.5-", "gemini-3")):
             config["thinkingBudget"] = 0
         return config
 
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if effort == "none":
         config = {"includeThoughts": False}
-        if normalized_model.startswith(("gemini-2.5-", "gemini-3", "gemini-3.1")):
+        if normalized_model.startswith(("gemini-2.5-", "gemini-3")):
             config["thinkingBudget"] = 0
         return config
 

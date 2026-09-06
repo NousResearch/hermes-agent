@@ -21,7 +21,8 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
-    BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
+    BulkDeleteSessions, SessionClear, SessionImport, SessionMessagesDelete,
+    SessionOwnerBackfill, SessionPrune, SessionRename)
 from hermes_cli.web_routers._common import log as _log, http_failure
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import is_transient_sqlite_error
@@ -574,6 +575,50 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         return {"ok": True}
 
     return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)
+
+
+@manage_router.post("/api/sessions/{session_id}/clear")
+async def clear_session_endpoint(
+    session_id: str,
+    body: Optional[SessionClear] = None,
+):
+    """Clear transcript / messages for a session while preserving metadata."""
+    profile = body.profile if body else None
+    keep_last_n = body.keep_last_n if body else None
+    before_timestamp = body.before_timestamp if body else None
+
+    if isinstance(before_timestamp, str):
+        from hermes_cli.session_filters import parse_point_in_time
+        before_timestamp = parse_point_in_time(before_timestamp)
+
+    def _clear(db):
+        sid = _resolve_session_id(db, session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        success = db.clear_session_messages(
+            sid,
+            keep_last_n=keep_last_n,
+            before_timestamp=before_timestamp,
+        )
+        return {"ok": success, "session_id": sid}
+
+    return await asyncio.to_thread(_with_db, profile, _clear, read_only=False)
+
+
+@manage_router.post("/api/sessions/{session_id}/messages/bulk-delete")
+async def delete_session_messages_endpoint(
+    session_id: str,
+    body: SessionMessagesDelete,
+):
+    """Delete specific messages by ID within a session."""
+    def _delete(db):
+        sid = _resolve_session_id(db, session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        deleted = db.delete_session_messages(sid, body.message_ids)
+        return {"ok": True, "session_id": sid, "deleted": deleted}
+
+    return await asyncio.to_thread(_with_db, body.profile, _delete, read_only=False)
 
 
 @manage_router.post("/api/sessions/owner-backfill")

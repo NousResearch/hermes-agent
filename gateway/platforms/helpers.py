@@ -148,6 +148,15 @@ def split_markdown_table_row(line: str) -> list[str]:
     return split_table_row(line)
 
 
+def _unwrap_table_heading_bold(value: str) -> str:
+    """Avoid nested bold markers when a table row label is already bold."""
+    if len(value) > 4 and value.startswith("**") and value.endswith("**"):
+        return value[2:-2]
+    if len(value) > 4 and value.startswith("__") and value.endswith("__"):
+        return value[2:-2]
+    return value
+
+
 def _render_table_block(table_block: list[str]) -> str:
     """Render a GFM table as bold-heading + bullet groups (same alignment logic as Telegram's
     renderer: without a row-label column the full row is data and the heading bullet is skipped)."""
@@ -159,14 +168,15 @@ def _render_table_block(table_block: list[str]) -> str:
     for index, row in enumerate(table_block[2:], start=1):
         cells = split_markdown_table_row(row)
         if has_row_label_col:
-            heading = cells[0] if cells and cells[0] else f"Row {index}"
+            raw_heading = cells[0] if cells and cells[0] else f"Row {index}"
             data_cells = cells[1:]
         else:
-            heading = next((cell for cell in cells if cell), f"Row {index}")
+            raw_heading = next((cell for cell in cells if cell), f"Row {index}")
             data_cells = cells
+        heading = _unwrap_table_heading_bold(raw_heading)
         data_cells = (data_cells + [""] * len(headers))[: len(headers)]
         bullets = [f"• {header}: {value}" for header, value in zip(headers, data_cells)
-                   if has_row_label_col or value != heading]
+                   if has_row_label_col or value != raw_heading]
         rendered_groups.append("\n".join([f"**{heading}**", *bullets]))
     return "\n\n".join(rendered_groups)
 

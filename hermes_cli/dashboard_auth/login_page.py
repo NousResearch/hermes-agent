@@ -12,6 +12,7 @@ href to walk the OAuth flow.
 from __future__ import annotations
 
 import html
+import json
 from urllib.parse import quote
 
 from hermes_cli.dashboard_auth import list_session_providers
@@ -31,28 +32,28 @@ _LOGIN_HTML_TEMPLATE = """\
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
+    src: url('{font_base}/fonts/Collapse-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Collapse';
     font-style: normal;
     font-weight: 700;
     font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
+    src: url('{font_base}/fonts/Collapse-Bold.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
+    src: url('{font_base}/fonts/RulesCompressed-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
+    src: url('{font_base}/fonts/RulesCompressed-Medium.woff2') format('woff2');
   }}
 
   :root {{
@@ -396,6 +397,7 @@ an SSH tunnel or Tailscale.</p>
 _PASSWORD_FORM_SCRIPT = """\
 <script>
 (function () {
+  var PREFIX = __HERMES_PREFIX_JSON__;
   function handle(form) {
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
@@ -409,7 +411,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch(PREFIX + '/auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -417,7 +419,7 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            window.location.assign(PREFIX + ((data && data.next) || '/'));
           });
         }
         var msg = resp.status === 429
@@ -439,30 +441,42 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` is threaded into each provider button/form so the OAuth round
     trip carries it end-to-end. The caller validates it same-origin; it is
     HTML-escaped here as defence in depth.
+
+    ``prefix`` is the request's normalised ``X-Forwarded-Prefix`` (``""`` on a
+    direct deploy). Every URL on this page is root-absolute, so without it they
+    all point outside a sub-path mount: the OAuth button 404s and the password
+    form POSTs to whatever owns ``location /`` at the proxy, which surfaces to
+    the user as a bare "sign-in failed". ``prefix_from_request`` has already
+    rejected quotes, angle brackets and ``..``; each sink escapes again.
     """
+    # CSS ``url()`` sits inside a ``<style>`` block, where HTML entities are
+    # NOT decoded -- this sink takes the raw prefix, not the escaped one.
     providers = list_session_providers()
     if not providers:
-        return _EMPTY_HTML
+        return _EMPTY_HTML.replace("url('/fonts/", f"url('{prefix}/fonts/")
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
     buttons = [
         _render_password_form(p, next_path) if getattr(p, "supports_password", False) else
         f'      <a class="provider-btn" '
-        f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+        f'href="{html.escape(prefix, quote=True)}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
         f'Sign in with {html.escape(p.display_name)}</a>'
         for p in providers
     ]
     needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
-        password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        password_script=_PASSWORD_FORM_SCRIPT.replace(
+            "__HERMES_PREFIX_JSON__", json.dumps(prefix)
+        ) if needs_password_script else "",
+        font_base=prefix,
     )
 
 

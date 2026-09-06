@@ -175,6 +175,36 @@ class TestBasePlatformTopicSessions:
         ]
 
     @pytest.mark.asyncio
+    async def test_post_delivery_callback_sees_failed_delivery(self):
+        adapter = DummyTelegramAdapter()
+        fired = []
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "ack"
+
+        async def failing_send(*_args, **_kwargs):
+            return SendResult(success=False, error="send failed")
+
+        async def callback():
+            fired.append(True)
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter.send = failing_send
+        adapter._keep_typing = hold_typing
+        event = _make_event("-1001", "17585")
+        session_key = build_session_key(event.source)
+        adapter.register_post_delivery_callback(session_key, callback)
+
+        await adapter._process_message_background(event, session_key)
+
+        assert fired == [True]
+        assert getattr(event, "_hermes_delivery_succeeded") is False
+
+    @pytest.mark.asyncio
     async def test_process_message_background_marks_exception_unsuccessful(self):
         adapter = DummyTelegramAdapter()
 

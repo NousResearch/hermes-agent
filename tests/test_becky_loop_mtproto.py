@@ -274,6 +274,7 @@ platforms:
 
     assert loaded is not None
     assert loaded.topic_control == "mtproto_private_topic"
+    assert loaded.managed_topic_ids == frozenset()
 
 
 def test_loader_rejects_unstructured_control_setting(

@@ -60,6 +60,7 @@ from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
+from agent.turn_events import record_turn_tool_events
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
@@ -4529,7 +4530,24 @@ def run_conversation(
                     except Exception:
                         pass
 
+                _tool_messages_start = len(messages)
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                try:
+                    record_turn_tool_events(
+                        agent,
+                        assistant_message,
+                        messages,
+                        _tool_messages_start,
+                    )
+                except Exception:
+                    # Auto-close is fail-closed: an instrumentation problem
+                    # must never turn a successful-looking prose response into
+                    # a topic-close request.
+                    agent._turn_tool_events = []
+                    logger.warning(
+                        "Unable to record Becky turn tool outcomes; keeping loop open",
+                        exc_info=True,
+                    )
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

@@ -1131,6 +1131,11 @@ class TestTelegramMenuCommands:
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
 
+    def test_close_is_visible_in_telegram_menu(self):
+        menu, _ = telegram_menu_commands(max_commands=100)
+
+        assert ("close", "Close the current Telegram topic") in menu
+
     def test_operational_builtins_survive_thirty_command_cap(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text(
             "display:\n  tool_progress_command: true\n"

@@ -69,6 +69,16 @@ class FakeStore:
         return list(self.transcripts.get(session_id, []))
 
 
+class CloseableStore(FakeStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ended_topics: list[tuple[str, str, str]] = []
+
+    def end_topic_session(self, *, chat_id: str, thread_id: str, reason: str) -> bool:
+        self.ended_topics.append((chat_id, thread_id, reason))
+        return True
+
+
 class PersistingShortcutStore(FakeStore):
     def __init__(self) -> None:
         super().__init__()
@@ -538,6 +548,7 @@ def new_topic_reply_params(
         "topic_id": topic_id,
         "message_id": message_id,
         "idempotency_key": idempotency_key,
+        "auto_close_policy": "simple_calendar_todoist_success",
     }
 
 
@@ -880,6 +891,54 @@ async def test_bridge_answers_a_new_topic_without_exposing_answer_text() -> None
 
 
 @pytest.mark.asyncio
+async def test_new_topic_hands_off_to_real_agent_when_session_is_available() -> None:
+    store = PersistingShortcutStore()
+    sender = FakeTopicSender()
+    generator = FakeReplyGenerator(["This fallback must not run."])
+    dispatch_calls: list[dict[str, Any]] = []
+
+    async def dispatcher(**kwargs: Any) -> None:
+        dispatch_calls.append(dict(kwargs))
+
+    server = reply_server(
+        store=store,
+        sender=sender,
+        generator=generator,
+        agent_dispatcher=dispatcher,  # type: ignore[arg-type]
+    )
+
+    response = await server._dispatch(json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "becky.loops.answer_new_topic",
+        "params": new_topic_reply_params(
+            title="Daily Storage Check",
+            text="Create a daily storage check.",
+            topic_id="44",
+            message_id="104",
+        ),
+    }))
+
+    assert response["result"] == {
+        "schema_version": "1",
+        "answer_state": "answer_pending",
+    }
+    assert sender.calls == []
+    assert generator.calls == []
+    assert dispatch_calls == [
+        {
+            "chat_id": "123456789",
+            "thread_id": "44",
+            "session_id": "shortcut-session",
+            "text": "Create a daily storage check.",
+            "reply_to_message_id": "104",
+            "auto_close_policy": "simple_calendar_todoist_success",
+            "new_topic": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_new_topic_answer_persists_exchange_for_loop_projection() -> None:
     store = PersistingShortcutStore()
     sender = FakeTopicSender()
@@ -933,6 +992,7 @@ async def test_new_topic_answer_persists_exchange_for_loop_projection() -> None:
         },
         {**new_topic_reply_params(), "topic_id": "0"},
         {**new_topic_reply_params(), "message_id": "not-a-number"},
+        {**new_topic_reply_params(), "auto_close_policy": "anything"},
         {**new_topic_reply_params(), "title": ""},
         {**new_topic_reply_params(), "text": " "},
         {**new_topic_reply_params(), "idempotency_key": "not-a-uuid"},
@@ -2535,6 +2595,74 @@ async def test_bridge_close_uses_connected_controller_and_replays_idempotently()
 
 
 @pytest.mark.asyncio
+async def test_bridge_close_idempotency_results_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(becky_loops, "_MAX_CLOSE_RESULTS", 2)
+    controller = FakeTopicController()
+    server = BeckyLoopsBridgeServer(
+        config=control_config(),
+        store=CloseableStore(),
+        summarizer=FakeSummarizer(),
+        topic_controller=controller,
+    )
+
+    keys = [f"00000000-0000-4000-8000-{index:012d}" for index in range(3)]
+    for key in keys:
+        await server._close_topic(
+            source_ref=SOURCE_REF,
+            expected_revision=REVISION,
+            idempotency_key=key,
+        )
+
+    assert len(server._close_results) == 2
+    assert keys[0] not in server._close_results
+
+
+@pytest.mark.asyncio
+async def test_bridge_start_cancellation_closes_listener_after_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+    close_calls = 0
+
+    class Listener:
+        def close(self) -> None:
+            nonlocal close_calls
+            close_calls += 1
+
+        async def wait_closed(self) -> None:
+            closed.set()
+
+    listener = Listener()
+
+    async def delayed_serve(*args: Any, **kwargs: Any) -> Listener:
+        del args, kwargs
+        started.set()
+        await release.wait()
+        return listener
+
+    monkeypatch.setattr(becky_loops, "serve", delayed_serve)
+    server = BeckyLoopsBridgeServer(
+        config=control_config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(),
+    )
+    task = asyncio.create_task(server.start())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    release.set()
+    await asyncio.wait_for(closed.wait(), timeout=1.0)
+    assert close_calls == 1
+    assert server._server is None
+
+
+@pytest.mark.asyncio
 async def test_bridge_close_reports_mtproto_control_method() -> None:
     controller = FakeTopicController()
     controller.method = "mtproto_private_topic"
@@ -2628,6 +2756,36 @@ async def test_bridge_close_rechecks_revision_and_maps_controller_failures() -> 
         })
     )
     assert failed["error"]["message"] == "topic_control_unsupported"
+
+
+@pytest.mark.asyncio
+async def test_bridge_reconciles_already_closed_topic_and_ends_session() -> None:
+    store = CloseableStore()
+    controller = FakeTopicController(
+        [becky_loops._TopicControlFailure("topic_already_closed")]
+    )
+    server = BeckyLoopsBridgeServer(
+        config=control_config(),
+        store=store,
+        summarizer=FakeSummarizer(),
+        topic_controller=controller,
+    )
+
+    response = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "becky.loops.close",
+            "params": {
+                "source_ref": SOURCE_REF,
+                "expected_revision": REVISION,
+                "idempotency_key": IDEMPOTENCY_KEY,
+            },
+        })
+    )
+
+    assert response["result"]["source_state"] == "closed"
+    assert store.ended_topics == [("123456789", "20197", "telegram_topic_closed")]
 
 
 @pytest.mark.asyncio

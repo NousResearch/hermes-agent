@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -60,6 +61,9 @@ _READY = {
     "method": "event",
     "params": {"type": "gateway.ready", "payload": {"skin": {}}},
 }
+# The new-topic handoff is intentionally private: it is accepted only on the
+# authenticated bridge and is not advertised to the dashboard's public method
+# surface.
 _METHODS = ["list", "summarize", "close", "reopen", "reply", "reply_retry"]
 _SAFE_REMOTE_CODES = frozenset({
     "conversation_too_large",
@@ -94,6 +98,8 @@ _SUMMARY_DEADLINE_SECONDS = 30.0
 _REPLY_DEADLINE_SECONDS = 30.0
 _REPLY_ATTEMPT_TTL_SECONDS = 15 * 60.0
 _MAX_REPLY_ATTEMPTS = 256
+_CLOSE_RESULT_TTL_SECONDS = 15 * 60.0
+_MAX_CLOSE_RESULTS = 256
 _MAX_REPLY_TEXT_CHARS = 2_000
 _MAX_REPLY_COMMENT_CHARS = 5_000
 _MAX_NEW_TOPIC_ANSWERS = 256
@@ -101,6 +107,164 @@ _SESSION_PAGE_SIZE = 200
 _MAX_SESSION_SCAN = 10_000
 _TELEGRAM_ID_RE = re.compile(r"^-?\d+$")
 _POSITIVE_TELEGRAM_ID_RE = re.compile(r"^[1-9]\d{0,19}$")
+
+# The dashboard may opt a newly-created loop into this deliberately narrow
+# policy.  Keep the value explicit at the bridge boundary so a future caller
+# cannot accidentally request broader automatic closure behavior.
+BECKY_AUTO_CLOSE_POLICY_SIMPLE_CALENDAR_TODOIST_SUCCESS = (
+    "simple_calendar_todoist_success"
+)
+
+_AUTO_CLOSE_TODOIST_TASK_RE = re.compile(
+    r"(?:mcp_)?todoist_(?:(?:quick_)?add|create)_tasks?$"
+)
+_AUTO_CLOSE_CALENDAR_EVENT_RE = re.compile(
+    r"(?:mcp_google_|google_|mcp_)?calendar_(?:(?:add|create|insert)_events?|events?_(?:add|create|insert))$"
+)
+_AUTO_CLOSE_CALENDAR_ACTION_RE = re.compile(
+    r"(?:mcp_google_|google_|mcp_)?calendar_(?:add|create|insert)$"
+)
+_AUTO_CLOSE_TERMINAL_COMMAND_RE = re.compile(
+    r"^(?:"
+    r"\$GAPI\s+calendar\s+(?:create|insert)"
+    r"|gws\s+calendar(?:\s+events)?\s+(?:create|insert)"
+    r"|(?:python(?:3(?:\.\d+)?)?|python3)\s+(?:\S+/)?google_api\.py\s+calendar\s+(?:create|insert)"
+    r")(?:\s|$)",
+    re.IGNORECASE,
+)
+_AUTO_CLOSE_UNSAFE_TERMINAL_CHARS = frozenset(
+    ";|&<>\r\n$`\\(){}[]*?!~#"
+)
+
+
+def _normalize_tool_name(name: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(name or "").casefold()).strip("_")
+
+
+def _event_arguments(event: dict[str, Any]) -> dict[str, Any]:
+    arguments = event.get("arguments")
+    return arguments if isinstance(arguments, dict) else {}
+
+
+def _is_successful_auto_close_event(event: dict[str, Any]) -> bool:
+    if event.get("success") is not True:
+        return False
+    status = event.get("status")
+    if isinstance(status, str) and status.casefold() in {
+        "blocked",
+        "cancelled",
+        "canceled",
+        "error",
+        "failed",
+        "skipped",
+        "timeout",
+    }:
+        return False
+    exit_code = event.get("exit_code")
+    if exit_code is None:
+        exit_code = _event_arguments(event).get("exit_code")
+    if exit_code is not None and (
+        isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code != 0
+    ):
+        return False
+    return True
+
+
+def _is_todoist_task_add(name: str) -> bool:
+    return _AUTO_CLOSE_TODOIST_TASK_RE.fullmatch(name) is not None
+
+
+def _is_calendar_event_create(name: str, arguments: dict[str, Any]) -> bool:
+    if _AUTO_CLOSE_CALENDAR_EVENT_RE.fullmatch(name) is not None:
+        return True
+    if _AUTO_CLOSE_CALENDAR_ACTION_RE.fullmatch(name) is None:
+        return False
+    operation = str(
+        arguments.get("operation") or arguments.get("action") or ""
+    ).casefold()
+    return operation in {"add_event", "create_event", "insert_event"}
+
+
+def _is_single_calendar_terminal_command(
+    name: str, event: dict[str, Any], arguments: dict[str, Any]
+) -> bool:
+    if name != "terminal":
+        return False
+    if event.get("background") is True or arguments.get("background") is True:
+        return False
+    exit_code = event.get("exit_code", arguments.get("exit_code"))
+    if isinstance(exit_code, bool) or not isinstance(exit_code, int) or exit_code != 0:
+        return False
+    command = arguments.get("command")
+    if not isinstance(command, str):
+        return False
+    if arguments.get("command_truncated") is True:
+        return False
+    command = command.strip()
+    if not command:
+        return False
+    # ``$GAPI`` is the one intentionally supported shell variable.  Every
+    # other shell-expansion/control character is rejected, including command
+    # substitution and backticks after an otherwise valid calendar prefix.
+    shell_body = command
+    if command.startswith("$GAPI") and (
+        len(command) == len("$GAPI") or command[len("$GAPI")].isspace()
+    ):
+        shell_body = command[len("$GAPI") :]
+    if any(char in shell_body for char in _AUTO_CLOSE_UNSAFE_TERMINAL_CHARS):
+        return False
+    return _AUTO_CLOSE_TERMINAL_COMMAND_RE.match(command) is not None
+
+
+def should_auto_close_becky_loop(agent_result: object) -> bool:
+    """Return whether one completed Becky turn earned automatic topic closure.
+
+    The predicate is intentionally conservative and consumes only the
+    machine-derived current-turn tool outcome.  It never infers success from
+    assistant prose: exactly one successful Todoist task-add or Calendar event
+    creation must be recorded, with no interruption, failure, or extra tool.
+    """
+    if not isinstance(agent_result, dict):
+        return False
+    if agent_result.get("completed") is not True:
+        return False
+    if any(agent_result.get(key) for key in ("failed", "partial", "interrupted")):
+        return False
+    if agent_result.get("error"):
+        return False
+    turn_exit_reason = agent_result.get("turn_exit_reason")
+    if not isinstance(turn_exit_reason, str) or not turn_exit_reason.startswith(
+        "text_response("
+    ):
+        return False
+    final_response = agent_result.get("final_response")
+    if not isinstance(final_response, str) or not final_response.strip():
+        return False
+    events = agent_result.get("turn_tool_events")
+    if not isinstance(events, list) or len(events) != 1:
+        return False
+    event = events[0]
+    if not isinstance(event, dict) or not _is_successful_auto_close_event(event):
+        return False
+    requested_name = _normalize_tool_name(event.get("requested_name"))
+    name = _normalize_tool_name(event.get("name"))
+    if not requested_name or not name or requested_name != name:
+        return False
+    if requested_name in {
+        "tool_search",
+        "mcp_tool_search",
+        "tool_call",
+        "mcp_tool_call",
+    } or event.get(
+        "via_tool_search"
+    ) is True:
+        return False
+    arguments = _event_arguments(event)
+    return (
+        _is_todoist_task_add(name)
+        or _is_calendar_event_create(name, arguments)
+        or _is_single_calendar_terminal_command(name, event, arguments)
+    )
 
 
 @dataclass(frozen=True)
@@ -111,6 +275,8 @@ class BeckyLoopsConfig:
     port: int = 9_120
     topic_control: str = "unavailable"
     topic_reply: str = "unavailable"
+    # Hermes-owned forum topics are control/status lanes, not user loops.
+    managed_topic_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -140,6 +306,8 @@ class AgentReplyDispatcher(Protocol):
         session_id: str,
         text: str,
         reply_to_message_id: str,
+        auto_close_policy: str | None = None,
+        new_topic: bool = False,
     ) -> None: ...
 
 
@@ -413,9 +581,16 @@ def revision_for(row: dict[str, Any], transcript: list[dict[str, Any]]) -> str:
 class SessionDBBeckyLoopsStore:
     """Read-only projection over Hermes's existing SessionDB."""
 
-    def __init__(self, db: Any, *, session_store: Any | None = None) -> None:
+    def __init__(
+        self,
+        db: Any,
+        *,
+        session_store: Any | None = None,
+        managed_topic_ids: set[str] | frozenset[str] | None = None,
+    ) -> None:
         self._db = db
         self._session_store = session_store
+        self._managed_topic_ids = frozenset(str(value).strip() for value in (managed_topic_ids or ()) if str(value).strip())
         self._source_rows: dict[str, dict[str, Any]] = {}
         self._chat_id = ""
 
@@ -450,6 +625,8 @@ class SessionDBBeckyLoopsStore:
             # projection at the source rather than presenting an action that
             # Telegram will always reject.
             if not thread_id or thread_id == "1":
+                continue
+            if self._hidden_managed_topic(raw, thread_id):
                 continue
             session_id = str(raw.get("id") or "")
             if not session_id:
@@ -517,6 +694,81 @@ class SessionDBBeckyLoopsStore:
             result.append(item)
         return result
 
+    def _hidden_managed_topic(self, raw: dict[str, Any], thread_id: str) -> bool:
+        if thread_id in self._managed_topic_ids:
+            return True
+        for key in ("title", "name"):
+            value = str(raw.get(key) or "").strip().casefold()
+            if value in {"general", "system", "becky loops"}:
+                return True
+        preview = str(raw.get("preview") or "").strip().casefold()
+        return preview.startswith("system topic for hermes commands and status")
+
+    def end_topic_session(
+        self, *, chat_id: str, thread_id: str, reason: str
+    ) -> bool:
+        """End the Hermes session owning one Telegram topic, if it is active."""
+        session_ids: list[str] = []
+        get_binding = getattr(self._db, "get_telegram_topic_binding", None)
+        if callable(get_binding):
+            try:
+                binding = get_binding(chat_id=str(chat_id), thread_id=str(thread_id))
+            except Exception:
+                binding = None
+            if binding:
+                bound_id = str(binding.get("session_id") or "").strip()
+                if bound_id and bound_id not in session_ids:
+                    session_ids.append(bound_id)
+        list_sessions = getattr(self._db, "list_sessions_rich", None)
+        if callable(list_sessions):
+            offset = 0
+            scanned = 0
+            while scanned < _MAX_SESSION_SCAN:
+                try:
+                    candidates = list_sessions(
+                        source="telegram",
+                        include_children=False,
+                        include_archived=False,
+                        project_compression_tips=True,
+                        order_by_last_active=True,
+                        limit=_SESSION_PAGE_SIZE,
+                        offset=offset,
+                    )
+                except Exception:
+                    candidates = []
+                page = candidates or []
+                scanned += len(page)
+                for candidate in page:
+                    if (
+                        str(candidate.get("chat_id") or "") == str(chat_id)
+                        and str(candidate.get("thread_id") or "") == str(thread_id)
+                        and candidate.get("ended_at") is None
+                    ):
+                        candidate_id = str(candidate.get("id") or "").strip()
+                        if candidate_id and candidate_id not in session_ids:
+                            session_ids.append(candidate_id)
+                if len(page) < _SESSION_PAGE_SIZE:
+                    break
+                offset += len(page)
+        end_session = getattr(self._db, "end_session", None)
+        if not session_ids or not callable(end_session):
+            return False
+        ended_any = False
+        try:
+            for session_id in session_ids:
+                try:
+                    end_session(session_id, reason)
+                except Exception:
+                    logger.warning(
+                        "Unable to end Hermes session for closed Telegram topic",
+                        exc_info=True,
+                    )
+                else:
+                    ended_any = True
+        except Exception:
+            logger.warning("Unable to end Hermes sessions for closed Telegram topic", exc_info=True)
+        return ended_any
+
     def get_topic(self, source_ref: str) -> dict[str, Any] | None:
         row = self._source_rows.get(source_ref)
         if row is not None:
@@ -543,7 +795,7 @@ class SessionDBBeckyLoopsStore:
         return SessionSource(
             platform=Platform.TELEGRAM,
             chat_id=self._chat_id,
-            chat_type="group",
+            chat_type="group" if self._chat_id.startswith("-") else "dm",
             thread_id=topic_id,
         )
 
@@ -642,7 +894,7 @@ class SessionDBBeckyLoopsStore:
                     session_id=session_id,
                     source="telegram",
                     chat_id=self._chat_id,
-                    chat_type="group",
+                    chat_type="group" if self._chat_id.startswith("-") else "dm",
                     thread_id=topic_id,
                 )
 
@@ -730,7 +982,7 @@ class BeckyLoopsBridgeServer:
             str, tuple[str, asyncio.Future[dict[str, Any]]]
         ] = {}
         self._new_topic_answers_lock = asyncio.Lock()
-        self._close_results: dict[str, tuple[str, str, dict[str, Any]]] = {}
+        self._close_results: dict[str, tuple[str, str, dict[str, Any], float]] = {}
         self._close_results_lock = asyncio.Lock()
         self._server: Server | None = None
 
@@ -743,20 +995,47 @@ class BeckyLoopsBridgeServer:
     async def start(self) -> None:
         if self._server is not None:
             return
-        self._server = await serve(
-            self._handle_connection,
-            host="127.0.0.1",
-            port=self.config.port,
-            process_request=self._process_request,
-            max_size=_MAX_RESPONSE_BYTES,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=1,
-            compression=None,
-            server_header="Hermes-Becky-Loops",
-            logger=_WEBSOCKET_LOGGER,
+        serve_task = asyncio.ensure_future(
+            serve(
+                self._handle_connection,
+                host="127.0.0.1",
+                port=self.config.port,
+                process_request=self._process_request,
+                max_size=_MAX_RESPONSE_BYTES,
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=1,
+                compression=None,
+                server_header="Hermes-Becky-Loops",
+                logger=_WEBSOCKET_LOGGER,
+            )
         )
+        try:
+            self._server = await asyncio.shield(serve_task)
+        except asyncio.CancelledError:
+            if serve_task.done():
+                try:
+                    server = serve_task.result()
+                except BaseException:
+                    pass
+                else:
+                    server.close()
+                    await asyncio.shield(server.wait_closed())
+            else:
+                asyncio.create_task(self._close_server_after_start(serve_task))
+            raise
         logger.info("Becky loop bridge listening on 127.0.0.1:%d", self.bound_port)
+
+    @staticmethod
+    async def _close_server_after_start(serve_task: asyncio.Task[Server]) -> None:
+        """Close a listener whose startup completed after its owner was cancelled."""
+        try:
+            server = await serve_task
+            server.close()
+            await server.wait_closed()
+        except BaseException:
+            # Cancellation or bind failure already leaves no listener to clean.
+            return
 
     async def stop(self) -> None:
         server, self._server = self._server, None
@@ -984,6 +1263,7 @@ class BeckyLoopsBridgeServer:
                 topic_id=params["topic_id"],
                 message_id=params["message_id"],
                 idempotency_key=params["idempotency_key"].lower(),
+                auto_close_policy=params["auto_close_policy"],
             )
         if method == "becky.loops.close":
             if not self._valid_close_params(params):
@@ -1009,6 +1289,7 @@ class BeckyLoopsBridgeServer:
         topic_id: str,
         message_id: str,
         idempotency_key: str,
+        auto_close_policy: str,
     ) -> dict[str, Any]:
         fingerprint = json.dumps(
             {
@@ -1016,6 +1297,7 @@ class BeckyLoopsBridgeServer:
                 "text": text,
                 "topic_id": topic_id,
                 "message_id": message_id,
+                "auto_close_policy": auto_close_policy,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -1050,43 +1332,68 @@ class BeckyLoopsBridgeServer:
             message_id=message_id,
         )
         try:
-            answer = await self._generate_reply(
-                row={
-                    "title": title,
-                    "chat_id": self.config.chat_id,
-                    "thread_id": topic_id,
-                    "source_ref": f"shortcut_{idempotency_key}",
-                },
-                transcript=[
-                    {
-                        "role": "user",
-                        "content": text,
-                        "timestamp": datetime.now(UTC).timestamp(),
-                    }
-                ],
-                comment="Answer the user's opening message.",
-            )
-            answer = answer.strip()
-            if not 1 <= len(answer) <= _MAX_REPLY_TEXT_CHARS:
-                raise ValueError("reply unavailable")
-            receipt = await self._send_topic(
-                thread_id=topic_id,
-                text=answer,
-                reply_to_message_id=message_id,
-            )
-            if shortcut_session_id is not None:
-                self._record_shortcut_answer(
-                    session_id=shortcut_session_id,
-                    text=answer,
-                    message_id=receipt.message_id,
+            if self.agent_dispatcher is not None and shortcut_session_id is not None:
+                logger.info("Becky loop shortcut selecting Telegram agent handoff")
+                dispatch = getattr(
+                    self.agent_dispatcher,
+                    "dispatch",
+                    self.agent_dispatcher,
                 )
-            result = {"schema_version": "1", "answer_state": "answered"}
+                if not callable(dispatch):
+                    raise RuntimeError("agent reply dispatcher is unavailable")
+                await dispatch(
+                    chat_id=self.config.chat_id,
+                    thread_id=topic_id,
+                    session_id=shortcut_session_id,
+                    text=text,
+                    reply_to_message_id=message_id,
+                    auto_close_policy=auto_close_policy,
+                    new_topic=True,
+                )
+                result = {"schema_version": "1", "answer_state": "answer_pending"}
+            else:
+                answer = await self._generate_reply(
+                    row={
+                        "title": title,
+                        "chat_id": self.config.chat_id,
+                        "thread_id": topic_id,
+                        "source_ref": f"shortcut_{idempotency_key}",
+                    },
+                    transcript=[
+                        {
+                            "role": "user",
+                            "content": text,
+                            "timestamp": datetime.now(UTC).timestamp(),
+                        }
+                    ],
+                    comment="Answer the user's opening message.",
+                )
+                answer = answer.strip()
+                if not 1 <= len(answer) <= _MAX_REPLY_TEXT_CHARS:
+                    raise ValueError("reply unavailable")
+                receipt = await self._send_topic(
+                    thread_id=topic_id,
+                    text=answer,
+                    reply_to_message_id=message_id,
+                )
+                if shortcut_session_id is not None:
+                    self._record_shortcut_answer(
+                        session_id=shortcut_session_id,
+                        text=answer,
+                        message_id=receipt.message_id,
+                    )
+                result = {"schema_version": "1", "answer_state": "answered"}
         except asyncio.CancelledError:
             result = {"schema_version": "1", "answer_state": "answer_unavailable"}
             if not future.done():
                 future.set_result(result)
             raise
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "Becky loop shortcut answer failed (%s)",
+                type(exc).__name__,
+                exc_info=True,
+            )
             result = {"schema_version": "1", "answer_state": "answer_unavailable"}
         if not future.done():
             future.set_result(result)
@@ -1175,6 +1482,14 @@ class BeckyLoopsBridgeServer:
         self, *, source_ref: str, expected_revision: str, idempotency_key: str
     ) -> dict[str, Any]:
         async with self._close_results_lock:
+            now = time.monotonic()
+            expired = [
+                key
+                for key, entry in self._close_results.items()
+                if now - entry[3] >= _CLOSE_RESULT_TTL_SECONDS
+            ]
+            for key in expired:
+                self._close_results.pop(key, None)
             existing = self._close_results.get(idempotency_key)
             if existing is not None:
                 if existing[0] != source_ref or existing[1] != expected_revision:
@@ -1195,14 +1510,22 @@ class BeckyLoopsBridgeServer:
                         thread_id=str(row.get("thread_id") or ""),
                     )
                 except _TopicControlFailure as failure:
-                    raise _RemoteFailure(failure.code) from None
+                    if failure.code != "topic_already_closed":
+                        raise _RemoteFailure(failure.code) from None
+                    # Telegram is already closed, but an older Hermes session
+                    # may not have been ended when the original control call
+                    # lost its Becky archive callback. Treat this as an
+                    # idempotent success and repair that local projection.
+                    closed_at = datetime.now(UTC)
                 except MtprotoTopicControlError as failure:
                     code = (
                         "topic_control_unavailable"
                         if failure.code == "topic_control_forbidden"
                         else failure.code
                     )
-                    raise _RemoteFailure(code) from None
+                    if code != "topic_already_closed":
+                        raise _RemoteFailure(code) from None
+                    closed_at = datetime.now(UTC)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -1217,6 +1540,13 @@ class BeckyLoopsBridgeServer:
                 "mtproto_private_topic",
             }:
                 control_method = self.config.topic_control
+            end_topic_session = getattr(self.store, "end_topic_session", None)
+            if callable(end_topic_session):
+                end_topic_session(
+                    chat_id=self.config.chat_id,
+                    thread_id=str(row.get("thread_id") or ""),
+                    reason="telegram_topic_closed",
+                )
             result = {
                 "source_ref": source_ref,
                 "source_state": "closed",
@@ -1224,10 +1554,17 @@ class BeckyLoopsBridgeServer:
                 "control_method": control_method,
                 "idempotency_key": idempotency_key,
             }
+            if len(self._close_results) >= _MAX_CLOSE_RESULTS:
+                oldest_key = min(
+                    self._close_results,
+                    key=lambda key: self._close_results[key][3],
+                )
+                self._close_results.pop(oldest_key, None)
             self._close_results[idempotency_key] = (
                 source_ref,
                 expected_revision,
                 result,
+                now,
             )
             return dict(result)
 
@@ -1647,7 +1984,14 @@ class BeckyLoopsBridgeServer:
         text = params.get("text")
         return (
             set(params)
-            == {"title", "text", "topic_id", "message_id", "idempotency_key"}
+            == {
+                "title",
+                "text",
+                "topic_id",
+                "message_id",
+                "idempotency_key",
+                "auto_close_policy",
+            }
             and isinstance(title, str)
             and 1 <= len(title.strip()) <= 128
             and isinstance(text, str)
@@ -1658,6 +2002,8 @@ class BeckyLoopsBridgeServer:
             and _POSITIVE_TELEGRAM_ID_RE.fullmatch(params["message_id"]) is not None
             and isinstance(params.get("idempotency_key"), str)
             and _UUID_RE.fullmatch(params["idempotency_key"]) is not None
+            and params.get("auto_close_policy")
+            == BECKY_AUTO_CLOSE_POLICY_SIMPLE_CALENDAR_TODOIST_SUCCESS
         )
 
     @staticmethod
@@ -1887,6 +2233,7 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
         # connected adapter is checked separately by GatewayRunner before it
         # is injected into the bridge.
         topic_reply=("bot_api_private_topic" if proven_topic_reply else "unavailable"),
+        managed_topic_ids=_managed_topic_ids(raw, section, chat_id),
     )
 
 
@@ -2013,6 +2360,37 @@ def _has_configured_loop_topic(
     )
 
 
+def _managed_topic_ids(
+    raw: dict[str, Any], section: dict[str, Any], chat_id: str
+) -> frozenset[str]:
+    """Return same-chat Hermes control/status topic IDs to omit from loops."""
+    managed: set[str] = set()
+    for key in ("telegram_system_topic_id", "system_topic_id"):
+        value = section.get(key)
+        if _valid_telegram_id(value):
+            managed.add(str(value).strip())
+
+    platforms = raw.get("platforms")
+    telegram = platforms.get("telegram") if isinstance(platforms, dict) else None
+    extra = telegram.get("extra") if isinstance(telegram, dict) else None
+    dm_topics = extra.get("dm_topics") if isinstance(extra, dict) else None
+    if isinstance(dm_topics, list):
+        for chat_entry in dm_topics:
+            if not isinstance(chat_entry, dict) or str(chat_entry.get("chat_id", "")).strip() != chat_id:
+                continue
+            topics = chat_entry.get("topics")
+            if not isinstance(topics, list):
+                continue
+            for topic in topics:
+                if not isinstance(topic, dict):
+                    continue
+                name = str(topic.get("name") or topic.get("title") or "").strip().casefold()
+                thread_id = topic.get("thread_id")
+                if name in {"system", "becky loops", "general"} and _valid_telegram_id(thread_id):
+                    managed.add(str(thread_id).strip())
+    return frozenset(managed)
+
+
 async def start_becky_loops_bridge(
     *,
     config: BeckyLoopsConfig | None,
@@ -2028,7 +2406,11 @@ async def start_becky_loops_bridge(
     if config is None or not config.enabled:
         return None
     try:
-        store = SessionDBBeckyLoopsStore(db, session_store=session_store)
+        store = SessionDBBeckyLoopsStore(
+            db,
+            session_store=session_store,
+            managed_topic_ids=config.managed_topic_ids,
+        )
         store._chat_id = config.chat_id
         server = BeckyLoopsBridgeServer(
             config=config,

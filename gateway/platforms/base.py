@@ -97,6 +97,16 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
+        metadata = getattr(event, "metadata", None)
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("becky_dashboard_reply") is True
+            and getattr(event, "reply_to_message_id", None) is not None
+        ):
+            # Dashboard handoffs use a synthetic event message_id for local
+            # bookkeeping. It is not a Telegram message ID and must never be
+            # passed to the Bot API as the reply anchor.
+            return getattr(event, "reply_to_message_id")
         # Reply to the triggering user message. Replying to Telegram's earlier
         # topic seed/anchor can render the bot response outside the active lane.
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
@@ -4810,6 +4820,7 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        processing_ok = False
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -5230,6 +5241,13 @@ class BasePlatformAdapter(ABC):
                     self.name, notify_err, exc_info=True,
                 )  # Last resort — don't let error reporting crash the handler
         finally:
+            # Make the final delivery decision visible to deferred callbacks.
+            # MessageEvent is intentionally the per-turn handoff object, so a
+            # callback can fail closed without changing the public callback API.
+            try:
+                setattr(event, "_hermes_delivery_succeeded", processing_ok)
+            except Exception:
+                pass
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not
             # leave the typing refresh task running indefinitely.

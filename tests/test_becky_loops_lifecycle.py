@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ from gateway.becky_loops import (
     stop_becky_loops_bridge,
 )
 from gateway.config import Platform
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _validated_becky_dashboard_url
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -35,6 +36,269 @@ class FakeReplyGenerator:
     async def generate(self, **kwargs):
         del kwargs
         return "answer"
+
+
+class CloseController:
+    method = "mtproto_private_topic"
+    is_connected = True
+    supports_close = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def close_topic(self, *, chat_id: str, thread_id: str):
+        self.calls.append((chat_id, thread_id))
+        from datetime import UTC, datetime
+
+        return datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+
+
+class FailingCloseController(CloseController):
+    async def close_topic(self, *, chat_id: str, thread_id: str):
+        self.calls.append((chat_id, thread_id))
+        raise RuntimeError("Telegram rejected close")
+
+
+class PostDeliveryAdapter:
+    def __init__(self) -> None:
+        self.callbacks: list[tuple[str, object, int | None]] = []
+
+    def register_post_delivery_callback(
+        self, session_key: str, callback, *, generation: int | None = None
+    ) -> None:
+        self.callbacks.append((session_key, callback, generation))
+
+
+class CloseSessionDB:
+    def __init__(self) -> None:
+        self.ended: list[tuple[str, str]] = []
+
+    async def get_telegram_topic_binding(self, *, chat_id: str, thread_id: str):
+        assert (chat_id, thread_id) == ("-1004476874933", "3")
+        return {"session_id": "session-3"}
+
+    async def end_session(self, session_id: str, reason: str) -> None:
+        self.ended.append((session_id, reason))
+
+
+class UnboundCloseSessionDB(CloseSessionDB):
+    async def get_telegram_topic_binding(self, *, chat_id: str, thread_id: str):
+        assert (chat_id, thread_id) == ("-1004476874933", "3")
+        return None
+
+    async def list_sessions_rich(self, **kwargs: object):
+        assert kwargs["source"] == "telegram"
+        return [
+            {
+                "id": "session-3",
+                "chat_id": "-1004476874933",
+                "thread_id": "3",
+                "ended_at": None,
+                "last_active": 2.0,
+            },
+            {
+                "id": "session-3-older",
+                "chat_id": "-1004476874933",
+                "thread_id": "3",
+                "ended_at": None,
+                "last_active": 1.0,
+            },
+        ]
+
+
+class PaginatedUnboundCloseSessionDB(UnboundCloseSessionDB):
+    def __init__(self) -> None:
+        super().__init__()
+        self.offsets: list[int] = []
+
+    async def list_sessions_rich(self, **kwargs: object):
+        offset = int(kwargs["offset"])
+        self.offsets.append(offset)
+        if offset == 0:
+            return [
+                {
+                    "id": f"unrelated-{index}",
+                    "chat_id": "-1004476874933",
+                    "thread_id": str(index + 10),
+                    "ended_at": None,
+                }
+                for index in range(200)
+            ]
+        if offset == 200:
+            return [{
+                "id": "session-3-late",
+                "chat_id": "-1004476874933",
+                "thread_id": "3",
+                "ended_at": None,
+            }]
+        return []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com:8787",
+        "http://localhost:8787",
+        "http://127.0.0.1.evil.example:8787",
+        "http://user:password@127.0.0.1:8787",
+        "http://127.0.0.1:8787/dashboard",
+        "http://127.0.0.1:8787/?redirect=example.com",
+        "http://169.254.169.254:8787",
+    ],
+)
+def test_becky_dashboard_callback_url_must_be_loopback_without_url_tricks(url: str) -> None:
+    assert _validated_becky_dashboard_url(url) is None
+
+
+def test_becky_dashboard_callback_url_accepts_loopback_ip_only() -> None:
+    assert _validated_becky_dashboard_url("http://127.0.0.1:8787/") == (
+        "http://127.0.0.1:8787"
+    )
+
+
+@pytest.mark.asyncio
+async def test_becky_archive_never_posts_token_to_external_url(monkeypatch) -> None:
+    import httpx
+
+    runner = object.__new__(GatewayRunner)
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+    )
+    monkeypatch.setenv("HERMES_BECKY_DASHBOARD_URL", "https://example.com")
+
+    def unexpected_client(*_args, **_kwargs):
+        raise AssertionError("external archive callback must not be opened")
+
+    monkeypatch.setattr(httpx, "AsyncClient", unexpected_client)
+
+    result = await runner._notify_becky_topic_closed(
+        source_ref="loop_" + "A" * 43,
+        closed_at=datetime(2026, 8, 22, 12, 0, tzinfo=UTC),
+        control_method="mtproto_private_topic",
+    )
+
+    assert result == "pending"
+
+
+@pytest.mark.asyncio
+async def test_telegram_close_command_closes_topic_ends_session_and_notifies_becky() -> None:
+    runner = object.__new__(GatewayRunner)
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+        managed_topic_ids=frozenset({"2"}),
+    )
+    controller = CloseController()
+    session_db = CloseSessionDB()
+    notifications: list[dict[str, object]] = []
+    runner._becky_loops_topic_controller = controller
+    runner._session_db = session_db
+
+    async def notify(**kwargs: object) -> str:
+        notifications.append(kwargs)
+        return "archived"
+
+    runner._notify_becky_topic_closed = notify
+
+    result = await runner._handle_becky_close_command(
+        chat_id="-1004476874933",
+        thread_id="3",
+        user_id="8837347581",
+        message_id="42",
+    )
+
+    assert result == "Topic closed and archived."
+    assert controller.calls == [("-1004476874933", "3")]
+    assert session_db.ended == [("session-3", "telegram_topic_closed")]
+    assert notifications[0]["source_ref"].startswith("loop_")
+
+
+@pytest.mark.asyncio
+async def test_telegram_close_command_rejects_managed_topic() -> None:
+    runner = object.__new__(GatewayRunner)
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+        managed_topic_ids=frozenset({"2"}),
+    )
+    controller = CloseController()
+    runner._becky_loops_topic_controller = controller
+
+    result = await runner._handle_becky_close_command(
+        chat_id="-1004476874933",
+        thread_id="2",
+        user_id="8837347581",
+        message_id="42",
+    )
+
+    assert "system topic" in result.casefold()
+    assert controller.calls == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_close_command_ends_unbound_topic_session() -> None:
+    runner = object.__new__(GatewayRunner)
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+        managed_topic_ids=frozenset({"2"}),
+    )
+    runner._becky_loops_topic_controller = CloseController()
+    session_db = UnboundCloseSessionDB()
+    runner._session_db = session_db
+
+    async def notify(**kwargs: object) -> str:
+        del kwargs
+        return "pending"
+
+    runner._notify_becky_topic_closed = notify
+
+    await runner._handle_becky_close_command(
+        chat_id="-1004476874933",
+        thread_id="3",
+        user_id="8837347581",
+        message_id="42",
+    )
+
+    assert session_db.ended == [
+        ("session-3", "telegram_topic_closed"),
+        ("session-3-older", "telegram_topic_closed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_telegram_close_command_scans_all_session_pages() -> None:
+    runner = object.__new__(GatewayRunner)
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+        managed_topic_ids=frozenset({"2"}),
+    )
+    runner._becky_loops_topic_controller = CloseController()
+    session_db = PaginatedUnboundCloseSessionDB()
+    runner._session_db = session_db
+
+    async def notify(**kwargs: object) -> str:
+        del kwargs
+        return "pending"
+
+    runner._notify_becky_topic_closed = notify
+
+    await runner._handle_becky_close_command(
+        chat_id="-1004476874933",
+        thread_id="3",
+        user_id="8837347581",
+        message_id="42",
+    )
+
+    assert session_db.offsets == [0, 200]
+    assert ("session-3-late", "telegram_topic_closed") in session_db.ended
 
 
 @pytest.mark.asyncio
@@ -138,6 +402,66 @@ async def test_runner_dispatches_dashboard_reply_into_telegram_agent_pipeline() 
 
 
 @pytest.mark.asyncio
+async def test_runner_private_dashboard_reply_uses_dm_identity_and_real_anchor() -> None:
+    class FakeTelegramAdapter:
+        async def handle_message(self, event) -> None:
+            self.event = event
+
+    adapter = FakeTelegramAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    await runner._dispatch_becky_agent_reply(
+        chat_id="8837347581",
+        thread_id="3964",
+        session_id="session-1",
+        text="Add the appointment.",
+        reply_to_message_id="101",
+    )
+
+    event = adapter.event
+    assert event.source.chat_type == "dm"
+    assert GatewayRunner._reply_anchor_for_event(event) == "101"
+
+
+def test_shortcut_source_uses_private_dm_identity_for_positive_chat_ids() -> None:
+    store = SessionDBBeckyLoopsStore(EmptyDB())
+    store._chat_id = "8837347581"
+
+    assert store._shortcut_source("3964").chat_type == "dm"
+
+
+@pytest.mark.asyncio
+async def test_runner_propagates_the_narrow_auto_close_policy_in_event_metadata() -> None:
+    class FakeTelegramAdapter:
+        def __init__(self) -> None:
+            self.events = []
+
+        async def handle_message(self, event) -> None:
+            self.events.append(event)
+
+    adapter = FakeTelegramAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    await runner._dispatch_becky_agent_reply(
+        chat_id="-1004476874933",
+        thread_id="3964",
+        session_id="session-1",
+        text="Add the appointment.",
+        reply_to_message_id="101",
+        auto_close_policy="simple_calendar_todoist_success",
+        new_topic=True,
+    )
+
+    assert adapter.events[0].metadata == {
+        "becky_dashboard_reply": True,
+        "becky_dashboard_new_topic": True,
+        "becky_auto_close_policy": "simple_calendar_todoist_success",
+    }
+
+
+@pytest.mark.asyncio
 async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch() -> None:
     class FakeTelegramAdapter:
         async def handle_message(self, event) -> None:
@@ -191,6 +515,412 @@ async def test_runner_binds_dashboard_reply_to_existing_session_before_dispatch(
     assert adapter.event.reply_to_message_id == "101"
     assert adapter.event.source.user_id == "8837347581"
     assert adapter.event.source.user_name == "Cory"
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_publish_bridge_after_shutdown_begins(monkeypatch) -> None:
+    config = becky_loops.BeckyLoopsConfig(
+        enabled=True,
+        chat_id="8837347581",
+        token="t" * 64,
+        port=0,
+    )
+    bridge = object()
+    stopped: list[object] = []
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner._session_db = SimpleNamespace(_db=object())
+    runner._startup_should_abort = lambda: True
+
+    async def stop_bridge(value) -> None:
+        stopped.append(value)
+
+    async def start_bridge(**kwargs):
+        del kwargs
+        return bridge
+
+    monkeypatch.setattr(becky_loops, "load_becky_loops_config", lambda: config)
+    monkeypatch.setattr(becky_loops, "start_becky_loops_bridge", start_bridge)
+    monkeypatch.setattr(becky_loops, "stop_becky_loops_bridge", stop_bridge)
+
+    await runner._start_becky_loops_bridge()
+
+    assert stopped == [bridge]
+    assert not hasattr(runner, "_becky_loops_bridge")
+
+
+@pytest.mark.asyncio
+async def test_runner_registers_auto_close_after_a_successful_simple_action() -> None:
+    adapter = PostDeliveryAdapter()
+    controller = CloseController()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._session_run_generation = {
+        "agent:main:telegram:group:-1004476874933:3964": 7,
+    }
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+    )
+    runner._becky_loops_topic_controller = controller
+    runner._session_db = None
+
+    notifications: list[dict[str, object]] = []
+
+    async def notify(**kwargs: object) -> str:
+        notifications.append(kwargs)
+        return "archived"
+
+    runner._notify_becky_topic_closed = notify
+    event = MessageEvent(
+        text="Done.",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        metadata={
+            "becky_dashboard_new_topic": True,
+            "becky_auto_close_policy": "simple_calendar_todoist_success",
+        },
+        internal=True,
+    )
+
+    runner._register_becky_auto_close_after_delivery(
+        event=event,
+        source=event.source,
+        session_key="agent:main:telegram:group:-1004476874933:3964",
+        run_generation=7,
+        agent_result={
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "final_response": "Done.",
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "turn_tool_events": [
+                {
+                    "name": "mcp_todoist_add_tasks",
+                    "requested_name": "mcp_todoist_add_tasks",
+                    "success": True,
+                    "arguments": {},
+                }
+            ],
+        },
+    )
+
+    assert len(adapter.callbacks) == 1
+    assert adapter.callbacks[0][0].endswith(":3964")
+    assert adapter.callbacks[0][2] == 7
+    event._hermes_delivery_succeeded = True
+    await adapter.callbacks[0][1]()
+
+    assert controller.calls == [("-1004476874933", "3964")]
+    assert notifications[0]["source_ref"].startswith("loop_")
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_topic_open_when_delivery_was_not_confirmed() -> None:
+    adapter = PostDeliveryAdapter()
+    controller = CloseController()
+    runner = object.__new__(GatewayRunner)
+    session_key = "agent:main:telegram:group:-1004476874933:3964"
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._session_run_generation = {session_key: 7}
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+    )
+    runner._becky_loops_topic_controller = controller
+    runner._session_db = None
+
+    event = MessageEvent(
+        text="Done.",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        metadata={
+            "becky_dashboard_new_topic": True,
+            "becky_auto_close_policy": "simple_calendar_todoist_success",
+        },
+        internal=True,
+    )
+    runner._register_becky_auto_close_after_delivery(
+        event=event,
+        source=event.source,
+        session_key=session_key,
+        run_generation=7,
+        agent_result={
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "final_response": "Done.",
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "turn_tool_events": [
+                {
+                    "name": "mcp_todoist_add_tasks",
+                    "requested_name": "mcp_todoist_add_tasks",
+                    "success": True,
+                    "arguments": {},
+                }
+            ],
+        },
+    )
+
+    assert len(adapter.callbacks) == 1
+    await adapter.callbacks[0][1]()
+
+    assert controller.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_topic_open_when_a_newer_generation_exists() -> None:
+    adapter = PostDeliveryAdapter()
+    controller = CloseController()
+    runner = object.__new__(GatewayRunner)
+    session_key = "agent:main:telegram:group:-1004476874933:3964"
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._session_run_generation = {session_key: 8}
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+    )
+    runner._becky_loops_topic_controller = controller
+    runner._session_db = None
+    event = MessageEvent(
+        text="Done.",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        metadata={
+            "becky_dashboard_new_topic": True,
+            "becky_auto_close_policy": "simple_calendar_todoist_success",
+        },
+        internal=True,
+    )
+
+    runner._register_becky_auto_close_after_delivery(
+        event=event,
+        source=event.source,
+        session_key=session_key,
+        run_generation=7,
+        agent_result={
+            "completed": True,
+            "final_response": "Done.",
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "turn_tool_events": [
+                {
+                    "name": "mcp_todoist_add_tasks",
+                    "requested_name": "mcp_todoist_add_tasks",
+                    "success": True,
+                }
+            ],
+        },
+    )
+    event._hermes_delivery_succeeded = True
+
+    await adapter.callbacks[0][1]()
+
+    assert controller.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runner_keeps_topic_open_when_a_followup_is_pending() -> None:
+    adapter = PostDeliveryAdapter()
+    adapter._pending_messages = {}
+    controller = CloseController()
+    runner = object.__new__(GatewayRunner)
+    session_key = "agent:main:telegram:group:-1004476874933:3964"
+    adapter._pending_messages[session_key] = object()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._session_run_generation = {session_key: 7}
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+    )
+    runner._becky_loops_topic_controller = controller
+    runner._session_db = None
+    event = MessageEvent(
+        text="Done.",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        metadata={
+            "becky_dashboard_new_topic": True,
+            "becky_auto_close_policy": "simple_calendar_todoist_success",
+        },
+        internal=True,
+    )
+
+    runner._register_becky_auto_close_after_delivery(
+        event=event,
+        source=event.source,
+        session_key=session_key,
+        run_generation=7,
+        agent_result={
+            "completed": True,
+            "final_response": "Done.",
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "turn_tool_events": [
+                {
+                    "name": "mcp_todoist_add_tasks",
+                    "requested_name": "mcp_todoist_add_tasks",
+                    "success": True,
+                }
+            ],
+        },
+    )
+    event._hermes_delivery_succeeded = True
+
+    await adapter.callbacks[0][1]()
+
+    assert controller.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_register_auto_close_for_failed_action() -> None:
+    adapter = PostDeliveryAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    event = MessageEvent(
+        text="It failed.",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        internal=True,
+    )
+
+    runner._register_becky_auto_close_after_delivery(
+        event=event,
+        source=event.source,
+        session_key="agent:main:telegram:group:-1004476874933:3964",
+        run_generation=7,
+        agent_result={
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "final_response": "It failed.",
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "turn_tool_events": [
+                {
+                    "name": "mcp_todoist_add_tasks",
+                    "requested_name": "mcp_todoist_add_tasks",
+                    "success": False,
+                    "arguments": {},
+                }
+            ],
+        },
+    )
+
+    assert adapter.callbacks == []
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_register_auto_close_without_new_topic_provenance() -> None:
+    adapter = PostDeliveryAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    event = MessageEvent(
+        text="Done.",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        metadata={
+            "becky_auto_close_policy": "simple_calendar_todoist_success",
+        },
+        internal=True,
+    )
+
+    runner._register_becky_auto_close_after_delivery(
+        event=event,
+        source=event.source,
+        session_key="agent:main:telegram:group:-1004476874933:3964",
+        run_generation=7,
+        agent_result={
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "final_response": "Done.",
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "turn_tool_events": [
+                {
+                    "name": "mcp_todoist_add_tasks",
+                    "requested_name": "mcp_todoist_add_tasks",
+                    "success": True,
+                    "arguments": {},
+                }
+            ],
+        },
+    )
+
+    assert adapter.callbacks == []
+
+
+@pytest.mark.asyncio
+async def test_auto_close_keeps_topic_open_when_topic_control_fails() -> None:
+    controller = FailingCloseController()
+    runner = object.__new__(GatewayRunner)
+    runner._becky_loops_config = BeckyLoopsConfig(
+        enabled=True,
+        chat_id="-1004476874933",
+        token="t" * 64,
+    )
+    runner._becky_loops_topic_controller = controller
+    runner._session_db = None
+    runner._notify_becky_topic_closed = pytest.fail
+
+    await runner._maybe_auto_close_becky_topic(
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1004476874933",
+            chat_type="group",
+            thread_id="3964",
+        ),
+        agent_result={
+            "completed": True,
+            "failed": False,
+            "partial": False,
+            "interrupted": False,
+            "final_response": "Done.",
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+            "turn_tool_events": [
+                {
+                    "name": "google_calendar_create_event",
+                    "requested_name": "google_calendar_create_event",
+                    "success": True,
+                }
+            ],
+        },
+    )
+
+    assert controller.calls == [("-1004476874933", "3964")]
 
 
 @pytest.mark.asyncio

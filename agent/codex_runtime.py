@@ -98,6 +98,8 @@ def _record_codex_app_server_usage(agent, turn, messages=None) -> dict[str, Any]
         if compressor is not None and getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage cannot adjudicate the pending compaction; unlatch preflight deferral.
             compressor.update_from_response({})
+        if compressor is not None and callable(getattr(compressor, "note_usage_less_response", None)):
+            compressor.note_usage_less_response()
         _queue_token_counts(agent, "Codex app-server api-call persistence failed (session=%s): %s",
                             counts=lambda: billing(billing_mode="subscription_included"))
         return {}

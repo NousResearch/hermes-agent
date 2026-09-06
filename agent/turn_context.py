@@ -39,6 +39,7 @@ def _preflight_request_tokens(
     """Token estimate for automatic preflight compression: a valid provider usage anchor,
     else the checkpoint-pruned native wire payload, else the generic estimator."""
     anchored = anchored_context_tokens(messages, getattr(agent, "_usage_anchor", None))
+    agent._request_pressure_anchored = anchored is not None
     if anchored is not None:
         return anchored
     tools = getattr(agent, "tools", None) or None

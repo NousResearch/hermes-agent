@@ -1977,15 +1977,18 @@ def estimate_tokens_rough(text: str) -> int:
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:
-    """Rough token estimate for a message list (pre-flight only). Images cost a flat ~1500 tokens
-    each rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
+    """Rough token estimate for a message list (pre-flight only). Images cost the per-image price
+    learned from provider usage (``agent.image_token_cost``; flat default before calibration)
+    rather than their base64 length. ``charge_stale_thinking=False`` mirrors the tail-budget
     walk (``context_compressor._estimate_msg_budget_tokens``): on non-echo routes stale reasoning
     rides the wire only for the NEWEST assistant turn, so excluding it keeps the compaction TRIGGER
     in the same size class as the walk — otherwise reasoning-heavy sessions fire preflight forever."""
-    _IMAGE_TOKEN_COST = 1500
+    from agent.image_token_cost import current_image_token_cost
+
+    image_cost = current_image_token_cost()
     if not charge_stale_thinking:
         messages = _strip_stale_thinking_for_estimate(messages)
-    return sum(_estimate_message_tokens_cached(msg, _IMAGE_TOKEN_COST) for msg in messages)
+    return sum(_estimate_message_tokens_cached(msg, image_cost) for msg in messages)
 
 
 # Thinking-text keys replayed for at most the newest assistant turn on non-echo routes — must stay
@@ -2020,7 +2023,7 @@ def _strip_stale_thinking_for_estimate(messages: List[Dict[str, Any]]) -> List[D
 # estimate. Because the api_messages build shallow-copies history dicts each iteration, the copies share the
 # same content strings — so unchanged history messages hit the memo even though the outer dicts are fresh
 # objects every turn.
-_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int]] = {}
+_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int, int]] = {}  # pins, text tokens, image count
 _MSG_TOKENS_CACHE_MAX = 4096
 
 
@@ -2041,19 +2044,23 @@ def _msg_fingerprint(value: Any, pins: list) -> Any:
 
 
 def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
-    def _compute() -> int:
-        return _estimate_message_tokens_without_images(msg) + _count_image_tokens(msg, image_cost)
+    """Text tokens + images x ``image_cost``; the memo holds text and image COUNT so a recalibrated
+    per-image price re-prices cached rows without invalidating them."""
+    def _compute() -> Tuple[int, int]:
+        return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
         pins: list = []
         key = _msg_fingerprint(msg, pins)
         hash(key)
     except Exception:
-        return _compute()
+        text, images = _compute()
+        return text + images * image_cost
     cached = _MSG_TOKENS_CACHE.get(key)
     if cached is not None:
-        return cached[1]
-    tokens = _compute()
-    _MSG_TOKENS_CACHE[key] = (pins, tokens)
+        return cached[1] + cached[2] * image_cost
+    text, images = _compute()
+    tokens = text + images * image_cost
+    _MSG_TOKENS_CACHE[key] = (pins, text, images)
     while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
         try:
             _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))

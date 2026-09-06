@@ -8546,22 +8546,141 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
 # the interpreter and node_modules the repo root already has.
 WORKTREE_TOOLCHAIN_DIRS = ("venv", ".venv", "node_modules")
 
+# How deep to look for a nested toolchain dir. 2026-09-07: the top-level scan
+# above missed BackupBrain entirely — its install is at ``frontend/node_modules``,
+# so every fresh worktree failed `npm run build` before it tested anything, and
+# the 09-06 gate patch worked around it by SKIPPING the UI rung when `dist` was
+# absent, which masks the fault instead of fixing it. One level is enough for the
+# monorepo layouts this fleet actually has, and bounded so a big repo cannot turn
+# worktree creation into a filesystem walk.
+_WORKTREE_NESTED_SCAN_DEPTH = 1
+_WORKTREE_NESTED_MAX_DIRS = 40
+
+
+def _tenant_provision_paths(repo_root: Path) -> list[str]:
+    """Repo-relative paths a tenant declares must exist in every worktree.
+
+    2026-09-07. Symlinking `node_modules` is not enough: a project's *data* can
+    be gitignored too, and then a fresh worktree is silently unable to verify
+    anything. BackupBrain's 69MB corpus (`data/backupbrain.db`) is the live
+    case — two cards had to be hand-provisioned on 09-07 before they could check
+    their own acceptance criteria, which is the same failure the toolchain links
+    exist to prevent.
+
+    Declared per tenant in ``kanban-tenants.json``::
+
+        "backupbrain": {..., "provision": ["data/backupbrain.db",
+                                           "frontend/node_modules"]}
+
+    Looked up by ``primary_path`` so any caller with a repo root can resolve it
+    without threading the tenant through. Fail-open: any problem returns ``[]``
+    and worktree creation behaves exactly as before.
+    """
+    try:
+        path = os.environ.get("HERMES_KANBAN_TENANTS")
+        p = Path(path) if path else _fleet_home() / "kanban-tenants.json"
+        if not p.is_file():
+            return []
+        data = json.loads(p.read_text() or "{}")
+        if not isinstance(data, dict):
+            return []
+        want = repo_root.resolve(strict=False)
+        for ent in data.values():
+            if not isinstance(ent, dict):
+                continue
+            primary = ent.get("primary_path")
+            if not primary:
+                continue
+            if Path(str(primary)).expanduser().resolve(strict=False) != want:
+                continue
+            raw = ent.get("provision") or []
+            if not isinstance(raw, list):
+                return []
+            return [str(x) for x in raw if isinstance(x, str) and x.strip()]
+    except Exception as exc:  # noqa: BLE001 — provisioning must never fail a dispatch
+        _log.debug("tenant provision lookup for %s failed: %s", repo_root, exc)
+    return []
+
+
+def _safe_relative_target(repo_root: Path, target: Path, rel: str):
+    """Resolve a repo-relative provision entry, or ``None`` if it escapes.
+
+    An entry is data from a config file, so it is treated as untrusted: absolute
+    paths and anything that resolves outside the repo (``../../etc/passwd``) are
+    refused rather than linked. Returns ``(src, dst)``.
+    """
+    rel = (rel or "").strip()
+    if not rel or Path(rel).is_absolute():
+        return None
+    src = (repo_root / rel).resolve(strict=False)
+    dst = (target / rel).resolve(strict=False)
+    root = repo_root.resolve(strict=False)
+    tgt = target.resolve(strict=False)
+    try:
+        src.relative_to(root)
+        dst.relative_to(tgt)
+    except ValueError:
+        return None
+    return src, dst
+
 
 def _provision_worktree_toolchain(repo_root: Path, target: Path) -> list[str]:
-    """Symlink the repo root's toolchain dirs into a fresh worktree. Best effort."""
+    """Symlink the repo root's toolchain and tenant data into a fresh worktree.
+
+    Best effort throughout: a worktree that is missing a convenience link is
+    recoverable, a dispatch that raises here is not.
+    """
     linked: list[str] = []
+
+    def _link(rel: str, src: Path, dst: Path, is_dir: bool) -> None:
+        try:
+            if not src.exists():
+                return
+            if dst.exists() or dst.is_symlink():
+                return
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.symlink_to(src, target_is_directory=is_dir)
+            linked.append(rel)
+        except Exception as exc:  # noqa: BLE001
+            _log.debug("worktree link %s -> %s failed: %s", dst, src, exc)
+
+    # 1. Top-level toolchain dirs (the 2026-09-03 behaviour, unchanged).
     for name in WORKTREE_TOOLCHAIN_DIRS:
         src = repo_root / name
-        dst = target / name
-        try:
-            if not src.is_dir() or dst.exists() or dst.is_symlink():
-                continue
-            dst.symlink_to(src, target_is_directory=True)
-            linked.append(name)
-        except Exception as exc:  # noqa: BLE001 — never fail a worktree for a convenience link
-            _log.debug("worktree toolchain link %s -> %s failed: %s", dst, src, exc)
+        if src.is_dir():
+            _link(name, src, target / name, True)
+
+    # 2. The same dirs one level down — `frontend/node_modules`, `api/.venv`.
+    try:
+        children = sorted(
+            d for d in repo_root.iterdir()
+            if d.is_dir() and not d.name.startswith(".") and d.name != ".worktrees"
+        )[:_WORKTREE_NESTED_MAX_DIRS]
+        for child in children:
+            for name in WORKTREE_TOOLCHAIN_DIRS:
+                src = child / name
+                if src.is_dir():
+                    rel = f"{child.name}/{name}"
+                    _link(rel, src, target / child.name / name, True)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("worktree nested toolchain scan of %s failed: %s", repo_root, exc)
+
+    # 3. Whatever the tenant declares it cannot work without — typically
+    #    gitignored data. Untrusted config, so each entry is bounds-checked.
+    for rel in _tenant_provision_paths(repo_root):
+        resolved = _safe_relative_target(repo_root, target, rel)
+        if resolved is None:
+            _log.warning(
+                "worktree %s: refusing provision entry %r — it escapes the repo",
+                target, rel,
+            )
+            continue
+        src, dst = resolved
+        if src.exists():
+            _link(rel, src, dst, src.is_dir())
+
     if linked:
-        _log.info("worktree %s: linked toolchain %s from %s", target, ",".join(linked), repo_root)
+        _log.info("worktree %s: linked %s from %s", target, ",".join(linked), repo_root)
     return linked
 
 
@@ -8631,6 +8750,19 @@ def _resolve_worktree_workspace(
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
             if fallback.resolve(strict=False) != requested_resolved:
+                # 2026-09-07: say so. This guard is correct — reusing another
+                # task's checkout is silent provenance corruption — but until
+                # now it substituted a DIFFERENT workspace without a word, so an
+                # operator who deliberately pointed a card at an already-
+                # provisioned tree saw the card start somewhere else and had no
+                # way to know why. An hour went into re-deriving that on 09-07.
+                _log.warning(
+                    "task %s: requested worktree %s is checked out on branch %r, "
+                    "not %r — creating a fresh worktree at %s instead. Anything "
+                    "gitignored in the requested tree (data, node_modules) will "
+                    "NOT be there; declare it in kanban-tenants.json 'provision'.",
+                    task.id, requested, actual_branch, branch_name, fallback,
+                )
                 _ensure_git_worktree(fallback_root, fallback, branch_name)
                 return fallback.resolve(strict=False), branch_name
         # No repo to anchor a fallback on (or the occupied path IS this

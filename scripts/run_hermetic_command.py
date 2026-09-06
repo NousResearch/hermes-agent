@@ -11,7 +11,11 @@ import subprocess
 import sys
 import tempfile
 
-from run_tests_parallel import _resolve_real_home, _sandboxed_test_command
+from run_tests_parallel import (
+    _path_without_real_home,
+    _resolve_real_home,
+    _sandboxed_test_command,
+)
 
 
 def _prepare_disposable_workspace(source: Path, destination: Path) -> Path:
@@ -161,7 +165,9 @@ def main() -> int:
         home = sandbox_root / "home"
         home.mkdir()
         env = {
-            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+            "PATH": _path_without_real_home(
+                os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), real_home
+            ),
             "HOME": str(home),
             "HERMES_HOME": str(home / ".hermes"),
             "XDG_CONFIG_HOME": str(home / ".config"),

@@ -12,6 +12,8 @@ import threading
 
 import pytest
 
+from scripts.run_tests_parallel import _trusted_sandbox_executable
+
 
 def test_runner_uses_synthetic_home_and_os_sandbox():
     home = Path(os.environ["HOME"]).resolve()
@@ -28,6 +30,21 @@ def test_runner_uses_synthetic_home_and_os_sandbox():
         entry = Path(raw_entry).resolve()
         assert entry != real_home
         assert not entry.is_relative_to(real_home)
+
+
+def test_os_sandbox_launcher_ignores_ambient_path(monkeypatch):
+    fake = Path(os.environ["HOME"]) / "bin" / "sandbox-exec"
+    monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: str(fake))
+    if sys.platform.startswith("linux"):
+        resolved = _trusted_sandbox_executable(Path("/usr/bin/bwrap"), "bubblewrap")
+    elif sys.platform == "darwin":
+        resolved = _trusted_sandbox_executable(
+            Path("/usr/bin/sandbox-exec"), "sandbox-exec"
+        )
+    else:
+        pytest.skip("fixed launcher attestation is POSIX-only")
+    assert Path(resolved).is_absolute()
+    assert Path(resolved) != fake
 
 
 @pytest.mark.parametrize(

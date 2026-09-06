@@ -47,6 +47,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -77,6 +78,43 @@ _DEFAULT_ROOTS = ["tests"]
 #                        so the build is guaranteed to die in fixture
 #                        setup. The dedicated job sidesteps both costs.
 _SKIP_PARTS = {"integration", "e2e", "docker"}
+
+
+def _path_without_real_home(raw_path: str, real_home: Path) -> str:
+    safe_entries: list[str] = []
+    for raw_entry in raw_path.split(os.pathsep):
+        entry = Path(raw_entry)
+        if not entry.is_absolute():
+            continue
+        resolved_entry = entry.resolve()
+        if resolved_entry == real_home or resolved_entry.is_relative_to(real_home):
+            continue
+        safe_entries.append(str(entry))
+    if not safe_entries:
+        raise RuntimeError("test PATH has no executable directory outside real HOME")
+    return os.pathsep.join(safe_entries)
+
+
+def _trusted_sandbox_executable(path: Path, label: str) -> str:
+    try:
+        resolved = path.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Hermes tests require the system {label}; refusing an unsandboxed process"
+        ) from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        # Linux user namespaces map host root to the overflow uid. Compare
+        # with the system root owner so nested hermetic runners retain the
+        # same attestation without accepting the calling user's files.
+        or metadata.st_uid != Path("/").stat().st_uid
+        or not os.access(resolved, os.X_OK)
+    ):
+        raise RuntimeError(
+            f"Hermes system {label} failed root-owned executable attestation"
+        )
+    return str(resolved)
 
 # Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
@@ -240,12 +278,7 @@ def _sandboxed_test_command(
     """Wrap one pytest file in the host's fail-closed OS sandbox."""
     directories, files = _sensitive_host_paths(real_home, repo_root)
     if sys.platform.startswith("linux"):
-        bwrap = shutil.which("bwrap")
-        if not bwrap:
-            raise RuntimeError(
-                "Hermes tests require bubblewrap on Linux; refusing an "
-                "unsandboxed test process"
-            )
+        bwrap = _trusted_sandbox_executable(Path("/usr/bin/bwrap"), "bubblewrap")
         env["HERMES_TEST_OS_SANDBOX"] = "linux-bwrap"
         live_hermes = real_home / ".hermes"
         if repo_root == live_hermes or repo_root.is_relative_to(live_hermes):
@@ -373,12 +406,9 @@ def _sandboxed_test_command(
         return [*wrapped, *command]
 
     if sys.platform == "darwin":
-        sandbox_exec = shutil.which("sandbox-exec")
-        if not sandbox_exec:
-            raise RuntimeError(
-                "Hermes tests require sandbox-exec on macOS; refusing an "
-                "unsandboxed test process"
-            )
+        sandbox_exec = _trusted_sandbox_executable(
+            Path("/usr/bin/sandbox-exec"), "sandbox-exec"
+        )
         env["HERMES_TEST_OS_SANDBOX"] = "macos-sandbox-exec"
         env["HERMES_TEST_ATTESTED_MACH_BROKER"] = _attest_macos_mach_broker()
         # Seatbelt intentionally permits a sandboxed process to signal
@@ -903,18 +933,7 @@ def _run_one_file_once(
     test_home.mkdir()
     test_hermes_home.mkdir()
     real_home = _resolve_real_home(env)
-    safe_path_entries: list[str] = []
-    for raw_entry in env.get("PATH", "").split(os.pathsep):
-        entry = Path(raw_entry)
-        if not entry.is_absolute():
-            continue
-        resolved_entry = entry.resolve()
-        if resolved_entry == real_home or resolved_entry.is_relative_to(real_home):
-            continue
-        safe_path_entries.append(str(entry))
-    if not safe_path_entries:
-        raise RuntimeError("test PATH has no executable directory outside real HOME")
-    env["PATH"] = os.pathsep.join(safe_path_entries)
+    env["PATH"] = _path_without_real_home(env.get("PATH", ""), real_home)
     env["PYTEST_DEBUG_TEMPROOT"] = temproot
     cmd.extend(("-o", f"cache_dir={temproot}/pytest-cache"))
     env["TMPDIR"] = temproot

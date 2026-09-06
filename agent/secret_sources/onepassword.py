@@ -157,13 +157,25 @@ def _describe_secret_purpose(reference: str) -> str:
     return "This credential is needed for the agent to perform its current task."
 
 
+_NOTIFIED_REFS: set = set()  # Track which references we've already notified about this process
+
+
 def _notify_secret_access(reference: str, *, profile: str = "", reason: str = "") -> None:
     """Send a desktop notification BEFORE calling op read, so the user has context
     when the 1Password authorization prompt appears. This addresses the blind-prompt
     problem where 1Password shows a process path but not what it's for or why.
 
+    Only notifies once per reference per process — repeated reads from cache
+    don't re-trigger the notification. This prevents notification storms when
+    the cache expires and re-resolves the same secret.
+
     Servetus design principle: informed consent, not blind authorization.
     """
+    # Only notify once per reference per process lifetime
+    if reference in _NOTIFIED_REFS:
+        return
+    _NOTIFIED_REFS.add(reference)
+
     try:
         # Parse the op://vault/item/field reference for human-readable parts
         parts = reference.replace("op://", "").split("/")

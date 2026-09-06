@@ -74,3 +74,42 @@ def test_echo_on_slightly_shorter_rephrasing_is_caught():
     current = "the answer is forty-two and a bit more context"  # prior minus '.'
     agent = _agent(current)
     assert _is_degenerate_continuation(agent, current, prior) is True
+
+
+def test_echo_prior_contained_in_current_is_caught():
+    """The reverse direction: prior is a >=70% substring of the new reply."""
+    prior = "abcdef"          # 6 chars
+    current = "abcdefgh"      # 8 chars; prior is 75% of current and contained
+    agent = _agent(current)
+    assert _is_degenerate_continuation(agent, current, prior) is True
+
+
+def test_echo_below_70_percent_not_degenerate():
+    """A reply that is not a large-enough overlap of the prior is NOT echo."""
+    prior = "abcdefghij"      # 10 chars
+    current = "abcdef"        # 6 chars -> 60% (<70%) and prior not in current
+    agent = _agent(current)
+    assert _is_degenerate_continuation(agent, current, prior) is False
+
+
+def test_phrase_gate_at_160_is_degenerate():
+    """A 160-char single-line stall reply is exactly at the gate -> flagged."""
+    text = ("i cannot " * 20)[:160]  # exactly 160 chars, single line, no fence
+    assert len(text) == 160
+    agent = _agent(text)
+    assert _is_degenerate_continuation(agent, text, "") is True
+
+
+def test_phrase_gate_over_160_not_degenerate():
+    """A 161-char single-line reply is past the thin-stall gate -> not flagged."""
+    text = ("i cannot " * 20)[:161]  # 161 chars, single line, no fence
+    assert len(text) == 161
+    agent = _agent(text)
+    assert _is_degenerate_continuation(agent, text, "") is False
+
+
+def test_multiline_reply_with_phrase_not_degenerate():
+    """A multi-line reply containing a stall word is a deliverable, not a stall."""
+    content = "i cannot give a one-liner. Here is the breakdown:\n- point 1\n- point 2"
+    agent = _agent(content)
+    assert _is_degenerate_continuation(agent, content, "") is False

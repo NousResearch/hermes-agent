@@ -412,3 +412,34 @@ def test_route_key_still_probes_when_the_pooled_token_is_stale(monkeypatch):
 
     assert result.status == "pass"
     assert seen["headers"].get("Authorization") == "Bearer route-key"
+
+
+def test_run_live_checks_actually_runs_the_configured_model_probe(monkeypatch):
+    """The probe must be WIRED INTO ``run_live_checks``, not merely importable.
+
+    Every other test here calls ``_probe_configured_models`` directly, so all of them stay
+    green if the call site disappears from the run — which is exactly what a refactor of the
+    surrounding probe list (or a botched rebase onto one) would do.
+    """
+    sentinel = doctor_live.ProbeResult("Model: sentinel", "fail", "(wired)")
+    seen = {}
+
+    def _fake(config, timeout):
+        seen["called"] = True
+        seen["timeout"] = timeout
+        return [sentinel]
+
+    monkeypatch.setattr(doctor_live, "_probe_configured_models", _fake)
+    monkeypatch.setattr(doctor_live, "_load_config", lambda: {})
+    # Silence every other probe so the run is fast and this test is about wiring only.
+    monkeypatch.setattr(doctor_live, "_run_one",
+                        lambda name, fn, issues: doctor_live.ProbeResult(name, "skip", "(stubbed)"))
+    monkeypatch.setattr(doctor_live, "_section", lambda *a, **k: None)
+    monkeypatch.setattr(doctor_live, "_report", lambda *a, **k: None)
+
+    issues: list = []
+    results = doctor_live.run_live_checks(issues)
+
+    assert seen.get("called"), "run_live_checks never called _probe_configured_models"
+    assert sentinel in results, "the probe's results are dropped instead of reported"
+    assert seen["timeout"] == doctor_live.DEFAULT_PROBE_TIMEOUT

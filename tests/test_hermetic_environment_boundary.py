@@ -12,7 +12,10 @@ import threading
 
 import pytest
 
-from scripts.run_tests_parallel import _trusted_sandbox_executable
+from scripts.run_tests_parallel import (
+    _trusted_linux_bubblewrap,
+    _trusted_sandbox_executable,
+)
 
 
 def test_runner_uses_synthetic_home_and_os_sandbox():
@@ -36,7 +39,7 @@ def test_os_sandbox_launcher_ignores_ambient_path(monkeypatch):
     fake = Path(os.environ["HOME"]) / "bin" / "sandbox-exec"
     monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: str(fake))
     if sys.platform.startswith("linux"):
-        resolved = _trusted_sandbox_executable(Path("/usr/bin/bwrap"), "bubblewrap")
+        resolved = _trusted_linux_bubblewrap(dict(os.environ))
     elif sys.platform == "darwin":
         resolved = _trusted_sandbox_executable(
             Path("/usr/bin/sandbox-exec"), "sandbox-exec"

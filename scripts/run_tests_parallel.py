@@ -109,12 +109,34 @@ def _trusted_sandbox_executable(path: Path, label: str) -> str:
         # with the system root owner so nested hermetic runners retain the
         # same attestation without accepting the calling user's files.
         or metadata.st_uid != Path("/").stat().st_uid
+        or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
         or not os.access(resolved, os.X_OK)
     ):
         raise RuntimeError(
             f"Hermes system {label} failed root-owned executable attestation"
         )
     return str(resolved)
+
+
+def _trusted_linux_bubblewrap(env: dict[str, str]) -> str:
+    candidates = [Path("/usr/bin/bwrap")]
+    discovered = shutil.which("bwrap", path=env.get("PATH", ""))
+    if discovered:
+        candidates.append(Path(discovered))
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved != Path("/usr/bin/bwrap") and not resolved.is_relative_to(
+            Path("/nix/store")
+        ):
+            continue
+        return _trusted_sandbox_executable(resolved, "bubblewrap")
+    raise RuntimeError(
+        "Hermes tests require root-owned bubblewrap from /usr/bin or /nix/store; "
+        "refusing an unsandboxed process"
+    )
 
 # Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
@@ -278,7 +300,7 @@ def _sandboxed_test_command(
     """Wrap one pytest file in the host's fail-closed OS sandbox."""
     directories, files = _sensitive_host_paths(real_home, repo_root)
     if sys.platform.startswith("linux"):
-        bwrap = _trusted_sandbox_executable(Path("/usr/bin/bwrap"), "bubblewrap")
+        bwrap = _trusted_linux_bubblewrap(env)
         env["HERMES_TEST_OS_SANDBOX"] = "linux-bwrap"
         live_hermes = real_home / ".hermes"
         if repo_root == live_hermes or repo_root.is_relative_to(live_hermes):

@@ -199,7 +199,7 @@ def test_steer_closed_acceptance_is_refused():
 
 
 def test_stop_interrupts_owned_child(monkeypatch):
-    import tools.delegate_tool as dt
+    import tools.delegate_tool_registry as dt
 
     parent = _StubParent()
     child = _StubChild(parent)
@@ -219,7 +219,7 @@ def test_stop_interrupts_owned_child(monkeypatch):
 
 
 def test_stop_foreign_child_is_refused(monkeypatch):
-    import tools.delegate_tool as dt
+    import tools.delegate_tool_registry as dt
 
     parent = _StubParent()
     foreign = _StubChild(_StubParent())
@@ -619,8 +619,108 @@ def test_child_watch_match_suppressed_by_default(monkeypatch):
     assert reg.completion_queue.qsize() == 0
 
 
+def test_child_completion_with_collapsed_container_task_id_suppressed(monkeypatch):
+    """Regression (child-notify leak, Aug 2026): terminal_tool stamps the
+    COLLAPSED container key ("default"/session key) into the event's task_id
+    — _resolve_container_task_id deliberately collapses subagent ids so
+    children share the parent's container. The suppression gate must key on
+    owner_task_id (the raw spawning id), or child events with
+    task_id="default" walk straight past it into the parent chat."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    evt = _child_completion_evt(task_id="default")
+    evt["owner_task_id"] = "sa-9-supp0005"
+    reg.completion_queue.put(evt)
+    assert reg.drain_notifications() == []
+    assert reg.completion_queue.qsize() == 0
+
+
+def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch):
+    """spawn_local(owner_task_id=...) survives to the completion event, so a
+    real subagent-spawned process (collapsed task_id) is suppressed on
+    drain. Exercises the actual spawn -> _move_to_finished -> drain path."""
+    import time as _time
+
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    session = reg.spawn_local(
+        command="echo owner-stamp-e2e",
+        task_id="default",
+        owner_task_id="sa-9-supp0006",
+    )
+    session.notify_on_complete = True
+    assert session.owner_task_id == "sa-9-supp0006"
+    deadline = _time.time() + 15
+    while not session.exited and _time.time() < deadline:
+        _time.sleep(0.05)
+    assert session.exited, "test process should exit promptly"
+    _time.sleep(0.3)  # let the reader thread enqueue the completion event
+    assert reg.drain_notifications() == []
+
+
+def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch):
+    """Backward compat: callers that don't pass owner_task_id behave exactly
+    as before (owner falls back to task_id; parent-owned still delivers)."""
+    import time as _time
+
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+
+    monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
+    reg = ProcessRegistry()
+    session = reg.spawn_local(command="echo parent-e2e", task_id="default")
+    session.notify_on_complete = True
+    assert session.owner_task_id == "default"
+    deadline = _time.time() + 15
+    while not session.exited and _time.time() < deadline:
+        _time.sleep(0.05)
+    assert session.exited
+    _time.sleep(0.3)
+    results = reg.drain_notifications()
+    assert len(results) == 1
+    assert "completed normally" in results[0][1]
+
+
+def test_attribution_line_uses_owner_task_id(monkeypatch):
+    """format_process_notification resolves attribution from owner_task_id
+    when task_id is a collapsed container key (surface flag on)."""
+    import hermes_cli.config as _cfg
+    from tools.process_registry import ProcessRegistry
+    from tools.process_registry_notifications import format_process_notification
+
+    monkeypatch.setattr(
+        _cfg,
+        "read_raw_config",
+        lambda *a, **k: {
+            "delegation": {"surface_child_process_notifications": True}
+        },
+    )
+    parent = _StubParentWithSession("sess-attr-owner")
+    child = _StubChild(parent)
+    _register("sa-9-supp0007", child, delegation_id="deleg_attr_owner")
+    try:
+        reg = ProcessRegistry()
+        evt = _child_completion_evt(task_id="default", sid="proc_ownerattr01")
+        evt["owner_task_id"] = "sa-9-supp0007"
+        reg.completion_queue.put(evt)
+        results = reg.drain_notifications()
+        assert len(results) == 1
+        assert "Started by subagent sa-9-supp0007" in results[0][1]
+        # And the standalone formatter agrees.
+        text = format_process_notification(evt)
+        assert "Started by subagent sa-9-supp0007" in text
+    finally:
+        _unregister_subagent("sa-9-supp0007")
+
+
 def test_completion_notification_trims_subagent_output_wall():
-    from tools.process_registry import format_process_notification
+    from tools.process_registry_notifications import format_process_notification
 
     parent = _StubParentWithSession("sess-attr-4")
     child = _StubChild(parent)
@@ -646,7 +746,7 @@ def test_completion_notification_trims_subagent_output_wall():
 
 def test_parent_owned_process_notification_unchanged():
     """Processes NOT started by a subagent keep the exact legacy shape."""
-    from tools.process_registry import format_process_notification
+    from tools.process_registry_notifications import format_process_notification
 
     text = format_process_notification(
         {

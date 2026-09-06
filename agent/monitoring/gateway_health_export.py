@@ -1,101 +1,62 @@
 """Gateway Health & Diagnostics OTLP export runtime.
 
-This exporter emits operator-owned gateway service-health metrics plus
-narrow redacted diagnostic events. It is deliberately in-process and fail-open so
-it works under systemd, launchd, s6, containers, tmux, nohup, or a simple shell
-without a sidecar/watchdog dependency.
+Emits operator-owned gateway service-health metrics plus narrow redacted diagnostic events.
+Deliberately in-process and fail-open so it works under systemd, launchd, s6, containers,
+tmux, nohup, or a plain shell without a sidecar/watchdog dependency.
 """
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
-import re
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
+
+from agent.monitoring import emitter, otlp_exporter
+from agent.monitoring.gateway_health import (
+    GatewayDiagnosticLogHandler,
+    GatewayMetric,
+    _safe_profile as _profile,
+    _safe_version as _version,
+    build_gateway_health_snapshot,
+    source_logger_for_export,
+)
+from agent.monitoring.otlp_exporter import (
+    EmitterStreamer,
+    _allowlisted_attrs,
+    _install_id,
+    _monitoring_section,
+    _otlp_config,
+    _resolve_headers,
+    _runtime_resource_attributes,
+    _signal_endpoint,
+)
+from agent.monitoring.redaction import redact_bounded
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DIAGNOSTIC_SCOPE = "hermes.gateway.diagnostics"
-
-_RESOURCE_ATTRIBUTE_KEYS = frozenset({
-    "service.name",
-    "service.namespace",
-    "service.version",
-    "service.instance.id",
-    "deployment.environment.name",
-    "cloud.provider",
-    "cloud.platform",
-    "cloud.region",
-    "telemetry.scope",
-})
-_DIAGNOSTIC_ATTRIBUTE_KEYS = frozenset({
-    "name",
-    "subsystem",
-    "error_class",
-    "error_code",
-    "platform",
-    "old_state",
-    "new_state",
-    "version",
-    "severity",
-})
-_SAFE_RESOURCE_VALUE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
-
-
-def _redact_string(raw: Any, *, limit: int = 500) -> str:
-    try:
-        from agent.monitoring.redaction import redact_for_export
-        return (redact_for_export(str(raw or "")) or "[redacted]")[:limit]
-    except Exception:
-        return "[redaction-unavailable]"
-
-
-def _safe_resource_attributes(raw: Any) -> Dict[str, str]:
-    """Allowlist bounded resource labels and reject values changed by redaction."""
-    attrs: Dict[str, str] = {}
-    if not isinstance(raw, dict):
-        return attrs
-    for key, value in raw.items():
-        key = str(key)
-        if key not in _RESOURCE_ATTRIBUTE_KEYS or value is None:
-            continue
-        if key == "service.instance.id":
-            from agent.monitoring.gateway_health import _safe_instance_id
-            attrs[key] = _safe_instance_id(value)
-            continue
-        text = str(value)
-        if not _SAFE_RESOURCE_VALUE.fullmatch(text):
-            continue
-        if _redact_string(text, limit=128) != text:
-            continue
-        attrs[key] = text
-    return attrs
-
-
-def _runtime_resource_attributes(
-    config: Dict[str, Any], *, telemetry_scope: str
-) -> Dict[str, str]:
-    """Build the safe OTLP resource shared by metrics and diagnostic logs."""
-    gh = _gateway_health_config(config)
-    attrs = _safe_resource_attributes(gh.get("resource_attributes"))
-    from agent.monitoring.gateway_health import _safe_instance_id
-
-    attrs["service.name"] = "hermes-gateway"
-    attrs["service.instance.id"] = _safe_instance_id(_install_id(config))
-    attrs["telemetry.scope"] = telemetry_scope
-    return attrs
+_METRICS_SDK = (
+    "OTLPLogExporter", "OTLPMetricExporter", "Observation", "LogRecord", "LoggerProvider",
+    "INVALID_SPAN_ID", "INVALID_TRACE_ID", "TraceFlags", "SeverityNumber",
+    "BatchLogRecordProcessor", "MeterProvider", "PeriodicExportingMetricReader", "Resource",
+)
+# Every gauge the runtime snapshot can emit MUST be listed here or it is silently dropped.
+_OBSERVABLE_METRIC_NAMES = (
+    "hermes.gateway.up", "hermes.gateway.state", "hermes.gateway.active_agents", "hermes.gateway.busy",
+    "hermes.gateway.drainable", "hermes.gateway.restart_requested", "hermes.gateway.background_work",
+    "hermes.gateway.background_delegations", "hermes.platform.up", "hermes.platform.degraded",
+    "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
+    "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
+    "hermes.cron.jobs.overdue",
+)
 
 
 def _diagnostic_log_attributes(event: Dict[str, Any]) -> Dict[str, Any]:
-    attrs: Dict[str, Any] = {}
-    for key in _DIAGNOSTIC_ATTRIBUTE_KEYS:
-        value = event.get(key)
-        if value is None:
-            continue
-        attrs[f"hermes.{key}"] = _redact_string(value) if isinstance(value, str) else value
-    return attrs
+    # Same allowlist as the span mapping: profile/install_id/ts never egress as attributes.
+    return _allowlisted_attrs(event, otlp_exporter._KEEP_BY_KIND["gateway_diagnostic"])
 
 
 @dataclass(slots=True)
@@ -115,473 +76,204 @@ class GatewayHealthExportRuntime:
         if self.thread is not None:
             self.thread.join(timeout=0.25)
         if self.log_handler is not None:
-            try:
+            with suppress(Exception):
                 logging.getLogger().removeHandler(self.log_handler)
-            except Exception:
-                pass
-
-        # All producers above are now stopped. Drain queued and in-flight
-        # events before detaching subscribers so the terminal lifecycle event
-        # cannot race exporter shutdown. The barrier is bounded and fail-open.
-        try:
-            from agent.monitoring.emitter import get_emitter
-            emitter = get_emitter()
-            emitter.flush(timeout=1.0)
-            if self.streamer is not None:
-                emitter.unsubscribe(self.streamer)
-            if self.log_streamer is not None:
-                emitter.unsubscribe(self.log_streamer)
-        except Exception:
-            pass
-
-        # Network flush/close runs under one bounded daemon-thread deadline and
-        # can never delay gateway teardown indefinitely.
-        closeables = [
-            item for item in (self.streamer, self.log_streamer, self.metric_provider)
-            if item is not None
-        ]
+        # Producers are stopped; drain queued/in-flight events BEFORE detaching subscribers
+        # so the terminal lifecycle event cannot race exporter shutdown. Bounded, fail-open.
+        subscribers = [item for item in (self.streamer, self.log_streamer) if item is not None]
+        with suppress(Exception):
+            bus = emitter.get_emitter()
+            bus.flush(timeout=1.0)
+            for sub in subscribers:
+                bus.unsubscribe(sub)
+        # Network flush/close runs under one bounded daemon-thread deadline so it can
+        # never delay gateway teardown indefinitely.
+        closeables = [item for item in (self.streamer, self.log_streamer, self.metric_provider) if item is not None]
 
         def _close() -> None:
             for item in closeables:
-                try:
+                with suppress(Exception):
                     item.shutdown()
-                except Exception:
-                    pass
 
         if closeables:
-            worker = threading.Thread(
-                target=_close,
-                name="hermes-gateway-health-export-shutdown",
-                daemon=True,
-            )
+            worker = threading.Thread(target=_close, name="hermes-gateway-health-export-shutdown", daemon=True)
             worker.start()
             worker.join(timeout=2.0)
-
-        self.streamer = None
-        self.log_streamer = None
-        self.metric_provider = None
-        self.thread = None
-        self.stop_event = None
+        self.streamer = self.log_streamer = self.metric_provider = self.thread = self.stop_event = None
 
 
 def _gateway_health_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    mon = (config or {}).get("monitoring") or {}
-    return mon.get("gateway_health_export") or {}
-
-
-def _otlp_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    mon = (config or {}).get("monitoring") or {}
-    export = mon.get("export") or {}
-    return export.get("otlp") or {}
+    return _monitoring_section(config, "gateway_health_export")
 
 
 def _enabled(config: Dict[str, Any]) -> bool:
-    gh = _gateway_health_config(config)
+    return bool(_gateway_health_config(config).get("enabled") and otlp_exporter.is_enabled(config))
+
+
+def _exporter_kwargs(config: Dict[str, Any], signal: str) -> Dict[str, Any]:
     otlp = _otlp_config(config)
-    return bool(gh.get("enabled") and otlp.get("enabled") and otlp.get("endpoint"))
+    return {"endpoint": _signal_endpoint(str(otlp.get("endpoint")), signal), "headers": _resolve_headers(otlp.get("headers_env")) or None}
 
 
-def _require_metrics_sdk(*, auto_install: bool = True, prompt: bool = False) -> Dict[str, Any]:
-    if auto_install:
-        try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("export.otlp", prompt=prompt)
-        except Exception:
-            pass
-    try:
-        from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-        from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-        from opentelemetry.metrics import Observation
-        from opentelemetry.trace import INVALID_SPAN_ID, INVALID_TRACE_ID, TraceFlags
-        from opentelemetry._logs import LogRecord
-        from opentelemetry._logs.severity import SeverityNumber
-        from opentelemetry.sdk._logs import LoggerProvider
-        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-        from opentelemetry.sdk.metrics import MeterProvider
-        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-        from opentelemetry.sdk.resources import Resource
-        return {
-            "OTLPLogExporter": OTLPLogExporter,
-            "OTLPMetricExporter": OTLPMetricExporter,
-            "Observation": Observation,
-            "LogRecord": LogRecord,
-            "LoggerProvider": LoggerProvider,
-            "INVALID_SPAN_ID": INVALID_SPAN_ID,
-            "INVALID_TRACE_ID": INVALID_TRACE_ID,
-            "TraceFlags": TraceFlags,
-            "SeverityNumber": SeverityNumber,
-            "BatchLogRecordProcessor": BatchLogRecordProcessor,
-            "MeterProvider": MeterProvider,
-            "PeriodicExportingMetricReader": PeriodicExportingMetricReader,
-            "Resource": Resource,
-        }
-    except Exception as exc:
-        raise RuntimeError(f"OTLP metrics SDK unavailable: {exc}") from exc
-
-
-def _resolve_headers(headers_env: Optional[Dict[str, str]]) -> Dict[str, str]:
-    resolved: Dict[str, str] = {}
-    for header_name, env_name in (headers_env or {}).items():
-        val = os.environ.get(str(env_name))
-        if val:
-            resolved[str(header_name)] = val
-    return resolved
-
-
-def _metric_endpoint(endpoint: str) -> str:
-    if endpoint.endswith("/v1/traces"):
-        return endpoint[: -len("/v1/traces")] + "/v1/metrics"
-    return endpoint
-
-
-def _logs_endpoint(endpoint: str) -> str:
-    if endpoint.endswith("/v1/traces"):
-        return endpoint[: -len("/v1/traces")] + "/v1/logs"
-    if endpoint.endswith("/v1/metrics"):
-        return endpoint[: -len("/v1/metrics")] + "/v1/logs"
-    return endpoint
-
-
-def _version() -> str:
-    try:
-        from hermes_cli import __version__
-        return str(__version__)
-    except Exception:
-        return "unknown"
-
-
-def _profile() -> str:
-    try:
-        from hermes_cli.profiles import get_active_profile_name
-        return str(get_active_profile_name() or "default")
-    except Exception:
-        return "default"
-
-
-def _install_id(config: Dict[str, Any]) -> str:
-    try:
-        from agent.monitoring.policy import ensure_install_id
-        return str(ensure_install_id(config))
-    except Exception:
-        return "unknown"
+# Ordered detection: systemd > s6 > container > launchd > manual (first match wins).
+_SUPERVISION_DETECTORS: tuple[tuple[str, Callable[[], Any]], ...] = (
+    ("systemd", lambda: os.environ.get("INVOCATION_ID")),
+    ("s6", lambda: os.environ.get("S6_CMD_ARG0") or os.environ.get("S6_VERSION")),
+    ("container", lambda: os.environ.get("container") or os.path.exists("/.dockerenv")),
+    ("launchd", lambda: os.environ.get("LAUNCHD_SOCKET")),
+)
 
 
 def _supervision_mode() -> str:
-    if os.environ.get("INVOCATION_ID"):
-        return "systemd"
-    if os.environ.get("S6_CMD_ARG0") or os.environ.get("S6_VERSION"):
-        return "s6"
-    if os.environ.get("container") or os.path.exists("/.dockerenv"):
-        return "container"
-    if os.environ.get("LAUNCHD_SOCKET"):
-        return "launchd"
-    return "manual"
+    return next((mode for mode, detect in _SUPERVISION_DETECTORS if detect()), "manual")
 
 
 def _read_gateway_snapshot(config: Dict[str, Any]):
-    from agent.monitoring.gateway_health import build_gateway_health_snapshot
     try:
         from gateway.status import read_runtime_status
         runtime = read_runtime_status() or {}
     except Exception:
         runtime = {}
     return build_gateway_health_snapshot(
-        runtime,
-        gateway_running=True,
-        profile=_profile(),
-        install_id=_install_id(config),
-        version=_version(),
+        runtime, gateway_running=True, profile=_profile(), install_id=_install_id(config), version=_version(),
         supervision_mode=_supervision_mode(),
     )
 
 
 def _read_cron_snapshot():
     from agent.monitoring.cron_health import build_cron_health_snapshot
-
     return build_cron_health_snapshot()
 
 
+def _count(failure_msg: str, module: str, read: Callable[[Any], Any]) -> int:
+    """Best-effort non-negative count read from a lazily imported module; 0 when it can't be imported/read."""
+    try:
+        return max(0, int(read(importlib.import_module(module))))
+    except Exception:
+        logger.debug(failure_msg, exc_info=True)
+        return 0
+
+
 def _read_background_work_count() -> int:
-    """Count live background/subagent work that ``active_agents`` does NOT include.
-
-    ``hermes.gateway.active_agents`` counts foreground turns + in-flight cron
-    jobs + API runs, but deliberately excludes backgrounded ``delegate_task``
-    subagents, ``terminal(background=true)`` processes, kanban workers, and the
-    runner's own background tasks (they are tracked only for the scale-to-zero
-    suspend guard, ``_scale_to_zero_has_live_background_work``). Without this
-    metric a peer churning through delegated subagents shows ``active_agents=0``
-    on the fleet dashboard. Best-effort and content-free: a single integer,
-    no job/task identity. Returns 0 if a source can't be imported.
-
-    Delegation is counted TASK-granular (``active_task_count``): a fan-out batch
-    of N subagents contributes N, not 1, so the metric reflects real concurrent
-    subagent load rather than dispatch-unit/pool-slot count. This intentionally
-    differs from the async pool's capacity accounting (one batch = one slot).
-    """
-    total = 0
-    try:
-        from tools.async_delegation import active_task_count
-
-        total += max(0, int(active_task_count()))
-    except Exception:
-        logger.debug("background-work async-delegation count failed", exc_info=True)
-    try:
-        from tools.process_registry import process_registry
-
-        total += max(0, int(process_registry.count_running()))
-    except Exception:
-        logger.debug("background-work process-registry count failed", exc_info=True)
-    return total
+    """Live background/subagent work that ``active_agents`` (foreground turns + in-flight cron + API
+    runs) deliberately does NOT include: backgrounded ``delegate_task`` subagents,
+    ``terminal(background=true)`` processes, kanban workers.  TASK-granular: a fan-out batch of N
+    contributes N (real concurrent load), unlike the pool's one-slot-per-batch accounting."""
+    return _count("background-work async-delegation count failed", "tools.async_delegation", lambda m: m.active_task_count()) + _count(
+        "background-work process-registry count failed", "tools.process_registry", lambda m: m.process_registry.count_running()
+    )
 
 
 def _read_background_delegations_count() -> int:
-    """Count live async delegation UNITS (dispatch/pool slots).
-
-    Complements ``_read_background_work_count`` (which is task-granular): this
-    counts each ``delegate_task`` dispatch as ONE regardless of fan-out width,
-    matching the async pool's capacity accounting (a batch = one slot). Together
-    the two metrics let an operator see both slot pressure
-    (``background_delegations``, alert vs ``max_concurrent_children``) and real
-    concurrent subagent load (``background_work``). Delegations only — it does
-    not include ``terminal(background)`` / kanban work, which are already folded
-    into ``background_work``. Best-effort; 0 if the source can't be imported.
-    """
-    try:
-        from tools.async_delegation import active_count
-
-        return max(0, int(active_count()))
-    except Exception:
-        logger.debug("background-delegations count failed", exc_info=True)
-        return 0
+    """Live async delegation UNITS (pool slots): a batch counts ONE regardless of fan-out width, so
+    operators see slot pressure (vs ``max_concurrent_children``) alongside ``background_work``."""
+    return _count("background-delegations count failed", "tools.async_delegation", lambda m: m.active_count())
 
 
 def _read_runtime_snapshot(config: Dict[str, Any]):
     gateway_snapshot = _read_gateway_snapshot(config)
-    # Background/subagent work — a distinct metric from active_agents (which
-    # never counts it). Appended to the gateway snapshot so it rides the same
-    # base resource attributes (service.instance.id etc.).
+    # Background/subagent work is appended to the gateway snapshot so it rides the same base
+    # resource attributes (service.instance.id etc.).
     try:
-        from agent.monitoring.gateway_health import GatewayMetric
-
         base = dict(gateway_snapshot.metrics[0].attributes) if gateway_snapshot.metrics else {}
-        gateway_snapshot.metrics.append(
-            GatewayMetric(
-                name="hermes.gateway.background_work",
-                value=_read_background_work_count(),
-                attributes=base,
-            )
-        )
-        gateway_snapshot.metrics.append(
-            GatewayMetric(
-                name="hermes.gateway.background_delegations",
-                value=_read_background_delegations_count(),
-                attributes=base,
-            )
-        )
+        for name, read in (
+            ("hermes.gateway.background_work", _read_background_work_count),
+            ("hermes.gateway.background_delegations", _read_background_delegations_count),
+        ):
+            gateway_snapshot.metrics.append(GatewayMetric(name=name, value=read(), attributes=base))
     except Exception as exc:
-        logger.warning(
-            "background-work snapshot unavailable; metric not exported (error_type=%s)",
-            type(exc).__name__,
-        )
+        logger.warning("background-work snapshot unavailable; metric not exported (error_type=%s)", type(exc).__name__)
         logger.debug("background-work snapshot traceback", exc_info=True)
     try:
-        cron_snapshot = _read_cron_snapshot()
+        gateway_snapshot.metrics.extend(_read_cron_snapshot().metrics)
     except Exception as exc:
-        # Content-free visibility: cron telemetry silently dropping out is a
-        # release-relevant regression, so surface it at WARNING with only the
-        # exception *type* name (never the message, which could carry paths or
-        # other environment detail). exc_info stays on the DEBUG record.
-        logger.warning(
-            "cron health snapshot unavailable; cron telemetry not exported (error_type=%s)",
-            type(exc).__name__,
-        )
+        # Cron telemetry silently dropping out is a release-relevant regression: WARN with only
+        # the exception *type* (the message could carry paths); exc_info stays on DEBUG.
+        logger.warning("cron health snapshot unavailable; cron telemetry not exported (error_type=%s)", type(exc).__name__)
         logger.debug("cron health snapshot traceback", exc_info=True)
-        return gateway_snapshot
-    gateway_snapshot.metrics.extend(cron_snapshot.metrics)
     return gateway_snapshot
 
 
 def _emit_snapshot_events(config: Dict[str, Any]) -> None:
-    gh = _gateway_health_config(config)
-    if not gh.get("diagnostic_events_enabled", True):
+    if not _gateway_health_config(config).get("diagnostic_events_enabled", True):
         return
     try:
-        from agent.monitoring import emitter
-        snapshot = _read_runtime_snapshot(config)
-        for event in snapshot.events:
+        for event in _read_runtime_snapshot(config).events:
             emitter.emit(event)
     except Exception:
         logger.debug("gateway health snapshot emit failed", exc_info=True)
 
 
 def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
-    gh = _gateway_health_config(config)
-    if not gh.get("metrics_enabled", True):
-        return None
-    otlp = _otlp_config(config)
-    endpoint = _metric_endpoint(str(otlp.get("endpoint")))
-    headers = _resolve_headers(otlp.get("headers_env"))
-    exporter = sdk["OTLPMetricExporter"](endpoint=endpoint, headers=headers or None)
-    interval_ms = max(5, int(gh.get("export_interval_seconds", 60))) * 1000
+    exporter = sdk["OTLPMetricExporter"](**_exporter_kwargs(config, "metrics"))
+    interval_ms = max(5, int(_gateway_health_config(config).get("export_interval_seconds", 60))) * 1000
     reader = sdk["PeriodicExportingMetricReader"](exporter, export_interval_millis=interval_ms)
-    resource_attrs = _runtime_resource_attributes(
-        config, telemetry_scope="gateway_health"
-    )
-    provider = sdk["MeterProvider"](
-        metric_readers=[reader],
-        resource=sdk["Resource"].create(resource_attrs),
-    )
+    resource = sdk["Resource"].create(_runtime_resource_attributes(config, telemetry_scope="gateway_health"))
+    provider = sdk["MeterProvider"](metric_readers=[reader], resource=resource)
     meter = provider.get_meter("hermes.gateway.health")
     Observation = sdk["Observation"]
-
-    metric_names = [
-        "hermes.gateway.up",
-        "hermes.gateway.state",
-        "hermes.gateway.active_agents",
-        "hermes.gateway.busy",
-        "hermes.gateway.drainable",
-        "hermes.gateway.restart_requested",
-        "hermes.gateway.background_work",
-        "hermes.gateway.background_delegations",
-        "hermes.platform.up",
-        "hermes.platform.degraded",
-        "hermes.cron.scheduler.heartbeat_age_seconds",
-        "hermes.cron.scheduler.last_success_age_seconds",
-        "hermes.cron.scheduler.catch_up_occurrences",
-        "hermes.cron.jobs.enabled",
-        "hermes.cron.jobs.running",
-        "hermes.cron.jobs.overdue",
-    ]
 
     def callback(name: str):
         def _cb(_options=None):
             try:
-                snapshot = _read_runtime_snapshot(config)
-                return [Observation(m.value, m.attributes) for m in snapshot.metrics if m.name == name]
+                return [Observation(m.value, m.attributes) for m in _read_runtime_snapshot(config).metrics if m.name == name]
             except Exception:
                 logger.debug("gateway metric callback failed", exc_info=True)
                 return []
+
         return _cb
 
-    for metric_name in metric_names:
+    for metric_name in _OBSERVABLE_METRIC_NAMES:
         meter.create_observable_gauge(metric_name, callbacks=[callback(metric_name)])
     return provider
 
 
+_SEVERITY_NAMES = {"critical": "FATAL", "fatal": "FATAL", "error": "ERROR", "info": "INFO", "information": "INFO", "debug": "DEBUG"}
+
+
 def _severity_number(sdk: Dict[str, Any], severity: Any) -> Any:
-    SeverityNumber = sdk["SeverityNumber"]
-    sev = str(severity or "warning").lower()
-    if sev in {"critical", "fatal"}:
-        return SeverityNumber.FATAL
-    if sev == "error":
-        return SeverityNumber.ERROR
-    if sev in {"info", "information"}:
-        return SeverityNumber.INFO
-    if sev == "debug":
-        return SeverityNumber.DEBUG
-    return SeverityNumber.WARN
+    return getattr(sdk["SeverityNumber"], _SEVERITY_NAMES.get(str(severity or "warning").lower(), "WARN"))
 
 
-class GatewayDiagnosticLogStreamer:
+class GatewayDiagnosticLogStreamer(EmitterStreamer):
     """Emitter subscriber that sends gateway diagnostic events as OTLP logs."""
 
     def __init__(self, config: Dict[str, Any], sdk: Dict[str, Any]):
-        otlp = _otlp_config(config)
-        headers = _resolve_headers(otlp.get("headers_env"))
-        endpoint = _logs_endpoint(str(otlp.get("endpoint")))
-        resource_attrs = _runtime_resource_attributes(
-            config, telemetry_scope="gateway_diagnostics"
-        )
-        self._provider = sdk["LoggerProvider"](resource=sdk["Resource"].create(resource_attrs))
-        self._processor = sdk["BatchLogRecordProcessor"](
-            sdk["OTLPLogExporter"](endpoint=endpoint, headers=headers or None)
-        )
+        resource = sdk["Resource"].create(_runtime_resource_attributes(config, telemetry_scope="gateway_diagnostics"))
+        self._provider = sdk["LoggerProvider"](resource=resource)
+        self._processor = sdk["BatchLogRecordProcessor"](sdk["OTLPLogExporter"](**_exporter_kwargs(config, "logs")))
         self._provider.add_log_record_processor(self._processor)
-        self._logger = self._provider.get_logger(_DEFAULT_DIAGNOSTIC_SCOPE)
-        self._LogRecord = sdk["LogRecord"]
+        self._logger = self._provider.get_logger("hermes.gateway.diagnostics")
         self._sdk = sdk
         self.exported = 0
 
     def __call__(self, batch: list[Dict[str, Any]]) -> None:
-        from agent.monitoring.gateway_health import source_logger_for_export
-
+        sdk = self._sdk
         for ev in batch:
             if ev.get("event") != "gateway_diagnostic":
                 continue
-            attrs = _diagnostic_log_attributes(ev)
-            # Preserve the source-controlled Python logger as the OTel
-            # instrumentation scope. This adds precise code attribution without
-            # turning a fluid module layout into a maintained subsystem enum.
-            # Rendered messages stay out because they may contain arbitrary IDs,
-            # names, paths, or configured strings. A future, separately gated
-            # ``diagnostic_detail: redacted_message`` mode may add best-effort
-            # free text when an observability plane defines that privacy policy.
+            # The source-controlled Python logger becomes the OTel instrumentation scope:
+            # precise code attribution without maintaining a subsystem enum. Rendered
+            # messages stay out (they may carry IDs, names, paths, configured strings).
             source_logger = source_logger_for_export(ev.get("source_logger"))
-            otel_logger = (
-                self._provider.get_logger(source_logger)
-                if source_logger is not None
-                else self._logger
-            )
-            body = "gateway diagnostic"
-            record = self._LogRecord(
-                timestamp=ev.get("ts_ns"),
-                trace_id=self._sdk["INVALID_TRACE_ID"],
-                span_id=self._sdk["INVALID_SPAN_ID"],
-                trace_flags=self._sdk["TraceFlags"].DEFAULT,
-                severity_text=str(ev.get("severity") or "warning").upper(),
-                severity_number=_severity_number(self._sdk, ev.get("severity")),
-                body=_redact_string(body),
-                attributes=attrs,
-            )
-            otel_logger.emit(record)
+            otel_logger = self._provider.get_logger(source_logger) if source_logger is not None else self._logger
+            otel_logger.emit(sdk["LogRecord"](
+                timestamp=ev.get("ts_ns"), trace_id=sdk["INVALID_TRACE_ID"], span_id=sdk["INVALID_SPAN_ID"],
+                trace_flags=sdk["TraceFlags"].DEFAULT, severity_text=str(ev.get("severity") or "warning").upper(),
+                severity_number=_severity_number(sdk, ev.get("severity")), body=redact_bounded("gateway diagnostic"),
+                attributes=_diagnostic_log_attributes(ev),
+            ))
             self.exported += 1
-
-    def shutdown(self) -> None:
-        try:
-            from agent.monitoring.emitter import get_emitter
-            get_emitter().unsubscribe(self)
-        except Exception:
-            pass
-        try:
-            self._processor.force_flush()
-            self._provider.shutdown()
-        except Exception:
-            pass
-
-
-def _start_diagnostic_log_streamer(config: Dict[str, Any], sdk: Dict[str, Any]) -> GatewayDiagnosticLogStreamer:
-    from agent.monitoring.emitter import get_emitter
-    streamer = GatewayDiagnosticLogStreamer(config, sdk)
-    get_emitter().subscribe(streamer)
-    return streamer
-
-
-def _start_snapshot_thread(config: Dict[str, Any], stop_event: threading.Event) -> threading.Thread:
-    interval = max(5, int(_gateway_health_config(config).get("logs_export_interval_seconds", 5)))
-
-    def _run() -> None:
-        while not stop_event.wait(interval):
-            _emit_snapshot_events(config)
-
-    thread = threading.Thread(target=_run, name="hermes-gateway-health-export", daemon=True)
-    thread.start()
-    return thread
-
-
-def _attach_log_handler(config: Dict[str, Any]) -> Any:
-    gh = _gateway_health_config(config)
-    if not gh.get("diagnostic_events_enabled", True) or not gh.get("warning_error_events_enabled", True):
-        return None
-    from agent.monitoring.gateway_health import GatewayDiagnosticLogHandler
-    handler = GatewayDiagnosticLogHandler(profile=_profile(), version=_version())
-    root = logging.getLogger()
-    if handler not in root.handlers:
-        root.addHandler(handler)
-    return handler
 
 
 def _gateway_health_event(ev: Dict[str, Any]) -> bool:
     return ev.get("event") in {"gateway_health", "cron_execution"}
+
+
+def _fail(runtime: GatewayHealthExportRuntime, log: Callable[..., None], msg: str, reason: str) -> GatewayHealthExportRuntime:
+    log(msg, exc_info=True)
+    runtime.shutdown()
+    return GatewayHealthExportRuntime(enabled=False, reason=reason)
 
 
 def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRuntime:
@@ -589,55 +281,64 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
     if not _enabled(config):
         return GatewayHealthExportRuntime(enabled=False, reason="disabled")
     gh = _gateway_health_config(config)
+    metrics_on = gh.get("metrics_enabled", True)
+    diagnostics_on = gh.get("diagnostic_events_enabled", True)
     runtime = GatewayHealthExportRuntime(enabled=True, reason="enabled")
     sdk: Optional[Dict[str, Any]] = None
-
-    if gh.get("metrics_enabled", True) or gh.get("diagnostic_events_enabled", True):
+    if metrics_on or diagnostics_on:
         try:
-            sdk = _require_metrics_sdk(prompt=False)
+            sdk = otlp_exporter._require_sdk(_METRICS_SDK, auto_install=True, prompt=False)
         except Exception:
-            logger.warning(
-                "monitoring.gateway_health_export.enabled but OTLP SDK is unavailable; "
-                "install 'hermes-agent[otlp]'",
-                exc_info=True,
-            )
+            logger.warning("monitoring.gateway_health_export.enabled but OTLP SDK is unavailable; install 'hermes-agent[otlp]'", exc_info=True)
             return GatewayHealthExportRuntime(enabled=False, reason="otlp_unavailable")
-
-    if gh.get("metrics_enabled", True) and sdk is not None:
+    if metrics_on and sdk is not None:
         try:
             runtime.metric_provider = _start_metric_provider(config, sdk)
         except Exception:
-            logger.warning("gateway health OTLP metrics failed to start", exc_info=True)
-            runtime.shutdown()
-            return GatewayHealthExportRuntime(enabled=False, reason="metrics_start_failed")
-
-    if gh.get("diagnostic_events_enabled", True) and sdk is not None:
+            return _fail(runtime, logger.warning, "gateway health OTLP metrics failed to start", "metrics_start_failed")
+    if diagnostics_on and sdk is not None:
         try:
-            from agent.monitoring import otlp_exporter
             runtime.streamer = otlp_exporter.start_streaming(config, event_filter=_gateway_health_event)
             if runtime.streamer is None:
                 raise RuntimeError("gateway health span streamer did not start")
-            runtime.log_streamer = _start_diagnostic_log_streamer(config, sdk)
+            log_streamer = GatewayDiagnosticLogStreamer(config, sdk)
+            emitter.get_emitter().subscribe(log_streamer)
+            runtime.log_streamer = log_streamer
         except Exception:
-            logger.debug("gateway diagnostic OTLP export failed to start", exc_info=True)
-            runtime.shutdown()
-            return GatewayHealthExportRuntime(enabled=False, reason="diagnostics_start_failed")
-
+            return _fail(runtime, logger.debug, "gateway diagnostic OTLP export failed to start", "diagnostics_start_failed")
     try:
-        runtime.log_handler = _attach_log_handler(config)
+        if diagnostics_on and gh.get("warning_error_events_enabled", True):
+            handler = GatewayDiagnosticLogHandler(profile=_profile(), version=_version())
+            root = logging.getLogger()
+            if handler not in root.handlers:
+                root.addHandler(handler)
+            runtime.log_handler = handler
     except Exception:
         logger.debug("gateway diagnostic log handler failed to attach", exc_info=True)
-    if gh.get("diagnostic_events_enabled", True):
+    if diagnostics_on:
         try:
             _emit_snapshot_events(config)
-            runtime.stop_event = threading.Event()
-            runtime.thread = _start_snapshot_thread(config, runtime.stop_event)
+            stop_event = runtime.stop_event = threading.Event()
+            interval = max(5, int(gh.get("logs_export_interval_seconds", 5)))
+
+            def _run() -> None:
+                while not stop_event.wait(interval):
+                    _emit_snapshot_events(config)
+
+            thread = threading.Thread(target=_run, name="hermes-gateway-health-export", daemon=True)
+            thread.start()
+            runtime.thread = thread
         except Exception:
             logger.debug("gateway health snapshot thread failed to start", exc_info=True)
     return runtime
 
 
-__all__ = [
-    "GatewayHealthExportRuntime",
-    "start_gateway_health_export",
-]
+__all__ = ["GatewayHealthExportRuntime", "start_gateway_health_export"]
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import re  # noqa: F401,E402
+# ---- END PLUGIN-COMPAT ----

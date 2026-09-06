@@ -16,10 +16,9 @@ import sys
 import pytest
 
 import hermes_state
-from hermes_state import (
-    apply_database_pragmas,
-    resolve_synchronous_level,
-)
+import hermes_state_wal
+from hermes_state import apply_database_pragmas
+from hermes_state_wal import resolve_synchronous_level
 
 
 def _wal_conn(tmp_path):
@@ -186,7 +185,7 @@ class TestMacOSFloor:
         conn = _wal_conn(tmp_path)
         try:
             monkeypatch.setattr(sys, "platform", "darwin")
-            hermes_state._enforce_macos_synchronous_full(conn)
+            hermes_state_wal._enforce_macos_synchronous_full(conn)
             assert _level(conn) == 2
             with caplog.at_level("WARNING"):
                 apply_database_pragmas(conn, db_label="state.db")

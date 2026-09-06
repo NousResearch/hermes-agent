@@ -40,7 +40,6 @@ from hermes_cli.profiles import (
     _get_profiles_root,
     _get_default_hermes_home,
     seed_profile_skills,
-    has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
@@ -210,9 +209,6 @@ class TestNoSkillsOptOut:
         assert marker.is_file(), "expected .no-bundled-skills marker in profile root"
         assert "--no-skills" in marker.read_text()
 
-        # has_bundled_skills_opt_out() agrees
-        assert has_bundled_skills_opt_out(profile_dir) is True
-
         # skills/ dir exists (profile bootstrapping still creates the dir) but
         # contains nothing yet because create_profile itself doesn't seed.
         assert (profile_dir / "skills").is_dir()
@@ -231,7 +227,7 @@ class TestNoSkillsOptOut:
         import subprocess as _sp
 
         profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
-        assert has_bundled_skills_opt_out(profile_dir) is True
+        assert (profile_dir / NO_BUNDLED_SKILLS_MARKER).is_file()
 
         # Marker present: the subprocess still runs (essential-only seeding
         # happens inside sync_skills) and its skipped_opt_out flag surfaces.
@@ -254,7 +250,6 @@ class TestNoSkillsOptOut:
 
         # Delete marker → next call is a normal full sync.
         (profile_dir / NO_BUNDLED_SKILLS_MARKER).unlink()
-        assert has_bundled_skills_opt_out(profile_dir) is False
         r2 = seed_profile_skills(profile_dir, quiet=True)
         assert r2 == {"copied": []}
         assert len(called) == 2

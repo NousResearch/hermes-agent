@@ -8484,13 +8484,14 @@ function sanitizeRegistryConnection(entry) {
   // Last-known stable backend identity (from roster enumeration / Test) so
   // Settings can hint "Same backend as <label>" on connections that are two
   // addresses for one box. Display-only; absent until a probe has seen it.
-  const knownInstallId = connectionInstallIds.get(entry.id)?.id
+  const known = connectionInstallIds.get(entry.id)
 
   return {
     ...rest,
     tokenSet: Boolean(decrypted),
     tokenPreview: tokenPreview(decrypted),
-    ...(knownInstallId ? { installId: knownInstallId } : {}),
+    ...(known?.id ? { installId: known.id } : {}),
+    ...(known?.runtimeKind ? { runtimeKind: known.runtimeKind } : {}),
     // Header VALUES are secrets (Cloudflare Access client secrets etc.) and
     // never cross the IPC boundary — the renderer only needs the names to
     // render the edit form.

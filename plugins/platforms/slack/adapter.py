@@ -1934,8 +1934,8 @@ class SlackAdapter(BasePlatformAdapter):
                 chunks.extend(self._task_update_chunk(task) for task in tasks)
                 append_payload: Dict[str, Any] = {
                     "channel": chat_id, "ts": stream.stream_ts, "chunks": chunks}
-                if fallback_text:
-                    append_payload["markdown_text"] = fallback_text
+                # Slack rejects markdown_text alongside chunks. The gateway owns
+                # fallback_text's separate editable-message path on native failure.
                 await client.api_call("chat.appendStream", json=append_payload)
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging

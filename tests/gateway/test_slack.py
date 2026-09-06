@@ -5022,6 +5022,100 @@ class TestSlackUserAgent:
 
 
 class TestNativeTaskCardProgress:
+    @pytest.mark.asyncio
+    async def test_fallback_text_does_not_break_native_task_lifecycle(self, adapter):
+        client = adapter._app.client
+
+        async def api_call(method, *, json):
+            if method == "chat.startStream":
+                return {"ts": "stream-1"}
+            if method == "chat.appendStream" and "chunks" in json and "markdown_text" in json:
+                raise ValueError("cannot_provide_both_markdown_text_and_chunks")
+            return {"ok": True}
+
+        client.api_call.side_effect = api_call
+        metadata = {"thread_id": "thread-1"}
+        statuses = ["in_progress", "complete", "error"]
+        for status in statuses:
+            result = await adapter.send_native_task_card_progress(
+                "C1",
+                [{"id": "call-1", "title": "terminal", "status": status}],
+                metadata=metadata,
+                fallback_text=f"Hermes is working\n- terminal - {status}",
+            )
+            assert result.success, result.error
+            assert result.message_id == "stream-1"
+
+        await adapter.stop_native_task_card_progress("C1", metadata=metadata)
+        calls = client.api_call.await_args_list
+        assert [c.args[0] for c in calls] == [
+            "chat.startStream", *["chat.appendStream"] * len(statuses), "chat.stopStream",
+        ]
+        for call, status in zip(calls[1:-1], statuses):
+            payload = call.kwargs["json"]
+            assert payload["ts"] == "stream-1"
+            assert payload["chunks"] == [
+                {"type": "plan_update", "title": "Hermes is working"},
+                {"type": "task_update", "id": "call-1", "title": "terminal", "status": status},
+            ]
+            assert "markdown_text" not in payload
+        assert adapter._native_task_card_streams == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failed_method", [None, "chat.startStream", "chat.appendStream"])
+    async def test_gateway_task_cards_preserve_editable_fallback(self, adapter, failed_method):
+        from gateway.run_turn_runner import TurnRunner
+        from gateway.turn_context import TurnContext
+
+        client = adapter._app.client
+
+        async def api_call(method, *, json):
+            if method == failed_method:
+                raise RuntimeError("native stream unavailable")
+            if method == "chat.startStream":
+                return {"ts": "stream-1"}
+            if method == "chat.appendStream" and "chunks" in json and "markdown_text" in json:
+                raise ValueError("cannot_provide_both_markdown_text_and_chunks")
+            return {"ok": True}
+
+        client.api_call.side_effect = api_call
+        client.chat_postMessage.return_value = {"ok": True, "ts": "fallback-1"}
+        client.chat_update.return_value = {"ok": True, "ts": "fallback-1"}
+        metadata = {"thread_id": "thread-1"}
+        runner = TurnRunner(MagicMock(spec=GatewayRunner), TurnContext(
+            source=SimpleNamespace(chat_id="C1"),
+            _progress_reply_to="thread-1", _progress_metadata=metadata,
+        ))
+        state = runner._TaskCardState(adapter)
+        for event_type in ("tool.started", "tool.completed"):
+            state.apply_event({"type": event_type, "tool_call_id": "call-1", "tool_name": "terminal"})
+            assert state.fallback_text()
+            await runner._task_card_publish(state)
+
+        await adapter.stop_native_task_card_progress("C1", metadata=metadata)
+        methods = [c.args[0] for c in client.api_call.await_args_list]
+        if failed_method is None:
+            assert methods == [
+                "chat.startStream", "chat.appendStream", "chat.appendStream", "chat.stopStream",
+            ]
+            assert not state.native_failed
+            client.chat_postMessage.assert_not_awaited()
+            client.chat_update.assert_not_awaited()
+        else:
+            assert state.native_failed
+            assert methods.count(failed_method) == 1
+            client.chat_postMessage.assert_awaited_once()
+            post = client.chat_postMessage.await_args.kwargs
+            assert post["channel"] == "C1"
+            assert post["thread_ts"] == "thread-1"
+            assert post["text"] == adapter.format_message("Hermes is working\n- terminal - running")
+            client.chat_update.assert_awaited_once()
+            assert client.chat_update.await_args.kwargs == {
+                "channel": "C1", "ts": "fallback-1",
+                "text": adapter.format_message("Hermes is working\n- terminal - complete"),
+            }
+        assert adapter._native_task_card_streams == {}
+
     def test_native_flag_is_an_explicit_opt_in(self):
         config = PlatformConfig(
             enabled=True,

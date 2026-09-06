@@ -206,7 +206,7 @@ class FakeGitHub:
             self.current = self.current_by_number[number]
 
     def ensure_issue_label(
-        self, repository: str, label: str, *, color: str, description: str
+        self, repository: str, label: str, *, color: str, description: str, preserve_existing: bool = False
     ) -> None:
         self.ensure_label_calls.append((repository, label, color, description))
 

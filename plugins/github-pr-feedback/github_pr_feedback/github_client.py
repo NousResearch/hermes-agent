@@ -1158,7 +1158,7 @@ class GitHubClient:
         self._runner.run(argv)
 
     def ensure_issue_label(
-        self, repository: str, label: str, *, color: str, description: str
+        self, repository: str, label: str, *, color: str, description: str, preserve_existing: bool = False
     ) -> None:
         """Create or update one configured label using an exact name/color.
 
@@ -1177,6 +1177,8 @@ class GitHubClient:
         label_endpoint = f"repos/{repository}/labels/{quote(label, safe='')}"
         try:
             self._read_object(label_endpoint)
+            if preserve_existing:
+                return
         except GitHubClientError as error:
             if error.code != "not_found":
                 raise

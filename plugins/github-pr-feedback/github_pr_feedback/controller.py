@@ -1471,6 +1471,7 @@ class ScanController:
         side lane means a shared GitHub cooldown or label permission failure
         cannot prevent local-CI admission or merge-maintainer evaluation.
         """
+        self._ensured_agent_labels = set()
         label_policy = self._policy.agent_labels
         if label_policy is None or not label_policy.enabled:
             return {"status": "ok", "updated": 0, "skipped": {}}
@@ -1561,8 +1562,11 @@ class ScanController:
                 return "agent_labels_unchanged"
             if label_policy.create_missing:
                 for mapping in missing.values():
-                    self._github.ensure_issue_label(repository, mapping.label,
-                        color=mapping.color, description=mapping.description)
+                    key = (repository, mapping.label)
+                    if key not in self._ensured_agent_labels:
+                        self._github.ensure_issue_label(repository, mapping.label,
+                            color=mapping.color, description=mapping.description, preserve_existing=True)
+                        self._ensured_agent_labels.add(key)
             current = self._github.get_pull_request(repository, listed.number)
             if not current_matches(current):
                 return "agent_label_head_changed"

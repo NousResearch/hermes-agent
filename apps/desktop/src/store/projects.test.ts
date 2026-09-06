@@ -10,6 +10,7 @@ import {
   $activeProjectId,
   $projects,
   $projectScope,
+  $projectSessionsLoadError,
   $projectsRpcAvailable,
   $projectTree,
   $worktreeRefreshToken,
@@ -172,6 +173,74 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).not.toHaveBeenCalled()
+    setShowAllProfiles(false)
+  })
+})
+
+describe('project sessions drill-in load error signal', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeGatewayProfile.set('default')
+    $activeProjectId.set(null)
+    $projectTree.set([])
+    $projectSessionsLoadError.set(false)
+    setShowAllProfiles(false)
+  })
+
+  it('marks a failed drill-in fetch so the sidebar can show an error instead of an empty state', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('gateway connection closed')
+    })
+
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    const result = await fetchProjectSessions('p_123')
+
+    expect(result).toBeNull()
+    expect($projectSessionsLoadError.get()).toBe(true)
+  })
+
+  it('clears the error on the next successful fetch', async () => {
+    $projectSessionsLoadError.set(true)
+    const request = vi.fn(async () => ({ project: null }))
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    await fetchProjectSessions('p_123')
+
+    expect($projectSessionsLoadError.get()).toBe(false)
+  })
+
+  it('keeps the error flag when a stale success arrives after a newer failure', async () => {
+    const request = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('request timed out'))
+      .mockResolvedValueOnce({ project: null })
+
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    const stale = fetchProjectSessions('p_123')
+    void stale
+    await fetchProjectSessions('p_123')
+    await stale
+
+    // The first (failed) call must not clear the flag the second (successful)
+    // call left behind — and vice versa: the stale failure must not clobber a
+    // newer success. Final state reflects the NEWEST resolved call.
+    expect($projectSessionsLoadError.get()).toBe(false)
+  })
+
+  it('does not treat the all-profiles scope as a load failure', async () => {
+    setShowAllProfiles(true)
+
+    await fetchProjectSessions('p_123')
+
+    expect($projectSessionsLoadError.get()).toBe(false)
     setShowAllProfiles(false)
   })
 })

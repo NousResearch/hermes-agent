@@ -53,6 +53,12 @@ export const $projectTreeLoading = atom(false)
 // (same semver label, older install). Null until the first probe.
 export const $projectsRpcAvailable = atom<boolean | null>(null)
 
+// The entered-project drill-in fetch (`projects.project_sessions`) failed. The
+// UI must not paint "no sessions yet" over a load failure — that reads as data
+// loss. Set on failure, cleared on the next success or when the user leaves the
+// entered project; a stale failure never outlives a newer success.
+export const $projectSessionsLoadError = atom<boolean>(false)
+
 function markProjectsRpcSuccess(): void {
   $projectsRpcAvailable.set(true)
 }
@@ -527,8 +533,18 @@ export async function fetchProjectSessions(projectId: string): Promise<SidebarPr
       return null
     }
 
+    $projectSessionsLoadError.set(false)
+
     return res.project ?? null
-  } catch {
+  } catch (err) {
+    // All-profiles view intentionally reads no project data (projectParams
+    // throws) — that is a scope, not a load failure.
+    if (err instanceof Error && err.message.includes('viewing all profiles')) {
+      return null
+    }
+
+    $projectSessionsLoadError.set(true)
+
     return null
   }
 }

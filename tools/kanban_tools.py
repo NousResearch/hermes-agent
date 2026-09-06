@@ -1147,6 +1147,29 @@ def _is_test_py(rel: str) -> bool:
     return "tests" in p.parts or "test" in p.name.lower()
 
 
+def _is_browser_ui_test(rel: str) -> bool:
+    """True when a root-relative test path needs a built frontend bundle.
+
+    A worktree ships gitignored node_modules/dist absent, so a browser or
+    UI test in the focused set would ERROR (cannot build the bundle it
+    drives) rather than exercise anything — an environment gap, not the
+    card's defect.  These tests are conventionally named/directed at the
+    served UI: a ``test_ui*``/``*_ui*`` module, a ``regression`` directory
+    (browser pass), or any path that mentions browser/playwright.  This
+    lets the gate skip (log, never fail) the browser rung on build-less
+    worktree-only runs while the card's own static tests still gate.
+    """
+    low = rel.lower()
+    p = Path(low)
+    if "tests/regression" in low or "test_regression" in low:
+        return True
+    if "ui" in p.name:
+        return True
+    if "browser" in low or "playwright" in low or "real_click" in low:
+        return True
+    return False
+
+
 def _pytest_importable(project_python: str, cwd: str) -> bool:
     """True when ``pytest`` imports under the project interpreter.
 
@@ -1367,6 +1390,28 @@ def _run_pre_review_gate(task: Any) -> Optional[_GateBounce]:
     tests = _scoped_test_paths_from_body(task_body, Path(str(ws)))
     if not tests:
         tests = _focused_test_paths(str(ws), changed_py)
+    # A worktree ships gitignored node_modules/dist absent, so a browser/UI
+    # test in the focused set would ERROR (no built bundle) rather than
+    # exercise anything — an env gap, not a card defect.  Skip (log, never
+    # fail) any focused test that needs a built frontend when dist is missing.
+    # The card's own static/lock-in tests still run and remain the real gate.
+    if tests:
+        dist_root = Path(str(ws)) / "frontend" / "dist"
+        built = dist_root.is_dir() and any(dist_root.glob("index*.html"))
+        if not built:
+            kept, dropped = [], []
+            for t in tests:
+                if _is_browser_ui_test(t):
+                    dropped.append(t)
+                else:
+                    kept.append(t)
+            if dropped:
+                logger.info(
+                    "review gate: skipping %d browser/UI focused test(s) — "
+                    "frontend/dist absent in worktree (%s)",
+                    len(dropped), ", ".join(dropped),
+                )
+            tests = kept
     if tests:
         if not _pytest_importable(pypath, str(ws)):
             logger.info(

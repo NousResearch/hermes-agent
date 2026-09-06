@@ -144,6 +144,58 @@ def test_gate_failing_build_bounces_card(
         assert "import/build sanity" in comments[0].body
 
 
+def test_gate_skips_browser_ui_test_when_dist_absent(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A focused UI/browser test is skipped (logged) when frontend/dist is
+    absent in the worktree, so an env gap does not false-bounce the card.
+
+    A fresh worktree ships gitignored node_modules/dist absent; a browser/UI
+    test in the focused set would ERROR (cannot build the served bundle it
+    drives) rather than exercise anything.  The gate skips that rung on
+    build-less worktree-only runs; the card's own static tests still gate.
+    The worktree has an index build skip (no dist) and the changed file maps
+    to a browser/UI test — the gate must proceed to review, not bounce.
+    """
+    ws = _add_worktree(repo, "uiship")
+    # A UI-test module that would need a built bundle; dist is absent (the
+    # fresh worktree ships none).
+    _change_python_file(ws, "app/mod.py", "X = 1\n")
+    _change_python_file(ws, "tests/test_ui_v2.py",
+                        "def test_ui_pass():\n    assert 1 == 1\n")
+
+    from tools import kanban_tools as tools
+
+    # The helper itself classifies it as a browser/UI test.
+    assert tools._is_browser_ui_test("tests/test_ui_v2.py")
+    assert not tools._is_browser_ui_test("tests/test_mymod.py")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    resp = json.loads(tools._handle_request_review({"summary": "ui ship"}))
+    assert resp.get("ok") is True, resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "review"
+
+
+def test_gate_runs_non_ui_test_even_without_dist(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-UI focused test still runs (and gates) even without frontend/dist
+    — the skip only drops the browser/UI rung, never masks a real unit test."""
+    ws = _add_worktree(repo, "plain")
+    _change_python_file(ws, "mymod.py", "GOOD = 1\n")
+    _change_python_file(ws, "tests/test_mymod.py", "def test_bad():\n    assert 1 == 2\n")
+
+    tid = _make_task(tmp_path / ".hermes", monkeypatch, ws)
+    from tools import kanban_tools as tools
+
+    resp = json.loads(tools._handle_request_review({"summary": "plain fail"}))
+    # The non-UI focused test failing must still bounce the card.
+    assert "error" in resp
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+
+
 def test_gate_comment_carries_output_tail(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

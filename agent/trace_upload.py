@@ -211,7 +211,7 @@ def load_session_messages(session_id: str, db_path=None) -> Tuple[List[Dict[str,
     """``(messages, meta)`` from SQLite; ``meta`` is ``{}`` when the session row is missing (a live, untitled
     session may still have messages)."""
     from hermes_state_registry import acquire, release_or_close
-    db = acquire(db_path) if db_path else acquire()
+    db = acquire(db_path or None)
     try:
         resolved = db.resolve_session_id(session_id) or session_id
         meta = db.get_session(resolved) or {}

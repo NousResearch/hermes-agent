@@ -216,20 +216,16 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _last_auto_archive_check[key] = now
 
         from hermes_cli.config import load_config as _load_full_config
-        from hermes_state_registry import release_or_close
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_archive", False):
             return
-        # Bind the release helper BEFORE acquiring: the sweep's ``finally`` must
-        # never raise NameError over a held registry reference, or every eligible
-        # sweep leaks one and pins a retired generation open forever.
         db = _open_session_db_for_profile(profile, read_only=False)
         try:
             db.maybe_auto_archive(
                 idle_days=float(cfg.get("auto_archive_days", 3)),
                 min_interval_hours=int(cfg.get("min_interval_hours", 24)))
         finally:
-            release_or_close(db)
+            db.close()
     except Exception as exc:
         _log.debug("opportunistic auto-archive skipped: %s", exc)
 

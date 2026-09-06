@@ -219,55 +219,47 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
                 if opening is None:
                     opening = _opening[path] = threading.Event()
                     lifecycle_lock = _path_lifecycle_lock_locked(path)
-                    break
-                wait_for = opening
-        # Another caller is constructing this path; wait without holding the global
-        # lock. A failed opener signals too, so a waiter can retry.
-        wait_for.wait()
+                else:
+                    wait_for = opening
+        if wait_for is not None:
+            # Another caller is constructing or closing this path; wait without holding the
+            # global lock. A failed opener signals too, so a waiter can retry.
+            wait_for.wait()
+            continue
 
-    # Open OUTSIDE the lock; the per-path marker prevents redundant writers without
-    # serialising other files.
-    try:
-        # Serialize connection construction with a final close/checkpoint for
-        # this path, while keeping unrelated paths independent.
-        with lifecycle_lock:
-            db = _open_session_db(path)
-            db._shared_registry_owned = True
-            identity = _stat_db_file_identity(path)
-    except BaseException:
+        # Open OUTSIDE the registry lock; the per-path marker prevents redundant writers without
+        # serialising other files, the lifecycle mutex keeps the open off a same-path close.
+        try:
+            with lifecycle_lock:
+                db = _open_session_db(path)
+                db._shared_registry_owned = True
+                identity = _stat_db_file_identity(path)
+        except BaseException:
+            with _lock:
+                _finish_opening(path, opening)
+            raise
+
         with _lock:
+            teardown = _tearing_down.get(path)
+            if teardown is None:
+                existing = _generations.get(path)
+                if existing is not None:  # Defensive: installed by explicit registry manipulation mid-open.
+                    existing.refcount += 1
+                    winner = existing.db
+                else:
+                    _generations[path] = _Generation(path, db, identity)
+                    winner = db
             _finish_opening(path, opening)
-        raise
-
-    discard_barrier: Optional[_TeardownBarrier] = None
-    with _lock:
-        teardown = _tearing_down.get(path)
         if teardown is not None:
-            # A shutdown or retired-generation final release began while this
-            # opener was constructing the handle. Do not publish a new
-            # generation into that teardown window; close this speculative
-            # connection and retry after the barrier.
-            discard_barrier = teardown
-            winner = None
-        else:
-            existing = _generations.get(path)
-            if existing is not None:  # Defensive: installed by explicit registry manipulation mid-open.
-                existing.refcount += 1
-                winner = existing.db
-            else:
-                _generations[path] = _Generation(path, db, identity)
-                winner = db
-        _finish_opening(path, opening)
-    if discard_barrier is not None:
-        with lifecycle_lock:
-            _teardown(db)
-        discard_barrier.event.wait()
-        return acquire(path)
-    assert winner is not None
-    if winner is not db:
-        with lifecycle_lock:
-            _teardown(db)
-    return winner
+            # A shutdown or retired-generation final release was admitted while this opener was
+            # constructing: never publish into that window — discard the speculative handle and
+            # go round again once the barrier lifts.
+            _teardown_generation(path, db)
+            teardown.event.wait()
+            continue
+        if winner is not db:
+            _teardown_generation(path, db)
+        return winner
 
 
 def release(db: "SessionDB") -> bool:
@@ -278,7 +270,6 @@ def release(db: "SessionDB") -> bool:
     if db is None:
         return False
     key = id(db)
-    teardown_path: Optional[Path] = None
     teardown_barrier: Optional[_TeardownBarrier] = None
     with _lock:
         generation = _retired.get(key)
@@ -293,22 +284,17 @@ def release(db: "SessionDB") -> bool:
         generation.refcount -= 1
         needs_teardown = generation.refcount <= 0
         if needs_teardown:
-            teardown_path = generation.path
             if generation.retired:
                 _retired.pop(key, None)
             elif _generations.get(generation.path) is generation:
                 _generations.pop(generation.path, None)
-            # Remove the lendable entry and admit this close in the SAME lock
-            # section, then keep the path blocked until checkpoint/close
-            # completes. A retired generation's drain is admitted too: it
-            # checkpoints and unlinks the same sidecars as the current one, so
-            # a replacement writer must not open on top of it.
+            # A retired generation's drain is admitted too: it checkpoints and unlinks the same
+            # sidecars as the current one, so a replacement writer must not open on top of it.
             teardown_barrier = _admit_teardown_locked(generation.path)
     # Teardown OUTSIDE the lock: stopping the token writer, WAL checkpoint and read-pool
     # drain must not block acquisition for every other state.db.
     if needs_teardown:
-        assert teardown_path is not None
-        _teardown_generation(teardown_path, db, barrier=teardown_barrier)
+        _teardown_generation(generation.path, db, barrier=teardown_barrier)
     return True
 
 
@@ -340,11 +326,8 @@ def close_all() -> int:
                     _teardown(generation.db)
         finally:
             _finish_teardown(path, teardown_barriers[path])
-    # A concurrent final release may have removed its generation before this
-    # sweep took the registry lock. It still owns the physical close; wait for
-    # that barrier rather than returning while SQLite teardown is in flight.
-    # A barrier is lifted only once EVERY teardown admitted for its path has
-    # settled, so this cannot return over a close that is still running.
+    # A final release that removed its generation before this sweep took _lock still owns
+    # its physical close; wait for it rather than return over a running teardown.
     for barrier in active_teardowns:
         barrier.event.wait()
     return len(generations)

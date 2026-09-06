@@ -87,9 +87,11 @@ def test_git_local_fixture_operations_are_allowed_but_remote_alias_is_blocked(
     origin.mkdir()
 
     def git(cwd, *args):
-        return subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+        result = subprocess.run(
+            ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
         )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result
 
     git(origin, "init", "-q")
     git(origin, "config", "user.email", "test@example.invalid")

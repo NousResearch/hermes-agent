@@ -17,6 +17,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
+from gateway.log_redaction import (
+    log_safe_gateway_error, log_safe_gateway_identity, session_key_for_log,
+)
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
@@ -250,13 +253,16 @@ class GatewayNotificationsMixin:
             switched = await self.async_session_store.switch_session(session_entry.session_key, target_session_id)
         if switched is None:
             logger.warning(
-                "Async-delegation completion could not bind routing key %s to "
-                "owning session %s; dropping injection.", session_entry.session_key, target_session_id,
+                "Async-delegation completion could not bind routing key %s to owning session %s; dropping injection.",
+                session_key_for_log(session_entry.session_key),
+                target_session_id,
             )
             return None
         logger.info(
             "Pinned async-delegation completion to owning session %s (was %s) for routing key %s (#57498)",
-            target_session_id, prior_session_id, session_entry.session_key,
+            target_session_id,
+            prior_session_id,
+            session_key_for_log(session_entry.session_key),
         )
         return switched
 
@@ -306,7 +312,11 @@ class GatewayNotificationsMixin:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
                     await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
-                    logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                    logger.warning(
+                        "[%s] Post-stream image batch delivery failed: %s",
+                        adapter.name,
+                        log_safe_gateway_error(getattr(adapter, "platform", None), e),
+                    )
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
@@ -319,7 +329,11 @@ class GatewayNotificationsMixin:
                     else:
                         await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
-                    logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    logger.warning(
+                        "[%s] Post-stream media delivery failed: %s",
+                        adapter.name,
+                        log_safe_gateway_error(getattr(adapter, "platform", None), e),
+                    )
 
 
     async def _deliver_queued_first_response(
@@ -586,7 +600,11 @@ class GatewayNotificationsMixin:
                         "✅ Hermes update finished." if exit_code == 0
                         else "❌ Hermes update failed (exit code {}).".format(exit_code)
                     )
-                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
+                    logger.info(
+                        "Update finished (exit=%s), notified %s",
+                        exit_code,
+                        session_key_for_log(session_key),
+                    )
                 self._clear_update_markers(paths, session_key)
                 return
             _read_new_output()
@@ -671,7 +689,12 @@ class GatewayNotificationsMixin:
                         "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
                     )
                 await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
-                logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
+                logger.info(
+                    "Sent post-update notification to %s:%s (exit=%s)",
+                    platform_str,
+                    log_safe_gateway_identity(platform_str, chat_id),
+                    exit_code,
+                )
         except Exception as e:
             logger.warning("Post-update notification failed: %s", e)
         finally:
@@ -725,7 +748,11 @@ class GatewayNotificationsMixin:
                     "Restart notification to %s:%s was not delivered: %s", platform_str, chat_id, _send_error(result),
                 )
                 return None
-            logger.info("Sent restart notification to %s:%s", platform_str, chat_id)
+            logger.info(
+                "Sent restart notification to %s:%s",
+                platform_str,
+                log_safe_gateway_identity(platform_str, chat_id),
+            )
             return str(platform_str), str(chat_id), str(thread_id) if thread_id else None
         except Exception as e:
             logger.warning("Restart notification failed: %s", e)
@@ -817,7 +844,11 @@ class GatewayNotificationsMixin:
                 platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
             ):
                 delivered.add(target)
-                logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
+                logger.info(
+                    "Sent home-channel startup notification to %s:%s",
+                    platform.value,
+                    log_safe_gateway_identity(platform, home.chat_id),
+                )
         return delivered
 
     async def _send_session_db_warning_notifications(self) -> None:
@@ -901,7 +932,11 @@ class GatewayNotificationsMixin:
                 if entry and getattr(entry, "origin", None):
                     return entry.origin
             except Exception as exc:
-                logger.debug("Synthetic process-event session-store lookup failed for %s: %s", session_key, exc)
+                logger.debug(
+                    "Synthetic process-event session-store lookup failed for %s: %s",
+                    session_key_for_log(session_key),
+                    exc,
+                )
             cached_source = self._get_cached_session_source(session_key)
             if cached_source is not None:
                 return cached_source
@@ -916,9 +951,12 @@ class GatewayNotificationsMixin:
             if _raw_process_event_session_id(evt):
                 return None
             logger.warning(
-                "Synthetic event source unresolvable: "
-                "session_key=%r platform=%r chat_type=%r chat_id=%r evt_type=%s",
-                session_key, platform_name, chat_type, chat_id, evt.get("type", "?"),
+                "Synthetic event source unresolvable: session_key=%r platform=%r chat_type=%r chat_id=%r evt_type=%s",
+                session_key_for_log(session_key),
+                platform_name,
+                chat_type,
+                log_safe_gateway_identity(platform_name, chat_id),
+                evt.get("type", "?"),
             )
             return None
         try:
@@ -1083,7 +1121,9 @@ class GatewayNotificationsMixin:
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
-                platform_name, source.chat_id, source.thread_id,
+                platform_name,
+                log_safe_gateway_identity(source.platform, source.chat_id),
+                log_safe_gateway_identity(source.platform, source.thread_id),
             )
             # Relay egress priming: post-restart routing caches are cold (they warm only on inbound), so
             # replies would egress without tenant discriminators and be declined by the connector.

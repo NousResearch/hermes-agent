@@ -20,6 +20,9 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+from gateway.log_redaction import (
+    session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE, resolve_cron_drain_budget
@@ -766,7 +769,10 @@ class GatewayShutdownMixin:
                 continue
             with _log_suppressed(logging.DEBUG, "Failed interrupting agent during shutdown: %s"):
                 request_hard_interrupt(agent, reason)
-                logger.debug("Interrupted running agent for session %s during shutdown", session_key)
+                logger.debug(
+                    "Interrupted running agent for session %s during shutdown",
+                    session_key_for_log(session_key),
+                )
         # API-server / desk turns are adapter-owned and never enter _running_agents, so the loop above
         # cannot see them even though _drain_active_agents() waited for them.
         for count, what in (
@@ -1223,7 +1229,8 @@ class GatewayShutdownMixin:
                     suspended += 1
                     logger.warning(
                         "Auto-suspended stuck session %s (active across %d consecutive restarts — likely a stuck loop)",
-                        session_key, counts[session_key],
+                        session_key_for_log(session_key),
+                        counts[session_key],
                     )
         if suspended:
             with suppress(Exception):

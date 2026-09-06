@@ -17,6 +17,9 @@ import os
 import re
 import time
 from contextlib import suppress
+from gateway.log_redaction import (
+    log_safe_gateway_identity, session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -62,8 +65,9 @@ class GatewayInboundMixin:
             if _action == "skip":
                 logger.info(
                     "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
-                    _result.get("reason"), source.platform.value if source.platform else "unknown",
-                    source.chat_id or "unknown",
+                    _result.get("reason"),
+                    source.platform.value if source.platform else "unknown",
+                    log_safe_gateway_identity(source.platform, source.chat_id or "unknown"),
                 )
                 return None
             if _action == "rewrite":
@@ -194,7 +198,12 @@ class GatewayInboundMixin:
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            logger.warning(
+                "Unauthorized user: %s (%s) on %s",
+                log_safe_gateway_identity(source.platform, source.user_id),
+                log_safe_gateway_identity(source.platform, source.user_name),
+                source.platform.value,
+            )
             # DMs get a pairing code, groups are ignored. A bot cannot pair, and answering one mid-cooldown is outbound traffic.
             if (
                 source.chat_type == "dm"
@@ -306,9 +315,9 @@ class GatewayInboundMixin:
             err = self._hm_write_update_response("")
             if err is None:
                 logger.info(
-                    "Recognized /%s during pending update prompt for %s; "
-                    "cancelled prompt with default and dispatching command",
-                    _recognized_cmd, _quick_key,
+                    "Recognized /%s during pending update prompt for %s; cancelled prompt with default and dispatching command",
+                    _recognized_cmd,
+                    session_key_for_log(_quick_key),
                 )
             else:
                 logger.warning("Failed to write cancel response for pending update prompt: %s", err)
@@ -348,7 +357,8 @@ class GatewayInboundMixin:
         if _text_outcome == _clarify_mod.TEXT_RESOLVED:
             logger.info(
                 "Gateway intercepted clarify text response (session=%s, id=%s)",
-                _quick_key, _pending_clarify.clarify_id,
+                session_key_for_log(_quick_key),
+                _pending_clarify.clarify_id,
             )
             # The clarify callback pauses the platform typing/status indicator while waiting so
             # Slack users can type; the active agent resumes now, so re-enable its indicator.
@@ -456,9 +466,12 @@ class GatewayInboundMixin:
         )
         if _should_evict:
             logger.warning(
-                "Evicting stale _running_agents entry for %s "
-                "(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
-                _quick_key, _stale_age, _stale_idle, _raw_stale_timeout, _stale_detail,
+                "Evicting stale _running_agents entry for %s (age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
+                session_key_for_log(_quick_key),
+                _stale_age,
+                _stale_idle,
+                _raw_stale_timeout,
+                _stale_detail,
             )
             self._hm_evict_running_agent(_quick_key, "stale_running_agent_eviction")
 
@@ -530,7 +543,10 @@ class GatewayInboundMixin:
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
-            logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
+            logger.debug(
+                "PRIORITY photo follow-up for session %s — queueing without interrupt",
+                session_key_for_log(_quick_key),
+            )
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
         return False, None
@@ -549,7 +565,8 @@ class GatewayInboundMixin:
             return False
         logger.debug(
             "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-            time.time() - _started_at, _quick_key,
+            time.time() - _started_at,
+            session_key_for_log(_quick_key),
         )
         if effective_busy_input_mode != "queue":
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
@@ -573,9 +590,11 @@ class GatewayInboundMixin:
             except Exception as exc:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
-            logger.debug("PRIORITY steer for session %s", _quick_key)
+            logger.debug("PRIORITY steer for session %s", session_key_for_log(_quick_key))
             return
-        logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
+        logger.debug(
+            "PRIORITY steer-fallback-to-queue for session %s", session_key_for_log(_quick_key)
+        )
         self._queue_or_replace_pending_event(_quick_key, event)
 
     async def _hm_busy_interrupt(
@@ -591,11 +610,15 @@ class GatewayInboundMixin:
                 if running_agent.redirect(
                     self._steer_text_with_origin((event.text or "").strip(), event)
                 ):
-                    logger.debug("PRIORITY redirect for session %s", _quick_key)
+                    logger.debug("PRIORITY redirect for session %s", session_key_for_log(_quick_key))
                     return
             except Exception as exc:
-                logger.warning("PRIORITY redirect failed for session %s: %s", _quick_key, exc)
-        logger.debug("PRIORITY interrupt for session %s", _quick_key)
+                logger.warning(
+                    "PRIORITY redirect failed for session %s: %s",
+                    session_key_for_log(_quick_key),
+                    log_safe_gateway_error(event.source.platform, exc),
+                )
+        logger.debug("PRIORITY interrupt for session %s", session_key_for_log(_quick_key))
         _interrupt_text = event.text
         if self._pending_event_audio_paths(event):
             _interrupt_text, _ = await self._transcribe_and_echo_pending_voice(
@@ -627,7 +650,10 @@ class GatewayInboundMixin:
         if running_agent is _AGENT_PENDING_SENTINEL:  # agent still being set up
             if event.get_command() == "stop":  # force-clean the sentinel so the session is unlocked
                 self._release_running_agent_state(_quick_key)
-                logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
+                logger.info(
+                    "HARD STOP (pending) for session %s — sentinel cleared",
+                    session_key_for_log(_quick_key),
+                )
                 return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)  # picked up after start
             return None
@@ -641,7 +667,7 @@ class GatewayInboundMixin:
                 else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
             )
         if effective_busy_input_mode == "queue":
-            logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
+            logger.debug("PRIORITY queue follow-up for session %s", session_key_for_log(_quick_key))
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
         if effective_busy_input_mode == "steer":
@@ -788,7 +814,9 @@ class GatewayInboundMixin:
         )
 
     async def _hm_cmd_start(self, event, source, _quick_key):
-        logger.info("Ignoring /start platform ping for session %s", _quick_key)
+        logger.info(
+            "Ignoring /start platform ping for session %s", session_key_for_log(_quick_key)
+        )
         return True, ""
 
     async def _hm_cmd_egress(self, event, source, _quick_key):
@@ -1236,7 +1264,10 @@ class GatewayInboundMixin:
             # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
             # only fall to zero. Reversible.
             if self._external_drain_active:
-                logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
+                logger.info(
+                    "Refusing new turn for session %s — external drain active.",
+                    session_key_for_log(_quick_key),
+                )
                 return (
                     "⏳ This agent is draining for a maintenance action and isn't "
                     "accepting new turns right now. It'll be back in a moment — "
@@ -1248,7 +1279,10 @@ class GatewayInboundMixin:
         # passes the "already running" guard and spins up a duplicate agent for the same session.
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:
-            logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)
+            logger.info(
+                "Rejecting new active session %s: max_concurrent_sessions reached",
+                session_key_for_log(_quick_key),
+            )
             return _limit_message
 
         event, source, is_internal = self._hm_rescue_orphaned_fifo(event, source, is_internal, _quick_key)

@@ -90,3 +90,8 @@ def log_safe_gateway_exc_info(platform: object, exc_info=True):
     """Keep non-WhatsApp tracebacks; WhatsApp exception text stays out of log records."""
     name = str(getattr(platform, "value", platform) or "").lower()
     return None if name in {"whatsapp", "whatsapp_cloud"} else exc_info
+
+
+def session_exc_info_for_log(session_key: object, exc_info=True):
+    """Apply traceback privacy using the raw routing key's platform slot."""
+    return log_safe_gateway_exc_info(_session_platform(session_key), exc_info)

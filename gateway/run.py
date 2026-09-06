@@ -1398,6 +1398,9 @@ _TOOL_MEDIA_RE = re.compile(
 
 
 # Shared with cron delivery and gateway background tasks; canonical names live in gateway.media_repair.
+from gateway.log_redaction import (
+    log_safe_gateway_exc_info, log_safe_gateway_identity, session_exc_info_for_log, session_key_for_log,
+)
 from gateway.media_repair import tool_name_by_call_id as _tool_name_by_call_id  # noqa: E402
 
 
@@ -4035,7 +4038,11 @@ class GatewayRunner(
         try:
             cached_sources[session_key] = dataclasses.replace(source)
         except Exception:
-            logger.debug("Failed to cache live session source for %s", session_key, exc_info=True)
+            logger.debug(
+                "Failed to cache live session source for %s",
+                session_key_for_log(session_key),
+                exc_info=session_exc_info_for_log(session_key),
+            )
             return
         try:
             cached_sources.move_to_end(session_key)
@@ -4339,7 +4346,8 @@ class GatewayRunner(
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",
-                source.platform, source.chat_id, exc_info=True)
+                source.platform, log_safe_gateway_identity(source.platform, source.chat_id),
+                exc_info=log_safe_gateway_exc_info(source.platform))
             return None
         if matched:
             try:
@@ -4357,8 +4365,11 @@ class GatewayRunner(
             return matched.profile
         logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
-            source.platform.value, source.chat_id,
-            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None))
+            source.platform.value,
+            log_safe_gateway_identity(source.platform, source.chat_id),
+            log_safe_gateway_identity(source.platform, getattr(source, "thread_id", None)),
+            log_safe_gateway_identity(source.platform, getattr(source, "parent_chat_id", None)),
+        )
         return None
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -4376,20 +4387,25 @@ class GatewayRunner(
             profile_dir = get_profile_dir(name)
             if explicit_profile and not profile_exists(name):
                 logger.warning(
-                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
-                    "falling back to global HERMES_HOME",
-                    explicit_profile, source.platform.value, source.chat_id,
-                    getattr(source, "guild_id", None))
+                    "Profile %r does not exist for source %s/%s (guild_id=%s), falling back to global HERMES_HOME",
+                    explicit_profile,
+                    source.platform.value,
+                    log_safe_gateway_identity(source.platform, source.chat_id),
+                    log_safe_gateway_identity(source.platform, getattr(source, "guild_id", None)),
+                )
                 return get_hermes_home()
             return profile_dir
         except ProfileRouteRejected:
             raise
         except Exception:
             logger.warning(
-                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
-                "falling back to global HERMES_HOME: %s",
-                source.platform.value, source.chat_id, getattr(source, "guild_id", None),
-                explicit_profile or "(no profile)", exc_info=True)
+                "Failed to resolve profile directory for source %s/%s (guild_id=%s), falling back to global HERMES_HOME: %s",
+                source.platform.value,
+                log_safe_gateway_identity(source.platform, source.chat_id),
+                log_safe_gateway_identity(source.platform, getattr(source, "guild_id", None)),
+                explicit_profile or "(no profile)",
+                exc_info=log_safe_gateway_exc_info(source.platform),
+            )
             return get_hermes_home()
 
     @dataclasses.dataclass

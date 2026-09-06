@@ -13,6 +13,9 @@ import time
 from collections import Counter
 from typing import Any, Dict, Optional
 
+from gateway.log_redaction import (
+    session_key_for_log,
+)
 from gateway.session_stall import (
     format_session_stall_notification,
     resolve_session_idle_seconds_from_activity,
@@ -149,16 +152,22 @@ class GatewaySessionWatchersMixin:
         undeliverable (no chat_id) latches without sending; send failures never latch."""
         from gateway.run import _STALL_NOTIFY_SEND_TIMEOUT_SECONDS
         logger.warning(
-            "Session stall detected: session=%s idle=%.0fs (timeout=%.0fs, ~%d min); pending "
-            "inbound present | last_activity=%s | provenance=%s (agent.session_stall_timeout)",
-            session_key, idle_seconds, timeout_seconds, max(1, int(idle_seconds // 60)),
-            activity.get("last_activity_desc") or activity.get("last_activity_description")
+            "Session stall detected: session=%s idle=%.0fs (timeout=%.0fs, ~%d min); pending inbound present | last_activity=%s | provenance=%s (agent.session_stall_timeout)",
+            session_key_for_log(session_key),
+            idle_seconds,
+            timeout_seconds,
+            max(1, int(idle_seconds // 60)),
+            activity.get("last_activity_desc")
+            or activity.get("last_activity_description")
             or "unknown",
             activity.get("provenance") or activity.get("last_activity_provenance") or "unknown",
         )
         source = getattr(pending_event, "source", None)
         if not getattr(source, "chat_id", None):
-            logger.warning("Session stall notify skipped (no chat_id): session=%s", session_key)
+            logger.warning(
+                "Session stall notify skipped (no chat_id): session=%s",
+                session_key_for_log(session_key),
+            )
             notified_map[session_key] = True  # cannot deliver; latch to avoid log spam every tick
             return False
         # Re-read pending state + activity IMMEDIATELY before delivery: the snapshot ages while
@@ -173,8 +182,12 @@ class GatewaySessionWatchersMixin:
             self._session_activity_for_stall(session_key), now=time.time()
         )
         if not still_pending or (fresh_idle is not None and fresh_idle < timeout_seconds):
-            logger.info("Session stall notify aborted (no longer stale): session=%s pending=%s "
-                        "fresh_idle=%s", session_key, still_pending, fresh_idle)
+            logger.info(
+                "Session stall notify aborted (no longer stale): session=%s pending=%s fresh_idle=%s",
+                session_key_for_log(session_key),
+                still_pending,
+                fresh_idle,
+            )
             notified_map.pop(session_key, None)  # re-arm so a FUTURE genuine stall notifies again
             return False
         try:
@@ -192,11 +205,14 @@ class GatewaySessionWatchersMixin:
         except asyncio.TimeoutError:
             logger.warning(
                 "Session stall notify send timed out after %.0fs for %s; will retry next tick",
-                _STALL_NOTIFY_SEND_TIMEOUT_SECONDS, session_key,
+                _STALL_NOTIFY_SEND_TIMEOUT_SECONDS,
+                session_key_for_log(session_key),
             )
             return False
         except Exception as exc:
-            logger.warning("Session stall notify failed for %s: %s", session_key, exc)
+            logger.warning(
+                "Session stall notify failed for %s: %s", session_key_for_log(session_key), exc
+            )
             return False
         notified_map[session_key] = True
         return True

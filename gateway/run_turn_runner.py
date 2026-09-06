@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from gateway.log_redaction import (
+    session_key_for_log,
+)
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -974,17 +977,16 @@ class TurnRunner:
             # a stale "dead" verdict must never be applied to a different (possibly live) agent.
             if sid_mismatch and dead and cached_sid == peek_sid:
                 logger.info(
-                    "Agent cache invalidated for session %s: "
-                    "cached agent's session_id %s is ended in "
-                    "state.db (stale self-heal artifact, "
-                    "#54878 x #54947) — discarding instead of "
-                    "reusing across the routing recovery", ctx.session_key, cached_sid,
+                    "Agent cache invalidated for session %s: cached agent's session_id %s is ended in state.db (stale self-heal artifact, #54878 x #54947) — discarding instead of reusing across the routing recovery",
+                    session_key_for_log(ctx.session_key),
+                    cached_sid,
                 )
             elif not sid_mismatch and cached_mc is not None and msg_count is not None and msg_count != cached_mc:
                 logger.info(
-                    "Agent cache invalidated for session %s: "
-                    "message_count changed (%s -> %s), "
-                    "possible cross-process write", ctx.session_key, cached_mc, msg_count,
+                    "Agent cache invalidated for session %s: message_count changed (%s -> %s), possible cross-process write",
+                    session_key_for_log(ctx.session_key),
+                    cached_mc,
+                    msg_count,
                 )
             else:
                 out.agent = cached[0]
@@ -995,7 +997,9 @@ class TurnRunner:
                 self._runner._init_cached_agent_for_turn(out.agent, ctx._interrupt_depth)
                 # Cached agent may have been created with old config.
                 out.agent.max_iterations = max_iterations
-                logger.debug("Reusing cached agent for session %s", ctx.session_key)
+                logger.debug(
+                    "Reusing cached agent for session %s", session_key_for_log(ctx.session_key)
+                )
                 out.reused = True
                 return out
             out.evicted = self._pop_cached_agent_for_eviction()
@@ -1074,7 +1078,11 @@ class TurnRunner:
                     # can skip the meaningless count comparison if the active session_id switches.
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
-            logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
+            logger.debug(
+                "Created new agent for session %s (sig=%s)",
+                session_key_for_log(ctx.session_key),
+                sig,
+            )
         return agent, found.reused
 
     # ── per-turn agent wiring ───────────────────────────────────────────────────────────────
@@ -1404,10 +1412,10 @@ class TurnRunner:
             selected = _select_cached_agent_history(agent_history, getattr(agent, "_session_messages", None))
             if selected is not agent_history:
                 logger.warning(
-                    "Persisted transcript lagged live cached history for "
-                    "session %s (disk=%d, memory=%d); preserving live "
-                    "conversation context (possible FTS write corruption)",
-                    ctx.session_key, len(agent_history), len(selected),
+                    "Persisted transcript lagged live cached history for session %s (disk=%d, memory=%d); preserving live conversation context (possible FTS write corruption)",
+                    session_key_for_log(ctx.session_key),
+                    len(agent_history),
+                    len(selected),
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply the
                 # stale-confirmation expiry so a dangerous confirmation can't slip through.
@@ -1617,18 +1625,18 @@ class TurnRunner:
                 entry_session_id = getattr(entry, "session_id", None)
                 if not ctx._run_still_current():
                     logger.info(
-                        "Skipping session split sync for stale run %s — "
-                        "generation %s is no longer current",
-                        ctx.session_key or "?", ctx.run_generation,
+                        "Skipping session split sync for stale run %s — generation %s is no longer current",
+                        session_key_for_log(ctx.session_key or "?"),
+                        ctx.run_generation,
                     )
                 elif entry_session_id == agent_session_id:
                     persisted = True
                 elif entry_session_id != ctx.session_id:
                     logger.info(
-                        "Skipping session split sync for %s because the "
-                        "session binding moved from %s to %s before "
-                        "compression finished",
-                        ctx.session_key or "?", ctx.session_id, entry_session_id,
+                        "Skipping session split sync for %s because the session binding moved from %s to %s before compression finished",
+                        session_key_for_log(ctx.session_key or "?"),
+                        ctx.session_id,
+                        entry_session_id,
                     )
                 else:
                     entry.session_id = agent_session_id
@@ -1727,7 +1735,9 @@ class TurnRunner:
             )
             logger.debug(
                 "run_agent resolved: model=%s provider=%s session=%s",
-                model, runtime_kwargs.get("provider"), ctx.session_key or "",
+                model,
+                runtime_kwargs.get("provider"),
+                session_key_for_log(ctx.session_key or ""),
             )
         except Exception as exc:
             return {"final_response": f"⚠️ Provider authentication failed: {exc}", "messages": [], "api_calls": 0, "tools": []}

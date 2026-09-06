@@ -447,6 +447,13 @@ class KanbanSubprocessClient:
             self.reconcile_dispatch_task(task_id, task)
         return task_id
 
+    def promote_task(self, board: str, task_id: str) -> None:
+        result = self._runner.run(
+            ["hermes", "kanban", "--board", board, "promote", task_id]
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Kanban task promotion failed")
+
     def task_details(self, board: str, task_id: str) -> dict[str, object] | None:
         result = self._runner.run(
             ["hermes", "kanban", "--board", board, "show", task_id, "--json"]

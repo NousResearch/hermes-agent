@@ -175,6 +175,8 @@ class KanbanClient(Protocol):
 
     def create_or_get_task(self, task: KanbanTask) -> str: ...
 
+    def promote_task(self, board: str, task_id: str) -> None: ...
+
     def task_status(self, board: str, task_id: str) -> str | None: ...
 
     def task_details(self, board: str, task_id: str) -> Mapping[str, object] | None: ...
@@ -1795,6 +1797,9 @@ class ScanController:
                 self._local_git, receipt, task_id, self._policy.board or ""
             )
             self._ledger.finalize(receipt, task_id, lease)
+            promote_task = getattr(self._kanban, "promote_task", None)
+            if promote_task is not None:
+                promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
                 print(
@@ -1922,6 +1927,9 @@ class ScanController:
                 self._local_git, receipt, task_id, self._policy.board or ""
             )
             self._ledger.finalize(receipt, task_id, lease)
+            promote_task = getattr(self._kanban, "promote_task", None)
+            if promote_task is not None:
+                promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
                 print(
@@ -2218,6 +2226,9 @@ class ScanController:
                 self._local_git, receipt, task_id, self._policy.board or ""
             )
             self._ledger.finalize(receipt, task_id, lease)
+            promote_task = getattr(self._kanban, "promote_task", None)
+            if promote_task is not None:
+                promote_task(self._policy.board or "", task_id)
         except Exception as error:  # noqa: BLE001 - retain retryable dispatch failure.
             if os.environ.get("HERMES_PR_FEEDBACK_DEBUG"):
                 print(
@@ -3004,7 +3015,9 @@ def _task(
         evidence=evidence,
         # Kanban's public create CLI calls its dispatchable default "running";
         # create_task resolves that to a ready card until a worker claims it.
-        initial_status="running" if auto_dispatch else "blocked",
+        # Bind the receipt before making the card dispatchable.  A ready card
+        # can be claimed between create_task and ledger.finalize.
+        initial_status="blocked",
         max_retries=2 if auto_dispatch else 1,
         # 900s had no real margin: three separate PR-feedback repair tasks
         # observed live (2026-08-28) landed at 901-905s and were blocked as
@@ -3223,7 +3236,8 @@ def _ci_failure_task(
         idempotency_key=f"{_receipt_idempotency_key(receipt)}:typed-fixer-v3",
         evidence=evidence,
         evidence_heading="Authoritative local CI failure receipt (JSON)",
-        initial_status="running" if policy.auto_dispatch else "blocked",
+        # The ledger binding is finalized before this card is promoted.
+        initial_status="blocked",
         max_retries=2 if policy.auto_dispatch else 1,
         # Static/type repairs often need one full repository-owned lane after
         # the focused fix.  Keep the exact-head lease authoritative instead of

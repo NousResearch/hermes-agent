@@ -264,6 +264,18 @@ What they do:
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
+### Creating a job paused (safe canary)
+
+Some jobs must not fire even once until a human says so — a canary that posts to a shared channel, a dry run you want to inspect first. Pausing after creation leaves a window: the job is stored enabled, so the scheduler can pick it up before your `pause` lands. Creation with `--paused` closes that window by persisting the job disabled inside the single atomic write:
+
+```bash
+hermes cron create "every 1h" "Post the digest" --paused --paused-reason "canary — awaiting operator approval"
+```
+
+The job is stored with `enabled: false`, `state: paused`, the pause timestamp and your reason, and is never registered with the scheduler — it cannot become due or execute until you explicitly resume it (`hermes cron resume <job_id>`, which re-arms the next run from that moment). Ordinary creation is unchanged: omit the flag and the job lands enabled and scheduled as before. `--paused-reason` requires `--paused` and is rejected otherwise, before anything is persisted.
+
+The same contract is available to the agent's `cronjob` tool (`paused`/`paused_reason` on `create`) and to the dashboard API (`POST /api/jobs` accepts `paused` and `paused_reason`), so a canary can be staged from any surface with the identical no-run guarantee.
+
 ## Agent-managed scheduling (cron jobs that manage cron jobs)
 
 By default, agents launched *by* the scheduler cannot use the `cronjob` tool —

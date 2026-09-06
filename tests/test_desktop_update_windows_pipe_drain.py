@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
@@ -107,7 +108,9 @@ class TestIdleWatchdogCountsUpdateLogGrowth:
         # The growth check must gate the termination: compare-and-reset
         # appears before the 124 tree-termination inside the drain loop.
         consult = src.index("if ($currentLogStamp -ne $progressLogStamp)")
-        terminate = src.index("TerminateAndWait($job, 124")
+        # There is now also an absolute-deadline termination before the idle
+        # branch (#102283); find the idle-specific termination after the consult.
+        terminate = src.index("TerminateAndWait($job, 124", consult)
         assert consult < terminate, msg
         # And the clock actually resets on growth.
         growth_block = src[consult:terminate]
@@ -125,8 +128,9 @@ class TestIdleWatchdogCountsUpdateLogGrowth:
 
 
 @pytest.mark.windows_only
+@pytest.mark.parametrize("host", ["powershell", "pwsh"])
 def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
-    tmp_path: Path,
+    tmp_path: Path, host: str,
 ) -> None:
     """Execute the real hand-off runner against all three step shapes.
 
@@ -165,6 +169,11 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     powershell = (
         system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     )
+    if host == "pwsh":
+        found = shutil.which("pwsh")
+        if not found:
+            pytest.skip("PowerShell 7 is not installed")
+        powershell = Path(found)
     if not powershell.is_file():
         pytest.skip(f"Windows PowerShell not found at {powershell}")
 
@@ -206,10 +215,10 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         "The Windows update hand-off's step drain regressed: it either waited "
         "on a descendant holding the pipe open (the Desktop parks on 'Updating "
         "Hermes' forever) or metered a chatty step (backpressure on the running "
-        f"update). Fixture diagnosis follows.\n--- stdout ---\n{result.stdout}\n"
+        f"update). Fixture diagnosis follows.\n--- stdout tail ---\n{result.stdout[-8000:]}\n"
         f"--- stderr ---\n{result.stderr}"
     )
     assert result.returncode == 0, (
         f"-SelfTestPipeDrain exited {result.returncode}.\n"
-        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+        f"--- stdout tail ---\n{result.stdout[-8000:]}\n--- stderr ---\n{result.stderr[-8000:]}"
     )

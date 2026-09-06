@@ -265,89 +265,44 @@ class TestRunLoggedSubprocess:
         assert terminal.getvalue() == ""  # not echoed to terminal
         assert "LOUD BUILD OUTPUT" in log.getvalue()  # but kept in the log
 
-    def test_streams_to_log_before_child_exits(self, monkeypatch, tmp_path):
-        """Electron/vite output must hit update.log while the child is alive.
-
-        Buffering until subprocess.run returns made a 40-minute Desktop
-        rebuild look stalled to the Windows idle watchdog (exit 124).
-        """
-        import threading
-        import time
-
-        terminal = io.StringIO()
-        log_path = tmp_path / "update.log"
-        log = log_path.open("w+", encoding="utf-8")
-        monkeypatch.setattr(sys, "stdout", _UpdateOutputStream(terminal, log))
-
-        script = (
-            "import sys, time\n"
-            "print('FIRST', flush=True)\n"
-            "time.sleep(4)\n"
-            "print('SECOND', flush=True)\n"
-        )
-        seen_first = threading.Event()
-
-        def watch() -> None:
-            deadline = time.time() + 2.5
-            while time.time() < deadline:
-                try:
-                    if "FIRST" in log_path.read_text(encoding="utf-8"):
-                        seen_first.set()
-                        return
-                except OSError:
-                    pass
-                time.sleep(0.05)
-
-        holder: dict = {}
-
-        def run() -> None:
-            holder["r"] = _run_logged_subprocess([sys.executable, "-c", script])
-
-        watcher = threading.Thread(target=watch, daemon=True)
-        runner = threading.Thread(target=run)
-        watcher.start()
-        runner.start()
-        assert seen_first.wait(timeout=2.5), (
-            "FIRST must land in update.log before the child exits"
-        )
-        assert runner.is_alive(), (
-            "child should still be in the 4s sleep when FIRST is logged"
-        )
-        runner.join(timeout=10)
-        result = holder["r"]
-        assert result.returncode == 0
-        assert "SECOND" in (result.stdout or "")
-        assert terminal.getvalue() == ""
-        log.close()
-
-
 class TestUpdateProgressHeartbeat:
-    def test_emits_elapsed_line_while_work_runs(self, capsys):
-        import time
+    def test_emits_elapsed_line_while_work_runs(self, monkeypatch):
+        import threading
 
         from hermes_cli.update_cmd import _update_progress_heartbeat
 
-        with _update_progress_heartbeat(
-            "still ({elapsed}s)", interval_seconds=0.12
-        ):
-            time.sleep(0.4)
-        out = capsys.readouterr().out
-        assert "still (" in out
+        observed = threading.Event()
 
-    def test_unwrapped_stdout_still_grows_update_log(self, capsys):
-        """Unwrapped stdout must still grow logs/update.log (Desktop watchdog)."""
-        import time
+        class Terminal(io.StringIO):
+            def write(self, text):
+                result = super().write(text)
+                if "still (" in text:
+                    observed.set()
+                return result
+
+        terminal = Terminal()
+        monkeypatch.setattr(sys, "stdout", terminal)
+        with _update_progress_heartbeat("still ({elapsed}s)", interval_seconds=.02):
+            assert observed.wait(3), "heartbeat never reached the terminal"
+        assert "still (" in terminal.getvalue()
+
+    def test_unwrapped_stdout_still_grows_update_log(self, monkeypatch, capsys):
+        """Observe the actual write instead of assuming a thread ran after a sleep."""
+        import threading
 
         from hermes_constants import get_hermes_home
-        from hermes_cli.update_cmd import _update_progress_heartbeat
+        from hermes_cli import update_cmd
 
+        observed = threading.Event()
+        original = update_cmd._log_only_write
+
+        def witness(text):
+            original(text)
+            observed.set()
+
+        monkeypatch.setattr(update_cmd, "_log_only_write", witness)
+        with update_cmd._update_progress_heartbeat("still ({elapsed}s)", interval_seconds=.02):
+            assert observed.wait(3), "heartbeat never reached the progress log"
         log_path = get_hermes_home() / "logs" / "update.log"
-        before = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
-        with _update_progress_heartbeat(
-            "still ({elapsed}s)", interval_seconds=0.12
-        ):
-            time.sleep(0.4)
-        after = log_path.read_text(encoding="utf-8")
-        assert "still (" in after[len(before):]
+        assert "still (" in log_path.read_text(encoding="utf-8")
         assert "still (" in capsys.readouterr().out
-

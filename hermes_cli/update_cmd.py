@@ -5,6 +5,8 @@ Each concern lives in ``update_cmd_<concern>.py`` and is re-imported here so
 main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at call time.
 """
 
+import codecs
+import io
 import logging
 from contextlib import contextmanager, suppress
 import os
@@ -461,11 +463,18 @@ def _update_progress_heartbeat(message: str, *, interval_seconds: int = 30):
         while not done.wait(interval_seconds):
             elapsed = int(_time.time() - start)
             line = message.format(elapsed=elapsed)
-            print(line, flush=True)
+            mirrored = False
+            try:
+                print(line, flush=True)
+                mirrored = getattr(sys.stdout, "_log", None) is not None
+            except (OSError, ValueError):
+                # The originating console may close while the update lives on.
+                # Its failure must not kill the independent progress witness.
+                pass
             # The hangup tee mirrors print() into update.log. When stdout
             # is not wrapped (gateway mode today, wrap-setup failure), still
             # tick the file the Windows Desktop idle watchdog watches.
-            if getattr(sys.stdout, "_log", None) is None:
+            if not mirrored:
                 _log_only_write(line)
 
     t = threading.Thread(target=_beat, daemon=True, name="update-heartbeat")
@@ -491,7 +500,7 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
     chunks: list[str] = []
     child_env = dict(env) if env is not None else os.environ.copy()
     # Python children block-buffer stdout when it is a pipe; without this
-    # the line loop below still sees nothing until the child exits.
+    # the pipe reader below still sees nothing until the child exits.
     child_env.setdefault("PYTHONUNBUFFERED", "1")
     try:
         proc = subprocess.Popen(
@@ -500,19 +509,25 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
             env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
         )
     except OSError as exc:
         return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
 
     try:
         if proc.stdout is not None:
-            for line in proc.stdout:
-                chunks.append(line)
-                _log_only_write(line)
+            # read1 performs one pipe read, so a flushed partial line is visible
+            # without waiting for a newline or a full buffer. Keep text-mode
+            # decoding/newline semantics across UTF-8 chunk boundaries.
+            decoder = io.IncrementalNewlineDecoder(
+                codecs.getincrementaldecoder("utf-8")("replace"), translate=True
+            )
+            while chunk := proc.stdout.read1(65536):
+                text = decoder.decode(chunk)
+                chunks.append(text)
+                _log_only_write(text)
+            tail = decoder.decode(b"", final=True)
+            chunks.append(tail)
+            _log_only_write(tail)
         returncode = proc.wait()
     except Exception:
         proc.kill()
@@ -521,6 +536,9 @@ def _run_logged_subprocess(cmd, *, cwd=None, env=None):
         except Exception:
             pass
         raise
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
     return subprocess.CompletedProcess(cmd, returncode, stdout="".join(chunks), stderr=None)
 
 

@@ -161,12 +161,13 @@ class PluginLedgerMixin:
             return
         ids = {id(r) for r in registrations}
         self._registration_order = [r for r in self._registration_order if id(r) not in ids]
-        for plugin_key, owned in list(self._ownership_ledger.items()):
-            remaining = [r for r in owned if id(r) not in ids]
-            if remaining:
-                self._ownership_ledger[plugin_key] = remaining
-            else:
-                self._ownership_ledger.pop(plugin_key, None)
+        for ledger in (self._ownership_ledger, self._memory_hook_registrations):
+            for plugin_key, owned in list(ledger.items()):
+                remaining = [r for r in owned if id(r) not in ids]
+                if remaining:
+                    ledger[plugin_key] = remaining
+                else:
+                    ledger.pop(plugin_key, None)
 
     def _dispose_registrations(self, registrations: List[PluginRegistration]) -> None:
         """Dispose registrations in reverse acquisition order, best effort."""

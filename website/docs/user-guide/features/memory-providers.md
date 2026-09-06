@@ -672,7 +672,7 @@ hermes memory setup
 
 ### deja
 
-Memory from the coding sessions already on the machine. deja indexes the transcripts Hermes, Claude Code, Codex, Cursor and 18 other agents — 22 in all — write to disk — including months from before it was installed — and recalls the relevant one before a turn. No model, no key, no server; one Go binary.
+Memory from the coding sessions already on the machine. deja indexes the transcripts Hermes, Claude Code, Codex, Cursor and 19 other agents — 23 in all — write to disk — including months from before it was installed — and recalls the relevant one before a turn. No model, no key, no server; one Go binary.
 
 | | |
 |---|---|
@@ -716,7 +716,7 @@ See the [deja Hermes guide](https://vshulcz.github.io/deja-vu/guide/memory-for-h
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
-| **deja** | Local | Free | 3 | `deja` binary | Indexes the session history already on disk, across 22 agents |
+| **deja** | Local | Free | 3 | `deja` binary | Indexes the session history already on disk, across 23 agents |
 
 ## Profile Isolation
 

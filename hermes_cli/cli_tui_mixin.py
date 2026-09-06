@@ -357,7 +357,7 @@ class CLITuiMixin:
         *,
         sudo_widget,
         secret_widget,
-        free_text_widget,  # KENSEI CUSTOM
+        free_text_widget=None,  # KENSEI CUSTOM: optional free-text banner widget
         approval_widget,
         slash_confirm_widget=None,
         clarify_widget,

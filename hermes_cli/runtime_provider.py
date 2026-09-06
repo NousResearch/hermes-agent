@@ -352,8 +352,9 @@ def _auto_detect_local_model(base_url: str) -> str:
         url = base_url.rstrip("/")
         resp = requests.get((url if url.endswith("/v1") else url + "/v1") + "/models", timeout=(2, 3))
         if resp.ok:
-            models = resp.json().get("data", [])
-            if len(models) == 1 and models[0].get("id", ""):
+            payload = resp.json()
+            models = ((payload.get("data") or []) if isinstance(payload, dict) else [])
+            if len(models) == 1 and isinstance(models[0], dict) and models[0].get("id", ""):
                 return models[0]["id"]
     except Exception as exc:
         logger.debug("Auto-detect model from %s failed: %s", base_url, exc)

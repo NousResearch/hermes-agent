@@ -209,3 +209,17 @@ actually run rather than inventing a command; when in doubt, read the scripts.
   locales?
 
 If any answer is "not sure," that's the part to go verify.
+
+## Nous free tier: state is pulled, never latched in the renderer
+
+The free tier (a Nous identity with no account, `hermes_cli/anon_auth.py`) reaches the renderer
+through one JSON-RPC pair: `free_tier.status` (has_guest, enabled, carries_inference,
+notice_pending, model, label) read from local auth state with zero network, and
+`free_tier.ack_notice`, which persists the one-time notice flag on the identity itself. The
+first-launch ready screen and the own-key strip are the SAME state rendered for two situations,
+keyed on `notice_pending`; there is no localStorage latch, so the CLI and the desktop cannot
+disagree about whether the notice was shown. Sign-in goes through the existing
+`POST /api/providers/oauth/nous/start` + poll route, which over a free-tier identity registers the
+connector transfer and reports `reason`, `account_email` and `model` on completion; every entry
+point (Billing, status chip, ready screen) opens the one free-tier sign-in dialog. Never branch on
+provider display names: the picker row carries `free_tier_row`, status cards carry `free_tier`.

@@ -54,7 +54,8 @@ describe('useStatusSnapshot', () => {
     await flushAsync()
 
     expect(getStatus).toHaveBeenCalledOnce()
-    expect(requestGateway).toHaveBeenCalledTimes(2)
+    // One refresh round = setup.status + setup.runtime_check + free_tier.status.
+    expect(requestGateway).toHaveBeenCalledTimes(3)
   })
 
   it('keeps the last authoritative readiness through a transient RPC failure', async () => {
@@ -199,13 +200,14 @@ describe('useStatusSnapshot', () => {
     renderHook(() => useStatusSnapshot('open', requestGateway))
     await flushAsync()
 
-    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
+    // Three legs per round: setup.status, setup.runtime_check, free_tier.status.
+    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000)
     })
 
-    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
+    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
 
     await act(async () => {
       setup.resolve({ provider_configured: true })
@@ -216,11 +218,11 @@ describe('useStatusSnapshot', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(59_999)
     })
-    expect(requestGatewayMock).toHaveBeenCalledTimes(2)
+    expect(requestGatewayMock).toHaveBeenCalledTimes(3)
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1)
     })
-    expect(requestGatewayMock).toHaveBeenCalledTimes(4)
+    expect(requestGatewayMock).toHaveBeenCalledTimes(6)
   })
 })

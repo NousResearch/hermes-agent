@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { refreshFreeTierStatus } from '@/store/free-tier'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -59,7 +60,12 @@ export function useStatusSnapshot(
         // race newer healthy results.
         const [statusResult, inferenceResult] = await Promise.allSettled([
           getStatus(),
-          gatewayState === 'open' ? evaluateRuntimeReadiness(requestGateway) : Promise.resolve(null)
+          gatewayState === 'open' ? evaluateRuntimeReadiness(requestGateway) : Promise.resolve(null),
+          // The free-tier verdict is a local, zero-network read, so it rides
+          // this cadence rather than earning a poll of its own. It writes
+          // straight to its own store and swallows its failures — nothing here
+          // waits on it or reads the result.
+          gatewayState === 'open' ? refreshFreeTierStatus(requestGateway) : Promise.resolve(null)
         ])
 
         if (cancelled) {

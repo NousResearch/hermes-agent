@@ -4,7 +4,12 @@ export interface SetupStatusSnapshot {
 
 export interface RuntimeCheckSnapshot {
   error?: string
+  /** True when the resolved route is the free tier rather than a credential of
+   *  the user's own. Absent on older backends. */
+  free_tier?: boolean
+  model?: string
   ok?: boolean
+  provider?: string
 }
 
 export interface RuntimeReadinessSignals {
@@ -22,6 +27,13 @@ export interface RuntimeReadinessOptions {
 
 export interface RuntimeReadinessResult {
   checksDisagree: boolean
+  /** Passed through from `setup.runtime_check`: the resolved route is the free
+   *  tier. Undefined when the check did not answer (older backend, transport
+   *  fallback) — never read it as "not free tier". */
+  freeTier?: boolean
+  /** Passed through from `setup.runtime_check`: the model the route resolved
+   *  to. Undefined when the check did not answer. */
+  model?: string
   ready: boolean
   reason: null | string
   source: 'fallback' | 'runtime_check' | 'setup_status'
@@ -100,12 +112,21 @@ export function interpretRuntimeReadiness(
   const runtimeFailure = normalizeMessage(signals.runtime?.error) ?? normalizeMessage(signals.runtimeError)
   const setupFailure = normalizeMessage(signals.setupError)
 
+  // Route facts the check reported, carried through untouched so consumers
+  // (free-tier chrome) don't have to re-issue setup.runtime_check. Left
+  // undefined when the check said nothing — "absent" and "false" differ.
+  const route = {
+    freeTier: typeof signals.runtime?.free_tier === 'boolean' ? signals.runtime.free_tier : undefined,
+    model: normalizeMessage(signals.runtime?.model) ?? undefined
+  }
+
   const checksDisagree =
     typeof setupConfigured === 'boolean' && typeof runtimeOk === 'boolean' && setupConfigured !== runtimeOk
 
   if (typeof runtimeOk === 'boolean') {
     if (runtimeOk) {
       return {
+        ...route,
         checksDisagree,
         ready: true,
         reason: null,
@@ -120,6 +141,7 @@ export function interpretRuntimeReadiness(
     }
 
     return {
+      ...route,
       checksDisagree,
       ready: false,
       reason,
@@ -129,6 +151,7 @@ export function interpretRuntimeReadiness(
 
   if (typeof setupConfigured === 'boolean') {
     return {
+      ...route,
       checksDisagree: false,
       ready: setupConfigured,
       reason: setupConfigured ? null : (runtimeFailure ?? setupFailure ?? defaultReason),
@@ -137,6 +160,7 @@ export function interpretRuntimeReadiness(
   }
 
   return {
+    ...route,
     checksDisagree: false,
     ready: unknownReady,
     reason: unknownReady ? null : (runtimeFailure ?? setupFailure ?? defaultReason),

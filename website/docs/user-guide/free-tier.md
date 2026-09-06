@@ -91,6 +91,29 @@ does not carry your connectors over. Use `hermes auth upgrade` when you have con
 to keep.
 :::
 
+## On Hermes Desktop
+
+The desktop app runs on the same free tier as the CLI and shows it in four places:
+
+| Where | What you see |
+|---|---|
+| First launch | A ready screen: "Hermes is ready." with the default model `nous/welcome`, a Free tier badge, and **Begin**. "Sign in with a Nous account instead" and "Other providers" sit under it. The screen shows once. |
+| First launch with your own API key already present | A one-time strip above the composer: "Free Nous inference and connectors are now available." with **Open model picker**, **Sign in** and **Dismiss**. |
+| Status bar | A chip "Nous · free tier · nous/welcome" with a **Sign in** badge while the free tier carries inference. You can hide it from the bar's right-click menu. |
+| Settings › Billing | "You're on the Nous free tier" with one **Sign in** button; the summary reads Plan "Free tier", Model `nous/welcome`, Connectors "Included". There is no balance and nothing to pay, so no payment or usage sections appear. |
+
+Signing in from any of those places opens one dialog. It shows a code and a link; open the link
+(or the browser the app opened), confirm in the portal, and the dialog ends with "Signed in as
+you@example.com. Your connectors are kept." and the default model your account now uses. A
+sign-in you reject in the browser, a code that timed out, or a code replaced by a newer one each
+show their own message and leave you on the free tier. The model picker lists the free tier as one
+row, "Nous · free tier", with the single model `nous/welcome`; there is no sign-in action inside the
+picker.
+
+The desktop reads all of this from the same local state the CLI writes. The ready screen and the
+strip are keyed on the same one-time flag the CLI notice uses, so seeing one on the CLI means you
+will not see it again on the desktop for that free-tier identity, and the other way round.
+
 ## Turning the free tier off
 
 ```bash

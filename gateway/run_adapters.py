@@ -1123,7 +1123,9 @@ class GatewayAdapterLifecycleMixin:
                 credential_claim, claimed, profile_name, platform, "credential"
             ) or self._refuse_duplicate_claim(listener_claim, claimed, profile_name, platform, "listener"):
                 continue
-            self._configure_profile_adapter(adapter, profile_name, platform)
+            self._configure_profile_adapter(
+                adapter, profile_name, platform, profile_home=profile_home
+            )
             try:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)
@@ -1150,6 +1152,7 @@ class GatewayAdapterLifecycleMixin:
     def _wire_adapter_handlers(
         self, adapter: BasePlatformAdapter, *, message_handler=None, fatal_error_handler=None,
         busy_session_handler=None, authorization_check=None, platform_event_handler=None,
+        admin_policy_check=None,
         busy_text_mode: Optional[str] = None, busy_text_timing: Optional[tuple[float, float]] = None,
         human_delay: Optional[tuple[int, int]] | object = _UNSET,
     ) -> None:
@@ -1167,6 +1170,7 @@ class GatewayAdapterLifecycleMixin:
             authorization_check or self._make_adapter_auth_check(adapter.platform)
         )
         adapter.set_platform_event_handler(platform_event_handler or self._primary_platform_event_handler())
+        adapter.set_admin_policy_check(admin_policy_check or self._make_adapter_admin_policy_check())
         adapter._busy_text_mode = (self._busy_text_mode if busy_text_mode is None else busy_text_mode)
         timing = busy_text_timing or getattr(self, "_busy_text_timing", None)
         if timing:
@@ -1175,7 +1179,8 @@ class GatewayAdapterLifecycleMixin:
             getattr(self, "_human_delay", None) if human_delay is _UNSET else human_delay)
 
     def _configure_profile_adapter(
-        self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform
+        self, adapter: BasePlatformAdapter, profile_name: str, platform: Platform,
+        *, profile_home: Optional["Path"] = None,
     ) -> None:
         """Install the profile-scoped handlers shared by startup and reconnect."""
         # Runtime status is process-scoped: key on profile:platform so health shows WHICH secondary failed.
@@ -1197,6 +1202,7 @@ class GatewayAdapterLifecycleMixin:
             busy_session_handler=self._make_profile_busy_session_handler(profile_name),
             authorization_check=self._make_adapter_auth_check(platform, profile_name=profile_name),
             platform_event_handler=self._make_profile_platform_event_handler(profile_name),
+            admin_policy_check=self._make_adapter_admin_policy_check(profile_home=profile_home),
             busy_text_mode=(
                 text_modes.get(profile_name, self._busy_text_mode)
                 if isinstance(text_modes, dict)
@@ -1250,7 +1256,9 @@ class GatewayAdapterLifecycleMixin:
                 return None, None
             carry_inbound_dedup(inbound_dedup, adapter)
             try:
-                self._configure_profile_adapter(adapter, profile_name, platform)
+                self._configure_profile_adapter(
+                    adapter, profile_name, platform, profile_home=profile_home
+                )
                 success = await self._connect_adapter_with_timeout(adapter, platform, is_reconnect=True)
             except BaseException:
                 # Caller never sees this adapter; release its partial resources here.
@@ -1737,4 +1745,52 @@ class GatewayAdapterLifecycleMixin:
             if self._canonicalize(source, primary_home=transport_home) is None:
                 return False  # fail-closed, like the ``_handle_message`` ingress gate
             return self._is_user_authorized_for_source(source)
+        return check
+
+    def _make_adapter_admin_policy_check(
+        self,
+        profile_home: Optional["Path"] = None,
+    ) -> Callable[[SessionSource], bool]:
+        """Build a profile-bound admin-tier callback for adapter use.
+
+        Registered via :meth:`BasePlatformAdapter.set_admin_policy_check` so
+        gated inline-button actions (Telegram's exec-approval Allow button)
+        resolve ``allow_admin_from`` for the RIGHT profile -- not just the
+        primary one -- without the adapter needing to introspect its own
+        message-handler binding.
+
+        ``profile_home`` is ``None`` for the primary (non-multiplexed)
+        adapter: ``self.config`` is already that profile's config, no scoping
+        needed. For a secondary multiplexed adapter, ``profile_home`` is the
+        Path captured from the same per-profile connection loop that builds
+        the adapter's message handler (``_make_profile_message_handler``) --
+        each adapter instance gets its own closure bound to its own profile,
+        mirroring ``_connect_profile_platforms``'s
+        ``with _profile_runtime_scope(profile_home): load_gateway_config()``.
+        """
+        def check(source: SessionSource) -> bool:
+            from gateway.run import _profile_runtime_scope
+            from gateway.slash_access import policy_for_source
+            try:
+                if profile_home is None:
+                    gateway_config = self.config
+                else:
+                    from gateway.config import load_gateway_config
+                    with _profile_runtime_scope(profile_home):
+                        gateway_config = load_gateway_config()
+                policy = policy_for_source(gateway_config, source)
+                return bool(
+                    not policy.enabled or policy.is_admin(getattr(source, "user_id", None))
+                )
+            except Exception:
+                # Fail toward existing behavior: an unresolvable tier policy
+                # must not newly lock out an already-authorized approver.
+                # Never silently, though — an operator who configured
+                # allow_admin_from needs to know the tier wasn't applied.
+                logger.warning(
+                    "Admin-tier policy resolution failed for %s (profile_home=%s); "
+                    "treating caller as admin (pre-tier behavior)",
+                    source, profile_home, exc_info=True,
+                )
+                return True
         return check

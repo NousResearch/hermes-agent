@@ -108,7 +108,7 @@ test('successful builder retains rollback for the canonical launchability gate',
     assert.deepEqual(result.retained, [backupDir])
     assert.deepEqual(result.discarded, [])
     assert.equal(fs.existsSync(backupDir), true)
-    assert.equal(fs.existsSync(`${backupDir}.session`), true)
+    assert.equal(fs.existsSync(`${backupDir}.session`), false)
     assert.equal(isWindowsPeExecutable(path.join(appOutDir, 'Hermes.exe')), true)
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
@@ -253,6 +253,10 @@ test('a new builder session replaces stale rollback material with the current go
     fs.mkdirSync(appOutDir, { recursive: true })
     writeFixture(path.join(appOutDir, 'Hermes.exe'), 'current-generation', 'utf8')
 
+    // Only a completed, validated builder releases the unfinished marker.
+    assert.equal(settleDesktopPack({ releaseDir: path.dirname(appOutDir),
+      builderSucceeded: true, sessionId: 'stale-session' }).ok, true)
+
     assert.equal(
       preserveRollbackBackup(appOutDir, 'Hermes.exe', 'new-session').status,
       ROLLBACK_ACQUISITION_STATUS.PRESERVED
@@ -325,6 +329,22 @@ test('a structurally complete executable for the wrong target rolls back', () =>
       sessionId: 'arch-session', builderSucceeded: true
     })
     assert.equal(result.ok, false)
+    assert.equal(fs.readFileSync(path.join(output, 'Hermes.exe'))[0x200], 0x11)
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+})
+
+test('an interrupted complete wrong-architecture candidate cannot replace its prior backup', () => {
+  const root = tempRoot()
+  try {
+    const output = path.join(root, 'win-unpacked')
+    const backup = `${output}.bak`
+    writePe(path.join(backup, 'Hermes.exe'), 0x11)
+    fs.writeFileSync(`${backup}.session`, 'interrupted-session')
+    writePe(path.join(output, 'Hermes.exe'), 0x22, { machine: 0xaa64 })
+    preserveRollbackBackup(output, 'Hermes.exe', 'retry-session')
+    assert.equal(fs.readFileSync(path.join(backup, 'Hermes.exe'))[0x200], 0x11)
+    const result = settleDesktopPack({ releaseDir: root, builderSucceeded: false, sessionId: 'retry-session' })
+    assert.equal(result.ok, true)
     assert.equal(fs.readFileSync(path.join(output, 'Hermes.exe'))[0x200], 0x11)
   } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })

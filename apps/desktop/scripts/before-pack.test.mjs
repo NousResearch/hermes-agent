@@ -142,7 +142,41 @@ test('beforePack on win32 preserves the previous build instead of wiping it', as
   }
 })
 
-test('beforePack fails closed when a stale rollback marker cannot be retired', async () => {
+test('beforePack retains an interrupted session backup instead of retiring it', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
+  try {
+    const appOutDir = path.join(tempRoot, 'win-unpacked')
+    const backupDir = `${appOutDir}.bak`
+    const markerPath = `${backupDir}.session`
+    fs.mkdirSync(appOutDir, { recursive: true })
+    writeFixture(path.join(appOutDir, 'Hermes.exe'), 'MZ-current-working', 'utf8')
+    fs.mkdirSync(backupDir, { recursive: true })
+    writeFixture(path.join(backupDir, 'Hermes.exe'), 'MZ-older-working', 'utf8')
+    writeFixture(markerPath, 'older-session\n', 'utf8')
+
+    // The older marker means an interrupted invocation; its backup is the
+    // rollback authority and must be adopted, not replaced or retired.
+    await beforePack(
+      { appOutDir, electronPlatformName: 'win32' },
+      {
+        rollbackSessionId: 'new-session',
+        rollbackOperations: {
+          clearRollbackSession() {
+            throw new Error('must not retire an interrupted backup marker')
+          }
+        }
+      }
+    )
+
+    assert.equal(fs.existsSync(appOutDir), false)
+    assert.equal(readFixture(path.join(backupDir, 'Hermes.exe'), 'utf8'), 'MZ-older-working')
+    assert.equal(readFixture(markerPath, 'utf8'), 'new-session\n')
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('beforePack fails closed when interrupted backup adoption fails', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
   try {
     const appOutDir = path.join(tempRoot, 'win-unpacked')
@@ -160,7 +194,7 @@ test('beforePack fails closed when a stale rollback marker cannot be retired', a
         {
           rollbackSessionId: 'new-session',
           rollbackOperations: {
-            clearRollbackSession() {
+            writeRollbackSession() {
               const error = new Error('simulated locked rollback session marker')
               error.code = 'EPERM'
               throw error
@@ -170,7 +204,7 @@ test('beforePack fails closed when a stale rollback marker cannot be retired', a
       ),
       error => {
         assert.match(error.message, /refusing destructive Windows package replacement/)
-        assert.match(error.message, /rollback-slot-retirement-failed/)
+        assert.match(error.message, /existing-backup-adoption-failed/)
         assert.match(error.message, /simulated locked rollback session marker/)
         return true
       }

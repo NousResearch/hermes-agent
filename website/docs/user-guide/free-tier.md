@@ -79,7 +79,8 @@ Connectors you linked on the free tier carry over. Inference moves to the Nous P
 paid tools unlock, and `hermes auth status` shows your account instead of the free-tier line.
 `nous/welcome` stays with the free tier: an account that was using it lands on the recommended
 model for its plan (the same one a fresh `hermes model` pick would suggest), and a default model
-you chose yourself is left alone.
+you chose yourself is left alone. If no recommendation is available at that moment, no default is
+set and Hermes tells you to run `hermes model`.
 
 `hermes auth upgrade` is offered wherever the free tier is present, including installs that
 run inference on their own API key. Signing in still unlocks paid tools for those installs.

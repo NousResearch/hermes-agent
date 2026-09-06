@@ -114,6 +114,26 @@ def test_reconcile_arms_all_enabled(temp_home, chronos, monkeypatch):
     assert fake.cancels == []
 
 
+def test_reconcile_does_not_provision_atomic_disabled_record(
+    temp_home, chronos, monkeypatch
+):
+    prov, fake = chronos
+    jobs = [{
+        "id": "disabled",
+        "enabled": False,
+        "state": "paused",
+        "paused_at": "2026-09-07T12:00:00+00:00",
+        "paused_reason": "created disabled",
+        "next_run_at": None,
+    }]
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
+
+    prov.reconcile()
+
+    assert fake.provisions == []
+    assert fake.cancels == []
+
+
 # -- fire_due re-arm ----------------------------------------------------------
 
 def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):

@@ -3408,10 +3408,12 @@ class CronSchedulerRegistrationError(RuntimeError):
 
 def create_job_with_scheduler_registration(**kwargs) -> dict:
     """Persist one job and register its first trigger with the active provider."""
-    from cron.jobs import create_job
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.jobs import create_job, is_job_runnable
 
     job = create_job(**kwargs)
+    if not is_job_runnable(job):
+        return job
+    from cron.scheduler_provider import resolve_cron_scheduler
     try:
         resolve_cron_scheduler().register_job(job)
     except Exception as exc:

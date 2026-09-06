@@ -540,7 +540,8 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
-                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
+                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
+                   ("enabled", "enabled"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:
@@ -579,9 +580,16 @@ def cron_create(args):
     print(f"  Name: {result['name']}\n  Schedule: {result['schedule']}")
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
-    _print_job_details(result.get("job", {}))
-    print(f"  Next run: {result['next_run_at']}")
-    _warn_if_gateway_not_running()
+    job_data = result.get("job", {})
+    _print_job_details(job_data)
+    if not job_data.get("enabled", True):
+        print("  Job created disabled; it is inert until resumed.")
+        print("  State is paused.")
+        print("  No next run is armed.")
+        print("  Resume is required to schedule it.")
+    else:
+        print(f"  Next run: {result['next_run_at']}")
+        _warn_if_gateway_not_running()
     return 0
 
 

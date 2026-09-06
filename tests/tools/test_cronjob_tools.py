@@ -246,6 +246,38 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_direct_create_can_forward_disabled_without_exposing_schema_flag(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Keep paused",
+                schedule="every 1h",
+                enabled=False,
+            )
+        )
+
+        assert created["success"] is True
+        assert created["job"]["enabled"] is False
+        assert created["job"]["state"] == "paused"
+        assert created["job"]["next_run_at"] is None
+
+        from tools.cronjob_tools import CRONJOB_SCHEMA, _HANDLER_FORWARDED_ARGS
+        assert "enabled" not in CRONJOB_SCHEMA["parameters"]["properties"]
+        assert "enabled" not in _HANDLER_FORWARDED_ARGS
+
+    def test_direct_create_rejects_non_boolean_enabled(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Reject this",
+                schedule="every 1h",
+                enabled="false",
+            )
+        )
+
+        assert result["success"] is False
+        assert "enabled" in result["error"]
+
     def test_create_with_natural_weekday_schedule(self):
         # The documented "every monday 9am" form must create a real cron job
         # through the tool path, not error out (issue: parser rejected it).

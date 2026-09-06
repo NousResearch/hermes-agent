@@ -128,6 +128,61 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+    def test_create_disabled_forwards_exact_bool_and_prints_inert_state(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        captured = {}
+
+        def fake_api(**kwargs):
+            captured.update(kwargs)
+            return {
+                "success": True,
+                "job_id": "disabled-job",
+                "name": "Inert job",
+                "schedule": "every 1h",
+                "next_run_at": None,
+                "skills": [],
+                "job": {
+                    "enabled": False,
+                    "state": "paused",
+                    "next_run_at": None,
+                },
+            }
+
+        monkeypatch.setattr(cron_cli, "_cron_api", fake_api)
+        monkeypatch.setattr(
+            cron_cli,
+            "_warn_if_gateway_not_running",
+            lambda: (_ for _ in ()).throw(AssertionError("inert create must not warn")),
+        )
+
+        rc = cron_cli.cron_create(
+            SimpleNamespace(
+                schedule="every 1h",
+                prompt="Keep paused",
+                name="Inert job",
+                deliver=None,
+                failure_deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+                enabled=False,
+            )
+        )
+
+        assert rc == 0
+        assert captured["enabled"] is False
+        out = capsys.readouterr().out
+        assert "Job created disabled" in out
+        assert "State is paused" in out
+        assert "No next run is armed" in out
+        assert "Resume is required to schedule it" in out
+        assert "Next run:" not in out
+        assert "Gateway is not running" not in out
+
 
 class TestUnverifiedDeliveryVisibility:
     """An evidence-free live-adapter ack (Slack/Matrix/Mattermost bare

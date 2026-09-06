@@ -572,7 +572,8 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
-            failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])))
+            failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            enabled=a["enabled"] if a["enabled"] is not None else True)
     except CronSchedulerRegistrationError as exc:
         _partial = exc.to_dict()
         return tool_error(_partial.pop("error"), success=False, **_partial)
@@ -583,7 +584,8 @@ def _action_create(a: Dict[str, Any]) -> str:
         "success": True, "job_id": job["id"], "name": job["name"], "skill": job.get("skill"),
         "skills": job.get("skills", []), "schedule": job["schedule_display"], "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"), "next_run_at": job["next_run_at"], "job": _format_job(job),
-        "message": _create_message, **_gateway_liveness_notice(),
+        "message": _create_message,
+        **({} if not job.get("enabled", True) else _gateway_liveness_notice()),
     }
     return _dumps(_with_guidance(_result, job, deliver))
 
@@ -871,6 +873,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    enabled: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None) -> str:
     """Unified cron job management tool."""

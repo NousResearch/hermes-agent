@@ -1703,6 +1703,7 @@ def create_job(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    enabled: bool = True,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1712,6 +1713,8 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    if type(enabled) is not bool:
+        raise TypeError("enabled must be a bool")
     parsed_schedule = parse_schedule(schedule)
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
@@ -1769,12 +1772,12 @@ def create_job(
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {"times": repeat, "completed": 0},  # times None = forever
-        "enabled": True,
-        "state": "scheduled",
-        "paused_at": None,
-        "paused_reason": None,
+        "enabled": enabled,
+        "state": "scheduled" if enabled else "paused",
+        "paused_at": None if enabled else now,
+        "paused_reason": None if enabled else "created disabled",
         "created_at": now,
-        "next_run_at": next_run_at,
+        "next_run_at": next_run_at if enabled else None,
         "last_run_at": None,
         "last_status": None,
         "last_error": None,

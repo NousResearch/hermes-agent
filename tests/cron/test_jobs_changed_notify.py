@@ -71,6 +71,31 @@ def test_create_registers_first_trigger_with_active_provider(
     assert registered == [job]
 
 
+def test_disabled_create_skips_provider_resolution_and_registration(
+    temp_home, monkeypatch
+):
+    """An inert create must not resolve or call an external scheduler provider."""
+    import cron.scheduler as sched
+    import cron.scheduler_provider as sp
+
+    resolve_calls = []
+
+    def fail_resolution():
+        resolve_calls.append(True)
+        raise AssertionError("disabled creation must not resolve a scheduler provider")
+
+    monkeypatch.setattr(sp, "resolve_cron_scheduler", fail_resolution)
+
+    job = sched.create_job_with_scheduler_registration(
+        prompt="do not run", schedule="every 5m", name="inert", enabled=False
+    )
+
+    assert resolve_calls == []
+    assert job["enabled"] is False
+    assert job["state"] == "paused"
+    assert job["next_run_at"] is None
+
+
 def test_create_failure_preserves_job_and_hides_provider_details(
     temp_home, monkeypatch, make_cron_provider
 ):

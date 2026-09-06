@@ -86,6 +86,12 @@ must never test `== "ok"` for "the user got their result":
 | `completed` | Repeat count exhausted or one-shot that has fired |
 | `running` | Currently executing (transient state) |
 
+Creation accepts a strict boolean `enabled` value for internal/CLI callers.
+`enabled=False` is persisted atomically as `enabled=false`, `state=paused`,
+`paused_at=<created_at>`, `paused_reason="created disabled"`, and
+`next_run_at=null`. The scheduler skips provider resolution and registration
+for this non-runnable record; resuming computes and persists its next run.
+
 ### Backward Compatibility
 
 Older jobs may have a single `skill` field instead of the `skills` array. The scheduler normalizes this at load time — single `skill` is promoted to `skills: [skill]`.

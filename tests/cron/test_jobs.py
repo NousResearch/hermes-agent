@@ -378,6 +378,142 @@ class TestJobCRUD:
         assert fetched is not None
         assert fetched["prompt"] == "Check server status"
 
+    def test_create_disabled_persists_final_inert_state_in_one_write(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        import cron.jobs as jobs
+
+        now = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(jobs, "_hermes_now", lambda: now)
+        original_save_jobs = jobs.save_jobs
+        save_calls = []
+
+        def recording_save(records, **kwargs):
+            save_calls.append([dict(record) for record in records])
+            return original_save_jobs(records, **kwargs)
+
+        monkeypatch.setattr(jobs, "save_jobs", recording_save)
+
+        created = create_job(prompt="Keep inert", schedule="every 1h", enabled=False)
+
+        assert len(save_calls) == 1
+        assert created["enabled"] is False
+        assert created["state"] == "paused"
+        assert created["paused_at"] == now.isoformat()
+        assert created["paused_reason"] == "created disabled"
+        assert created["next_run_at"] is None
+        assert list_jobs() == []
+        stored = list_jobs(include_disabled=True)
+        assert len(stored) == 1
+        assert stored[0]["id"] == created["id"]
+        assert stored[0]["state"] == "paused"
+        assert stored[0]["next_run_at"] is None
+
+    @pytest.mark.parametrize("enabled", [None, 0, 1, "false", []])
+    def test_create_rejects_non_boolean_enabled_before_persistence(
+        self, tmp_cron_dir, enabled
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            create_job(prompt="Reject this", schedule="every 1h", enabled=enabled)
+
+        assert load_jobs() == []
+
+    def test_disabled_job_is_not_due_or_claimable(self, tmp_cron_dir):
+        job = create_job(prompt="Do not fire", schedule="every 1h", enabled=False)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (_hermes_now() - timedelta(hours=1)).isoformat()
+        save_jobs(jobs)
+
+        assert job["id"] not in {due["id"] for due in get_due_jobs()}
+        assert claim_job_for_fire(job["id"], force=False) is False
+
+    def test_disabled_one_shot_still_rejects_past_schedule(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        now = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        stale = (now - timedelta(minutes=5)).isoformat()
+
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            create_job(prompt="Too late", schedule=stale, enabled=False)
+
+        assert load_jobs() == []
+
+    def test_resume_disabled_job_computes_future_run_and_clears_pause_metadata(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        now = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Resume later", schedule="every 1h", enabled=False)
+
+        resumed = resume_job(job["id"])
+
+        assert resumed["enabled"] is True
+        assert resumed["state"] == "scheduled"
+        assert resumed["paused_at"] is None
+        assert resumed["paused_reason"] is None
+        assert datetime.fromisoformat(resumed["next_run_at"]) > now
+
+    def test_ticker_cannot_observe_intermediate_runnable_record(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        import cron.jobs as jobs
+
+        original_save_jobs = jobs.save_jobs
+        save_finished = threading.Event()
+        release_save = threading.Event()
+        scan_entered = threading.Event()
+        ticker_started = threading.Event()
+        ticker_done = threading.Event()
+        creator_errors = []
+        due_jobs = []
+
+        def recording_save(records, **kwargs):
+            original_save_jobs(records, **kwargs)
+            save_finished.set()
+            assert release_save.wait(timeout=2)
+
+        def recording_scan():
+            scan_entered.set()
+            return original_scan()
+
+        original_scan = jobs._get_due_jobs_locked
+        monkeypatch.setattr(jobs, "save_jobs", recording_save)
+        monkeypatch.setattr(jobs, "_get_due_jobs_locked", recording_scan)
+
+        def creator():
+            try:
+                create_job(prompt="Atomic disabled", schedule="every 1m", enabled=False)
+            except BaseException as exc:  # surfaced by the assertion below
+                creator_errors.append(exc)
+
+        def ticker():
+            ticker_started.set()
+            due_jobs.extend(jobs.get_due_jobs())
+            ticker_done.set()
+
+        creator_thread = threading.Thread(target=creator)
+        ticker_thread = threading.Thread(target=ticker)
+        creator_thread.start()
+        assert save_finished.wait(timeout=2)
+        ticker_thread.start()
+        assert ticker_started.wait(timeout=2)
+        assert not scan_entered.is_set()
+
+        release_save.set()
+        creator_thread.join(timeout=2)
+        ticker_thread.join(timeout=2)
+
+        assert not creator_errors
+        assert scan_entered.wait(timeout=2)
+        assert ticker_done.is_set()
+        assert due_jobs == []
+        persisted = load_jobs()
+        assert len(persisted) == 1
+        assert persisted[0]["enabled"] is False
+        assert persisted[0]["state"] == "paused"
+        assert persisted[0]["next_run_at"] is None
+
     def test_list_jobs(self, tmp_cron_dir):
         create_job(prompt="Job 1", schedule="every 1h")
         create_job(prompt="Job 2", schedule="every 2h")

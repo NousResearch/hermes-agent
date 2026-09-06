@@ -63,6 +63,14 @@ hermes cron create "every 1h" "Use both skills and combine the result" \
   --name "Skill combo"
 ```
 
+To create a job without arming it, pass `--disabled`. The job is persisted
+paused with no next run; use `hermes cron resume <job_id>` when it is ready:
+
+```bash
+hermes cron create "every 2h" "Check server status" --disabled
+hermes cron resume <job_id>
+```
+
 ### Through natural conversation
 
 Ask Hermes normally:

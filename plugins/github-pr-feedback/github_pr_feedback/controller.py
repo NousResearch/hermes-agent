@@ -1472,6 +1472,7 @@ class ScanController:
         cannot prevent local-CI admission or merge-maintainer evaluation.
         """
         self._ensured_agent_labels = set()
+        self._agent_label_errors = []
         label_policy = self._policy.agent_labels
         if label_policy is None or not label_policy.enabled:
             return {"status": "ok", "updated": 0, "skipped": {}}
@@ -1524,7 +1525,7 @@ class ScanController:
                     candidate_count=len(candidates),
                     updated_at=datetime.now(UTC),
                 )
-        return {"status": "ok", "updated": updated, "skipped": dict(skipped)}
+        return {"status": "ok", "updated": updated, "skipped": dict(skipped), "errors": self._agent_label_errors}
 
     def _apply_agent_label(
         self,
@@ -1578,6 +1579,8 @@ class ScanController:
                 return "agent_label_readback_failed"
         except GitHubClientError as error:
             code = getattr(error, "code", "github_error")
+            self._agent_label_errors.append({"repository": repository, "pr_number": listed.number,
+                                             "reason": str(error)[:200], "code": code})
             if code in {"permission_denied", "authentication", "rate_limited"}:
                 return f"agent_label_{code}"
             return "agent_label_github_error"

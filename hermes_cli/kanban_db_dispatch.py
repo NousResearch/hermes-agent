@@ -460,7 +460,7 @@ def _terminate_reclaimed_worker(
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
-    if not str(claim_lock).startswith(_kb._host_prefix()):
+    if not _kbp._claim_pid_checkable(claim_lock):
         return info
     info["host_local"] = True
 
@@ -667,8 +667,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     for row in rows:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
-        lock = row["claim_lock"] or ""
-        if not lock.startswith(host_prefix):
+        if not _kbp._claim_pid_checkable(row["claim_lock"], host_prefix=host_prefix):
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
@@ -1174,8 +1173,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
         host_prefix = _kb._host_prefix()
         from hermes_cli.kanban_owner_recovery import apply_attempt_note, managed_run_exit_code, owner_reclaim_blocked
         for row in rows:
-            lock = row["claim_lock"] or ""
-            if not lock.startswith(host_prefix):
+            if not _kbp._claim_pid_checkable(row["claim_lock"], host_prefix=host_prefix):
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
             # before its PID is visible on /proc.
@@ -2899,7 +2897,8 @@ def run_daemon(
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb
-from hermes_cli import kanban_db_connect as _kbc
-from hermes_cli import kanban_db_default_assignee as _kbda
-from hermes_cli import kanban_db_workspace as _kbw
+from hermes_cli import kanban_db_pidns as _kbp  # noqa: E402
+from hermes_cli import kanban_db as _kb  # noqa: E402
+from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
+from hermes_cli import kanban_db_default_assignee as _kbda  # noqa: E402
+from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402

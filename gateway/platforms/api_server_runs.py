@@ -21,6 +21,7 @@ except ImportError:
 
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms import api_server_credential_authorizer as _credential_auth
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -197,7 +198,7 @@ def _run_idempotency_scope(self, request: "web.Request", *, _api_server) -> str:
             "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
             "member_id", "target_install_id", "target_profile"))
     else:
-        auth_context = _api_server._api_request_auth_context.get()
+        auth_context = _credential_auth._api_request_auth_context.get()
         credential_owner = getattr(auth_context, "owner_key", None)
         if credential_owner:
             return str(credential_owner)
@@ -666,7 +667,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             credential_owner=credential_owner,
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
-        request_auth_context=_api_server._api_request_auth_context.get(),
+        request_auth_context=_credential_auth._api_request_auth_context.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         session_db=session_db,
@@ -754,7 +755,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
     # (token, reset, fail-safe clear) triples unwound in the finally block; bound only once each step succeeds.
     resets: list[tuple[Any, Callable, Callable]] = []
     with self._profile_scope(run.request_profile):
-        auth_token = _api_server._api_request_auth_context.set(run.request_auth_context)
+        auth_token = _credential_auth._api_request_auth_context.set(run.request_auth_context)
         try:
             try:
                 # Contextvars, not process env: concurrent runs must not share identity.
@@ -814,7 +815,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                     raise cleanup_error
         finally:
             _api_server._reset_contextvars_fail_safe(
-                (_api_server._api_request_auth_context, auth_token))
+                (_credential_auth._api_request_auth_context, auth_token))
         return r, {key: getattr(agent, attr, 0) or 0 for key, attr in _USAGE_FIELDS}
 
 

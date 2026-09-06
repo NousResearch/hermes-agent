@@ -11,7 +11,6 @@ import concurrent.futures
 import errno
 import hashlib
 import hmac
-import inspect
 import itertools
 import json
 from contextlib import contextmanager, nullcontext, suppress
@@ -33,26 +32,11 @@ from gateway.api_credentials import (
     APIServerOperation, AuthorizedAPICredential, CredentialAuthorizationRequest)
 from hermes_state_errors import SessionTurnLeaseLostError
 
-# _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
-# distinct from None (no prefix / multiplexing off -> default profile).
-_PROFILE_REJECTED = object()
-
-
-def _prefix_names_served_profile(profile: str) -> bool:
-    """True when a /p/<profile>/ prefix names the profile this gateway serves. Fail closed: a
-    single-profile gateway answering /p/<x>/ served the owner's toolsets under another URL."""
-    try:
-        from hermes_cli.profiles import profile_matches_home
-        return profile_matches_home(profile)
-    except Exception:
-        return False
 
 
 # Per-request /p/<profile>/ selection: set by the profile-prefix middleware, read by handlers.
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None)
-_api_request_auth_context: ContextVar[Optional["_CredentialAuthContext"]] = ContextVar(
-    "api_server_request_auth_context", default=None)
 _api_request_browser_control_principal: ContextVar[str] = ContextVar(
     "api_server_browser_control_principal", default="")
 _api_request_browser_control_transport_family: ContextVar[str] = ContextVar(
@@ -74,111 +58,6 @@ def _reset_contextvars_fail_safe(*bindings) -> None:
         raise cleanup_error
 
 
-@dataclass(frozen=True, slots=True)
-class _CredentialAuthContext:
-    principal: Optional[AuthorizedAPICredential]
-    owner_key: Optional[str]
-    static_admin: bool = False
-    authorization_request: Optional[CredentialAuthorizationRequest] = None
-    authorizer: Any = None
-    authority_generation: Optional[int] = None
-
-
-class _CredentialAuthorizerSaturated(RuntimeError):
-    """The bounded authorizer facility has no free execution slot."""
-
-
-class _CredentialAuthorizerRunner:
-    """Deadline-observing async-only authorizer runner with bounded in-flight capacity.
-
-    Rules:
-    - Only coroutine functions may be executed; sync callables are rejected at registration
-      time and must never reach here.
-    - Capacity is reserved *before* the task is created so a task-creation failure cannot
-      silently over-admit.
-    - ``asyncio.wait`` is used for deadline observation; ``wait_for`` is NOT used because it
-      awaits cancellation which would block the caller past the deadline.
-    - After cancellation the slot is retained until the task's done-callback fires, so a
-      cancellation-resistant coroutine cannot free capacity by simply ignoring ``CancelledError``.
-    - The ``_active`` counter is a plain ``int`` guarded by a ``threading.Lock`` so done-callbacks
-      (which may fire from any thread via ``call_soon_threadsafe``) decrement safely.
-    - ``close()`` is a process-manager operation; adapters MUST NOT call it.
-    """
-
-    def __init__(self, capacity: int):
-        self._capacity = max(1, int(capacity))
-        self._active = 0
-        self._lock = threading.Lock()
-        self._tasks: set[asyncio.Task] = set()
-        self._closed = False
-
-    def _acquire(self) -> None:
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("API credential authorizer runner is shut down")
-            if self._active >= self._capacity:
-                raise _CredentialAuthorizerSaturated
-            self._active += 1
-
-    def _release(self, task: asyncio.Task) -> None:
-        with self._lock:
-            self._tasks.discard(task)
-            self._active -= 1
-        # Consume any stored exception so the GC does not log "task exception was never retrieved".
-        with suppress(asyncio.CancelledError, Exception):
-            task.exception()
-
-    async def run(self, authorize, request, *, timeout: float):
-        """Reserve a slot, run ``authorize(request)`` as a task, and observe the deadline.
-
-        Returns the ``AuthorizedAPICredential | None`` result on time, raises
-        ``asyncio.TimeoutError`` when the deadline expires (the task is cancelled but the slot
-        is held until the task's done-callback fires), or re-raises any non-timeout exception
-        from the authorizer.
-        """
-        self._acquire()
-        loop = asyncio.get_running_loop()
-        try:
-            task = loop.create_task(authorize(request))
-        except BaseException:
-            with self._lock:
-                self._active -= 1
-            raise
-        with self._lock:
-            if self._closed:
-                self._active -= 1
-                task.cancel()
-                raise RuntimeError("API credential authorizer runner is shut down")
-            self._tasks.add(task)
-        task.add_done_callback(self._release)
-        timeout_seconds = max(0.0, float(timeout))
-        started_at = loop.time()
-        try:
-            done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
-        except asyncio.CancelledError:
-            # The request owner disappeared. Cancel promptly, then keep an independent
-            # deadline cancellation armed for an authorizer that suppresses the first one.
-            task.cancel()
-            remaining = max(0.0, timeout_seconds - (loop.time() - started_at))
-            deadline_handle = loop.call_later(remaining, task.cancel)
-            task.add_done_callback(lambda _task: deadline_handle.cancel())
-            raise
-        if task in done:
-            return task.result()
-        # Deadline reached: cancel and return promptly.  The slot is retained until the task's
-        # done-callback fires (i.e. until the coroutine actually exits), so a
-        # cancellation-resistant authorizer cannot free capacity by swallowing CancelledError.
-        task.cancel()
-        raise asyncio.TimeoutError
-
-    def close(self) -> None:
-        """Cancel all in-flight tasks.  Called only by the process-level manager on shutdown."""
-        with self._lock:
-            self._closed = True
-            tasks = tuple(self._tasks)
-        for task in tasks:
-            with suppress(RuntimeError):
-                task.get_loop().call_soon_threadsafe(task.cancel)
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +144,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms import api_server_credential_authorizer as _credential_auth
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path)
@@ -285,9 +165,6 @@ from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 
 logger = logging.getLogger(__name__)
-_API_CREDENTIAL_AUTH_REQUEST_KEY = (
-    RequestKey("hermes.api_credential_auth", _CredentialAuthContext)
-    if RequestKey is not None else "hermes.api_credential_auth")
 
 
 def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
@@ -1248,11 +1125,11 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+class APIServerAdapter(
+    _credential_auth.CredentialAuthorizerMixin, OpenAICompatRoutesMixin, BasePlatformAdapter
+):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
-    _API_CREDENTIAL_AUTH_TIMEOUT_SECONDS = 5.0
-    _API_CREDENTIAL_AUTH_MAX_INFLIGHT = 4
 
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
     # delivery here, and a resumed turn completes the work rather than asking.
@@ -1325,37 +1202,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._api_credential_authorizer = None
         self._api_credential_authorizer_manager: Any = None
         self._api_credential_authorizer_generation: Optional[int] = None
-        self._api_credential_authorizer_runner: Optional[_CredentialAuthorizerRunner] = None
+        self._api_credential_authorizer_runner: Optional[
+            _credential_auth._CredentialAuthorizerRunner
+        ] = None
 
-    def _current_api_credential_authorizer(self):
-        """Resolve current manager-owned ``(generation, authority)`` for one request."""
-        manager = self._api_credential_authorizer_manager
-        if manager is None:
-            return None, self._api_credential_authorizer
-        generation, authorizer = manager.get_api_server_credential_authorizer_snapshot()
-        self._api_credential_authorizer_generation = generation
-        return generation, authorizer
-
-    def _credential_authorizer_runner(self) -> _CredentialAuthorizerRunner:
-        """Return the process-level runner singleton.
-
-        The runner is owned by the PluginManager, not by this adapter.  Retrieval failure
-        raises immediately so the calling middleware path can fail auth closed — there is
-        no local fallback.
-        """
-        if self._api_credential_authorizer_runner is not None:
-            return self._api_credential_authorizer_runner
-        from hermes_cli.plugins import get_plugin_manager
-        runner = get_plugin_manager().get_api_server_credential_authorizer_runner(
-            capacity=self._API_CREDENTIAL_AUTH_MAX_INFLIGHT,
-            factory=_CredentialAuthorizerRunner,
-        )
-        if not isinstance(runner, _CredentialAuthorizerRunner):
-            raise RuntimeError(
-                f"Expected _CredentialAuthorizerRunner from plugin manager, got {type(runner)!r}"
-            )
-        self._api_credential_authorizer_runner = runner
-        return runner
 
     def active_agent_work_count(self) -> int:
         """All live agent work: pending admissions + in-flight turns + live /v1/runs tasks
@@ -1554,11 +1404,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """Validate cached plugin authority or the static Bearer token."""
         try:
-            cached = request.get(_API_CREDENTIAL_AUTH_REQUEST_KEY)
+            cached = request.get(_credential_auth._API_CREDENTIAL_AUTH_REQUEST_KEY)
         except (AttributeError, TypeError):
             cached = None
-        cached = cached if isinstance(cached, _CredentialAuthContext) else _api_request_auth_context.get()
-        if isinstance(cached, _CredentialAuthContext):
+        cached = cached if isinstance(cached, _credential_auth._CredentialAuthContext) else _credential_auth._api_request_auth_context.get()
+        if isinstance(cached, _credential_auth._CredentialAuthContext):
             return None
         profile = _api_request_profile.get()
         expected_key = self._expected_api_key()
@@ -1647,21 +1497,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _resolve_request_profile(self, request: "web.Request"):
         """Resolve + validate the /p/<profile>/ prefix: ``None`` (no prefix, or multiplexing
         off and the prefix names this gateway's own profile), the served profile name, or
-        ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
+        ``_credential_auth.PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
         profile = (request.match_info.get("profile") or "").strip()
         if not profile:
             return None
         cfg = getattr(self.gateway_runner, "config", None)
         if not getattr(cfg, "multiplex_profiles", False):
-            return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED
+            return None if _credential_auth._prefix_names_served_profile(profile) else _credential_auth.PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
             served = {
                 name for name, _ in profiles_to_serve(
                     multiplex=True, profile_allowlist=getattr(cfg, "multiplex_profile_allowlist", None))}
         except Exception:
-            return _PROFILE_REJECTED
-        return profile if profile in served else _PROFILE_REJECTED
+            return _credential_auth.PROFILE_REJECTED
+        return profile if profile in served else _credential_auth.PROFILE_REJECTED
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):
@@ -1684,78 +1534,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from hermes_cli.profiles import get_profile_dir
         return _profile_runtime_scope(get_profile_dir(profile))
 
-    def _make_profile_prefix_middleware(self):
-        """Resolve URL/static/plugin authority, then enter the server-derived profile scope."""
-
-        @web.middleware
-        async def profile_prefix_middleware(request: "web.Request", handler):
-            url_profile = self._resolve_request_profile(request)
-            if url_profile is _PROFILE_REJECTED:
-                return web.json_response({"error": "Unknown or unconfigured profile"}, status=404)
-
-            auth_header = request.headers.get("Authorization", "")
-            bearer = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
-            with self._profile_scope(url_profile):
-                expected_key = self._expected_api_key_for_profile(url_profile)
-            if bearer and expected_key and self._tokens_match(bearer, expected_key):
-                context = _CredentialAuthContext(None, None, static_admin=True)
-                return await self._run_scoped_request(request, handler, url_profile, context)
-
-            operation, canonical_route = self._credential_route_metadata(request)
-            try:
-                authority_generation, authorizer = self._current_api_credential_authorizer()
-            except Exception:
-                logger.warning(
-                    "[%s] API credential authority is unavailable or ambiguous for %s %s",
-                    self.name, request.method.upper(), canonical_route,
-                )
-                return self._auth_failed_response()
-            if not bearer or operation is None or authorizer is None:
-                return await self._run_scoped_request(request, handler, url_profile, None)
-            try:
-                auth_request = CredentialAuthorizationRequest(
-                    bearer=bearer, method=request.method.upper(), canonical_route=canonical_route,
-                    operation=operation)
-                result = await self._credential_authorizer_runner().run(
-                    authorizer.authorize, auth_request,
-                    timeout=self._API_CREDENTIAL_AUTH_TIMEOUT_SECONDS)
-                if self._api_credential_authorizer_manager is not None:
-                    current_generation, current_authorizer = (
-                        self._api_credential_authorizer_manager
-                        .get_api_server_credential_authorizer_snapshot()
-                    )
-                    if (
-                        current_generation != authority_generation
-                        or current_authorizer is not authorizer
-                    ):
-                        return self._auth_failed_response()
-            except Exception:
-                logger.warning(
-                    "[%s] API credential authorizer rejected after an internal failure for %s %s",
-                    self.name, request.method.upper(), canonical_route)
-                return self._auth_failed_response()
-            if type(result) is not AuthorizedAPICredential:
-                return self._auth_failed_response()
-            if operation not in result.allowed_operations:
-                return self._credential_forbidden_response()
-            if not self._credential_profile_is_served(result.runtime_profile):
-                return self._credential_forbidden_response()
-            if url_profile and url_profile != result.runtime_profile:
-                return self._credential_forbidden_response()
-            manager = self._api_credential_authorizer_manager
-            if manager is not None and not manager.admit_api_server_credential_authorizer(
-                authority_generation, authorizer
-            ):
-                return self._auth_failed_response()
-            context = _CredentialAuthContext(
-                result,
-                self._credential_owner_key(result),
-                authorization_request=auth_request,
-                authorizer=authorizer,
-                authority_generation=authority_generation,
-            )
-            return await self._run_scoped_request(request, handler, result.runtime_profile, context)
-        return profile_prefix_middleware
 
     @staticmethod
     def _tokens_match(provided: str, expected: str) -> bool:
@@ -1771,101 +1549,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         finally:
             _reset_contextvars_fail_safe((_api_request_profile, token))
 
-    @staticmethod
-    def _credential_forbidden_response() -> "web.Response":
-        return web.json_response(
-            {"error": {"message": "Credential is not authorized for this operation",
-                       "type": "gateway_auth_error", "code": "gateway_auth_forbidden"}},
-            status=403)
-
-    def _credential_route_metadata(
-        self, request: "web.Request"
-    ) -> tuple[Optional[APIServerOperation], str]:
-        canonical = ""
-        with suppress(Exception):
-            canonical = str(request.match_info.route.resource.canonical)
-        prefix = "/p/{profile}"
-        if canonical.startswith(prefix):
-            canonical = canonical[len(prefix):] or "/"
-        method = request.method.upper()
-        for route in self._http_route_table():
-            if route.method == method and route.path == canonical:
-                return route.credential_operation, canonical
-        return None, canonical
-
-    def _credential_profile_is_served(self, profile: str) -> bool:
-        cfg = getattr(self.gateway_runner, "config", None)
-        if not getattr(cfg, "multiplex_profiles", False):
-            return _prefix_names_served_profile(profile)
-        try:
-            from hermes_cli.profiles import profiles_to_serve
-            return profile in {
-                name for name, _home in profiles_to_serve(
-                    multiplex=True,
-                    profile_allowlist=getattr(cfg, "multiplex_profile_allowlist", None))}
-        except Exception:
-            return False
-
-    @staticmethod
-    def _credential_owner_key(principal: AuthorizedAPICredential) -> str:
-        parts = (
-            principal.runtime_profile, principal.principal_id,
-            principal.agent_profile_id.value, principal.credential_scope_id.value)
-        return "api-credential:" + hashlib.sha256("\0".join(parts).encode()).hexdigest()
-
-    async def _credential_context_is_current(
-        self, request: "web.Request", operation: APIServerOperation
-    ) -> bool:
-        """Revalidate continuing authority before an admitted streaming disclosure."""
-        try:
-            context = request.get(_API_CREDENTIAL_AUTH_REQUEST_KEY)
-        except (AttributeError, TypeError):
-            return False
-        if not isinstance(context, _CredentialAuthContext):
-            return self._check_auth(request) is None
-        if context.static_admin:
-            return True
-        auth_request = context.authorization_request
-        authorizer = context.authorizer
-        principal = context.principal
-        if (
-            not isinstance(auth_request, CredentialAuthorizationRequest)
-            or authorizer is None
-            or type(principal) is not AuthorizedAPICredential
-            or auth_request.operation is not operation
-        ):
-            return False
-        manager = self._api_credential_authorizer_manager
-        if manager is not None and not manager.admit_api_server_credential_authorizer(
-            context.authority_generation, authorizer
-        ):
-            return False
-        try:
-            current = await self._credential_authorizer_runner().run(
-                authorizer.authorize,
-                auth_request,
-                timeout=self._API_CREDENTIAL_AUTH_TIMEOUT_SECONDS,
-            )
-        except Exception:
-            return False
-        if manager is not None and not manager.admit_api_server_credential_authorizer(
-            context.authority_generation, authorizer
-        ):
-            return False
-        return (
-            type(current) is AuthorizedAPICredential
-            and current == principal
-            and operation in current.allowed_operations
-        )
 
     async def _run_scoped_request(
         self, request: "web.Request", handler, profile: Optional[str],
-        context: Optional[_CredentialAuthContext],
+        context: Optional[_credential_auth._CredentialAuthContext],
     ) -> "web.StreamResponse":
         profile_token = _api_request_profile.set(profile)
-        auth_token = _api_request_auth_context.set(context)
+        auth_token = _credential_auth._api_request_auth_context.set(context)
         if context is not None:
-            request[_API_CREDENTIAL_AUTH_REQUEST_KEY] = context
+            request[_credential_auth._API_CREDENTIAL_AUTH_REQUEST_KEY] = context
         try:
             with self._profile_scope(profile):
                 resolved_profile = profile or "default"
@@ -1882,7 +1574,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
         finally:
             _reset_contextvars_fail_safe(
-                (_api_request_auth_context, auth_token),
+                (_credential_auth._api_request_auth_context, auth_token),
                 (_api_request_profile, profile_token),
             )
 
@@ -1956,10 +1648,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # _bind_api_server_session and _create_agent) so peer lookups can filter on it.
     _SESSION_SOURCE = "api_server"
 
-    @staticmethod
-    def _credential_owner() -> Optional[str]:
-        context = _api_request_auth_context.get()
-        return context.owner_key if isinstance(context, _CredentialAuthContext) else None
 
     def _declared_conversation_session(self, gateway_session_key: Optional[str]) -> Optional[str]:
         """Resolve the live session a client declared with ``X-Hermes-Session-Key`` (the key
@@ -4125,7 +3813,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()
-        request_auth_context = _api_request_auth_context.get()
+        request_auth_context = _credential_auth._api_request_auth_context.get()
         request_credential_owner = self._credential_owner()
         request_browser_control_principal = _api_request_browser_control_principal.get()
         request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
@@ -4133,7 +3821,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         def _run():
             from gateway.session_context import clear_session_vars, _clear_session_vars_unconditionally
             with self._profile_scope(request_profile):
-                auth_context_token = _api_request_auth_context.set(request_auth_context)
+                auth_context_token = _credential_auth._api_request_auth_context.set(request_auth_context)
                 try:
                     tokens = self._bind_api_server_session(
                         chat_id=session_id or "", session_key=gateway_session_key or session_id or "",
@@ -4227,7 +3915,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                             raise cleanup_error
                 finally:
                     _reset_contextvars_fail_safe(
-                        (_api_request_auth_context, auth_context_token))
+                        (_credential_auth._api_request_auth_context, auth_context_token))
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
@@ -4332,42 +4020,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return False
         return True
 
-    def _load_api_credential_authorizer(self) -> bool:
-        """Resolve the listener owner's optional authorizer, rejecting ambiguity."""
-        try:
-            from hermes_cli.plugins import get_plugin_manager
-            manager = get_plugin_manager()
-        except Exception:
-            logger.error("[%s] Refusing to start: API credential authorizer discovery failed", self.name)
-            self._set_fatal_error(
-                "api_credential_authorizer_discovery_failed",
-                "API credential authorizer discovery failed.", retryable=False)
-            return False
-        try:
-            generation, authorizer = manager.get_api_server_credential_authorizer_snapshot()
-        except RuntimeError:
-            logger.error(
-                "[%s] Refusing to start: multiple API credential authorizers are registered", self.name)
-            self._set_fatal_error(
-                "api_credential_authorizer_ambiguous",
-                "Multiple API credential authorizers are registered; enable exactly one.",
-                retryable=False)
-            return False
-        self._api_credential_authorizer_manager = manager
-        self._api_credential_authorizer_generation = generation
-        self._api_credential_authorizer = authorizer
-        if authorizer is None:
-            return True
-        if not inspect.iscoroutinefunction(getattr(authorizer, "authorize", None)):
-            logger.error(
-                "[%s] Refusing to start: API credential authorizer must define async authorize()", self.name)
-            self._set_fatal_error(
-                "api_credential_authorizer_not_async",
-                "API credential authorizer must define async authorize(request).",
-                retryable=False,
-            )
-            return False
-        return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start the aiohttp web server."""

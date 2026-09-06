@@ -90,17 +90,9 @@ class MCPServerRunMixin:
                             await self._keepalive_probe()
                     except Exception as exc:
                         root = _errors._unwrap_exception_group(exc)
-                        # %r, not %s: failures this catches are raised with no
-                        # args — TimeoutError from _keepalive_probe's wait_for,
-                        # arg-less OSError subclasses like ConnectionResetError —
-                        # so str(root) is "" and the reason renders blank.
-                        # repr() names the type (#65787).
-                        logger.warning(
-                            "MCP server '%s' keepalive failed, triggering "
-                            "reconnect (state: connected → degraded): %r",
-                            self.name, root,
-                        )
-                        self.mark_suspect(f"keepalive failed: {root!r}")
+                        logger.warning("MCP server '%s' keepalive failed, triggering reconnect (state: connected → "
+                                       "degraded): %s: %s", self.name, type(root).__name__, root)
+                        self.mark_suspect(f"keepalive failed: {type(root).__name__}: {root}")
                         self._reconnect_event.set()
                         break
                     # Survived a full keepalive interval: real proof of health.

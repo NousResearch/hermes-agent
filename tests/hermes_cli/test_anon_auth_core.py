@@ -217,3 +217,28 @@ class TestModelPin:
         anon_auth.ensure_portal_identity(blocking=True)
         assert normalize_model_for_provider("openai/gpt-5", "nous") == anon_auth.GUEST_MODEL
         assert normalize_model_for_provider("gpt-5", "openrouter") != anon_auth.GUEST_MODEL
+
+
+class TestLogout:
+    def test_logout_with_only_free_tier_is_a_true_noop(self, portal, capsys):
+        from types import SimpleNamespace
+        from hermes_cli.auth import _auth_file_path, logout_command
+        anon_auth.ensure_portal_identity(blocking=True)
+        before = _auth_file_path().read_bytes()
+        logout_command(SimpleNamespace(provider=None))
+        out = capsys.readouterr().out.lower()
+        assert "not signed in" in out
+        assert "guest" not in out and "anonymous" not in out
+        assert _auth_file_path().read_bytes() == before
+
+    def test_logout_of_real_account_clears_shared_store(self, portal, tmp_path):
+        from types import SimpleNamespace
+        from hermes_cli.auth import logout_command
+        from hermes_cli.auth_nous import persist_nous_credentials
+        persist_nous_credentials({"access_token": _jwt(client_id="hermes-cli", account_tier="free"),
+                                  "refresh_token": "rt-1", "expires_at": "2030-01-01T00:00:00+00:00",
+                                  "auth_method": "oauth_device_code"})
+        assert _shared_store(tmp_path).get("refresh_token") == "rt-1"
+        logout_command(SimpleNamespace(provider="nous"))
+        assert _shared_store(tmp_path) == {}
+        assert "nous" not in _load_auth_store().get("providers", {})

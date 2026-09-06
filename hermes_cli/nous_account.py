@@ -67,6 +67,15 @@ class NousToolAccessInfo:
     coverage: dict[str, bool] = field(default_factory=dict)
 
 
+_ANON_ACCOUNT_TIER = "anonymous"
+# Every billing / top-up / entitlement surface says exactly this for the free tier (R-USR-1).
+FREE_TIER_NEEDS_ACCOUNT = "This needs a Nous account. Run `hermes auth upgrade`."
+
+
+def _is_anonymous_tier(account_info: Optional["NousPortalAccountInfo"]) -> bool:
+    return account_info is not None and account_info.account_tier == _ANON_ACCOUNT_TIER
+
+
 @dataclass(frozen=True)
 class NousPortalAccountInfo:
     logged_in: bool
@@ -93,10 +102,17 @@ class NousPortalAccountInfo:
     raw_claims: Optional[dict[str, Any]] = None
     raw_account: Optional[dict[str, Any]] = None
     error: Optional[str] = None
+    # NAS account tier claim; ``"anonymous"`` is the free tier (no Nous account behind it).
+    account_tier: Optional[str] = None
 
     @property
     def is_paid(self) -> bool:
         return self.paid_service_access is True
+
+    @property
+    def is_anonymous_tier(self) -> bool:
+        """The free tier: no Nous account, so no billing, credits, or entitlement to speak of."""
+        return self.account_tier == _ANON_ACCOUNT_TIER
 
     @property
     def is_free_tier(self) -> bool:
@@ -154,6 +170,8 @@ def format_nous_portal_entitlement_message(
     access doesn't fund it gets a neutral billing nudge, never an "exhausted" message. The
     pool-vs-paid distinction is never surfaced.
     """
+    if _is_anonymous_tier(account_info):
+        return FREE_TIER_NEEDS_ACCOUNT
     billing_url = nous_portal_billing_url(account_info)
 
     if account_info is not None:
@@ -209,6 +227,8 @@ def format_nous_portal_entitlement_message(
 
 
 def _no_paid_access_message(account_info: NousPortalAccountInfo, capability: str, billing_url: str) -> str:
+    if _is_anonymous_tier(account_info):
+        return FREE_TIER_NEEDS_ACCOUNT
     access = account_info.paid_service_access_info or NousPaidServiceAccessInfo()
     active, paid = access.has_active_subscription, access.active_subscription_is_paid
     labelled = (
@@ -478,6 +498,7 @@ def _info_from_valid_jwt(
         paid_service_access=paid_access, paid_service_access_info=access_info,
         tool_access=_tool_access_from_value(claims.get("tool_access")),
         raw_claims=dict(claims),
+        account_tier=_coerce_str(claims.get("account_tier")) or _coerce_str(state.get("account_tier")),
     )
 
 
@@ -506,6 +527,8 @@ def _info_from_account_payload(
         paid_service_access=paid_access, paid_service_access_info=access,
         tool_access=_tool_access_from_value(payload.get("tool_access")),
         raw_account=dict(payload),
+        account_tier=_coerce_str(payload.get("account_tier")) or _coerce_str(user.get("account_tier"))
+        or _coerce_str(state.get("account_tier")),
     )
 
 

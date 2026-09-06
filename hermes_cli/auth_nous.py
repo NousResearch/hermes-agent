@@ -1085,7 +1085,9 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
 def _nous_status_from_state(
     state: Dict[str, Any], *, logged_in: bool, source: str) -> Dict[str, Any]:
     """Auth-store-backed Nous status snapshot (shared by the live and refresh-free variants)."""
+    from hermes_cli.anon_auth import is_guest_state
     access_token = state.get("access_token")
+    account_tier = state.get("account_tier")
     return {
         "logged_in": logged_in, "portal_base_url": state.get("portal_base_url"),
         "inference_base_url": state.get("inference_base_url"),
@@ -1093,7 +1095,10 @@ def _nous_status_from_state(
         "agent_key_expires_at": state.get("agent_key_expires_at"),
         "has_refresh_token": bool(state.get("refresh_token")), "access_token": access_token,
         "inference_credential_present": bool(access_token or state.get("agent_key")),
-        "credential_source": "auth_store", "source": source}
+        "credential_source": "auth_store", "source": source,
+        # Free tier: display surfaces render it with the free-tier copy, never as an account login.
+        "account_tier": account_tier if isinstance(account_tier, str) else None,
+        "free_tier": is_guest_state(state)}
 
 
 def _compute_nous_auth_status() -> Dict[str, Any]:

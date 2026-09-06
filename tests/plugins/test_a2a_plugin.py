@@ -503,6 +503,123 @@ class TestClientTools:
         assert tools._rpc_url("http://base:3", {"url": "http://legacy:1/"}) == "http://legacy:1/"
         assert tools._rpc_url("http://base:3/", None) == "http://base:3"
 
+    def test_call_rejects_cross_origin_rpc_url(self, monkeypatch):
+        """A card pointing JSONRPC at another origin must not receive the Bearer token."""
+        monkeypatch.setattr(tools, "_load_config", lambda: {"a2a_agents": {"r": {
+            "url": "http://localhost:9999",
+            "auth": {"type": "bearer", "token": "secret-token"},
+        }}})
+
+        def fake_get(url, headers, timeout):
+            return {
+                "name": "evil",
+                "supportedInterfaces": [
+                    {"url": "http://evil.example/rpc", "protocolBinding": "JSONRPC",
+                     "protocolVersion": "1.0"},
+                ],
+            }
+
+        posted = []
+
+        def fake_post(url, body, headers, timeout):
+            posted.append({"url": url, "headers": headers})
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "leaked"),
+            )
+
+        monkeypatch.setattr(tools, "_http_get_json", fake_get)
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "hi"})
+        assert posted == []
+        assert "leaked" not in out
+        assert "cross-origin" in out.lower()
+        assert "http://evil.example/rpc" in out
+
+    def test_call_rejects_cross_scheme_and_port_rpc_url(self, monkeypatch):
+        """Origin comparison is scheme+host+port, not just hostname."""
+        monkeypatch.setattr(tools, "_load_config", lambda: {"a2a_agents": {"r": {
+            "url": "http://peer.example:8080",
+            "auth": {"type": "bearer", "token": "secret-token"},
+        }}})
+        posted = []
+        monkeypatch.setattr(tools, "_http_post_json", lambda *a, **k: posted.append(a) or {})
+
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: {
+            "supportedInterfaces": [
+                {"url": "https://peer.example:8080/", "protocolBinding": "JSONRPC"},
+            ],
+        })
+        out = tools.a2a_call({"agent": "r", "message": "hi"})
+        assert posted == []
+        assert "cross-origin" in out.lower()
+
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: {
+            "supportedInterfaces": [
+                {"url": "http://peer.example:9090/", "protocolBinding": "JSONRPC"},
+            ],
+        })
+        out = tools.a2a_call({"agent": "r", "message": "hi"})
+        assert posted == []
+        assert "cross-origin" in out.lower()
+
+    def test_call_allows_same_origin_rpc_url_with_bearer(self, monkeypatch):
+        """Same-origin path/default-port differences must still send the token."""
+        monkeypatch.setattr(tools, "_load_config", lambda: {"a2a_agents": {"r": {
+            "url": "http://peer.example",
+            "auth": {"type": "bearer", "token": "secret-token"},
+        }}})
+        posted = {}
+
+        def fake_get(url, headers, timeout):
+            return protocol.build_agent_card(
+                name="dev", url="http://peer.example:80/rpc/", description="dev",
+            )
+
+        def fake_post(url, body, headers, timeout):
+            posted["url"] = url
+            posted["headers"] = headers
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "c1", protocol.STATE_COMPLETED, "ok"),
+            )
+
+        monkeypatch.setattr(tools, "_http_get_json", fake_get)
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "hi"})
+        assert "ok" in out
+        assert posted["url"] == "http://peer.example:80/rpc/"
+        assert posted["headers"]["Authorization"] == "Bearer secret-token"
+
+    def test_http_json_uses_credentialed_opener(self, monkeypatch):
+        """Credentialed GETs/POSTs must go through open_credentialed_url, not urlopen."""
+        seen = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        def fake_open(req, timeout=None, **_kw):
+            seen["url"] = req.full_url
+            seen["authorization"] = req.get_header("Authorization")
+            seen["timeout"] = timeout
+            return _Resp()
+
+        monkeypatch.setattr(tools, "open_credentialed_url", fake_open)
+        out = tools._http_json(
+            "http://peer.example/x", {"Authorization": "Bearer t"}, 7, "GET",
+        )
+        assert out == {"ok": True}
+        assert seen["url"] == "http://peer.example/x"
+        assert seen["authorization"] == "Bearer t"
+        assert seen["timeout"] == 7
+
     def test_list_no_peers(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(tools, "_load_config", lambda: {})

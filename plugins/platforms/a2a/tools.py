@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
 from gateway.platforms._shared import coerce_port as _coerce_int
+from hermes_cli.urllib_security import open_credentialed_url, url_origin
 
 from . import protocol, security
 
@@ -54,8 +55,17 @@ def _auth_header(auth: dict) -> dict:
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+    with open_credentialed_url(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _ensure_same_origin_rpc(base_url: str, rpc_url: str) -> str:
+    """Fail closed if a card-advertised RPC URL leaves the configured peer origin."""
+    if url_origin(rpc_url) != url_origin(base_url):
+        raise ValueError(
+            f"Refusing cross-origin A2A RPC URL {rpc_url!r} (configured peer is {base_url!r})."
+        )
+    return rpc_url
 
 
 def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
@@ -117,7 +127,8 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    rpc_url = _ensure_same_origin_rpc(base_url, _rpc_url(base_url, card))
+    resp = _http_post_json(rpc_url, rpc_body, headers, timeout)
     if "error" in resp:
         raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))

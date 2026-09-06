@@ -174,9 +174,13 @@ def run_oneshot(
     JSON usage report even when the run fails. Returns the exit code; the caller owns process
     termination.
     """
-    # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
-    # root logger. File handlers from setup_logging() keep working (level-independent).
-    logging.disable(logging.CRITICAL)
+    # Silence stderr log output: AIAgent, tools and provider adapters log to stderr through the
+    # root logger.  Only raise the stderr StreamHandler's level so file handlers from
+    # setup_logging() continue to receive records (logging.disable() would suppress both).
+    _root = logging.getLogger()
+    for _h in _root.handlers:
+        if isinstance(_h, logging.StreamHandler) and getattr(_h, "stream", None) is sys.stderr:
+            _h.setLevel(logging.CRITICAL + 1)
 
     # --provider without --model is ambiguous (the provider may not host the configured model, and
     # picking its catalog default hides the mismatch). Validate BEFORE the stderr redirect.

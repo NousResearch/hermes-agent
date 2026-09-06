@@ -53,11 +53,19 @@ With the `a2a` toolset enabled, the agent gets:
 
 Configure known peers in `config.yaml`:
 
+The bearer token is a secret. Keep it in `~/.hermes/.env` and reference it with `${VAR}` substitution.
+
+```bash
+# ~/.hermes/.env
+A2A_RESEARCHER_TOKEN="..."
+```
+
 ```yaml
+# ~/.hermes/config.yaml
 a2a_agents:
   researcher:
     url: "http://research-box.local:9900"
-    auth: { type: bearer, token: "..." }
+    auth: { type: bearer, token: ${A2A_RESEARCHER_TOKEN} }
     timeout: 120
     capabilities: [web_search, research]
 ```

@@ -76,13 +76,14 @@ def test_sha_mismatch_and_unknown_context_are_blocked(conn):
 
 
 def test_valid_implementation_context_needs_recent_pr_url_to_block(conn):
-    valid = kb.create_task(
-        conn, title="valid implementation", assignee="implementation",
-        execution_context=context("implementation"),
-    )
-    assert kbd.check_respawn_guard(conn, valid) is None
-    kb.add_comment(conn, valid, "worker", "https://github.com/example/repo/pull/7")
-    assert kbd.check_respawn_guard(conn, valid) == "active_pr"
+    for task_type in ("implementation", "development"):
+        valid = kb.create_task(
+            conn, title=f"valid {task_type}", assignee=task_type,
+            execution_context=context(task_type),
+        )
+        assert kbd.check_respawn_guard(conn, valid) is None
+        kb.add_comment(conn, valid, "worker", "https://github.com/example/repo/pull/7")
+        assert kbd.check_respawn_guard(conn, valid) == "active_pr"
 
 
 def test_force_bypass_is_rejected(conn):
@@ -99,6 +100,13 @@ def test_pid_persistence_loses_fence_without_partial_state(conn):
     tid = kb.create_task(conn, title="fenced", assignee="integration")
     claimed = kb.claim_task(conn, tid, claimer="host:worker")
     assert claimed is not None
+    assert claimed.current_run_id is not None
+    assert claimed.claim_lock is not None
+    assert not kbd._set_worker_pid(
+        conn, tid, 4242,
+        expected_run_id=claimed.current_run_id + 1,
+        expected_claim_lock=claimed.claim_lock,
+    )
     with kb.write_txn(conn):
         conn.execute("UPDATE tasks SET claim_lock = ? WHERE id = ?", ("host:replacement", tid))
     assert not kbd._set_worker_pid(

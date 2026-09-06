@@ -55,7 +55,8 @@ def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     dead = subprocess.Popen(["true"])
     dead.wait()
-    kbd._set_worker_pid(conn, tid, dead.pid)
+    task = kb.get_task(conn, tid)
+    kbd._set_worker_pid(conn, tid, dead.pid, expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)
     old = conn.execute(
         "SELECT claim_lock, worker_pid FROM tasks WHERE id=?", (tid,)
     ).fetchone()
@@ -70,7 +71,8 @@ def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:B")
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
-        kbd._set_worker_pid(conn, tid, sleeper.pid)
+        task = kb.get_task(conn, tid)
+        kbd._set_worker_pid(conn, tid, sleeper.pid, expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)
 
         # The stale reset for worker A — same shape as the guarded UPDATE in
         # detect_crashed_workers — must reject (rowcount 0) because B owns it.
@@ -100,7 +102,8 @@ def test_genuine_crash_still_reclaims(conn):
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     dead = subprocess.Popen(["true"])
     dead.wait()
-    kbd._set_worker_pid(conn, tid, dead.pid)
+    task = kb.get_task(conn, tid)
+    kbd._set_worker_pid(conn, tid, dead.pid, expected_run_id=task.current_run_id, expected_claim_lock=task.claim_lock)
     # Rewind started_at so the launch grace window doesn't skip the check.
     conn.execute("UPDATE tasks SET started_at = started_at - 9999 WHERE id=?", (tid,))
     conn.execute(

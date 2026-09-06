@@ -42,7 +42,12 @@ import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-c
 import { $defaultReasoningEffort } from '@/store/session'
 import type { LocalModelLoadProgress, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
-import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import {
+  type FastControl,
+  ModelEditSubmenu,
+  resolveFastControl,
+  type SubmenuFocusOutsideEvent
+} from './model-edit-submenu'
 
 /** Whether a catalog row represents the session's current provider. Custom
  *  providers report the canonical `custom:<key>` identity from `model.options`
@@ -401,16 +406,94 @@ export function ModelCatalogMenu({
   // events (WSLg/RDP) — ArrowRight in the search input is the fallback.
   const triggerRefs = useRef(new Map<string, HTMLDivElement>())
 
+  // Live pointer position, used by the submenu's dismissal veto below.
+  const lastPointerRef = useRef<{ x: number; y: number } | null>(null)
+
+  useEffect(() => {
+    const track = (event: PointerEvent) => {
+      lastPointerRef.current = { x: event.clientX, y: event.clientY }
+    }
+
+    document.addEventListener('pointermove', track, { passive: true, capture: true })
+    return () => document.removeEventListener('pointermove', track, { capture: true })
+  }, [])
+
+  // Mounted submenu content nodes, for the dismissal veto below.
+  const subContentNodes = useRef(new Map<string, HTMLDivElement>())
+
+  // Radix closes a submenu the moment focus lands anywhere but its own
+  // trigger (DismissableLayer focusOutside → onDismiss). Focus moves are
+  // exactly what happens while the pointer travels from a row to its
+  // collision-flipped submenu: Radix's pointer-grace guard
+  // (isPointerMovingToSubmenu) compares the pointer's travel direction
+  // against the submenu's data-side, and real-world pointer jitter (WSLg/RDP
+  // coalescing) flips that direction, so rows the pointer crosses steal
+  // focus and the submenu closes mid-travel (#97505).
+  //
+  // Instead of fighting that guard, veto the dismissal while the pointer is
+  // still inside the trigger↔submenu corridor: the submenu stays open while
+  // the user is heading for it, and closes normally (focus, click outside,
+  // Escape, selection) once they deliberately go elsewhere.
+  const vetoSubmenuDismissal = (key: string) => (event: SubmenuFocusOutsideEvent) => {
+    const focusTarget: unknown = event.detail?.originalEvent?.target
+    if (!(focusTarget instanceof Element)) {
+      return
+    }
+
+    const p = lastPointerRef.current
+    const subNode = subContentNodes.current.get(key)
+    if (!p || !subNode || !document.contains(subNode)) {
+      return
+    }
+
+    const sr = subNode.getBoundingClientRect()
+    const inBox = (r: { left: number; right: number; top: number; bottom: number }, pad: number) =>
+      p.x >= r.left - pad && p.x <= r.right + pad && p.y >= r.top - pad && p.y <= r.bottom + pad
+
+    // Pointer inside (or nearly inside) the submenu itself: always keep it.
+    if (inBox(sr, 30)) {
+      event.preventDefault()
+      return
+    }
+
+    const trigger = triggerRefs.current.get(key)
+    const tr = trigger?.getBoundingClientRect()
+    if (!tr) {
+      return
+    }
+
+    // Corridor = bounding box of the row and its submenu.
+    const box = {
+      left: Math.min(tr.left, sr.left),
+      right: Math.max(tr.right, sr.right),
+      top: Math.min(tr.top, sr.top),
+      bottom: Math.max(tr.bottom, sr.bottom)
+    }
+    if (!inBox(box, 20)) {
+      return // pointer moved elsewhere — let the submenu close normally
+    }
+
+    // Deliberately aiming at another row's caret: allow the close so that
+    // submenu can take over.
+    const caretRow = document.elementFromPoint(p.x, p.y)?.closest('[role="menuitem"]')
+    if (caretRow && caretRow !== trigger) {
+      return
+    }
+
+    event.preventDefault()
+  }
+
   // Open ONE row's options submenu by asking Radix to do it: dispatch one
   // bubbling `pointermove` on the row's SubTrigger — the exact event Radix's
   // SubTrigger listens to for hover-open — so the submenu opens through the
   // normal path (its open timer, safe polygon, focus management) and there is
   // no duplicated state, timer, or global listener to clean up. Used by the
-  // search input's ArrowRight (#86966) AND by the caret click: a click-open
-  // alone skips Radix's pointer-grace setup, so the submenu dies the moment
-  // the pointer jumps toward the effort radios (no pointerenter fires → close
-  // timer wins, ~300ms). The synthetic pointermove runs onItemEnter, which
-  // seeds the safe polygon the close logic then respects (#97505).
+  // search input's ArrowRight (#86966) and harmless on caret click (Radix
+  // opens natively there). Coordinates MUST be the trigger's real center: a
+  // coordinate-less event feeds (0,0) into Radix's pointer-direction tracker
+  // (MenuContentImpl compares clientX against the last seen X), after which
+  // every real move reads as travelling "right" and defeats the guard that
+  // keeps the submenu open during leftward travel (#97505).
   const openRowSubmenu = (key: null | string) => {
     if (!key) {
       return
@@ -421,7 +504,15 @@ export function ModelCatalogMenu({
     // jsdom (unit tests) has no PointerEvent; hover-open is untestable there.
     if (trigger && typeof PointerEvent === 'function') {
       trigger.scrollIntoView({ block: 'nearest' })
-      trigger.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse' }))
+      const rect = trigger.getBoundingClientRect()
+      trigger.dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          pointerType: 'mouse',
+          clientX: rect.x + rect.width / 2,
+          clientY: rect.y + rect.height / 2,
+        })
+      )
     }
   }
 
@@ -674,6 +765,38 @@ export function ModelCatalogMenu({
                           }
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}
+                          subContentRef={node => {
+                            const key = `${group.provider.slug}:${family.id}`
+
+                            if (node) {
+                              subContentNodes.current.set(key, node)
+                            } else {
+                              subContentNodes.current.delete(key)
+                            }
+
+                            // Radix hardcodes data-side="right" on every
+                            // submenu (MenuSubContent ignores the popper's
+                            // collision flip), but its pointer-grace guard
+                            // compares the pointer's travel direction against
+                            // data-side. At the screen's right edge the popup
+                            // flips LEFT while data-side still says "right",
+                            // so the guard always fails: the first parent item
+                            // the pointer crosses steals focus and the submenu
+                            // closes before the pointer arrives (#97505).
+                            // Rewrite data-side to the resolved side so the
+                            // guard matches the real geometry.
+                            if (!node) {
+                              return
+                            }
+
+                            const anchor = triggerRefs.current.get(`${group.provider.slug}:${family.id}`)
+                            const fitsRight =
+                              anchor &&
+                              typeof window !== 'undefined' &&
+                              window.innerWidth - anchor.getBoundingClientRect().right > node.offsetWidth + 8
+                            node.dataset.side = fitsRight ? 'right' : 'left'
+                          }}
+                          onFocusOutside={vetoSubmenuDismissal(`${group.provider.slug}:${family.id}`)}
                         />
                       </DropdownMenuSub>
                     )

@@ -15,6 +15,11 @@ import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
 
+/** Radix dispatches a cancelable `dismissableLayer.focusOutside` CustomEvent
+ *  on the element that stole focus; `detail.originalEvent` is the real
+ *  focusin. Calling preventDefault() keeps the submenu open (#97505). */
+export type SubmenuFocusOutsideEvent = CustomEvent<{ originalEvent: FocusEvent }>
+
 /** How "fast" is achieved for a given model — two different mechanisms:
  *  - `param`: the Anthropic/OpenAI `speed=fast` request parameter.
  *  - `variant`: a separate `…-fast` sibling model selected via the model field.
@@ -59,6 +64,15 @@ export function resolveFastControl(
 }
 
 interface ModelEditSubmenuProps {
+  /** Veto hook for Radix's focus-outside dismissal (#97505): the owning
+   *  surface decides per-focus-event whether the submenu may close. */
+  onFocusOutside?: (event: SubmenuFocusOutsideEvent) => void
+
+  /** Ref hook for the mounted SubContent element. Used to correct Radix's
+   *  hardcoded `data-side="right"` when the popper collision-flips the
+   *  submenu to the other side of the trigger (#97505). */
+  subContentRef?: (node: HTMLDivElement | null) => void
+
   /** Whether this model can turn thinking off. False on reasoning-mandatory
    *  routes, whose upstream rejects a disable — the toggle is hidden rather
    *  than offered as a control that silently does nothing. */
@@ -95,7 +109,12 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // the sub actually opens — eagerly running the body's hooks/JSX for every
   // row made opening the menu itself lag on large catalogs.
   return (
-    <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
+    <DropdownMenuSubContent
+      className="w-52 p-0"
+      sideOffset={4}
+      ref={props.subContentRef}
+      onFocusOutside={props.onFocusOutside}
+    >
       <ModelEditSubmenuBody {...props} />
     </DropdownMenuSubContent>
   )

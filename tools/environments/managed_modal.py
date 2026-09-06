@@ -112,7 +112,8 @@ class ManagedModalEnvironment(BaseEnvironment):
         while True:
             if is_interrupted():
                 self._cancel_exec(exec_id)
-                return _result("[Command interrupted - Modal sandbox exec cancelled]", 130)
+                return {**_result("[Command interrupted - Modal sandbox exec cancelled]", 130),
+                        "_process_interrupted": True}
             try:
                 if (result := self._poll_exec(exec_id)) is not None:
                     return result

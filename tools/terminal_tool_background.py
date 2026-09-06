@@ -134,10 +134,10 @@ def spawn_background_process(
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
-    Never inline-polls ``is_interrupted()``: the spawn detaches and returns
-    exit_code 0 immediately, so the stale-interrupt kill cannot occur here.
+    Definite pre-start cancellation has no session. An uncertain remote start
+    remains tracked, including when its PID still needs to be recovered.
     """
-    from tools.process_registry import process_registry
+    from tools.process_registry import ProcessStartCancelled, process_registry
     from tools.terminal_tool import (
         _redact_terminal_error_text, _resolve_command_cwd, _resolve_notification_flag_conflict,
     )
@@ -153,6 +153,10 @@ def spawn_background_process(
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        if getattr(proc_session, "start_interrupted", False) is True:
+            note = "Background start was interrupted; the process may still be running and remains tracked."
+            result_data.update(output=note, exit_code=130, error=note,
+                               status="running" if proc_session.pid is not None else "unknown")
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:
@@ -185,6 +189,9 @@ def spawn_background_process(
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
         return json.dumps(result_data, ensure_ascii=False)
+    except ProcessStartCancelled:
+        return json.dumps({"output": "[Command interrupted]", "exit_code": 130,
+                           "error": "Command cancelled before process start.", "status": "cancelled"})
     except Exception as e:
         from tools.terminal_tool_sudo import SudoPasswordPromptCancelled
         if isinstance(e, SudoPasswordPromptCancelled):

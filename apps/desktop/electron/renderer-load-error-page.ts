@@ -101,6 +101,7 @@ function missingAssetsList(missingAssets?: string[]): string {
 export function buildRendererLoadErrorPage(details: RendererLoadErrorDetails = {}): string {
   const code =
     details.errorCode === undefined || details.errorCode === null ? '' : ` (${escapeHtml(details.errorCode)})`
+
   const title = 'Hermes couldn\u2019t start the desktop UI'
   const description = escapeHtml(details.errorDescription || 'The desktop renderer failed to load.')
   const url = details.url ? `<p><code>${escapeHtml(details.url)}</code></p>` : ''

@@ -172,6 +172,8 @@ function Get-LastClusterHealthTimestamp {
             #   new (>=T#72): "[CLUSTER-HEALTH] T#72 — Hermes (po-2026), 02/09 00:20Z"
             # Line-anchored + mandatory "T#<digits>" right after the tag: the WARN
             # body only mentions [CLUSTER-HEALTH] mid-line, never as "T#N" at start.
+            # (Covers roo-extensions #3379's measured format; `\d+` is kept so a
+            # malformed bare "T#" mention can never be counted as a tour.)
             if ($blockBody -match "(?m)^#{0,2}\s*\[CLUSTER-HEALTH\]\s+T#\d+") {
                 $t = ConvertTo-UtcDateTime $m.Groups[1].Value
                 if ($null -ne $t) { $lastTs = $t }
@@ -256,8 +258,10 @@ if ($isNewFire -and $fireAgeMin -ge $PostMarginMinutes) {
 
 # $lastHealth can legitimately be $null (no tour block in global.md yet, or the
 # file was unreadable) — guard the interpolation, an unguarded .ToString() here
-# crashed the script with exit 1 BEFORE any log line (2026-09-01T23:37Z incident).
-$lastHealthStr = if ($null -ne $lastHealth) { $lastHealth.ToString('o', $Invariant) } else { "none" }
+# crashed the script with exit 1 BEFORE any log line (2026-09-01T23:37Z incident)
+# and under ErrorActionPreference=Stop wrote no verdict at every run (roo-extensions
+# #3379). "never" = no tour block ever seen; "none" would be ambiguous vs unreadable.
+$lastHealthStr = if ($null -ne $lastHealth) { $lastHealth.ToString('o', $Invariant) } else { "never" }
 Write-Log "verdict=$verdict | $detail | last_run_at=$($lastRunAt.ToString('o',$Invariant)) | last_health=$lastHealthStr | ok=$($state.OkCount) missing=$($state.MissingCount)"
 
 $okCount    = $state.OkCount

@@ -17,25 +17,107 @@ import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 //     messages evict the entry rather than truncating a message mid-parts.
 //   - LRU across MAX_ENTRIES sessions; corrupt entries self-evict.
 //   - Same trust domain as state.db on the same disk — no new exposure.
-//   - Keyed by stored session id (durable identity), never runtime id.
+//   - Keyed by stored session id (durable identity), never runtime id,
+//     SCOPED by the owning {connectionId, profile} (#94828). Stored ids are
+//     only unique WITHIN one profile's state.db, and localStorage survives
+//     profile switches in the same window: an unscoped key let profile A's
+//     tail be painted against profile B's backend, which then retried a
+//     session id that does not exist there ("session not found") on every
+//     wake. The scope mirrors the in-memory twin's transcriptTailKey
+//     (transcript-tail.ts). Entries persisted before scoping shipped (v1,
+//     bare-id keys) carry no owner and are unreachable by construction —
+//     they are swept once per window so a stale tail can never paint again.
 
-const PREFIX = 'hermes.transcript-tail.v1:'
-const INDEX_KEY = 'hermes.transcript-tail.v1-index'
+const PREFIX = 'hermes.transcript-tail.v2:'
+const LEGACY_ROOT = 'hermes.transcript-tail.v1'
+const INDEX_KEY = 'hermes.transcript-tail.v2-index'
 const TAIL_MESSAGES = 40
 const MAX_ENTRY_BYTES = 256 * 1024
 const MAX_ENTRIES = 50
+
+/** Owning scope of an entry — same shape the REST layer threads through
+ *  `getLatestSessionMessages(id, scope)` and the in-memory twin stores in
+ *  each TranscriptTailState. */
+export type TranscriptTailScope =
+  | null
+  | string
+  | {
+      connectionId?: null | string
+      profile?: null | string
+    }
 
 interface CacheEntry {
   messages: ChatMessage[]
   savedAt: number
 }
 
+let legacyPurged = false
+
+/** One-time sweep of pre-scoping v1 entries (#94828): a bare-id key cannot
+ *  be attributed to a profile, so it must never paint again. Best effort —
+ *  worst case a stale entry lingers unread until quota eviction. */
+function purgeLegacyV1(store: Storage): void {
+  if (legacyPurged) {
+    return
+  }
+
+  try {
+    const doomed: string[] = []
+
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index)
+
+      if (key && key.startsWith(LEGACY_ROOT)) {
+        doomed.push(key)
+      }
+    }
+
+    for (const key of doomed) {
+      store.removeItem(key)
+    }
+
+    // Only latch on a completed sweep: a mid-sweep throw retries on the next
+    // storage() touch instead of leaving a partial purge latched for the
+    // window's lifetime.
+    legacyPurged = true
+  } catch {
+    // best effort
+  }
+}
+
 function storage(): Storage | null {
   try {
-    return window.localStorage
+    const store = window.localStorage
+
+    purgeLegacyV1(store)
+
+    return store
   } catch {
     return null
   }
+}
+
+function normalizedScope(scope?: TranscriptTailScope): { connectionId: string; profile: string } | null {
+  if (typeof scope === 'string') {
+    return { connectionId: '', profile: scope.trim() || 'default' }
+  }
+
+  if (!scope) {
+    return null
+  }
+
+  return {
+    connectionId: String(scope.connectionId ?? '').trim(),
+    profile: String(scope.profile ?? '').trim() || 'default'
+  }
+}
+
+/** Index identity of an entry: the bare stored id (legacy/unscoped callers)
+ *  or the JSON [connectionId, profile, storedId] composite. */
+function entrySuffix(storedSessionId: string, scope?: TranscriptTailScope): string {
+  const scoped = normalizedScope(scope)
+
+  return scoped ? JSON.stringify([scoped.connectionId, scoped.profile, storedSessionId]) : storedSessionId
 }
 
 function readIndex(store: Storage): string[] {
@@ -57,9 +139,9 @@ function writeIndex(store: Storage, ids: string[]): void {
   }
 }
 
-function touchIndex(store: Storage, storedSessionId: string): void {
-  const ids = readIndex(store).filter(id => id !== storedSessionId)
-  ids.push(storedSessionId)
+function touchIndex(store: Storage, suffix: string): void {
+  const ids = readIndex(store).filter(id => id !== suffix)
+  ids.push(suffix)
 
   while (ids.length > MAX_ENTRIES) {
     const evicted = ids.shift()
@@ -76,8 +158,14 @@ function touchIndex(store: Storage, storedSessionId: string): void {
   writeIndex(store, ids)
 }
 
-/** Persist the tail of a session's transcript. No-op on empty/oversized. */
-export function saveTranscriptTail(storedSessionId: string, messages: ChatMessage[]): void {
+/** Persist the tail of a session's transcript. No-op on empty/oversized.
+ *  Pass the session's owning scope ({connectionId, profile}, or just the
+ *  profile name) so the entry can only ever be read against that backend. */
+export function saveTranscriptTail(
+  storedSessionId: string,
+  messages: ChatMessage[],
+  scope?: TranscriptTailScope
+): void {
   const id = (storedSessionId ?? '').trim()
   const store = storage()
 
@@ -111,23 +199,26 @@ export function saveTranscriptTail(storedSessionId: string, messages: ChatMessag
     }
   }
 
+  const suffix = entrySuffix(id, scope)
+
   try {
-    store.setItem(PREFIX + id, serialized)
-    touchIndex(store, id)
+    store.setItem(PREFIX + suffix, serialized)
+    touchIndex(store, suffix)
   } catch {
     // Quota exceeded — evict everything and retry once (small cache >> stale cache).
     try {
       clearTranscriptTails()
-      store.setItem(PREFIX + id, serialized)
-      touchIndex(store, id)
+      store.setItem(PREFIX + suffix, serialized)
+      touchIndex(store, suffix)
     } catch {
       // Storage genuinely unavailable; instant paint just won't happen.
     }
   }
 }
 
-/** Cached tail for a stored session, or null. Corrupt entries self-evict. */
-export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | null {
+/** Cached tail for a stored session, or null. Corrupt entries self-evict.
+ *  Only entries saved under the SAME owning scope are returned (#94828). */
+export function loadTranscriptTail(storedSessionId: string, scope?: TranscriptTailScope): ChatMessage[] | null {
   const id = (storedSessionId ?? '').trim()
   const store = storage()
 
@@ -138,7 +229,7 @@ export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | nul
   let raw: null | string = null
 
   try {
-    raw = store.getItem(PREFIX + id)
+    raw = store.getItem(PREFIX + entrySuffix(id, scope))
   } catch {
     return null
   }
@@ -163,7 +254,7 @@ export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | nul
     return parsed.messages.map(withUniqueToolCallIdsWithinMessage)
   } catch {
     try {
-      store.removeItem(PREFIX + id)
+      store.removeItem(PREFIX + entrySuffix(id, scope))
     } catch {
       // best effort
     }
@@ -172,8 +263,10 @@ export function loadTranscriptTail(storedSessionId: string): ChatMessage[] | nul
   }
 }
 
-/** Drop one session's cached tail (session deleted / cache poisoned). */
-export function dropTranscriptTail(storedSessionId: string): void {
+/** Drop one session's cached tail (session deleted / cache poisoned). With a
+ *  scope, only that scope's entry is dropped — other backends' tails for the
+ *  same stored id stay intact. */
+export function dropTranscriptTail(storedSessionId: string, scope?: TranscriptTailScope): void {
   const id = (storedSessionId ?? '').trim()
   const store = storage()
 
@@ -182,10 +275,61 @@ export function dropTranscriptTail(storedSessionId: string): void {
   }
 
   try {
-    store.removeItem(PREFIX + id)
+    const suffix = entrySuffix(id, scope)
+
+    store.removeItem(PREFIX + suffix)
     writeIndex(
       store,
-      readIndex(store).filter(entry => entry !== id)
+      readIndex(store).filter(entry => entry !== suffix)
+    )
+  } catch {
+    // best effort
+  }
+}
+
+/** Drop EVERY scope's entry for a stored id. Delete-path only: the save-path
+ *  scope (ownerRoute) and the delete-path scope (the removed row's
+ *  connection_id) are derived from different sources, so a shape drift
+ *  between them would orphan the entry until LRU eviction (#94914 review,
+ *  defect 1). A DELETED stored id cannot be legitimately reused, so sweeping
+ *  all scopes is safe there — but never on the failed-resume path, where a
+ *  same-id twin in another profile must keep its own tail. */
+export function dropTranscriptTailEverywhere(storedSessionId: string): void {
+  const id = (storedSessionId ?? '').trim()
+  const store = storage()
+
+  if (!store || !id) {
+    return
+  }
+
+  try {
+    const namesId = (entry: string): boolean => {
+      if (entry === id) {
+        return true
+      }
+
+      if (!entry.startsWith('[')) {
+        return false
+      }
+
+      try {
+        const parsed = JSON.parse(entry)
+
+        return Array.isArray(parsed) && parsed[2] === id
+      } catch {
+        return false
+      }
+    }
+
+    const index = readIndex(store)
+
+    for (const entry of index.filter(namesId)) {
+      store.removeItem(PREFIX + entry)
+    }
+
+    writeIndex(
+      store,
+      index.filter(entry => !namesId(entry))
     )
   } catch {
     // best effort

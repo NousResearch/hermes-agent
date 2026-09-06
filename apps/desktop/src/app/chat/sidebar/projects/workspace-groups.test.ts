@@ -13,6 +13,7 @@ import {
   NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
+  reconcileEnteredProjectSessions,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -613,6 +614,59 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
+  it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
+    const staleHistory = makeCwdSession('/www/app', {
+      id: 'stale-history',
+      git_branch: 'main',
+      last_active: 10
+    })
+
+    const currentPreview = makeCwdSession('/www/app', {
+      id: 'current-preview',
+      git_branch: 'main',
+      last_active: 20
+    })
+
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      previewSessions: [currentPreview],
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({
+              id: '/www/app::branch::main',
+              label: 'main',
+              isMain: true,
+              path: '/www/app',
+              sessions: [staleHistory]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaySessions = reconcileEnteredProjectSessions([], project.previewSessions)
+    const overlaid = overlayLiveLanes(project, overlaySessions)
+
+    expect(overlaid.repos[0].groups[0].sessions.map(session => session.id)).toEqual([
+      'current-preview',
+      'stale-history'
+    ])
+  })
+
+  it('keeps the live row when it is also present in the overview preview', () => {
+    const live = makeCwdSession('/www/app', { id: 'same', title: 'live title' })
+    const preview = makeCwdSession('/www/app', { id: 'same', title: 'preview title' })
+    const reconciled = reconcileEnteredProjectSessions([live], [preview])
+
+    expect(reconciled).toEqual([live])
+  })
+
   it('injects a live session into the matching main lane instantly', () => {
     const project = projectNode({
       id: '/www/app',
@@ -626,6 +680,60 @@ describe('overlayLiveLanes', () => {
     const lane = overlaid.repos[0].groups.find(g => g.label === 'main')
 
     expect(lane?.sessions.map(session => session.id)).toContain('fresh')
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('keeps cwd-less repo sessions visible in both the overview and project drill-in', () => {
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app' })]
+        }
+      ]
+    })
+
+    const live = makeCwdSession(null, { id: 'fresh', git_branch: 'main', git_repo_root: '/www/app' })
+
+    expect(overlayLivePreviews([project], [live], [], 3)['/www/app'].map(session => session.id)).toEqual(['fresh'])
+
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions.map(session => session.id))).toEqual(['fresh'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('places a cwd-less repo session only in its exact repo subtree', () => {
+    const project = projectNode({
+      id: '/www',
+      repos: [
+        {
+          id: '/www',
+          label: 'www',
+          path: '/www',
+          sessionCount: 0,
+          groups: [lane({ id: '/www::branch::main', label: 'main', isMain: true, path: '/www' })]
+        },
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app' })]
+        }
+      ]
+    })
+
+    const live = makeCwdSession(null, { id: 'fresh', git_branch: 'main', git_repo_root: '/www/app' })
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions)).toEqual([])
+    expect(overlaid.repos[1].groups.flatMap(group => group.sessions.map(session => session.id))).toEqual(['fresh'])
     expect(overlaid.sessionCount).toBe(1)
   })
 

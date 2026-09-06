@@ -72,6 +72,7 @@ describe('HUD mode', () => {
     expect(screen.getByLabelText('Voice dictation')).toBeTruthy()
     expect(screen.getByLabelText('Read replies aloud')).toBeTruthy()
     expect(screen.queryByLabelText('Exit HUD mode')).toBeNull()
+    expect(screen.queryByLabelText('Reset HUD size and position')).toBeNull()
     expect(screen.queryByLabelText('Voice')).toBeNull()
   })
 
@@ -80,6 +81,7 @@ describe('HUD mode', () => {
     renderControls()
 
     expect(screen.getByLabelText('Voice')).toBeTruthy()
+    expect(screen.getByLabelText('Reset HUD size and position')).toBeTruthy()
     expect(screen.getByLabelText('Exit HUD mode')).toBeTruthy()
 
     // Folded away, not duplicated — the whole point is the row's width back.

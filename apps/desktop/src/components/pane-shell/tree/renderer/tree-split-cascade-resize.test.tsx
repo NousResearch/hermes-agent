@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
-import { $paneStates } from '@/store/panes'
+import { $paneStates, setPaneWidthLock } from '@/store/panes'
 
 import { group, split, type SplitNode } from '../model'
 import { $hiddenTreePanes, $layoutTree, markCollapsePane, setTreeGroupMinimized } from '../store'
@@ -229,5 +229,259 @@ describe('TreeSplit cascading expansion', () => {
     expect(row().children[1]).toMatchObject({ id: 'terminal-zone', minimized: true })
     expect($paneStates.get().terminal?.heightOverride).toBeUndefined()
     expect(chat.style.flex).toBe(chatFlex)
+  })
+})
+
+describe('TreeSplit axis locking', () => {
+  it('locked pane holds its width when a neighbor sash is dragged', () => {
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { placement: 'bottom' },
+        id: 'terminal',
+        render: () => null,
+        title: 'Terminal'
+      })
+    )
+
+    const tree = split(
+      'row',
+      [
+        group(['chat'], { id: 'chat-zone' }),
+        group(['browser'], { id: 'browser-zone' }),
+        group(['terminal'], { id: 'terminal-zone' })
+      ],
+      [5, 1, 2],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+    $paneStates.set({ browser: { lockWidth: true, lockedWidth: 200, open: true, widthOverride: 200 } })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [chat, browser, terminal] = [...container.children] as HTMLElement[]
+    setWidth(container, 1000)
+    setWidth(chat, 500)
+    setWidth(browser, 200)
+    setWidth(terminal, 300)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!, 200)
+
+    // Drag the browser-terminal sash left to try to grow browser (locked).
+    const browserSash = document.querySelectorAll('[role="separator"]')[1]!
+    fireEvent.pointerDown(browserSash, { button: 0, clientX: 800, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientX: 700, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientX: 700, pointerId: 1, pointerType: 'mouse' })
+
+    // Browser's override must not have been changed — the sash skipped the
+    // locked pane entirely.
+    expect($paneStates.get().browser?.widthOverride).toBe(200)
+  })
+
+  it('locked pane cannot be grown by dragging into it', () => {
+    disposers.push(
+      registry.register({
+        area: 'panes',
+        data: { placement: 'bottom' },
+        id: 'terminal',
+        render: () => null,
+        title: 'Terminal'
+      })
+    )
+
+    const tree = split(
+      'row',
+      [
+        group(['chat'], { id: 'chat-zone' }),
+        group(['browser'], { id: 'browser-zone' }),
+        group(['terminal'], { id: 'terminal-zone' })
+      ],
+      [5, 1, 2],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+    $paneStates.set({ browser: { lockWidth: true, lockedWidth: 200, open: true, widthOverride: 200 } })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [chat, browser, terminal] = [...container.children] as HTMLElement[]
+    setWidth(container, 1000)
+    setWidth(chat, 600)
+    setWidth(browser, 200)
+    setWidth(terminal, 200)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!, 200)
+
+    // Drag the chat-browser sash right (into browser) by 100px.
+    const sash = document.querySelectorAll('[role="separator"]')[0]!
+    fireEvent.pointerDown(sash, { button: 0, clientX: 600, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientX: 700, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientX: 700, pointerId: 1, pointerType: 'mouse' })
+
+    // Browser must stay at 200px — a locked target cannot grow.
+    expect($paneStates.get().browser?.widthOverride).toBe(200)
+  })
+
+  it('column stack with a locked pane uses the locked width as the zone track basis', () => {
+    const tree = split(
+      'column',
+      [
+        group(['chat'], { id: 'chat-zone' }),
+        split('row', [group(['browser', 'terminal'], { id: 'browser-zone' })], [1], 'browser-row')
+      ],
+      [1, 1],
+      'root-column'
+    )
+
+    $layoutTree.set(tree)
+    $paneStates.set({ browser: { lockWidth: true, lockedWidth: 200, open: true, widthOverride: 200 } })
+
+    render(<TreeSplit node={tree} root />)
+
+    const browserZone = document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!
+    expect(browserZone).toBeTruthy()
+    const browserRow = document.querySelector<HTMLElement>('[data-tree-split="browser-row"]')!
+    expect(browserRow).toBeTruthy()
+  })
+
+  it('unlock clears lockedWidth so the pane reverts to flex behavior', () => {
+    const tree = split(
+      'row',
+      [group(['chat'], { id: 'chat-zone' }), group(['browser'], { id: 'browser-zone' })],
+      [1, 1],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+    $paneStates.set({ browser: { lockWidth: true, lockedWidth: 300, open: true, widthOverride: 300 } })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [, browser] = [...container.children] as HTMLElement[]
+    setWidth(container, 800)
+    setWidth(browser, 300)
+
+    const browserFlex = browser.style.flex
+    expect(browserFlex).toContain('300px')
+
+    // Unlock — the pane should revert to its flex layout.
+    setPaneWidthLock('browser', false)
+
+    const snap = $paneStates.get().browser
+    expect(snap?.lockWidth).toBeUndefined()
+    expect(snap?.lockedWidth).toBeUndefined()
+    expect(snap?.widthOverride).toBe(300)
+  })
+
+  it('locks on a flex pane with no override, capturing measured DOM bounding rect 420', () => {
+    const tree = split(
+      'row',
+      [group(['chat'], { id: 'chat-zone' }), group(['browser'], { id: 'browser-zone' })],
+      [1, 1],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+    // No widthOverride — flex pane at heart.
+    $paneStates.set({})
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [, browser] = [...container.children] as HTMLElement[]
+    setWidth(container, 800)
+    setWidth(browser, 400)
+
+    // Mock the zone element's bounding rect to 420px (the measured DOM size).
+    const zoneEl = document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!
+    Object.defineProperty(zoneEl, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: 600, width: 420, ...{ toJSON: () => ({}) } })
+    })
+
+    // Lock with explicit dimension — the store captures 420, not the override.
+    setPaneWidthLock('browser', true, 420)
+
+    const snap = $paneStates.get().browser
+    expect(snap?.lockWidth).toBe(true)
+    expect(snap?.lockedWidth).toBe(420)
+  })
+
+  it('column-in-row: locked pane inside nested column preserves width on horizontal drag', () => {
+    // Layout: root-row > [chat-zone, column-split > [browser-zone]]
+    // browser-zone is inside a column (parentAxis="column") but the row
+    // constrains its width. Locking width and dragging the chat-browser sash
+    // must preserve browser's locked width.
+    const tree = split(
+      'row',
+      [
+        group(['chat'], { id: 'chat-zone' }),
+        split('column', [group(['browser'], { id: 'browser-zone' })], [1], 'inner-col')
+      ],
+      [5, 1],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+    $paneStates.set({ browser: { lockWidth: true, lockedWidth: 250, open: true, widthOverride: 250 } })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const container = document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!
+    const [chat, colSplit] = [...container.children] as HTMLElement[]
+    setWidth(container, 1000)
+    setWidth(chat, 700)
+    setWidth(colSplit, 300)
+    setWidth(document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!, 250)
+
+    // Drag the chat-column sash right (into browser's column) by 100px.
+    const sash = document.querySelectorAll('[role="separator"]')[0]!
+    fireEvent.pointerDown(sash, { button: 0, clientX: 700, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerMove(window, { clientX: 800, pointerId: 1, pointerType: 'mouse' })
+    fireEvent.pointerUp(window, { clientX: 800, pointerId: 1, pointerType: 'mouse' })
+
+    // Browser must stay at 250px — the locked pane's width is preserved.
+    expect($paneStates.get().browser?.widthOverride).toBe(250)
+  })
+
+  it('snapshot signature includes lockedWidth so re-lock at new size re-renders', () => {
+    // Scenario: lock on a flex pane with no prior override. The lock captures
+    // the measured DOM width (420). Then a second lock captures a new size
+    // (350) — the snapshot signature must include lockedWidth so the subtree
+    // overrides cache invalidates and the component re-renders.
+    const tree = split(
+      'row',
+      [group(['chat'], { id: 'chat-zone' }), group(['browser'], { id: 'browser-zone' })],
+      [1, 1],
+      'root-row'
+    )
+
+    $layoutTree.set(tree)
+    // Lock with captured width 420 — no prior widthOverride.
+    $paneStates.set({ browser: { lockWidth: true, lockedWidth: 420, open: true } })
+
+    render(<TreeSplit node={tree} root rootRow />)
+
+    const browserEl = document.querySelector<HTMLElement>('[data-tree-group="browser-zone"]')!.parentElement!
+    setWidth(document.querySelector<HTMLElement>('[data-tree-split="root-row"]')!, 800)
+    setWidth(browserEl, 420)
+
+    // The locked basis is 420px.
+    expect(browserEl.style.flex).toContain('420px')
+
+    // Re-lock at 350 (lockWidth stays true, lockedWidth changes 420→350).
+    // Without lockedWidth in the signature, the cache returns stale data
+    // and the component keeps showing 420px.
+    act(() => {
+      $paneStates.set({ browser: { lockWidth: true, lockedWidth: 350, open: true } })
+    })
+
+    setWidth(browserEl, 350)
+
+    // The component must re-render with the new locked basis.
+    expect(browserEl.style.flex).toContain('350px')
   })
 })

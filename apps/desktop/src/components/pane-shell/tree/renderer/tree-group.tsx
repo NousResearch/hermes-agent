@@ -30,6 +30,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
+import { getPaneStateSnapshot, setPaneHeightLock, setPaneWidthLock } from '@/store/panes'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -43,10 +44,12 @@ import {
   resolveRememberedActivePane,
   workspaceScopeKey
 } from '../../workspace-scope'
-import type { DropPosition, GroupNode } from '../model'
+import type { DropPosition, GroupNode, LayoutNode, SplitNode } from '../model'
+import { allPaneIds } from '../model'
 import {
   $dropHint,
   $hiddenTreePanes,
+  $layoutTree,
   $narrowViewport,
   $newSessionTabAction,
   $panesWithCloser,
@@ -86,6 +89,45 @@ import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
 
+/** Find the column split that directly contains `groupId` in the layout tree,
+ *  then return all pane IDs across its child groups. Used by the shared-column
+ *  width lock: locking from any zone in the column locks every zone in it. */
+function columnPaneIdsForGroup(groupId: string): string[] | null {
+  const tree = $layoutTree.get()
+
+  if (!tree || tree.type === 'group') {
+    return null
+  }
+
+  const find = (node: LayoutNode): SplitNode | null => {
+    if (node.type === 'split') {
+      for (const child of node.children) {
+        if (child.type === 'group' && child.id === groupId) {
+          return node
+        }
+
+        if (child.type === 'split') {
+          const found = find(child)
+
+          if (found) {
+            return found
+          }
+        }
+      }
+    }
+
+    return null
+  }
+
+  const colSplit = find(tree)
+
+  if (!colSplit || colSplit.orientation !== 'column') {
+    return null
+  }
+
+  return colSplit.children.flatMap(child => allPaneIds(child))
+}
+
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
  *  all) plus the strip's own chrome toggles. Same items and icons as a session
  *  tab's menu, so every tab in a strip answers a right-click the same way —
@@ -94,9 +136,12 @@ import { paneChrome } from './track-model'
 function ZoneMenu({
   children,
   closable,
+  lockAxisColumn,
+  lockAxisRow,
   minimizable = true,
   minimized,
   nodeId,
+  parentAxis,
   stripVisible,
   tabMenuPrefix,
   targetPane
@@ -109,7 +154,13 @@ function ZoneMenu({
    *  MAIN pane strands the app behind a strip. */
   minimizable?: boolean
   minimized?: boolean
+  /** Whether a row split exists above this zone (width lockable). */
+  lockAxisRow?: boolean
+  /** Whether a column split exists above this zone (height lockable). */
+  lockAxisColumn?: boolean
   nodeId: string
+  /** The parent split's orientation — determines which axis to lock. */
+  parentAxis?: 'column' | 'row'
   /** Whether the strip is on screen — the Hide/Show row toggles against what
    *  the user can see, not against the stored mode (a zone on auto has none). */
   stripVisible?: boolean
@@ -146,6 +197,94 @@ function ZoneMenu({
           label: t.zones.reload,
           onSelect: () => reloadTreePane(targetId)
         })}
+        {(() => {
+          // Axis-specific Lock/Unlock items for the right-clicked pane.
+          // lockAxisRow/column determine which dimensions are lockable:
+          // a row ancestor means width is lockable, a column ancestor
+          // means height is. A zone inside a column-within-a-row gets
+          // BOTH options (shared-column width).
+          if (!lockAxisRow && !lockAxisColumn) {
+            return null
+          }
+
+          const targetId = targetPane()
+          const snap = getPaneStateSnapshot(targetId)
+
+          const items = []
+
+          if (lockAxisRow) {
+            // Shared-column width lock: when this zone sits inside a column
+            // split under a row, locking width locks the COLUMN's width for
+            // ALL zone panes in that column. One child must not advertise
+            // unlocked while a sibling has pinned shared width.
+            const sharedColumn = parentAxis === 'column'
+            const columnPaneIds = sharedColumn ? columnPaneIdsForGroup(nodeId) : null
+
+            const locked = columnPaneIds
+              ? columnPaneIds.some(id => getPaneStateSnapshot(id)?.lockWidth)
+              : snap?.lockWidth
+
+            const label = columnPaneIds
+              ? locked
+                ? t.zones.unlockColumnWidth
+                : t.zones.lockColumnWidth
+              : locked
+                ? t.zones.unlockWidth
+                : t.zones.lockWidth
+
+            items.push(
+              <Fragment key="lock-width">
+                <kit.Separator />
+                {renderActionItem(kit, {
+                  icon: locked ? 'unlock' : 'lock',
+                  label,
+                  onSelect: () => {
+                    if (columnPaneIds) {
+                      // Shared-column: measure the column split element and
+                      // lock/unlock ALL zone panes in the column.
+                      const zoneEl = document.querySelector<HTMLElement>(`[data-tree-group="${nodeId}"]`)
+                      const colSplitEl = zoneEl?.closest<HTMLElement>('[data-tree-split]')
+
+                      const fixedWidth = colSplitEl
+                        ? colSplitEl.getBoundingClientRect().width
+                        : zoneEl
+                          ? zoneEl.getBoundingClientRect().width
+                          : undefined
+
+                      for (const pid of columnPaneIds) {
+                        setPaneWidthLock(pid, !locked, fixedWidth)
+                      }
+                    } else {
+                      const zoneEl = document.querySelector<HTMLElement>(`[data-tree-group="${nodeId}"]`)
+                      const fixedWidth = zoneEl ? zoneEl.getBoundingClientRect().width : undefined
+                      setPaneWidthLock(targetId, !locked, fixedWidth)
+                    }
+                  }
+                })}
+              </Fragment>
+            )
+          }
+
+          if (lockAxisColumn) {
+            const locked = snap?.lockHeight
+            items.push(
+              <Fragment key="lock-height">
+                {lockAxisRow ? null : <kit.Separator />}
+                {renderActionItem(kit, {
+                  icon: locked ? 'unlock' : 'lock',
+                  label: locked ? t.zones.unlockHeight : t.zones.lockHeight,
+                  onSelect: () => {
+                    const zoneEl = document.querySelector<HTMLElement>(`[data-tree-group="${nodeId}"]`)
+                    const fixedHeight = zoneEl ? zoneEl.getBoundingClientRect().height : undefined
+                    setPaneHeightLock(targetId, !locked, fixedHeight)
+                  }
+                })}
+              </Fragment>
+            )
+          }
+
+          return items
+        })()}
         <kit.Separator />
         {paneTabCloseItems(kit, {
           counts: treeTabCloseTargets(targetId),
@@ -217,10 +356,14 @@ function ZoneMenu({
 }
 
 export function TreeGroup({
+  lockAxisColumn,
+  lockAxisRow,
   node,
   parentAxis,
   railSide = 'left'
 }: {
+  lockAxisColumn?: boolean
+  lockAxisRow?: boolean
   node: GroupNode
   parentAxis?: 'column' | 'row'
   railSide?: 'left' | 'right'
@@ -407,9 +550,12 @@ export function TreeGroup({
   // Same menu on the header strip and the edit veil — one prop bag.
   const zoneMenu = {
     closable,
+    lockAxisColumn,
+    lockAxisRow,
     minimizable,
     minimized: node.minimized,
     nodeId: node.id,
+    parentAxis,
     stripVisible,
     tabMenuPrefix: (kit: MenuKit) => paneChrome(paneFor(targetPane())).tabMenuPrefix?.(kit),
     targetPane

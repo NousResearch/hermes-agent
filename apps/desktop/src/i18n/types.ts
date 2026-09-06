@@ -2961,6 +2961,12 @@ export interface Translations {
     toggleStripTab: (title: string) => string
     minimize: string
     restore: string
+    lockWidth: string
+    unlockWidth: string
+    lockHeight: string
+    unlockHeight: string
+    lockColumnWidth: string
+    unlockColumnWidth: string
     closeRunningTitle: string
     closeRunningBody: string
     closeRunningConfirm: string

@@ -1,17 +1,27 @@
+import { fireEvent, screen } from '@testing-library/react'
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { $paneStates, getPaneStateSnapshot } from '@/store/panes'
+import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import type { GroupNode } from '../model'
-import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
+import { group, split } from '../model'
+import { $layoutTree, $treeDragging, declareDefaultTree, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
 
 import { TreeGroup } from './tree-group'
 
 let root: null | Root = null
 let container: HTMLDivElement | null = null
 let disposePane: (() => void) | null = null
+const disposers: (() => void)[] = []
+
+beforeAll(() => {
+  stubResizeObserver()
+  stubMenuDomApis()
+})
 
 function render(ui: ReactNode) {
   if (!container) {
@@ -50,6 +60,9 @@ afterEach(() => {
 
   container?.remove()
   disposePane?.()
+  disposers.splice(0).forEach(d => d())
+  $paneStates.set({})
+  $layoutTree.set(null)
   root = null
   container = null
   disposePane = null
@@ -57,6 +70,219 @@ afterEach(() => {
 })
 
 describe('TreeGroup', () => {
+  describe('ZoneMenu axis lock actions', () => {
+    const rowGroup = (): GroupNode => ({
+      active: 'sidebar',
+      id: 'sidebar-zone',
+      minimized: false,
+      panes: ['sidebar'],
+      tabStrip: 'always',
+      type: 'group'
+    })
+
+    const columnGroup = (): GroupNode => ({
+      active: 'terminal',
+      id: 'terminal-zone',
+      minimized: false,
+      panes: ['terminal'],
+      tabStrip: 'always',
+      type: 'group'
+    })
+
+    /** Radix opens a ContextMenu on contextmenu after a pointerdown positions it. */
+    function openContextMenu(target: HTMLElement) {
+      fireEvent.pointerDown(target, { button: 2, pointerType: 'mouse' })
+      fireEvent.contextMenu(target, { button: 2 })
+    }
+
+    it('shows "Lock width" on a row child', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { width: '237px' },
+          id: 'sidebar',
+          render: () => <div>Sidebar</div>,
+          title: 'Sidebar'
+        })
+      )
+      declareDefaultTree(split('row', [group(['sidebar'], { id: 'sidebar-zone' })]))
+      render(<TreeGroup lockAxisRow node={rowGroup()} parentAxis="row" />)
+
+      const tab = document.querySelector<HTMLElement>('[data-tree-tab="sidebar"]')!
+      openContextMenu(tab)
+
+      expect(await screen.findByRole('menuitem', { name: /lock width/i })).toBeTruthy()
+    })
+
+    it('shows "Lock height" on a column child', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { height: '38vh' },
+          id: 'terminal',
+          render: () => <div>Terminal</div>,
+          title: 'Terminal'
+        })
+      )
+      declareDefaultTree(split('column', [group(['terminal'], { id: 'terminal-zone' })]))
+      render(<TreeGroup lockAxisColumn node={columnGroup()} parentAxis="column" />)
+
+      const tab = document.querySelector<HTMLElement>('[data-tree-tab="terminal"]')!
+      openContextMenu(tab)
+
+      expect(await screen.findByRole('menuitem', { name: /lock height/i })).toBeTruthy()
+    })
+
+    it('shows "Unlock width" when width is already locked', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { width: '237px' },
+          id: 'sidebar',
+          render: () => <div>Sidebar</div>,
+          title: 'Sidebar'
+        })
+      )
+      declareDefaultTree(split('row', [group(['sidebar'], { id: 'sidebar-zone' })]))
+      $paneStates.set({ sidebar: { lockWidth: true, lockedWidth: 237, open: true, widthOverride: 237 } })
+
+      render(<TreeGroup lockAxisRow node={rowGroup()} parentAxis="row" />)
+
+      const tab = document.querySelector<HTMLElement>('[data-tree-tab="sidebar"]')!
+      openContextMenu(tab)
+
+      expect(await screen.findByRole('menuitem', { name: /unlock width/i })).toBeTruthy()
+    })
+
+    it('shows both "Lock column width" and "Lock height" for a zone in column-within-row (shared-column)', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { height: '38vh', width: '237px' },
+          id: 'terminal',
+          render: () => <div>Terminal</div>,
+          title: 'Terminal'
+        })
+      )
+      declareDefaultTree(split('row', [split('column', [group(['terminal'], { id: 'terminal-zone' })])]))
+      // lockAxisRow=true (row ancestor) + lockAxisColumn=true (column parent)
+      render(<TreeGroup lockAxisColumn lockAxisRow node={columnGroup()} parentAxis="column" />)
+
+      const tab = document.querySelector<HTMLElement>('[data-tree-tab="terminal"]')!
+      openContextMenu(tab)
+
+      expect(await screen.findByRole('menuitem', { name: /lock column width/i })).toBeTruthy()
+      expect(await screen.findByRole('menuitem', { name: /lock height/i })).toBeTruthy()
+    })
+
+    it('shows "Lock column width" label for a zone in column-within-row', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { height: '38vh', width: '237px' },
+          id: 'terminal',
+          render: () => <div>Terminal</div>,
+          title: 'Terminal'
+        })
+      )
+      const tree = split('row', [split('column', [group(['terminal'], { id: 'terminal-zone' })])])
+      declareDefaultTree(tree)
+      $layoutTree.set(tree)
+      render(<TreeGroup lockAxisColumn lockAxisRow node={columnGroup()} parentAxis="column" />)
+
+      const tab = document.querySelector<HTMLElement>('[data-tree-tab="terminal"]')!
+      openContextMenu(tab)
+
+      expect(await screen.findByRole('menuitem', { name: /lock column width/i })).toBeTruthy()
+    })
+
+    it('locking column width from one zone locks all zones in the column', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { height: '38vh', width: '237px' },
+          id: 'terminal',
+          render: () => <div>Terminal</div>,
+          title: 'Terminal'
+        }),
+        registry.register({
+          area: 'panes',
+          data: { height: '200px', width: '200px' },
+          id: 'files',
+          render: () => <div>Files</div>,
+          title: 'Files'
+        })
+      )
+
+      const tree = split('row', [
+        split('column', [group(['terminal'], { id: 'terminal-zone' }), group(['files'], { id: 'files-zone' })])
+      ])
+
+      declareDefaultTree(tree)
+      $layoutTree.set(tree)
+      render(<TreeGroup lockAxisColumn lockAxisRow node={columnGroup()} parentAxis="column" />)
+
+      // Mock the zone element's bounding rect to 500px (column width)
+      const zoneEl = document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')!
+      Object.defineProperty(zoneEl, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ height: 600, width: 500, ...{ toJSON: () => ({}) } })
+      })
+
+      const tab = document.querySelector<HTMLElement>('[data-tree-tab="terminal"]')!
+      openContextMenu(tab)
+
+      const lockItem = await screen.findByRole('menuitem', { name: /lock column width/i })
+      fireEvent.click(lockItem)
+
+      // Both zone panes should be locked
+      const termSnap = getPaneStateSnapshot('terminal')
+      const filesSnap = getPaneStateSnapshot('files')
+      expect(termSnap?.lockWidth).toBe(true)
+      expect(termSnap?.lockedWidth).toBe(500)
+      expect(filesSnap?.lockWidth).toBe(true)
+      expect(filesSnap?.lockedWidth).toBe(500)
+    })
+
+    it('lock action captures measured DOM bounding rect width', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { width: '237px' },
+          id: 'sidebar',
+          render: () => <div>Sidebar</div>,
+          title: 'Sidebar'
+        })
+      )
+      declareDefaultTree(split('row', [group(['sidebar'], { id: 'sidebar-zone' })]))
+      render(<TreeGroup lockAxisRow node={rowGroup()} parentAxis="row" />)
+
+      // Mock the zone element's bounding rect to 420px
+      const zoneEl = document.querySelector<HTMLElement>('[data-tree-group="sidebar-zone"]')!
+      Object.defineProperty(zoneEl, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ height: 600, width: 420, ...{ toJSON: () => ({}) } })
+      })
+
+      const tab = document.querySelector<HTMLElement>('[data-tree-tab="sidebar"]')!
+      openContextMenu(tab)
+
+      const lockItem = await screen.findByRole('menuitem', { name: /lock width/i })
+      fireEvent.click(lockItem)
+
+      const snap = getPaneStateSnapshot('sidebar')
+      expect(snap?.lockWidth).toBe(true)
+      expect(snap?.lockedWidth).toBe(420)
+    })
+  })
+
   it('points the docked-zone chevron in the collapse or restore action direction', () => {
     disposePane = registry.register({
       area: 'panes',

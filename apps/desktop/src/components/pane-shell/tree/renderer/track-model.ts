@@ -153,7 +153,17 @@ export function resolveCssPx(container: HTMLElement, css: number | string, horiz
 export interface TrackContext {
   paneFor: (id: string) => Contribution | undefined
   paneGone: (id: string) => boolean
-  overrides: Record<string, { widthOverride?: number; heightOverride?: number }>
+  overrides: Record<
+    string,
+    {
+      widthOverride?: number
+      heightOverride?: number
+      lockWidth?: boolean
+      lockHeight?: boolean
+      lockedWidth?: number
+      lockedHeight?: number
+    }
+  >
 }
 
 /** A group's panes that are actually on screen (not hidden / narrow-collapsed
@@ -229,11 +239,28 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
     }
 
     const overrideKey = axis === 'row' ? 'widthOverride' : 'heightOverride'
+    const lockKey = axis === 'row' ? 'lockWidth' : 'lockHeight'
+    const lockedKey = axis === 'row' ? 'lockedWidth' : 'lockedHeight'
 
     const declared = (id: string) => {
       const sizing = (ctx.paneFor(id)?.data ?? {}) as PaneSizing
       const css = (axis === 'row' ? sizing.width : sizing.height) ?? null
       const override = ctx.overrides[id]?.[overrideKey]
+      const locked = ctx.overrides[id]?.[lockKey]
+
+      // A locked pane uses its captured or override dimension as a fixed px
+      // basis, bypassing the declared CSS length. This makes the zone hold
+      // its size regardless of sash drags on neighbors.
+      if (locked) {
+        const lockedPx = ctx.overrides[id]?.[lockedKey]
+        const px = lockedPx ?? override
+
+        if (px !== undefined) {
+          return `${px}px`
+        }
+
+        // Locked but no captured px — fall through to declared CSS.
+      }
 
       // An override only refines a pane that DECLARES a size along this axis
       // (sash drags write overrides to fixed zones only). One without a

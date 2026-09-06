@@ -3426,6 +3426,12 @@ export const ru = defineLocale({
     toggleStripTab: title => `Переключить вкладку ${title}`,
     minimize: 'Свернуть',
     restore: 'Восстановить',
+    lockWidth: 'Lock width',
+    unlockWidth: 'Unlock width',
+    lockHeight: 'Lock height',
+    unlockHeight: 'Unlock height',
+    lockColumnWidth: 'Lock column width',
+    unlockColumnWidth: 'Unlock column width',
     closeRunningTitle: 'Закрыть работающую вкладку?',
     closeRunningBody:
       'Этот чат ещё работает (или ждёт вашего ввода). Закрытие вкладки скроет его — сеанс сохранит прогресс и можно будет открыть снова из боковой панели.',

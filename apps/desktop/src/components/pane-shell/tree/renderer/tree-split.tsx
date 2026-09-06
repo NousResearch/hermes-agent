@@ -49,6 +49,21 @@ import {
 } from './track-model'
 import { TreeNode } from './tree-node'
 
+/** True when any group descendant of `node` contains a pane locked along
+ *  `lockKey`.  Used by the sash drag to skip subtrees that hold a locked
+ *  pane — the sash neither donates nor receives from a locked subtree. */
+function subtreeHasLockedPane(
+  node: LayoutNode,
+  lockKey: 'lockHeight' | 'lockWidth',
+  overrides: TrackContext['overrides']
+): boolean {
+  if (node.type === 'group') {
+    return node.panes.some(id => overrides[id]?.[lockKey])
+  }
+
+  return node.children.some(child => subtreeHasLockedPane(child, lockKey, overrides))
+}
+
 /** The single group id a subtree resolves to, or null when it holds several
  *  zones — the sash can only collapse a boundary that IS exactly one zone. */
 function groupIdOf(node: LayoutNode): null | string {
@@ -74,7 +89,13 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   const snapshot = useCallback(() => {
     const all = $paneStates.get()
 
-    const sig = paneIds.map(id => `${id}:${all[id]?.widthOverride ?? ''}:${all[id]?.heightOverride ?? ''}`).join('|')
+    const sig = paneIds
+      .map(id => {
+        const s = all[id]
+
+        return `${id}:${s?.widthOverride ?? ''}:${s?.heightOverride ?? ''}:${s?.lockWidth ? 1 : 0}:${s?.lockHeight ? 1 : 0}:${s?.lockedWidth ?? ''}:${s?.lockedHeight ?? ''}`
+      })
+      .join('|')
 
     if (cache.current.sig !== sig) {
       cache.current = { sig, value: Object.fromEntries(paneIds.flatMap(id => (all[id] ? [[id, all[id]]] : []))) }
@@ -87,7 +108,19 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   return useSyncExternalStore(cb => $paneStates.listen(cb), snapshot, snapshot)
 }
 
-export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boolean; rootRow?: boolean }) {
+export function TreeSplit({
+  lockAxisColumn,
+  lockAxisRow,
+  node,
+  root,
+  rootRow
+}: {
+  lockAxisColumn?: boolean
+  lockAxisRow?: boolean
+  node: SplitNode
+  root?: boolean
+  rootRow?: boolean
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -255,6 +288,13 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
         const side = sideFor(child, element, index <= aIndex ? 'end' : 'start')
 
+        // A locked pane (axis lock from the zone menu) neither donates nor
+        // receives during a sash drag — it holds its captured size.
+        // Check recursively: a split child may contain a locked group in its
+        // subtree (e.g. a column-split holding a locked pane inside a row).
+        const lockKey = horizontal ? 'lockWidth' : 'lockHeight'
+        const locked = subtreeHasLockedPane(child, lockKey, overrides)
+
         return {
           ...side,
           element,
@@ -264,6 +304,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
           // and its remembered weight must survive the gesture so restoring
           // it brings back the size it had before it was folded.
           minimized: child.type === 'group' && Boolean(child.minimized),
+          locked,
           visible: !isCollapsed(child)
         }
       })
@@ -290,7 +331,9 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         const partnerIndex = toward > 0 ? bIndex : aIndex
         const target = sashTracks[targetIndex]
         const next = sashTracks.map(track => track.initial)
-        let remaining = Math.min(Math.abs(requestedShift), Math.max(0, target.max - target.initial))
+        // A locked target cannot grow — the drag has nowhere to push into.
+        const targetGrowth = target.locked ? 0 : Math.max(0, target.max - target.initial)
+        let remaining = Math.min(Math.abs(requestedShift), targetGrowth)
         let transferred = 0
         let cascaded = false
         // A tool rail is locally resizable at its own seam, but must not make
@@ -307,6 +350,11 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
           if (donor.collapseId && donorIndex !== partnerIndex) {
             break
+          }
+
+          // A locked donor cannot shrink — skip it like a collapsed track.
+          if (donor.locked) {
+            continue
           }
 
           const take = Math.min(remaining, Math.max(0, donor.initial - donor.min))
@@ -720,6 +768,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
             )}
             {!narrowCollapsed && (
               <TreeNode
+                lockAxisColumn={lockAxisColumn}
+                lockAxisRow={lockAxisRow}
                 node={child}
                 parentAxis={axis}
                 railSide={horizontal ? railSideFor(i) : undefined}

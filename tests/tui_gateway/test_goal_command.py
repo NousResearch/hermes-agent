@@ -442,6 +442,89 @@ def test_new_goal_does_not_inherit_previous_goal_recovery_attempt(server):
     assert GoalManager(session_key).state.status == "active"
 
 
+# ── blocked goal + real user message ──────────────────────────────────
+
+
+def _blocked_goal(session_key: str):
+    """Set a goal and drive it to the judge's BLOCKED auto-pause (needs user input)."""
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_key)
+    mgr.set("run both agent sessions end to end")
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("blocked", "needs the user to approve the login card", False, None, False),
+    ):
+        decision = mgr.evaluate_after_turn("Can I use your login for the tests?")
+    assert decision["status"] == "paused"
+    return mgr
+
+
+def test_user_message_after_blocked_pause_continues_the_goal(server, turn_env, monkeypatch):
+    """The judge pauses a goal as BLOCKED when the agent needs user input. The user's
+    next real message IS that input: the turn must run under the goal again (judged,
+    continuation dispatched) instead of executing as a plain prompt on a paused goal."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "goal-blocked-user-answers"
+    _blocked_goal(session_key)
+    continuation = GoalManager(session_key).next_continuation_prompt() or ""
+    assert continuation == "", "a paused goal has no continuation prompt yet"
+
+    seen_prompts = []
+    results = iter([{"final_response": "Copying the login and starting session A."},
+                    {"final_response": "Session A is running."}])
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return next(results)
+
+    verdicts = iter([("continue", "session B still pending", False, None, False),
+                     ("done", "both sessions verified", False, None, False)])
+    monkeypatch.setattr("hermes_cli.goals.judge_goal", lambda *a, **k: next(verdicts))
+    agent = types.SimpleNamespace(
+        session_id=session_key, run_conversation=run_conversation, clear_interrupt=lambda: None)
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "sid", session, "yes go ahead.", user_turn=True)
+
+    assert seen_prompts[0] == "yes go ahead."
+    assert len(seen_prompts) == 2 and seen_prompts[1].startswith("[Continuing toward your standing goal]")
+    notices = [p["text"] for event, _sid, p in turn_env
+               if event == "status.update" and p.get("kind") == "goal"]
+    assert any(text.startswith("▶ Goal resumed") for text in notices), notices
+    assert any("Continuing toward goal" in text for text in notices), notices
+    assert GoalManager(session_key).state.status == "done"
+
+
+def test_synthetic_turn_does_not_reactivate_a_blocked_goal(server, turn_env, monkeypatch):
+    """Background-process notifications, delegation completions, wakeups and auto-continues
+    are not the user answering — they must not silently un-pause a goal waiting on input.
+    They reach ``_run_prompt_submit`` without ``user_turn`` (the default)."""
+    from hermes_cli.goals import GoalManager
+
+    session_key = "goal-blocked-synthetic"
+    _blocked_goal(session_key)
+    seen_prompts = []
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return {"final_response": "noted the background result"}
+
+    monkeypatch.setattr(
+        "hermes_cli.goals.judge_goal",
+        lambda *a, **k: pytest.fail("a paused goal must not be judged"))
+    agent = types.SimpleNamespace(
+        session_id=session_key, run_conversation=run_conversation, clear_interrupt=lambda: None)
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit(
+        "rid", "sid", session, "[IMPORTANT: Background process proc_1 completed normally]")
+
+    assert seen_prompts == ["[IMPORTANT: Background process proc_1 completed normally]"]
+    assert GoalManager(session_key).state.status == "paused"
+
+
 # ── command.dispatch /moa ────────────────────────────────────────────
 
 def _write_moa_config(home, text):
@@ -467,3 +550,38 @@ moa:
     # Bare /moa is usage-only now; switching to a preset is via the model picker.
     assert "error" in r
     assert "model_override" not in s
+
+
+# ── prompt.submit marks the turn as the user's ────────────────────────
+
+
+def test_prompt_submit_rpc_marks_turn_as_user_turn(server, session, monkeypatch):
+    """The RPC the composer calls is the ONLY place that knows a person typed the message;
+    it must say so, or a BLOCKED-paused goal never learns its input arrived."""
+    sid, _, s = session
+    seen = {}
+
+    def fake_run(rid, _sid, _session, text, **kwargs):
+        seen["text"] = text
+        seen["kwargs"] = kwargs
+        _session["running"] = False  # the real one releases the turn in its finally
+        return True
+
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", fake_run)
+    s["agent_ready"] = threading.Event()
+    s["agent_ready"].set()
+    s["agent"] = types.SimpleNamespace(session_id="x", clear_interrupt=lambda: None)
+
+    r = _call(server, "prompt.submit", session_id=sid, text="yes go ahead.")
+
+    assert r["result"]["status"] == "streaming", r
+    assert seen["text"] == "yes go ahead."
+    assert seen["kwargs"]["user_turn"] is True
+
+    seen.clear()
+    r = _call(server, "prompt.submit", session_id=sid, text="widget intent", display_kind="hidden")
+    assert r["result"]["status"] == "streaming", r
+    assert seen["kwargs"]["user_turn"] is False, "hidden widget sends are not the user answering"

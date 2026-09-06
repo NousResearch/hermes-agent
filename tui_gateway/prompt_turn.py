@@ -40,6 +40,21 @@ def _active_goal_manager(session: dict):
     return goal_mgr if goal_mgr.is_active() else None
 
 
+def _revive_blocked_goal_for_user_turn(sid: str, session: dict, user_turn: bool) -> None:
+    """A real user message revives a goal the judge paused as BLOCKED: that pause means
+    "needs user input", and this message IS the input. Without this the answer runs as a
+    plain prompt — no judge, no continuation — while the card keeps saying "Goal paused".
+    ``user_turn`` is positive identification from the ``prompt.submit`` entry points; every
+    self-dispatched turn (goal continuation, auto-continue, notification poller, /loop and
+    heartbeat wakeups) leaves it False and leaves the pause alone."""
+    if not user_turn or not session.get("session_key"):
+        return
+    from hermes_cli.goals import GoalManager
+    goal_mgr = GoalManager(session_id=str(session["session_key"]))
+    if goal_mgr.resume_for_user_input():
+        _emit("status.update", sid, {"kind": "goal", "text": f"▶ Goal resumed: {goal_mgr.state.goal}"})
+
+
 def _plan_goal_compression_recovery(
     session: dict, result: Any, *, status: str, raw: Any) -> tuple[str | None, str | None]:
     """Bounded active-goal retry after compression exhaustion: ``(continuation, notice)``.
@@ -274,7 +289,8 @@ def _turn_outcome(result: Any) -> tuple[Any, str, str | None]:
 
 
 def _goal_followup_after_turn(
-    sid: str, session: dict, result: Any, status: str, raw: Any) -> str | None:
+    sid: str, session: dict, result: Any, status: str, raw: Any,
+    user_turn: bool = False) -> str | None:
     """/goal continuation (mirrors gateway/run._post_turn_goal_continuation): the prompt to
     chain once ``running`` is released, or None.  Compression failures are never judge
     input: the error text is not work toward the goal, and judging it spends a turn."""
@@ -290,6 +306,10 @@ def _goal_followup_after_turn(
         _hook_failure("goal compression recovery", _goal_recovery_exc)
     if compression_exhausted or not _is_successful_goal_turn(result, status, raw):
         return goal_followup
+    try:
+        _revive_blocked_goal_for_user_turn(sid, session, user_turn)
+    except Exception as _goal_revive_exc:
+        _hook_failure("goal revive on user input", _goal_revive_exc)
     try:
         if session.get("session_key") and (goal_mgr := _active_goal_manager(session)) is not None:
             try:
@@ -754,7 +774,11 @@ def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
-    terminal_callback: Callable[[dict[str, Any]], None] | None = None) -> bool:
+    terminal_callback: Callable[[dict[str, Any]], None] | None = None,
+    user_turn: bool = False) -> bool:
+    """``user_turn`` is set only by the ``prompt.submit`` entry points (and the drain of prompts
+    the user queued while busy): it is the positive signal that a person is talking, which a
+    goal paused as BLOCKED-on-user-input waits for. Self-dispatched turns leave it False."""
     admitted = _admit_prompt_turn(sid, session, text, image_paths, queued_prompt_generation)
     if admitted is None:
         return False
@@ -797,7 +821,8 @@ def _run_prompt_submit(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
             _emit("message.complete", sid, payload)
-            goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
+            goal_followup = _goal_followup_after_turn(
+                sid, session, st.result, status, raw, user_turn=user_turn)
             if status == "complete":
                 _after_complete_turn(sid, session, st, raw)
         except Exception as e:

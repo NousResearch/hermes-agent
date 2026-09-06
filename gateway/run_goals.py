@@ -228,17 +228,24 @@ class GatewayGoalsMixin:
         return factory(sid)
 
     async def _post_turn_goal_continuation(
-        self, *, session_entry: Any, source: Any, final_response: str,
+        self, *, session_entry: Any, source: Any, final_response: str, user_turn: bool = True,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
-        continuation through the adapter FIFO so a simultaneous real user message takes priority."""
+        continuation through the adapter FIFO so a simultaneous real user message takes priority.
+        A real user turn also revives a goal the judge paused as BLOCKED (needs user input): the
+        message IS the input. Internal turns (notifications, wakeups) leave the pause alone."""
         def _load():
             from hermes_cli.goals import GoalManager
             max_turns = self._goal_max_turns_from_config()
             return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
 
         mgr = await self._post_turn_manager(session_entry, "goal continuation", "goals", _load)
-        if mgr is None or not mgr.is_active():
+        if mgr is None:
+            return
+        if user_turn and mgr.resume_for_user_input() and source is not None:
+            await self._defer_goal_status_notice_after_delivery(
+                source, f"▶ Goal resumed: {mgr.state.goal}")
+        if not mgr.is_active():
             return
 
         _bg_procs = None
@@ -284,12 +291,15 @@ class GatewayGoalsMixin:
             return
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled.
-        hooks = [("loop completion", self._post_turn_loop_completion)]
+        hooks = [("loop completion", self._post_turn_loop_completion, {})]
         if final_text.strip():
-            hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
-        for label, hook in hooks:
+            # Goal continuations are synthetic prompts too: they are not the user answering.
+            user_turn = not is_internal and not self._is_goal_continuation_event(event)
+            hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation,
+                             {"user_turn": user_turn}))
+        for label, hook, extra in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response=final_text)
+                await hook(session_entry=session_entry, source=source, final_response=final_text, **extra)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
 

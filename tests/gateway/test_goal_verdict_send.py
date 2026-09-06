@@ -174,3 +174,59 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
     assert not adapter._pending_messages
 
 
+
+
+def _blocked_goal(session_id: str):
+    """Set a goal and drive it to the judge's BLOCKED auto-pause (needs user input)."""
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id)
+    mgr.set("run both agent sessions end to end")
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("blocked", "needs the user to approve the login card", False, None, False),
+    ):
+        assert mgr.evaluate_after_turn("May I use your login?")["status"] == "paused"
+    return mgr
+
+
+@pytest.mark.asyncio
+async def test_user_turn_revives_blocked_goal_and_continues(hermes_home):
+    """A BLOCKED pause means the agent needs user input. The user's next real message IS
+    that input: the goal must resume (notice sent), be judged, and continue — not sit paused
+    until the user types /goal resume."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+    from hermes_cli.goals import GoalManager
+
+    _blocked_goal(session_entry.session_id)
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "session B pending", False, None, False)):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry, source=src,
+            final_response="Copying the login now and starting session A.", user_turn=True)
+        await _drain_until(lambda: len(adapter.sends) >= 2 and adapter._pending_messages)
+
+    contents = [s["content"] for s in adapter.sends]
+    assert any(c.startswith("▶ Goal resumed") for c in contents), contents
+    assert any("Continuing toward goal" in c for c in contents), contents
+    assert adapter._pending_messages, "continuation must be enqueued for the next turn"
+    assert GoalManager(session_entry.session_id).state.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_internal_turn_leaves_blocked_goal_paused(hermes_home):
+    """Background notifications / wakeups are not the user answering — no revive, no judge."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+    from hermes_cli.goals import GoalManager
+
+    _blocked_goal(session_entry.session_id)
+
+    with patch("hermes_cli.goals.judge_goal", side_effect=AssertionError("paused goal must not be judged")):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry, source=src,
+            final_response="noted the background result", user_turn=False)
+        await asyncio.sleep(0.05)
+
+    assert adapter.sends == []
+    assert not adapter._pending_messages
+    assert GoalManager(session_entry.session_id).state.status == "paused"

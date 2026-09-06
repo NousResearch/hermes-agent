@@ -495,7 +495,9 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
-        terminal_callback=hosted_terminal_callback)
+        terminal_callback=hosted_terminal_callback,
+        # Hidden widget sends are off-screen intents, not the user answering a question.
+        user_turn=display_kind is None)
 
 
 _TRUNCATION_PARAMS = (
@@ -606,7 +608,7 @@ def _(rid, params: dict) -> dict:
         return err
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
+            rid, sid, session, text, display_kind=display_kind, user_turn=display_kind is None)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)

@@ -300,6 +300,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
+    # Everything in this queue came from the user (busy prompt.submit, /steer, /redirect, a leftover steer):
+    # when it drains it is the user talking, which a goal paused on user input waits for.
+    kwargs["user_turn"] = True
     dispatch_failed = False
     try:
         if not use_compute_host:

@@ -1445,18 +1445,43 @@ def _sum_skill_view(name, args, content, content_len, line_count):
     return f"[skill_view] name={skill} ({content_len:,} chars)" + marker
 
 
+def _clarify_answer(content: str) -> Any:
+    """The user's answer(s) from a clarify result, or None when there is nothing to quote.
+    Single-question shape: ``user_response`` (str or list). Batch shape (``questions=[...]``):
+    ``responses[].user_response`` in question order; blanks stay as ``""`` so positions line
+    up with the questions, but a batch where nothing was answered (all skipped / timed out)
+    is not an answer at all."""
+    data = _json_dict(content)
+    if "user_response" in data:
+        response = data.get("user_response")
+        is_answer_shaped = (isinstance(response, str) and bool(response)) or (
+            isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
+        )
+        return response if is_answer_shaped and not _is_clarify_non_response_sentinel(response) else None
+    responses = data.get("responses")
+    if not isinstance(responses, list) or not responses:
+        return None
+    answers = []
+    for entry in responses:
+        response = entry.get("user_response") if isinstance(entry, dict) else None
+        if isinstance(response, str):
+            answers.append("" if _is_clarify_non_response_sentinel(response) else response)
+        elif isinstance(response, list) and all(isinstance(s, str) for s in response):
+            answers.append([] if _is_clarify_non_response_sentinel(response) else response)
+        else:
+            answers.append("")
+    return answers if any(answers) else None
+
+
 def _sum_clarify(name, args, content, content_len, line_count):
     response_prefix = "[clarify] user responded: "
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
     truncation_marker = "...[truncated]"
-    response = _json_dict(content).get("user_response")
-    is_answer_shaped = (isinstance(response, str) and bool(response)) or (
-        isinstance(response, list) and bool(response) and all(isinstance(s, str) and s for s in response)
-    )
+    response = _clarify_answer(content)
     # Timeout / no-user sentinel prose must not be quoted as a user answer.
-    if is_answer_shaped and not _is_clarify_non_response_sentinel(response):
+    if response is not None:
         # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
         serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
         summary = response_prefix + serialized.decode("utf-8")

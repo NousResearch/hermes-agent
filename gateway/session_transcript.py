@@ -405,11 +405,14 @@ class SessionTranscriptMixin:
             self._transcript_append_failures.pop(session_id, None)
 
     def has_platform_message_id(self, session_id: str, platform_message_id: str) -> bool:
-        """Whether a message with this platform_message_id is persisted (False without a DB).
-
-        Thin wrapper over SessionDB.has_platform_message_id(). Returns False when no DB is available
-        (in-memory sessions). Used by the gateway's transient-failure dedupe guard (#47237).
-        """
+        """Whether a platform message ID is persisted or queued for retry."""
+        with self._transcript_retry_lock:
+            for message in self._dirty_transcripts.get(session_id, ()):
+                pending_id = message.get("platform_message_id") or message.get(
+                    "message_id"
+                )
+                if pending_id == platform_message_id:
+                    return True
         db = self._db_for_session_id(session_id)
         if not db:
             return False

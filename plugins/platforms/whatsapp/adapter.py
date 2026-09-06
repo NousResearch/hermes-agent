@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -673,6 +674,113 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
         return {"name": chat_id, "type": "dm"}
 
+    def _should_observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
+        """Admit an untriggered, text-only group message for silent observation."""
+        if self.config.extra.get("observe_unmentioned_group_messages") is not True:
+            return False
+        if (
+            data.get("isGroup") is not True
+            or data.get("fromMe") is not False
+            or data.get("hasMedia") is not False
+            or data.get("hasQuotedMessage") is not False
+            or data.get("isForwarded") is not False
+        ):
+            return False
+        if type(data.get("mentionedIds")) is not list or data["mentionedIds"]:
+            return False
+        if type(data.get("mediaType")) is not str or data["mediaType"]:
+            return False
+        body = data.get("body")
+        chat_id = data.get("chatId")
+        sender_id = data.get("senderId")
+        message_id = data.get("messageId")
+        timestamp = data.get("timestamp")
+        if not all(
+            type(value) is str and value.strip()
+            for value in (body, chat_id, sender_id, message_id)
+        ):
+            return False
+        if type(timestamp) is not int or timestamp <= 0:
+            return False
+        if not self._matches_whatsapp_allowlist(chat_id, self._group_allow_from):
+            return False
+        return self._is_sender_authorized(
+            sender_id,
+            chat_type="group",
+            chat_id=chat_id,
+        ) is True
+
+    def _observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
+        """Persist one admitted observation using the native session transcript."""
+        if not self._should_observe_unmentioned_group_message(data):
+            return False
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return False
+        source = self.build_source(
+            chat_id=data["chatId"],
+            chat_name=data.get("chatName"),
+            chat_type="group",
+            user_id=None,
+            user_name=None,
+        )
+        if source.profile is None:
+            source.profile = self._session_key_profile(source)
+        session_entry = store.get_or_create_session(source)
+        message_id = data["messageId"]
+        if store.has_platform_message_id(session_entry.session_id, message_id):
+            return True
+        sender_name = data.get("senderName")
+        if type(sender_name) is not str or not sender_name.strip():
+            sender_name = data["senderId"]
+        attribution = json.dumps(
+            {"name": sender_name.strip(), "id": data["senderId"]},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        store.append_to_transcript(
+            session_entry.session_id,
+            {
+                "role": "user",
+                "content": (
+                    f"[WhatsApp observation sender] {attribution}\n{data['body']}"
+                ),
+                "timestamp": data["timestamp"],
+                "observed": True,
+                "message_id": message_id,
+            },
+        )
+        return True
+
+    async def _handle_polled_message(self, data: Dict[str, Any]) -> None:
+        """Route one bridge message to dispatch or silent observation."""
+        try:
+            active = self._should_process_message(data)
+        except Exception as exc:
+            print(f"[{self.name}] Error building event: {exc}")
+            return
+        if not active and self._should_observe_unmentioned_group_message(data):
+            try:
+                self._observe_unmentioned_group_message(data)
+            except Exception as exc:
+                logger.warning(
+                    "[%s] Failed to persist WhatsApp group observation: %s",
+                    self.name,
+                    type(exc).__name__,
+                )
+            return
+        if not active:
+            return
+        event = await self._build_message_event(data, _admitted=True)
+        if event is None:
+            return
+        # Fire-and-forget: a slow bridge /read must not delay dispatch.
+        asyncio.create_task(self._send_read_receipt(data))
+        if event.message_type == MessageType.TEXT:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
+
     async def _report_bridge_exit(self) -> bool:
         bridge_exit = await self._check_managed_bridge_exit()
         if bridge_exit:
@@ -687,14 +795,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:
                         for msg_data in await resp.json():
-                            event = await self._build_message_event(msg_data)
-                            if event:
-                                # Fire-and-forget: a slow bridge /read must not delay dispatch.
-                                asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                            await self._handle_polled_message(msg_data)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -784,10 +885,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 print(f"[{self.name}] Failed to read document text: {e}", flush=True)
         return body
 
-    async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
+    async def _build_message_event(
+        self, data: Dict[str, Any], *, _admitted: bool = False
+    ) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if not self._should_process_message(data):
+            if not _admitted and not self._should_process_message(data):
                 return None
             msg_type = self._classify_bridge_message(data)
             source = self.build_source(chat_id=data.get("chatId", ""), chat_name=data.get("chatName"), chat_type="group" if data.get("isGroup", False) else "dm",

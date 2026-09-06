@@ -94,12 +94,13 @@ import {
         fromMe: false,
       },
       pushName: 'Tester',
-      messageTimestamp: 123,
+      messageTimestamp: { toString: () => '123' },
       message: {
         extendedTextMessage: {
           text: 'approved',
           contextInfo: {
             stanzaId: 'outbound-1',
+            isForwarded: true,
             participant: '15559998888@s.whatsapp.net',
             remoteJid: '15551234567@s.whatsapp.net',
             quotedMessage: { conversation: 'approve deploy?' },
@@ -125,6 +126,9 @@ import {
     fromMe: false,
   });
   assert.equal(event.hasQuotedMessage, true);
+  assert.equal(event.fromMe, false);
+  assert.equal(event.isForwarded, true);
+  assert.equal(event.timestamp, 123);
   assert.equal(event.body, 'approved');
   console.log('  ✓ inbound quoted metadata includes quoted text');
 }

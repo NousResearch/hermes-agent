@@ -1166,8 +1166,11 @@ def _build_gateway_agent_history(
         content = msg.get("content")
         if inject_timestamps and role == "user" and isinstance(content, str):
             content = _render_msg_ts(content, msg.get("timestamp"), tz=_msg_tz)
-        if separate_observed_context and msg.get("observed") and role == "user" and content:
-            observed_group_context.append(str(content).strip())
+        if msg.get("observed"):
+            if separate_observed_context and role == "user" and content:
+                observed_group_context.append(str(content).strip())
+            # Observations are never ordinary agent-history turns. Platforms
+            # without an explicit context-only marker keep them storage-only.
             continue
 
         # Rich tool_calls/tool-result rows pass through intact so the API sees valid assistant→tool sequences.

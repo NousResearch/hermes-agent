@@ -405,7 +405,10 @@ def _sandboxed_test_command(
         for path in files:
             if path.exists():
                 escaped = _sandbox_profile_escape(str(path))
-                rules.append(f'(deny file-read* (literal "{escaped}"))')
+                # Pytest stats repo-root entries while resolving collection.
+                # Deny file contents, not metadata, so an intentionally masked
+                # .env file cannot abort collection merely by existing.
+                rules.append(f'(deny file-read-data (literal "{escaped}"))')
                 rules.append(f'(deny file-write* (literal "{escaped}"))')
         live_roots = (
             real_home / ".hermes",

@@ -4,6 +4,7 @@ import type * as React from 'react'
 
 import { PrTag } from '@/app/chat/pr-tag'
 import { ProfileTag } from '@/app/chat/profile-tag'
+import { SessionAttentionChip } from '@/app/chat/session-attention-chip'
 import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { openSession } from '@/app/open-session'
@@ -28,7 +29,12 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
-import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
+import {
+  $sessionAttentionKindById,
+  $sessionDotStateById,
+  hasLiveTurn,
+  showsRunningArc
+} from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
 import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
@@ -199,6 +205,17 @@ function SidebarSessionRowImpl({
   // thing. Chips used to render in the body instead, which left them stranded
   // to the left of the kebab's own column: never flush right, never swapping.
   const trailing: { key: string; node: React.ReactNode }[] = []
+
+  // A turn parked on the user leads the slot, ahead of every optional figure:
+  // the age and the chips yield to the kebab on hover, this must not. It is
+  // the one thing in the row the user is required to act on, so it is the one
+  // thing the sidebar says in words rather than with a 6px dot (#needs-input).
+  // A selector keyed to this row: only the row whose prompt arrives repaints.
+  const attention = useStoreSelector($sessionAttentionKindById, kinds => kinds[session.id])
+
+  if (attention) {
+    trailing.push({ key: 'attention', node: <SessionAttentionChip kind={attention} /> })
+  }
 
   if ((showProfile || pinnedProfile) && hasProfileTag) {
     trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })

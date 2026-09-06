@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
+import { clearAllPrompts, setApprovalRequest } from './prompts'
 import {
   $cronSessions,
   $messagingSessions,
@@ -14,9 +15,12 @@ import {
   setSessions
 } from './session'
 import {
+  $attentionSessionCount,
   $delegatingSessionIds,
+  $sessionAttentionKindById,
   $sessionDotStateById,
   $unreadSessionCount,
+  attentionSessionCount,
   hasLiveTurn,
   showsRunningArc,
   unreadSessionCount
@@ -238,5 +242,116 @@ describe('$unreadSessionCount (titlebar badge)', () => {
 
     expect($unreadSessionCount.get()).toBe(0)
     expect($sessionDotStateById.get()['cron-1']).not.toBe('unread')
+  })
+})
+
+describe('$sessionAttentionKindById (sidebar attention chip)', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    clearAllPrompts()
+    $sessions.set([])
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    clearAllPrompts()
+    $sessions.set([])
+  })
+
+  it('names nothing for a session that is merely working', () => {
+    setSessions([storedRow('s1')])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    expect($sessionAttentionKindById.get()['s1']).toBeUndefined()
+  })
+
+  it('reads as a question when a turn is blocked without a parked approval', () => {
+    setSessions([storedRow('s1')])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, needsInput: true })
+
+    expect($sessionAttentionKindById.get()['s1']).toBe('question')
+  })
+
+  it('reads as an approval when the blocking prompt is a parked approval, bridged runtime → stored', () => {
+    setSessions([storedRow('s1')])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, needsInput: true })
+    setApprovalRequest({ command: 'rm -rf build', description: 'dangerous', sessionId: 'rt1' })
+
+    expect($sessionAttentionKindById.get()['s1']).toBe('approval')
+  })
+
+  it('claims every lineage alias so a compressed tip and its root agree', () => {
+    setSessions([storedRow('tip', { _lineage_root_id: 'root' }), storedRow('root')])
+    publishSessionState('rt1', { ...createClientSessionState('tip'), busy: true, needsInput: true })
+    setApprovalRequest({ command: 'x', description: 'd', sessionId: 'rt1' })
+
+    const kinds = $sessionAttentionKindById.get()
+    expect(kinds['tip']).toBe('approval')
+    expect(kinds['root']).toBe('approval')
+  })
+
+  it('drops the chip the moment the prompt is answered', () => {
+    setSessions([storedRow('s1')])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, needsInput: true })
+    setApprovalRequest({ command: 'x', description: 'd', sessionId: 'rt1' })
+    expect($sessionAttentionKindById.get()['s1']).toBe('approval')
+
+    clearAllPrompts('rt1')
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, needsInput: false })
+
+    expect($sessionAttentionKindById.get()['s1']).toBeUndefined()
+  })
+
+  it('keeps reference identity when nothing changed, so rows do not repaint per delta', () => {
+    setSessions([storedRow('s1')])
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, needsInput: true })
+
+    const first = $sessionAttentionKindById.get()
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true, needsInput: true, streamId: 'x' })
+
+    expect($sessionAttentionKindById.get()).toBe(first)
+  })
+})
+
+describe('attentionSessionCount / $attentionSessionCount (titlebar badge)', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+  })
+
+  it('counts listed blocked rows and skips archived ones and unlisted aliases', () => {
+    expect(
+      attentionSessionCount({ a: 'needs-input', b: 'working', c: 'needs-input', alias: 'needs-input' }, [
+        { id: 'a' },
+        { id: 'b' },
+        { archived: true, id: 'c' }
+      ])
+    ).toBe(1)
+  })
+
+  it('counts regular + messaging sessions but never cron', () => {
+    setSessions([storedRow('reg-1')])
+    setMessagingSessions([storedRow('msg-1')])
+    setCronSessions([storedRow('cron-1', { source: 'cron' })])
+
+    for (const [rt, stored] of [
+      ['rt-reg', 'reg-1'],
+      ['rt-msg', 'msg-1'],
+      ['rt-cron', 'cron-1']
+    ] as const) {
+      publishSessionState(rt, { ...createClientSessionState(stored), busy: true, needsInput: true })
+    }
+
+    expect($sessionDotStateById.get()['cron-1']).toBe('needs-input')
+    expect($attentionSessionCount.get()).toBe(2)
   })
 })

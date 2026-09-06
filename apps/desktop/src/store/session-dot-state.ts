@@ -28,6 +28,7 @@ import { computed } from 'nanostores'
 import { stableArray, stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
+import { $approvalRequests } from './prompts'
 import { $messagingSessions, $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
 import {
   $attentionSessionIds,
@@ -210,4 +211,71 @@ export function unreadSessionCount(
 export const $unreadSessionCount = computed(
   [$sessionDotStateById, $sessions, $messagingSessions],
   (byId, sessions, messaging) => unreadSessionCount(byId, sessions, messaging)
+)
+
+/** What a blocked session is waiting on. `approval` is the sharper cue — the
+ *  turn cannot proceed until a command is allowed or refused — and gets its own
+ *  word in the chip; every other blocking prompt (clarify, sudo, secret, MCP
+ *  consent) reads as a question. */
+export type SessionAttentionKind = 'approval' | 'question'
+
+let attentionKinds: Readonly<Record<string, SessionAttentionKind>> = {}
+
+/** Listed, non-archived sessions currently blocked on the user, with what they
+ *  are blocked on. Keyed by stored id (every lineage alias, like the dot map)
+ *  so the sidebar row and a pane tab agree. The approval map is keyed by
+ *  runtime id, so it is folded in through the same alias bridge the working
+ *  set uses: runtime → stored via `$sessionStates`. */
+export const $sessionAttentionKindById = computed(
+  [$sessionDotStateById, $approvalRequests, $sessionStates, $sessions],
+  (byId, approvals, states, sessions) => {
+    const next: Record<string, SessionAttentionKind> = {}
+
+    for (const [id, state] of Object.entries(byId)) {
+      if (state === 'needs-input') {
+        next[id] = 'question'
+      }
+    }
+
+    for (const runtimeId of Object.keys(approvals)) {
+      if (!runtimeId) {
+        continue
+      }
+
+      for (const alias of lineageAliases(states[runtimeId]?.storedSessionId ?? runtimeId, sessions)) {
+        if (next[alias]) {
+          next[alias] = 'approval'
+        }
+      }
+    }
+
+    return (attentionKinds = stableRecord(attentionKinds, next))
+  }
+)
+
+/** Listed, non-archived rows blocked on the user. Alias keys are ignored
+ *  unless they are themselves a listed row — same rule as the unread count. */
+export function attentionSessionCount(
+  byId: Readonly<Record<string, SessionDotState>>,
+  ...lists: Array<readonly { archived?: boolean; id: string }[]>
+): number {
+  let n = 0
+
+  for (const rows of lists) {
+    for (const row of rows) {
+      if (!row.archived && byId[row.id] === 'needs-input') {
+        n++
+      }
+    }
+  }
+
+  return n
+}
+
+/** The titlebar's "needs you" count. Cron sessions are excluded like the
+ *  unread badge — a cron run parked on a prompt has no one watching it, and
+ *  its row in the cron section still paints amber. */
+export const $attentionSessionCount = computed(
+  [$sessionDotStateById, $sessions, $messagingSessions],
+  (byId, sessions, messaging) => attentionSessionCount(byId, sessions, messaging)
 )

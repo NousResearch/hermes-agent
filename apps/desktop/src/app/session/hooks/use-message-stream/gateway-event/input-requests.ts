@@ -1,6 +1,7 @@
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall, settlePendingClarifyToolCall } from '@/lib/chat-messages'
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   $clarifyRequests,
   clearClarifyRequest,
@@ -13,9 +14,27 @@ import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import { $sessions, sessionMatchesStoredId } from '@/store/session'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
+
+/** The OS toast names the chat that is waiting: "Approval needed — Fix the
+ *  build". A toast that only says "Approval needed" sends the user hunting
+ *  through the sidebar for which of six sessions it meant. The event carries
+ *  the runtime id; the row is found through the stored id it maps to. */
+function attentionTitle(key: 'approvalTitle' | 'inputTitle', ctx: GatewayEventContext): string {
+  const base = translateNow(`notifications.native.${key}`)
+  const { sessionId } = ctx
+
+  const storedId = sessionId
+    ? (ctx.deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? null)
+    : null
+
+  const row = storedId ? $sessions.get().find(session => sessionMatchesStoredId(session, storedId)) : undefined
+
+  return row ? `${base} — ${sessionTitle(row)}` : base
+}
 
 /** The blocking-input family: clarify / MCP setup consent / approval / sudo /
  *  secret requests. The Python side is blocked on the matching *.respond, so
@@ -102,7 +121,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: questions.map(q => q.question).join(' · '),
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: attentionTitle('inputTitle', ctx)
       })
     } else if (requestId && question) {
       if (rawChoices != null && choices.length === 0) {
@@ -150,7 +169,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: question,
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: attentionTitle('inputTitle', ctx)
       })
     }
 
@@ -219,7 +238,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: reason || server,
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: attentionTitle('inputTitle', ctx)
       })
     }
 
@@ -261,7 +280,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
       body: command || description,
       kind: 'approval',
       sessionId,
-      title: translateNow('notifications.native.approvalTitle')
+      title: attentionTitle('approvalTitle', ctx)
     })
 
     return true
@@ -283,7 +302,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: translateNow('notifications.native.inputBody'),
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: attentionTitle('inputTitle', ctx)
       })
     }
 
@@ -314,7 +333,7 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         body: promptText || envVar || translateNow('notifications.native.inputBody'),
         kind: 'input',
         sessionId,
-        title: translateNow('notifications.native.inputTitle')
+        title: attentionTitle('inputTitle', ctx)
       })
     }
 

@@ -317,6 +317,7 @@ export interface Translations {
     hideRightSidebar: string
     showRightSidebar: string
     unreadSessions: (count: number) => string
+    attentionSessions: (count: number) => string
     muteHaptics: string
     unmuteHaptics: string
     openSettings: string
@@ -2125,6 +2126,8 @@ export interface Translations {
       sessionRunning: string
       needsInput: string
       waitingForAnswer: string
+      attentionApproval: string
+      attentionQuestion: string
       finishedUnread: string
       backgroundRunning: string
       draftSession: string

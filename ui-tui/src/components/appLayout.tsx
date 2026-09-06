@@ -9,12 +9,14 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { $turnState } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
-import { devContextRailWidth } from '../domain/devContext.js'
+import { devContextHasActivity, devContextRailWidth } from '../domain/devContext.js'
+import { type ContextRailData, useContextRailInputs } from '../hooks/useContextRailInputs.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -29,7 +31,7 @@ import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
-import { DevContextRail } from './devContextRail.js'
+import { DevContextBottomDock, DevContextRail } from './devContextRail.js'
 import { FpsOverlay } from './fpsOverlay.js'
 import { HelpHint } from './helpHint.js'
 import { Journey } from './journey.js'
@@ -141,12 +143,41 @@ const TranscriptPane = memo(function TranscriptPane({
   actions,
   composer,
   progress,
-  transcript
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
+  transcript,
+  hasRailInputs
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'> & { hasRailInputs: boolean }) {
   const ui = useStore($uiState)
+  const overlay = useStore($overlayState)
+  const turn = useStore($turnState)
   const petBox = useStore($petBox)
   const ambientRailCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
-  const railCols = ambientRailCols + devContextRailWidth(ui.devContext, composer.cols, ambientRailCols)
+
+  const activeAgentCount = turn.subagents.filter(
+    agent => agent.status === 'queued' || agent.status === 'running'
+  ).length
+
+  const hasAttention = Boolean(
+    overlay.approval ||
+    overlay.billing ||
+    overlay.clarify ||
+    overlay.confirm ||
+    overlay.secret ||
+    overlay.subscription ||
+    overlay.sudo
+  )
+
+  const hasDevContextActivity = devContextHasActivity(
+    turn.todos.length,
+    activeAgentCount,
+    ui.bgTasks.size,
+    turn.tools.length,
+    composer.queuedDisplay.length,
+    hasRailInputs,
+    hasAttention
+  )
+
+  const railCols =
+    ambientRailCols + devContextRailWidth(ui.devContext, composer.cols, ambientRailCols, hasDevContextActivity)
 
   // Keep transcript text clear of the floating pet, responsively:
   //  - wide terminals: reserve a right gutter so lines wrap to the pet's left
@@ -277,8 +308,9 @@ const TranscriptPane = memo(function TranscriptPane({
 const ComposerPane = memo(function ComposerPane({
   actions,
   composer,
+  railData,
   status
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'> & { railData: ContextRailData }) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
@@ -368,6 +400,13 @@ const ComposerPane = memo(function ComposerPane({
 
       <StatusRulePane at="top" composer={composer} status={status} />
       <AmbientDock placement="dock-top" />
+      <DevContextBottomDock
+        cols={composer.cols}
+        flowStatus={railData.flowStatus}
+        queuedCount={composer.queuedDisplay.length}
+        railInputs={railData.railInputs}
+        workspace={status.workspace}
+      />
 
       <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
@@ -534,6 +573,8 @@ export const AppLayout = memo(function AppLayout({
 }: AppLayoutProps) {
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
+  const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
+  const railData = useContextRailInputs(cwd)
 
   // Inline mode skips AlternateScreen so the host terminal's native
   // scrollback captures rows scrolled off the top; composer + progress
@@ -556,12 +597,24 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
           ) : (
             <PerfPane id="transcript">
-              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              <TranscriptPane
+                actions={actions}
+                composer={composer}
+                hasRailInputs={Boolean(railData.railInputs)}
+                progress={progress}
+                transcript={transcript}
+              />
             </PerfPane>
           )}
           {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
           {!overlay.agents && !overlay.journey && (
-            <DevContextRail cols={composer.cols} queuedCount={composer.queuedDisplay.length} status={status} />
+            <DevContextRail
+              cols={composer.cols}
+              flowStatus={railData.flowStatus}
+              queuedCount={composer.queuedDisplay.length}
+              railInputs={railData.railInputs}
+              workspace={status.workspace}
+            />
           )}
         </Box>
 
@@ -579,7 +632,7 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
 
             <PerfPane id="composer">
-              <ComposerPane actions={actions} composer={composer} status={status} />
+              <ComposerPane actions={actions} composer={composer} railData={railData} status={status} />
             </PerfPane>
 
             {SHOW_FPS && (

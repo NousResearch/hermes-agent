@@ -4,19 +4,20 @@ import { renderSync } from '@hermes/ink'
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { patchDelegationState, resetDelegationState } from '../app/delegationStore.js'
-import type { AppLayoutStatusProps } from '../app/interfaces.js'
 import { patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { patchTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
-import { DevContextRail } from '../components/devContextRail.js'
+import { DevContextBottomDock, DevContextRail } from '../components/devContextRail.js'
 import {
   DEV_CONTEXT_MIN_TERMINAL_COLS,
   DEV_CONTEXT_RAIL_WIDTH,
+  devContextHasActivity,
+  devContextPlacement,
   devContextRailVisible,
   devContextRailWidth
 } from '../domain/devContext.js'
-import { DEFAULT_THEME } from '../theme.js'
+import type { RailInputs } from '../domain/railInputs.js'
+import type { RailFlowStatus } from '../hooks/useContextRailInputs.js'
 
 const makeStreams = (columns = 140, rows = 40) => {
   const stdout = new PassThrough()
@@ -35,37 +36,24 @@ const makeStreams = (columns = 140, rows = 40) => {
   return { capture: () => captured, stderr, stdin, stdout }
 }
 
-const status: AppLayoutStatusProps = {
-  cwdLabel: '~/work/hermes-agent',
-  goodVibesTick: 0,
-  lastTurnEndedAt: null,
-  sessionStartedAt: null,
-  sessionTitle: 'HUD work',
-  showStickyPrompt: false,
-  statusColor: DEFAULT_THEME.color.ok,
-  stickyPrompt: '',
-  turnStartedAt: null,
-  voiceLabel: '',
-  workspace: {
-    branch: 'feature/dev-context',
-    dirty: true,
-    gitRoot: '/Users/example/work/hermes-agent',
-    github: { fullName: 'NousResearch/hermes-agent', owner: 'NousResearch', repo: 'hermes-agent' },
-    projectName: 'Hermes Agent',
-    pullRequest: { number: 42, state: 'open', title: 'Add developer context rail' },
-    upstream: { ahead: 2, behind: 1 }
-  }
-}
-
-const renderRail = async (columns = 140, rows = 40): Promise<string> => {
+const renderRail = async (
+  columns = 140,
+  rows = 40,
+  queuedCount = 2,
+  railInputs?: RailInputs | null,
+  flowStatus?: RailFlowStatus | null
+): Promise<string> => {
   const streams = makeStreams(columns, rows)
 
-  const instance = renderSync(React.createElement(DevContextRail, { cols: columns, queuedCount: 2, status }), {
-    patchConsole: false,
-    stderr: streams.stderr as unknown as NodeJS.WriteStream,
-    stdin: streams.stdin as unknown as NodeJS.ReadStream,
-    stdout: streams.stdout as unknown as NodeJS.WriteStream
-  })
+  const instance = renderSync(
+    React.createElement(DevContextRail, { cols: columns, flowStatus, queuedCount, railInputs }),
+    {
+      patchConsole: false,
+      stderr: streams.stderr as unknown as NodeJS.WriteStream,
+      stdin: streams.stdin as unknown as NodeJS.ReadStream,
+      stdout: streams.stdout as unknown as NodeJS.WriteStream
+    }
+  )
 
   await new Promise(resolve => setTimeout(resolve, 20))
 
@@ -79,74 +67,66 @@ const renderRail = async (columns = 140, rows = 40): Promise<string> => {
   }
 }
 
+const renderDock = async (columns = 80, rows = 40): Promise<string> => {
+  const streams = makeStreams(columns, rows)
+
+  const instance = renderSync(React.createElement(DevContextBottomDock, { cols: columns, queuedCount: 0 }), {
+    patchConsole: false,
+    stderr: streams.stderr as unknown as NodeJS.WriteStream,
+    stdin: streams.stdin as unknown as NodeJS.ReadStream,
+    stdout: streams.stdout as unknown as NodeJS.WriteStream
+  })
+
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  try {
+    // eslint-disable-next-line no-control-regex
+    return streams.capture().replace(/\u001b\[[0-9;]*m/g, '')
+  } finally {
+    instance.unmount()
+    instance.cleanup()
+  }
+}
+
 describe('developer context rail layout', () => {
   beforeEach(() => {
     resetUiState()
     resetTurnState()
     resetOverlayState()
-    resetDelegationState()
   })
 
   afterEach(() => {
     resetUiState()
     resetTurnState()
     resetOverlayState()
-    resetDelegationState()
   })
 
   it('keeps the built-in rail enabled by default', () => {
     expect(getUiState().devContext).toBe(true)
   })
 
-  it('reserves a fixed rail only when the transcript still has room', () => {
-    expect(devContextRailVisible(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0)).toBe(true)
-    expect(devContextRailWidth(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0)).toBe(DEV_CONTEXT_RAIL_WIDTH)
-    expect(devContextRailVisible(true, DEV_CONTEXT_MIN_TERMINAL_COLS - 1, 0)).toBe(false)
-    expect(devContextRailVisible(true, 140, 44)).toBe(true)
-    expect(devContextRailVisible(true, 130, 44)).toBe(false)
-    expect(devContextRailWidth(false, 160, 0)).toBe(0)
+  it('uses the side rail only when there is content and the transcript has room', () => {
+    expect(devContextHasActivity(0, 0, 0, 0, 0)).toBe(false)
+    expect(devContextHasActivity(1, 0, 0, 0, 0)).toBe(true)
+    expect(devContextHasActivity(0, 0, 0, 0, 0, true)).toBe(true)
+    expect(devContextPlacement(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0, true)).toBe('side')
+    expect(devContextPlacement(true, DEV_CONTEXT_MIN_TERMINAL_COLS - 1, 0, true)).toBe('bottom')
+    expect(devContextPlacement(true, 140, 44, true)).toBe('side')
+    expect(devContextPlacement(true, 130, 44, true)).toBe('bottom')
+    expect(devContextPlacement(true, 140, 0, false)).toBe('hidden')
+    expect(devContextRailVisible(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0, true)).toBe(true)
+    expect(devContextRailWidth(true, DEV_CONTEXT_MIN_TERMINAL_COLS, 0, true)).toBe(DEV_CONTEXT_RAIL_WIDTH)
+    expect(devContextRailWidth(false, 160, 0, true)).toBe(0)
+    expect(devContextRailWidth(true, 160, 0, false)).toBe(0)
   })
 
-  it('renders repository, runtime, plan, work, safety, and activity state without secrets', async () => {
-    patchUiState({
-      busy: true,
-      destructiveSlashConfirm: true,
-      devContext: true,
-      focusView: true,
-      info: {
-        mcp_servers: [
-          { connected: true, name: 'support', status: 'connected', tools: 3, transport: 'http' },
-          { connected: false, name: 'broken', status: 'failed', tools: 0, transport: 'stdio' }
-        ],
-        model: 'test-model',
-        provider: 'test-provider',
-        reasoning_effort: 'high',
-        service_tier: 'priority',
-        skills: { core: ['one', 'two'] },
-        tools: { file: ['read_file', 'write_file'] }
-      },
-      status: 'working',
-      usage: {
-        avg_latency_s: 1.2,
-        avg_tps: 40,
-        cache_hit_pct: 87,
-        calls: 4,
-        compressions: 2,
-        context_max: 200_000,
-        context_percent: 42,
-        context_used: 84_000,
-        cost_usd: 0.12,
-        input: 12_000,
-        output: 3_000,
-        total: 15_000
-      }
-    })
+  it('renders only plan and work, with every todo and redacted display text', async () => {
+    patchUiState({ devContext: true })
     patchTurnState({
-      activity: [{ id: 1, text: 'checked token=hidden at https://example.invalid/private', tone: 'info' }],
       subagents: [
         {
           depth: 0,
-          goal: 'Inspect the changed files',
+          goal: 'Inspect token=hidden at https://example.invalid/private',
           id: 'agent-1',
           index: 0,
           notes: [],
@@ -160,32 +140,142 @@ describe('developer context rail layout', () => {
       ],
       todos: [
         { content: 'Inspect the changed files', id: 'todo-1', status: 'in_progress' },
-        { content: 'Run focused tests', id: 'todo-2', status: 'pending' }
+        { content: 'Run focused tests', id: 'todo-2', status: 'pending' },
+        { content: 'Verify the narrow dock', id: 'todo-3', status: 'completed' },
+        { content: 'Archive the plan', id: 'todo-4', status: 'cancelled' }
       ],
       tools: [{ id: 'tool-1', name: 'read_file' }]
     })
-    patchDelegationState({ paused: true })
-    patchOverlayState({ approval: { choices: ['allow', 'deny'], command: 'git status', description: 'inspect workspace' } })
 
     const frame = await renderRail()
 
     expect(frame).toContain('DEV CONTEXT')
-    expect(frame).toContain('Hermes Agent')
-    expect(frame).toContain('feature/dev-context')
-    expect(frame).toContain('GH NousResearch/hermes-agent')
-    expect(frame).toContain('PR')
-    expect(frame).toContain('test-model')
-    expect(frame).toContain('42%')
-    expect(frame).toContain('agents 1/1')
-    expect(frame).toContain('0/2 done')
-    expect(frame).toContain('approval required')
+    expect(frame).toContain('PLAN')
+    expect(frame).toContain('WORK')
+    expect(frame).toContain('2/4 done')
+    expect(frame).toContain('Inspect the changed files')
+    expect(frame).toContain('Run focused tests')
+    expect(frame).toContain('Verify the narrow dock')
+    expect(frame).toContain('Archive the plan')
+    expect(frame).toContain('▶ Inspect the changed files')
+    expect(frame).toContain('· Run focused tests')
+    expect(frame).toContain('✓ Verify the narrow dock')
+    expect(frame).toContain('× Archive the plan')
+    expect(frame).toContain('agents 1')
+    expect(frame).toContain('tools 1')
+    expect(frame).toContain('queue 2')
+    expect(frame).not.toContain('REPO')
+    expect(frame).not.toContain('RUNTIME')
+    expect(frame).not.toContain('GUARDRAILS')
+    expect(frame).not.toContain('ACTIVITY')
     expect(frame).not.toContain('token=hidden')
     expect(frame).not.toContain('https://example.invalid')
   })
 
-  it('renders nothing when the terminal is too narrow', async () => {
+  it('renders configured repo context with source labels, timestamps, and redaction', async () => {
+    patchUiState({ devContext: true })
+    patchTurnState({ todos: [{ content: 'Review the rail', id: 'todo-rail', status: 'in_progress' }] })
+
+    const railInputs: RailInputs = {
+      checks: 'npm test token=check-secret https://checks.invalid/run',
+      decisions: ['2026-09-05: keep Flow as the work authority'],
+      evidence: 'docs/ops-log.md',
+      flow: '.flow',
+      mtimeMs: Date.now(),
+      product: 'Reader token=product-secret https://product.invalid',
+      sourceFile: '/repo/AGENTS.md'
+    }
+
+    const frame = await renderRail(140, 40, 0, railInputs, { at: Date.now(), text: '2 open · next ready task' })
+
+    expect(frame).toContain('FOCUS')
+    expect(frame).toContain('PLAN')
+    expect(frame).toContain('DECISIONS')
+    expect(frame).toContain('EVIDENCE')
+    expect(frame).toContain('WORK')
+    expect(frame).toContain('product: Reader')
+    expect(frame).toContain('tree: .flow')
+    expect(frame).toContain('progress: 2 open')
+    expect(frame).toContain('0/1 done')
+    expect(frame).toContain('decision: 2026-09-05')
+    expect(frame).toContain('durable: docs/ops-log.md')
+    expect(frame).toContain('as of')
+    expect(frame).not.toContain('token=product-secret')
+    expect(frame).not.toContain('token=check-secret')
+    expect(frame).not.toContain('https://product.invalid')
+    expect(frame).not.toContain('https://checks.invalid')
+  })
+
+  it('renders at most one explicit attention item', async () => {
+    patchUiState({ devContext: true })
+    patchOverlayState({
+      approval: { command: 'git status', description: 'inspect workspace' },
+      clarify: { choices: null, question: 'Which path?', requestId: 'clarify-1' }
+    })
+
+    const frame = await renderRail(140, 40, 0)
+
+    expect(frame.match(/NEEDS ME/g)).toHaveLength(1)
+    expect(frame).toContain('approval: git status')
+    expect(frame).not.toContain('Which path?')
+  })
+
+  it('renders every todo in the bottom dock when the terminal is narrow', async () => {
+    patchUiState({ devContext: true })
+    patchTurnState({
+      todos: [
+        { content: 'First narrow todo', id: 'todo-1', status: 'pending' },
+        { content: 'Second narrow todo', id: 'todo-2', status: 'in_progress' },
+        { content: 'Third narrow todo', id: 'todo-3', status: 'completed' },
+        { content: 'Fourth narrow todo', id: 'todo-4', status: 'cancelled' }
+      ]
+    })
+
+    expect(await renderRail(DEV_CONTEXT_MIN_TERMINAL_COLS - 1, 40, 0)).toBe('')
+
+    const frame = await renderDock(DEV_CONTEXT_MIN_TERMINAL_COLS - 1)
+
+    expect(frame).toContain('DEV CONTEXT')
+    expect(frame).toContain('PLAN')
+    expect(frame).toContain('WORK')
+    expect(frame).toContain('First narrow todo')
+    expect(frame).toContain('Second narrow todo')
+    expect(frame).toContain('Third narrow todo')
+    expect(frame).toContain('Fourth narrow todo')
+    expect(frame).not.toContain('REPO')
+  })
+
+  it('shows work without an empty plan section', async () => {
+    patchUiState({ devContext: true })
+    patchTurnState({
+      subagents: [
+        {
+          depth: 0,
+          goal: 'Run the active worker',
+          id: 'agent-1',
+          index: 0,
+          notes: [],
+          parentId: null,
+          status: 'running',
+          taskCount: 1,
+          thinking: [],
+          toolCount: 0,
+          tools: []
+        }
+      ]
+    })
+
+    const frame = await renderRail(140, 40, 0)
+
+    expect(frame).toContain('WORK')
+    expect(frame).toContain('Run the active worker')
+    expect(frame).not.toContain('PLAN')
+  })
+
+  it('renders nothing when there is no plan or active work', async () => {
     patchUiState({ devContext: true })
 
-    expect(await renderRail(DEV_CONTEXT_MIN_TERMINAL_COLS - 1)).toBe('')
+    expect(await renderRail(140, 40, 0)).toBe('')
+    expect(await renderDock(80)).toBe('')
   })
 })

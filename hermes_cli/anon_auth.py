@@ -120,6 +120,18 @@ def guest_carries_inference() -> bool:
 WELCOME_HOSTS = frozenset({"welcome-api.nousresearch.com"})
 
 
+def pin_model_for_route(provider: Any, base_url: Any, model: Any) -> Any:
+    """The one model-policy decision the free tier owns: on the Nous welcome host the model is
+    ``nous/welcome``; anywhere else the caller's model stands. Called wherever a Nous route is
+    finalized (agent init and every credential-pool swap), so endpoint and model never drift.
+    """
+    if provider == "nous" and route_is_welcome_host(base_url):
+        if model and model != GUEST_MODEL:
+            logger.info("Nous free tier: using %s instead of configured model %s", GUEST_MODEL, model)
+        return GUEST_MODEL
+    return model
+
+
 def route_is_welcome_host(base_url: Any) -> bool:
     """The routing predicate for the free tier: the welcome host serves exactly ``nous/welcome``.
 

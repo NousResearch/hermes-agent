@@ -290,3 +290,19 @@ class TestBackgroundRetry:
                 break
             _t.sleep(0.05)
         assert anon_auth.has_guest()
+
+
+class TestPoolSwapKeepsRouteAndModelTogether:
+    def test_swap_to_welcome_pins_and_swap_to_paid_restores_caller_model(self, portal):
+        from types import SimpleNamespace
+        from agent.client_lifecycle import ClientLifecycleMixin
+        agent = SimpleNamespace(provider="nous", api_mode="chat_completions", base_url="https://inference-api.nousresearch.com/v1",
+                                api_key="k", model="nous/paid-model", _client_kwargs={},
+                                _reapply_route_client_config=lambda **kw: None,
+                                _replace_primary_openai_client=lambda **kw: None)
+        swap = ClientLifecycleMixin._swap_credential
+        swap(agent, SimpleNamespace(id="g", runtime_api_key="jwt", runtime_base_url=WELCOME))
+        assert agent.model == anon_auth.GUEST_MODEL and agent.base_url.rstrip("/") == WELCOME
+        agent.model = "nous/paid-model"
+        swap(agent, SimpleNamespace(id="p", runtime_api_key="key", runtime_base_url="https://inference-api.nousresearch.com/v1"))
+        assert agent.model == "nous/paid-model"

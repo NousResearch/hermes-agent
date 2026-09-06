@@ -940,6 +940,11 @@ class ClientLifecycleMixin:
             self.api_key, self.base_url = runtime_key, stripped_base
             return
         self.api_key, self.base_url = runtime_key, stripped_base
+        # The route may have moved between the welcome host and the portal host: re-apply the Nous
+        # model policy so endpoint and model are always decided together.
+        if getattr(self, "provider", None) == "nous":
+            from hermes_cli.anon_auth import pin_model_for_route
+            self.model = pin_model_for_route("nous", self.base_url, getattr(self, "model", None))
         # Inlined (not _sync_client_kwargs_credentials): tests call this unbound on a SimpleNamespace agent.
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url

@@ -4268,6 +4268,45 @@ class TestDeleteEmptySessionsEndpoint:
         )
 
 
+class TestServeIndexTokenEscaping:
+    """An operator-supplied HERMES_DASHBOARD_SESSION_TOKEN is arbitrary text:
+    quotes/backslashes must not break WS auth, and </script> must not break
+    out of the bootstrap block. The headless branch already uses json.dumps;
+    the SPA branch must match."""
+
+    @staticmethod
+    def _mount_spa_client(tmp_path, monkeypatch):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+        from hermes_cli import web_server_dashboard as _web_server_dashboard
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head><title>t</title></head><body>SPA</body></html>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        spa_app = FastAPI()
+        _web_server_dashboard.mount_spa(spa_app)
+        return TestClient(spa_app)
+
+    def test_hostile_token_injected_as_json(self, tmp_path, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        hostile = 'a"b\\c</script><script>alert(1)</script>'
+        monkeypatch.setattr(ws, "_SESSION_TOKEN", hostile)
+        client = self._mount_spa_client(tmp_path, monkeypatch)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        # JSON-escaped with < neutralization: no literal breakout sequence,
+        # and the value round-trips through JS string parsing.
+        assert "</script><script>" not in resp.text
+        assert "<script>alert" not in resp.text
+        assert json.dumps(hostile).replace("<", "\\u003c") in resp.text
+
+
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 

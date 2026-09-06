@@ -32,6 +32,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.web_server as web_server_mod
+import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 SLOW_SECONDS = 1  # represents the Defender worst-case (scaled down for CI speed)
 
@@ -149,7 +150,7 @@ def test_get_status_does_not_block_event_loop():
                 tg.create_task(_version())
 
     with patch.object(
-        web_server_mod, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
+        _web_server_lifecycle, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
     ):
         asyncio.run(_run())
 
@@ -204,7 +205,7 @@ def test_concurrent_status_probes_all_respond():
                     responses.append(r.status_code)
 
     with patch.object(
-        web_server_mod, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
+        _web_server_lifecycle, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
     ):
         asyncio.run(_run())
 

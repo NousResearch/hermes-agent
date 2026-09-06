@@ -10,6 +10,8 @@ import os
 import pytest
 
 from tools import approval as mod
+import tools.approval_floors as approval_floors
+from tools import approval_context
 
 
 @pytest.fixture
@@ -21,7 +23,7 @@ def deny_config(monkeypatch):
     def set_deny(patterns, **extra):
         state["config"] = {"mode": "manual", "deny": list(patterns), **extra}
 
-    monkeypatch.setattr(mod, "_get_approval_config", lambda: state["config"])
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: state["config"])
     return set_deny
 
 
@@ -41,14 +43,14 @@ class TestMatchUserDenyRule:
         assert mod._match_user_deny_rule("git push --force origin main") is None
 
     def test_missing_key_is_noop(self, monkeypatch):
-        monkeypatch.setattr(mod, "_get_approval_config", lambda: {"mode": "manual"})
+        monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"mode": "manual"})
         assert mod._match_user_deny_rule("rm -rf build/") is None
 
 
     def test_config_load_failure_fails_open(self, monkeypatch):
         def boom():
             raise RuntimeError("config unavailable")
-        monkeypatch.setattr(mod, "_get_approval_config", boom)
+        monkeypatch.setattr(approval_context, "_get_approval_config", boom)
         assert mod._match_user_deny_rule("git push --force") is None
 
     def test_quote_obfuscation_still_matches(self, deny_config):
@@ -108,16 +110,45 @@ class TestDenyOrdering:
         deny_config(["git push --force*"])
         monkeypatch.setattr(
             mod, "_command_matches_permanent_allowlist", lambda c: True)
+        monkeypatch.setattr(
+            approval_floors, "_command_matches_permanent_allowlist", lambda c: True)
 
         result = mod.check_dangerous_command("git push --force origin main", "local")
         assert result["approved"] is False
         assert result.get("user_deny") is True
 
-    def test_container_backend_skips_deny(self, deny_config, clean_env):
-        """Isolated container backends bypass the whole guard stack (existing
-        contract) — deny rules protect the host, containers can't touch it."""
-        deny_config(["git push --force*"])
-        result = mod.check_dangerous_command("git push --force origin main", "docker")
+    @pytest.mark.parametrize(
+        "guard",
+        [mod.check_dangerous_command, mod.check_all_command_guards],
+    )
+    @pytest.mark.parametrize(
+        "env_type",
+        ["docker", "singularity", "modal", "daytona", "vercel_sandbox"],
+    )
+    def test_container_backend_cannot_skip_deny(
+            self, guard, env_type, deny_config, clean_env, monkeypatch):
+        deny_config(["*chmod*"], mode="off")
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
+
+        result = guard("chmod 600 /tmp/hermes-approval-deny-test", env_type)
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
+
+    @pytest.mark.parametrize(
+        "guard",
+        [mod.check_dangerous_command, mod.check_all_command_guards],
+    )
+    @pytest.mark.parametrize(
+        "env_type",
+        ["docker", "singularity", "modal", "daytona", "vercel_sandbox"],
+    )
+    def test_container_backend_still_skips_non_denied_command(
+            self, guard, env_type, deny_config, clean_env):
+        deny_config(["*chmod*"])
+
+        result = guard("rm -rf build/", env_type)
+
         assert result["approved"] is True
 
     def test_benign_command_unaffected(self, deny_config, clean_env):

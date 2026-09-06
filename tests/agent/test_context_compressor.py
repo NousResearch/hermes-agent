@@ -366,6 +366,40 @@ class TestPreflightDeferral:
         compressor.awaiting_real_usage_after_compression = True
         assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
+    def test_native_checkpoint_defers_until_provider_usage_reanchors(self, compressor):
+        """A newly captured native checkpoint is opaque ciphertext, not text.
+
+        Its serialized size can add more than a million rough tokens even when
+        the provider reports that the checkpoint-pruned request fits. Defer the
+        local compressor for one request so real usage can establish the new
+        rough/real calibration instead of immediately summarizing again.
+        """
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 60_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 70_000
+        compressor.last_compression_rough_tokens = 40_000
+
+        compressor.note_native_compaction_checkpoint()
+
+        encrypted_checkpoint_rough = 1_300_000
+        assert compressor.awaiting_real_usage_after_compression is True
+        assert compressor.last_compression_rough_tokens == 0
+        assert (
+            compressor.should_defer_preflight_to_real_usage(
+                encrypted_checkpoint_rough
+            )
+            is True
+        )
+
+        compressor.note_request_rough_estimate(encrypted_checkpoint_rough)
+        compressor.update_from_response({"prompt_tokens": 65_000})
+
+        assert compressor.awaiting_real_usage_after_compression is False
+        assert (
+            compressor.last_rough_tokens_when_real_prompt_fit
+            == encrypted_checkpoint_rough
+        )
+
 
 
 
@@ -852,6 +886,19 @@ class TestAuthFailureAborts:
         err = RuntimeError(
             "Provider 'opencode-zen' is set in config.yaml but no API key was "
             "found. Set the OPENCODE-ZEN_API_KEY environment variable."
+        )
+        assert _is_summary_access_or_quota_error(err) is True
+
+    def test_unscoped_secret_read_is_terminal_access_failure(self):
+        # Multiplexed gateway: a credential read reached get_secret() from a
+        # worker thread without the profile scope. The summary model is
+        # unreachable until the spawn site is fixed — abort and preserve the
+        # session rather than truncating the middle window (#100849 bundle).
+        from agent.secret_scope import UnscopedSecretError
+
+        err = UnscopedSecretError(
+            "get_secret('SURPLUS_API_KEY') called with no profile secret scope "
+            "active while multiplexing is on."
         )
         assert _is_summary_access_or_quota_error(err) is True
 

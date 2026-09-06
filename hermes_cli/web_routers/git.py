@@ -1,33 +1,48 @@
-"""Git dashboard routes (extracted verbatim from web_server.py).
+"""Git dashboard routes — the remote half of the desktop coding rail + review pane.
 
-Handler bodies are byte-identical to their previous in-web_server form; the
-helpers they call (``_git_op``, ``_git_path``) still live in web_server and are
-reached via the late-binding seam in :mod:`hermes_cli.web_deps`, so
-``monkeypatch.setattr(web_server, ...)`` keeps working.
+The desktop runs these as Electron-local git; over a remote gateway that's the wrong
+filesystem, so they are mirrored here with the same auth gate + path hardening as
+/api/fs. Logic lives in ``hermes_cli.web_git``; these are thin executor-offloaded
+wrappers (git/gh can block).
 """
 
+import asyncio
+import shutil
+import subprocess
+import time
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-from hermes_cli import web_git as _web_git  # noqa: F401 — used by handlers
+from hermes_cli import web_git as _web_git
 from hermes_cli.web_deps import late
+from hermes_cli.web_server_files import _fs_path
 from hermes_cli.web_models import (
-    GitPathBody,
-    GitFileBody,
+    GitBranchSwitchBody,
     GitCommitBody,
+    GitFileBody,
+    GitPathBody,
     GitPrListBody,
     GitWorktreeAddBody,
     GitWorktreeRemoveBody,
-    GitBranchSwitchBody,
 )
 
 router = APIRouter()
 
-# Late-bound web_server helpers (resolved at call time; cycle-safe,
-# monkeypatch-transparent).
-_git_op = late("_git_op")
-_git_path = late("_git_path")
+# Late-bound so a test's monkeypatch on the owning module wins at call time.
+
+
+async def _git_op(fn, *args):
+    """Run a (blocking) git op off the event loop; map a failed mutation to 400."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, fn, *args)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
+
+
+def _git_path(path: str) -> str:
+    return str(_fs_path(path))
 
 
 @router.get("/api/git/status")
@@ -35,54 +50,39 @@ async def git_status_route(path: str):
     return await _git_op(_web_git.repo_status, _git_path(path))
 
 
-# ─── gh CLI auth probe ───────────────────────────────────────────────────────
-# Cached `gh auth status` result. Consumed by the desktop composer's GitHub
-# suggestion pill: GitHub deliberately has NO MCP catalog entry (its hosted
-# MCP requires a per-host OAuth app — generic DCR 404s — and the bundled
-# github/* skills via gh CLI are the more capable integration), so the pill
-# offers the `/github-auth` skill instead, and only to users who aren't
-# already authenticated. The probe is read-only and never prompts.
-
+# Cached `gh auth status` for the desktop composer's GitHub suggestion pill. GitHub
+# deliberately has NO MCP catalog entry (hosted MCP needs a per-host OAuth app; the
+# gh-CLI skills are the better integration), so the pill offers `/github-auth` —
+# only to users who aren't already authenticated.
 _GH_AUTH_TTL_S = 300.0
 _gh_auth_cache: Optional[tuple] = None  # (monotonic_ts, payload)
 
 
+def _probe_gh_auth() -> dict:
+    gh = shutil.which("gh")
+    if not gh:
+        return {"available": False, "authenticated": False}
+    try:
+        # Exits 0 when at least one host is logged in; DEVNULL stdin guards against any prompt.
+        proc = subprocess.run(
+            [gh, "auth", "status"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+        )
+        return {"available": True, "authenticated": proc.returncode == 0}
+    except Exception:
+        return {"available": True, "authenticated": False}
+
+
 @router.get("/api/git/gh-auth")
 async def gh_auth_status_route(refresh: bool = False):
-    """Report whether the `gh` CLI is present and authenticated.
-
-    Returns ``{"available": bool, "authenticated": bool}``. Cached for five
-    minutes (`refresh=true` bypasses — the pill uses it after a completed
-    login so the suggestion withdraws immediately).
-    """
+    """``{"available", "authenticated"}`` for the `gh` CLI; cached 5 min
+    (``refresh=true`` bypasses so the pill withdraws right after a login)."""
     global _gh_auth_cache
-    import asyncio
-    import time
-
     if not refresh and _gh_auth_cache and time.monotonic() - _gh_auth_cache[0] < _GH_AUTH_TTL_S:
         return _gh_auth_cache[1]
-
-    def _probe() -> dict:
-        import shutil
-        import subprocess
-
-        gh = shutil.which("gh")
-        if not gh:
-            return {"available": False, "authenticated": False}
-        try:
-            # `gh auth status` exits 0 when at least one host is logged in.
-            # Never interactive; DEVNULL stdin guards against any prompt.
-            proc = subprocess.run(
-                [gh, "auth", "status"],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                timeout=10,
-            )
-            return {"available": True, "authenticated": proc.returncode == 0}
-        except Exception:
-            return {"available": True, "authenticated": False}
-
-    payload = await asyncio.to_thread(_probe)
+    payload = await asyncio.to_thread(_probe_gh_auth)
     _gh_auth_cache = (time.monotonic(), payload)
     return payload
 
@@ -173,12 +173,7 @@ async def git_create_pr_route(body: GitPathBody):
 async def git_worktree_add_route(body: GitWorktreeAddBody):
     options = {
         key: value
-        for key, value in {
-            "name": body.name,
-            "branch": body.branch,
-            "base": body.base,
-            "existingBranch": body.existingBranch,
-        }.items()
+        for key, value in body.model_dump(include={"name", "branch", "base", "existingBranch"}).items()
         if value
     }
     return await _git_op(_web_git.worktree_add, _git_path(body.path), options)

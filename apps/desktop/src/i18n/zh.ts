@@ -77,6 +77,7 @@ export const zh = defineLocale({
     close: '关闭',
     collapse: '收起',
     confirm: '确认',
+    typedConfirmation: (value: string) => `输入 ${value} 以确认。`,
     connect: '连接',
     connecting: '连接中',
     continue: '继续',

@@ -7,6 +7,7 @@ export const ru: Translations = {
     cancel: "Отмена",
     close: "Закрыть",
     confirm: "Подтвердить",
+    typedConfirmation: (value: string) => `Введите ${value} для подтверждения.`,
     delete: "Удалить",
     refresh: "Обновить",
     retry: "Повторить",

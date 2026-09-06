@@ -31,10 +31,12 @@ export function ConfirmHost() {
       // The caller does the work once it has its answer, so there is nothing
       // here to keep the dialog open for.
       dismissOnConfirm
-      onClose={() => settleConfirm(false)}
-      onConfirm={() => settleConfirm(true)}
+      key={shown.id}
+      onClose={() => settleConfirm(false, shown)}
+      onConfirm={() => settleConfirm(true, shown)}
       open={request !== null}
       title={shown.title}
+      typedConfirmation={shown.typedConfirmation}
     />
   )
 }

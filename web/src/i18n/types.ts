@@ -25,6 +25,7 @@ export interface Translations {
     cancel: string;
     close: string;
     confirm: string;
+    typedConfirmation: (value: string) => string;
     delete: string;
     refresh: string;
     retry: string;

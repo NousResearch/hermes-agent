@@ -7,6 +7,7 @@ export const uk: Translations = {
     cancel: "Скасувати",
     close: "Закрити",
     confirm: "Підтвердити",
+    typedConfirmation: (value: string) => `Введіть ${value}, щоб підтвердити.`,
     delete: "Видалити",
     refresh: "Оновити",
     retry: "Повторити",

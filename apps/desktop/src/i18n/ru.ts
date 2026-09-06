@@ -70,6 +70,7 @@ export const ru = defineLocale({
     close: 'Закрыть',
     collapse: 'Свернуть',
     confirm: 'Подтвердить',
+    typedConfirmation: (value: string) => `Введите ${value} для подтверждения.`,
     connect: 'Подключить',
     connecting: 'Подключение',
     continue: 'Продолжить',

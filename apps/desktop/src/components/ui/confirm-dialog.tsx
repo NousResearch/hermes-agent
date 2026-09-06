@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 
@@ -25,6 +26,7 @@ interface ConfirmDialogProps {
   busyLabel?: string
   doneLabel?: string
   cancelLabel?: string
+  typedConfirmation?: string
   destructive?: boolean
   /** Close as soon as onConfirm resolves — for optimistic actions that finish in the background. */
   dismissOnConfirm?: boolean
@@ -54,9 +56,15 @@ export function ConfirmDialog({
   cancelLabel,
   destructive = false,
   dismissOnConfirm = false,
-  secondaryAction
+  secondaryAction,
+  typedConfirmation
 }: ConfirmDialogProps) {
   const { t } = useI18n()
+  const inputId = useId()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const submittingRef = useRef(false)
+  const [confirmation, setConfirmation] = useState('')
+  const ready = typedConfirmation === undefined || confirmation === typedConfirmation
   const confirmRef = useRef<HTMLButtonElement>(null)
   const closeTimerRef = useRef<null | number>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
@@ -67,12 +75,16 @@ export function ConfirmDialog({
   const resolvedDoneLabel = doneLabel ?? t.common.done
   const resolvedCancelLabel = cancelLabel ?? t.common.cancel
 
+  // Reset the submission latch for a new prompt; no reactive value is mirrored.
+  // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
     if (open) {
+      setConfirmation('')
+      submittingRef.current = false
       setStatus('idle')
       setError(null)
     }
-  }, [open])
+  }, [open, typedConfirmation])
 
   // Cancel the pending close timer on unmount. The timer below holds the
   // "done" beat visible for 600ms, and an unmount inside that window used to
@@ -93,10 +105,12 @@ export function ConfirmDialog({
   }, [])
 
   async function run() {
-    if (busy) {
+    if (busy || submittingRef.current || !ready) {
       return
     }
 
+    submittingRef.current = true
+    setStatus('saving')
     setError(null)
 
     if (dismissOnConfirm) {
@@ -104,6 +118,8 @@ export function ConfirmDialog({
         await onConfirm()
         onClose()
       } catch (err) {
+        submittingRef.current = false
+        setStatus('idle')
         setError(err instanceof Error ? err.message : t.errors.genericFailure)
       }
 
@@ -120,6 +136,7 @@ export function ConfirmDialog({
         onClose()
       }, 600)
     } catch (err) {
+      submittingRef.current = false
       setStatus('idle')
       setError(err instanceof Error ? err.message : t.errors.genericFailure)
     }
@@ -132,7 +149,13 @@ export function ConfirmDialog({
         onKeyDown={event => {
           // Enter/Space confirm regardless of which button holds focus
           // (preventDefault stops a focused Cancel from swallowing it).
-          if ((event.key === 'Enter' || event.key === ' ') && !busy) {
+          const typedInput = event.target === inputRef.current
+
+          if (typedConfirmation !== undefined && event.target !== confirmRef.current && !typedInput) {
+            return
+          }
+
+          if ((event.key === 'Enter' || (event.key === ' ' && !typedInput)) && !event.nativeEvent.isComposing) {
             event.preventDefault()
             void run()
           }
@@ -143,13 +166,28 @@ export function ConfirmDialog({
           // sidebar row) and Enter re-triggers that instead. Radix's default
           // would take the X — confirm is the button Enter maps to.
           event.preventDefault()
-          confirmRef.current?.focus()
+          ;(typedConfirmation === undefined ? confirmRef.current : inputRef.current)?.focus()
         }}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           {description ? <DialogDescription>{description}</DialogDescription> : null}
         </DialogHeader>
+
+        {typedConfirmation !== undefined && (
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-muted-foreground" htmlFor={inputId}>
+              {t.common.typedConfirmation(typedConfirmation)}
+            </label>
+            <Input
+              disabled={busy}
+              id={inputId}
+              onChange={event => setConfirmation(event.target.value)}
+              ref={inputRef}
+              value={confirmation}
+            />
+          </div>
+        )}
 
         {error && (
           <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -176,7 +214,7 @@ export function ConfirmDialog({
             </Button>
           )}
           <Button
-            disabled={busy}
+            disabled={busy || !ready}
             onClick={() => void run()}
             ref={confirmRef}
             variant={destructive ? 'destructive' : 'default'}

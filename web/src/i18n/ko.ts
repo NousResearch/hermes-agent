@@ -7,6 +7,7 @@ export const ko: Translations = {
     cancel: "취소",
     close: "닫기",
     confirm: "확인",
+    typedConfirmation: (value: string) => `확인하려면 ${value}을(를) 입력하세요.`,
     delete: "삭제",
     refresh: "새로고침",
     retry: "다시 시도",

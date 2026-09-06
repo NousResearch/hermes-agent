@@ -1,6 +1,8 @@
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Input } from "@nous-research/ui/ui/components/input";
+import { useI18n } from "@/i18n";
 import { AlertTriangle } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 
@@ -11,12 +13,17 @@ interface ConfirmDialogProps {
   destructive?: boolean;
   loading?: boolean;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: () => Promise<void> | void;
   open: boolean;
   title: string;
+  typedConfirmation?: string;
 }
 
-export function ConfirmDialog({
+export function ConfirmDialog(props: ConfirmDialogProps) {
+  return props.open ? <OpenConfirmDialog key={props.typedConfirmation} {...props} /> : null;
+}
+
+function OpenConfirmDialog({
   cancelLabel = "Cancel",
   confirmLabel = "Confirm",
   description,
@@ -26,7 +33,13 @@ export function ConfirmDialog({
   onConfirm,
   open,
   title,
+  typedConfirmation,
 }: ConfirmDialogProps) {
+  const { t } = useI18n();
+  const submittingRef = useRef(false);
+  const inputId = useId();
+  const [confirmation, setConfirmation] = useState("");
+  const ready = typedConfirmation === undefined || confirmation === typedConfirmation;
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -34,11 +47,11 @@ export function ConfirmDialog({
 
     const prevActive = document.activeElement as HTMLElement | null;
     dialogRef.current
-      ?.querySelector<HTMLButtonElement>("[data-confirm]")
+      ?.querySelector<HTMLElement>(typedConfirmation !== undefined ? "input" : "[data-confirm]")
       ?.focus();
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !loading) {
         e.preventDefault();
         onCancel();
       }
@@ -53,7 +66,17 @@ export function ConfirmDialog({
       document.body.style.overflow = prevOverflow;
       prevActive?.focus?.();
     };
-  }, [open, onCancel]);
+  }, [open, onCancel, typedConfirmation, loading]);
+
+  const run = async () => {
+    if (!ready || loading || submittingRef.current) return;
+    submittingRef.current = true;
+    try {
+      await onConfirm();
+    } finally {
+      submittingRef.current = false;
+    }
+  };
 
   if (!open) return null;
 
@@ -64,7 +87,7 @@ export function ConfirmDialog({
       aria-labelledby="confirm-dialog-title"
       aria-describedby={description ? "confirm-dialog-desc" : undefined}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
+        if (e.target === e.currentTarget && !loading) onCancel();
       }}
       className="fixed inset-0 z-[200] flex items-center justify-center bg-background/85 p-4"
     >
@@ -101,6 +124,27 @@ export function ConfirmDialog({
           </div>
         </div>
 
+        {typedConfirmation !== undefined && (
+          <div className="flex flex-col gap-2 px-4 pt-4">
+            <label className="text-xs text-muted-foreground" htmlFor={inputId}>
+              {t.common.typedConfirmation(typedConfirmation)}
+            </label>
+            <Input
+              autoComplete="off"
+              disabled={loading}
+              id={inputId}
+              onChange={(event) => setConfirmation(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  void run();
+                }
+              }}
+              spellCheck={false}
+              value={confirmation}
+            />
+          </div>
+        )}
         <div className="flex items-center justify-end gap-2 p-3">
           <Button type="button" outlined onClick={onCancel} disabled={loading}>
             {cancelLabel}
@@ -109,8 +153,8 @@ export function ConfirmDialog({
             data-confirm
             type="button"
             destructive={destructive}
-            onClick={onConfirm}
-            disabled={loading}
+            onClick={() => void run()}
+            disabled={loading || !ready}
           >
             {loading ? "…" : confirmLabel}
           </Button>

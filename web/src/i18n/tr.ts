@@ -7,6 +7,7 @@ export const tr: Translations = {
     cancel: "İptal",
     close: "Kapat",
     confirm: "Onayla",
+    typedConfirmation: (value: string) => `Onaylamak için ${value} yazın.`,
     delete: "Sil",
     refresh: "Yenile",
     retry: "Yeniden dene",

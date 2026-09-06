@@ -5,12 +5,16 @@ export interface ConfirmRequest {
   description?: string
   confirmLabel?: string
   cancelLabel?: string
+  typedConfirmation?: string
   destructive?: boolean
 }
 
 export interface PendingConfirm extends ConfirmRequest {
+  id: number
   resolve: (confirmed: boolean) => void
 }
+
+let nextRequestId = 0
 
 export const $confirmRequest = atom<null | PendingConfirm>(null)
 
@@ -23,15 +27,15 @@ export function confirm(request: ConfirmRequest): Promise<boolean> {
   settleConfirm(false)
 
   return new Promise<boolean>(resolve => {
-    $confirmRequest.set({ ...request, resolve })
+    $confirmRequest.set({ ...request, id: ++nextRequestId, resolve })
   })
 }
 
 /** Answer the open request, if there still is one. Idempotent. */
-export function settleConfirm(confirmed: boolean): void {
+export function settleConfirm(confirmed: boolean, expected?: PendingConfirm): void {
   const pending = $confirmRequest.get()
 
-  if (!pending) {
+  if (!pending || (expected && pending !== expected)) {
     return
   }
 

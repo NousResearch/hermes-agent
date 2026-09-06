@@ -7,6 +7,7 @@ export const zhHant: Translations = {
     cancel: "取消",
     close: "關閉",
     confirm: "確認",
+    typedConfirmation: (value: string) => `輸入 ${value} 以確認。`,
     delete: "刪除",
     refresh: "重新整理",
     retry: "重試",

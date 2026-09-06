@@ -243,7 +243,10 @@ so glass and message-bubble transparency do not reveal scrolling text.
   master/detail empties with an icon and action. Don't hand-roll a third
   centered empty.
 - **Confirmation:** `ConfirmDialog` is the only way we ask "are you sure". It
-  opens focused on Confirm, so `Enter` confirms and `Esc` cancels, and it owns
+  opens focused on Confirm, so `Enter` confirms and `Esc` cancels. With
+  `typedConfirmation`, it focuses an input and requires an exact match before
+  click or Enter can confirm; Space remains text input. It clears the input on
+  every opening and owns
   the pending → done → close beat and the inline error — a call site passes an
   async `onConfirm` and nothing else. A third way out (e.g. "Remove from
   sidebar" beside "Delete worktree") goes in the one `secondaryAction` slot.

@@ -7,6 +7,7 @@ export const af: Translations = {
     cancel: "Kanselleer",
     close: "Maak toe",
     confirm: "Bevestig",
+    typedConfirmation: (value: string) => `Tik ${value} om te bevestig.`,
     delete: "Skrap",
     refresh: "Herlaai",
     retry: "Probeer weer",

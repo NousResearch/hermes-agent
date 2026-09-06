@@ -7,6 +7,7 @@ export const ja: Translations = {
     cancel: "キャンセル",
     close: "閉じる",
     confirm: "確認",
+    typedConfirmation: (value: string) => `確認するには ${value} と入力してください。`,
     delete: "削除",
     refresh: "更新",
     retry: "再試行",

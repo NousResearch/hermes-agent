@@ -7,6 +7,7 @@ export const hu: Translations = {
     cancel: "Mégse",
     close: "Bezárás",
     confirm: "Megerősítés",
+    typedConfirmation: (value: string) => `A megerősítéshez írd be: ${value}.`,
     delete: "Törlés",
     refresh: "Frissítés",
     retry: "Újra",

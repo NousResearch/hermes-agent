@@ -43,26 +43,34 @@ def _declared_hooks(plugin_dir: Path) -> set[str] | None:
     return None
 
 
-def _resolved_declared_hooks(home: Path, project_root: Path | None = None) -> set[str] | None:
+def _resolved_declared_hooks(
+    home: Path, project_root: Path | None = None
+) -> tuple[set[str] | None, str]:
     """Resolve the worker plugin contract from manifests only.
 
     A profile-local manifest wins over the trusted bundled manifest, matching the
     plugin discovery precedence without executing profile-owned code.
     """
     user_plugins = home / "plugins"
-    candidates = []
+    candidates: list[tuple[Path, str]] = []
     if project_root is not None:
-        candidates.append(Path(project_root) / ".hermes" / "plugins" / _PLUGIN_NAME)
-    candidates.append(user_plugins / _PLUGIN_NAME)
+        candidates.append((
+            Path(project_root) / ".hermes" / "plugins" / _PLUGIN_NAME,
+            _PLUGIN_NAME,
+        ))
+    candidates.append((user_plugins / _PLUGIN_NAME, _PLUGIN_NAME))
     try:
         categories = tuple(path for path in user_plugins.iterdir() if path.is_dir())
     except OSError:
         categories = ()
-    candidates.extend(category / _PLUGIN_NAME for category in categories)
-    for candidate in candidates:
+    candidates.extend(
+        (category / _PLUGIN_NAME, f"{category.name}/{_PLUGIN_NAME}")
+        for category in categories
+    )
+    for candidate, key in candidates:
         if candidate.exists():
-            return _declared_hooks(candidate)
-    return _declared_hooks(Path(__file__).resolve().parents[1])
+            return _declared_hooks(candidate), key
+    return _declared_hooks(Path(__file__).resolve().parents[1]), _PLUGIN_NAME
 
 
 def _entrypoint_override_present() -> bool:
@@ -102,14 +110,16 @@ def worker_contract_enabled(
     if disabled is None:
         disabled = []
     if (not isinstance(enabled, list) or not all(isinstance(item, str) for item in enabled)
-            or _PLUGIN_NAME not in enabled
             or not isinstance(disabled, list)
             or not all(isinstance(item, str) for item in disabled)
-            or _PLUGIN_NAME in disabled):
+    ):
         return False
 
     if _entrypoint_override_present():
         return False
 
-    hooks = _resolved_declared_hooks(home, project_root)
+    hooks, key = _resolved_declared_hooks(home, project_root)
+    manifest_names = {_PLUGIN_NAME, key}
+    if not manifest_names.intersection(enabled) or manifest_names.intersection(disabled):
+        return False
     return hooks is not None and _REQUIRED_HOOKS <= hooks

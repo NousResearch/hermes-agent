@@ -143,6 +143,22 @@ def test_worker_readiness_accepts_manifest_declared_hooks_without_importing_work
     assert worker_contract_enabled(tmp_path, "worker") is True
 
 
+@pytest.mark.parametrize("enabled", [["github-pr-feedback"], ["category/github-pr-feedback"]])
+def test_worker_readiness_accepts_bare_and_canonical_manifest_keys(tmp_path, enabled):
+    from github_pr_feedback.worker_contract import worker_contract_enabled
+
+    worker = tmp_path / "profiles/worker"
+    plugin = worker / "plugins/category/github-pr-feedback"
+    plugin.mkdir(parents=True)
+    (worker / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": enabled, "disabled": []}}))
+    (plugin / "plugin.yaml").write_text(yaml.safe_dump({
+        "name": "github-pr-feedback", "provides_hooks": ["pre_tool_call", "pre_kanban_complete"]
+    }))
+
+    assert worker_contract_enabled(tmp_path, "worker") is True
+
+
 @pytest.mark.parametrize("managed,raw,expected", [
     ({"plugins": {"disabled": ["github-pr-feedback"]}}, b"plugins:\n  enabled: [github-pr-feedback]\n", False),
     ({}, b"\xff", False),

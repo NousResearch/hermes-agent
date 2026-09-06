@@ -7,7 +7,7 @@ loads on a miss and evicts the least-recently-used entry beyond the cap.
 """
 from __future__ import annotations
 
-import tools.tts_tool as tts
+import tools.tts_tool_local as tts
 
 
 def test_loads_on_miss_and_serves_from_cache_on_hit():
@@ -24,7 +24,7 @@ def test_loads_on_miss_and_serves_from_cache_on_hit():
 
 
 def test_hit_refreshes_recency_so_eviction_is_lru_not_fifo(monkeypatch):
-    monkeypatch.setattr(tts, "_TTS_MODEL_CACHE_MAX", 2)
+    monkeypatch.setattr("tools.tts_tool_local._TTS_MODEL_CACHE_MAX", 2)
     cache: dict = {}
     tts._tts_cache_get_or_load(cache, "a", lambda: "a")
     tts._tts_cache_get_or_load(cache, "b", lambda: "b")

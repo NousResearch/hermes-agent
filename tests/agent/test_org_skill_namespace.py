@@ -236,7 +236,7 @@ class TestOrgPullIsWiredIn:
         main_src = (
             pathlib.Path(__file__).resolve().parents[2]
             / "hermes_cli"
-            / "main.py"
+            / "main_platform_setup.py"
         ).read_text(encoding="utf-8")
         assert "maybe_pull_org_skills" in main_src, (
             "`hermes sync pull` must also refresh the org mirror."
@@ -302,7 +302,7 @@ class TestSkillSyncIsOneCommand:
         )
 
     def test_sync_usage_lists_propose(self):
-        main_src = self._src("hermes_cli", "main.py")
+        main_src = self._src("hermes_cli", "main_platform_setup.py")
         usage_start = main_src.index("usage: hermes sync ")
         usage_block = main_src[usage_start : usage_start + 1400]
         assert "propose" in usage_block, (
@@ -334,42 +334,43 @@ class TestLocalEditsSurviveOrgUpdates:
         monkeypatch.setattr(
             ssc, "_org_dir", lambda: skills / sku.ORG_MIRROR_DIR_NAME
         )
-        return ssc, skills, d
+        from tools import skills_sync_client_org as org
+        return org, skills, d
 
     def test_unmodified_skill_is_not_flagged(self, tmp_path, monkeypatch):
-        ssc, _skills, d = self._mirror(tmp_path, monkeypatch)
-        ssc._write_org_baseline(
+        org, _skills, d = self._mirror(tmp_path, monkeypatch)
+        org._write_org_baseline(
             "org-1",
-            {"shared-x": {"fingerprint": ssc._skill_dir_fingerprint(d), "tree": "t1"}},
+            {"shared-x": {"fingerprint": org._skill_dir_fingerprint(d), "tree": "t1"}},
         )
-        assert ssc.org_skill_is_locally_modified("shared-x", "org-1") is False
-        assert ssc.list_locally_modified_org_skills("org-1") == []
+        assert org.org_skill_is_locally_modified("shared-x", "org-1") is False
+        assert org.list_locally_modified_org_skills("org-1") == []
 
     def test_edited_skill_is_detected(self, tmp_path, monkeypatch):
-        ssc, _skills, d = self._mirror(tmp_path, monkeypatch)
-        ssc._write_org_baseline(
+        org, _skills, d = self._mirror(tmp_path, monkeypatch)
+        org._write_org_baseline(
             "org-1",
-            {"shared-x": {"fingerprint": ssc._skill_dir_fingerprint(d), "tree": "t1"}},
+            {"shared-x": {"fingerprint": org._skill_dir_fingerprint(d), "tree": "t1"}},
         )
         (d / "SKILL.md").write_text("---\nname: shared-x\n---\nEDITED\n", encoding="utf-8")
-        assert ssc.org_skill_is_locally_modified("shared-x", "org-1") is True
-        assert ssc.list_locally_modified_org_skills("org-1") == ["shared-x"]
+        assert org.org_skill_is_locally_modified("shared-x", "org-1") is True
+        assert org.list_locally_modified_org_skills("org-1") == ["shared-x"]
 
     def test_missing_baseline_does_not_cry_wolf(self, tmp_path, monkeypatch):
-        ssc, _skills, _d = self._mirror(tmp_path, monkeypatch)
+        org, _skills, _d = self._mirror(tmp_path, monkeypatch)
         # Mirror pulled before baselines existed — must not be reported as
         # modified (that would block every update with a phantom conflict).
-        assert ssc.org_skill_is_locally_modified("shared-x", "org-1") is False
+        assert org.org_skill_is_locally_modified("shared-x", "org-1") is False
 
     def test_fingerprint_is_content_based_not_mtime(self, tmp_path, monkeypatch):
         import os
         import time
 
-        ssc, _skills, d = self._mirror(tmp_path, monkeypatch)
-        before = ssc._skill_dir_fingerprint(d)
+        org, _skills, d = self._mirror(tmp_path, monkeypatch)
+        before = org._skill_dir_fingerprint(d)
         time.sleep(0.01)
         os.utime(d / "SKILL.md", None)  # touch: mtime changes, content doesn't
-        assert ssc._skill_dir_fingerprint(d) == before
+        assert org._skill_dir_fingerprint(d) == before
 
     def test_auto_propose_defaults_off(self, monkeypatch):
         from tools import skills_sync_client as ssc

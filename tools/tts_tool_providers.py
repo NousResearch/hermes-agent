@@ -53,7 +53,7 @@ DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT = False
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_TIMEOUT = 120  # seconds; persona + audio-tag pipelines run long
-DEFAULT_GEMINI_TTS_RETRIES = 3  # transient 429/5xx + malformed responses (high-demand spikes)
+DEFAULT_GEMINI_TTS_RETRIES = 2  # retries after the first attempt => 3 total attempts
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
@@ -600,15 +600,29 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         except Exception:
             version = "0.0.0"
         headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"  # partner-integration guidance
-    gemini_timeout = float(
-        (tts_config.get("gemini") or {}).get("timeout")
-        or tts_config.get("timeout")
-        or DEFAULT_GEMINI_TTS_TIMEOUT
+    gemini_cfg = tts_config.get("gemini") or {}
+    # ``tts.gemini.retries`` counts RETRIES after the first attempt (total
+    # attempts = retries + 1), and ``tts.gemini.timeout`` the per-call timeout.
+    # Use a None-check (not truthiness) so an explicit 0 is honored: retries: 0
+    # means "one attempt, no retry" instead of silently colliding with the
+    # default. A value absent from the gemini section inherits the top-level
+    # ``tts.timeout`` / ``tts.retries``; a value of 0 does NOT inherit.
+    gemini_timeout_raw = gemini_cfg.get("timeout")
+    if gemini_timeout_raw is None:
+        gemini_timeout_raw = tts_config.get("timeout")
+    gemini_timeout = (
+        DEFAULT_GEMINI_TTS_TIMEOUT if gemini_timeout_raw is None
+        else float(gemini_timeout_raw)
     )
-    gemini_retries = int(
-        (tts_config.get("gemini") or {}).get("retries")
-        or DEFAULT_GEMINI_TTS_RETRIES
+    gemini_retries_raw = gemini_cfg.get("retries")
+    if gemini_retries_raw is None:
+        gemini_retries_raw = tts_config.get("retries")
+    gemini_retries = (
+        DEFAULT_GEMINI_TTS_RETRIES if gemini_retries_raw is None
+        else int(gemini_retries_raw)
     )
+    # retries after the first attempt -> total attempts = retries + 1.
+    gemini_attempts = max(1, gemini_retries + 1)
     # The 3.x preview TTS models are capacity-limited and intermittently
     # return 429/503 "high demand" or a 200 with an empty/malformed body.
     # Retry transient failures with short exponential backoff so a spike
@@ -617,7 +631,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     # worker thread — acceptable, since TTS synthesis is already a blocking
     # to_thread call and the total delay is bounded.
     endpoint = f"{base_url}/models/{model}:generateContent"
-    for attempt in range(max(1, gemini_retries)):
+    for attempt in range(gemini_attempts):
         response = _post_json(endpoint, payload, headers, params={"key": api_key}, timeout=gemini_timeout)
         if response.status_code != 200:
             detail = _gemini_error_detail(response)
@@ -630,9 +644,9 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             if (
                 response.status_code in (429, 500, 502, 503, 504)
                 and not quota_exhausted
-                and attempt < gemini_retries - 1
+                and attempt < gemini_attempts - 1
             ):
-                logger.warning("%s; retrying (%d/%d)", err_msg, attempt + 1, gemini_retries)
+                logger.warning("%s; retrying (%d/%d)", err_msg, attempt + 1, gemini_attempts)
                 time.sleep(2 ** attempt)
                 continue
             raise RuntimeError(err_msg)
@@ -660,10 +674,10 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             audio_b64 = inline.get("data", "")
             break
         except (KeyError, IndexError, TypeError) as e:
-            if attempt < gemini_retries - 1:
+            if attempt < gemini_attempts - 1:
                 logger.warning(
                     "Gemini TTS response was malformed (%s); retrying (%d/%d)",
-                    e, attempt + 1, gemini_retries,
+                    e, attempt + 1, gemini_attempts,
                 )
                 time.sleep(2 ** attempt)
                 continue

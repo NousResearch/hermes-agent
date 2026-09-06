@@ -351,13 +351,28 @@ def _build_fallback_entries(provider: str, tts_config: Dict[str, Any]) -> List[D
 
 
 def _fallback_config_with_model(tts_config: Dict[str, Any], entry: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a config copy with the fallback entry's model override applied."""
+    """Return a config copy with the fallback entry's model override applied.
+
+    The override is written to the entry's OWN provider section (not hardcoded
+    to gemini), so a cross-provider fallback like ``{provider: openai, model:
+    ...}`` is honored instead of being silently dropped into the gemini block
+    that the other provider never reads. If that provider has no config
+    section, the override cannot be applied — log it rather than fail silently.
+    """
     if not entry.get("model"):
         return tts_config
     cfg = dict(tts_config)
-    gemini = dict(cfg.get("gemini") or {})
-    gemini["model"] = entry["model"]
-    cfg["gemini"] = gemini
+    prov = entry.get("provider")
+    if prov and isinstance(cfg.get(prov), dict):
+        section = dict(cfg[prov])
+        section["model"] = entry["model"]
+        cfg[prov] = section
+    else:
+        logger.warning(
+            "tts.fallback provider=%r model=%r ignored: no %r config section "
+            "to carry the override",
+            prov, entry.get("model"), prov,
+        )
     return cfg
 
 

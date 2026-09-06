@@ -118,6 +118,23 @@ def test_thousand_clean_writes_emit_one_info(caplog_lsp):
     assert "active for" in info_records[0].getMessage()
 
 
+def test_reap_is_info_and_respawn_reannounces_active(caplog_lsp):
+    """Every reap and the next active generation are visible at INFO."""
+    key = ("pyright", "/proj")
+
+    eventlog.log_active(*key)
+    eventlog.log_reaped([key], idle_timeout=600)
+    eventlog.log_active(*key)
+
+    info_records = [r for r in caplog_lsp.records if r.levelno == logging.INFO]
+    assert [r.getMessage() for r in info_records] == [
+        "lsp[pyright] active for /proj",
+        "lsp[reaper] reaped 1 idle client(s) after 600s: pyright (/proj)",
+        "lsp[pyright] active for /proj",
+    ]
+    assert not any("reused client" in r.getMessage() for r in caplog_lsp.records)
+
+
 # ---------------------------------------------------------------------------
 # Path shortening
 # ---------------------------------------------------------------------------
@@ -132,5 +149,3 @@ def test_short_path_keeps_absolute_when_outside(tmp_path, monkeypatch):
     out = eventlog._short_path(other)
     # Outside cwd: keeps absolute (no leading "../")
     assert out == "/var/log/foo.txt" or not out.startswith("..")
-
-

@@ -30,6 +30,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from agent.redact import redact_sensitive_text
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -256,7 +257,7 @@ class WebhookAdapter(BasePlatformAdapter):
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
         if deliver_type == "log":
-            logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
+            logger.info("[webhook] Response: %s", redact_sensitive_text(content, force=True)[:200])
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -709,7 +710,7 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: dispatch *content* to the same delivery helpers agent-mode ``send()`` uses."""
         deliver_type = delivery.get("deliver", "log")
         if deliver_type == "log":  # startup validation rejects deliver_only + log; guard defensively
-            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
+            logger.info("[webhook] direct-deliver log-only: %s", redact_sensitive_text(content, force=True)[:200])
             return SendResult(success=True)
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)

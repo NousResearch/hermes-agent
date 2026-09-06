@@ -20,6 +20,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from agent.redact import redact_sensitive_text
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, is_network_accessible,
@@ -159,7 +160,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        logger.info("[msgraph_webhook] Response for %s: %s", chat_id, content[:200])
+        logger.info("[msgraph_webhook] Response: %s", redact_sensitive_text(content, force=True)[:200])
         return SendResult(success=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

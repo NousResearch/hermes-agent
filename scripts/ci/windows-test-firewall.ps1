@@ -134,6 +134,10 @@ if ($Mode -eq "Run") {
     $start.Password = $password
     $start.UseShellExecute = $false
     $start.LoadUserProfile = $true
+    $start.Environment.Clear()
+    foreach ($pair in $safe.GetEnumerator()) {
+        $start.Environment[[string]$pair.Key] = [string]$pair.Value
+    }
     $process = [Diagnostics.Process]::Start($start)
     $process.WaitForExit()
     exit $process.ExitCode

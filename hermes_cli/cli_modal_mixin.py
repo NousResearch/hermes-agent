@@ -877,11 +877,6 @@ class CLIModalMixin:
             self._clarify_state = None
             self._clarify_freetext = False
             self._clarify_multi_base = None
-        if self._sudo_state:
-            _put(self._sudo_state, "")
-            self._sudo_state = None
-            self._sudo_deadline = 0
-            self._restore_modal_input_snapshot()
         if self._secret_state:
             try:
                 self._cancel_secret_capture()

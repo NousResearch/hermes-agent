@@ -157,7 +157,10 @@ def _mask_quoted_prose(command: str) -> str:
 
 # ---- Sudo stdin guard: an explicit "sudo -S" is always the LLM piping a guessed
 # password via stdin (brute-force vector). Unconditional block, no exceptions.
-_SUDO_STDIN_RE = re.compile(r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b', re.IGNORECASE)
+_SUDO_STDIN_RE = re.compile(
+    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo(?:\s+-[a-zA-Z]+)*?\s+-[a-zA-Z]*S[a-zA-Z]*\b',
+    re.IGNORECASE,
+)
 
 
 def _check_sudo_stdin_guard(command: str) -> tuple:

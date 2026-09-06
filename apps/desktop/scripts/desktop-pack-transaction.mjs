@@ -292,9 +292,9 @@ export function settleDesktopPack({
 
     try {
       if (builderSucceeded && replacementValid) {
-        // Preserve both the rollback tree and its generation marker. The
-        // Python launchability gate owns wrong-architecture detection, final
-        // commit, and rollback retirement.
+        // Keep the prior package available for the Python host-integrity gate.
+        // Mark this builder invocation complete only after every target passed;
+        // beforePack then distinguishes accepted output from an interrupted one.
         retained.push(backupDir)
         continue
       }
@@ -323,6 +323,10 @@ export function settleDesktopPack({
         reason: `could not settle rollback transaction: ${error.message}`
       })
     }
+  }
+
+  if (builderSucceeded && failures.length === 0) {
+    for (const backupDir of retained) clearRollbackSessionBestEffort(backupDir)
   }
 
   return {

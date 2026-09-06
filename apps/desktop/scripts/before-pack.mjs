@@ -189,23 +189,28 @@ export function preserveRollbackBackup(
     )
   }
 
-  const sameSessionBackup =
-    Boolean(sessionId) &&
-    backupValid &&
-    operations.readRollbackSession(backupDir) === sessionId
+  const previousSession = operations.readRollbackSession(backupDir)
+  // A marker remains until its builder has validated the complete target set.
+  // A different marker therefore means an interrupted invocation, not proof
+  // that its current candidate is safe to replace the older backup.
+  const reusableBackup = Boolean(sessionId) && backupValid && Boolean(previousSession)
 
-  if (sameSessionBackup) {
+  if (reusableBackup) {
     // Multi-target pack: keep the first (pre-build) generation as authority.
     // The current tree is output from an earlier target in this same builder
     // process and must not replace the rollback generation.
     try {
-      removeTree(operations.rmSync, appOutDir)
+      operations.writeRollbackSession(backupDir, sessionId)
+    } catch (error) {
       return rollbackResult(
-        ROLLBACK_ACQUISITION_STATUS.PRESERVED,
-        'same-session-backup-retained',
-        undefined,
+        ROLLBACK_ACQUISITION_STATUS.BLOCKED,
+        'existing-backup-adoption-failed',
+        error,
         { backupDir }
       )
+    }
+    try {
+      removeTree(operations.rmSync, appOutDir)
     } catch (error) {
       return rollbackResult(
         ROLLBACK_ACQUISITION_STATUS.BLOCKED,
@@ -214,6 +219,12 @@ export function preserveRollbackBackup(
         { backupDir }
       )
     }
+    return rollbackResult(
+      ROLLBACK_ACQUISITION_STATUS.PRESERVED,
+      previousSession === sessionId ? 'same-session-backup-retained' : 'interrupted-backup-retained',
+      undefined,
+      { backupDir }
+    )
   }
 
   try {

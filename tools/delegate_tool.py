@@ -652,7 +652,7 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
-    n_tasks = len(task_list)
+    n_tasks = len(runnable)
     # Reserve only after fallible pre-dispatch setup, but before building any
     # child. This keeps concurrent calls atomic without leaking budget when
     # setup fails. A build failure below releases the complete reservation.
@@ -660,10 +660,16 @@ def delegate_task(
     if budget_error:
         return tool_error(budget_error)
 
-    children, err = _build_children(
-        task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
-    )
+    try:
+        children, err = _build_children(
+            task_list, task_schemas, routes, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+            live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        )
+    except Exception:
+        # No child is dispatched until the complete construction loop succeeds.
+        # Roll back the whole reservation even when earlier children built.
+        _release_session_children_budget(parent_agent, n_tasks)
+        raise
     if err:
         _release_session_children_budget(parent_agent, n_tasks)
         return tool_error(err)

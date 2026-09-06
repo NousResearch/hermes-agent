@@ -227,6 +227,9 @@ def _reserve_session_children_budget(parent_agent, n_tasks: int) -> Optional[str
     """
     if n_tasks <= 0:
         return None
+    # Late-import from the facade so monkeypatching tools.delegate_tool._get_max_children_per_session
+    # is the seam (AGENTS.md: "Patch where production reads").
+    from tools.delegate_tool import _get_max_children_per_session
     cap = _get_max_children_per_session()
     if cap == 0:
         return None

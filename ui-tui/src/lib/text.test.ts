@@ -48,6 +48,28 @@ describe('formatAbandonedClarify', () => {
 
     expect(out.split('\n')[0]).toBe('ask trailing space')
   })
+
+  it('numbers options 1-based to match the live ClarifyPrompt', () => {
+    const out = formatAbandonedClarify('q', ['first'], 'timed out')
+
+    expect(out).toContain('  1. first')
+    expect(out).not.toContain('  0.')
+  })
+
+  it('renders structured {label, description} choices by label (Phase 1)', () => {
+    const out = formatAbandonedClarify(
+      'q',
+      [
+        { description: 'Linear history', label: 'Rebase' },
+        { description: 'Keep context', label: 'Merge' }
+      ],
+      'timed out'
+    )
+
+    expect(out).toContain('  1. Rebase')
+    expect(out).toContain('  2. Merge')
+    expect(out).not.toContain('[object Object]')
+  })
 })
 
 describe('formatAbandonedClarifyBatch', () => {

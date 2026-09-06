@@ -449,9 +449,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         question = (question or "").strip()
         if not choices:
             return await self.send(chat_id, f"❓ {question}", reply_to=_reply_to_from(metadata))
+        from tools.clarify_tool import choice_label
         # Full choice text goes in the body so long options aren't lost to the
         # 20-char label cap; labels are just the option number.
-        choices_list = [str(c).strip() for c in choices[:10] if str(c).strip()]
+        choices_list = [choice_label(c) for c in choices[:10] if choice_label(c)]
         body_text = self._truncate_body(f"❓ {question}\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices_list)))
         if len(choices_list) <= 3:
             interactive = self._button_interactive(

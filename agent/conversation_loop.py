@@ -588,18 +588,13 @@ def _print_billing_or_entitlement_guidance(
 
 
 def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
-    """Bot Chat capability epoch check for a stored prompt.
-
-    The stored prompt embeds a capability fingerprint; a mismatch is a deliberate
-    once-per-change rebuild. Unstamped prompts never match; probe failures fail closed
-    to "reuse" so the cache is kept. Legacy upgrade: a Bot Chat prompt predating the
-    epoch mechanism gets ONE title-gated migration rebuild; the stamped result cannot
-    re-fire."""
+    """Return whether routed Bot Mode prompt state must be rebuilt once."""
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE,
+            bot_mode_session_state,
             stored_bot_chat_prompt_needs_upgrade,
             stored_prompt_capability_stale,
+            stored_prompt_has_bot_mode_protocol,
         )
         home = None
         try:
@@ -607,17 +602,15 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
             home = _agent_home(agent)
         except Exception:
             pass
-        if stored_prompt_capability_stale(stored_prompt, home):
+        routed = bool(bot_mode_session_state(agent)["session_kind"])
+        if not routed and stored_prompt_has_bot_mode_protocol(stored_prompt):
             return True
-        if not getattr(agent, "_bot_mode_protocol", True):
+        if not routed:
             return False
-        title = str(getattr(agent, "_session_title_hint", "") or "").strip()
-        if not title and agent._session_db and agent.session_id:
-            try:
-                title = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
-            except Exception:
-                title = ""
-        return title == BOT_CHAT_TITLE and bool(stored_bot_chat_prompt_needs_upgrade(stored_prompt, home))
+        return bool(
+            stored_prompt_capability_stale(stored_prompt, home)
+            or stored_bot_chat_prompt_needs_upgrade(stored_prompt, home)
+        )
     except Exception:
         return False
 
@@ -667,7 +660,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 "adopt the new capability surface (one-time prefix-cache break).",
                 agent.session_id,
             )
-            agent._session_title_hint = "Bot Chat"
             # The skills index cache (LRU + disk snapshot) does not watch the skills
             # dir; a capability refresh must rebuild THROUGH it or new skills are lost.
             try:

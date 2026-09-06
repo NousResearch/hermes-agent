@@ -12,10 +12,12 @@ helpers shared by ``bot_mode_dm`` and ``bot_relay``.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from pathlib import Path
 
 _PROTOCOL_HEADING = "## Messaging other agents"
+_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # The only session title that receives the protocol section. Must match the
 # desktop plugin's createCanonicalChat title and the `-c "Bot Chat"` resume target.
@@ -23,6 +25,9 @@ BOT_CHAT_TITLE = "Bot Chat"
 
 _lock = threading.Lock()
 _cached: dict[str, str] = {}
+_session_state_lock = threading.Lock()
+_SESSION_STATE_CACHE_MAX = 1024
+_session_state_cache: dict[tuple[str, str, str], dict] = {}
 
 
 # ── shared path / roster helpers ─────────────────────────────────────────────
@@ -59,11 +64,49 @@ def _handle(name: str) -> str:
     return "hermes" if name == "default" else name
 
 
+def _absolute_without_symlink_resolution(path: Path) -> Path:
+    """Absolute lexical path, preserving ``profiles/<name>`` containment."""
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def _is_roster_profile_dir(root: Path, candidate: Path) -> bool:
+    """Validate a live profile-roster directory and reject symlink escapes."""
+    try:
+        root = _absolute_without_symlink_resolution(root)
+        candidate = _absolute_without_symlink_resolution(candidate)
+        if candidate == root:
+            return root.is_dir()
+        profiles = root / "profiles"
+        if (
+            candidate.parent != profiles
+            or not _PROFILE_ID_RE.fullmatch(candidate.name)
+            or candidate.is_symlink()
+            or profiles.is_symlink()
+            or not candidate.is_dir()
+            or (profiles / ".deleted" / candidate.name).exists()
+        ):
+            return False
+        profiles_real = profiles.resolve(strict=True)
+        return candidate.resolve(strict=True) == profiles_real / candidate.name
+    except (OSError, RuntimeError):
+        return False
+
+
 def _roster(root: Path) -> list[tuple[str, Path]]:
-    """(name, dir) for the default profile + every named profile, sorted."""
-    profiles = root / "profiles"
-    named = _swallow(lambda: [(c.name, c) for c in sorted(profiles.iterdir()) if c.is_dir()] if profiles.is_dir() else [], [])
-    return [("default", root), *named]
+    """Valid default + named profile directories, with symlinks denied."""
+    root = _absolute_without_symlink_resolution(root)
+    entries: list[tuple[str, Path]] = []
+    if _is_roster_profile_dir(root, root):
+        entries.append(("default", root))
+    try:
+        profiles = root / "profiles"
+        if profiles.is_dir() and not profiles.is_symlink():
+            for child in sorted(profiles.iterdir()):
+                if child.name != "default" and _is_roster_profile_dir(root, child):
+                    entries.append((child.name, child))
+    except OSError:
+        pass
+    return entries
 
 
 def _read_yaml_dict(path: Path, needle: str | None = None) -> dict | None:
@@ -103,6 +146,150 @@ def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     ``message_agent`` injection gate — deliberately independent of the protocol section's
     emptiness: a SOUL.md carrying the legacy protocol gets an empty section but still gets the tool."""
     return _swallow(lambda: _any_managed(_hermes_root(_resolve_home(home))), False)
+
+
+def is_bot_mode_roster_profile(home: str | os.PathLike | None = None) -> bool:
+    """True when ``home`` is a real profile in a participating install's roster."""
+    try:
+        candidate = _absolute_without_symlink_resolution(_resolve_home(home))
+        root = _hermes_root(candidate)
+        return _is_roster_profile_dir(root, candidate)
+    except Exception:
+        return False
+
+
+_CANONICAL_BOT_CHAT_SESSION_SOURCES = frozenset({"", "cli", "tui", "desktop"})
+_MESSAGING_GATEWAY_SESSION_SOURCES = frozenset({
+    "telegram", "discord", "whatsapp", "whatsapp_cloud", "slack", "signal",
+    "mattermost", "matrix", "email", "sms", "dingtalk", "feishu", "wecom",
+    "wecom_callback", "weixin", "bluebubbles", "qqbot", "yuanbao",
+    "buzz", "google_chat", "irc", "line", "photon", "simplex", "teams",
+})
+
+
+def _session_source(agent: object) -> str:
+    try:
+        from gateway.session_context import resolve_session_source
+        return str(resolve_session_source(getattr(agent, "platform", None))).strip().lower()
+    except Exception:
+        return "__untrusted__"
+
+
+def is_messaging_gateway_session(agent: object) -> bool:
+    """True only for classified human messaging-gateway conversations."""
+    try:
+        return _session_source(agent) in _MESSAGING_GATEWAY_SESSION_SOURCES
+    except Exception:
+        return False
+
+
+def _agent_home(agent: object) -> str:
+    """The routed profile home: ContextVar first, shared DB as fallback."""
+    try:
+        from hermes_constants import get_hermes_home_override
+        override = get_hermes_home_override()
+        if override:
+            return override
+    except Exception:
+        pass
+    try:
+        db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
+        if db_path:
+            return str(Path(db_path).parent)
+    except Exception:
+        pass
+    return _default_home()
+
+
+def _session_title(agent: object) -> str:
+    title = str(getattr(agent, "_session_title_hint", "") or "").strip()
+    if title:
+        return title
+    try:
+        sdb = getattr(agent, "_session_db", None)
+        sid = getattr(agent, "session_id", None)
+        if sdb and sid:
+            return str(sdb.get_session_title(sid) or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
+def bot_mode_dispatch_authorized(agent: object, home: str | os.PathLike | None = None) -> bool:
+    """Live, fail-closed authorization for a ``message_agent`` delivery."""
+    try:
+        if not bool(getattr(agent, "_bot_mode_protocol", True)):
+            return False
+        resolved = _absolute_without_symlink_resolution(
+            Path(home if home is not None else _agent_home(agent))
+        )
+        if not is_bot_mode_managed(resolved) or not is_bot_mode_roster_profile(resolved):
+            return False
+        source = _session_source(agent)
+        return (
+            source in _CANONICAL_BOT_CHAT_SESSION_SOURCES
+            and _session_title(agent) == BOT_CHAT_TITLE
+        ) or source in _MESSAGING_GATEWAY_SESSION_SOURCES
+    except Exception:
+        return False
+
+
+def bot_mode_session_state(agent: object, home: str | os.PathLike | None = None) -> dict:
+    """Return the frozen Bot Mode classification shared by prompt, schema and dispatch."""
+    cache_key = None
+    source = ""
+    try:
+        if home is None:
+            agent_cached = getattr(agent, "_bot_mode_session_state", None)
+            if (
+                isinstance(agent_cached, tuple)
+                and len(agent_cached) == 2
+                and isinstance(agent_cached[1], dict)
+                and "session_kind" in agent_cached[1]
+                and agent_cached[0] == _session_source(agent)
+            ):
+                return agent_cached[1]
+
+        protocol_enabled = bool(getattr(agent, "_bot_mode_protocol", True))
+        resolved = str(_absolute_without_symlink_resolution(
+            Path(home if home else _agent_home(agent))
+        ))
+        title = _session_title(agent)
+        session_id = str(getattr(agent, "session_id", "") or "")
+        source = _session_source(agent)
+
+        if home is None and session_id:
+            cache_key = (resolved, session_id, source)
+            with _session_state_lock:
+                cached = _session_state_cache.pop(cache_key, None)
+                if cached is not None:
+                    _session_state_cache[cache_key] = cached
+            if cached is not None:
+                setattr(agent, "_bot_mode_session_state", (source, cached))
+                return cached
+
+        managed = protocol_enabled and is_bot_mode_managed(resolved)
+        roster_profile = managed and is_bot_mode_roster_profile(resolved)
+        if roster_profile and title == BOT_CHAT_TITLE and source in _CANONICAL_BOT_CHAT_SESSION_SOURCES:
+            state = {"managed": True, "session_kind": "bot_chat"}
+        elif roster_profile and source in _MESSAGING_GATEWAY_SESSION_SOURCES:
+            state = {"managed": True, "session_kind": "gateway"}
+        else:
+            state = {"managed": bool(managed), "session_kind": None}
+    except Exception:
+        state = {"managed": False, "session_kind": None}
+
+    if home is None:
+        if cache_key is not None:
+            with _session_state_lock:
+                state = _session_state_cache.setdefault(cache_key, state)
+                while len(_session_state_cache) > max(1, int(_SESSION_STATE_CACHE_MAX)):
+                    _session_state_cache.pop(next(iter(_session_state_cache)), None)
+        try:
+            setattr(agent, "_bot_mode_session_state", (source, state))
+        except Exception:
+            pass
+    return state
 
 
 def _soul_has_protocol(profile_dir: Path) -> bool:
@@ -202,13 +389,14 @@ def _build_section(home: Path) -> str:
         f"{_PROTOCOL_HEADING}\n"
         "This install runs Bot Mode: each Hermes profile is an agent teammate with "
         'one canonical "Bot Chat" conversation, and you have the `message_agent` '
-        "tool to DM any of them. It is FIRE-AND-FORGET: it delivers your message "
-        "with your attribution prefixed automatically and returns an acknowledgement "
-        "immediately — it never returns the reply. Send it, finish your turn, and "
-        "the reply arrives later as a background-process completion notification "
-        "that wakes you; relay it to the user then, attributed to that agent. "
-        "COMPOSE every message yourself — say what YOU need from that agent; never "
-        "forward the user's words verbatim, and never reveal private 1:1 chat "
+        "tool to DM any of them — from this messaging chat (Discord, Telegram, "
+        "Slack, ...) or from your Bot Chat. It is FIRE-AND-FORGET: it delivers your "
+        "message with your attribution prefixed automatically and returns an "
+        "acknowledgement immediately — it never returns the reply. Send it, finish "
+        "your turn, and the reply arrives later as a background-process completion "
+        "notification that wakes you; relay it to the user then, attributed to that "
+        "agent. COMPOSE every message yourself — say what YOU need from that agent; "
+        "never forward the user's words verbatim, and never reveal private 1:1 chat "
         "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "
         "a handoff: pick the right teammate from the roster below, message them "
         "with message_agent, and report back naming which agent replied. Message "
@@ -301,7 +489,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         surface["roster"] = []
     # Protocol-text version salt: bumping it refreshes every eternal Bot Chat
     # prompt ONCE so existing bots adopt a new protocol section.
-    surface["protocol_version"] = 2
+    surface["protocol_version"] = 3
     # Peer gateways and the Desktop relay roster are part of the messaging
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
@@ -317,6 +505,15 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
 def epoch_line(home: str | os.PathLike | None = None) -> str:
     """The epoch stamp appended to a Bot Chat prompt."""
     return f"{_EPOCH_PREFIX}{capability_fingerprint(home)}"
+
+
+def stored_prompt_has_bot_mode_protocol(stored_prompt: str) -> bool:
+    """True only for prompts stamped with the generated Bot Mode protocol."""
+    try:
+        prompt = stored_prompt or ""
+        return _EPOCH_PREFIX in prompt and _PROTOCOL_HEADING in prompt
+    except Exception:
+        return False
 
 
 def stored_prompt_capability_stale(stored_prompt: str, home: str | os.PathLike | None = None) -> bool:
@@ -347,3 +544,5 @@ def stored_bot_chat_prompt_needs_upgrade(stored_prompt: str, home: str | os.Path
 def _reset_cache_for_tests() -> None:
     with _lock:
         _cached.clear()
+    with _session_state_lock:
+        _session_state_cache.clear()

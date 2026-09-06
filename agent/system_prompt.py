@@ -312,24 +312,18 @@ def _skills_prompt(agent: Any) -> str:
 
 
 def _bot_mode_parts(agent: Any) -> List[str]:
-    """Bot Mode teammate protocol — only in a bot's canonical "Bot Chat" session.
-    Marks the prompt timeless (the volatile date line is dropped) since a birth
-    date pinned in a months-long session is misinformation."""
+    """Bot Mode protocol for canonical Bot Chats and routed human messaging sessions."""
     parts: List[str] = []
     try:
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, epoch_line, get_bot_mode_protocol_section
-        _title = str(getattr(agent, "_session_title_hint", "") or "").strip()
-        if not _title:
-            _sdb = getattr(agent, "_session_db", None)
-            _sid = getattr(agent, "session_id", None)
-            _title = str((_sdb.get_session_title(_sid) if (_sdb and _sid) else None) or "").strip()
-        _bot_section = get_bot_mode_protocol_section(_agent_home(agent)) if _title == BOT_CHAT_TITLE else None
-        if _bot_section:
-            parts.append(_bot_section)
-            # Capability epoch lets the restore path rebuild ONCE per
-            # user-initiated capability change in an eternal session.
-            parts.append(epoch_line(_agent_home(agent)))
-            agent._bot_chat_timeless_prompt = True
+        from tools.bot_mode_probe import bot_mode_session_state, epoch_line, get_bot_mode_protocol_section
+        if bot_mode_session_state(agent)["session_kind"]:
+            _bot_section = get_bot_mode_protocol_section(_agent_home(agent))
+            if _bot_section:
+                parts.append(_bot_section)
+                # Capability epoch lets the restore path rebuild ONCE per
+                # user-initiated capability change in an eternal session.
+                parts.append(epoch_line(_agent_home(agent)))
+                agent._bot_chat_timeless_prompt = True
     except Exception:
         pass
     return parts

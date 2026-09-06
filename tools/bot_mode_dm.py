@@ -109,11 +109,12 @@ def message_agent_tool_schema() -> dict:
 
 
 def ensure_message_agent_tool(agent: Any) -> bool:
-    """Inject the ``message_agent`` schema into a Bot Chat agent's tool list (once per turn).
-    Idempotent and deterministic for the session's life (the gate is stable from the
-    first turn), so the tool list is byte-identical across turns — prompt-cache safe. Never raises."""
+    """Inject the ``message_agent`` schema into a routed Bot Mode session.
+    The shared frozen gate keeps the tool list byte-identical across turns."""
     try:
-        if not getattr(agent, "_bot_mode_protocol", True):
+        from tools.bot_mode_probe import bot_mode_session_state
+
+        if not bot_mode_session_state(agent)["session_kind"]:
             return False
         tools = getattr(agent, "tools", None)
         if tools and any(
@@ -121,12 +122,6 @@ def ensure_message_agent_tool(agent: Any) -> bool:
             for t in tools
         ):
             return True
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
-
-        # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
-        # legacy protocol text gets an empty section but must still get the tool.
-        if _session_title(agent) != BOT_CHAT_TITLE or not is_bot_mode_managed(_agent_home(agent)):
-            return False
         if agent.tools is None:
             agent.tools = []
         agent.tools.append(message_agent_tool_schema())
@@ -164,17 +159,18 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     home = _agent_home(agent)
     try:
         from tools.bot_mode_probe import (
-            BOT_CHAT_TITLE, _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
-            is_bot_mode_managed,
+            _handle, _hermes_root, _peers, _profile_name as _self_profile_name, _roster,
+            bot_mode_dispatch_authorized, bot_mode_session_state,
         )
         from tools.bot_relay import BOT_CHAT_TURN_ARGS
 
-        if _session_title(agent) != BOT_CHAT_TITLE:
-            return _err("message_agent is only available in a Bot Mode 'Bot Chat' session. "
-                        "This session is not one; do not retry.")
-        if not is_bot_mode_managed(home):
-            return _err("This install is not Bot-Mode-managed (no bot roster); "
-                        "message_agent is unavailable. Do not retry.")
+        state = bot_mode_session_state(agent)
+        if not state["session_kind"] or not bot_mode_dispatch_authorized(agent, home):
+            return _err(
+                "message_agent is only available in a Bot Mode session — a canonical "
+                "'Bot Chat' or a classified human messaging chat bound to a real profile. "
+                "This session is not one; do not retry."
+            )
     except Exception as exc:  # pragma: no cover — defensive
         return _err(f"Bot Mode gate check failed: {exc}")
 
@@ -480,7 +476,14 @@ def _delivery_main(args: list[str]) -> int:
 
 
 def _agent_home(agent: Any) -> str:
-    """The calling agent's OWN home (session-db derived), not ambient env."""
+    """The routed profile home: ContextVar first, shared DB as fallback."""
+    try:
+        from hermes_constants import get_hermes_home_override
+        override = get_hermes_home_override()
+        if override:
+            return override
+    except Exception:
+        pass
     with contextlib.suppress(Exception):
         db_path = getattr(getattr(agent, "_session_db", None), "db_path", None)
         if db_path:

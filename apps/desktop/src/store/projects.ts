@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import type { NewSessionPlacement } from '@/app/chat/new-session-drag'
 import {
   liveSessionProjectId,
   NO_PROJECT_ID,
@@ -756,6 +757,10 @@ export interface CreateProjectInput {
   use?: boolean
   // Free-text project idea; written to IDEA.md at the primary folder on create.
   idea?: string
+  /** Where a "New project" DRAG dropped the project (tab-strip slot / pane
+   *  edge / pane center). The completion side opens the created project's
+   *  fresh session draft exactly there; absent = the plain-click behavior. */
+  dropPlacement?: NewSessionPlacement
 }
 
 // Generate a project idea via the stateless llm.oneshot RPC (inherits the live
@@ -904,6 +909,16 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
 
     if (input.use) {
       $activeProjectId.set(created.id)
+    }
+
+    // A "New project" DRAG created this: hand the placement to the completion
+    // side so the project's fresh session draft opens exactly where it was
+    // dropped (tab-strip slot / pane edge / pane center). The plain click
+    // path has no placement and keeps its existing behavior.
+    const rootPath = created.primary_path ?? created.folders?.[0]?.path ?? input.primaryPath
+
+    if (input.dropPlacement && rootPath) {
+      $newProjectSessionRequest.set({ path: rootPath, placement: input.dropPlacement })
     }
 
     setSidebarAgentsGrouped(true)
@@ -1104,6 +1119,12 @@ export function openProjectCreate(): void {
   $projectDialog.set({ mode: 'create' })
 }
 
+/** Clear the armed "New project" drag placement — on dialog close, so a later
+ *  plain-click create can never inherit a stale arm. */
+export function clearNewProjectDropPlacement(): void {
+  $newProjectDropPlacement.set(null)
+}
+
 export function openProjectRename(project: { id: string; name: string }): void {
   $projectDialog.set({ mode: 'rename', name: project.name, projectId: project.id })
 }
@@ -1224,6 +1245,28 @@ export interface StartWorkSessionRequest {
 }
 
 export const $startWorkSessionRequest = atom<StartWorkSessionRequest | null>(null)
+
+// ── "New project" drag placement ─────────────────────────────────────────────
+// Dragging the project-overview header's "New project" + onto a chat zone arms
+// WHERE the project should start; the dialog flow consumes it on create. Two
+// atoms, mirroring $startWorkSessionRequest's token pattern:
+//
+// - `$newProjectDropPlacement` holds the last armed placement while the
+//   project dialog is open. The dialog submit reads it when its `createProject`
+//   succeeds and forwards it as `CreateProjectInput.dropPlacement`. Cleared on
+//   dialog close so a later plain-click create never inherits a stale arm.
+// - `$newProjectSessionRequest` is the consume-once completion signal: the
+//   controller effect (ContribWiring) watches it, opens the created project's
+//   fresh session draft at the recorded anchor/slot, and drops the request.
+export const $newProjectDropPlacement = atom<NewSessionPlacement | null>(null)
+
+export interface NewProjectSessionRequest {
+  /** The created project's root cwd — the fresh draft starts here. */
+  path: string
+  placement: NewSessionPlacement
+}
+
+export const $newProjectSessionRequest = atom<NewProjectSessionRequest | null>(null)
 
 // The "make a new worktree" intent, from the keyboard or a menu. One dialog is
 // mounted, in the sidebar beside ProjectDialog, and it reads this atom. This

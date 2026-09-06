@@ -302,7 +302,13 @@ class HermesTokenStorage:
         try:
             return cls.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
-            logger.warning("Corrupt %s at %s -- ignoring: %s", label, path, exc)
+            # A pydantic ValidationError's str() echoes the raw input (the token material); log
+            # only which fields failed.
+            detail = exc
+            if hasattr(exc, "errors"):  # pydantic ValidationError
+                detail = "validation failed for " + ", ".join(
+                    ".".join(map(str, e.get("loc", ()))) for e in exc.errors(include_input=False))
+            logger.warning("Corrupt %s at %s -- ignoring: %s", label, path, detail)
             return None
 
     def _rebase_expires_in(self, data: dict) -> None:

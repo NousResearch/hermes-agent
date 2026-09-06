@@ -2090,12 +2090,12 @@ class GatewayTurnMixin:
             )
             return []
         principals = {
-            str(value).strip()
+            value.strip()
             for value in (
                 getattr(source, "user_id", None),
                 getattr(source, "user_id_alt", None),
             )
-            if str(value or "").strip()
+            if isinstance(value, str) and value.strip()
         }
         result = list(enabled)
         for toolset, raw_allowed in platform_rules.items():

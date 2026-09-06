@@ -57,6 +57,13 @@ def test_missing_identity_denies_restricted_toolset():
     assert "computer_use" not in result
 
 
+def test_non_string_identity_cannot_match_allowlist():
+    config = _config(["123"])
+
+    assert "computer_use" not in _resolve(config, _source(123))
+    assert "computer_use" not in _resolve(config, _source("U_OTHER", 123))
+
+
 def test_alternate_authenticated_identity_can_match():
     result = _resolve(_config(["U_ALT"]), _source("U_PRIMARY", "U_ALT"))
     assert "computer_use" in result

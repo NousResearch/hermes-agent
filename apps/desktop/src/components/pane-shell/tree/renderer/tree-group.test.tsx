@@ -13,6 +13,7 @@ import { group, split } from '../model'
 import { $layoutTree, $treeDragging, declareDefaultTree, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
 
 import { TreeGroup } from './tree-group'
+import { TreeNode } from './tree-node'
 
 let root: null | Root = null
 let container: HTMLDivElement | null = null
@@ -361,6 +362,61 @@ describe('TreeGroup', () => {
       fireEvent.click(await screen.findByRole('button', { name: /unlock pane/i }))
 
       expect(getPaneStateSnapshot('sidebar')?.lockWidth).toBeUndefined()
+    })
+
+    it('shared-column veil lock captures the column width and locks every column pane', async () => {
+      vi.stubGlobal('CSS', { escape: (value: string) => value })
+      disposers.push(
+        registry.register({
+          area: 'panes',
+          data: { height: '38vh', width: '237px' },
+          id: 'terminal',
+          render: () => <div>Terminal</div>,
+          title: 'Terminal'
+        }),
+        registry.register({
+          area: 'panes',
+          data: { height: '200px', width: '200px' },
+          id: 'files',
+          render: () => <div>Files</div>,
+          title: 'Files'
+        })
+      )
+
+      // column-within-row: a column split (terminal + files) under a row ancestor.
+      const tree = split('row', [split('column', [group(['terminal'], { id: 'terminal-zone' }), group(['files'], { id: 'files-zone' })])])
+      declareDefaultTree(tree)
+      $layoutTree.set(tree)
+      $layoutEditMode.set(true)
+      render(<TreeNode node={tree} />)
+
+      // The column split element (not the individual zone) is the width source.
+      const zoneEl = document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')!
+      const colSplitEl = zoneEl.closest<HTMLElement>('[data-tree-split]')!
+      Object.defineProperty(zoneEl, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ height: 600, width: 250, ...{ toJSON: () => ({}) } })
+      })
+      Object.defineProperty(colSplitEl, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ height: 600, width: 500, ...{ toJSON: () => ({}) } })
+      })
+
+      const lockButton = document.querySelector<HTMLButtonElement>(
+        '[data-tree-group="terminal-zone"] button[aria-label="Lock pane"]'
+      )!
+      fireEvent.click(lockButton)
+
+      // Both panes in the column get the SPLIT's width, not the zone's.
+      const termSnap = getPaneStateSnapshot('terminal')
+      const filesSnap = getPaneStateSnapshot('files')
+      expect(termSnap?.lockWidth).toBe(true)
+      expect(termSnap?.lockedWidth).toBe(500)
+      expect(filesSnap?.lockWidth).toBe(true)
+      expect(filesSnap?.lockedWidth).toBe(500)
+      // Height locks too (column ancestor), and it's captured from the zone rect.
+      expect(termSnap?.lockHeight).toBe(true)
+      expect(termSnap?.lockedHeight).toBe(600)
     })
   })
 

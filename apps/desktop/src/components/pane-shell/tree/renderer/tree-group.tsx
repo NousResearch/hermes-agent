@@ -10,7 +10,16 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
+import {
+  type CSSProperties,
+  Fragment,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
@@ -30,7 +39,7 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
-import { $paneState, getPaneStateSnapshot, setPaneHeightLock, setPaneWidthLock } from '@/store/panes'
+import { $paneState, $paneStates, getPaneStateSnapshot, setPaneHeightLock, setPaneWidthLock } from '@/store/panes'
 import { closeAllOpenSessionTiles } from '@/store/session-states'
 
 import { $layoutEditMode } from '../../edit-mode'
@@ -559,8 +568,21 @@ export function TreeGroup({
 
   const lockable = lockableAxes.width || lockableAxes.height
   const paneLock = useStore($paneState(activeId))
-  const lockedWidth = Boolean(paneLock?.lockWidth)
   const lockedHeight = Boolean(paneLock?.lockHeight)
+
+  // Width lock state must match the zone menu's shared-column rule: when this
+  // zone sits in a column-within-a-row, the column is "locked" if ANY of its
+  // panes holds lockWidth — otherwise the corner button and the menu would
+  // advertise opposite actions. useSyncExternalStore over the whole map with a
+  // boolean snapshot is churn-immune (only re-renders when the value flips),
+  // unlike useStore($paneStates) which would re-render on every override write.
+  const columnPaneIds = lockableAxes.width && parentAxis === 'column' ? columnPaneIdsForGroup(node.id) : null
+
+  const lockedWidth = useSyncExternalStore(
+    cb => $paneStates.listen(cb),
+    () => (columnPaneIds ? columnPaneIds.some(id => $paneStates.get()[id]?.lockWidth) : Boolean($paneStates.get()[activeId]?.lockWidth))
+  )
+
   const isLocked = (lockableAxes.width && lockedWidth) || (lockableAxes.height && lockedHeight)
 
   const togglePaneLock = () => {
@@ -954,7 +976,7 @@ export function TreeGroup({
                 title={isLocked ? t.zones.unlockPane : t.zones.lockPane}
                 type="button"
               >
-                <Codicon name={isLocked ? 'lock' : 'unlock'} size="0.875rem" />
+                <Codicon name={isLocked ? 'unlock' : 'lock'} size="0.875rem" />
               </button>
             )}
           </div>

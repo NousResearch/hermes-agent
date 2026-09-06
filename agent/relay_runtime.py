@@ -150,6 +150,11 @@ class RelaySession:
     # closing now would pop the session scope under a live turn scope
     # (LIFO violation). end_turn consumes this and closes the session.
     close_pending: bool = False
+    # A failed native scope close leaves the Relay stack untrustworthy. Keep
+    # the Hermes conversation alive, but retire its Relay instrumentation
+    # rather than letting later turns block on the corrupted native state.
+    recovery_needed: bool = False
+    recovery_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -713,11 +718,38 @@ class RelayRuntime:
                 timeout=_SCOPE_OP_TIMEOUT,
             )
         except Exception as exc:
+            self._mark_session_for_recovery(session, failure_label, exc)
             return f"{failure_label}: {exc}"
         retry_exc = error_holder.get("retry") or error_holder.get("first")
         if retry_exc is not None:
+            self._mark_session_for_recovery(session, failure_label, retry_exc)
             return f"{failure_label}: {retry_exc}"
         return None
+
+    def _mark_session_for_recovery(
+        self,
+        session: RelaySession,
+        failure_label: str,
+        exc: BaseException,
+    ) -> None:
+        """Retire a Relay session whose native scope stack can no longer close.
+
+        A scope-pop failure is telemetry-only: it must never hold up Hermes
+        turn cleanup.  Clearing the saved context makes subsequent Relay work
+        fail closed while the ordinary conversation continues normally.
+        """
+        logger.error(
+            "Hermes Relay %s; retiring corrupted session %s",
+            failure_label,
+            session.session_id,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        with session.lock:
+            session.recovery_needed = True
+            session.recovery_reason = f"{failure_label}: {exc}"
+            session.closing = True
+            session.handle = None
+            session.context = None
 
     def close_session(self, event: dict[str, Any]) -> None:
         """Close one session scope and remove it from the core registry."""
